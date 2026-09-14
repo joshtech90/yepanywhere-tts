@@ -1,9 +1,9 @@
-import type {
-  ToolRenderer,
-  UpdatePlanInput,
-  UpdatePlanResult,
-  UpdatePlanStep,
-} from "./types";
+import { useI18n } from "../../../i18n";
+import { CodeModeOutput } from "./CodeModeOutput";
+import styles from "./UpdatePlanRenderer.module.css";
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
+import type { UpdatePlanStep } from "./types";
 
 type NormalizedPlanStatus = "pending" | "in_progress" | "completed";
 
@@ -93,10 +93,25 @@ function extractResultMessage(result: unknown): string | undefined {
   return undefined;
 }
 
-export const updatePlanRenderer: ToolRenderer<
-  UpdatePlanInput,
-  UpdatePlanResult
-> = {
+/** Code-mode acknowledgements may include unrelated sibling output. Keep it
+ * available without expanding it over the input-side plan. */
+function PlanOutput({
+  result,
+  isError,
+}: {
+  result: unknown;
+  isError: boolean;
+}) {
+  const { t } = useI18n();
+  return (
+    <details className={styles.output}>
+      <summary>{t("toolDisplay.output")}</summary>
+      <CodeModeOutput result={result} isError={isError} />
+    </details>
+  );
+}
+
+export const updatePlanRenderer = defineTool(toolDisplayContracts.UpdatePlan, {
   tool: "UpdatePlan",
   displayName: "Update plan",
 
@@ -104,8 +119,15 @@ export const updatePlanRenderer: ToolRenderer<
     return null;
   },
 
-  renderToolResult() {
-    return null;
+  renderToolResult(result, isError) {
+    return (
+      <div className={isError ? "todo-error" : "todo-summary"}>
+        {extractResultMessage(result)}
+        {Array.isArray(result) && (
+          <PlanOutput result={result} isError={isError} />
+        )}
+      </div>
+    );
   },
 
   renderInline(input, result, isError, status) {
@@ -117,6 +139,9 @@ export const updatePlanRenderer: ToolRenderer<
       return (
         <div className="todo-error">
           {resultMessage || "Failed to update plan"}
+          {Array.isArray(result) && (
+            <PlanOutput result={result} isError={isError} />
+          )}
         </div>
       );
     }
@@ -126,7 +151,12 @@ export const updatePlanRenderer: ToolRenderer<
         return <div className="todo-summary">Updating plan...</div>;
       }
       return (
-        <div className="todo-summary">{resultMessage || "Plan updated"}</div>
+        <div className="todo-summary">
+          {resultMessage || "Plan updated"}
+          {Array.isArray(result) && (
+            <PlanOutput result={result} isError={isError} />
+          )}
+        </div>
       );
     }
 
@@ -157,6 +187,9 @@ export const updatePlanRenderer: ToolRenderer<
             </div>
           ))}
         </div>
+        {Array.isArray(result) && (
+          <PlanOutput result={result} isError={isError} />
+        )}
         {status !== "pending" &&
           resultMessage &&
           resultMessage.toLowerCase() !== "plan updated" && (
@@ -183,4 +216,4 @@ export const updatePlanRenderer: ToolRenderer<
     }
     return extractResultMessage(result) || "Plan updated";
   },
-};
+});

@@ -42,6 +42,19 @@ the presentation the user saw in recent Claude/Codex. It is real but **partial**
   forms `read`/`grep`/`ls`/`list_dir`/…).
 - The group renders a per-entry one-line summary (interactive summary when the
   renderer offers one, else a path/pattern fallback) with a status glyph.
+- **One line is a contract on the entry, not a hope about the renderer.** An
+  entry uses a renderer's interactive summary only when that renderer
+  understood the record — the prepared display kind is `rich`. A payload that
+  misses its display contract makes the renderer answer with its raw fallback
+  instead: a tool heading, a "rich preview unavailable" notice and
+  pretty-printed JSON. That block belongs in an expanded tool row, not in an
+  entry's single-line cell, where it inflated the row and painted over the
+  neighbouring entries (observed 2026-09-10 with an image read whose envelope
+  carried the media type as its top-level discriminator). Unrecognized
+  envelopes therefore take the group's own compact fallback, which still names
+  the file or pattern. The cell is also a block container rather than an inline
+  one, so a renderer that crashes mid-render and falls back to the same block
+  is clipped by the cell instead of escaping the row.
 
 ### Why "not done consistently" is accurate
 

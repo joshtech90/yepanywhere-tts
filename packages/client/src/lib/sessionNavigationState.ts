@@ -16,6 +16,7 @@ export interface InitialSessionStatus {
 }
 
 export interface SessionNavigationState {
+  asyncQuestion?: { messageId: string; index: number };
   initialStatus?: InitialSessionStatus;
   initialTitle?: string;
   initialModel?: string;
@@ -98,6 +99,18 @@ export function parseSessionNavigationState(
 
   const initialStatus = normalizeInitialSessionStatus(value.initialStatus);
   return {
+    ...(isRecord(value.asyncQuestion) &&
+    typeof value.asyncQuestion.messageId === "string" &&
+    typeof value.asyncQuestion.index === "number" &&
+    Number.isInteger(value.asyncQuestion.index) &&
+    value.asyncQuestion.index >= 0
+      ? {
+          asyncQuestion: {
+            messageId: value.asyncQuestion.messageId,
+            index: value.asyncQuestion.index,
+          },
+        }
+      : {}),
     ...(initialStatus ? { initialStatus } : {}),
     ...(typeof value.initialTitle === "string"
       ? { initialTitle: value.initialTitle }
@@ -122,6 +135,7 @@ export function createSessionNavigationState(
   state: SessionNavigationState,
 ): SessionNavigationState {
   return {
+    ...(state.asyncQuestion ? { asyncQuestion: state.asyncQuestion } : {}),
     ...(state.initialStatus ? { initialStatus: state.initialStatus } : {}),
     ...(state.initialTitle ? { initialTitle: state.initialTitle } : {}),
     ...(state.initialModel ? { initialModel: state.initialModel } : {}),

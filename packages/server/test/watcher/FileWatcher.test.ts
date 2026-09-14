@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { EventEmitter } from "node:events";
 import {
   appendFile,
   mkdir,
@@ -12,6 +13,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { EventBus, type FileChangeEvent } from "../../src/watcher/EventBus.js";
 import { FileWatcher } from "../../src/watcher/FileWatcher.js";
+import * as sharedDirectoryWatcher from "../../src/watcher/SharedDirectoryWatcher.js";
 
 interface FileWatcherTestAccess {
   rescanInProgress: boolean;
@@ -114,46 +116,69 @@ describe("FileWatcher", () => {
     }
   });
 
-  it("preserves an event observed while the baseline is pending", async () => {
-    const watchDir = join(tmpdir(), `file-watcher-${randomUUID()}`);
-    tempDirs.push(watchDir);
-    await mkdir(watchDir, { recursive: true });
-    const filePath = join(watchDir, "session.jsonl");
-    await writeFile(filePath, "{}\n");
+  it.each(["before", "after"])(
+    "preserves a pending-baseline event delivered %s baseline completion",
+    async (delivery) => {
+      const watchDir = join(tmpdir(), `file-watcher-${randomUUID()}`);
+      tempDirs.push(watchDir);
+      await mkdir(watchDir, { recursive: true });
+      const filePath = join(watchDir, "session.jsonl");
+      await writeFile(filePath, "{}\n");
 
-    const events: FileChangeEvent[] = [];
-    const eventBus = new EventBus();
-    eventBus.subscribe((event) => {
-      if (event.type === "file-change") events.push(event);
-    });
-    const watcher = new FileWatcher({
-      watchDir,
-      provider: "claude",
-      eventBus,
-      debounceMs: 0,
-      rescanSlowLogThresholdMs: 60_000,
-    });
+      const events: FileChangeEvent[] = [];
+      const eventBus = new EventBus();
+      eventBus.subscribe((event) => {
+        if (event.type === "file-change") events.push(event);
+      });
+      const watcher = new FileWatcher({
+        watchDir,
+        provider: "claude",
+        eventBus,
+        debounceMs: 0,
+        rescanSlowLogThresholdMs: 60_000,
+      });
 
-    try {
-      watcher.start();
-      (watcher as unknown as FileWatcherTestAccess).handleFileEvent(
-        "change",
-        "session.jsonl",
-      );
-      const metrics = await watcher.waitForInitialBaseline();
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Native notifications for the fixture write can arrive after start() on
+      // macOS and replace the injected event's debounce timer. Own delivery here;
+      // the other watcher tests retain real filesystem observation coverage.
+      class NativeWatch extends EventEmitter {
+        close() {}
+        ref() {
+          return this;
+        }
+        unref() {
+          return this;
+        }
+      }
+      const nativeWatch = vi
+        .spyOn(sharedDirectoryWatcher, "watchSharedDirectory")
+        .mockReturnValue(new NativeWatch());
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        watcher.start();
+        (watcher as unknown as FileWatcherTestAccess).handleFileEvent(
+          "change",
+          "session.jsonl",
+        );
+        if (delivery === "before") vi.runOnlyPendingTimers();
+        const metrics = await watcher.waitForInitialBaseline();
+        expect(watcher.getInitialBaselineState()).toBe("complete");
+        if (delivery === "after") vi.runOnlyPendingTimers();
 
-      expect(metrics?.touchedPathsPreserved).toBe(1);
-      expect(events).toEqual([
-        expect.objectContaining({
-          path: filePath,
-          changeType: "modify",
-        }),
-      ]);
-    } finally {
-      watcher.stop();
-    }
-  });
+        expect(metrics?.touchedPathsPreserved).toBe(1);
+        expect(events).toEqual([
+          expect.objectContaining({
+            path: filePath,
+            changeType: "modify",
+          }),
+        ]);
+      } finally {
+        watcher.stop();
+        vi.useRealTimers();
+        nativeWatch.mockRestore();
+      }
+    },
+  );
 
   it("reports a file first seen after the baseline as a create", async () => {
     const watchDir = join(tmpdir(), `file-watcher-${randomUUID()}`);

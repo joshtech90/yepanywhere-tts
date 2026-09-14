@@ -27,6 +27,7 @@ import { getSessionDisplayTitle } from "../utils";
 import { FilterDropdown, type FilterOption } from "./FilterDropdown";
 import styles from "./InboxContent.module.css";
 import { SessionListItem } from "./SessionListItem";
+import { SessionAsyncQuestionsButton } from "./SessionAsyncQuestionsButton";
 
 const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
 const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
@@ -617,6 +618,10 @@ export function InboxContent({
       <div className={`page-content-inner ${styles.root}`}>
         {/* Toolbar with project filter and refresh button */}
         <div className="inbox-toolbar">
+          <SessionAsyncQuestionsButton
+            projectId={projectId}
+            basePath={basePath}
+          />
           {projects && projects.length > 0 && (
             <FilterDropdown
               label={t("inboxFilterProject")}

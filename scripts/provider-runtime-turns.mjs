@@ -60,6 +60,11 @@ function submissionFingerprint(request) {
           sessionOptions: request.sessionOptions,
           launch: request.launch,
           resumeRecentRuntime: request.resumeRecentRuntime,
+          ...(request.eventual ? { eventual: true } : {}),
+          ...(request.liveOnly ? { liveOnly: true } : {}),
+          ...(request.idleTimeoutMs !== undefined
+            ? { idleTimeoutMs: request.idleTimeoutMs }
+            : {}),
         }),
       ),
     )
@@ -96,6 +101,10 @@ export class ProviderRuntimeTurnLedger {
   }
 
   async open(request, socket) {
+    for (const option of ["eventual", "liveOnly"]) {
+      if (request[option] !== undefined && typeof request[option] !== "boolean")
+        throw new Error(`${option} must be boolean`);
+    }
     this.prune(MAX_RETAINED_SUBMISSIONS - 1);
     const submissionId = this.requireSubmissionId(request);
     const fingerprint = submissionFingerprint(request);
@@ -166,7 +175,7 @@ export class ProviderRuntimeTurnLedger {
         );
         return;
       }
-      if (runtime.activeSubmissionId) {
+      if (runtime.activeSubmissionId && !request.eventual) {
         this.failBeforeAcceptance(
           submission,
           "busy",
@@ -199,6 +208,8 @@ export class ProviderRuntimeTurnLedger {
         submissionId,
         message: request.message,
         sessionOptions: request.sessionOptions,
+        eventual: request.eventual === true,
+        liveOnly: request.liveOnly === true,
       });
     } catch (error) {
       this.failBeforeAcceptance(
@@ -223,6 +234,7 @@ export class ProviderRuntimeTurnLedger {
         submission.acceptTimer = null;
         submission.state = "accepted";
         submission.acceptedAt = new Date().toISOString();
+        submission.delivery = message.delivery ?? "queued";
         try {
           this.persistReceipt(submission);
         } catch (error) {
@@ -237,10 +249,36 @@ export class ProviderRuntimeTurnLedger {
           providerSessionId: runtime.providerSessionId,
           yaSessionId: runtime.yaSessionId,
           acceptedAt: submission.acceptedAt,
+          ...(submission.request.eventual
+            ? { delivery: submission.delivery }
+            : {}),
           sessionOptionsResult: message.sessionOptionsResult,
         });
         return true;
       case "sessionTurnStarted":
+        if (submission.state !== "accepted") return true;
+        submission.delivery = "started";
+        submission.startedAt = new Date().toISOString();
+        if (!submission.request.eventual) return true;
+        try {
+          this.persistReceipt(submission);
+        } catch (error) {
+          this.failReceiptPersistence(submission, error);
+          return true;
+        }
+        this.append(submission, {
+          type: "started",
+          submissionId,
+          startedAt: submission.startedAt,
+        });
+        return true;
+      case "sessionTurnReady":
+        if (submission.state === "accepted")
+          this.append(submission, {
+            type: "sessionOptions",
+            submissionId,
+            sessionOptionsResult: message.sessionOptionsResult,
+          });
         return true;
       case "sessionTurnEvent":
         if (submission.state !== "accepted") return true;
@@ -367,12 +405,11 @@ export class ProviderRuntimeTurnLedger {
   }
 
   runtimeEnded(runtime, outcome = "provider-failed") {
-    const submissionId = runtime.activeSubmissionId;
-    if (!submissionId) return;
-    const submission = this.submissions.get(submissionId);
-    if (submission) {
+    for (const submission of this.submissions.values()) {
+      if (submission.runtime !== runtime || submission.state === "terminal")
+        continue;
       if (submission.state === "accepted") {
-        this.finish(submission, outcome, {
+        this.finish(submission, submission.startedAt ? outcome : "not-alive", {
           error: "Provider runtime ended before a terminal result",
         });
       } else {
@@ -587,7 +624,14 @@ export class ProviderRuntimeTurnLedger {
 
   releaseRuntime(submission) {
     if (submission.runtime?.activeSubmissionId === submission.submissionId) {
-      submission.runtime.activeSubmissionId = undefined;
+      submission.runtime.activeSubmissionId = [
+        ...this.submissions.values(),
+      ].find(
+        (other) =>
+          other !== submission &&
+          other.runtime === submission.runtime &&
+          other.state !== "terminal",
+      )?.submissionId;
     }
   }
 
@@ -599,6 +643,8 @@ export class ProviderRuntimeTurnLedger {
       accepted: Boolean(submission.acceptedAt),
       acceptedAt: submission.acceptedAt,
       terminalAt: submission.terminalAt,
+      delivery: submission.delivery,
+      startedAt: submission.startedAt,
       outcome: terminal?.outcome,
       receipt: terminal?.receipt,
       recordCount: submission.records.length,
@@ -613,6 +659,8 @@ export class ProviderRuntimeTurnLedger {
       accepted: Boolean(submission.acceptedAt),
       acceptedAt: submission.acceptedAt,
       terminalAt: submission.terminalAt,
+      delivery: submission.delivery,
+      startedAt: submission.startedAt,
       outcome,
       receipt,
     });

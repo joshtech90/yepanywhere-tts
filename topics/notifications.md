@@ -88,6 +88,26 @@ Test pushes are an explicit diagnostic action and always display, including
 while YA is focused. Dismiss intents close the matching session notification
 without applying presentation suppression.
 
+## Completion, Intentional Stops, And Shutdown
+
+With session completion notifications enabled, a live session becoming idle
+following active work sends one completion intent. Repeated idle reports,
+provider iterator closure, and initial/restored idle state do not create new
+completion intents. A later active turn can notify again.
+
+Manual Stop, Kill, and archive-driven abort suppress completion/error intents
+from that process's cleanup, including repeated or delayed state events.
+Accepted fresh user work or a replacement process restores eligibility.
+Unexpected provider termination while YA is running retains its error intent;
+an abruptly crashed YA server cannot reliably send its own failure alert.
+
+Once intentional server shutdown begins, session and project/YA inactivity
+notifiers stop generating intents before any provider is aborted or detached.
+Pending asynchronous checks must not send after shutdown starts. An intent
+already handed to the push transport may still arrive. This applies equally
+to Mac/Windows local-provider cleanup and Linux hosted-provider reloads without
+changing provider ownership or teardown mechanics.
+
 ## Direct Browser Notifications
 
 Raw in-page `Notification` calls are not the primary cross-platform path. The

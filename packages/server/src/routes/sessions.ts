@@ -20,8 +20,10 @@ import {
   type UserMessageMetadata,
   type UrlProjectId,
   type WorkstreamId,
+  GOAL_COMMAND_NAME,
   buildEffectiveAgentContext,
   getModelContextWindow,
+  readGoalDetails,
   isUrlProjectId,
   isWorkstreamId,
   mainWorkstreamId,
@@ -61,7 +63,7 @@ import type { SessionQueuePersistenceService } from "../services/SessionQueuePer
 import type { WorkstreamService } from "../services/WorkstreamService.js";
 import { initializeSessionHeartbeatDefaults } from "../services/sessionHeartbeatDefaults.js";
 import { CodexSessionReader } from "../sessions/codex-reader.js";
-import { cloneClaudeSession, cloneCodexSession } from "../sessions/fork.js";
+import { cloneClaudeSession } from "../sessions/fork.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
 import { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
@@ -81,6 +83,7 @@ import {
   applyRecapOverlayToSummary,
   hasEquivalentRecapMessage,
   hasUnreadProviderContent,
+  getEffectiveProviderUpdatedAt,
   latestRecapMessage,
   mergeSessionOverlayMessages,
   mergeLocalCommandMessages,
@@ -221,16 +224,22 @@ async function getSessionSlashCommands(
       );
     }
   }
-  return (
+  // A stopped session has no provider to ask, so the last observed goal stands
+  // in for live state. A live inventory that already reports goal state wins;
+  // unknown goal state is not evidence that the goal was cleared.
+  const savedGoal = metadata?.goalCommand ?? metadata?.codexGoalCommand;
+  if (!savedGoal) return commands ?? null;
+  const merged =
     commands?.map((command) =>
-      provider === "codex" &&
-      command.name === "goal" &&
-      command.providerDetails?.codex?.goalObjective === undefined &&
-      metadata?.codexGoalCommand
-        ? metadata.codexGoalCommand
+      command.name === GOAL_COMMAND_NAME &&
+      readGoalDetails(command)?.goalObjective === undefined
+        ? savedGoal
         : command,
-    ) ?? null
-  );
+    ) ?? null;
+  if (merged?.some((command) => command.name === GOAL_COMMAND_NAME)) {
+    return merged;
+  }
+  return [...(merged ?? []), savedGoal];
 }
 
 function roundedMs(value: number): number {
@@ -256,6 +265,10 @@ function isQueueFullResponse(
 }
 
 export interface SessionsDeps {
+  onIssueWindow?: (
+    source: { sessionId: string; projectId: string },
+    messages: readonly Message[],
+  ) => void;
   supervisor: Supervisor;
   scanner: ProjectScanner;
   readerFactory: (project: Project) => ISessionReader;
@@ -383,6 +396,7 @@ async function resolveSessionReader({
 }
 
 interface StartSessionBody {
+  computerControl?: boolean;
   message: string;
   images?: string[];
   documents?: string[];
@@ -431,6 +445,7 @@ function hasSessionMessageContent(body: StartSessionBody): boolean {
 }
 
 interface CreateSessionBody {
+  computerControl?: boolean;
   mode?: PermissionMode;
   model?: string;
   serviceTier?: string;
@@ -2303,6 +2318,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
               projectId,
               sessionId,
               source.reader,
+              // A live Codex rollout grows between index passes, so requiring
+              // an exactly-current index meant every mid-turn open of a long
+              // session lost the compact-tail window and fell back to reading
+              // and normalizing the whole file. The reader takes only
+              // head-derived fields from this hint and reads the tail itself.
+              { acceptAppendedFile: true },
             )
           : null;
       const loaded = await source.reader.getSession(
@@ -2640,10 +2661,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       metadataProvider ?? process?.provider,
     );
     const rawSessionSummary = sessionSummaryResult?.summary ?? null;
+    const providerUpdatedAt = getEffectiveProviderUpdatedAt(
+      rawSessionSummary?.updatedAt ?? "",
+      process,
+    );
     const recapMessages =
       deps.sessionMetadataService?.getRecapMessages?.(sessionId) ?? [];
     const sessionSummary = rawSessionSummary
-      ? applyRecapOverlayToSummary(rawSessionSummary, recapMessages)
+      ? applyRecapOverlayToSummary(
+          { ...rawSessionSummary, updatedAt: providerUpdatedAt },
+          recapMessages,
+        )
       : null;
 
     if (!sessionSummary && !process) {
@@ -2665,11 +2693,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: "Session not found" }, 404);
     }
 
-    const hasUnread = rawSessionSummary
+    const hasUnread = providerUpdatedAt
       ? hasUnreadProviderContent(
           deps.notificationService,
           sessionId,
-          rawSessionSummary.updatedAt,
+          providerUpdatedAt,
         )
       : undefined;
 
@@ -2690,7 +2718,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         title: sessionSummary?.title ?? null,
         fullTitle: sessionSummary?.fullTitle ?? null,
         createdAt: sessionSummary?.createdAt ?? new Date().toISOString(),
-        updatedAt: sessionSummary?.updatedAt ?? new Date().toISOString(),
+        updatedAt:
+          sessionSummary?.updatedAt ||
+          providerUpdatedAt ||
+          new Date().toISOString(),
         messageCount: sessionSummary?.messageCount ?? 0,
         provider:
           metadataProvider ??
@@ -3033,11 +3064,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         // When we own the session, tools without results might be pending approval
         includeOrphans: wasEverOwned && !process,
         ...(!fullHistory &&
-        !afterMessageId &&
-        effectiveTailCompactions !== undefined
+        ((!afterMessageId && effectiveTailCompactions !== undefined) ||
+          primaryReaderAfterMessageId)
           ? {
-              tailCompactions: effectiveTailCompactions,
-              ...(beforeMessageId ? { beforeMessageId } : {}),
+              tailCompactions:
+                effectiveTailCompactions ??
+                DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
+              ...(!afterMessageId && beforeMessageId
+                ? { beforeMessageId }
+                : {}),
             }
           : {}),
       },
@@ -3098,6 +3133,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // The init message that normally carries these gets discarded from the SSE buffer
     // after ~30s, so we attach them to the REST response. Providers with known
     // native built-ins, such as Codex, can expose those while stopped.
+    const metadataStartMs = performance.now();
     const slashCommands = await getSessionSlashCommands(
       process,
       process?.provider ??
@@ -3117,6 +3153,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       "fresh",
     );
 
+    const metadataMs = performance.now() - metadataStartMs;
+
     if (!session) {
       // Session file doesn't exist yet - only valid if we own the process
       if (process) {
@@ -3124,7 +3162,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         // are computed on a detached client projection, as on file-backed reads.
         const sdkMessages = process.getMessageHistory();
         const transcriptSnapshotUpdatedAt =
-          process.lastProviderMessageTime?.toISOString() ??
+          process.lastProviderContentTime?.toISOString() ??
           process.startedAt.toISOString();
         const processMessages = sdkMessagesToClientMessages(
           structuredClone(sdkMessages),
@@ -3340,6 +3378,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
     if (
       loadedSession.readWindow &&
+      !incrementalAnchorFound &&
       (paginationInfo?.hasOlderMessages !==
         loadedSession.readWindow.omittedPrefix ||
         (loadedSession.readWindow.omittedPrefix &&
@@ -3362,6 +3401,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       paginationInfo = sliced.pagination;
     }
     const sliceEndMs = performance.now();
+
+    if (!publicShare) {
+      deps.onIssueWindow?.(
+        {
+          sessionId: process?.sessionId ?? session.id,
+          projectId: effectiveProjectId,
+        },
+        session.messages,
+      );
+    }
 
     // Normalization carries sanitized inline image bytes as private symbol
     // metadata. Consume those candidates before generic response detachment,
@@ -3418,9 +3467,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
     // The overlay reassigns `session` below; hasUnreadProviderContent needs
     // the pre-overlay timestamp.
-    const preRecapUpdatedAt = session.updatedAt;
+    const preRecapUpdatedAt = getEffectiveProviderUpdatedAt(
+      session.updatedAt,
+      process,
+    );
     session = {
       ...session,
+      updatedAt: preRecapUpdatedAt,
       messages: mergeLocalCommandMessages(
         session.messages,
         localCommandMessages,
@@ -3478,10 +3531,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const totalMs = performance.now() - requestStartMs;
     const detailTimings = {
       augment: roundedMs(augmentEndMs - sliceEndMs),
+      metadata: roundedMs(metadataMs),
       normalize: roundedMs(normalizeEndMs - readEndMs),
       project: roundedMs(projectResolvedMs - requestStartMs),
       read: roundedMs(readEndMs - projectResolvedMs),
-      route: roundedMs(sliceEndMs - normalizeEndMs),
+      route: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
       total: roundedMs(totalMs),
     };
     c.header(
@@ -3514,10 +3568,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           sessionId,
           timings: {
             augmentMs: roundedMs(augmentEndMs - sliceEndMs),
+            metadataMs: roundedMs(metadataMs),
             normalizeMs: roundedMs(normalizeEndMs - readEndMs),
             projectMs: roundedMs(projectResolvedMs - requestStartMs),
             readMs: roundedMs(readEndMs - projectResolvedMs),
-            routeMs: roundedMs(sliceEndMs - normalizeEndMs),
+            routeMs: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
             totalMs: roundedMs(totalMs),
           },
           totalMessageCount: session.messageCount,
@@ -3542,10 +3597,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           sessionId,
           timings: {
             augmentMs: roundedMs(augmentEndMs - sliceEndMs),
+            metadataMs: roundedMs(metadataMs),
             normalizeMs: roundedMs(normalizeEndMs - readEndMs),
             projectMs: roundedMs(projectResolvedMs - requestStartMs),
             readMs: roundedMs(readEndMs - projectResolvedMs),
-            routeMs: roundedMs(sliceEndMs - normalizeEndMs),
+            routeMs: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
             totalMs: roundedMs(totalMs),
           },
           totalMessageCount: session.messageCount,
@@ -3578,10 +3634,11 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           tailTurns: requestedTailTurns ?? null,
           timings: {
             augmentMs: roundedMs(augmentEndMs - sliceEndMs),
+            metadataMs: roundedMs(metadataMs),
             normalizeMs: roundedMs(normalizeEndMs - readEndMs),
             projectMs: roundedMs(projectResolvedMs - requestStartMs),
             readMs: roundedMs(readEndMs - projectResolvedMs),
-            routeMs: roundedMs(sliceEndMs - normalizeEndMs),
+            routeMs: roundedMs(sliceEndMs - normalizeEndMs - metadataMs),
             totalMs: roundedMs(totalMs),
           },
           totalMessageCount: session.messageCount,
@@ -3751,6 +3808,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        computerControl: body.computerControl,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -3895,6 +3953,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        computerControl: body.computerControl,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4034,6 +4093,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        computerControl: body.computerControl,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4140,6 +4200,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       thinking,
       effort,
       providerName: body.provider,
+      computerControl: body.computerControl,
       executor,
       sandboxLevel: sandboxSelection.sandboxLevel,
       sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -7460,6 +7521,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       let cloneProvider: ProviderName =
         originalResolution?.source.provider ?? project.provider;
 
+      const originalMetadata =
+        deps.sessionMetadataService?.getMetadata?.(sessionId);
+      const originalTitle =
+        originalMetadata?.customTitle ?? originalSession?.title;
+      const cloneTitle =
+        body.title ?? (originalTitle ? `${originalTitle} [cloned]` : undefined);
+
       let result: { newSessionId: string; entries: number };
 
       const shouldCloneFromCodex =
@@ -7473,33 +7541,39 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         if (!codexReader) {
           return c.json({ error: "Codex session reader not available" }, 500);
         }
-        const filePath = await codexReader.getSessionFilePath(sessionId);
-        if (!filePath) {
-          return c.json({ error: "Session file not found" }, 404);
-        }
-
         cloneProvider =
           originalResolution?.source.provider ??
           body.provider ??
           (isCodexProviderName(project.provider) ? project.provider : "codex");
-        result = await cloneCodexSession(filePath);
-        codexReader.invalidateCache();
-        deps.codexScanner?.invalidateCache();
+        const forkProjectPath =
+          originalMetadata?.sandboxLevel === "project-write"
+            ? (originalMetadata.sandboxProjectPath ?? project.path)
+            : project.path;
+        const fork = await deps.supervisor.forkSession({
+          sessionId,
+          projectPath: forkProjectPath,
+          providerName: cloneProvider,
+          title: cloneTitle,
+          ...inheritedSandboxSettings(originalMetadata),
+        });
+        if (originalMetadata?.sandboxLevel === "project-write") {
+          await deps.sessionMetadataService?.setSessionSandbox(fork.sessionId, {
+            level: originalMetadata.sandboxLevel,
+            networkFirewall: persistedSandboxNetworkFirewall(originalMetadata),
+            stateKey: fork.sandboxStateKey ?? originalMetadata.sandboxStateKey,
+            projectPath: forkProjectPath,
+            projectId:
+              originalMetadata.workingProjectId ?? (projectId as UrlProjectId),
+          });
+        }
+        result = {
+          newSessionId: fork.sessionId,
+          // Older /btw clients use this offset only until their prompt marker
+          // arrives. A conservative bound hides inherited text without a scan.
+          entries: Number.MAX_SAFE_INTEGER,
+        };
       } else {
         result = await cloneClaudeSession(sessionDir, sessionId);
-      }
-
-      // Build clone title: use provided title, or derive from original
-      let cloneTitle = body.title;
-      if (!cloneTitle && deps.sessionMetadataService) {
-        // Check for custom title first, then fall back to auto-generated title
-        const originalMetadata =
-          deps.sessionMetadataService.getMetadata(sessionId);
-        const originalTitle =
-          originalMetadata?.customTitle ?? originalSession?.title;
-        if (originalTitle) {
-          cloneTitle = `${originalTitle} [cloned]`;
-        }
       }
 
       // Set clone metadata. /btw asides pass parentSessionId so the child

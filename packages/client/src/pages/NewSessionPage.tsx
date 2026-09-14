@@ -1,12 +1,17 @@
-import type { ProviderName } from "@yep-anywhere/shared";
+import type {
+  PermissionMode,
+  ProviderName,
+  ThinkingOption,
+} from "@yep-anywhere/shared";
+import {
+  ALL_PERMISSION_MODES,
+  PROJECT_CODE_NAMES_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PageHeader } from "../components/PageHeader";
-import {
-  PROJECT_CODE_NAMES_CAPABILITY,
-  serverHasCapability,
-} from "@yep-anywhere/shared";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import { useVersion } from "../hooks/useVersion";
 import { useIncomingShareFiles } from "../hooks/useIncomingShareFiles";
@@ -24,6 +29,25 @@ import { useToastContext } from "../contexts/ToastContext";
 const RECENT_PROJECT_SESSION_LIMIT = 30;
 const DETACHED_PROJECT_PARAM = "detached";
 
+function parsePreferredThinking(
+  value: string | null,
+): ThinkingOption | undefined {
+  if (!value) return undefined;
+  if (value === "off" || value === "auto" || value.startsWith("on:")) {
+    return value as ThinkingOption;
+  }
+  return undefined;
+}
+
+function parsePreferredPermissionMode(
+  value: string | null,
+): PermissionMode | undefined {
+  if (!value) return undefined;
+  return ALL_PERMISSION_MODES.includes(value as PermissionMode)
+    ? (value as PermissionMode)
+    : undefined;
+}
+
 export function NewSessionPage() {
   const { t } = useI18n();
   const { showToast } = useToastContext();
@@ -34,6 +58,13 @@ export function NewSessionPage() {
   const projectId = searchParams.get("projectId") ?? undefined;
   const preferredProvider = searchParams.get("provider") ?? undefined;
   const preferredModel = searchParams.get("model") ?? undefined;
+  const preferredThinking = parsePreferredThinking(
+    searchParams.get("thinking"),
+  );
+  const preferredPermissionMode = parsePreferredPermissionMode(
+    searchParams.get("permissionMode"),
+  );
+  const preferredExecutor = searchParams.get("executor") ?? undefined;
   const requestedDetached =
     !projectId && searchParams.get(DETACHED_PROJECT_PARAM) === "1";
   const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
@@ -183,6 +214,9 @@ export function NewSessionPage() {
             onProjectChange={handleProjectChange}
             preferredProvider={preferredProvider as ProviderName | undefined}
             preferredModel={preferredModel}
+            preferredThinking={preferredThinking}
+            preferredPermissionMode={preferredPermissionMode}
+            preferredExecutor={preferredExecutor || undefined}
           />
         </div>
       </main>

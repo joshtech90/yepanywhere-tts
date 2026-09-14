@@ -6,7 +6,11 @@ import { beginTooltipSuppression } from "../hooks/useTooltipAppearance";
 import { useI18n } from "../i18n";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
-import { setNewSessionPrefill } from "../lib/newSessionPrefill";
+import {
+  setNewSessionPrefill,
+  stashNewSessionPrefillToken,
+  type NewSessionPrefillCaret,
+} from "../lib/newSessionPrefill";
 import styles from "./FileResourceActions.module.css";
 
 export type FileViewPresentation = "preview" | "source";
@@ -43,8 +47,35 @@ export interface ResourceContextMenuProps {
 }
 
 export interface NewSessionPrefillOptions {
-  provider?: string;
+  caret?: NewSessionPrefillCaret;
+  executor?: string;
   model?: string;
+  newTab?: boolean;
+  permissionMode?: string;
+  provider?: string;
+  thinking?: string;
+}
+
+function appendNewSessionOptionParams(
+  params: URLSearchParams,
+  options: NewSessionPrefillOptions,
+): void {
+  if (options.provider) params.set("provider", options.provider);
+  if (options.model) params.set("model", options.model);
+  if (options.thinking) params.set("thinking", options.thinking);
+  if (options.permissionMode) {
+    params.set("permissionMode", options.permissionMode);
+  }
+  if (options.executor) params.set("executor", options.executor);
+}
+
+function navigateInTab(url: string): void {
+  window.history.pushState(window.history.state, "", url);
+  const navigationEvent =
+    typeof PopStateEvent === "function"
+      ? new PopStateEvent("popstate", { state: window.history.state })
+      : new Event("popstate");
+  window.dispatchEvent(navigationEvent);
 }
 
 export function useStartNewSessionWithPrefillAction() {
@@ -59,17 +90,29 @@ export function useStartNewSessionWithPrefillAction() {
     ) => {
       const trimmed = prefill.trim();
       if (!projectId || !trimmed) return;
-      setNewSessionPrefill(clientSummarySourceKey, trimmed);
       const params = new URLSearchParams({ projectId });
-      if (options.provider) params.set("provider", options.provider);
-      if (options.model) params.set("model", options.model);
-      const url = `${basePath}/new-session?${params.toString()}`;
-      window.history.pushState(window.history.state, "", url);
-      const navigationEvent =
-        typeof PopStateEvent === "function"
-          ? new PopStateEvent("popstate", { state: window.history.state })
-          : new Event("popstate");
-      window.dispatchEvent(navigationEvent);
+      appendNewSessionOptionParams(params, options);
+      if (options.newTab) {
+        const token = stashNewSessionPrefillToken(
+          clientSummarySourceKey,
+          trimmed,
+          { caret: options.caret },
+        );
+        params.set("prefillToken", token);
+        const opened = window.open(
+          `${basePath}/new-session?${params.toString()}`,
+          "_blank",
+        );
+        if (opened) {
+          opened.opener = null;
+          return;
+        }
+        params.delete("prefillToken");
+      }
+      setNewSessionPrefill(clientSummarySourceKey, trimmed, {
+        caret: options.caret,
+      });
+      navigateInTab(`${basePath}/new-session?${params.toString()}`);
     },
     [basePath, clientSummarySourceKey],
   );

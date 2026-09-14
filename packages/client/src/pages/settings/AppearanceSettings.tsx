@@ -130,6 +130,7 @@ import {
 } from "../../hooks/useTooltipAppearance";
 import { useWiderConversationActivityPreviews } from "../../hooks/useWiderConversationActivityPreviews";
 import { useWorkflowTags } from "../../hooks/useWorkflowTags";
+import { useAcliCommentarySetting } from "../../hooks/useAcliCommentarySetting";
 import { useSelectionActionPreferences } from "../../hooks/useSelectionActionPreferences";
 import { useGlossaryHints } from "../../hooks/useGlossaryHints";
 import { useProjectCodeNamePreferences } from "../../hooks/useProjectCodeNamePreferences";
@@ -234,6 +235,8 @@ export function AppearanceSettings() {
   } = useWiderConversationActivityPreviews();
   const { glossaryHintsEnabled, setGlossaryHintsEnabled } = useGlossaryHints();
   const { workflowTagsEnabled, setWorkflowTagsEnabled } = useWorkflowTags();
+  const { acliCommentaryEnabled, setAcliCommentaryEnabled } =
+    useAcliCommentarySetting();
   const { version: versionInfo } = useVersion();
   const glossaryHintsSupported = serverHasCapability(
     versionInfo,
@@ -378,6 +381,7 @@ export function AppearanceSettings() {
     ),
     undoEntry(glossaryHintsEnabled, setGlossaryHintsEnabled),
     undoEntry(workflowTagsEnabled, setWorkflowTagsEnabled),
+    undoEntry(acliCommentaryEnabled, setAcliCommentaryEnabled),
     undoEntry(tooltipDelayMs, setTooltipDelayMs),
     undoEntry(tooltipMode, setTooltipMode),
     undoEntry(hoverCardMaxHeightPx, setHoverCardMaxHeightPx, (value) =>
@@ -792,6 +796,22 @@ export function AppearanceSettings() {
               checked={workflowTagsEnabled}
               onChange={(event) => setWorkflowTagsEnabled(event.target.checked)}
               aria-label={t("appearanceWorkflowTagsTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("acliCommentarySetting")}
+          description={t("acliCommentaryDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={acliCommentaryEnabled}
+              onChange={(event) =>
+                setAcliCommentaryEnabled(event.target.checked)
+              }
+              aria-label={t("acliCommentarySetting")}
             />
             <span className="toggle-slider" />
           </label>

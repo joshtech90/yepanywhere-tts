@@ -63,14 +63,14 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v6
         with:
-          node-version: '20.12'
+          node-version: '22.16.0'
           cache: pnpm
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
       - name: Install Chromium
-        if: matrix.driver == 'browser' || matrix.driver == 'built-client'
+        if: matrix.driver != 'server'
         run: pnpm -F @yep-anywhere/client exec playwright install chromium
 
       - name: Run capacity-keyed ${{ matrix.summary }} ratchet

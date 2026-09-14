@@ -11,6 +11,12 @@ function readStoredText(key: string): string | null {
   return (JSON.parse(raw) as { text?: string }).text ?? null;
 }
 
+function readStoredPendingSend(key: string): boolean {
+  const raw = window.localStorage.getItem(key);
+  if (!raw) return false;
+  return (JSON.parse(raw) as { pendingSend?: boolean }).pendingSend === true;
+}
+
 function readStoredAttachmentCount(key: string): number {
   const raw = window.localStorage.getItem(key);
   if (!raw) return 0;
@@ -109,6 +115,112 @@ describe("useDraftPersistence", () => {
 
     expect(result.current[0]).toBe("");
     expect(window.localStorage.getItem("draft-test")).toBe(null);
+  });
+
+  it("marks the surviving recovery copy as a pending send", () => {
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
+
+    act(() => {
+      result.current[1]("submitted turn");
+      result.current[2].clearInput();
+    });
+
+    expect(result.current[0]).toBe("");
+    expect(readStoredText("draft-test")).toBe("submitted turn");
+    expect(readStoredPendingSend("draft-test")).toBe(true);
+  });
+
+  it("discards a hydrated recovery copy the session already accounts for", () => {
+    const { result: sender } = renderHook(() =>
+      useDraftPersistence("draft-test"),
+    );
+
+    act(() => {
+      sender.current[1]("submitted turn");
+      sender.current[2].clearInput();
+    });
+
+    // A second tab on the same session hydrates the marked recovery copy.
+    const { result: sibling } = renderHook(() =>
+      useDraftPersistence("draft-test"),
+    );
+    expect(sibling.current[0]).toBe("submitted turn");
+
+    let discarded = false;
+    act(() => {
+      discarded = sibling.current[2].discardPendingSendDraft(
+        (text) => text === "submitted turn",
+      );
+    });
+
+    expect(discarded).toBe(true);
+    expect(sibling.current[0]).toBe("");
+    expect(window.localStorage.getItem("draft-test")).toBe(null);
+  });
+
+  it("keeps a recovery copy the session cannot account for", () => {
+    const { result: sender } = renderHook(() =>
+      useDraftPersistence("draft-test"),
+    );
+
+    act(() => {
+      sender.current[1]("never landed");
+      sender.current[2].clearInput();
+    });
+
+    const { result: sibling } = renderHook(() =>
+      useDraftPersistence("draft-test"),
+    );
+
+    let discarded = true;
+    act(() => {
+      discarded = sibling.current[2].discardPendingSendDraft(() => false);
+    });
+
+    expect(discarded).toBe(false);
+    expect(sibling.current[0]).toBe("never landed");
+    expect(readStoredText("draft-test")).toBe("never landed");
+  });
+
+  it("never discards a draft the user typed or recalled", () => {
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
+
+    act(() => {
+      result.current[1]("submitted turn");
+      result.current[2].clearInput();
+      // Composer recall puts an already-sent turn back for deliberate resend.
+      result.current[2].setDraft("submitted turn");
+    });
+
+    expect(readStoredPendingSend("draft-test")).toBe(false);
+
+    let discarded = true;
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(() => true);
+    });
+
+    expect(discarded).toBe(false);
+    expect(result.current[0]).toBe("submitted turn");
+  });
+
+  it("never discards text restored after a failed send", () => {
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
+
+    act(() => {
+      result.current[1]("submitted turn");
+      result.current[2].clearInput();
+      result.current[2].restoreFromStorage();
+    });
+
+    expect(result.current[0]).toBe("submitted turn");
+
+    let discarded = true;
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(() => true);
+    });
+
+    expect(discarded).toBe(false);
+    expect(result.current[0]).toBe("submitted turn");
   });
 
   it("reads legacy raw-string drafts and rewrites them as envelopes", () => {

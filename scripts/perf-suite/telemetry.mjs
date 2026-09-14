@@ -80,6 +80,9 @@ export function requestProfile(response) {
     "ya-route",
     "ya-augment",
   ];
+  // Older execution revisions have no separate metadata clock.
+  if (typeof serverTimings["ya-metadata"] === "number")
+    owners.push("ya-metadata");
   const serverTotalMs = serverTimings["ya-total"];
   const ownerValues = owners.map((name) => serverTimings[name]);
   const hasServerProfile =
@@ -100,6 +103,9 @@ export function requestProfile(response) {
         readMs: serverTimings["ya-read"],
         normalizeMs: serverTimings["ya-normalize"],
         routeMs: serverTimings["ya-route"],
+        ...(typeof serverTimings["ya-metadata"] === "number"
+          ? { metadataMs: serverTimings["ya-metadata"] }
+          : {}),
         augmentMs: serverTimings["ya-augment"],
         serverResidualMs: serverPhaseResidualMs,
         frameworkSerializeLoopbackMs,
@@ -242,6 +248,9 @@ export function summarizeRequestProfiles(profiles) {
       ),
       read: summarize(
         values((profile) => profile.serverTimings["ya-read"], available),
+      ),
+      metadata: summarize(
+        values((profile) => profile.serverTimings["ya-metadata"], available),
       ),
       normalize: summarize(
         values((profile) => profile.serverTimings["ya-normalize"], available),

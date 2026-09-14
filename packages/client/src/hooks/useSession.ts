@@ -21,8 +21,12 @@ import {
   isBrowserDebugPerformanceRecording,
   recordBrowserDebugPerformanceMetric,
 } from "../lib/browserDebugPerformance";
-import { hasUnconfirmedSelfSends } from "../lib/deliveryState";
-import { getMessageId } from "../lib/mergeMessages";
+import {
+  hasUnconfirmedSelfSends,
+  ownedSessionShouldFetchDurableTranscript,
+  PENDING_SEND_RECONCILE_MS,
+} from "../lib/deliveryState";
+import { getMessageId } from "@yep-anywhere/shared/transcript/message";
 import { findPendingTasks } from "../lib/pendingTasks";
 import {
   extractParentSessionIdFromAgentFileEvent,
@@ -1264,11 +1268,16 @@ export function useSession(
 
   // Tracks whether any self-sent turn is still awaiting its durable
   // transcript copy (delivery-state "sent"); read by handleFileChange via ref
-  // so the handler identity stays stable.
+  // so the handler identity stays stable. pendingCountRef is the prior
+  // stage: Sending chips that have not received a live echo yet.
   const hasUnconfirmedSendsRef = useRef(false);
+  const pendingCountRef = useRef(0);
   useEffect(() => {
     hasUnconfirmedSendsRef.current = hasUnconfirmedSelfSends(messages);
   }, [messages]);
+  useEffect(() => {
+    pendingCountRef.current = pendingMessages.length;
+  }, [pendingMessages]);
 
   // Update local mode (UI selection) and sync to server if process is active
   const setPermissionMode = useCallback(
@@ -1496,6 +1505,20 @@ export function useSession(
     [fetchNewMessages],
   );
 
+  // Live user-echo is the fast ack. If that notice is dropped while the
+  // tab stays connected, fetch durable history until the chip can match.
+  useEffect(() => {
+    if (pendingMessages.length === 0) {
+      return;
+    }
+    const timer = window.setInterval(() => {
+      throttledFetch({ route: "pending-send-reconcile" });
+    }, PENDING_SEND_RECONCILE_MS);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [pendingMessages.length, throttledFetch]);
+
   // Handle file changes - for non-owned sessions only
   // For owned sessions, stream provides real-time messages and session-updated events
   // provide metadata (title, messageCount), so we don't need to poll the API
@@ -1527,12 +1550,17 @@ export function useSession(
 
       // For owned sessions: messages come via the stream, metadata via the
       // session-updated event — skip file-change processing, EXCEPT while a
-      // self-send is still awaiting its durable copy. Then the durable rows
-      // are exactly what confirms the send (flips delivery-state to
-      // "confirmed" via the merge/queue-operation pairing), so fetch them
-      // mid-turn. Self-limiting: once nothing is unconfirmed, owned sessions
-      // go back to skipping.
-      if (status.owner === "self" && !hasUnconfirmedSendsRef.current) {
+      // self-send is still awaiting its live echo (Sending chip) or its
+      // durable copy. Then the durable rows are what confirms the send, so
+      // fetch them mid-turn. Self-limiting: once nothing is pending or
+      // unconfirmed, owned sessions go back to skipping.
+      if (
+        status.owner === "self" &&
+        !ownedSessionShouldFetchDurableTranscript({
+          hasUnconfirmedSelfSends: hasUnconfirmedSendsRef.current,
+          pendingSendCount: pendingCountRef.current,
+        })
+      ) {
         return;
       }
 
@@ -1800,7 +1828,10 @@ export function useSession(
     [recordSessionFileChangeFact, status.owner, throttledFetch],
   );
 
-  const { connected: sessionWatchConnected } = useSessionWatchStream(
+  const {
+    connected: sessionWatchConnected,
+    resubscribing: sessionWatchResubscribing,
+  } = useSessionWatchStream(
     !backgroundEffectsPaused && status.owner !== "self"
       ? {
           sessionId,
@@ -2540,7 +2571,11 @@ export function useSession(
 
   // Only connect to session stream when we own the session
   // External sessions are tracked via the activity stream instead
-  const { connected, reconnect: reconnectStream } = useSessionStream(
+  const {
+    connected,
+    reconnect: reconnectStream,
+    resubscribing: sessionStreamResubscribing,
+  } = useSessionStream(
     !backgroundEffectsPaused && status.owner === "self" ? sessionId : null,
     { onMessage: handleStreamMessage, onError: handleStreamError },
   );
@@ -2550,6 +2585,12 @@ export function useSession(
       ? connected
       : status.owner === "external"
         ? sessionWatchConnected
+        : false;
+  const sessionUpdatesResubscribing =
+    status.owner === "self"
+      ? sessionStreamResubscribing
+      : status.owner === "external"
+        ? sessionWatchResubscribing
         : false;
 
   // Restore the user's last per-session model pick when reopening a session
@@ -2606,6 +2647,7 @@ export function useSession(
     connected,
     sessionWatchConnected,
     sessionUpdatesConnected,
+    sessionUpdatesResubscribing,
     lastStreamActivityAt, // Last stream message timestamp for engagement tracking
     setStatus: setObservedStatus,
     setProcessState: setObservedProcessState,

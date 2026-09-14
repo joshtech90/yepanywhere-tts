@@ -478,12 +478,30 @@ describe("ProjectQueueSection", () => {
       { [PROJECT_ID]: makeProjectStatus("blocked") },
     );
 
-    expect(screen.getByText(/Blocked: session- in turn/)).toBeTruthy();
+    expect(screen.getByText(/Waiting because: session- in turn/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Force start" }));
 
     expect(handlers.onPromoteNow).toHaveBeenCalledWith("project-1", "1", {
       force: true,
     });
+  });
+
+  it("shows the external readiness caption without interpreting its colons", () => {
+    renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      { status: "running" },
+      [],
+      {
+        [PROJECT_ID]: makeProjectStatus("blocked", {
+          blockers: ["readiness:Editing parser: updating tests"],
+        }),
+      },
+    );
+    expect(
+      screen.getByText("Waiting because: Editing parser: updating tests"),
+    ).toBeTruthy();
   });
 
   it("highlights a linked queue item", () => {

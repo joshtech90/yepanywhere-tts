@@ -1,7 +1,8 @@
 import { useI18n } from "../../../i18n";
 import type { RenderContext } from "../types";
 import styles from "./GoalRenderer.module.css";
-import type { ToolRenderer } from "./types";
+import { defineTool } from "./defineTool";
+import { toolDisplayContracts } from "./toolDisplayContracts";
 
 type GoalOperation = "create" | "get" | "update";
 
@@ -404,11 +405,10 @@ function GoalPreview({
   );
 }
 
-function createGoalRenderer(
-  tool: "create_goal" | "get_goal" | "update_goal",
-  operation: GoalOperation,
-): ToolRenderer<unknown, unknown> {
-  return {
+function createGoalRenderer<
+  const T extends "create_goal" | "get_goal" | "update_goal",
+>(tool: T, operation: GoalOperation) {
+  return defineTool(toolDisplayContracts[tool], {
     tool,
     displayName: "Goal",
     displayNameForCall(input, status) {
@@ -452,7 +452,7 @@ function createGoalRenderer(
     getResultSummary(result, isError, input) {
       return isError ? "failed" : goalSummary(operation, input, result);
     },
-  };
+  });
 }
 
 export const createGoalToolRenderer = createGoalRenderer(

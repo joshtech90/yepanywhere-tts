@@ -52,7 +52,7 @@ for (const viewport of [
     await page.addInitScript(() => {
       localStorage.setItem(
         "yep-anywhere-session-toolbar-presence",
-        JSON.stringify({ browserDebug: "pin" }),
+        JSON.stringify({ browserDebug: "pin", thinkingToggle: "first" }),
       );
     });
     await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
@@ -68,6 +68,101 @@ for (const viewport of [
       name: /Disable full JavaScript debugging/,
     });
     await expect(activeControl).toBeVisible();
+    const readout = activeControl
+      .locator("span[aria-hidden='true']")
+      .filter({ hasText: /max .*long/ });
+    await expect(readout).toBeVisible();
+    const readoutWidths = await readout.evaluate((element) => {
+      const original = element.textContent;
+      const widths = [
+        "max 9ms · long 1",
+        "max 1000ms · long 1000",
+        "max 10ms · long 10",
+      ].map((text) => {
+        element.textContent = text;
+        return element.getBoundingClientRect().width;
+      });
+      element.textContent = original;
+      return widths;
+    });
+    expect(new Set(readoutWidths).size).toBe(1);
+    const composer = page.locator("textarea[data-composer-input]");
+    await composer.fill("Checking toolbar geometry");
+    await composer.press("End");
+    for (const key of [".", "a", "Backspace"]) {
+      await composer.press(key);
+      await expect(activeControl).toBeVisible();
+      await expect
+        .poll(() =>
+          page
+            .locator(".message-input-toolbar")
+            .last()
+            .evaluate((toolbar) => {
+              const left = toolbar.querySelector(".message-input-left");
+              const actions = toolbar.querySelector(".message-input-actions");
+              if (!left || !actions) throw new Error("Missing toolbar groups");
+              const right = actions.getBoundingClientRect().left;
+              return [...left.children].every((child) => {
+                const rect = child.getBoundingClientRect();
+                const style = getComputedStyle(child);
+                return (
+                  style.display === "none" ||
+                  style.position === "absolute" ||
+                  rect.width === 0 ||
+                  rect.right <= right + 1
+                );
+              });
+            }),
+        )
+        .toBe(true);
+    }
+    if (viewport.name === "desktop") {
+      let splitPriority = false;
+      for (let width = 400; width <= 640; width += 8) {
+        await page.setViewportSize({ width, height: 600 });
+        await page.evaluate(
+          () =>
+            new Promise((resolve) =>
+              requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            ),
+        );
+        const controls = await page
+          .locator(
+            ".composer-bottom-overflow-inline.composer-bottom-overflow-early",
+          )
+          .evaluateAll((elements) =>
+            elements.map((element) => ({
+              key: (element as HTMLElement).dataset.sessionToolbarControl,
+              visible: element.getBoundingClientRect().width > 0,
+            })),
+          );
+        if (
+          controls.some((control) => control.visible) &&
+          controls.some((control) => !control.visible)
+        ) {
+          splitPriority = true;
+          await page
+            .getByRole("button", { name: "More toolbar controls" })
+            .click();
+          for (const control of controls) {
+            const menuCopy = page.locator(
+              `.composer-bottom-overflow-menu-group [data-session-toolbar-control="${control.key}"]`,
+            );
+            if (control.visible) await expect(menuCopy).toBeHidden();
+            else await expect(menuCopy).toBeVisible();
+          }
+          await captureMenu(page, testInfo, "desktop-partial-priority");
+          await page
+            .getByRole("button", { name: "More toolbar controls" })
+            .click();
+          break;
+        }
+      }
+      expect(splitPriority).toBe(true);
+      await page.setViewportSize(viewport);
+    }
+    await captureMenu(page, testInfo, `${viewport.name}-debug-composing`);
+    await composer.fill("");
     const expiryBeforeReload = (
       await activeControl.getAttribute("aria-label")
     )?.split("\n")[0];

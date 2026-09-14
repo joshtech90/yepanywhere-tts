@@ -1,3 +1,4 @@
+import { containsLinkifiableUrl, splitUrlSegments } from "./linkify.js";
 /**
  * Render terminal output with ANSI CSI SGR escape codes into safe HTML.
  *
@@ -102,6 +103,23 @@ function applySgr(state: SgrState, params: number[]): void {
   }
 }
 
+/**
+ * Escape a run of terminal text, linking bare `http(s)` URLs inside it.
+ *
+ * Terminal output is where a URL most often arrives, and a monospace block
+ * was the one place a link had to be selected and copied by hand.
+ */
+function escapeWithLinks(text: string): string {
+  if (!containsLinkifiableUrl(text)) return escapeHtml(text);
+  return splitUrlSegments(text)
+    .map((segment) =>
+      segment.type === "url" && segment.href
+        ? `<a href="${escapeHtml(segment.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(segment.text)}</a>`
+        : escapeHtml(segment.text),
+    )
+    .join("");
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -133,9 +151,9 @@ export function renderAnsiToHtml(text: string): string {
     if (pending.length === 0) return;
     const classes = stateClasses(state);
     if (classes.length > 0) {
-      out += `<span class="${classes.join(" ")}">${escapeHtml(pending)}</span>`;
+      out += `<span class="${classes.join(" ")}">${escapeWithLinks(pending)}</span>`;
     } else {
-      out += escapeHtml(pending);
+      out += escapeWithLinks(pending);
     }
     pending = "";
   };

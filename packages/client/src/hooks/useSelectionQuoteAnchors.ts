@@ -219,7 +219,12 @@ export function useSelectionQuoteAnchors({
         return false;
       }
       const quotedText = anchors
-        .map((anchor) => anchor.quotedText)
+        .map((anchor) => {
+          const location = anchor.sourceLocation;
+          return location
+            ? `re: ${location.filePath}:${location.lineStart}\n${anchor.quotedText}`
+            : anchor.quotedText;
+        })
         .join("\n\n");
       const nextDraft = onQuoteSelection(
         typedPrefix ? `${quotedText}\n${typedPrefix}` : `${quotedText}\n`,

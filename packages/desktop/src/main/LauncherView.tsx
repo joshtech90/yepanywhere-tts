@@ -114,7 +114,9 @@ export function LauncherView() {
           <dt>Data</dt>
           <dd>{dataDir || "Loading..."}</dd>
           <dt>Runtime</dt>
-          <dd>{devDir ? `Development checkout: ${devDir}` : "Stable bundle"}</dd>
+          <dd>
+            {devDir ? `Development checkout: ${devDir}` : "Bundled runtime"}
+          </dd>
         </dl>
       </main>
     </div>

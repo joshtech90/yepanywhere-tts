@@ -106,7 +106,7 @@ describe("Inbox Routes", () => {
       getPendingInputRequest: () => unknown;
       state: { type: string };
       isRetainingProviderWork?: () => boolean;
-      lastProviderMessageTime?: Date | null;
+      lastProviderContentTime?: Date | null;
     }
   >;
   let unreadMap: Map<string, boolean>;
@@ -178,6 +178,32 @@ describe("Inbox Routes", () => {
   }
 
   describe("tier categorization", () => {
+    it("preserves independently observed question previews in Inbox", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      const asyncQuestions = {
+        omitted: true,
+        questions: [
+          { messageId: "question", index: 0, title: "Continue?", age: 2 },
+        ],
+      };
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set(project.sessionDir, [
+        createSession("sess1", "proj1", minutesAgo(1), { asyncQuestions }),
+      ]);
+      processMap.set("sess1", {
+        getPendingInputRequest: () => null,
+        state: { type: "in-turn" },
+      });
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+      });
+      expect(result.active[0]?.asyncQuestions).toEqual(asyncQuestions);
+    });
+
     it("categorizes session with pendingInputType into needsAttention", async () => {
       const project = createProject("proj1", "myproject", "/sessions/proj1");
       const session = createSession("sess1", "proj1", minutesAgo(5));
@@ -250,7 +276,7 @@ describe("Inbox Routes", () => {
       processMap.set("sess1", {
         getPendingInputRequest: () => null,
         state: { type: "in-turn" },
-        lastProviderMessageTime: processUpdatedAt,
+        lastProviderContentTime: processUpdatedAt,
       });
       vi.mocked(mockNotificationService.hasUnread).mockImplementation(
         (_sessionId: string, updatedAt: string) => updatedAt > lastSeenAt,

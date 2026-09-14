@@ -9,8 +9,10 @@ import {
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
+  SERVER_CAPABILITIES,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
+  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
   serverHasCapability,
 } from "@yep-anywhere/shared";
@@ -21,6 +23,14 @@ async function importVersion() {
   const mod = await import("../src/routes/version.js");
   return mod;
 }
+
+// Both speech vocabulary capabilities are advertised only once SQLite is
+// ready, because learned vocabulary lives in that store. Every other
+// capability answers the same way with or without a SQLite status reader.
+const SQLITE_GATED_CAPABILITY_NAMES: ReadonlySet<string> = new Set([
+  SERVER_CAPABILITIES.speechVocabulary.name,
+  SERVER_CAPABILITIES.speechVocabularySessionTerms.name,
+]);
 
 describe("GET /version", () => {
   const originalFetch = global.fetch;
@@ -41,6 +51,86 @@ describe("GET /version", () => {
   ) {
     global.fetch = vi.fn(handler) as unknown as typeof fetch;
   }
+
+  it("advertises subagent depth on an untagged source build in every encoding", async () => {
+    mockFetch(() => new Response(JSON.stringify({ version: "0.8.1" })));
+    const { createVersionRoutes } = await importVersion();
+    const routes = createVersionRoutes({
+      getCurrentVersionInfo: async () => ({
+        version: "5756cfd",
+        installSource: "source",
+      }),
+      getSessionSandboxAvailability: async () => ({
+        state: "unsupported-platform",
+        platform: "test",
+      }),
+    });
+    for (const query of [
+      "/",
+      "/?clientVersion=0.8.1",
+      "/?capabilities=compact-v1",
+    ]) {
+      const version = await (await routes.request(query)).json();
+      expect(version.current).toBe("5756cfd");
+      expect(
+        serverHasCapability(version, SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY),
+      ).toBe(true);
+    }
+  });
+
+  it.each(["disabled", "unsupported", "ready", "error"] as const)(
+    "reports retained SQLite %s status and gates vocabulary in every encoding",
+    async (state) => {
+      mockFetch(() => new Response(JSON.stringify({ version: "0.8.1" })));
+      const { createVersionRoutes } = await importVersion();
+      const getSqliteStatus = vi.fn(() => ({ state }));
+      const options = {
+        getCurrentVersionInfo: async () => ({
+          version: "0.8.1",
+          installSource: "source" as const,
+        }),
+        getSessionSandboxAvailability: async () => ({
+          state: "unsupported-platform" as const,
+          platform: "test",
+        }),
+      };
+      const legacy = createVersionRoutes(options);
+      const routes = createVersionRoutes({ ...options, getSqliteStatus });
+      for (const query of [
+        "/",
+        "/?clientVersion=0.8.1",
+        "/?capabilities=compact-v1",
+      ]) {
+        const before = await (await legacy.request(query)).json();
+        const after = await (await routes.request(query)).json();
+        expect(before.sqlite).toBeUndefined();
+        expect(before.serverRuntime).toEqual({
+          kind: process.versions.bun ? "bun" : "node",
+          version: process.versions.bun ?? process.versions.node,
+        });
+        for (const { name } of Object.values(SERVER_CAPABILITIES)) {
+          expect(serverHasCapability(after, name), name).toBe(
+            SQLITE_GATED_CAPABILITY_NAMES.has(name)
+              ? state === "ready"
+              : serverHasCapability(before, name),
+          );
+        }
+        // Compare other metadata after checking capabilities semantically;
+        // their wire representation differs between the negotiated encodings.
+        for (const field of [
+          "capabilities",
+          "capabilityBits",
+          "optionalCapabilityBits",
+        ]) {
+          delete before[field];
+          delete after[field];
+        }
+        expect(after).toEqual({ ...before, sqlite: { state } });
+      }
+      // Each response reads retained readiness for capabilities and status.
+      expect(getSqliteStatus).toHaveBeenCalledTimes(6);
+    },
+  );
 
   it("parses version from update server 200 response", async () => {
     mockFetch(
@@ -300,7 +390,19 @@ describe("GET /version", () => {
     const version = await response.json();
 
     expect(version.capabilities).toBeUndefined();
-    expect(version.optionalCapabilityBits).toEqual([[0, 1]]);
+    expect(version.optionalCapabilityBits).toEqual([
+      [0, 1],
+      [2, 192],
+    ]);
+    expect(
+      serverHasCapability(version, SERVER_CAPABILITIES.computerControl.name),
+    ).toBe(true);
+    expect(
+      serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.computerControlReleases.name,
+      ),
+    ).toBe(true);
     expect(serverHasCapability(version, PROJECT_QUEUE_CAPABILITY)).toBe(true);
     expect(
       serverHasCapability(

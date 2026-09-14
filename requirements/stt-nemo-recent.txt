@@ -1,0 +1,5 @@
+# Isolated NeMo runtime for the unified English Parakeet model.
+# Keep it out of the shared Whisper/Transformers `stt` environment:
+#   pixi run -e stt-nemo nemo-bootstrap
+nemo_toolkit[asr]==3.0.0
+torchaudio

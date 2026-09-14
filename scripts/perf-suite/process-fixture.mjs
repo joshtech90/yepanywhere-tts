@@ -48,6 +48,7 @@ const HARNESS_SOURCE_URLS = [
   "run.mjs",
   "server-driver.mjs",
   "simulated-provider-worker.mjs",
+  "simulated-transcript.mjs",
   "specialized-driver.mjs",
   "telemetry.mjs",
 ].map((name) => new URL(name, import.meta.url));

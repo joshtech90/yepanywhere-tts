@@ -72,8 +72,9 @@ its runtime leases, verification, and cache-generation contract.
      changes architecture or product behavior.
 5. Enact source refreshes only after the provider-specific gate is satisfied.
    Codex compatibility edits, for example, are covered by the Codex version bump
-   audit rule in `AGENTS.md`: the read-only drift check is allowed immediately;
-   code edits should be explicitly approved.
+   audit rule in [provider development](../docs/development/providers.md#codex-version-bump-audit):
+   the read-only drift check is allowed immediately; code edits should be
+   explicitly approved.
 
 ## Pi
 
@@ -163,7 +164,64 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
-Current compatibility audit, 2026-09-06 (0.153.4):
+Current source refresh, 2026-09-10 (0.154.0):
+
+- Installed Codex is `0.154.0`. The official `rust-v0.154.0` tag peels to commit
+  `6b9826e3a`. Root `expectedVersion`, `compatibleThroughVersion`, and the
+  reference checkout all record `0.154.0`.
+- The checked-in app-server subset needed regeneration. `ResponseItem` gains a
+  `configuration_update` variant carrying `ConfigurationReasoning`, the durable
+  control Codex records when reasoning effort changes mid-thread. `Thread` gains
+  `environments`, `originator`, and `daybreakEnabled`, and the new
+  `ThreadEnvironment` describes a loaded thread's selected environment. YA reads
+  Thread fields by property access, so all three are additive.
+- Codex migrates several approval and review path fields from
+  `AbsolutePathBuf` to `LegacyAppPathString`, including
+  `PermissionsRequestApprovalParams.cwd` and the Guardian review actions. Both
+  aliases serialize as JSON strings, so the wire contract is unchanged, but the
+  new alias no longer promises an absolute path. YA passes approval `cwd`
+  through as opaque text and does not parse it.
+- `parseCodexSessionEntry()` would have accepted a `configuration_update` item
+  only as a raw unknown entry, which the difference detectors above treat as a
+  signal. The response-item union now carries it explicitly. It has no
+  user-visible content and the reader dispatches on positive type checks, so
+  nothing renders for it.
+- Account usage gains two fields YA does not yet consume:
+  `GetAccountRateLimitsResponse.ordinaryUsageAllowed` and
+  `RateLimitSnapshot.normalModelSlug`. Codex documents that clients must not
+  infer usage recovery from percentages or reset times, which is what YA's
+  subscription-usage formatting does today. `account/rateLimits/read` also
+  accepts new optional params (`supportsLunaReserve`,
+  `excludeResetCreditDetails`); YA sends none and the local app-server treats
+  them as absent. `thread/list` accepts a new hosted-only `originators`
+  allowlist that the local app-server rejects when nonempty, so YA must keep
+  omitting it.
+- The release adds an experimental trusted-client user-verification API
+  (P-256 signature proofs) and the Daybreak thread control:
+  `CyberAccessProgram`, `thread/metadata/update.daybreakEnabled`, and
+  `Thread.daybreakEnabled`. YA consumes none of them.
+  `turn/start.cyberAccessProgram` is optional and omission preserves Codex's
+  automatic behavior, so selecting `gpt-daybreak-blue-latest` needs no new YA
+  turn parameter.
+- The authenticated no-token `model/list` returns seven models with
+  `gpt-6-astra` marked default at medium effort. `gpt-daybreak-blue-latest` is
+  present for a Cyber Access Program enrolled account, and YA has ranked and
+  glyphed it since the 0.149 refresh, so the running
+  `/api/providers/codex` response already offers it sixth. It stays out of the
+  discovery-failure fallback constants because program enrollment varies by
+  account. An unauthenticated probe returns six models without Daybreak, which
+  is expected and is not catalog drift.
+- No local rollout has been written by 0.154.0 yet, so the persisted-JSONL
+  census cannot run. Re-run it once a 0.154.0 session exists, watching for
+  `configuration_update` items.
+
+Status: Codex 0.154.0 generated protocol, durable transcript coverage, approval
+path types, and model catalog are refreshed. Follow-on work, deferred as
+product decisions rather than compatibility: honor `ordinaryUsageAllowed`
+instead of inferring recovery from usage percentages, and decide whether the
+Daybreak thread control deserves a YA surface.
+
+Previous compatibility audit, 2026-09-06 (0.153.4):
 
 - Installed Codex is `0.153.4`. Official tag `rust-v0.153.4` resolves to
   `3d2ee51ca2d5db578f328aa75e20aa22c0197c9a`. Compared with `rust-v0.153.3`,

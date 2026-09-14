@@ -250,6 +250,18 @@ the live edge, and scrolling away exposes **Follow** beside the floating
 Conversation control. Frozen shares have no Follow action because their
 transcript cannot advance. See [conversation-view.md](conversation-view.md).
 
+Image attachment chips load on hover or open through the existing share-scoped
+raw-file endpoint, using the link's relay and viewer identity. They never use
+the viewer's private upload endpoint or owner-side attachment cache. An absent
+or unauthorized attachment remains unavailable; it does not fall back to
+authenticated access.
+
+The viewer's caution asks them not to share the link broadly because the
+sharer's transcript may unintentionally reveal secrets or private information.
+It is a request to protect the sharer's privacy, not a warning that reading the
+conversation puts the viewer at risk. Live and frozen views make that same
+distinction, with live copy identifying that the conversation can continue.
+
 Share-scoped file requests are allowed only for paths already visible or
 explicitly linked from shared session content and for bounded transitive
 render assets from visible Markdown/HTML sources. A frozen revision attempts a

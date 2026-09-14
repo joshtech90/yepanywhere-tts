@@ -13,6 +13,9 @@
 
 import { getSessionDisplayTitle } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import type { RetainedSessionCollectionState } from "@yep-anywhere/shared";
+import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
+import { readRetainedSessionItems } from "./retained-session-collections.js";
 import type { SessionIndexService } from "../indexes/index.js";
 import { SourceVersionedSingleFlight } from "../lib/sourceVersionedSingleFlight.js";
 import { getLogger } from "../logging/logger.js";
@@ -41,6 +44,7 @@ import { buildProviderProjectCatalog } from "./provider-catalog.js";
 import { getActiveSessionIndexOptions } from "./session-list-options.js";
 
 export interface InboxDeps {
+  retainedCollections?: RetainedSessionCollections;
   scanner: ProjectScanner;
   readerFactory: (project: Project) => ISessionReader;
   supervisor?: Supervisor;
@@ -63,10 +67,11 @@ export interface InboxDeps {
 }
 
 export interface InboxItem {
+  asyncQuestions?: SessionListSummary["asyncQuestions"];
   sessionId: string;
   projectId: string;
   projectName: string;
-  sessionTitle: string;
+  sessionTitle?: string;
   updatedAt: string;
   customTitle?: string;
   isStarred?: boolean;
@@ -76,6 +81,7 @@ export interface InboxItem {
 }
 
 export interface InboxResponse {
+  catalog?: RetainedSessionCollectionState;
   needsAttention: InboxItem[];
   active: InboxItem[];
   recentActivity: InboxItem[];
@@ -289,7 +295,37 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
     // 30 minutes, 8 hours, 24 hours — so retaining a tiered response would
     // freeze those windows at the instant of the walk, and a session would
     // stay in "Recent Activity" for as long as nothing on the bus moved.
-    const allSessions = await readInbox(filterProjectId);
+    const retained =
+      c.req.query("summaryMode") === "retained" && deps.retainedCollections
+        ? await readRetainedSessionItems(deps.retainedCollections, deps)
+        : undefined;
+    const allSessions: EnrichedInboxSession[] = retained
+      ? retained.sessions
+          .filter(
+            (item) =>
+              !item.isArchived &&
+              (!filterProjectId || item.projectId === filterProjectId),
+          )
+          .map((item) => ({
+            session: {
+              id: item.id,
+              projectId: item.projectId as Project["id"],
+              title: item.title ?? null,
+              fullTitle: item.fullTitle ?? null,
+              updatedAt: item.updatedAt,
+              provider: item.provider,
+              ...(item.asyncQuestions
+                ? { asyncQuestions: item.asyncQuestions }
+                : {}),
+            },
+            projectName: item.projectName,
+            pendingInputType: item.pendingInputType,
+            activity: item.activity,
+            hasUnread: item.hasUnread,
+            customTitle: item.customTitle,
+            isStarred: item.isStarred,
+          }))
+      : await readInbox(filterProjectId);
     const activeProjectQueueSessionIds = getActiveProjectQueueSessionIds(
       deps.projectQueueService,
     );
@@ -309,16 +345,20 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
       sessionId: item.session.id,
       projectId: item.session.projectId,
       projectName: item.projectName,
-      sessionTitle: getSessionDisplayTitle({
-        customTitle: item.customTitle,
-        title: item.session.title,
-      }),
+      sessionTitle:
+        retained && item.session.title == null && !item.customTitle
+          ? undefined
+          : getSessionDisplayTitle({
+              customTitle: item.customTitle,
+              title: item.session.title,
+            }),
       updatedAt: item.session.updatedAt,
       customTitle: item.customTitle,
       isStarred: item.isStarred,
       pendingInputType: item.pendingInputType,
       activity: item.activity,
       hasUnread: item.hasUnread,
+      asyncQuestions: item.session.asyncQuestions,
     });
 
     // Tier 1: needsAttention - sessions with pending input
@@ -387,6 +427,7 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
 
     // Apply limits per tier
     const response: InboxResponse = {
+      ...(retained ? { catalog: retained.catalog } : {}),
       needsAttention: needsAttention.slice(0, MAX_ITEMS_PER_TIER),
       active: active.slice(0, MAX_ITEMS_PER_TIER),
       recentActivity: recentActivity.slice(0, MAX_ITEMS_PER_TIER),

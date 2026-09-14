@@ -354,7 +354,7 @@ client's current constant serving as the fallback rather than a required field.
 Details, failure modes, and why this is an intent rather than a guarantee:
 [remote-hosted-compatibility](remote-hosted-compatibility.md) § Synchronized
 distribution is the intent, not the guarantee. Changes shipped upstream to
-`origin` follow CLAUDE.md's review unchanged.
+`origin` follow DEVELOPMENT.md's review unchanged.
 
 ### Relationship to project overrides
 

@@ -129,7 +129,7 @@ describe("initSpeechBackendRegistry", () => {
     expect(registry.allInfo()).toEqual([
       {
         id: "ya-nemo",
-        label: "Local NeMo Parakeet (pixi stt)",
+        label: "Local NeMo Parakeet (pixi stt-nemo)",
         enabled: true,
         validationStatus: "enabled",
         capabilities: {},

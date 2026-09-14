@@ -1,3 +1,5 @@
+import type { ConversationSubscriptions } from "../experimental/conversation-subscriptions.js";
+import { subscribeConversationRelay } from "../experimental/conversation-relay.js";
 /**
  * Shared WebSocket relay handler logic.
  *
@@ -333,6 +335,7 @@ function relayUploadError(
  * Dependencies for relay handlers.
  */
 export interface RelayHandlerDeps {
+  conversationSubscriptions?: ConversationSubscriptions;
   /** The main Hono app to route requests through */
   app: Hono<{ Bindings: HttpBindings }>;
   /** Base URL for internal requests (e.g., "http://localhost:3400") */
@@ -875,6 +878,21 @@ export async function handleRequest(
     } else if (legacyPublicShareRequest && !jsonResponse) {
       const text = new TextDecoder().decode(responseBody.bytes);
       body = text || null;
+    } else if (
+      response.ok &&
+      (url.searchParams.get("download") === "true" ||
+        response.headers
+          .get("Content-Disposition")
+          ?.split(";", 1)[0]
+          ?.trim()
+          .toLowerCase() === "attachment")
+    ) {
+      // Downloads preserve original bytes, including JSON formatting and
+      // integers that parsing would round. Keep errors on their normal path.
+      body = {
+        _binary: true,
+        data: Buffer.from(responseBody.bytes).toString("base64"),
+      };
     } else if (jsonResponse) {
       relayResponseSerializationStats.eligibleJsonResponses += 1;
       const parsed = parseRelayJsonBody(responseBody.bytes);
@@ -1593,6 +1611,7 @@ export function handleSubscribe(
   resolveAbsoluteFilePaths?: (
     paths: readonly string[],
   ) => Promise<ReadonlySet<string>>,
+  conversationSubscriptions?: ConversationSubscriptions,
 ): void {
   const { subscriptionId, channel } = msg;
 
@@ -1607,6 +1626,14 @@ export function handleSubscribe(
   }
 
   switch (channel) {
+    case "/api/experimental/conversation/subscribe":
+      subscribeConversationRelay(
+        subscriptions,
+        msg,
+        send,
+        conversationSubscriptions,
+      );
+      break;
     case "session":
       handleSessionSubscribe(
         subscriptions,
@@ -2225,6 +2252,7 @@ export async function handleMessage(
           deps.browserProfileService,
           () => ws.close(4004, "Legacy browser profile revoked"),
           deps.resolveAbsoluteFilePaths,
+          deps.conversationSubscriptions,
         ),
       onUnsubscribe: async (unsubscribeMsg) =>
         handleUnsubscribe(subscriptions, unsubscribeMsg),

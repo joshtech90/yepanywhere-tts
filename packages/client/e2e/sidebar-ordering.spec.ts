@@ -1,0 +1,242 @@
+import { mkdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { expect, test } from "@playwright/test";
+import {
+  decodeJsonFrame,
+  type RemoteClientMessage,
+} from "@yep-anywhere/shared";
+import { createTestViteServer } from "./support/vite-server";
+import {
+  startYaServerProcess,
+  stopYaServerProcess,
+} from "./support/ya-server-process";
+
+test.use({ serviceWorkers: "block" });
+
+test("sidebar follows user visits and sends while background work stays put", async ({
+  page,
+}) => {
+  test.setTimeout(180_000);
+  const projectPath = dirname(dirname(fileURLToPath(import.meta.url)));
+  const backend = await startYaServerProcess({ label: "sidebar order test" });
+  const source = await createTestViteServer({
+    configFile: join(projectPath, "vite.config.ts"),
+    define: { __VITE_DEV_PORT__: "-1" },
+    server: {
+      port: 0,
+      strictPort: false,
+      host: "127.0.0.1",
+      proxy: { "/api": { target: backend.baseUrl, ws: true } },
+    },
+  });
+  const projectId = Buffer.from(projectPath).toString("base64url");
+  const now = Date.now();
+  const rows = ["a", "b", "c"].map((id, index) => ({
+    id: `sidebar-${id}`,
+    title: `Session ${id.toUpperCase()}`,
+    fullTitle: `Session ${id.toUpperCase()}`,
+    projectId,
+    projectName: "Sidebar test",
+    provider: "claude",
+    activity: "idle",
+    ownership: { owner: "none" },
+    createdAt: new Date(now - (index + 1) * 60_000).toISOString(),
+    updatedAt: new Date(now - (index + 1) * 60_000).toISOString(),
+    messageCount: 1,
+  }));
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route(/\/api\/sessions(?:\?|$)/, (route) =>
+    route.fulfill({
+      json: {
+        sessions:
+          new URL(route.request().url()).searchParams.get("starred") === "true"
+            ? []
+            : rows,
+        hasMore: false,
+        total: rows.length,
+      },
+    }),
+  );
+  await page.route(
+    /\/api\/projects\/[^/]+\/sessions\/sidebar-[abc](?:\?|$)/,
+    (route) => {
+      const id = new URL(route.request().url()).pathname.split("/").at(-1);
+      return route.fulfill({
+        json: {
+          session: rows.find((row) => row.id === id),
+          messages: [
+            {
+              uuid: "opening",
+              type: "user",
+              content: "Keep this session easy to select.",
+            },
+          ],
+          ownership: { owner: "none" },
+        },
+      });
+    },
+  );
+  await page.route(/\/api\/sessions\/sidebar-[abc]\/process$/, (route) =>
+    route.fulfill({ json: { process: null } }),
+  );
+  let sendCount = 0;
+  await page.route(
+    /\/api\/projects\/[^/]+\/sessions\/sidebar-[abc]\/resume$/,
+    (route) => {
+      sendCount++;
+      return route.fulfill({
+        status: 503,
+        json: {
+          error: "Inert browser test; submission intentionally unavailable",
+        },
+      });
+    },
+  );
+  const activityListeners: Array<(type: string, data: object) => void> = [];
+  await page.routeWebSocket("**/api/ws", (socket) => {
+    const upstream = socket.connectToServer();
+    socket.onMessage((message) => {
+      const data =
+        typeof message === "string"
+          ? (JSON.parse(message) as RemoteClientMessage)
+          : decodeJsonFrame<RemoteClientMessage>(message);
+      if (data.type === "subscribe" && data.channel === "activity") {
+        activityListeners.push((eventType, payload) =>
+          socket.send(
+            JSON.stringify({
+              type: "event",
+              subscriptionId: data.subscriptionId,
+              eventType,
+              eventId: `sidebar-${Date.now()}-${Math.random()}`,
+              data: payload,
+            }),
+          ),
+        );
+      }
+      upstream.send(message);
+    });
+  });
+  try {
+    await source.listen();
+    const address = source.httpServer?.address();
+    if (!address || typeof address === "string")
+      throw new Error("Missing Vite port");
+    const origin = `http://127.0.0.1:${address.port}`;
+    const captures = process.env.YEP_E2E_UI_CAPTURE_DIR;
+    if (captures) mkdirSync(captures, { recursive: true });
+    for (const viewport of [
+      { name: "desktop", width: 1000, height: 600 },
+      { name: "phone", width: 375, height: 812 },
+    ]) {
+      await page.setViewportSize(viewport);
+      activityListeners.length = 0;
+      await page.goto(`${origin}/projects/${projectId}/sessions/sidebar-a`);
+      const composer = page.locator("[data-composer-input]");
+      await expect(composer).toBeVisible({ timeout: 30_000 });
+      await page
+        .getByRole("button", { name: "Open sidebar", exact: true })
+        .click();
+      const list = page.locator(".sidebar:visible #sidebar-last-24-hours-list");
+      // A compact row links to its session twice: the title link and the
+      // trailing project-name link. Match only the title link, so an index is
+      // a row, and assert the count so a third link per row fails loudly here
+      // instead of silently shifting what nth(1) clicks.
+      const links = list.locator(
+        'a.session-list-item__link[href*="/sessions/sidebar-"]',
+      );
+      const titles = links.locator(".session-list-item__title-text");
+      await expect(links).toHaveCount(3);
+      await expect(titles).toHaveText(["Session A", "Session B", "Session C"]);
+      const target = links.nth(1);
+      await target.hover();
+      const before = await target.boundingBox();
+      const visitsBeforeActivity = await page.evaluate(() =>
+        localStorage.getItem("yep-sidebar-interactions:local"),
+      );
+      await expect.poll(() => activityListeners.length).toBeGreaterThan(0);
+      for (const emit of activityListeners) {
+        emit("process-state-changed", {
+          type: "process-state-changed",
+          projectId,
+          sessionId: "sidebar-c",
+          activity: "in-turn",
+          timestamp: new Date().toISOString(),
+        });
+        emit("session-updated", {
+          type: "session-updated",
+          projectId,
+          sessionId: "sidebar-c",
+          updatedAt: new Date().toISOString(),
+          title: "Session C updated",
+          timestamp: new Date().toISOString(),
+        });
+      }
+      await expect(titles).toHaveText([
+        "Session A",
+        "Session B",
+        "Session C updated",
+      ]);
+      expect(await target.boundingBox()).toEqual(before);
+      expect(
+        await page.evaluate(() =>
+          localStorage.getItem("yep-sidebar-interactions:local"),
+        ),
+      ).toBe(visitsBeforeActivity);
+      await target.click();
+      await expect(page).toHaveURL(/\/sessions\/sidebar-b$/);
+      await expect(composer).toBeVisible();
+      await composer.focus();
+      await page.mouse.move(viewport.width - 1, viewport.height - 1);
+      await page
+        .getByRole("button", { name: "Open sidebar", exact: true })
+        .click();
+      await expect(titles).toHaveText([
+        "Session B",
+        "Session A",
+        "Session C updated",
+      ]);
+      await expect(
+        page.getByText("Server changed", { exact: false }),
+      ).toHaveCount(0);
+      if (captures)
+        await page.screenshot({
+          animations: "disabled",
+          path: join(captures, `sidebar-order-${viewport.name}.png`),
+        });
+      // A visit elsewhere in this browser must not hide a subsequent send's
+      // user activity. No provider is invoked: the test endpoint rejects it.
+      await page.keyboard.press("Escape");
+      const activityModule = "/src/lib/sessionInteractionOrder.ts";
+      await page.evaluate(async (modulePath) => {
+        const module = await import(modulePath);
+        module.recordSessionInteraction("local", "sidebar-a");
+      }, activityModule);
+      await composer.fill("User submission raises B again");
+      const previousSendCount = sendCount;
+      await composer.press("Enter");
+      await expect.poll(() => sendCount).toBeGreaterThan(previousSendCount);
+      await expect
+        .poll(() =>
+          page.evaluate(() => {
+            const value = localStorage.getItem(
+              "yep-sidebar-interactions:local",
+            );
+            return value ? JSON.parse(value)[0][0] : null;
+          }),
+        )
+        .toBe("sidebar-b");
+      await page.reload();
+      await expect(composer).toBeVisible();
+      await page
+        .getByRole("button", { name: "Open sidebar", exact: true })
+        .click();
+      await expect(titles).toHaveText(["Session B", "Session A", "Session C"]);
+    }
+    expect(errors).toEqual([]);
+  } finally {
+    await source.close();
+    stopYaServerProcess(backend);
+  }
+});

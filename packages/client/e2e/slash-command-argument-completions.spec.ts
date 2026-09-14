@@ -6,7 +6,8 @@ import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
-import { createServer, type ViteDevServer } from "vite";
+import type { ViteDevServer } from "vite";
+import { createTestViteServer as createServer } from "./support/vite-server";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
@@ -430,6 +431,7 @@ test("toggles the observed goal during work without consuming the draft", async 
   await page.goto(`${devUrl}/projects/${projectId}/sessions/${sessionId}`);
   const composer = page.locator("[data-composer-input]");
   const flag = page.getByRole("button", { name: `Current goal: ${objective}` });
+  await expect(composer).toBeVisible({ timeout: 30_000 });
   await expect(flag).toHaveAttribute("data-goal-status", "active");
   await expect.poll(() => !!publish).toBe(true);
   await composer.fill("Keep this draft while the agent works");

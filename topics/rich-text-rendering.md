@@ -78,6 +78,11 @@ These run unconditionally and are not user-configurable:
 - **Shiki syntax highlighting** — server-side, keyed on file extension, stored as
   `_highlightedContentHtml` on `ReadResultWithAugment`. Applied only to files the
   server recognises as source code.
+- **Code-fence language marking** — an assistant code block's info string is
+  reduced to one normalized language name, and every rendered block carries it
+  as `class="language-<name>"` regardless of which renderer produced the markup.
+  See [`code-fence-renderers.md`](code-fence-renderers.md), which also holds the
+  proposed per-language renderer registry and Mermaid design.
 - **Server markdown rendering** — server-side, for `.md`/`.markdown` files,
   stored as `_renderedMarkdownHtml`. CommonMark embedded HTML is parsed before
   the shared sanitizer, so inert structural markup such as table headers with
@@ -308,17 +313,32 @@ no reliable file extension.
 
 ## Summary affordances
 
+Tool activity uses one compact, unboxed gutter control: `+` when its detail
+is collapsed and `−` when expanded. Ran, ordinary tool results, and captured
+Exec/View Image media use the same control and tap target. Status color remains
+independent of expansion: green for success, red for failure, and the existing
+pending/interrupted colors. The marker occupies the timeline dot's position;
+there is no second boxed toggle or trailing disclosure chevron. Keyboard and
+pointer activation update the visible marker and `aria-expanded` together.
+The connector is centered on the glyph, uses lower contrast than the status
+color, and leaves three pixels clear above and below its visible strokes.
+The one-pixel strokes form symmetric nine-pixel glyphs aligned with the
+ordinary timeline connector, avoiding half-pixel stems at native scale.
+Hover brightens the same control without adding a box.
+
 Long one-line summaries keep the row tail visible by reserving result/count
 columns and applying normal end-ellipsis only to the variable expression. Grep
-uses the left timeline dot as its outline affordance: clicking the dot expands
+uses the left gutter control as its outline affordance: clicking it expands
 the full search expression under the clipped header while keeping the match count
 visible. The clipped pattern text is also clickable as a secondary target, but the
-dot is the stable control.
+gutter marker is the stable control.
 
-Bash/Ran rows keep the left dot and row middle for the existing output-preview
+Bash/Ran rows keep the gutter control and row middle for the existing output-preview
 show/hide behavior. The command text itself is a separate click target; clicking
 it expands the full command inline with wrapping, so a huge command can be
-inspected without collapsing the output preview accidentally.
+inspected without collapsing the output preview accidentally. The expanded
+command grows its row to its full natural height; it has no separate vertical
+scroll area. The transcript scrollbar remains the way to read long commands.
 
 ## Sigma button placement and scroll preservation
 
@@ -408,3 +428,199 @@ formulas as literal text, matching the experience in their editor.
 - Edit diff rich render does not yet inline-expand image links. This would help
   Markdown edits that add or update `![image](...)`, but it should share the
   local-media hydration path rather than adding a second image loader.
+
+## Malformed and partial tool records
+
+### Historical tool display audit
+
+`pnpm tools:audit` scans historical Codex and Claude transcripts offline to
+find registered tool rows rejected by display contracts. With no roots it scans
+`CODEX_HOME/{sessions,archived_sessions}` and `CLAUDE_CONFIG_DIR/projects`, using
+the normal `~/.codex` and `~/.claude` defaults. Repeat `--codex PATH` or
+`--claude PATH` for files, alternate profiles, or copied trees; explicit roots
+replace defaults. Claude subagent JSONL files are included recursively. The
+reported provider is the transcript family, not an inferred gateway/OSS backend.
+
+The command uses production JSONL/Claude cache parsing, Codex lineage resolution,
+session normalization, task snapshots, persisted augments, and transcript
+compilation before testing final tool rows. It does not apply API tail limits.
+Claude's production active-branch selection still applies; discarded branches
+are not independently replayed. Referenced ancestors must be inside the chosen
+Codex roots. Copied/forked histories can count the same underlying execution
+more than once. Plain and compressed twins at the same path count once, with
+the plain representation preferred. Zstd is read without unpacking files and
+requires a Node runtime supporting native zstd (Node 24 is recommended).
+
+Only explicit report exports write files: `--output REPORT.json` writes the
+main JSON report, and optional `--locations PRIVATE.json` writes the separate
+file-id-to-path map. Both refuse existing destinations and use owner-only file
+permissions where supported. Without `--output`, JSON goes to stdout; progress
+goes to stderr. No provider/server/index is started, no model calls are made,
+and no transcript or media is rewritten, fetched, or preserved. Each file runs
+in its own worker with a 2 GiB V8 heap ceiling and a 120-second timeout;
+`--timeout-seconds N` changes the deadline. Memory still scales with one full
+transcript, and a worker failure is reported rather than losing the scan.
+
+Reports contain revision/dirty-state provenance, coverage counts, parsing/read
+failures, per-file warnings, and bounded structural examples grouped by family,
+version, tool, reason, and shape. Payload strings, arbitrary object keys, raw
+exception/Zod messages, paths, and call identifiers are omitted or hashed.
+Only known structural vocabulary and allowlisted block types survive. Keep the
+optional locations file private. Examples are shape witnesses, not replayable
+fixtures; inspect locally and sanitize deliberately before adding a test.
+
+Successful raw, error raw, and unfinished raw rows are separate categories.
+Unknown tool registrations are counted separately. Targeted alias-loss checks
+cover Shell `cellId`/`command`/`cmd` and create-goal `tokenBudget`; this is not
+exhaustive detection of stripped fields. There is no browser mounting, media
+materialization, commentary transformation, live-event replay, or proof that an
+accepted renderer retains every affordance. Raw candidates require triage.
+
+Exit 0 means the selected scan completed, even with candidates. Optional
+`--fail-on-findings` returns 1 for successful raw or targeted alias-loss findings.
+Exit 2 means invalid invocation or incomplete coverage: failures, malformed
+records, changing files, skipped symlinks/unrecognized Codex filenames,
+discovery errors, no audited files, or a `--limit N` excluding discovered files.
+Absent default roots are counted without failing an otherwise valid scan;
+missing explicit roots are errors. A partial report retains completed files.
+
+### Display boundary contract
+
+A valid SDK message or persisted JSONL record does not guarantee valid tool
+arguments or a complete successful result. Providers can retain rejected calls
+and interrupted inputs, and result schemas intentionally permit partial data.
+Those records remain readable; display validation must not reject a session,
+rewrite the transcript, or infer missing content as an empty successful result.
+
+Before invoking rich tool rendering, the client checks its display requirements.
+Every specialized registration binds input, result and optional failure/partial
+schemas to private callbacks with `defineTool`. `toolDisplayContracts.ts` owns
+all registered variants; `tools/index.tsx` enforces exact registration coverage.
+Types derive from schema output. Public callers receive safe prepared operations
+or inert metadata, never unchecked callbacks. Summaries and dynamic names use
+the same boundary as collapsed, expanded, inline, standalone and nested views.
+
+Preparation is data-only, bounded to the displayed record and shared across row
+operations after commentary transforms its input/output. There is no transcript
+scan or unbounded cache. The prepared record carries parsed values, execution
+status and rich/partial/raw classification. Rejections use an explicit failure
+schema or raw inspection, never a success parser. The effective error flag is
+`isError ?? status === "error"` for every operation; pending, incomplete and
+aborted remain distinct states. Standalone support is declared per tool.
+
+Known consumed augments (highlights, Markdown, diffs, media, project links and
+task snapshots) are checked explicitly. Nested Task content checks its block
+fields and retains JSON tool arguments only for the nested checked dispatcher;
+those arguments do not become trusted inputs to the parent renderer. Original
+records remain separately owned by inspection infrastructure. Plain text from
+providers lacking structured metadata gets an explicit partial presentation
+with checked input previews. Read dedup and the named Edit replacement, raw
+patch, augmented, changes and target-only alternatives remain usable.
+
+Provider schemas and advisory warnings stay separate; they describe retained
+records rather than proving rich rendering eligibility. Unknown tools retain
+ordinary disclosure behavior with generic original-data inspection.
+
+Server-materialized tool media is independently eligible for its existing
+image/video presentation. A rejected text-preview schema must not hide stored
+media, its expansion control, or validated source-path actions. Media rows
+preserve actual execution status and use the session's normal source transport;
+they do not pass unchecked text results to rich renderer callbacks. As before,
+media-bearing rows use the media presentation in place of the text preview.
+
+When required display data is missing or has the wrong type, the tool row
+shows its name and actual status with a closed, explicit original-data
+disclosure. Expanding it reveals the original output and input. A failed Write
+missing `file_path` or `content` keeps a visible failed status and its provider
+validation error in that disclosure, without deriving a path or splitting
+missing content. Partial successful Read files, Edit hunks without lines, and
+questions without options use the same fallback. No successful result is
+relabeled as a failed execution merely because its preview is unavailable.
+Unknown augmentation fields are retained, and Claude Read dedup records with a
+file path but no body keep their distinct “unchanged” display.
+
+Observed text-block acknowledgements do not suppress input-side Edit diffs or
+UpdatePlan steps/counts. Plan sibling output is available behind disclosure.
+Nullable Edit original context means unavailable context, not proof of a new
+file. Read `file_unchanged` and echoed question results without `multiSelect`
+retain their existing presentation. Checked Shell and goal projections retain
+the aliases their helpers consume. The audit compares those original/parsed
+values rather than treating alias presence as evidence of loss.
+
+Shell text arrays reuse the ordered code-mode decoder and shared output view,
+including command metadata and closed raw inspection; command stdout stays a
+leaf. ViewImage's checked path action accepts text/image descriptor arrays even
+without materialized media. A missing source remains unavailable. Spawn text
+rejections with no agent id retain the specialized failed badge even when the
+native error flag is missing; this does not rewrite the provider record.
+
+Every tool row also contains unexpected React rendering exceptions locally,
+including exceptions from commentary and nested tool displays. Adjacent rows
+and the surrounding session remain usable; the affected row keeps its raw
+record and local error visible. Updated input, output, status, or tool identity
+retries rich rendering. This containment is a last resort, not a claim that all
+provider/tool shapes now have exhaustive display schemas. It does not catch
+unrelated asynchronous callbacks or event-handler errors.
+
+Registry-driven controls mount every declared variant and operation, assert
+semantic content, damage nested fields deterministically, and exercise lifecycle
+and standalone requirements. Unexpected synchronous and React boundary catches
+are counted; ordinary positive/negative controls require zero catches and zero
+console warnings. Dedicated throw tests assert local recovery and neighboring
+usability. Type fixtures and parser-backed architecture checks prevent common
+registration, fixture and callback-access omissions. See provider-authoring for
+the new-tool procedure and stream/persisted parity for native coverage limits.
+
+### Required display semantics and review regressions
+
+The callback contract uses function-valued properties with strict parameter
+checking. A callback cannot explicitly require a field absent from its schema;
+compile-fail controls cover annotated input and result parameters as well as
+inferred property access. Schemas alone determine inference at registration.
+
+Claude search results may mix commentary strings and link groups; valid links
+remain links. PDF Read results do not require an image MIME field. Image
+metadata may provide only original dimensions. TaskOutput retains `success`,
+`not_ready`, and `local_agent`, and does not invent an exit code when absent.
+Task text retains checked `_renderedHtml`. Nested tool-use blocks require an id
+and name before entering nested dispatch; malformed blocks use inspection
+without requiring a rendering exception.
+
+Supported Edit and Task rejections retain their specialized failure views and
+original error detail. A declined Edit with a checked proposed patch still
+shows that patch. Edit acknowledgements remain visible text rather than an
+invented empty before/after diff. Goal failures retain string, content, and
+nested message/detail forms. Other failures without an explicit checked failure
+contract remain inspectable raw records. Failure eligibility is independent of
+success schemas; commentary must retain an absent error flag's status fallback,
+including when status changes without replacing the output object.
+
+Shell/WriteStdin failures explicitly accept the checked string or command-output
+envelope used by successful polls. They retain readable output, nonzero exit
+metadata, and failed status instead of exposing the envelope as raw JSON.
+
+ExitPlanMode and UpdatePlan standalone results display their plan or
+acknowledgement. Standalone Edit requires a result fact (path, patch, or text);
+an empty object is insufficient. Input-only augmentation is not fabricated
+when the original input is missing. Original unknown fields remain available
+for inspection, not trusted rich access.
+
+`displayExpectations.ts` requires a separate semantic expectation for each
+variant/operation. An intentional empty operation is explicit; another
+operation's summary cannot satisfy its assertion. Standalone expectations
+account for facts present only in input. Independent provider-shape and failure
+controls complement mutation containment tests; mutation counts are not counts
+of independent semantic contracts. Bash views consume prepared object results
+without reparsing them; Conversation name and summary share one preparation.
+
+### Native display integration checks
+
+Native ingestion-to-rendering checks live in `packages/client/test/`, outside
+the browser application source tree. They still run with the client Vitest
+suite and are typechecked by `pnpm tools:typecheck` using the server-owned
+Node types. Client application builds must not pull provider adapters or
+server test harnesses into their TypeScript program through these tests.
+
+Completed Markdown prose and pending code do not initialize Shiki. The augment
+generator shares one lazy highlighter initialization when its first finalized
+code block needs syntax highlighting, preserving highlighted final output.

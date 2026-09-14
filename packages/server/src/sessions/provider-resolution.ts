@@ -353,6 +353,7 @@ export function getSessionSources(
   deps: ProviderResolutionDeps,
   preferredProvider?: ProviderName | string,
   catalog?: ProviderProjectCatalog,
+  allowedGroups?: ReadonlySet<string>,
 ): SessionSource[] {
   const sources: SessionSource[] = [];
   for (const group of buildCandidateGroups(
@@ -360,6 +361,7 @@ export function getSessionSources(
     preferredProvider,
     catalog,
   )) {
+    if (allowedGroups && !allowedGroups.has(group)) continue;
     const source = getSourceForGroup(project, deps, group, catalog);
     if (!source) continue;
     if (
@@ -481,10 +483,22 @@ async function listSessionListSummariesForSource(
                   source.reader,
                 )
               : null;
-          if (cached) {
+          if (
+            cached &&
+            !(
+              (cached.provider === "codex" ||
+                cached.provider === "codex-oss") &&
+              cached.asyncQuestions === undefined
+            )
+          ) {
             return toSessionListSummary(cached);
           }
-          return listReader.call(source.reader, entry.sessionId, project.id);
+          return listReader.call(
+            source.reader,
+            entry.sessionId,
+            project.id,
+            cached ? toSessionListSummary(cached) : undefined,
+          );
         }),
     );
     for (const summary of batch) {
@@ -570,7 +584,14 @@ export async function findSessionListSummaryAcrossProviders(
             source.reader,
           )
         : null;
-      if (cachedSummary) {
+      if (
+        cachedSummary &&
+        !(
+          (cachedSummary.provider === "codex" ||
+            cachedSummary.provider === "codex-oss") &&
+          cachedSummary.asyncQuestions === undefined
+        )
+      ) {
         return {
           source,
           summary: toSessionListSummary(cachedSummary),
@@ -580,6 +601,7 @@ export async function findSessionListSummaryAcrossProviders(
       const summary = await source.reader.getSessionListSummary(
         sessionId,
         projectId,
+        cachedSummary ? toSessionListSummary(cachedSummary) : undefined,
       );
       if (summary) {
         return { source, summary };

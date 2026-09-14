@@ -1,9 +1,10 @@
+import { augmentTaskListSnapshots } from "../../src/augments/task-list-augments.js";
 import { inspect } from "node:util";
-import { getMessageId } from "../../../client/src/lib/mergeMessages.ts";
-import { compileTranscriptProjection } from "../../../client/src/lib/transcriptProjection/compiler.ts";
-import type { TranscriptProjectionAugments } from "../../../client/src/lib/transcriptProjection/types.ts";
-import type { Message as ClientMessage } from "../../../client/src/types.ts";
-import type { RenderItem } from "../../../client/src/types/renderItems.ts";
+import { getMessageId } from "@yep-anywhere/shared/transcript/message";
+import { compileTranscriptProjection } from "@yep-anywhere/shared/transcript/compiler";
+import type { TranscriptProjectionAugments } from "@yep-anywhere/shared/transcript/types";
+import type { Message as ClientMessage } from "@yep-anywhere/shared/transcript/message";
+import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { createStreamAugmenter } from "../../src/augments/stream-augmenter.js";
 import { normalizeSession } from "../../src/sessions/normalization.js";
 import { augmentPersistedSessionMessages } from "../../src/sessions/persisted-augments.js";
@@ -333,6 +334,7 @@ export async function runPersistedPipeline(
   const normalizedSession = normalizeSession(
     structuredClone(loadedSession),
   ) as { messages: ClientMessage[] };
+  augmentTaskListSnapshots(normalizedSession.messages as ServerMessage[]);
   await augmentPersistedSessionMessages(
     normalizedSession.messages as unknown as ServerMessage[],
   );

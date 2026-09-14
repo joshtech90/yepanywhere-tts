@@ -12,6 +12,9 @@ import {
   type WorkstreamId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import type { RetainedSessionCollectionState } from "@yep-anywhere/shared";
+import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
+import { readRetainedSessionItems } from "./retained-session-collections.js";
 import type { SessionIndexService } from "../indexes/index.js";
 import type { SessionIndexListOptions } from "../indexes/types.js";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
@@ -52,6 +55,7 @@ import {
 } from "./session-list-options.js";
 
 export interface GlobalSessionsDeps {
+  retainedCollections?: RetainedSessionCollections;
   scanner: ProjectScanner;
   readerFactory: (project: Project) => ISessionReader;
   supervisor?: Supervisor;
@@ -86,11 +90,11 @@ export interface GlobalSessionsDeps {
 export interface GlobalSessionItem {
   // From cache (cheap)
   id: string;
-  title: string | null;
-  fullTitle: string | null;
-  createdAt: string;
+  title?: string | null;
+  fullTitle?: string | null;
+  createdAt?: string;
   updatedAt: string;
-  messageCount: number;
+  messageCount?: number;
   provider: ProviderName;
   /** Last active model for this session (from JSONL), for list/badge display. */
   model?: string;
@@ -120,6 +124,7 @@ export interface GlobalSessionItem {
   executor?: string;
   /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
+  asyncQuestions?: SessionSummary["asyncQuestions"];
   /** Provider-launched child work nested under this parent. Absent when none. */
   providerChildren?: ProviderChildSessionSummary[];
 }
@@ -143,6 +148,7 @@ export interface ProjectOption {
 }
 
 export interface GlobalSessionsResponse {
+  catalog?: RetainedSessionCollectionState;
   sessions: GlobalSessionItem[];
   hasMore: boolean;
   /** Global stats computed from all sessions (not just paginated results) */
@@ -402,6 +408,28 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     // conditional read is answered `changed`. Stamping the response with the
     // post-walk value would certify rows the response does not contain.
     const generation = collectionGeneration.current;
+    if (c.req.query("summaryMode") === "retained" && deps.retainedCollections) {
+      const retained = await readRetainedSessionItems(
+        deps.retainedCollections,
+        deps,
+      );
+      const rows = retained.sessions.filter(
+        (row) =>
+          (includeArchived || !row.isArchived) &&
+          (!starredOnly || row.isStarred) &&
+          (!filterProjectId || row.projectId === filterProjectId) &&
+          (!searchQuery ||
+            [row.title, row.customTitle, row.projectName].some((text) =>
+              text?.toLowerCase().includes(searchQuery),
+            )) &&
+          (!afterCursor || Date.parse(row.updatedAt) < Date.parse(afterCursor)),
+      );
+      return c.json({
+        ...retained,
+        sessions: rows.slice(0, limit),
+        hasMore: rows.length > limit,
+      });
+    }
     // A cursor page is not a whole-collection read, so it never short-circuits;
     // the token only means "the collection behind an identical query is
     // unchanged", which is why the client must replay it against the same
@@ -666,6 +694,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           initialPrompt: initialPrompt ?? undefined,
           executor,
           lastAgentText: overlaidSession.lastAgentText,
+          asyncQuestions: overlaidSession.asyncQuestions,
         });
       }
     }

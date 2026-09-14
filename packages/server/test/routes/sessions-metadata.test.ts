@@ -217,6 +217,59 @@ async function createGrokRedirectFixture(): Promise<{
 }
 
 describe("Sessions metadata route", () => {
+  it.each(["", "/metadata"])(
+    "uses provider content recency for read state at %s",
+    async (suffix) => {
+      const project = { ...createProject(), provider: "grok" as const };
+      const loaded = createLoadedGrokSession();
+      const lastSeenAt = "2026-03-10T09:49:00.000Z";
+      const process = {
+        id: "process-1",
+        projectId: project.id,
+        provider: "grok",
+        state: { type: "idle" },
+        lastProviderContentTime: new Date("2026-03-10T09:48:00.000Z"),
+        lastProviderMessageTime: new Date("2026-03-10T09:55:00.000Z"),
+        getProviderRuntimeStatus: () => null,
+        getDeferredQueueSummary: () => [],
+      };
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: () => process,
+          wasEverOwned: () => true,
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getOrCreateProject: async () => project,
+        } as unknown as SessionsDeps["scanner"],
+        readerFactory: () =>
+          ({
+            getSession: async () => loaded,
+            getSessionSummary: async () => loaded.summary,
+          }) as unknown as ISessionReader,
+        notificationService: {
+          getLastSeen: () => ({ timestamp: lastSeenAt }),
+          hasUnread: (_id: string, updatedAt: string) => updatedAt > lastSeenAt,
+        } as unknown as SessionsDeps["notificationService"],
+      });
+      const url = `/projects/${project.id}/sessions/sess-1${suffix}`;
+      const read = await routes.request(url);
+      expect(read.status).toBe(200);
+      expect((await read.json()).session).toMatchObject({
+        updatedAt: "2026-03-10T09:48:00.000Z",
+        hasUnread: false,
+      });
+      process.lastProviderContentTime = new Date("2026-03-10T09:50:00.000Z");
+      const unread = await routes.request(url);
+      expect(unread.status).toBe(200);
+      expect((await unread.json()).session).toMatchObject({
+        updatedAt: "2026-03-10T09:50:00.000Z",
+        hasUnread: true,
+      });
+      // A list/detail read must not mutate the cached transcript snapshot.
+      expect(loaded.summary.updatedAt).toBe("2026-03-10T09:46:00.000Z");
+    },
+  );
+
   it("verifiably stops an owned process after persisting archive metadata", async () => {
     const order: string[] = [];
     const updateMetadata = vi.fn(async () => {
@@ -2493,6 +2546,9 @@ describe("Sessions metadata route", () => {
       project.id,
       "sess-1",
       reader,
+      // A live rollout grows between index passes; the hint supplies only
+      // head-derived fields, so an indexed prefix is still usable.
+      { acceptAppendedFile: true },
     );
     expect(getSession).toHaveBeenCalledWith("sess-1", project.id, undefined, {
       includeOrphans: false,
@@ -2591,6 +2647,88 @@ describe("Sessions metadata route", () => {
       includeOrphans: false,
       tailCompactions: 2,
       summaryHint: summary,
+    });
+  });
+
+  it("clamps tailFrom outside a Codex compact-tail instead of dropping older history", async () => {
+    const project = { ...createProject(), provider: "codex" as const };
+    const summary = {
+      ...createSummary(),
+      messageCount: 23,
+      provider: "codex" as const,
+    };
+    const tagEntry = (entry: CodexSessionEntry, offset: number) =>
+      tagCodexEntrySourceByteOffset(entry, offset);
+    const entries: CodexSessionEntry[] = [
+      tagEntry(
+        {
+          type: "compacted",
+          timestamp: "2026-03-10T09:40:00.000Z",
+          payload: { message: "Older compact summary." },
+        },
+        100,
+      ),
+      tagEntry(
+        {
+          type: "event_msg",
+          timestamp: "2026-03-10T09:41:00.000Z",
+          payload: { type: "user_message", message: "Visible tail turn." },
+        },
+        200,
+      ),
+      tagEntry(
+        {
+          type: "compacted",
+          timestamp: "2026-03-10T10:10:00.000Z",
+          payload: { message: "Current compact summary." },
+        },
+        500,
+      ),
+    ];
+    const loaded: LoadedSession = {
+      summary,
+      transcriptSnapshotUpdatedAt: summary.updatedAt,
+      readWindow: {
+        kind: "compact-tail",
+        omittedPrefix: true,
+        startByte: 100,
+        compactBoundaries: 2,
+      },
+      data: {
+        provider: "codex",
+        session: { entries },
+      },
+    };
+    const getSession = vi.fn(async () => loaded);
+    const reader = { getSession } as unknown as CodexSessionReader;
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => null),
+        wasEverOwned: vi.fn(() => false),
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => reader),
+      codexReaderFactory: vi.fn(() => reader),
+      sessionIndexService: {
+        getCachedSessionSummary: vi.fn(async () => summary),
+      } as unknown as NonNullable<SessionsDeps["sessionIndexService"]>,
+    });
+
+    const response = await routes.request(
+      `/projects/${project.id}/sessions/sess-1?tailCompactions=2&tailFrom=d68b96e1-4c6d-46b8-ad32-1c1012aeb891`,
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.messages[0]?.uuid).toMatch(/^codex-compacted-byte-100-/);
+    expect(body.pagination).toMatchObject({
+      hasOlderMessages: true,
+      truncatedBeforeMessageId: body.messages[0]?.uuid,
+      returnedMessageCount: body.messages.length,
+      totalCompactions: 2,
+      truncatedBy: "compact_boundary",
     });
   });
 
@@ -2930,6 +3068,7 @@ describe("Sessions metadata route", () => {
     });
     expect(getSession).toHaveBeenCalledWith("sess-1", project.id, "missing", {
       includeOrphans: false,
+      tailCompactions: 12,
     });
   });
 

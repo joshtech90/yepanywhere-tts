@@ -15,10 +15,7 @@ import {
   resolveDefaultedValue,
 } from "../lib/defaultedStorage";
 import { EFFORT_LEVEL_OPTIONS, isEffortLevel } from "../lib/effortLevels";
-import {
-  cleanParakeetSpeechModel,
-  DEFAULT_PARAKEET_SPEECH_MODEL,
-} from "../lib/speechProviders/parakeetModels";
+import { DEFAULT_PARAKEET_SPEECH_MODEL } from "../lib/speechProviders/parakeetModels";
 import {
   DEFAULT_SPEECH_METHOD,
   isSpeechMethodId,
@@ -260,14 +257,19 @@ function saveGrokSpeechAudioSettings(settings: GrokSpeechAudioSettings) {
 
 function loadParakeetSpeechModel(): string {
   const stored = localStorage.getItem(BROWSER_LOCAL_KEYS.parakeetSpeechModel);
-  return stored?.trim() ? stored : DEFAULT_PARAKEET_SPEECH_MODEL;
+  return stored?.trim() ?? "";
+}
+
+const speechModelSubscribers = new Set<() => void>();
+
+function loadWhisperSpeechModel(): string {
+  return (
+    localStorage.getItem(BROWSER_LOCAL_KEYS.whisperSpeechModel)?.trim() ?? ""
+  );
 }
 
 function saveParakeetSpeechModel(model: string) {
-  localStorage.setItem(
-    BROWSER_LOCAL_KEYS.parakeetSpeechModel,
-    cleanParakeetSpeechModel(model),
-  );
+  localStorage.setItem(BROWSER_LOCAL_KEYS.parakeetSpeechModel, model.trim());
 }
 
 function getBuiltInSpeechClientDefaults(): Required<
@@ -363,6 +365,21 @@ export function useModelSettings() {
   const [parakeetSpeechModel, setParakeetSpeechModelState] = useState<string>(
     loadParakeetSpeechModel,
   );
+  const [whisperSpeechModel, setWhisperSpeechModelState] = useState(
+    loadWhisperSpeechModel,
+  );
+  useEffect(() => {
+    const update = () => {
+      setParakeetSpeechModelState(loadParakeetSpeechModel());
+      setWhisperSpeechModelState(loadWhisperSpeechModel());
+    };
+    speechModelSubscribers.add(update);
+    window.addEventListener("storage", update);
+    return () => {
+      speechModelSubscribers.delete(update);
+      window.removeEventListener("storage", update);
+    };
+  }, []);
 
   useEffect(() => {
     if (isClientStorageDefault(loadVoiceInputEnabledSetting())) {
@@ -458,6 +475,12 @@ export function useModelSettings() {
   const setParakeetSpeechModel = useCallback((model: string) => {
     setParakeetSpeechModelState(model);
     saveParakeetSpeechModel(model);
+    for (const subscriber of speechModelSubscribers) subscriber();
+  }, []);
+  const setWhisperSpeechModel = useCallback((model: string) => {
+    setWhisperSpeechModelState(model);
+    localStorage.setItem(BROWSER_LOCAL_KEYS.whisperSpeechModel, model.trim());
+    for (const subscriber of speechModelSubscribers) subscriber();
   }, []);
 
   return {
@@ -485,6 +508,8 @@ export function useModelSettings() {
     setGrokSpeechAudioSettings,
     parakeetSpeechModel,
     setParakeetSpeechModel,
+    whisperSpeechModel,
+    setWhisperSpeechModel,
   };
 }
 

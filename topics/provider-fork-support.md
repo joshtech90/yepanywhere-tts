@@ -44,11 +44,22 @@ forkSession?: (options: {
   upToMessageId?: string;  // inclusive prefix slice; omit for full copy
   boundary?: ProviderForkBoundary; // typed server-resolved identity
   title?: string;          // title for the new session
-}) => Promise<{ sessionId: string }>;
+}) => Promise<{ sessionId: string; filePath?: string }>;
 ```
 
 Contract obligations, not just the shape:
 
+- **Immediate discovery.** After fork completion, direct detail and metadata
+  reads can find the child without waiting for ordinary file discovery. Codex
+  and Pi supply their durable file path internally; Supervisor registers a
+  bounded, process-wide cache of the latest 1,024 fork paths before returning.
+  Warm and newly constructed readers consult that cache independently of scan
+  completion. They validate physical store containment and provider/session/
+  project metadata before using a hint. Missing files still use ordinary
+  discovery and can return not-found; a hint never supplies transcript data or
+  fabricates a session. Claude retains its direct session-id filename lookup.
+  Registration neither clears transcript caches nor adds polling, and paths
+  are not added to the client/server fork response contract.
 - **New, separately resumable session id.** The result is a top-level session
   YA can resume on its own — not a branch leaf inside the source file.
 - **Provider-native retained prefix.** The kept transcript content must match

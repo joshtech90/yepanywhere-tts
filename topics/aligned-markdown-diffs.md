@@ -228,18 +228,13 @@ remain observable after reference resolution.
 The same renderer retains project-file links, task lists, safe URL rendering,
 escaped raw HTML, table alignment, and sanitization. `@mdit/plugin-katex`
 provides bracket and dollar math delimiters with `trust: false` and
-`maxExpand: 1000`. Package-scoped pnpm overrides make plugin 1.0.2, its helper,
-and its TeX tokenizer use markdown-it 15 and YA's KaTeX 0.16.45. A strict-peer
-fixture proved one shared runtime resolution and accurate math/reference maps.
-The plugin's published declarations still name markdown-it v14-only types; YA's
-normal dependency declaration check is skipped by `skipLibCheck`, while the YA
-call site and full server build remain type-checked. Vendor or patch the plugin
-if a future compiler configuration requires dependency declarations to pass
-standalone strict checking. The package also declares Node 22 or newer, but the
-exact pinned artifact installs without engine warnings and passed the same
-runtime proof under YA's Node 20.12 floor. Repeat that minimum-runtime proof on
-every plugin bump; vendor the tokenizer/adapter if a future release actually
-uses a Node 22-only feature.
+`maxExpand: 1000`. Plugin 1.1.0 and its helper/tokenizer declare
+markdown-it 15-compatible peers. YA and the plugin resolve one KaTeX 0.18.7
+runtime, with matching client CSS. Fresh npm installation requires no pnpm-only
+peer overrides. Rendering and source-map tests cover the dependency refresh at
+the Node 22 server floor. Patched sanitize-html 2.17.7 escapes forbidden
+raw-text tags while sanitizing images exposed after malformed closing tags;
+executable attributes remain forbidden.
 
 Unified/mdast was evaluated first and passed the same alignment smoke, but was
 rejected on performance: the realistic parse/render/sanitize pipeline was

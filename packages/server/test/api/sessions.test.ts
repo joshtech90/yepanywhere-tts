@@ -15,6 +15,7 @@ import {
 } from "../../src/sdk/providers/provider-runtime-host.js";
 import type { ClaudeSDK } from "../../src/sdk/types.js";
 import { PublicShareService } from "../../src/services/PublicShareService.js";
+import { ClaudeSessionReader } from "../../src/sessions/reader.js";
 import type { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { encodeProjectId } from "../../src/supervisor/types.js";
 
@@ -550,6 +551,12 @@ describe("Sessions API", () => {
 
     it("reports additive detail phases through Server-Timing", async () => {
       await writeCompactedSession("sess-timed");
+      const children = vi
+        .spyOn(ClaudeSessionReader.prototype, "listProviderChildSessions")
+        .mockImplementation(async () => {
+          await new Promise((resolve) => setTimeout(resolve, 30));
+          return [];
+        });
       const { app } = createApp({
         sdk: mockSdk,
         projectsDir: testDir,
@@ -572,6 +579,7 @@ describe("Sessions API", () => {
       );
       expect(Object.keys(entries)).toEqual([
         "ya-augment",
+        "ya-metadata",
         "ya-normalize",
         "ya-project",
         "ya-read",
@@ -581,11 +589,15 @@ describe("Sessions API", () => {
       expect(entries["ya-total"]).toBeGreaterThanOrEqual(
         entries["ya-project"] +
           entries["ya-read"] +
+          entries["ya-metadata"] +
           entries["ya-normalize"] +
           entries["ya-route"] +
           entries["ya-augment"] -
           0.5,
       );
+      expect(entries["ya-metadata"]).toBeGreaterThanOrEqual(25);
+      expect(entries["ya-route"]).toBeLessThan(entries["ya-metadata"]);
+      children.mockRestore();
       expect(entries["ya-augment"]).toBeGreaterThanOrEqual(45);
       expect(serverTiming).toMatch(
         /ya-augment;dur=[0-9.]+;desc="messages=5 changed=[0-5] cache-hit=[0-9]+ cache-join=[0-9]+ cache-miss=[0-9]+"/,

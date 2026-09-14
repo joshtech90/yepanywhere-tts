@@ -1,6 +1,9 @@
 import type { RefObject } from "react";
 import { useCallback, useLayoutEffect, useRef, useState } from "react";
-import type { ToolbarNarrowingPriority } from "./useSessionToolbarPresence";
+import type {
+  SessionToolbarVisibilityKey,
+  ToolbarNarrowingPriority,
+} from "./useSessionToolbarPresence";
 
 export type ComposerOverflowTier = "none" | "early" | "medium" | "late";
 
@@ -9,6 +12,29 @@ const COMPOSER_OVERFLOW_TIERS: ComposerOverflowTier[] = [
   "early",
   "medium",
   "late",
+];
+
+// Configured priority wins; this fixed order breaks ties, first hidden first.
+export const COMPOSER_OVERFLOW_ORDER: readonly SessionToolbarVisibilityKey[] = [
+  "shortcutsHelp",
+  "syntheticDone",
+  "nudge",
+  "renderMode",
+  "conversationView",
+  "sessionStatus",
+  "attachments",
+  "modeSelector",
+  "slashMenu",
+  "thinkingToggle",
+  "contextUsage",
+  "btw",
+  "steerNow",
+  "projectQueueNewSessionShortcut",
+  "projectQueue",
+  "browserDebug",
+  "microphone",
+  "waveform",
+  "composerRecall",
 ];
 
 export interface MessageInputToolbarLayoutRefs {
@@ -117,8 +143,12 @@ export function useMeasuredComposerOverflow({
   refs?: MessageInputToolbarLayoutRefs;
 }): {
   tier: ComposerOverflowTier;
+  hiddenControls: ReadonlySet<string>;
   setToolbarRef: (node: HTMLDivElement | null) => void;
 } {
+  const [hiddenControls, setHiddenControls] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [tier, setTier] = useState<ComposerOverflowTier>(() =>
     typeof ResizeObserver === "undefined" ? "late" : "none",
   );
@@ -139,7 +169,8 @@ export function useMeasuredComposerOverflow({
     if (lastLayoutKeyRef.current !== layoutKey) {
       lastLayoutKeyRef.current = layoutKey;
       const resetTier = typeof ResizeObserver === "undefined" ? "late" : "none";
-      if (tier !== resetTier) {
+      if (tier !== resetTier || hiddenControls.size) {
+        setHiddenControls(new Set());
         setTier(resetTier);
         return;
       }
@@ -171,6 +202,11 @@ export function useMeasuredComposerOverflow({
       }
       const leftWidth = getControlListWidth(left);
       const actionsWidth = getControlListWidth(actions);
+      const status =
+        refs?.status?.current ??
+        toolbar.querySelector(":scope > .composer-status-ages");
+      const statusWidth =
+        status instanceof HTMLElement ? getVisibleControlWidth(status) : 0;
       const overflow = toolbar.querySelector(".composer-bottom-overflow");
       const overflowWidth =
         overflow instanceof HTMLElement ? getVisibleControlWidth(overflow) : 0;
@@ -183,12 +219,14 @@ export function useMeasuredComposerOverflow({
           : 0;
       const visibleSectionCount = [
         leftWidth,
+        statusWidth,
         fileViewerMinWidth,
         overflowWidth,
         actionsWidth,
       ].filter((width) => width > 0).length;
       const totalWidth =
         leftWidth +
+        statusWidth +
         fileViewerMinWidth +
         overflowWidth +
         actionsWidth +
@@ -197,14 +235,41 @@ export function useMeasuredComposerOverflow({
       if (totalWidth <= availableWidth + 0.5) {
         return;
       }
-      setTier((currentTier) => {
-        const tierIndex = COMPOSER_OVERFLOW_TIERS.indexOf(currentTier);
-        return (
-          COMPOSER_OVERFLOW_TIERS[
-            Math.min(tierIndex + 1, COMPOSER_OVERFLOW_TIERS.length - 1)
-          ] ?? "late"
+      const candidates = Array.from(
+        toolbar.querySelectorAll<HTMLElement>(
+          ".composer-bottom-overflow-inline",
+        ),
+      )
+        .map((element) => {
+          const marker = element.matches("[data-session-toolbar-control]")
+            ? element
+            : element.querySelector<HTMLElement>(
+                "[data-session-toolbar-control]",
+              );
+          const key = marker?.dataset.sessionToolbarControl;
+          const priority = COMPOSER_OVERFLOW_TIERS.findIndex((level) =>
+            element.classList.contains(`composer-bottom-overflow-${level}`),
+          );
+          return { element, key, priority };
+        })
+        .filter(
+          (item): item is typeof item & { key: SessionToolbarVisibilityKey } =>
+            !!item.key &&
+            item.priority > 0 &&
+            !hiddenControls.has(item.key) &&
+            getVisibleControlWidth(item.element) > 0,
+        )
+        .sort(
+          (a, b) =>
+            a.priority - b.priority ||
+            COMPOSER_OVERFLOW_ORDER.indexOf(a.key) -
+              COMPOSER_OVERFLOW_ORDER.indexOf(b.key),
         );
-      });
+      const next = candidates[0];
+      if (next) {
+        setHiddenControls(new Set([...hiddenControls, next.key]));
+        setTier(COMPOSER_OVERFLOW_TIERS[next.priority] ?? "late");
+      }
     };
     const scheduleMeasure = () => {
       if (frameId !== null) {
@@ -217,6 +282,7 @@ export function useMeasuredComposerOverflow({
       if (toolbarEntry) {
         const nextWidth = toolbarEntry.contentRect.width;
         if (nextWidth > lastToolbarWidthRef.current + 1) {
+          setHiddenControls(new Set());
           setTier("none");
         }
         lastToolbarWidthRef.current = nextWidth;
@@ -224,7 +290,7 @@ export function useMeasuredComposerOverflow({
       scheduleMeasure();
     };
 
-    scheduleMeasure();
+    measure();
     let resizeObserver: ResizeObserver | null = null;
     if (typeof ResizeObserver !== "undefined") {
       resizeObserver = new ResizeObserver(handleResize);
@@ -242,7 +308,15 @@ export function useMeasuredComposerOverflow({
         cancelAnimationFrame(frameId);
       }
     };
-  }, [tier, layoutKey, hasControls, refs?.actions, refs?.left]);
+  }, [
+    tier,
+    hiddenControls,
+    layoutKey,
+    hasControls,
+    refs?.actions,
+    refs?.left,
+    refs?.status,
+  ]);
 
-  return { tier, setToolbarRef };
+  return { tier, hiddenControls, setToolbarRef };
 }

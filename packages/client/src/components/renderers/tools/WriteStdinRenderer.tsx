@@ -1,20 +1,19 @@
+import { decodeCodeModeOutput } from "@yep-anywhere/shared";
+import { CodeModeOutput } from "./CodeModeOutput";
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { type ReactNode, useState } from "react";
 import {
   extractDetachedCellId,
   formatCommandDuration,
   getCommandResultMeta,
   parseShellToolOutput,
-} from "../../../lib/shellToolOutput";
+} from "@yep-anywhere/shared/transcript/shellToolOutput";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { ActivityDetailModal } from "../../ActivityDetailModal";
 import { AnsiText } from "../../ui/AnsiText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
-import type {
-  ToolRenderer,
-  ToolSummaryContext,
-  WriteStdinInput,
-  WriteStdinResult,
-} from "./types";
+import type { ToolSummaryContext } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -161,6 +160,12 @@ function formatChars(chars: string | undefined): string {
 }
 
 function getResultText(result: unknown): string {
+  const decoded = decodeCodeModeOutput(result);
+  if (decoded)
+    return decoded.parts
+      .filter((part) => part.kind !== "script-status")
+      .map((part) => part.text)
+      .join("\n");
   if (typeof result === "string") {
     return result;
   }
@@ -303,10 +308,7 @@ function ReadViaPtyFile({
   );
 }
 
-export const writeStdinRenderer: ToolRenderer<
-  WriteStdinInput,
-  WriteStdinResult
-> = {
+export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
   tool: "WriteStdin",
   displayName: "Shell",
   pendingDisplayName: "Waiting",
@@ -338,6 +340,12 @@ export const writeStdinRenderer: ToolRenderer<
   },
 
   renderToolResult(result, isError, _context, input) {
+    if (
+      decodeCodeModeOutput(result) &&
+      !(getLinkedToolName(input) === "Read" && getLinkedFilePath(input))
+    ) {
+      return <CodeModeOutput result={result} isError={isError} shellMetadata />;
+    }
     const text = getResultText(result);
     const parsed = parseShellToolOutput(text);
     const linkedToolName = getLinkedToolName(input);
@@ -427,6 +435,18 @@ export const writeStdinRenderer: ToolRenderer<
       return "Error";
     }
 
+    const decoded = decodeCodeModeOutput(result);
+    const failedCommands = decoded?.parts.flatMap((part) =>
+      part.kind === "command-output" && part.exitCode
+        ? [`rc=${part.exitCode}`]
+        : [],
+    );
+    if (failedCommands?.length) return failedCommands.join(" · ");
+    if (decoded?.parts.every((part) => part.kind === "script-status")) {
+      return decoded.parts[0]?.text.startsWith("Script running")
+        ? "still running"
+        : "No output";
+    }
     const text = getResultText(result);
     const parsed = parseShellToolOutput(text);
     const meta = getCommandResultMeta(result);
@@ -477,4 +497,4 @@ export const writeStdinRenderer: ToolRenderer<
       <ReadViaPtyFile filePath={linkedFilePath} output={parsed.output} inline />
     );
   },
-};
+});

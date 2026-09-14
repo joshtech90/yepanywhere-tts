@@ -161,7 +161,7 @@ describe("CodeModeExecRenderer", () => {
           }),
         ),
       );
-      expect(getByText("permission denied").tagName).toBe("PRE");
+      expect(getByText("permission denied").closest("pre")).not.toBeNull();
       expect(getByText("Exit code: 1 · 0.4s")).toBeDefined();
     },
   );
@@ -184,7 +184,8 @@ describe("CodeModeExecRenderer", () => {
         }),
       ),
     );
-    expect(container.textContent).toBe(
+    expect(container.querySelector('[data-tool-display="raw"]')).not.toBeNull();
+    expect(container.querySelector("pre")?.textContent).toBe(
       typeof result === "string" ? result : JSON.stringify(result, null, 2),
     );
   });

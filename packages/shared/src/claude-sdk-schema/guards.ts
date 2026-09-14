@@ -109,6 +109,8 @@ type ContinuationEntryLike = {
   type?: unknown;
   isMeta?: unknown;
   content?: unknown;
+  /** Raw local command output, present only on Claude Code's command echoes. */
+  local_command_source?: unknown;
   message?: { role?: unknown; model?: unknown; content?: unknown } | unknown;
 };
 
@@ -165,6 +167,28 @@ export function isSyntheticNoResponseTurn(
   if (entry.type !== "assistant" && message?.role !== "assistant") return false;
   if (message?.model !== SYNTHETIC_MODEL) return false;
   return entryTextContent(entry) === NO_RESPONSE_PLACEHOLDER_TEXT;
+}
+
+/**
+ * The assistant-shaped echo Claude Code emits to carry a slash command's own
+ * output back to its caller — "Compacted ", "Error: No messages to compact",
+ * "/status isn't available in this environment". No model produced it and no
+ * context was added, so it is command feedback rather than agent activity.
+ * Anything that measures whether the agent did something since the last check
+ * must skip it, or a command whose only answer is one of these echoes looks
+ * like a fresh turn every time it runs.
+ */
+export function isLocalCommandEchoTurn(
+  entry: ContinuationEntryLike | null | undefined,
+): boolean {
+  if (!entry || typeof entry !== "object") return false;
+  const message =
+    entry.message && typeof entry.message === "object"
+      ? (entry.message as { role?: unknown; model?: unknown })
+      : undefined;
+  if (entry.type !== "assistant" && message?.role !== "assistant") return false;
+  if (message?.model !== SYNTHETIC_MODEL) return false;
+  return typeof entry.local_command_source === "string";
 }
 
 /** Check if entry is a conversation entry (has message field) */

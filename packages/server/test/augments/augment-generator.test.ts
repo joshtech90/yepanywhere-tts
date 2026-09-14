@@ -45,6 +45,22 @@ describe("AugmentGenerator", () => {
       expect(augment.html).toContain("<span");
     });
 
+    it("normalizes language tags before highlighting", async () => {
+      const block: CompletedBlock = {
+        type: "code",
+        content: "```JavaScript\nconst x = 1;\n```",
+        lang: "JavaScript",
+        startOffset: 0,
+        endOffset: 31,
+      };
+
+      const augment = await generator.processBlock(block, 0);
+
+      expect(augment.type).toBe("code");
+      expect(augment.html).toContain('class="language-javascript"');
+      expect(augment.html).toContain("<span");
+    });
+
     it("renders streaming code without syntax highlighting", async () => {
       const augment = await generator.renderStreamingCodeBlock(
         {
@@ -60,6 +76,53 @@ describe("AugmentGenerator", () => {
       expect(augment.html).toContain('<pre class="shiki">');
       expect(augment.html).toContain('class="language-javascript"');
       expect(augment.html).toContain("const x = 1;");
+      expect(augment.html).not.toContain("<span");
+    });
+
+    it("normalizes language for streaming code blocks", async () => {
+      const augment = await generator.renderStreamingCodeBlock(
+        {
+          content: "```JavaScript\nconst x = 1;",
+          lang: "  JavaScript  ",
+          startOffset: 0,
+        },
+        0,
+      );
+
+      expect(augment.html).toContain('class="language-javascript"');
+      expect(augment.html).toContain("const x = 1;");
+    });
+
+    it("marks a highlighted block with its language class", async () => {
+      const augment = await generator.processBlock(
+        {
+          type: "code",
+          content: "```mermaid\ngraph TD\nA --> B\n```",
+          lang: "mermaid",
+          startOffset: 0,
+          endOffset: 28,
+        },
+        0,
+      );
+
+      expect(augment.type).toBe("code");
+      expect(augment.html).toContain('class="language-mermaid"');
+      expect(augment.html).toContain("A --> B");
+    });
+
+    it("marks a streaming block with its normalized language class", async () => {
+      const augment = await generator.renderStreamingCodeBlock(
+        {
+          content: "```mermaid\ngraph TD\nA --> B",
+          lang: "MERMAID",
+          startOffset: 0,
+        },
+        0,
+      );
+
+      expect(augment.type).toBe("code");
+      expect(augment.html).toContain('class="language-mermaid"');
+      expect(augment.html).toContain("A --&gt; B");
       expect(augment.html).not.toContain("<span");
     });
 

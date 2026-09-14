@@ -2,7 +2,8 @@
 
 Analysis of similar tools in the AI coding agent supervisor space.
 
-**[Feature Matrix](feature-matrix.md)** — Full checklist comparison across all tools.
+**[Feature Matrix](feature-matrix.md)** — Historical checklist plus links to
+dated source reviews; use the newer reviews for current comparisons.
 
 ## First-Party Tools
 
@@ -18,6 +19,7 @@ Official apps from AI providers:
 | Tool | Type | Agents | Key Differentiator |
 |------|------|--------|-------------------|
 | [T3 Code](t3code.md) | Web + desktop + native mobile | Codex, Claude, Cursor, Grok, OpenCode, Antigravity | Integrated workbench, offline mobile, multi-environment remote access, full source-control workflow |
+| [bb](bb.md) | Web + desktop + early-access mobile shell | Claude, Codex, Pi, five named ACP agents + custom ACP | Extensible plugin workbench, durable workflows, scheduling, managed environments and multi-host execution |
 | [AionUi](aionui.md) | Desktop + WebUI + Telegram | 17 (ACP) | Messaging platform bots, cron scheduling, Zed ACP bridges |
 | [emdash](emdash.md) | Desktop app | 20+ | Multi-agent orchestration, git worktrees |
 | [Conductor](conductor.md) | macOS app | Claude, Codex | Git worktree isolation |
@@ -67,6 +69,12 @@ The combination that most clearly distinguishes yepanywhere:
 - **Alternate/local provider variants** including Codex OSS/local, Gemini, and
   Claude gateway/Ollama configurations
 
+These describe a combination, not individually unique capabilities. The
+[bb source review](bb.md) confirms conversation forks, daemon-owned execution
+and remote access there too. Against bb, emphasize provider-native history,
+the tiered inbox, application-layer E2E relay encryption, and native Windows
+support; bb currently requires WSL2 on Windows.
+
 ## Common Gaps
 
 Features competitors have that we should consider:
@@ -76,6 +84,7 @@ Features competitors have that we should consider:
 - **Native iOS and offline mobile outbox** (T3 Code, Happy)
 - **Multiple provider-account instances** with explicit resume rules (T3 Code)
 - **Scheduling/automations** (Codex App, AionUi)
+- **Durable agent workflows and a general workbench plugin SDK** (bb)
 - **Messaging platform bots** as mobile proxy (AionUi — Telegram/Lark/DingTalk)
 
 ## Related (Non-Competitive)
@@ -84,4 +93,4 @@ See **[Ecosystem](../ecosystem/)** for adjacent projects — agent-to-agent coor
 
 ## Last Updated
 
-2026-09-04
+2026-09-13 (bb added; other competitor snapshots retain their own dates)

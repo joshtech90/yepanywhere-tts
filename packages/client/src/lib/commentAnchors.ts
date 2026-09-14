@@ -13,6 +13,7 @@ export interface CommentAnchor {
   lineSignatures: string[];
   sourceStart?: number;
   sourceEnd?: number;
+  sourceLocation?: MarkdownSelectionSnippet["sourceLocation"];
 }
 
 export interface DraftTextChangeMetadata {
@@ -58,6 +59,7 @@ export function createCommentAnchor(
     lineSignatures: getQuoteLineSignatures(snippet.markdown),
     sourceStart: snippet.sourceStart,
     sourceEnd: snippet.sourceEnd,
+    sourceLocation: snippet.sourceLocation,
   };
 }
 

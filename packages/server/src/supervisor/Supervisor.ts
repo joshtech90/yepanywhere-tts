@@ -14,8 +14,11 @@ import {
   type SyntheticSessionBoundaryCommand,
   type UrlProjectId,
   type WorkstreamId,
+  readGoalDetails,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
+import type { ClaudeGoalSnapshot } from "../sdk/providers/claude-goal.js";
+import { registerForkedSessionFile } from "../sessions/fork-discovery.js";
 import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
 import { DEFAULT_IDLE_TIMEOUT_MS } from "../defaults.js";
 import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
@@ -550,6 +553,8 @@ export interface SupervisorOptions {
   ) => void;
   /** Callback to fetch session summary for initial metadata reconciliation */
   onSessionSummary?: OnSessionSummaryCallback;
+  /** Notification policy only; called before a supported manual turn stop. */
+  onSessionStopRequested?: (sessionId: string) => void;
   /** Best-effort transcript recovery for sessions without a launch snapshot. */
   recoverSessionLaunchSettings?: RecoverSessionLaunchSettingsCallback;
   /** Callback to read the current heartbeat-turn settings for a session */
@@ -597,6 +602,7 @@ export interface SupervisorOptions {
 export type { SessionDoneResult };
 
 export class Supervisor {
+  computerControl?: import("../computer-control/service.js").ComputerControlService;
   private processes: Map<string, Process> = new Map();
   private sessionToProcess: Map<string, string> = new Map(); // sessionId -> processId
   private terminalProviderStatuses = createLruMap<
@@ -626,7 +632,18 @@ export class Supervisor {
     contextWindow: number,
     provider: ProviderName,
   ) => void;
+  private issueSessionRemapObserver?: (oldId: string, newId: string) => void;
+  observeSessionIdRemaps(
+    observer: (oldId: string, newId: string) => void,
+  ): () => void {
+    this.issueSessionRemapObserver = observer;
+    return () => {
+      if (this.issueSessionRemapObserver === observer)
+        this.issueSessionRemapObserver = undefined;
+    };
+  }
   private onSessionSummary?: OnSessionSummaryCallback;
+  private onSessionStopRequested?: (sessionId: string) => void;
   private recoverSessionLaunchSettings?: RecoverSessionLaunchSettingsCallback;
   private staleCheckTimer: ReturnType<typeof setInterval>;
   private getHeartbeatTurnSettings?: (
@@ -662,6 +679,19 @@ export class Supervisor {
    * retriggering on the idle boundary produced by compaction itself.
    */
   private compactThresholdCheckedAssistantVersion = new Map<string, number>();
+  /**
+   * Assistant-output version observed when a compaction last settled, keyed by
+   * process id. Compaction rewrites the context, but the durable usage summary
+   * still reports the pre-compaction token count until the next real turn is
+   * recorded, so the true size is unknown until then.
+   */
+  private compactionSettledAtAssistantVersion = new Map<string, number>();
+  /**
+   * Processes with a threshold compaction already started. Each attempt holds a
+   * message subscription until the provider answers or the wait expires, so a
+   * second attempt must never start while the first is outstanding.
+   */
+  private thresholdCompactionInFlight = new Set<string>();
   private interruptTimeoutMs: number;
   private sessionMetadataService?: SessionMetadataService;
   private notificationService?: NotificationService;
@@ -699,6 +729,7 @@ export class Supervisor {
     this.getSessionChildEnv = options.getSessionChildEnv;
     this.onContextWindowObserved = options.onContextWindowObserved;
     this.onSessionSummary = options.onSessionSummary;
+    this.onSessionStopRequested = options.onSessionStopRequested;
     this.recoverSessionLaunchSettings = options.recoverSessionLaunchSettings;
     this.getHeartbeatTurnSettings = options.getHeartbeatTurnSettings;
     this.getHeartbeatTurnCandidates = options.getHeartbeatTurnCandidates;
@@ -1215,6 +1246,7 @@ export class Supervisor {
       launchCompactPercentOverride:
         modelSettings?.claudeAutoCompactPercentOverride,
       claudeSteerBackgroundBash: this.getClaudeSteerBackgroundBashSettings?.(),
+      restoredGoal: this.readRestoredGoal(resumeSessionId),
       clientName: modelSettings?.clientName,
       globalInstructions: modelSettings?.globalInstructions,
       getSessionChildEnv: this.getSessionChildEnv
@@ -1247,6 +1279,7 @@ export class Supervisor {
       supportedModels,
       supportedCommands,
       setModel,
+      runProviderCommand,
       publishAgentctlSessionId,
     } = result;
 
@@ -1277,6 +1310,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
       setEffortFn: setEffort,
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
@@ -1288,6 +1322,8 @@ export class Supervisor {
           commands,
         ) ?? Promise.resolve(),
       setModelFn: setModel,
+      runProviderCommandFn: runProviderCommand,
+      providerInitializesOnFirstMessage: true,
       publishAgentctlSessionIdFn: publishAgentctlSessionId,
       permissionMode: effectiveMode,
       provider: "claude", // Real SDK is always Claude
@@ -1332,6 +1368,23 @@ export class Supervisor {
     this.registerProcess(process, !resumeSessionId);
 
     return process;
+  }
+
+  /**
+   * A paused goal exists only in YA: its Stop hook was removed from the
+   * provider, so a resumed session would otherwise forget the objective it is
+   * meant to reinstall. An active goal is not restored here — Claude reinstalls
+   * that hook itself on resume and the transcript reports it.
+   */
+  private readRestoredGoal(
+    resumeSessionId: string | undefined,
+  ): ClaudeGoalSnapshot | null {
+    if (!resumeSessionId) return null;
+    const goal = readGoalDetails(
+      this.sessionMetadataService?.getGoalCommand(resumeSessionId),
+    );
+    if (goal?.goalStatus !== "paused" || !goal.goalObjective) return null;
+    return { objective: goal.goalObjective, status: "paused" };
   }
 
   private async settleProviderStart<T>(
@@ -1644,9 +1697,11 @@ export class Supervisor {
    * been crossed. This deliberately spends occasional unnecessary provider
    * compute so a later user request never has to initiate and await compaction.
    *
-   * One assistant-output version is considered once. The compact operation's
-   * own idle boundary therefore cannot recursively trigger another compact,
-   * even if the durable usage summary has not caught up yet.
+   * One assistant-output version is considered once, and nothing is
+   * reconsidered until a real turn follows the last settled compaction. The
+   * compact operation's own idle boundary therefore cannot recursively trigger
+   * another compact, even though the durable usage summary keeps reporting the
+   * pre-compaction token count until that next turn is recorded.
    */
   private async maybeCompactAfterIdle(process: Process): Promise<void> {
     if (this.isAutomationPausedUntilUserTurn(process.sessionId)) return;
@@ -1654,6 +1709,7 @@ export class Supervisor {
     if (typeof percent !== "number" || percent <= 0 || percent >= 100) return;
     if (process.state.type !== "idle") return;
     if (process.isRetainingProviderWork()) return;
+    if (this.thresholdCompactionInFlight.has(process.id)) return;
     const provider = this.resolveProvider({ providerName: process.provider });
     if (
       !shouldYaOrchestrateCompactThreshold(
@@ -1669,6 +1725,18 @@ export class Supervisor {
       assistantActivityVersion <= 0 ||
       this.compactThresholdCheckedAssistantVersion.get(process.id) ===
         assistantActivityVersion
+    ) {
+      return;
+    }
+    // Context size after a compaction is unknown until the session produces a
+    // turn under the rewritten context. Reading the pre-compaction total back
+    // and acting on it is what turned one threshold compaction into thousands.
+    const compactedAtVersion = this.compactionSettledAtAssistantVersion.get(
+      process.id,
+    );
+    if (
+      compactedAtVersion !== undefined &&
+      assistantActivityVersion <= compactedAtVersion
     ) {
       return;
     }
@@ -1705,6 +1773,7 @@ export class Supervisor {
     }
     if (!crossesCompactThreshold(percent, contextWindow, inputTokens)) return;
 
+    this.thresholdCompactionInFlight.add(process.id);
     try {
       const attempt = await this.tryResumeCompaction(process, {
         expectedInputIntentVersion: inputIntentVersion,
@@ -1733,6 +1802,8 @@ export class Supervisor {
         },
         "Idle threshold compaction errored",
       );
+    } finally {
+      this.thresholdCompactionInFlight.delete(process.id);
     }
   }
 
@@ -1903,6 +1974,7 @@ export class Supervisor {
       launchCompactPercentOverride:
         modelSettings?.claudeAutoCompactPercentOverride,
       claudeSteerBackgroundBash: this.getClaudeSteerBackgroundBashSettings?.(),
+      restoredGoal: this.readRestoredGoal(resumeSessionId),
       clientName: modelSettings?.clientName,
       executor: modelSettings?.executor,
       remoteEnv: modelSettings?.remoteEnv,
@@ -1938,6 +2010,7 @@ export class Supervisor {
       supportedModels,
       supportedCommands,
       setModel,
+      runProviderCommand,
       publishAgentctlSessionId,
     } = result;
 
@@ -1967,6 +2040,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
       setEffortFn: setEffort,
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
@@ -1978,6 +2052,8 @@ export class Supervisor {
           commands,
         ) ?? Promise.resolve(),
       setModelFn: setModel,
+      runProviderCommandFn: runProviderCommand,
+      providerInitializesOnFirstMessage: true,
       publishAgentctlSessionIdFn: publishAgentctlSessionId,
       permissionMode: effectiveMode,
       provider: "claude", // Real SDK is always Claude
@@ -2113,7 +2189,15 @@ export class Supervisor {
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     // Start session WITHOUT an initial message - agent will wait
+    const computerControl = this.computerControl?.select(
+      tempSessionId,
+      modelSettings?.computerControl,
+      activeProvider.name,
+      modelSettings?.executor,
+      modelSettings?.sandboxLevel,
+    );
     const start = activeProvider.startSession({
+      computerControl,
       cwd: projectPath,
       // No initialMessage - queue will block until one is pushed
       resumeSessionId,
@@ -2129,6 +2213,7 @@ export class Supervisor {
         ? {}
         : { launchCompactPercentOverride }),
       claudeSteerBackgroundBash: this.getClaudeSteerBackgroundBashSettings?.(),
+      restoredGoal: this.readRestoredGoal(resumeSessionId),
       clientName: modelSettings?.clientName,
       executor: modelSettings?.executor,
       remoteEnv: modelSettings?.remoteEnv,
@@ -2153,7 +2238,10 @@ export class Supervisor {
       },
     });
     const result = await this.settleProviderStart(
-      start,
+      start.catch(async (error: unknown) => {
+        await computerControl?.close();
+        throw error;
+      }),
       retryProviderStartupFailure || requireProviderSessionId,
     );
 
@@ -2208,6 +2296,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
       setEffortFn: setEffort,
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
@@ -2221,6 +2310,8 @@ export class Supervisor {
         ) ?? Promise.resolve(),
       setModelFn: setModel,
       runProviderCommandFn: runProviderCommand,
+      providerInitializesOnFirstMessage:
+        activeProvider.initializesOnFirstMessage === true,
       appendConversationContextFn: result.appendConversationContext,
       initializedSessionId: result.initializedSessionId,
       publishAgentctlSessionIdFn: publishAgentctlSessionId,
@@ -2366,7 +2457,15 @@ export class Supervisor {
     });
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
+    const computerControl = this.computerControl?.select(
+      tempSessionId,
+      modelSettings?.computerControl,
+      activeProvider.name,
+      modelSettings?.executor,
+      modelSettings?.sandboxLevel,
+    );
     const start = activeProvider.startSession({
+      computerControl,
       cwd: projectPath,
       resumeSessionId,
       resumeSessionAt: resumeSessionId
@@ -2384,6 +2483,7 @@ export class Supervisor {
         ? {}
         : { launchCompactPercentOverride }),
       claudeSteerBackgroundBash: this.getClaudeSteerBackgroundBashSettings?.(),
+      restoredGoal: this.readRestoredGoal(resumeSessionId),
       executor: modelSettings?.executor,
       remoteEnv: modelSettings?.remoteEnv,
       globalInstructions: modelSettings?.globalInstructions,
@@ -2407,7 +2507,10 @@ export class Supervisor {
       },
     });
     const result = await this.settleProviderStart(
-      start,
+      start.catch(async (error: unknown) => {
+        await computerControl?.close();
+        throw error;
+      }),
       retryProviderStartupFailure || requireProviderSessionId,
     );
 
@@ -2437,7 +2540,7 @@ export class Supervisor {
       projectId,
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
-      initialState: "idle",
+      initialState: result.initialTurnState ?? "idle",
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       toolResultMediaStore: this.toolResultMediaStore,
@@ -2462,6 +2565,7 @@ export class Supervisor {
         return typeof p === "function" ? p() : p;
       },
       setMaxThinkingTokensFn: setMaxThinkingTokens,
+      publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
       setEffortFn: setEffort,
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
@@ -2475,6 +2579,8 @@ export class Supervisor {
         ) ?? Promise.resolve(),
       setModelFn: setModel,
       runProviderCommandFn: runProviderCommand,
+      providerInitializesOnFirstMessage:
+        activeProvider.initializesOnFirstMessage === true,
       appendConversationContextFn: result.appendConversationContext,
       initializedSessionId: result.initializedSessionId,
       publishAgentctlSessionIdFn: publishAgentctlSessionId,
@@ -2962,8 +3068,9 @@ export class Supervisor {
       title: options.title,
       sessionSandbox,
     });
+    registerForkedSessionFile(provider.name, fork.sessionId, fork.filePath);
     return {
-      ...fork,
+      sessionId: fork.sessionId,
       sandboxStateKey: sessionSandbox?.stateKey,
       sessionSandbox,
     };
@@ -3828,6 +3935,10 @@ export class Supervisor {
     return { success: false, error: result.error ?? "Failed to queue message" };
   }
 
+  async prepareForServerReload(process: Process): Promise<void> {
+    await this.activationCoordinator.prepareForServerReload(process);
+  }
+
   getAllProcesses(): Process[] {
     return Array.from(this.processes.values());
   }
@@ -4540,6 +4651,10 @@ export class Supervisor {
     const process = this.processes.get(processId);
     if (!process) return { success: false, supported: false };
 
+    if (process.supportsInterrupt) {
+      this.onSessionStopRequested?.(process.sessionId);
+    }
+
     await this.pauseRecapsUntilUserTurn(processId);
 
     // Check if the process supports interrupt
@@ -4861,6 +4976,15 @@ export class Supervisor {
         this.unregisterProcess(process);
       } else if (event.type === "message") {
         this.dirtyFileEditorService?.observeMessage(process, event.message);
+        if (
+          isCompactBoundaryMessage(event.message) ||
+          isCompactSuccessStatus(event.message)
+        ) {
+          this.compactionSettledAtAssistantVersion.set(
+            process.id,
+            process.assistantActivityVersion,
+          );
+        }
         if (event.message.type === "user") {
           this.clearTerminalProviderStatus(
             process.sessionId,
@@ -4919,6 +5043,15 @@ export class Supervisor {
           this.recapPausedSessionIds.add(event.newSessionId);
         }
         this.sessionToProcess.set(event.newSessionId, process.id);
+        try {
+          this.issueSessionRemapObserver?.(
+            event.oldSessionId,
+            event.newSessionId,
+          );
+        } catch (error) {
+          log.warn({ error }, "Issue evidence session remap failed");
+        }
+
         this.everOwnedSessions.add(event.newSessionId);
         void this.sessionMetadataService
           ?.remapSessionId(event.oldSessionId, event.newSessionId)
@@ -5211,6 +5344,8 @@ export class Supervisor {
     this.assertProviderOwnershipSettled(process, "unregister");
     this.observedProcessIds.delete(process.id);
     this.compactThresholdCheckedAssistantVersion.delete(process.id);
+    this.compactionSettledAtAssistantVersion.delete(process.id);
+    this.thresholdCompactionInFlight.delete(process.id);
     this.cacheMissBillingMonitor.forgetProcess(process.id);
     this.activationCoordinator.discardProcess(process);
     this.pendingForkedRecapRequests.delete(process.id);
@@ -5432,6 +5567,7 @@ export class Supervisor {
       contextUsage: summary.contextUsage,
       model: summary.model,
       lastAgentText: summary.lastAgentText,
+      asyncQuestions: summary.asyncQuestions,
       timestamp: new Date().toISOString(),
     };
     this.eventBus.emit(event);

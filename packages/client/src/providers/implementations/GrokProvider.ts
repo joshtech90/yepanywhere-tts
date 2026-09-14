@@ -11,7 +11,12 @@ export class GrokProvider implements Provider {
   readonly capabilities: ProviderCapabilities = {
     supportsDag: false,
     supportsCloning: false,
+    // Assistant, thinking, plan and tool rows align deterministically across
+    // the live ACP stream and the durable `updates.jsonl` replay (event id and
+    // tool-call id), so no content/timestamp backstop is needed. User turns
+    // cannot: Grok mints their durable identity and accepts none from YA.
     needsApproxMessageDedup: false,
+    dedupSelfSendUserEchoes: true,
   };
 
   readonly metadata: ProviderMetadata = {

@@ -45,9 +45,10 @@ index:
   duration, directories walked, rollout counts, plain/zstd precedence
   filtering, discovery-index behavior, first-line reads by representation,
   skipped metadata files, and subagent sessions filtered from ordinary lists.
-- `.jsonl.zst` support is a runtime capability. YA still declares Node
-  `>=20.12`; Node 20 does not expose native `node:zlib` zstd APIs, so compressed
-  rollouts are skipped cleanly and counted as unsupported on those runtimes.
+- `.jsonl.zst` support is a runtime capability. The active runtime must expose native
+  `node:zlib` zstd APIs; unavailable implementations skip compressed rollouts
+  cleanly and count them as unsupported. The main server runtime floor is
+  documented in [server runtimes](server-runtime.md).
 - `SessionDiscoveryIndex` persists normalized provider head metadata under
   `{dataDir}/indexes/session-discovery/<provider>/<source-root-hash>/...`.
   Codex uses date-bucket shards such as `2026/06/25.json` and stores a small

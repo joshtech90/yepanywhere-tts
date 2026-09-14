@@ -22,6 +22,9 @@ Use an eligible Claude or ChatGPT plan through the account already signed in to
 the official provider tool. Yep Anywhere can also show current subscription
 limits when the provider exposes them.
 
+New server releases require Node.js `^22.16 || ^23.11 || >=24.10`. Existing
+servers remain usable with the hosted client. See [runtime upgrade guidance](topics/server-runtime.md).
+
 ## Features
 
 - **All your sessions, in one place** — Find and resume every Claude Code and
@@ -104,6 +107,18 @@ pnpm start
 ```
 
 Open http://localhost:3400 in your browser. The app auto-detects installed CLI agents.
+
+**Keep the data directory on local disk.** YA keeps a SQLite database in
+`~/.yep-anywhere`, and SQLite takes a file lock per transaction. On a local disk
+that lock is free. On a network home directory (NFS, SMB, or any mounted share)
+each one is a network round trip, slow enough to stall the server. YA checks at
+startup and leaves the database closed on a share rather than stall, which costs
+you issue associations and learned speech vocabulary until you move it. Point
+`YEP_DATA_DIR` at local disk:
+
+```bash
+YEP_DATA_DIR=/scratch/$USER/.yep-anywhere yepanywhere
+```
 
 The complete phone and tablet experience is the responsive browser client. A
 native app should add more than an app-store wrapper, so Android is in
@@ -195,4 +210,4 @@ Read more: [How we use the SDK](https://yepanywhere.com/tos-compliance.html) | [
 
 ## License
 
-MIT
+[MIT](LICENSE)

@@ -89,8 +89,8 @@ it. When the two disagree, this topic wins and the tactical doc gets fixed.
 - Before claiming a slice, scan the ledger in doc 058, the owning docs above,
   and recent `git log` for an in-flight series touching the same files. If an
   overlap exists, defer the slice or coordinate in the owning doc first.
-- Follow the AGENTS.md commit message guidance. Every slice commit carries
-  `Topic: typescript-module-boundary-refactor`, plus the owning series' topic
+- Follow the [commit conventions](../docs/development/commits.md). Every slice
+  commit carries `Topic: typescript-module-boundary-refactor`, plus the owning series' topic
   trailer when the slice lands through another ledger.
 
 ## Tripwire Matrix
@@ -104,7 +104,7 @@ behavior these documents protect.
 | Queues, timers, liveness, reconnect, catch-up, heartbeat, replay, fan-out | `topics/architecture-mandates.md` and its linked docs | `pnpm test:e2e:sdk` |
 | Client transcript/rendering, scroll, row identity | `packages/client/RENDERING_PERFORMANCE.md`, `topics/scrollback-view-stability.md` | `pnpm --filter client test:e2e --grep-invert "physical Android"`; manual browser pass for scroll slices |
 | Transport, relay, SRP, NaCl, readiness | `topics/source-transport.md` | full transport test files |
-| Codex provider source/protocol | Codex version bump audit rules in `AGENTS.md` | Codex provider tests; stream/persisted render parity where relevant |
+| Codex provider source/protocol | [Codex version bump audit rules](../docs/development/providers.md#codex-version-bump-audit) | Codex provider tests; stream/persisted render parity where relevant |
 | `app.ts` mounting, middleware, auth | `topics/hard-development-rules.md` | route tests asserting preserved public paths |
 | Moved user-visible copy | — | `pnpm i18n:scan` |
 | Client console call sites | `topics/console-chatter.md` | `pnpm console:scan` must not exceed the committed budget |

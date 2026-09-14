@@ -8,6 +8,12 @@ This file is intentionally short — each link below is the load-bearing
 detailed doc. Update this file when the high-level picture changes; update the
 linked docs when the details change.
 
+For work spanning machines, start with
+[Working Across Machines](topics/multi-machine-architecture.md): a discussion
+map of ownership, deployment, grants, transport and machine lifecycle, linking
+existing YA spikes, Machine Control and external architectures. It records
+alternatives rather than selecting a new runtime contract.
+
 ## Shape
 
 ```
@@ -61,7 +67,7 @@ linked docs when the details change.
 
 ## Provider runtime ownership and reload
 
-On a capable Linux non-watch development launch, `scripts/dev.js` owns a shared
+On a capable Linux or macOS Node source-checkout non-watch development launch, `scripts/dev.js` owns a shared
 provider host outside the replaceable Hono process. One worker per session owns
 the real provider adapter, SDK/TUI transport, message queue, callbacks, and
 sequenced output; Hono's `Process` talks to it through an `AgentSession` proxy.
@@ -72,10 +78,11 @@ Shared-host use is capability-driven and automatic, not a user toggle. The
 former Codex-native setting remains accepted and stored for compatibility, but
 is inert and hidden; Codex uses the shared host like every other provider.
 
-**Safe Reload replaces Hono only.** Existing shared-host workers intentionally
-keep the provider code and launch facts they started with. A newly launched
-worker uses current provider code, a targeted worker relaunch updates that one
-session, and a provider-host reboot guarantees every provider worker adopted
+**Safe Reload replaces Hono and Vite, preserving the provider host.** Existing
+shared-host workers intentionally keep the provider code and launch facts they
+started with. A newly launched worker uses current provider code, a targeted
+worker relaunch updates that one session, and a provider-host reboot guarantees
+every provider worker adopted
 provider-layer changes (a full wrapper reboot does this when the wrapper owns
 the host). The UI's immediate reload is
 available only when each active blocker has a detachable hosted owner and no
@@ -331,7 +338,7 @@ example.
 hosts or transient cloud VMs.
 
 **Trigger.** Defer until YA actually runs somewhere multi-user, or a
-threat-model review flags the gap. Note in `CLAUDE.md`/`DEVELOPMENT.md` if
+threat-model review flags the gap. Note in `AGENTS.md`/`DEVELOPMENT.md` if
 multi-user becomes a target.
 
 ### Unified pub/sub abstraction
@@ -443,11 +450,14 @@ tripwires. See the completed
 This is useful web architecture but is not yet the versioned envelope or
 platform-neutral projection proposed above.
 
-**Next trigger.** Continue only after a human identifies a real second consumer
-and decides its bounded input, minimum projection contract, packaging/runtime,
-and compatibility policy. Do not add a public/versioned IR, projection
-transport, server/client negotiation, alternate runtime, or native live-session
-behavior implicitly from the successful web extraction.
+**Next consumer and decisions.** The 2026-09-12 direction selects a minimal
+multi-server web demo of a [Simple Client API](topics/simple-client-api.md),
+followed closely by Kotlin/Compose and Swift/SwiftUI consumers. It uses finished
+server projections, message-based limits, and a new small client state machine.
+The [three-client plan](docs/tactical/130-simple-client-api-and-three-client-demo.md)
+must settle concrete schemas, history semantics, packaging/runtime, and
+capability/fallback review before protocol implementation. The earlier extraction
+alone does not authorize a public/versioned IR or a client compiler runtime.
 
 ### Disk-pressure degraded mode
 

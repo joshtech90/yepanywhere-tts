@@ -5,6 +5,7 @@
  * State is persisted to a JSON file for durability across server restarts.
  */
 
+import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
@@ -23,7 +24,9 @@ import {
   type TranscriptDisplayObject,
   type UrlProjectId,
   type WorkstreamId,
+  findGoalCommand,
   normalizeRecapAfterSeconds,
+  readGoalDetails,
   sanitizeSessionTitle,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
@@ -68,7 +71,9 @@ export interface SessionMetadata {
   /** Durable YA-owned recap rows merged into the transcript view only. */
   recapMessages?: DurableRecapMessage[];
   localCommandMessages?: DurableLocalCommandMessage[];
-  /** Last provider-observed goal, independent of historical command receipts. */
+  /** Last observed goal, independent of historical command receipts. */
+  goalCommand?: SlashCommand;
+  /** Pre-Claude name for the same record; still read, no longer written. */
   codexGoalCommand?: SlashCommand;
   /** Durable YA-only `/done` rows merged into the transcript view only. */
   syntheticDoneMessages?: DurableSyntheticDoneMessage[];
@@ -161,7 +166,7 @@ export class SessionMetadataService {
   private sessionIdAliases = new Map<string, string>();
   private unsavedGoalObservations = new Set<string>();
   private metadataSaver = createCoalescingSaver(() => this.doSave());
-  private save = this.metadataSaver.save;
+  private save = this.metadataSaver.flush;
 
   constructor(options: SessionMetadataServiceOptions = {}) {
     this.dataDir =
@@ -180,12 +185,13 @@ export class SessionMetadataService {
    */
   async initialize(): Promise<void> {
     console.log(`[SessionMetadataService] Initializing from: ${this.filePath}`);
+    await fs.mkdir(this.dataDir, { recursive: true });
+    const content = await fs.readFile(this.filePath, "utf-8").catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    });
+    if (content === undefined) return;
     try {
-      // Ensure data directory exists
-      await fs.mkdir(this.dataDir, { recursive: true });
-
-      // Try to load existing state
-      const content = await fs.readFile(this.filePath, "utf-8");
       const parsed = JSON.parse(content) as SessionMetadataState;
       console.log(
         `[SessionMetadataService] Loaded ${Object.keys(parsed.sessions).length} sessions from disk`,
@@ -245,14 +251,10 @@ export class SessionMetadataService {
         await this.save();
       }
     } catch (error) {
-      // File doesn't exist or is invalid - start fresh
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(
-          "[SessionMetadataService] Failed to load state, starting fresh:",
-          error,
-        );
-      }
-      this.state = { sessions: {}, version: CURRENT_VERSION };
+      throw new Error(
+        `Cannot initialize session metadata from ${this.filePath}; refusing to replace existing state`,
+        { cause: error },
+      );
     }
   }
 
@@ -324,15 +326,21 @@ export class SessionMetadataService {
     await this.metadataSaver.flush();
   }
 
+  /** Last observed goal command for a session, whichever provider reported it. */
+  getGoalCommand(sessionId: string): SlashCommand | undefined {
+    const metadata = this.getMetadata(this.resolveSessionId(sessionId));
+    return metadata?.goalCommand ?? metadata?.codexGoalCommand;
+  }
+
   async observeCommandInventory(
     sessionId: string,
     commands: SlashCommand[],
   ): Promise<void> {
-    const goal = commands.find((command) => command.name === "goal");
+    const goal = findGoalCommand(commands);
     // An inventory without goal state is unknown, not evidence of a clear.
-    if (goal?.providerDetails?.codex?.goalObjective === undefined) return;
+    if (readGoalDetails(goal)?.goalObjective === undefined) return;
     sessionId = this.resolveSessionId(sessionId);
-    const previous = this.getMetadata(sessionId)?.codexGoalCommand;
+    const previous = this.getGoalCommand(sessionId);
     if (
       JSON.stringify(previous) === JSON.stringify(goal) &&
       !this.unsavedGoalObservations.has(sessionId)
@@ -341,10 +349,10 @@ export class SessionMetadataService {
     this.unsavedGoalObservations.add(sessionId);
     this.updateSessionMetadata(sessionId, (metadata) => ({
       ...metadata,
-      codexGoalCommand: goal,
+      goalCommand: goal,
     }));
     await this.metadataSaver.flush();
-    if (this.getMetadata(sessionId)?.codexGoalCommand === goal) {
+    if (this.getMetadata(sessionId)?.goalCommand === goal) {
       this.unsavedGoalObservations.delete(sessionId);
     }
   }
@@ -994,6 +1002,9 @@ export class SessionMetadataService {
     if (updated.localCommandMessages?.length) {
       cleaned.localCommandMessages = updated.localCommandMessages;
     }
+    if (updated.goalCommand) {
+      cleaned.goalCommand = updated.goalCommand;
+    }
     if (updated.codexGoalCommand) {
       cleaned.codexGoalCommand = updated.codexGoalCommand;
     }
@@ -1104,12 +1115,20 @@ export class SessionMetadataService {
   }
 
   private async doSave(): Promise<void> {
+    const temporaryPath = `${this.filePath}.${randomUUID()}.tmp`;
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      await fs.writeFile(temporaryPath, content, {
+        encoding: "utf-8",
+        flag: "wx",
+        mode: 0o600,
+      });
+      await fs.rename(temporaryPath, this.filePath);
     } catch (error) {
       console.error("[SessionMetadataService] Failed to save state:", error);
       throw error;
+    } finally {
+      await fs.rm(temporaryPath, { force: true });
     }
   }
 

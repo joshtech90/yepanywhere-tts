@@ -15,6 +15,7 @@ import type {
 } from "../../src/services/ServerSettingsService.js";
 import {
   DEFAULT_SERVER_SETTINGS,
+  CommittedSettingsSaveError,
   MAX_CLAUDE_GATEWAY_START_COMMAND_LENGTH,
 } from "../../src/services/ServerSettingsService.js";
 
@@ -69,6 +70,51 @@ describe("Settings Routes", () => {
     vi.unstubAllGlobals();
   });
 
+  it("applies committed file access and completes a storage transition before reporting durability failure", async () => {
+    const onFileAccessChanged = vi.fn();
+    const completed = vi.fn();
+    const failure = new Error("disk I/O failure");
+    vi.mocked(mockServerSettingsService.updateSettings).mockImplementation(
+      async (updates) => {
+        settings = { ...settings, ...updates };
+        throw new CommittedSettingsSaveError(settings, failure);
+      },
+    );
+    const routes = createSettingsRoutes({
+      serverSettingsService: mockServerSettingsService,
+      onFileAccessChanged,
+      projectStoragePolicy: {
+        transitionMode: async (
+          _mode: unknown,
+          commit: () => Promise<ServerSettings>,
+        ) => {
+          const result = await commit();
+          completed();
+          return result;
+        },
+      } as unknown as ProjectStoragePolicy,
+    });
+    routes.onError((error, c) => c.json({ error: error.message }, 500));
+    const fileAccess = {
+      projects: true,
+      uploads: true,
+      temp: true,
+      home: false,
+      custom: ["C:\\tmp"],
+    };
+    const response = await routes.request("/", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ fileAccess, projectDirectoryStorage: "project" }),
+    });
+    expect(response.status).toBe(500);
+    expect(await response.json()).toEqual({
+      error: "Settings were saved, but crash durability could not be confirmed",
+    });
+    expect(onFileAccessChanged).toHaveBeenCalledWith(fileAccess);
+    expect(completed).toHaveBeenCalledTimes(1);
+  });
+
   describe("PUT /remote-executors", () => {
     it("rejects invalid host aliases", async () => {
       const routes = createSettingsRoutes({
@@ -112,6 +158,72 @@ describe("Settings Routes", () => {
   });
 
   describe("PUT /", () => {
+    it("saves or disables the readiness executable and notifies after saving", async () => {
+      const changed = vi.fn(() =>
+        expect(settings.projectQueueReadinessCheck).toEqual(command),
+      );
+      let command: ServerSettings["projectQueueReadinessCheck"] = {
+        executable: "/usr/bin/agentctl",
+        args: ["others", "--text"],
+      };
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+        onProjectQueueReadinessChanged: changed,
+      });
+      for (const next of [command, null]) {
+        command = next;
+        const response = await routes.request("/", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ projectQueueReadinessCheck: command }),
+        });
+        expect(response.status).toBe(200);
+        expect(
+          (await response.json()).settings.projectQueueReadinessCheck,
+        ).toEqual(command);
+      }
+      expect(changed).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      "agentctl others",
+      {},
+      { executable: "", args: [] },
+      { executable: "agentctl", args: "others" },
+      { executable: "agentctl", args: [42] },
+      { executable: "agentctl", args: ["bad\0arg"] },
+      { executable: "agentctl", args: Array(129).fill("x") },
+    ])("rejects malformed readiness config: %j", async (command) => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ projectQueueReadinessCheck: command }),
+      });
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
+    it("bounds readiness arguments by UTF-8 bytes", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          projectQueueReadinessCheck: {
+            executable: "agentctl",
+            args: ["é".repeat(8193)],
+          },
+        }),
+      });
+      expect(response.status).toBe(400);
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("persists the default-off session wake gate", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,

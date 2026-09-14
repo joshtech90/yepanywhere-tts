@@ -127,9 +127,19 @@ export function getSettingsCategories(
       description: t("settingsSourceControlDescription"),
     },
     {
+      id: "issues",
+      label: t("issuesTitle"),
+      description: t("issuesSettingsDescription"),
+    },
+    {
       id: "storage",
       label: t("settingsStorageTitle"),
       description: t("settingsStorageDescription"),
+    },
+    {
+      id: "computer-control",
+      label: t("computerTitle"),
+      description: t("computerDescription"),
     },
     {
       id: "agent-context",

@@ -1,3 +1,21 @@
+.overflowHidden.overflowHidden {
+  display: none;
+}
+
+.overflowVisible {
+  display: inline-flex;
+}
+
+.overflow {
+  position: relative;
+  display: inline-flex;
+  width: var(--composer-control-size);
+  height: var(--composer-control-size);
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+}
+
 .fileViewerControllerActive :global(.message-input-left) {
   flex: 0 0 auto;
 }
@@ -176,11 +194,15 @@
 }
 
 .browserDebugPerformance {
+  display: inline-block;
+  width: 22ch;
+  overflow: hidden;
   color: color-mix(in srgb, currentcolor 84%, var(--text-primary));
   font-family: var(--font-mono);
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   line-height: 1;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

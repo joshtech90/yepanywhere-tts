@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-clear-update"
+description = "Enables the clear_update command without any pre-configured scope."
+commands.allow = ["clear_update"]
+
+[[permission]]
+identifier = "deny-clear-update"
+description = "Denies the clear_update command without any pre-configured scope."
+commands.deny = ["clear_update"]

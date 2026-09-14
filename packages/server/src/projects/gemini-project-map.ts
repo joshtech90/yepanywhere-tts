@@ -9,7 +9,13 @@ export const GEMINI_DIR = GEMINI_TMP_DIR.replace(
   new RegExp(`\\${sep}tmp$`),
   "",
 );
-export const PROJECT_MAP_FILE = join(GEMINI_TMP_DIR, "project-map.json");
+const LEGACY_PROJECT_MAP_FILE = join(GEMINI_TMP_DIR, "project-map.json");
+// YA-owned lookup state must not generate atomic-write events inside the
+// provider's recursively watched store (Node 20 can race a removed temp file).
+export const PROJECT_MAP_FILE = join(
+  process.env.YEP_DATA_DIR ?? join(homedir(), ".yep-anywhere"),
+  "gemini-project-map.json",
+);
 
 /**
  * Compute SHA-256 hash of a path (how Gemini creates projectHash).
@@ -29,7 +35,12 @@ export class GeminiProjectMap {
   private loadPromise: Promise<void> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
 
-  constructor(private mapFile: string = PROJECT_MAP_FILE) {}
+  constructor(
+    private mapFile: string = PROJECT_MAP_FILE,
+    private legacyMapFile: string | undefined = mapFile === PROJECT_MAP_FILE
+      ? LEGACY_PROJECT_MAP_FILE
+      : undefined,
+  ) {}
 
   /**
    * Load the map from disk.
@@ -50,14 +61,25 @@ export class GeminiProjectMap {
   }
 
   private async loadFromDisk(): Promise<void> {
+    let migrate = false;
     try {
-      const content = await readFile(this.mapFile, "utf-8");
+      const content = await readFile(this.mapFile, "utf-8").catch(
+        async (error: NodeJS.ErrnoException) => {
+          if (error.code !== "ENOENT" || !this.legacyMapFile) throw error;
+          migrate = true;
+          return readFile(this.legacyMapFile, "utf-8");
+        },
+      );
       const data = JSON.parse(content) as ProjectMapData;
       this.map = new Map(Object.entries(data));
     } catch {
       // File doesn't exist or is invalid, start with empty map
       this.map = new Map();
+      migrate = false;
     }
+    // Leave the legacy file untouched for older installs. Once the new map
+    // exists it is authoritative, including removals made after migration.
+    if (migrate) await this.persist(this.map);
     this.loaded = true;
   }
 

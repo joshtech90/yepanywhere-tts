@@ -8,6 +8,7 @@ import {
   simulatedNestedTool,
   simulatedPublish,
   publishSchema,
+  assistant,
 } from "../test-fixtures/workflow";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
@@ -42,6 +43,88 @@ for (const viewport of [
   { name: "desktop", width: 1000, height: 600 },
   { name: "phone", width: 375, height: 812 },
 ] as const) {
+  test(`publish progress stays visible with source collapsed at ${viewport.name} width`, async ({
+    page,
+    baseURL,
+  }, testInfo) => {
+    await page.setViewportSize(viewport);
+    await page.addInitScript(() => {
+      localStorage.setItem("yep-anywhere-workflow-tags-enabled", "true");
+      localStorage.setItem("yep-anywhere-conversation-view-enabled", "false");
+    });
+    const schemaPath = join(
+      e2ePaths.tempDir,
+      "mockproject",
+      "publish-lede.json",
+    );
+    writeFileSync(schemaPath, JSON.stringify(publishSchema));
+    const declaration = `@@visualization-schema/1 ${schemaPath}#ya-publish/1`;
+    const progress =
+      "Checking completed commits, active work, and the publication checkout.";
+    const reportPath = join(
+      e2ePaths.tempDir,
+      "mockproject",
+      "publish-report.md",
+    );
+    writeFileSync(reportPath, "# Publication checks\n\nReady to publish.");
+    const sessionId = `workflow-lede-${viewport.name}`;
+    const projectId = saveTranscript(sessionId, [
+      assistant(
+        "publish-lede",
+        `${declaration}\n[workflow][start] id=publish-test schema=ya-publish/1\n[publish][prepare] ${progress} Read [the report](<${reportPath}>).`,
+      ),
+    ]);
+    await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+    const output = page.locator("[data-workflow-output]");
+    const toggle = output.getByRole("button", {
+      name: "Expand original output",
+    });
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(output.getByText(progress, { exact: false })).toBeVisible();
+    await expect(
+      output.getByText("Workflow schema · Publish YA", { exact: true }),
+    ).toBeVisible();
+    await expect(output).not.toContainText("@@visualization-schema/1");
+    await expect(
+      output.getByRole("link", { name: "the report", exact: true }),
+    ).toBeVisible();
+    await expect(output).not.toContainText("[the report](");
+    await toggle.click();
+    await expect(output.locator("[data-workflow-original]")).toContainText(
+      declaration,
+    );
+    await output
+      .getByRole("button", { name: "Collapse original output" })
+      .click();
+    await expect(output.getByText(progress, { exact: false })).toBeVisible();
+    await output.getByRole("link", { name: "the report", exact: true }).click();
+    await expect(page.locator(".file-viewer-modal")).toBeVisible();
+    await expect(page.locator(".file-viewer-modal")).toContainText(
+      "Publication checks",
+    );
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".file-viewer-modal")).not.toBeVisible();
+    const captureDir =
+      process.env.YEP_E2E_UI_CAPTURE_DIR ?? testInfo.outputPath("captures");
+    mkdirSync(captureDir, { recursive: true });
+    await page.mouse.move(0, 0);
+    await expect(
+      page.getByText("Server changed", { exact: false }),
+    ).toHaveCount(0);
+    await page.screenshot({
+      path: join(captureDir, `publish-lede-${viewport.name}.png`),
+    });
+    const schemaLink = output.getByRole("link", {
+      name: "Workflow schema · Publish YA",
+      exact: true,
+    });
+    await schemaLink.click();
+    await expect(page.locator(".file-viewer-modal")).toBeVisible();
+    await expect(page.locator(".file-viewer-modal")).toContainText(
+      "ya-publish/1",
+    );
+  });
+
   test(`file-reference, inline and nested schemas at ${viewport.name} width`, async ({
     page,
     baseURL,
@@ -270,8 +353,11 @@ for (const viewport of [
     expect(
       await page.locator("[data-workflow-boundary]").allTextContents(),
     ).toEqual(before);
-    await tool.getByText("Original output", { exact: true }).click();
-    await expect(tool.locator("details[open]")).toContainText(
+    await tool.getByRole("button", { name: "Expand original output" }).click();
+    await expect(
+      tool.getByRole("button", { name: "Collapse original output" }),
+    ).toHaveText("−");
+    await expect(tool.locator("[data-workflow-original]")).toContainText(
       "[build][extra] Not whitelisted.",
     );
     for (const mode of [
@@ -321,8 +407,10 @@ for (const viewport of [
         });
       } else if (mode === "matching-lines") {
         await expect(preview).not.toContainText("Before activation.");
-        await script.getByText("Original output", { exact: true }).click();
-        await expect(script.locator("details[open]")).toContainText(
+        await script
+          .getByRole("button", { name: "Expand original output" })
+          .click();
+        await expect(script.locator("[data-workflow-original]")).toContainText(
           "Before activation.",
         );
       }

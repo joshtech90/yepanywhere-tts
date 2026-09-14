@@ -1,9 +1,11 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
-import type { ToolRenderer, WebFetchInput, WebFetchResult } from "./types";
+import type { WebFetchInput, WebFetchResult } from "./types";
 
 const MAX_CONTENT_LINES = 30;
 
@@ -68,7 +70,10 @@ function WebFetchToolResult({
     enabled && validationErrors && !isToolIgnored("WebFetch");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className="webfetch-error">
         {showValidationWarning && validationErrors && (
@@ -138,21 +143,19 @@ function WebFetchToolResult({
   );
 }
 
-export const webFetchRenderer: ToolRenderer<WebFetchInput, WebFetchResult> = {
+export const webFetchRenderer = defineTool(toolDisplayContracts.WebFetch, {
   tool: "WebFetch",
 
   renderToolUse(input, _context) {
-    return <WebFetchToolUse input={input as WebFetchInput} />;
+    return <WebFetchToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context) {
-    return (
-      <WebFetchToolResult result={result as WebFetchResult} isError={isError} />
-    );
+    return <WebFetchToolResult result={result} isError={isError} />;
   },
 
   getUseSummary(input) {
-    const url = (input as WebFetchInput).url;
+    const url = input.url;
     try {
       return new URL(url).hostname;
     } catch {
@@ -162,7 +165,7 @@ export const webFetchRenderer: ToolRenderer<WebFetchInput, WebFetchResult> = {
 
   getResultSummary(result, isError) {
     if (isError) return "Error";
-    const r = result as WebFetchResult;
+    const r = result;
     return r?.code ? `${r.code} ${r.codeText}` : "Fetched";
   },
-};
+});

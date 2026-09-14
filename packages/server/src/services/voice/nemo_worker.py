@@ -10,16 +10,17 @@ Request line:  {"audio_b64":"<base64>","mime_type":"audio/webm;codecs=opus"}
 Response line: {"text":"..."} or {"error":"..."}
 Startup line:  {"status":"ready"} (written once after model loads)
 """
+
 import base64
 import json
 import os
 import subprocess
 import sys
 import tempfile
+import traceback
 from typing import Any
 
-
-DEFAULT_NEMO_MODEL = "nvidia/parakeet-tdt-0.6b-v3"
+DEFAULT_NEMO_MODEL = "nvidia/parakeet-unified-en-0.6b"
 
 
 def suffix_for_mime(mime: str) -> str:
@@ -43,21 +44,6 @@ def unlink_if_present(path: str) -> None:
         pass
 
 
-def patch_numpy_sctypes() -> None:
-    import numpy as np  # type: ignore[import]
-
-    if hasattr(np, "sctypes"):
-        return
-    # NeMo 2.0.0 still references np.sctypes during audio preprocessing.
-    np.sctypes = {
-        "int": [np.int8, np.int16, np.int32, np.int64],
-        "uint": [np.uint8, np.uint16, np.uint32, np.uint64],
-        "float": [np.float16, np.float32, np.float64],
-        "complex": [np.complex64, np.complex128],
-        "others": [np.bool_, np.object_, np.bytes_, np.str_],
-    }
-
-
 def resolve_device(device_arg: str, torch: Any) -> str:
     normalized = device_arg.strip().lower()
     if normalized in ("", "auto"):
@@ -74,6 +60,8 @@ def resolve_device(device_arg: str, torch: Any) -> str:
 def transcript_text(output: Any) -> str:
     if isinstance(output, str):
         return output.strip()
+    if hasattr(output, "text"):
+        return str(output.text).strip()
     if isinstance(output, dict):
         return str(output.get("text") or "").strip()
     if isinstance(output, (list, tuple)):
@@ -87,41 +75,36 @@ def transcript_text(output: Any) -> str:
     return str(output or "").strip()
 
 
-def wav_path_for_nemo(input_path: str, suffix: str) -> str:
-    if suffix == ".wav":
-        return input_path
-
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as fh:
-        output_path = fh.name
+def audio_for_nemo(input_path: str) -> Any:
+    import numpy as np
 
     try:
-        subprocess.run(
+        result = subprocess.run(
             [
                 "ffmpeg",
                 "-nostdin",
                 "-loglevel",
                 "error",
-                "-y",
                 "-i",
                 input_path,
                 "-ac",
                 "1",
                 "-ar",
                 "16000",
-                output_path,
+                "-f",
+                "f32le",
+                "pipe:1",
             ],
             check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            capture_output=True,
         )
     except subprocess.CalledProcessError as exc:
-        unlink_if_present(output_path)
         stderr = exc.stderr.decode("utf-8", errors="replace").strip()
         if len(stderr) > 500:
             stderr = stderr[:500].rstrip() + "..."
         raise RuntimeError(f"ffmpeg audio conversion failed: {stderr}") from exc
 
-    return output_path
+    return np.frombuffer(result.stdout, dtype="<f4").copy()
 
 
 def summarize_model_load_error(model_name: str, exc: Exception) -> str:
@@ -138,10 +121,8 @@ def summarize_model_load_error(model_name: str, exc: Exception) -> str:
     if "att_chunk_context_size" in message:
         return (
             f"Model load failed for {model_name}: this model needs a newer "
-            "NeMo encoder than the YA pixi stt NeMo 2.0.0 add-on provides. "
-            "Use nvidia/parakeet-tdt-0.6b-v3, nvidia/parakeet-rnnt-1.1b, "
-            "or nvidia/parakeet-ctc-1.1b here; keep unified Parakeet models "
-            "on the separate modern-NeMo track."
+            "NeMo encoder. Run `pixi run -e stt-nemo nemo-bootstrap` to "
+            "install YA's isolated NeMo 3 runtime."
         )
     if (
         "gated repo" in lower
@@ -152,7 +133,7 @@ def summarize_model_load_error(model_name: str, exc: Exception) -> str:
     ):
         return (
             f"Model load failed for {model_name}: Hugging Face authentication "
-            "or model access is required. Run `pixi run --frozen -e stt hf auth "
+            "or model access is required. Run `pixi run --frozen -e stt-nemo hf auth "
             "login`, accept the model terms on Hugging Face if prompted, then "
             "restart YA."
         )
@@ -170,7 +151,6 @@ def main() -> None:
     sys.stderr.flush()
 
     try:
-        patch_numpy_sctypes()
         import torch  # type: ignore[import]
         from nemo.collections.asr.models import ASRModel  # type: ignore[import]
 
@@ -179,7 +159,7 @@ def main() -> None:
         if device.startswith("cuda"):
             model = model.to(device)
         model.eval()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Worker startup errors use the JSON protocol.
         sys.stdout.write(
             json.dumps({"error": summarize_model_load_error(model_name, exc)}) + "\n"
         )
@@ -210,19 +190,17 @@ def main() -> None:
                 fh.write(audio_bytes)
                 tmpfile = fh.name
 
-            transcription_file = tmpfile
             try:
-                transcription_file = wav_path_for_nemo(tmpfile, suffix)
+                # Array input avoids NeMo's dependency on training-only validation_ds.
                 output = model.transcribe(
-                    [transcription_file], batch_size=1, verbose=False
+                    [audio_for_nemo(tmpfile)], batch_size=1, verbose=False
                 )
                 sys.stdout.write(json.dumps({"text": transcript_text(output)}) + "\n")
             finally:
                 unlink_if_present(tmpfile)
-                if transcription_file != tmpfile:
-                    unlink_if_present(transcription_file)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Keep the worker alive after a failed request.
+            traceback.print_exc(file=sys.stderr)
             sys.stdout.write(json.dumps({"error": str(exc)}) + "\n")
 
         sys.stdout.flush()

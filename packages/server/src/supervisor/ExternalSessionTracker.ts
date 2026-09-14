@@ -120,6 +120,7 @@ export class ExternalSessionTracker {
       projectId: UrlProjectId;
       contextUsage?: ContextUsage;
       model?: string;
+      asyncQuestions?: SessionSummary["asyncQuestions"];
     }
   > = new Map();
 
@@ -149,6 +150,7 @@ export class ExternalSessionTracker {
           ...cached,
           title: summary.title,
           updatedAt: summary.updatedAt,
+          asyncQuestions: summary.asyncQuestions ?? cached?.asyncQuestions,
           projectId,
           ...(isComplete
             ? {
@@ -183,6 +185,7 @@ export class ExternalSessionTracker {
               projectId,
               title: summary.title,
               updatedAt: summary.updatedAt,
+              asyncQuestions: summary.asyncQuestions,
               ...(isComplete
                 ? {
                     messageCount: observed.summary.messageCount,
@@ -239,7 +242,10 @@ export class ExternalSessionTracker {
             updatedAtChanged ||
             messageCountChanged ||
             contextUsageChanged ||
-            modelChanged
+            modelChanged ||
+            (summary.asyncQuestions !== undefined &&
+              JSON.stringify(summary.asyncQuestions) !==
+                JSON.stringify(cached?.asyncQuestions))
           ) {
             const event: SessionUpdatedEvent = {
               type: "session-updated",
@@ -247,6 +253,7 @@ export class ExternalSessionTracker {
               projectId,
               title: summary.title,
               updatedAt: summary.updatedAt,
+              asyncQuestions: summary.asyncQuestions,
               ...(isComplete
                 ? {
                     messageCount: observed.summary.messageCount,

@@ -1,3 +1,8 @@
+import {
+  type DevelopmentPerformanceSnapshot,
+  getDevelopmentPerformanceSnapshot,
+} from "./developmentPerformance";
+
 export interface BrowserDebugPerformanceObservation {
   category?: string;
   count?: number;
@@ -38,6 +43,7 @@ export interface BrowserDebugPerformanceSnapshot {
   startedAt: string;
   sampledAt: string;
   elapsedMs: number;
+  developmentTiming?: DevelopmentPerformanceSnapshot;
   visibility: {
     state: DocumentVisibilityState;
     visibleMs: number;
@@ -346,6 +352,7 @@ class BrowserDebugPerformanceRecorder {
   snapshot(): BrowserDebugPerformanceSnapshot {
     const sampledAtWallMs = Date.now();
     const sampledAtMonotonicMs = nowMs();
+    const developmentTiming = getDevelopmentPerformanceSnapshot();
     const recentMainThread = mergeMainThreadStats(
       this.previousWindow,
       this.currentWindow,
@@ -353,6 +360,7 @@ class BrowserDebugPerformanceRecorder {
     return {
       version: 1,
       sessionId: this.sessionId,
+      ...(developmentTiming ? { developmentTiming } : {}),
       startedAt: new Date(this.startedAtWallMs).toISOString(),
       sampledAt: new Date(sampledAtWallMs).toISOString(),
       elapsedMs:

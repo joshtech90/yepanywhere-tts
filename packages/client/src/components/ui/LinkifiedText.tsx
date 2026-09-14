@@ -1,5 +1,5 @@
 import { Fragment, memo, type ReactNode, useMemo } from "react";
-import { containsLinkifiableUrl, splitUrlSegments } from "../../lib/linkify";
+import { containsLinkifiableUrl, splitUrlSegments } from "@yep-anywhere/shared";
 import styles from "./LinkifiedText.module.css";
 
 interface Props {

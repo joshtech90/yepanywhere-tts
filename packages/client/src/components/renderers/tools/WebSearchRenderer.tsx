@@ -1,9 +1,11 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
-import type { ToolRenderer, WebSearchInput, WebSearchResult } from "./types";
+import type { WebSearchInput, WebSearchResult } from "./types";
 
 /**
  * WebSearch tool use - shows search query
@@ -48,7 +50,10 @@ function WebSearchToolResult({
     enabled && validationErrors && !isToolIgnored("WebSearch");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className="websearch-error">
         {showValidationWarning && validationErrors && (
@@ -67,7 +72,9 @@ function WebSearchToolResult({
 
   // Flatten results from potentially nested structure
   const allResults =
-    result.results?.flatMap((r) => r.content || []).filter(Boolean) || [];
+    result.results
+      ?.flatMap((r) => (typeof r === "string" ? [] : r.content))
+      .filter(Boolean) || [];
 
   return (
     <div className="websearch-result">
@@ -103,31 +110,27 @@ function WebSearchToolResult({
   );
 }
 
-export const webSearchRenderer: ToolRenderer<WebSearchInput, WebSearchResult> =
-  {
-    tool: "WebSearch",
+export const webSearchRenderer = defineTool(toolDisplayContracts.WebSearch, {
+  tool: "WebSearch",
 
-    renderToolUse(input, _context) {
-      return <WebSearchToolUse input={input as WebSearchInput} />;
-    },
+  renderToolUse(input, _context) {
+    return <WebSearchToolUse input={input} />;
+  },
 
-    renderToolResult(result, isError, _context) {
-      return (
-        <WebSearchToolResult
-          result={result as WebSearchResult}
-          isError={isError}
-        />
-      );
-    },
+  renderToolResult(result, isError, _context) {
+    return <WebSearchToolResult result={result} isError={isError} />;
+  },
 
-    getUseSummary(input) {
-      return (input as WebSearchInput).query;
-    },
+  getUseSummary(input) {
+    return input.query;
+  },
 
-    getResultSummary(result, isError) {
-      if (isError) return "Error";
-      const r = result as WebSearchResult;
-      const count = r?.results?.flatMap((res) => res.content || []).length || 0;
-      return `${count} results`;
-    },
-  };
+  getResultSummary(result, isError) {
+    if (isError) return "Error";
+    const r = result;
+    const count =
+      r?.results?.flatMap((res) => (typeof res === "string" ? [] : res.content))
+        .length || 0;
+    return `${count} results`;
+  },
+});

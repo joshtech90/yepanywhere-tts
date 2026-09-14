@@ -80,6 +80,12 @@ export function getCancellableUnconfirmedSteerTempId(
 
 const UNCONFIRMED_SCAN_LIMIT = 200;
 
+/**
+ * Missed live-echo fallback. The Sending chip is not the unconfirmed echo in
+ * `messages`; owned sessions must still fetch durable history while it exists.
+ */
+export const PENDING_SEND_RECONCILE_MS = 3000;
+
 /** Bounded tail scan used to gate mid-turn durable fetches. */
 export function hasUnconfirmedSelfSends(messages: readonly Message[]): boolean {
   const start = Math.max(0, messages.length - UNCONFIRMED_SCAN_LIMIT);
@@ -90,4 +96,16 @@ export function hasUnconfirmedSelfSends(messages: readonly Message[]): boolean {
     }
   }
   return false;
+}
+
+/**
+ * Owned sessions skip file-change fetches unless a self-send is still
+ * unconfirmed. That includes the Sending chip (no live echo yet), not only
+ * an echo already in `messages`.
+ */
+export function ownedSessionShouldFetchDurableTranscript(options: {
+  hasUnconfirmedSelfSends: boolean;
+  pendingSendCount: number;
+}): boolean {
+  return options.hasUnconfirmedSelfSends || options.pendingSendCount > 0;
 }

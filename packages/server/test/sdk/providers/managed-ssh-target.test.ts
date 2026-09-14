@@ -150,6 +150,7 @@ describe.skipIf(process.platform === "win32")("ManagedSshTarget", () => {
     expect(inspection.managedRootState).toBe("creatable");
     expect(inspection.runnerCacheState).toBe("absent");
     expect(gitSshCommand).toContain("BatchMode=yes");
+    expect(gitSshCommand).toContain("-o ForwardAgent=no");
     expect(gitSshCommand).not.toMatch(/(?:^|\s)--\s*$/);
     expect(await readdir(directory)).toEqual(["ssh-record.jsonl"]);
     const records = (await readFile(recordPath, "utf8"))
@@ -160,6 +161,9 @@ describe.skipIf(process.platform === "win32")("ManagedSshTarget", () => {
       expect(record.args).toContain("-T");
       expect(record.args).not.toContain("-t");
       expect(record.args).toContain("BatchMode=yes");
+      expect(record.args.slice(0, record.args.indexOf("--"))).toContain(
+        "ForwardAgent=no",
+      );
       expect(record.args.join(" ")).not.toContain("StrictHostKeyChecking");
       expect(record.sensitiveEnvironmentPresent).toBe(false);
     }

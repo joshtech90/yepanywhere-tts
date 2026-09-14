@@ -115,6 +115,8 @@ function shortSessionId(sessionId: string): string {
 }
 
 function formatProjectQueueBlocker(blocker: string, t: Translate): string {
+  if (blocker.startsWith("readiness:"))
+    return blocker.slice("readiness:".length);
   if (blocker === "worker-queue") return t("projectQueueBlockerWorkerQueue");
   if (blocker === "project-queue:first-failed") {
     return t("projectQueueBlockerFirstFailed");

@@ -530,6 +530,16 @@ export interface DurableSyntheticDoneMessage extends AppMessageExtensions {
  * Contains metadata without full message content.
  */
 export interface AppSessionSummary {
+  /** Bounded recent question previews; absence means this projection is unknown. */
+  asyncQuestions?: {
+    questions: {
+      messageId: string;
+      index: number;
+      title: string;
+      age: number;
+    }[];
+    omitted: boolean;
+  };
   id: string;
   projectId: UrlProjectId;
   /** Human-readable project basename for display; projectId remains canonical. */

@@ -5,6 +5,7 @@ import {
   getUserPromptDeliveryState,
   hasUnconfirmedSelfSends,
   isUnconfirmedSelfSend,
+  ownedSessionShouldFetchDurableTranscript,
 } from "../deliveryState";
 
 function sdkEcho(overrides: Partial<Message> = {}): Message {
@@ -73,6 +74,27 @@ describe("deliveryState", () => {
     );
     expect(
       hasUnconfirmedSelfSends([sdkEcho({ _source: "jsonl" }), sdkEcho()]),
+    ).toBe(true);
+  });
+
+  it("fetches durable history for Sending chips even without an echo", () => {
+    expect(
+      ownedSessionShouldFetchDurableTranscript({
+        hasUnconfirmedSelfSends: false,
+        pendingSendCount: 0,
+      }),
+    ).toBe(false);
+    expect(
+      ownedSessionShouldFetchDurableTranscript({
+        hasUnconfirmedSelfSends: false,
+        pendingSendCount: 1,
+      }),
+    ).toBe(true);
+    expect(
+      ownedSessionShouldFetchDurableTranscript({
+        hasUnconfirmedSelfSends: true,
+        pendingSendCount: 0,
+      }),
     ).toBe(true);
   });
 });

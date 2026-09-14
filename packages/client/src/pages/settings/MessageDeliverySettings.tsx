@@ -4,7 +4,10 @@ import {
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   DEFAULT_STEER_NOW_ENABLED,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
+  PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
+  type ProjectQueueReadinessCommand,
   clampProjectQueueQuietSeconds,
+  serverHasCapability,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
@@ -16,6 +19,7 @@ import { useI18n } from "../../i18n";
 import { serverSupportsBangCommands } from "../../lib/bangCommandAvailability";
 import { serverSupportsProjectQueue } from "../../lib/projectQueueVisibility";
 import { SettingsItem } from "./SettingsItem";
+import { ProjectQueueReadinessSettings } from "./ProjectQueueReadinessSettings";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndo } from "./SettingsUndoContext";
@@ -53,6 +57,7 @@ function parseProjectQueueQuietSeconds(value: string): number {
 interface MessageDeliveryBaseline {
   joinWindowSeconds: number;
   projectQueueQuietSeconds: number;
+  projectQueueReadinessCheck: ProjectQueueReadinessCommand | null;
   composeAnchorsEnabled: boolean;
   turnTimestamps: TurnTimestampsPlacement;
   bangCommandsEnabled: boolean;
@@ -65,9 +70,8 @@ interface MessageDeliveryBaseline {
 }
 
 /**
- * Message Delivery pane. Settings apply immediately on change (the house
- * style for toggle/slider panes — no Save button); the header-row Undo
- * (useSettingsUndo) reverts to the values from when the pane was opened.
+ * Toggles and sliders apply immediately; the readiness command has an
+ * explicit Save. Header Undo restores saved values from when the pane opened.
  */
 export function MessageDeliverySettings() {
   const { t } = useI18n();
@@ -75,6 +79,10 @@ export function MessageDeliverySettings() {
   const { settings, isLoading, error, updateSettings } = useServerSettings();
   const { version } = useVersion();
   const supportsProjectQueue = serverSupportsProjectQueue(version);
+  const supportsReadinessCheck = serverHasCapability(
+    version,
+    PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
+  );
   const supportsBangCommands = serverSupportsBangCommands(version);
   const {
     keepMobileKeyboardOpenAfterDelivery,
@@ -111,6 +119,7 @@ export function MessageDeliverySettings() {
     clampProjectQueueQuietSeconds(settings?.projectQueueQuietSeconds) ??
     DEFAULT_PROJECT_QUEUE_QUIET_SECONDS;
   const serverComposeAnchorsEnabled = settings?.composeAnchorsEnabled ?? false;
+  const serverReadinessCheck = settings?.projectQueueReadinessCheck ?? null;
   const serverTurnTimestamps = settings?.turnTimestamps ?? "off";
   const serverBangCommandsEnabled =
     settings?.clientDefaults?.bangCommandsEnabled ?? false;
@@ -132,6 +141,7 @@ export function MessageDeliverySettings() {
           clampProjectQueueQuietSeconds(settings.projectQueueQuietSeconds) ??
           DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
         composeAnchorsEnabled: settings.composeAnchorsEnabled ?? false,
+        projectQueueReadinessCheck: settings.projectQueueReadinessCheck ?? null,
         turnTimestamps: settings.turnTimestamps ?? "off",
         bangCommandsEnabled:
           settings.clientDefaults?.bangCommandsEnabled ?? false,
@@ -276,6 +286,9 @@ export function MessageDeliverySettings() {
       (supportsProjectQueue &&
         shownProjectQueueQuietSeconds !== baseline.projectQueueQuietSeconds) ||
       shownAnchors !== baseline.composeAnchorsEnabled ||
+      (supportsReadinessCheck &&
+        JSON.stringify(serverReadinessCheck) !==
+          JSON.stringify(baseline.projectQueueReadinessCheck)) ||
       shownTurnTimestamps !== baseline.turnTimestamps ||
       (supportsBangCommands &&
         shownBangCommands !== baseline.bangCommandsEnabled) ||
@@ -310,6 +323,9 @@ export function MessageDeliverySettings() {
         ? { projectQueueQuietSeconds: snapshot.projectQueueQuietSeconds }
         : {}),
       composeAnchorsEnabled: snapshot.composeAnchorsEnabled,
+      ...(supportsReadinessCheck
+        ? { projectQueueReadinessCheck: snapshot.projectQueueReadinessCheck }
+        : {}),
       turnTimestamps: snapshot.turnTimestamps,
       clientDefaults: {
         ...(supportsBangCommands
@@ -333,6 +349,7 @@ export function MessageDeliverySettings() {
     setQuestionAsidesEnabled,
     supportsBangCommands,
     supportsProjectQueue,
+    supportsReadinessCheck,
     updateSettings,
   ]);
 
@@ -387,43 +404,53 @@ export function MessageDeliverySettings() {
         </SettingsItem>
 
         {supportsProjectQueue && (
-          <SettingsItem
-            label={t("messageDeliveryProjectQueueQuietTitle")}
-            description={t("messageDeliveryProjectQueueQuietDescription")}
-            valueText={shownProjectQueueQuietText}
-            className="model-settings-item"
-          >
-            <span className="output-appearance-slider-row">
-              <CommittedRangeInput
-                id="message-delivery-project-queue-quiet"
-                min={0}
-                max={MAX_PROJECT_QUEUE_QUIET_SECONDS}
-                step={5}
-                value={shownProjectQueueQuietSeconds}
-                aria-label={t("messageDeliveryProjectQueueQuietTitle")}
-                onCommit={(value) => setDraftProjectQueueQuiet(String(value))}
-              />
-              <span className="output-appearance-number-wrap">
-                <input
-                  type="number"
-                  className="settings-input-small output-appearance-number"
+          <SettingsSection title={t("projectQueueTitle")}>
+            <SettingsItem
+              label={t("messageDeliveryProjectQueueQuietTitle")}
+              description={t("messageDeliveryProjectQueueQuietDescription")}
+              valueText={shownProjectQueueQuietText}
+              className="model-settings-item"
+            >
+              <span className="output-appearance-slider-row">
+                <CommittedRangeInput
+                  id="message-delivery-project-queue-quiet"
                   min={0}
                   max={MAX_PROJECT_QUEUE_QUIET_SECONDS}
-                  value={shownProjectQueueQuietText}
-                  onChange={(e) => setDraftProjectQueueQuiet(e.target.value)}
+                  step={5}
+                  value={shownProjectQueueQuietSeconds}
                   aria-label={t("messageDeliveryProjectQueueQuietTitle")}
+                  onCommit={(value) => setDraftProjectQueueQuiet(String(value))}
                 />
-                <span className="output-appearance-unit">s</span>
+                <span className="output-appearance-number-wrap">
+                  <input
+                    type="number"
+                    className="settings-input-small output-appearance-number"
+                    min={0}
+                    max={MAX_PROJECT_QUEUE_QUIET_SECONDS}
+                    value={shownProjectQueueQuietText}
+                    onChange={(e) => setDraftProjectQueueQuiet(e.target.value)}
+                    aria-label={t("messageDeliveryProjectQueueQuietTitle")}
+                  />
+                  <span className="output-appearance-unit">s</span>
+                </span>
               </span>
-            </span>
-            <span className="settings-hint">
-              {shownProjectQueueQuietSeconds === 0
-                ? t("messageDeliveryProjectQueueQuietOffHint")
-                : t("messageDeliveryProjectQueueQuietOnHint", {
-                    seconds: String(shownProjectQueueQuietSeconds),
-                  })}
-            </span>
-          </SettingsItem>
+              <span className="settings-hint">
+                {shownProjectQueueQuietSeconds === 0
+                  ? t("messageDeliveryProjectQueueQuietOffHint")
+                  : t("messageDeliveryProjectQueueQuietOnHint", {
+                      seconds: String(shownProjectQueueQuietSeconds),
+                    })}
+              </span>
+            </SettingsItem>
+            {supportsReadinessCheck && (
+              <ProjectQueueReadinessSettings
+                command={serverReadinessCheck}
+                onSave={async (command) => {
+                  await updateSettings({ projectQueueReadinessCheck: command });
+                }}
+              />
+            )}
+          </SettingsSection>
         )}
 
         <SettingsItem

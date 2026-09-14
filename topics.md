@@ -93,6 +93,8 @@
   instant back/forward returns without unbounded transcript caching.
 - turn-rail-marker-layout - Right-scrollbar turn marker hit targets, previews,
   and bottom-bar position-age hints.
+- conversation-handoff-from - Turn-notch Handoff from… new-session prefill
+  from the in-memory Conversation view projection.
 - remote-hosted-compatibility - Coarse hosted remote UI / YA server
   compatibility level, starting with recommended level 10 for the first
   rollout.
@@ -371,3 +373,26 @@
   cards with explicit save/discard and independent main-session typing.
 - synthetic-turn-injection - General user/assistant context delivery through
   native history insertion or attributed normal user turns.
+- acli-commentary - Declared tool prose and artifact capture handoffs in YA.
+
+- desktop-nightly-releases - Signed nightly publication and same-app Stable/Latest channels.
+- ya-agent-self — read-only owning-session inspection and command delivery.
+- node-22-builtin-sqlite - Immediate server runtime floor and advisory remote upgrade guidance.
+- pending-send-live-echo-fallback - Sending chips must reconcile from durable
+  history when the live user-echo notice is dropped.
+- claude-goal-controls - Claude `/goal` state read from its transcript, with
+  YA-owned pause/resume and the session header flag.
+- tool-display-contracts - Checked renderer registration, exhaustive display
+  coverage, and native live/persisted rendering parity.
+- agent-instruction-consolidation - Canonical AGENTS instructions, harness
+  pointers, and bounded deduplication of repository guidance.
+- issue-session-associations - Experimental single-server Jira/GitHub issue
+  and PR links, durable association evidence, and SQLite schema evolution.
+- optional-sqlite - Built-in SQLite discovery storage: runtime adapters, data
+  directory placement, and the transaction cost callers must respect.
+- simple-client-api - Experimental typed server views with a multi-server web
+  demo and early Kotlin/Compose and Swift/SwiftUI consumers.
+- optional-computer-control - On-demand session-scoped native control,
+  local transport and Codex/Sky execution reference findings.
+- multi-machine-architecture - Discussion map for execution ownership,
+  deployment, grants, machine control, delegation and session migration.

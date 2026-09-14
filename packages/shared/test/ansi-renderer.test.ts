@@ -98,3 +98,24 @@ describe("renderAnsiToHtml", () => {
     expect(renderAnsiToHtml(plain)).toBe("line 1\nline 2\n");
   });
 });
+
+describe("URLs in terminal output", () => {
+  it("links a bare URL inside coloured output", () => {
+    const html = renderAnsiToHtml(
+      "\u001b[32mopen https://example.test/x \u001b[0m",
+    );
+    expect(html).toContain(
+      '<a href="https://example.test/x" target="_blank" rel="noopener noreferrer">https://example.test/x</a>',
+    );
+  });
+
+  it("still escapes the text around a link", () => {
+    const html = renderAnsiToHtml("<b> https://example.test/a?b=1&c=2 </b>");
+    expect(html).toContain("&lt;b&gt;");
+    expect(html).toContain('href="https://example.test/a?b=1&amp;c=2"');
+  });
+
+  it("leaves output without a URL untouched", () => {
+    expect(renderAnsiToHtml("plain text")).not.toContain("<a ");
+  });
+});

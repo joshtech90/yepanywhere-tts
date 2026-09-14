@@ -1,0 +1,50 @@
+import { render, screen } from "@testing-library/react";
+import { describe, expect, it } from "vitest";
+import {
+  AsyncQuestionsButton,
+  type AsyncQuestionsMenuState,
+} from "../AsyncQuestions";
+import { I18nProvider } from "../../i18n";
+
+/** A question past the count stage but short of the retired stage. */
+const quietInventory: AsyncQuestionsMenuState = {
+  questions: [
+    {
+      id: "q1",
+      messageId: "m1",
+      renderId: "m1",
+      index: 0,
+      title: "Which relay should the hosted client default to?",
+      options: [],
+      age: 5,
+    },
+  ],
+  records: {},
+  reminderTurns: 3,
+  menuOpen: false,
+  setMenuOpen: () => {},
+  open: () => {},
+  update: () => {},
+};
+
+const renderButton = (props: Parameters<typeof AsyncQuestionsButton>[0]) =>
+  render(
+    <I18nProvider>
+      <AsyncQuestionsButton {...props} />
+    </I18nProvider>,
+  );
+
+describe("AsyncQuestionsButton", () => {
+  it("keeps the quiet control to its icon where space is tightest", () => {
+    renderButton({ compact: "late", inventory: quietInventory });
+    const button = screen.getByRole("button", { name: "Questions" });
+    expect(button.textContent).toBe("");
+  });
+
+  it("still spells out the control when the row has room", () => {
+    renderButton({ compact: "none", inventory: quietInventory });
+    expect(
+      screen.getByRole("button", { name: "Questions" }).textContent,
+    ).toContain("Questions");
+  });
+});

@@ -2,7 +2,11 @@ import "../../startupEnv.js";
 import type { PermissionMode } from "@yep-anywhere/shared";
 import { prepareSessionSandbox } from "../../session-sandbox.js";
 import { getModuleEnv } from "../../yaModuleEnv.js";
-import { pickBrowserDebugAgentEnvironment } from "./agentctl-session-env.js";
+import {
+  copyAgentctlBashEnvInto,
+  createAgentctlSessionEnvBridge,
+  pickStaticAgentEnvironment,
+} from "./agentctl-session-env.js";
 import { ClaudeGatewayProvider } from "./claude-gateway.js";
 import { ClaudeOllamaProvider } from "./claude-ollama.js";
 import { grokACPProvider } from "./grok-acp.js";
@@ -178,30 +182,43 @@ async function main(): Promise<void> {
       const sessionSandbox = sandboxOptions
         ? await prepareSessionSandbox(sandboxOptions)
         : undefined;
-      const session = await provider.startSession({
-        ...providerOptions,
-        getSessionChildEnv: () => ({
-          ...hooks.getBrowserDebugEnvironment(),
-        }),
-        sessionSandbox,
-        sessionSandboxOptions: undefined,
-        onToolApproval: hooks.onToolApproval,
-        shouldEmitLiveDeltas: hooks.shouldEmitLiveDeltas,
-        onPermissionModeApplied: (mode: PermissionMode) =>
-          hooks.onPermissionModeApplied(mode),
-        onProviderRetentionChange: hooks.onProviderRetentionChange,
+      const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
+        providerOptions.resumeSessionId,
+        () => ({ ...hooks.getBrowserDebugEnvironment() }),
+      );
+      copyAgentctlBashEnvInto(process.env, agentctlSessionEnvBridge, {
+        sessionId: providerOptions.resumeSessionId,
       });
-      return {
-        session,
-        sandbox: sessionSandbox
-          ? {
-              enforcement: sessionSandbox.enforcement,
-              stateKey: sessionSandbox.stateKey,
-              projectPath: sessionSandbox.projectPath,
-            }
-          : undefined,
-      };
-    }, pickBrowserDebugAgentEnvironment(initialBrowserDebugEnvironment));
+      try {
+        const session = await provider.startSession({
+          ...providerOptions,
+          getSessionChildEnv: () => ({
+            ...hooks.getBrowserDebugEnvironment(),
+          }),
+          sessionSandbox,
+          sessionSandboxOptions: undefined,
+          onToolApproval: hooks.onToolApproval,
+          shouldEmitLiveDeltas: hooks.shouldEmitLiveDeltas,
+          onPermissionModeApplied: (mode: PermissionMode) =>
+            hooks.onPermissionModeApplied(mode),
+          onProviderRetentionChange: hooks.onProviderRetentionChange,
+        });
+        return {
+          session,
+          agentctlSessionEnvBridge,
+          sandbox: sessionSandbox
+            ? {
+                enforcement: sessionSandbox.enforcement,
+                stateKey: sessionSandbox.stateKey,
+                projectPath: sessionSandbox.projectPath,
+              }
+            : undefined,
+        };
+      } catch (error) {
+        agentctlSessionEnvBridge.cleanup();
+        throw error;
+      }
+    }, pickStaticAgentEnvironment(initialBrowserDebugEnvironment));
     await adapter.listen();
     owner.begin();
     if (typeof process.send === "function" && process.connected) {

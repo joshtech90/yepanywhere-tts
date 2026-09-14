@@ -1,0 +1,21 @@
+.row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-inline-size: 0;
+}
+.row > a {
+  flex: 1;
+  min-inline-size: 0;
+}
+/* Matches the inline-end inset of a session row's own trailing control, so a
+ * navigation accessory and the counts below it share one right edge. */
+.accessory {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  margin-inline-end: 4px;
+}
+:global(.sidebar-collapsed) .row {
+  flex-direction: column;
+}

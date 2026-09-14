@@ -10,8 +10,7 @@ import type {
 import {
   ensureLocalSttRuntime,
   PIXI_COMMAND,
-  PIXI_PYTHON_ARGS,
-  PIXI_STT_ENV,
+  PIXI_NEMO_ENV,
   cacheFreeSpaceSummary,
   defaultHuggingFaceHubCache,
   summarizeChildError,
@@ -25,20 +24,19 @@ const WORKER_SCRIPT = join(
   "nemo_worker.py",
 );
 
-export const DEFAULT_NEMO_PARAKEET_MODEL = "nvidia/parakeet-tdt-0.6b-v3";
+export const DEFAULT_NEMO_PARAKEET_MODEL = "nvidia/parakeet-unified-en-0.6b";
 
 /** Milliseconds to wait for model load before giving up. */
 const MODEL_LOAD_TIMEOUT_MS = 240_000;
 
-const NEMO_IMPORT_CHECK =
-  "import numpy as np; np.sctypes = getattr(np, 'sctypes', {'int': [np.int8, np.int16, np.int32, np.int64], 'uint': [np.uint8, np.uint16, np.uint32, np.uint64], 'float': [np.float16, np.float32, np.float64], 'complex': [np.complex64, np.complex128], 'others': [np.bool_, np.object_, np.bytes_, np.str_]}); import nemo.collections.asr";
+const NEMO_IMPORT_CHECK = "from nemo.collections.asr.models import ASRModel";
 
 const NEMO_REPAIR_HINT =
-  "Run `pixi run -e stt stt-bootstrap-nemo` from the YA checkout for the heavy NeMo add-on. If Hugging Face auth or a gated model is the problem, run `pixi run --frozen -e stt hf auth login` and accept the model terms on Hugging Face. If the error is ENOSPC, free the cache/tmp filesystem or set HF_HUB_CACHE, HF_XET_CACHE, and TMPDIR before starting YA. The current in-place NeMo add-on supports nvidia/parakeet-tdt-0.6b-v3, nvidia/parakeet-rnnt-1.1b, and nvidia/parakeet-ctc-1.1b; nvidia/parakeet-unified-en-0.6b needs a separate newer-NeMo environment.";
+  "Run `pixi run -e stt-nemo nemo-bootstrap` from the YA checkout for the isolated NeMo runtime. If Hugging Face auth or a gated model is the problem, run `pixi run --frozen -e stt-nemo hf auth login` and accept the model terms on Hugging Face. If the error is ENOSPC, free the cache/tmp filesystem or set HF_HUB_CACHE, HF_XET_CACHE, and TMPDIR before starting YA.";
 
 export class LocalNemoBackend implements PrewarmableSpeechBackend {
   readonly id = "ya-nemo";
-  readonly label = "Local NeMo Parakeet (pixi stt)";
+  readonly label = "Local NeMo Parakeet (pixi stt-nemo)";
 
   private readonly model: string;
   private readonly device: string;
@@ -68,7 +66,8 @@ export class LocalNemoBackend implements PrewarmableSpeechBackend {
     return ensureLocalSttRuntime({
       backendLabel: "local NeMo Parakeet",
       checkPython: NEMO_IMPORT_CHECK,
-      bootstrapTask: "stt-bootstrap-nemo",
+      bootstrapTask: "nemo-bootstrap",
+      environment: PIXI_NEMO_ENV,
     });
   }
 
@@ -95,7 +94,7 @@ export class LocalNemoBackend implements PrewarmableSpeechBackend {
 
     this.warmPromise = new Promise<void>((resolve, reject) => {
       logger.info(
-        `Starting nemo worker via pixi env "${PIXI_STT_ENV}" (model=${model} device=${device})`,
+        `Starting nemo worker via pixi env "${PIXI_NEMO_ENV}" (model=${model} device=${device})`,
       );
       this.workerReady = false;
       this.workerModel = model;
@@ -103,7 +102,16 @@ export class LocalNemoBackend implements PrewarmableSpeechBackend {
 
       const proc = spawn(
         PIXI_COMMAND,
-        [...PIXI_PYTHON_ARGS, WORKER_SCRIPT, model, device],
+        [
+          "run",
+          "--frozen",
+          "-e",
+          PIXI_NEMO_ENV,
+          "python",
+          WORKER_SCRIPT,
+          model,
+          device,
+        ],
         { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
       );
       this.proc = proc;

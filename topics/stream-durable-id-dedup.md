@@ -119,9 +119,12 @@ is impossible here: the CLI drops the supplied uuid on its queue path.
   server-accepted but not yet proven durable, exactly the copy a process kill
   could lose — and flips to the ordinary unadorned bubble when the durable
   copy merges (`lib/deliveryState.ts`, `UserPromptBlock`). A ✓ glyph was
-  rejected: it reads as confirmed/seen, the opposite of the state it marks. Owned sessions normally skip
-  file-change fetches; while unconfirmed sends exist they fetch incrementally
-  so confirmation lands mid-turn (`useSession.handleFileChange`).
+  rejected: it reads as confirmed/seen, the opposite of the state it marks.
+  Owned sessions normally skip file-change fetches. They fetch incrementally
+  while a `Sending` chip is up (no live echo yet) or while an unconfirmed
+  self-send echo is in `messages`, so confirmation does not depend on one
+  WS/SSE user-echo arriving in order (`useSession.handleFileChange`). A
+  bounded retry covers the case where file-change notices are also dropped.
 
 Residual gaps: two identical busy sends >60s apart whose CLI enqueue lagged
 that far (pairing misses; duplicate returns), and pre-delivery steers show
@@ -357,6 +360,53 @@ user-turn step doesn't re-investigate them:
 - Codex 0.149 persists `msg_*` and `rs_*` response-item ids. YA preserves them
   for assistant and reasoning identity.
 
+## Grok
+
+Grok stamps every `session/update` notification with `_meta.eventId`
+(`<sessionId>-<n>`) and records that same notification verbatim in the
+session's `updates.jsonl`, which `GrokSessionReader` replays. So the live ACP
+stream and the durable transcript observe one identifier per update, and
+`grokEventUuid` (`sdk/providers/grok-message-identity.ts`) turns it into the
+rendered uuid on both sides. Tool rows already keyed on `toolCallId` /
+`${toolCallId}:result`; assistant text, thinking, and checklist rows used a
+live `randomUUID()` against a durable positional
+`grok-${index}-${role}-${kind}`, so they could never merge.
+
+Text and thinking rows buffer consecutive chunks into one message and key on
+the **first chunk's** event id, which only aligns if both sides end a buffered
+run at the same place. The durable reader always ended a run when the chunk
+kind changed; the live path used to accumulate the two kinds concurrently and
+emit thinking-before-text at each flush. It now ends a run on a kind switch
+too, so the same chunks group into the same messages on both sides. Coverage:
+`grok-reader.test.ts` "keys each buffered run on its first chunk's update
+event id" and `grok-acp.test.ts` "keys streamed text and thinking on the update
+event id the transcript records" assert the same ids for the same chunk
+sequence. Transcripts recorded before Grok stamped event ids keep the
+positional fallback.
+
+**User turns stay on a scoped pairing.** Grok mints the durable user-row
+identity itself and exposes no client-id hook on `session/prompt` or
+`x.ai/interject`, so no deterministic alignment is possible. Capability
+`dedupSelfSendUserEchoes` (grok) routes those through
+`reconcileSelfSendUserEchoes`, the same exact-text one-to-one reconciler Claude
+and Codex use for delivered turns, accepting any unconfirmed self-send echo
+rather than steers only — Grok direct sends diverge just as interjects do. The
+echo is always stamped before Grok writes its row and Grok's record timestamp
+has whole-second granularity, so the future-skew bound is 2s. Replay must
+emit one unwrapped inner text per send: concatenating two interject
+envelopes into one row leaves leftover `</user_query>` boilerplate that
+matches neither echo, so both stay unconfirmed. Live assistant double-echo
+that clears on reload is a separate gap
+(`gaps/grok-live-assistant-double-echo.md`); do not treat an unconfirmed
+joined user row as proof that it is the same defect.
+
+This one gap was self-amplifying: a Grok user echo could never be confirmed, so
+`useSession.handleFileChange` treated the session as permanently holding an
+unconfirmed send and kept fetching durable rows mid-turn on every file change.
+Each fetch then re-appended the unaligned assistant rows — the reported "many
+duplicate assistant messages", which a reload cleared because the duplicates
+existed only in the merged client array.
+
 ## pi
 
 Same shape as OpenCode's user echo, and the durable copy only began to exist
@@ -435,6 +485,9 @@ anyway (pi doesn't emit it; see above).
 - `packages/client/src/providers/types.ts` — `needsApproxMessageDedup`.
 - `packages/client/src/hooks/useSessionMessages.ts` — merge + dedup gates.
 - `packages/server/src/sdk/providers/opencode.ts` — OpenCode stream ids.
+- `packages/server/src/sdk/providers/grok-message-identity.ts` — the shared
+  Grok event-id uuid, used by `grok-acp.ts` (live) and `grok-reader.ts`
+  (durable).
 - `packages/server/src/sessions/normalization.ts`,
   `packages/server/src/sessions/codex-reader.ts` — durable Codex ids.
 - `packages/shared/src/codex-schema/session.ts` — persisted Codex item and

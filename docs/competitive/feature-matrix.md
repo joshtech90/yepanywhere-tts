@@ -1,6 +1,19 @@
 # Feature Comparison Matrix
 
-Comprehensive comparison of AI coding agent supervisors.
+Historical comparison of AI coding agent supervisors, recorded 2026-02-03.
+The tables below have not been comprehensively refreshed: several YA entries,
+including desktop distribution and Source Control, are now obsolete. Do not
+use them as a current gap list.
+
+## Newer source reviews
+
+- [bb — 2026-09-13](bb.md#feature-comparison-with-yep-anywhere): current paired
+  comparison, with source/release distinctions and provider-specific limits.
+- [T3 Code — 2026-09-04](t3code.md): source review covering web, desktop,
+  mobile, orchestration and Git workflows.
+
+The [roadmap](../roadmap/README.md) owns current YA status and priorities.
+Adding these links does not refresh the historical cells below.
 
 ## Platforms
 

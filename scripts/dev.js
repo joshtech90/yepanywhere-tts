@@ -14,7 +14,7 @@
  *     PORT=4000
  */
 
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { createServer as createNetServer } from "node:net";
@@ -31,6 +31,10 @@ import {
   recoverProviderHost,
   resolveProviderHostPaths,
 } from "./provider-runtime-discovery.mjs";
+import {
+  isOwnedProcessGroupAlive,
+  providerHostCapability,
+} from "./provider-process-identity.mjs";
 import { exitIfUnsafeHome } from "./safe-home.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -177,7 +181,10 @@ const env = {
 };
 
 const reloadSafeRuntimeHostsEnabled =
-  process.platform === "linux" && !backendWatch;
+  providerHostCapability().supported &&
+  !backendWatch &&
+  (env.USE_MOCK_SDK !== "true" ||
+    Boolean(env.YEP_PROVIDER_RUNTIME_WORKER_PATH));
 const providerHostPaths = reloadSafeRuntimeHostsEnabled
   ? resolveProviderHostPaths(env)
   : null;
@@ -226,22 +233,6 @@ function processTargetAlive(target) {
   }
 }
 
-function readProcessStartTime(pid) {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
-    const commandEnd = stat.lastIndexOf(")");
-    if (commandEnd < 0) return null;
-    const fields = stat
-      .slice(commandEnd + 1)
-      .trim()
-      .split(/\s+/);
-    return fields[19] ?? null;
-  } catch (error) {
-    if (error?.code === "ENOENT" || error?.code === "ESRCH") return null;
-    throw error;
-  }
-}
-
 function reportedProcessGroups(message) {
   if (Array.isArray(message?.processGroups)) {
     return message.processGroups.filter(
@@ -260,14 +251,7 @@ function reportedProcessGroups(message) {
     .map((processGroupId) => ({ processGroupId }));
 }
 
-function runtimeProcessGroupAlive(target) {
-  if (!processTargetAlive(-target.processGroupId)) return false;
-  if (!target.leaderStartTime) return true;
-  const currentStartTime = readProcessStartTime(target.processGroupId);
-  return (
-    currentStartTime === null || currentStartTime === target.leaderStartTime
-  );
-}
+const runtimeProcessGroupAlive = isOwnedProcessGroupAlive;
 
 async function waitForRuntimeProcessGroupExit(target, timeoutMs) {
   const deadline = Date.now() + timeoutMs;
@@ -332,6 +316,28 @@ function waitForChildExit(child, timeoutMs) {
 async function stopManagedChild(child, name, firstWaitMs = 3_000) {
   const targets = managedTargets(child);
   if (!targets.some(processTargetAlive)) return;
+  if (isWindows) {
+    // Kill the tree while its launcher still exists. Killing cmd.exe first
+    // loses the ancestry needed to stop pnpm, tsx, Vite and their descendants.
+    for (const target of targets) {
+      if (!processTargetAlive(target)) continue;
+      await new Promise((resolve, reject) => {
+        execFile(
+          "taskkill.exe",
+          ["/PID", String(target), "/T", "/F"],
+          { windowsHide: true, timeout: 10_000 },
+          (error) => {
+            if (error && processTargetAlive(target)) reject(error);
+            else resolve();
+          },
+        );
+      });
+    }
+    if (!(await waitForProcessTargetsExit(targets, 1_500))) {
+      throw new Error(`${name} process target survived tree termination`);
+    }
+    return;
+  }
   signalManagedChild(child, "SIGTERM");
   if (await waitForProcessTargetsExit(targets, firstWaitMs)) return;
   console.warn(`[Shutdown] ${name} did not stop after SIGTERM; forcing it`);
@@ -367,13 +373,13 @@ async function reapRuntimeProcessGroup(reportedTarget) {
       : reportedTarget;
   const signalTarget = -target.processGroupId;
   if (!runtimeProcessGroupAlive(target)) return;
-  process.kill(signalTarget, "SIGTERM");
+  if (runtimeProcessGroupAlive(target)) process.kill(signalTarget, "SIGTERM");
   if (await waitForRuntimeProcessGroupExit(target, 1_500)) return;
   if (!runtimeProcessGroupAlive(target)) return;
-  process.kill(signalTarget, "SIGTERM");
+  if (runtimeProcessGroupAlive(target)) process.kill(signalTarget, "SIGTERM");
   if (await waitForRuntimeProcessGroupExit(target, 500)) return;
   if (!runtimeProcessGroupAlive(target)) return;
-  process.kill(signalTarget, "SIGKILL");
+  if (runtimeProcessGroupAlive(target)) process.kill(signalTarget, "SIGKILL");
   if (!(await waitForRuntimeProcessGroupExit(target, 1_000))) {
     throw new Error(
       `Runtime process group ${target.processGroupId} survived SIGKILL`,
@@ -721,26 +727,36 @@ async function requestServerReload(source) {
     return;
   }
   wrapperState = "reloading";
-  console.log(`\n[Reload] Replacing backend after ${source}...`);
-  signalManagedChild(server, isWindows ? "SIGTERM" : "SIGHUP");
+  console.log(`[Reload] Replacing backend and Vite after ${source}...`);
+  if (!isWindows) signalManagedChild(server, "SIGHUP");
   void completeServerReload(server);
 }
 
 async function completeServerReload(server) {
+  const client = clientChild;
   try {
-    if (!(await waitForProcessTargetsExit(managedTargets(server), 10_000))) {
+    if (isWindows) {
+      await stopManagedChild(server, "backend reload");
+    } else if (
+      !(await waitForProcessTargetsExit(managedTargets(server), 10_000))
+    ) {
       console.warn("[Reload] Backend did not stop after SIGHUP; escalating");
       await stopManagedChild(server, "backend reload", 2_000);
     }
+    if (wrapperState !== "reloading") return;
+    if (client) client.yaReloading = true;
+    await stopManagedChild(client, "Vite reload");
   } catch (error) {
     console.error(`[Reload] ${errorMessage(error)}`);
-    await shutdownWrapper("Backend reload cleanup failed", 1);
+    await shutdownWrapper("Development reload cleanup failed", 1);
     return;
   }
 
   if (wrapperState !== "reloading") return;
   if (serverChild === server) serverChild = null;
-  console.log("[Reload] Starting replacement backend");
+  if (clientChild === client) clientChild = null;
+  console.log("[Reload] Starting replacement Vite and backend");
+  startClient();
   startServer();
   wrapperState = "running";
 }
@@ -753,7 +769,7 @@ async function recoverUnexpectedServer(server, code) {
     await shutdownWrapper("Backend recovery cleanup failed", 1);
     return;
   }
-  if (wrapperState !== "running") return;
+  if (wrapperState !== "running" || serverChild !== server) return;
   if (serverChild === server) serverChild = null;
   console.error(`[Recovery] Backend exited with code ${code}; retrying once`);
   startServer();
@@ -810,16 +826,23 @@ function startServer() {
 
   serverGeneration += 1;
   const generation = `${process.pid}-${serverGeneration}`;
-  const server = spawnManaged(pnpmBin, ["--filter", "server", serverScript], {
-    cwd: rootDir,
-    env: { ...env, YEP_SERVER_GENERATION: generation },
-    stdio: "inherit",
-    ...shellOption,
-  });
+  const server = spawnManaged(
+    pnpmBin,
+    ["--filter", "@yep-anywhere/server", serverScript],
+    {
+      cwd: rootDir,
+      env: { ...env, YEP_SERVER_GENERATION: generation },
+      stdio: "inherit",
+      ...shellOption,
+    },
+  );
   server.yaGeneration = generation;
   serverChild = server;
 
   server.on("exit", (code, signal) => {
+    // Windows can report process death to kill(pid, 0) before Node delivers
+    // this event. A retired launcher must not recover or stop its replacement.
+    if (serverChild !== server) return;
     if (wrapperState === "shutting-down") return;
     if (wrapperState === "reloading") {
       return;
@@ -842,12 +865,16 @@ function startServer() {
  * Start the client dev server
  */
 function startClient() {
-  const client = spawnManaged(pnpmBin, ["--filter", "client", "dev"], {
-    cwd: rootDir,
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-    ...shellOption,
-  });
+  const client = spawnManaged(
+    pnpmBin,
+    ["--filter", "@yep-anywhere/client", "dev"],
+    {
+      cwd: rootDir,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      ...shellOption,
+    },
+  );
 
   forwardWithLineFilter(
     client.stdout,
@@ -863,13 +890,14 @@ function startClient() {
   clientChild = client;
 
   client.on("exit", (code, signal) => {
-    if (wrapperState === "shutting-down") return;
-    if (code !== null && code !== 0) {
-      console.error(`Client exited with code ${code}`);
-    }
-    void shutdownWrapper(
-      `Vite exited unexpectedly (code=${code}, signal=${signal})`,
-      code === 0 ? 0 : 1,
+    if (wrapperState === "shutting-down" || client.yaReloading) return;
+    console.error(
+      `[Vite] Exited (code=${code}, signal=${signal}); backend and provider host remain running. Reload the server to retry.`,
+    );
+  });
+  client.on("error", (error) => {
+    console.error(
+      `[Vite] Failed to start: ${errorMessage(error)}. Backend and provider host remain running. Reload the server to retry.`,
     );
   });
 

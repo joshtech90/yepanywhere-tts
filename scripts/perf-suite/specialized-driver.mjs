@@ -1,4 +1,4 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -557,8 +557,11 @@ export async function measureOwnedProviderLifecycle({
     driver: "specialized",
     envOverrides: {
       ENABLED_PROVIDERS: "claude",
-      IDLE_TIMEOUT: String(scenario.idleReapSeconds),
+      // Browser setup/replay is independent of the accelerated reap clock.
+      IDLE_TIMEOUT: "-1",
+      LOG_LEVEL: "debug",
       USE_MOCK_SDK: "false",
+      YEP_PERF_TRANSCRIPT_DIR: path.dirname(fixture.sessionFiles[0].file),
       YEP_PERF_SIM_STREAM_CHUNKS: String(scenario.streamChunks),
       YEP_PERF_SIM_STREAM_CHUNK_BYTES: String(scenario.streamChunkBytes),
       YEP_PERF_SIM_STREAM_DELAY_MS: String(scenario.streamDelayMs),
@@ -584,6 +587,9 @@ export async function measureOwnedProviderLifecycle({
         json: {
           provider: "claude",
           model: "perf-simulated-thinking-model",
+          // Match the browser's canonical setting. Leaving this unspecified
+          // makes its first send a launch-setting change and restarts the worker.
+          thinking: "off",
         },
         method: "POST",
         timeoutMs: config.server.requestTimeoutMs,
@@ -736,6 +742,28 @@ export async function measureOwnedProviderLifecycle({
       },
     );
 
+    await requestJson(`${server.baseUrl}/api/settings`, {
+      method: "PUT",
+      json: { idleReapHours: scenario.idleReapSeconds / 3600 },
+      timeoutMs: config.server.requestTimeoutMs,
+    });
+    // The raw observer remains subscribed after Chromium closes. Prove that
+    // viewer retention survives a full deadline before timing unsubscribe.
+    await new Promise((resolve) =>
+      setTimeout(resolve, scenario.idleReapSeconds * 1500),
+    );
+    const retained = await requestJson(
+      `${server.baseUrl}/api/sessions/${sessionId}/process`,
+      {
+        timeoutMs: config.server.requestTimeoutMs,
+      },
+    );
+    if (retained.body?.process?.state !== "idle") {
+      throw new Error(
+        "subscribed idle provider was released before unsubscribe",
+      );
+    }
+
     const reapStartedAtMs = performance.now();
     socket.send(JSON.stringify({ type: "unsubscribe", subscriptionId }));
     socket.close();
@@ -760,6 +788,7 @@ export async function measureOwnedProviderLifecycle({
         textBytes,
         textDeltaCount: textDeltas.length,
         rawBeforeEnriched: true,
+        retainedWhileSubscribedPastIdleDeadline: true,
         ownershipReleasedAfterVerifiedIdle: true,
         semanticAction: semanticAction.correctness,
       },
@@ -787,6 +816,14 @@ export async function measureOwnedProviderLifecycle({
       serverLog: server.logPath,
       serverStartupMs: round(server.startupMs),
     };
+  } catch (error) {
+    const serverLog = await readFile(server.logPath, "utf8").catch(
+      () => "unavailable",
+    );
+    throw new Error(
+      `${error instanceof Error ? error.message : String(error)}\nOwned-provider log tail:\n${serverLog.slice(-24000)}`,
+      { cause: error },
+    );
   } finally {
     socket?.terminate();
     server.log.end();
@@ -920,13 +957,46 @@ export async function measurePublicShareHerd({
       })),
       config.server.requestTimeoutMs,
     );
+    let renderedAssistantMessages = 0;
+    let assistantHtmlBytes = 0;
     for (const [index, body] of herd.bodies.entries()) {
+      const messages = bodyArray(
+        body?.session,
+        "messages",
+        `public share ${index}`,
+      );
       assertCount(
-        bodyArray(body?.session, "messages", `public share ${index}`).length,
+        messages.length,
         scenario.initialTurns * 2,
         `public share ${index} message count`,
       );
+      for (const message of messages) {
+        if (message.type !== "assistant") continue;
+        const content = message.message?.content ?? message.content;
+        const html = Array.isArray(content)
+          ? content
+              .filter((block) => block.type === "text")
+              .map((block) => block._html ?? "")
+              .join("\n")
+          : message._html;
+        if (
+          typeof html !== "string" ||
+          !html.includes("<p>") ||
+          !html.includes(target.detail.sessionId)
+        ) {
+          throw new Error(
+            `public share ${index} omitted rendered assistant Markdown`,
+          );
+        }
+        renderedAssistantMessages += 1;
+        assistantHtmlBytes += Buffer.byteLength(html);
+      }
     }
+    assertCount(
+      renderedAssistantMessages,
+      scenario.initialTurns * scenario.concurrentClients,
+      "public share rendered assistant messages",
+    );
     const settledMemory = await sampleMemory(
       server.inspectorUrl,
       server.maintenanceUrl,
@@ -938,6 +1008,7 @@ export async function measurePublicShareHerd({
         frozenShare: true,
         legacyResponses: herd.bodies.length,
         modernChunkMetadata: true,
+        renderedAssistantMessages,
         relayStatus: "waiting",
       },
       latency: {
@@ -957,6 +1028,7 @@ export async function measurePublicShareHerd({
         ),
       },
       processManifest: await readProcessManifest(server.processManifestPath),
+      assistantHtmlMiB: bytesToMiB(assistantHtmlBytes),
       responseMiB: bytesToMiB(
         herd.bytes.reduce((sum, value) => sum + value, 0),
       ),
@@ -1084,6 +1156,7 @@ export async function measureSpecializedRepetition({
     semanticAction: ownedProvider.semanticAction,
     responseMiB: {
       publicShareHerd: publicShare.responseMiB,
+      publicShareAssistantHtml: publicShare.assistantHtmlMiB,
     },
     memory: publicShare.memory,
   };

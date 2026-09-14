@@ -11,9 +11,18 @@ silent helper queries and lightweight fallback side-query envelopes.
 ## One-shot question cards
 
 Question cards are a lighter entry than `/btw`: one question, one answer,
-then an explicit Save Q+A or Discard decision. Enable **Quick question cards**
+then an explicit Save Q+A, Continue /btw, or Discard decision. Enable **Quick question cards**
 under Settings → Message delivery. The browser-local setting defaults off;
 existing delivery remains unchanged until enabled.
+
+The setting caption warns about observed Codex prompt-cache costs: as of
+2026-09-08, all three measured Quick Answer forks had large misses, with
+90–96% of input uncached. This is a 100% observed miss rate across requests,
+not a claim that every input token missed or that all future forks must miss.
+Native fork support alone does not establish inexpensive inference. The open
+[fork cache-efficiency gap](../gaps/quick-answer-fork-cache-efficiency.md)
+records the evidence and the provider improvements needed before reconsidering
+the warning.
 
 - While the main session is `in-turn` or `waiting-input`, an attachment-free
   draft whose literal final character is ASCII `?` previews a quick answer
@@ -31,6 +40,12 @@ existing delivery remains unchanged until enabled.
   question plus instructions to answer from inherited context, avoid commands
   and file changes, and avoid follow-up questions. This is a prompt constraint,
   not a new provider sandbox or a guarantee that a fork costs less than steering.
+- The card belongs to its originating source, project, and session. Switching
+  sources clears it even if the new host uses identical project/session IDs.
+  Clone, metadata changes, resume, polling, transcript reads, Save, and cleanup
+  remain bound to that source. A late clone is archived there; a late launch
+  after dismissal is stopped there. A Save already underway may finish on the
+  original host, but cannot refresh or change the newly selected session.
 - The compact card occupies normal footer space immediately above the main
   composer, below queued items and other aside panels. It reduces the transcript
   viewport instead of covering recent activity. An already-following transcript
@@ -43,18 +58,34 @@ existing delivery remains unchanged until enabled.
   desktop shortcut, which sits outside the button. It displays only
   the child assistant's visible text after the marked question, in order;
   inherited answers, reasoning blocks, and tool execution are not imported.
-  Typing always drafts the next main message. There is no child composer or
-  continuing question-card conversation in v1.
+  Typing drafts the next main message until the user chooses Continue /btw.
+  The question card itself has no child composer.
 - Once complete, a **fresh Enter on an exactly empty composer**, the empty
   composer Send button, or the card's **Save Q+A** button saves the exchange.
   Empty means no text, attachments, uploads, pending speech, or IME composition.
   Held/repeated Enter cannot save the answer automatically. Explicit card Save
   also works while the user has a separate main draft.
+- **Continue /btw** is available after the answer completes. It unarchives
+  the existing child, links it to this parent as an interactive aside, and
+  opens the ordinary `/btw` conversation with the original question and answer.
+  Moving starts no fork, model turn, or parent-context insertion. Follow-ups
+  resume that same child and explicitly lift the one-question-only limit;
+  they do not refork the parent's growing history. Controls prevent duplicate
+  moves or dismissal during the metadata update. Failure retains the answered
+  card with an error and allows an explicit retry. The existing metadata and
+  `/btw` navigation contracts also work with older capable servers.
 - **Discard**, Esc when the card owns dismissal, or submission of a new main
   message closes without saving. Typing alone does not dismiss. Dismissal
   stops unfinished child work; it never stops main. Saving already in progress
   cannot be dismissed or submitted twice. Failure is visible and does not
   automatically retry an operation whose acceptance may be uncertain.
+- A failed card offers **Steer** to send the original question verbatim as an
+  ordinary main-session message. It uses normal steering (or resumes main if
+  idle), without starting another fork or including the aside instructions,
+  answer, or error. A separate composer draft, quoted context, correction, and
+  attachments stay untouched and are not included. The card closes only after
+  send succeeds; on failure it remains available. Steer and Discard are disabled
+  while sending. The card never automatically resubmits a failed steer.
 
 Save preserves question and assistant text verbatim, with a separate provenance
 message naming the child YA session and snapshot-request time. Main may have
@@ -70,10 +101,32 @@ server capability. Older capable servers still answer cards through their
 existing clone/resume/read routes, and Save uses their ordinary resume route.
 No new endpoint is called when the capability is absent.
 
+Codex and Codex OSS `/clone` requests use the provider's native `thread/fork`
+adapter, including while the parent is working. YA reads bounded source
+metadata but does not copy or parse the full inherited transcript to create
+the child. Paginated Codex forks retain provider-owned history references;
+provider context initialization still occurs. The clone inherits the source
+sandbox boundary, leaves the parent running, and starts no question turn until
+the existing resume request submits it. Native failure is reported directly;
+YA never falls back to a handwritten Codex rollout copy. Claude retains its
+existing storage-clone path.
+
+The legacy `/clone` response keeps `messageCount` as a conservative inherited
+prefix offset. For native Codex forks it is `Number.MAX_SAFE_INTEGER`, so old
+`/btw` clients display no inherited messages before the marked aside prompt
+arrives. Once that marker exists, it determines the child transcript boundary
+regardless of the offset. This field must not be displayed as an exact count;
+obtaining an exact inherited count must not cause a full-history scan. Quick
+question cards already require their unique prompt marker to extract answers.
+
+**Use native Codex forks instead of repairing copied filenames:** the provider
+owns both resumable identity and paginated lineage. Renaming a handwritten
+copy would retain the full-transcript cost and duplicate that ownership.
+
 The browser owns this transient flow. Helper clones are archived before their
 question starts, so normal session lists stay clear; they remain archived
 sessions, not deleted transcripts. They have ordinary fork provenance and no
-interactive `/btw` parent link. They are not restored as cards after navigation,
+interactive `/btw` parent link until explicitly continued in `/btw`. They are not restored as cards after navigation,
 reload, or browser crash. Polling is bounded to 160 visible checks spaced by
 1.5 seconds, pauses while the page is hidden, and stops on completion or
 unmount. Input requests, missing answers, and exhausted polling show failure
@@ -86,6 +139,12 @@ Verification covers real composer submission, the SessionPage browser flow at
 and Codex app-server message insertion. A live Codex 0.153.4 probe persisted
 user/assistant text without starting a turn; active-turn consumption timing and
 live Claude fork generation were not exercised by that probe.
+
+A 2026-09-07 live Codex 0.153.4 check exercised the corrected `/clone` route
+and resumed its native child from the reported 179 MB parent. The child used a
+24 KB paginated rollout and resumed successfully; it was archived without a
+model turn. The reported storage clone failed the same provider resume check
+because its rollout filename was not canonical.
 
 ## `/btw` contracts
 

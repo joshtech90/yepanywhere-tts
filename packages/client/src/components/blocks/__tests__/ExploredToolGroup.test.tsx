@@ -9,7 +9,10 @@ import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContex
 import { I18nProvider } from "../../../i18n";
 import { buildAssistantRenderSegments } from "../../../lib/sessionDetail/renderSelectors";
 import type { Message } from "../../../types";
-import type { RenderItem, ToolCallItem } from "../../../types/renderItems";
+import type {
+  RenderItem,
+  ToolCallItem,
+} from "@yep-anywhere/shared/transcript/items";
 import grepStyles from "../../renderers/tools/GrepRenderer.module.css";
 import { ExploredToolGroup } from "../ExploredToolGroup";
 
@@ -637,5 +640,63 @@ describe("ExploredToolGroup", () => {
     expect(
       screen.getByRole("button", { name: "Hide command details" }),
     ).toBeDefined();
+  });
+
+  it("keeps an entry on one line when its payload fails the tool contract", () => {
+    // A real image read whose envelope does not match the Read display
+    // contract: the top-level discriminator is the media type rather than
+    // "image", and the payload carries no base64. The renderer has no rich
+    // summary for that, and its raw fallback is a multi-line block with a
+    // heading, a notice and pretty-printed JSON — far taller than the single
+    // line an explored entry occupies, so it used to paint over its
+    // neighbours.
+    const unreadableRead = (index: number) =>
+      toolCall(
+        `call-image-read-${index}`,
+        "Read",
+        { file_path: `${projectRoot}/docs/diagram-${index}.png` },
+        "2026-05-28T00:00:00.000Z",
+        {
+          content: "",
+          isError: false,
+          structured: {
+            type: "image/png",
+            file: {
+              type: "image/png",
+              originalSize: 120112,
+              dimensions: { originalWidth: 497, originalHeight: 196 },
+            },
+          },
+        },
+      );
+
+    const { container } = render(
+      <I18nProvider>
+        <SessionMetadataProvider
+          projectId={projectId}
+          projectPath={projectRoot}
+          sessionId="session-1"
+        >
+          <ExploredToolGroup
+            id="explored-image"
+            projection={projectionFor([
+              unreadableRead(1),
+              unreadableRead(2),
+              unreadableRead(3),
+            ])}
+          />
+        </SessionMetadataProvider>
+      </I18nProvider>,
+    );
+
+    const summaries = container.querySelectorAll(".explored-entry-summary");
+    expect(summaries).toHaveLength(3);
+    for (const summary of summaries) {
+      expect(summary.querySelector('[data-tool-display="raw"]')).toBeNull();
+    }
+    expect(container.textContent).not.toContain("Rich preview unavailable");
+    // The entries still identify what was read, from the group's own one-line
+    // fallback rather than the tool renderer.
+    expect(summaries[0]?.textContent).toContain("diagram-1.png");
   });
 });

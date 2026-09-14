@@ -14,6 +14,11 @@ fn main() {
         "open_server_output_window",
         "open_diagnostics_window",
         "open_updater_window",
+        "get_update_channel",
+        "set_update_channel",
+        "clear_update",
+        "check_update",
+        "install_update",
         "quit_app",
     ];
     tauri_build::try_build(

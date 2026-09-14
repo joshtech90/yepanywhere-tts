@@ -60,9 +60,11 @@ export const UI_KEYS = {
   keepMobileKeyboardOpenAfterDelivery:
     "yep-anywhere-keep-mobile-keyboard-open-after-delivery",
   questionAsides: "yep-anywhere-question-asides",
+  questionReminderTurns: "yep-anywhere-question-reminder-turns",
   developerMode: "yep-anywhere-developer-mode",
   conversationView: "yep-anywhere-conversation-view-enabled",
   workflowTags: "yep-anywhere-workflow-tags-enabled",
+  acliCommentary: "yep-anywhere-acli-commentary-enabled",
   conversationViewTurnLimit: "yep-anywhere-conversation-view-turn-limit",
   widerConversationActivityPreviews:
     "yep-anywhere-wider-conversation-activity-previews-enabled",
@@ -150,6 +152,7 @@ export const BROWSER_LOCAL_KEYS = {
   speechSmartTurn: "yep-anywhere-speech-smart-turn",
   grokSpeechAudio: "yep-anywhere-grok-speech-audio",
   parakeetSpeechModel: "yep-anywhere-parakeet-speech-model",
+  whisperSpeechModel: "yep-anywhere-whisper-speech-model",
   xaiSttApiKey: "yep-anywhere-xai-stt-api-key",
   // Preserve the first-shipped push/client-log device id key.
   browserProfileId: "yep-anywhere-device-id",

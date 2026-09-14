@@ -155,6 +155,36 @@ export class CodexRolloutWindowReader {
     stats: CodexRolloutStats,
     compactBoundaries: number,
   ): Promise<CodexCompactTailSnapshot | null> {
+    const startByte = await this.findCompactTailStart(
+      filePath,
+      stats,
+      compactBoundaries,
+    );
+    if (startByte === null) return null;
+    const parsed = await this.readEntryRange(
+      filePath,
+      startByte,
+      Number(stats.size) - startByte,
+    );
+    if (parsed.entries[0]?.type !== "compacted") return null;
+
+    return {
+      entries: parsed.entries,
+      transcriptSnapshotUpdatedAt: new Date(
+        getCodexRolloutActivityTimeMs(filePath, stats),
+      ).toISOString(),
+      kind: "compact-tail",
+      omittedPrefix: true,
+      startByte,
+      compactBoundaries,
+    };
+  }
+
+  async findCompactTailStart(
+    filePath: string,
+    stats: CodexRolloutStats,
+    compactBoundaries: number,
+  ): Promise<number | null> {
     const fileSize = Number(stats.size);
     if (
       isCompressedCodexRolloutPath(filePath) ||
@@ -172,25 +202,7 @@ export class CodexRolloutWindowReader {
       return null;
     }
 
-    const parsed = await this.readEntryRange(
-      filePath,
-      startByte,
-      fileSize - startByte,
-    );
-    if (parsed.entries[0]?.type !== "compacted") {
-      return null;
-    }
-
-    return {
-      entries: parsed.entries,
-      transcriptSnapshotUpdatedAt: new Date(
-        getCodexRolloutActivityTimeMs(filePath, stats),
-      ).toISOString(),
-      kind: "compact-tail",
-      omittedPrefix: true,
-      startByte,
-      compactBoundaries,
-    };
+    return startByte;
   }
 
   async readCompactPageSnapshot(

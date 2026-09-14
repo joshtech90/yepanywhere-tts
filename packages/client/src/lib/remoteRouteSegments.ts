@@ -5,6 +5,7 @@ const DIRECT_APP_ROUTE_SEGMENTS = new Set([
   "devices",
   "git-status",
   "inbox",
+  "issues",
   "new-session",
   "projects",
   "sessions",

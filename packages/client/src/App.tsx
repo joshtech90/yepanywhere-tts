@@ -1,3 +1,6 @@
+import { RemoteCompatibilityNotices } from "./components/RemoteCompatibilityNotices";
+import { useVersion } from "./hooks/useVersion";
+import { useI18n } from "./i18n";
 import { lazy, type ReactNode, Suspense, useEffect } from "react";
 import { useLocation } from "react-router-dom";
 import { BottomOverscrollReload } from "./components/BottomOverscrollReload";
@@ -5,6 +8,7 @@ import { CacheMissBillingToasts } from "./components/CacheMissBillingToasts";
 import { ClientLogRecordingBadge } from "./components/ClientLogRecordingBadge";
 import { ConnectionBar } from "./components/ConnectionBar";
 import { DesktopProviderNotice } from "./components/DesktopProviderNotice";
+import { StorageFilesystemBanner } from "./components/StorageFilesystemBanner";
 import { ReloadBanner, ReloadBannerStack } from "./components/ReloadBanner";
 import { AuthProvider, useAuth } from "./contexts/AuthContext";
 import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
@@ -109,7 +113,11 @@ function AppContent({ children }: Props) {
   return (
     <>
       <ConnectionBar />
+      <StorageFilesystemBanner />
       <DesktopProviderNotice />
+      {!authLoading && (!authEnabled || isAuthenticated) && (
+        <LocalRuntimeNotice />
+      )}
       <CacheMissBillingToasts />
       {!isSessionDetailRoute && <ClientLogRecordingBadge />}
       <ReloadBannerStack avoidSessionComposer={isSessionDetailRoute}>
@@ -178,5 +186,19 @@ export function App({ children }: Props) {
         </CurrentSourceRuntimeProvider>
       </AuthProvider>
     </ToastProvider>
+  );
+}
+
+function LocalRuntimeNotice() {
+  const { version, error } = useVersion();
+  const sourceKey = useClientSummarySourceKey();
+  const { t } = useI18n();
+  if (error) return null;
+  return (
+    <RemoteCompatibilityNotices
+      versionInfo={version}
+      relayUsername={null}
+      runtimeNotice={{ runtime: version?.serverRuntime, sourceKey, t }}
+    />
   );
 }

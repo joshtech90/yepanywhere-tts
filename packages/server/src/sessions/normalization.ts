@@ -1,3 +1,4 @@
+import { visibleIssueText } from "../services/issues/extract.js";
 import type {
   ClaudeSessionEntry,
   CodexAsyncUserInputQuestion,
@@ -68,6 +69,7 @@ interface CodexToolUseConversion {
   context: CodexToolCallContext;
 }
 
+const issueSourceIds = new WeakMap<Message, string>();
 const CODEX_CONTEXT_COMPACTED_DEDUPE_WINDOW_MS = 5000;
 const CODEX_PROVIDER_FORK_TURN_ID = Symbol("codexProviderForkTurnId");
 const CODEX_NORMALIZATION_SOURCE = Symbol("codexNormalizationSource");
@@ -103,6 +105,11 @@ function tagCodexMessageSourceByteOffset(
   const sourceByteOffset = (entry as CodexEntryWithSourceByteOffset)[
     CODEX_SOURCE_BYTE_OFFSET
   ];
+  const ordinal = (entry as { ordinal?: unknown }).ordinal;
+  if (Number.isSafeInteger(ordinal))
+    issueSourceIds.set(message, `codex-ordinal-${ordinal}`);
+  else if (sourceByteOffset !== undefined)
+    issueSourceIds.set(message, `codex-byte-${sourceByteOffset}`);
   if (sourceByteOffset === undefined) return message;
   Object.defineProperty(message, CODEX_MESSAGE_SOURCE_BYTE_OFFSET, {
     configurable: false,
@@ -289,6 +296,23 @@ function normalizeClaudeQueueOperationContent(content: unknown): string {
       return "";
     })
     .join("\n");
+}
+
+/** Normalize a bounded provider acquisition using the existing presentation rules. */
+export function normalizeConversationEntries(
+  input:
+    | { provider: "claude"; entries: ClaudeSessionEntry[] }
+    | { provider: "codex"; entries: CodexSessionEntry[] },
+  sessionId: string,
+): Message[] {
+  if (input.provider === "codex")
+    return convertCodexEntries(input.entries, sessionId);
+  const { entries, orphanedToolUses } = collectVisibleClaudeEntries(
+    input.entries,
+  );
+  return entries.map((raw, index) =>
+    convertClaudeMessage(raw, index, orphanedToolUses),
+  );
 }
 
 /**
@@ -553,6 +577,11 @@ function convertCodexEntries(
         observeCodexToolLifecycleMessage(msg, state.openToolUses);
       }
     } else if (entry.type === "event_msg") {
+      attachCodexCodeModeCommandExecution(
+        entry.payload,
+        state.toolCallContexts,
+        state.openToolUses,
+      );
       if (entry.payload.type === "patch_apply_end") {
         attachCodexCodeModePatchResult(entry.payload, state.toolCallContexts);
       }
@@ -795,6 +824,57 @@ function findCodexToolUseInput(message: Message, callId: string): unknown {
   return content.find(
     (block) => block.type === "tool_use" && block.id === callId,
   )?.input;
+}
+
+/** Native nested executions have their own IDs, not the outer exec call ID.
+ * Only associate a single exact command in the same turn with one open Bash
+ * call. Ambiguous/missing evidence must not turn arbitrary stdout into status.
+ */
+function attachCodexCodeModeCommandExecution(
+  payload: CodexEventMsgEntry["payload"],
+  contexts: Map<string, CodexToolCallContext>,
+  openToolUses: Map<string, Message>,
+): void {
+  // Without a native parent ID, concurrent tool calls make attribution ambiguous.
+  if (openToolUses.size !== 1) return;
+  if (payload.type !== "item_completed" || typeof payload.turn_id !== "string")
+    return;
+  const item = payload.item;
+  if (
+    !isRecord(item) ||
+    item.type !== "CommandExecution" ||
+    typeof item.id !== "string" ||
+    (item.status !== "completed" && item.status !== "failed") ||
+    !Array.isArray(item.parsed_cmd) ||
+    item.parsed_cmd.length !== 1
+  )
+    return;
+  const command = item.parsed_cmd[0];
+  if (!isRecord(command) || typeof command.cmd !== "string") return;
+  if (
+    item.exit_code != null &&
+    (typeof item.exit_code !== "number" || !Number.isInteger(item.exit_code))
+  )
+    return;
+  const callId = openToolUses.keys().next().value;
+  const context = callId ? contexts.get(callId) : undefined;
+  if (
+    context?.toolName !== "Bash" ||
+    context.codeModeTurnId !== payload.turn_id ||
+    !isRecord(context.input) ||
+    context.input.command !== command.cmd ||
+    context.commandExecution === null
+  )
+    return;
+  if (context.commandExecution && context.commandExecution.itemId !== item.id) {
+    context.commandExecution = null;
+    return;
+  }
+  context.commandExecution = {
+    itemId: item.id,
+    status: item.status,
+    ...(typeof item.exit_code === "number" ? { exitCode: item.exit_code } : {}),
+  };
 }
 
 function attachCodexCodeModePatchResult(
@@ -1431,6 +1511,7 @@ function convertCodexCustomToolCallPayload(
     context: {
       toolName: normalizedInvocation.toolName,
       input: normalizedInvocation.input,
+      ...(rawToolName === "exec" && turnId ? { codeModeTurnId: turnId } : {}),
       readShellInfo: normalizedInvocation.readShellInfo,
       writeShellInfo: normalizedInvocation.writeShellInfo,
     },
@@ -1968,9 +2049,16 @@ function convertGeminiMessages(
                 type: "user",
                 message: {
                   role: "user",
-                  content: [{ type: "tool_result", ...toolUseResult }],
+                  content: [
+                    {
+                      type: "tool_result",
+                      ...toolUseResult,
+                      ...(toolCall.status === "error"
+                        ? { is_error: true }
+                        : {}),
+                    },
+                  ],
                 },
-                toolUseResult,
                 timestamp: toolCall.timestamp ?? assistantMsg.timestamp,
               });
             }
@@ -2140,4 +2228,28 @@ function convertOpenCodeToolResultPart(
       part.state?.attachments,
     ),
   };
+}
+
+/** The issue index shares the transcript parser's visibility and identity rules. */
+export function normalizeIssueEntries(
+  provider: "claude" | "codex",
+  entries: Array<ClaudeSessionEntry | CodexSessionEntry>,
+): import("../services/issues/extract.js").IssueText[] {
+  const messages =
+    provider === "claude"
+      ? (entries as ClaudeSessionEntry[]).map((entry, index) =>
+          convertClaudeMessage(entry, index, new Set()),
+        )
+      : convertCodexEntries(entries as CodexSessionEntry[], "issue-index");
+  return messages.flatMap((message) => {
+    const text = issueMessageText(message);
+    return text ? [text] : [];
+  });
+}
+
+export function issueMessageText(
+  message: Message,
+): import("../services/issues/extract.js").IssueText | null {
+  const text = visibleIssueText(message);
+  return text ? { ...text, sourceId: issueSourceIds.get(message) } : null;
 }

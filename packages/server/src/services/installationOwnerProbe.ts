@@ -72,6 +72,8 @@ export function createDefaultOwnerProbe(
           return null;
         }
       }
+      // Avoid Get-Process module auto-loading during isolated Windows startup.
+      // Cold PowerShell under runner load can exceed the POSIX probe budget.
       try {
         const { stdout } = await runFile(
           "powershell.exe",
@@ -80,12 +82,16 @@ export function createDefaultOwnerProbe(
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            `((Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks)`,
+            `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks`,
           ],
-          { encoding: "utf8", timeout: 5_000 },
+          { encoding: "utf8", timeout: 15_000 },
         );
-        return stdout.trim() || null;
-      } catch {
+        const startId = stdout.trim();
+        return /^\d+$/.test(startId) ? startId : null;
+      } catch (error) {
+        // Our own process is necessarily alive. Preserve the operational
+        // failure so startup reports its cause, rather than a false stale PID.
+        if (pid === process.pid) throw error;
         return null;
       }
     },

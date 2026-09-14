@@ -1409,6 +1409,18 @@ describe("SessionListItem links", () => {
     });
 
     expect(screen.queryByRole("button", { name: "Resume" })).toBeNull();
-    expect(sessionLink.contains(project)).toBe(true);
+    // The project name opens the same session as the title, but sits beside
+    // the title area rather than inside it: the hover ... overlay fills the
+    // right edge of that area and would otherwise cover the name and the
+    // status letter next to it.
+    const projectLink = project.closest("a");
+    expect(projectLink?.getAttribute("href")).toBe(
+      sessionLink.getAttribute("href"),
+    );
+    const overlayHost = document.querySelector(
+      ".session-list-item__menu",
+    )?.parentElement;
+    expect(overlayHost).not.toBeNull();
+    expect(overlayHost?.contains(project)).toBe(false);
   });
 });

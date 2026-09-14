@@ -2,7 +2,10 @@ import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PushNotifier } from "../../src/push/PushNotifier.js";
 import type { PushService } from "../../src/push/PushService.js";
-import type { Supervisor } from "../../src/supervisor/Supervisor.js";
+import { Supervisor } from "../../src/supervisor/Supervisor.js";
+import { MessageQueue } from "../../src/sdk/messageQueue.js";
+import { EventBus as LiveEventBus } from "../../src/watcher/EventBus.js";
+import { createControllableIterator } from "../process.test-support.js";
 import type { InputRequest, ProcessState } from "../../src/supervisor/types.js";
 import type {
   BusEvent,
@@ -85,6 +88,7 @@ describe("PushNotifier", () => {
   describe("handling process state changes", () => {
     it("should send push notification when entering waiting-input state", async () => {
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -218,6 +222,7 @@ describe("PushNotifier", () => {
       const startedAt = new Date("2026-01-01T00:00:00.000Z");
       const timestamp = "2026-01-01T00:00:05.000Z";
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "idle",
           since: new Date(timestamp),
@@ -245,6 +250,7 @@ describe("PushNotifier", () => {
         timestamp,
       };
 
+      eventHandler?.({ ...event, activity: "in-turn" });
       eventHandler?.(event);
 
       await vi.waitFor(() => {
@@ -280,6 +286,7 @@ describe("PushNotifier", () => {
         timestamp: new Date().toISOString(),
       };
 
+      eventHandler?.({ ...event, activity: "in-turn" });
       eventHandler?.(event);
 
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -293,6 +300,7 @@ describe("PushNotifier", () => {
       );
 
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "idle",
           since: new Date(),
@@ -320,6 +328,7 @@ describe("PushNotifier", () => {
         timestamp: new Date().toISOString(),
       };
 
+      eventHandler?.({ ...event, activity: "in-turn" });
       eventHandler?.(event);
 
       await new Promise((resolve) => setTimeout(resolve, 10));
@@ -331,6 +340,7 @@ describe("PushNotifier", () => {
       const startedAt = new Date("2026-01-01T00:00:00.000Z");
       const timestamp = "2026-01-01T00:00:08.000Z";
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "terminated",
           reason: "stale",
@@ -377,6 +387,10 @@ describe("PushNotifier", () => {
     });
 
     it("should suppress session-halted after a user abort", async () => {
+      vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue({
+        userTurnVersion: 0,
+        state: { type: "idle" },
+      } as ReturnType<Supervisor["getProcessForSession"]>);
       new PushNotifier({
         eventBus: mockEventBus,
         pushService: mockPushService,
@@ -408,9 +422,253 @@ describe("PushNotifier", () => {
     });
   });
 
+  describe("completion boundaries and intentional stops", () => {
+    function setup() {
+      const process = {
+        userTurnVersion: 0,
+        state: { type: "idle", since: new Date() } as ProcessState,
+        startedAt: new Date(),
+      };
+      vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue(
+        process as ReturnType<Supervisor["getProcessForSession"]>,
+      );
+      const notifier = new PushNotifier({
+        eventBus: mockEventBus,
+        pushService: mockPushService,
+        supervisor: mockSupervisor,
+      });
+      const activity = (value: ProcessStateEvent["activity"]) => {
+        eventHandler?.({
+          type: "process-state-changed",
+          sessionId: "session-1",
+          projectId: testProjectId,
+          activity: value,
+          timestamp: new Date().toISOString(),
+        });
+      };
+      const terminated = () =>
+        eventHandler?.({
+          type: "process-terminated",
+          sessionId: "session-1",
+          projectId: testProjectId,
+          processId: "process-1",
+          provider: "codex",
+          reason: "underlying process terminated",
+          timestamp: new Date().toISOString(),
+        });
+      return { process, notifier, activity, terminated };
+    }
+
+    it("does not treat initial or restored idle state as completed work", () => {
+      const { activity } = setup();
+      activity("idle");
+      activity("idle");
+      expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+    });
+
+    it("consumes a completion edge before delivery finishes and rearms for later work", () => {
+      const { activity } = setup();
+      vi.mocked(mockPushService.sendToAll).mockReturnValue(
+        new Promise(() => {}),
+      );
+      activity("in-turn");
+      activity("idle"); // result
+      activity("idle"); // iterator done
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1);
+      activity("in-turn");
+      activity("idle");
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(2);
+    });
+
+    it.each(["manual stop", "abort event"])(
+      "keeps %s quiet through repeated cleanup until fresh user work",
+      (source) => {
+        const { process, notifier, activity, terminated } = setup();
+        activity("in-turn");
+        if (source === "abort event") {
+          eventHandler?.({
+            type: "session-aborted",
+            sessionId: "session-1",
+            projectId: testProjectId,
+            timestamp: new Date().toISOString(),
+          });
+        } else {
+          notifier.suppressSession("session-1");
+        }
+        activity("idle");
+        activity("idle");
+        activity("in-turn"); // a late provider cleanup event is not fresh input
+        activity("idle");
+        terminated();
+        terminated();
+        expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+        process.userTurnVersion++;
+        activity("in-turn");
+        activity("idle");
+        expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it("does not carry stop suppression into a replacement process", () => {
+      const { process, notifier, activity } = setup();
+      notifier.suppressSession("session-1");
+      vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue({
+        ...process,
+      } as ReturnType<Supervisor["getProcessForSession"]>);
+      activity("in-turn");
+      activity("idle");
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1);
+    });
+
+    it("preserves unexpected termination alerts and ignores duplicate termination events", () => {
+      const { terminated } = setup();
+      terminated();
+      terminated();
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1);
+      expect(mockPushService.sendToAll).toHaveBeenCalledWith(
+        expect.objectContaining({ type: "session-halted", reason: "error" }),
+      );
+    });
+
+    it("stops notification generation before bulk abort or detach cleanup", () => {
+      const { notifier, activity, terminated } = setup();
+      activity("in-turn");
+      notifier.dispose();
+      for (let i = 0; i < 23; i++) {
+        activity("idle");
+        activity("idle");
+        terminated();
+      }
+      expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+    });
+
+    it("does not send a completion after shutdown interrupts an awaited dismiss", async () => {
+      const { process, notifier, activity } = setup();
+      process.state = {
+        type: "waiting-input",
+        request: {
+          id: "request-1",
+          type: "tool-approval",
+          toolName: "Bash",
+        } as InputRequest,
+      };
+      activity("waiting-input");
+      await vi.waitFor(() =>
+        expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1),
+      );
+      let resolveDismiss!: (value: []) => void;
+      vi.mocked(mockPushService.sendToAll).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveDismiss = resolve;
+          }),
+      );
+      process.state = { type: "idle", since: new Date() };
+      activity("idle");
+      activity("idle");
+      notifier.dispose();
+      resolveDismiss([]);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(mockPushService.sendToAll).toHaveBeenCalledTimes(2);
+      expect(mockPushService.sendToAll).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "session-halted" }),
+      );
+    });
+  });
+
+  describe("real supervisor and process lifecycle", () => {
+    it.each(["stop", "kill", "shutdown"])(
+      "keeps %s cleanup quiet without changing provider teardown",
+      async (action) => {
+        const eventBus = new LiveEventBus();
+        const stream = createControllableIterator();
+        const queue = new MessageQueue();
+        const abort = vi.fn(() => {
+          stream.push({ type: "result", session_id: "lifecycle-session" });
+          stream.finish();
+        });
+        const interrupt = vi.fn(async () => {
+          stream.push({ type: "result", session_id: "lifecycle-session" });
+          return true;
+        });
+        let notifier: PushNotifier | undefined;
+        const supervisor = new Supervisor({
+          eventBus,
+          providerDiscoveryEnabled: false,
+          onSessionStopRequested: (sessionId) =>
+            notifier?.suppressSession(sessionId),
+          realSdk: {
+            startSession: async () => ({
+              iterator: stream.iterator,
+              queue,
+              abort,
+              interrupt,
+            }),
+          },
+        });
+        notifier = new PushNotifier({
+          eventBus,
+          supervisor,
+          pushService: mockPushService,
+        });
+        const process = await supervisor.resumeSession(
+          "lifecycle-session",
+          "/tmp/test",
+          { text: "hi" },
+        );
+        // Model the provider having consumed its initial input.
+        queue.drain();
+        try {
+          if (action === "shutdown") {
+            stream.push({ type: "result", session_id: process.sessionId });
+            await vi.waitFor(() => expect(process.state.type).toBe("idle"));
+            vi.mocked(mockPushService.sendToAll).mockClear();
+            notifier.dispose();
+            await process.abort(); // Mac shutdown bypasses Supervisor.abortProcess
+          } else if (action === "kill") {
+            await supervisor.abortProcessWithVerification(process.id);
+          } else {
+            expect(await supervisor.interruptProcess(process.id)).toMatchObject(
+              { success: true },
+            );
+            await vi.waitFor(() => expect(process.state.type).toBe("idle"));
+            expect(interrupt).toHaveBeenCalledTimes(1);
+            expect(abort).not.toHaveBeenCalled();
+            expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+            process.queueMessage({
+              text: "next turn",
+              metadata: { serverReceivedAt: new Date().toISOString() },
+            });
+            queue.drain();
+            stream.push({ type: "result", session_id: process.sessionId });
+            await vi.waitFor(() =>
+              expect(mockPushService.sendToAll).toHaveBeenCalledTimes(1),
+            );
+            expect(mockPushService.sendToAll).toHaveBeenCalledWith(
+              expect.objectContaining({ reason: "completed" }),
+            );
+            return;
+          }
+          expect(mockPushService.sendToAll).not.toHaveBeenCalled();
+          expect(abort).toHaveBeenCalledTimes(1);
+          expect(
+            supervisor.getProcessForSession(process.sessionId),
+          ).toBeUndefined();
+        } finally {
+          notifier.dispose();
+          if (supervisor.getProcessForSession(process.sessionId)) {
+            await supervisor.abortProcessWithVerification(process.id);
+          }
+        }
+      },
+    );
+  });
+
   describe("summary building", () => {
     it("should build summary with file path for file operations", async () => {
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -459,6 +717,7 @@ describe("PushNotifier", () => {
 
     it("should build summary with just tool name when no file path", async () => {
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -508,6 +767,7 @@ describe("PushNotifier", () => {
         "This is a very long question that exceeds the maximum length we want to show in a push notification summary";
 
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -556,6 +816,7 @@ describe("PushNotifier", () => {
       const shortPrompt = "What database should we use?";
 
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -602,6 +863,7 @@ describe("PushNotifier", () => {
   describe("dismissal sync", () => {
     it("should send dismiss when process leaves waiting-input state", async () => {
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -696,6 +958,7 @@ describe("PushNotifier", () => {
 
     it("should not send dismiss when push sending failed", async () => {
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {
@@ -782,6 +1045,7 @@ describe("PushNotifier", () => {
         .mockImplementation(() => {});
 
       const mockProcess = {
+        userTurnVersion: 0,
         state: {
           type: "waiting-input",
           request: {

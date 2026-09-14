@@ -1,4 +1,5 @@
-import type { UrlProjectId } from "@yep-anywhere/shared";
+import type { ProviderName, UrlProjectId } from "@yep-anywhere/shared";
+import type { SessionListSummary } from "./types.js";
 import type { ProviderCatalogFamily } from "./provider-catalog-family.js";
 
 export type SessionCatalogFidelity = "identity" | "head" | "tail";
@@ -24,6 +25,9 @@ export interface SessionCatalogRow {
   updatedAt: string;
   createdAt?: string;
   title?: string | null;
+  provider?: ProviderName;
+  projectName?: string;
+  asyncQuestions?: SessionListSummary["asyncQuestions"];
   fidelity: SessionCatalogFidelity;
   /** Exact provider source identity that established this row. */
   sourceVersion: string;

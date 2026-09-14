@@ -3,7 +3,11 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { createAgentctlSessionEnvBridge } from "../../../src/sdk/providers/agentctl-session-env.js";
+import {
+  copyAgentctlBashEnvInto,
+  createAgentctlSessionEnvBridge,
+  pickStaticAgentEnvironment,
+} from "../../../src/sdk/providers/agentctl-session-env.js";
 
 function runBash(env: NodeJS.ProcessEnv): string {
   return execFileSync(
@@ -50,6 +54,64 @@ function bridgeTestEnv(overrides: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 const bashIt = process.platform !== "win32" && isBashAvailable() ? it : it.skip;
 
 describe("agentctl session env bridge", () => {
+  bashIt("publishes the supervising server URL to tool subprocesses", () => {
+    const bridge = createAgentctlSessionEnvBridge();
+    try {
+      const env = bridge.extendEnv({
+        ...bridgeTestEnv(),
+        AGENT_SERVER_URL: "http://stale.invalid/",
+      });
+      expect(env.AGENT_SERVER_URL).toBeUndefined();
+      bridge.publishSessionId("session", {
+        AGENT_SERVER_URL: "http://localhost:4010/",
+      });
+      expect(
+        execFileSync("bash", ["-c", 'printf "%s" "$AGENT_SERVER_URL"'], {
+          encoding: "utf8",
+          env,
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      ).toBe("http://localhost:4010/");
+    } finally {
+      bridge.cleanup();
+    }
+  });
+  bashIt(
+    "does not restore an outer self grant through a chained startup file",
+    () => {
+      const outer = createAgentctlSessionEnvBridge();
+      const outerEnv = outer.extendEnv({
+        ...bridgeTestEnv(),
+        AGENT_YA_API_URL: "http://127.0.0.1:1234",
+        AGENT_YA_API_TOKEN: "outer-grant",
+      });
+      const inner = createAgentctlSessionEnvBridge();
+      try {
+        const launch = { ...outerEnv };
+        delete launch.AGENT_YA_API_URL;
+        delete launch.AGENT_YA_API_TOKEN;
+        // A nested provider chains the outer BASH_ENV but must not regain its
+        // grant, including the interval before its own canonical id is known.
+        delete launch.YEP_ORIGINAL_BASH_ENV;
+        const env = inner.extendEnv(launch);
+        const read = () =>
+          execFileSync(
+            "bash",
+            [
+              "-c",
+              `printf "%s|%s" "\${AGENT_YA_API_URL-}" "\${AGENT_YA_API_TOKEN-}"`,
+            ],
+            { env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+          );
+        expect(read()).toBe("|");
+        inner.publishSessionId("inner-session");
+        expect(read()).toBe("|");
+      } finally {
+        inner.cleanup();
+        outer.cleanup();
+      }
+    },
+  );
   bashIt("publishes AGENTCTL_SESSION_ID to later Bash shells", () => {
     const tempDir = mkdtempSync(join(tmpdir(), "ya-agentctl-env-test-"));
     const originalBashEnvPath = join(tempDir, "original-bash-env.sh");
@@ -125,6 +187,72 @@ describe("agentctl session env bridge", () => {
       expect(runBash(env)).toBe(
         "original= agentctl=sess-retained wake_url=http://127.0.0.1/session-wake/sess-retained wake_token=wake-token debug_url=http://127.0.0.1/new debug_token=new-token",
       );
+    } finally {
+      bridge.cleanup();
+    }
+  });
+
+  bashIt("copies the Bash bridge path without stripping the overlay", () => {
+    const bridge = createAgentctlSessionEnvBridge();
+    try {
+      const target: Record<string, string> = {
+        KEEP_ME: "yes",
+        AGENT_SERVER_URL: "http://child.invalid/",
+      };
+      copyAgentctlBashEnvInto(target, bridge, {
+        sessionId: "sess-copy",
+        baseEnv: bridgeTestEnv({ AGENT_SERVER_URL: "http://stale.invalid/" }),
+      });
+      expect(target.KEEP_ME).toBe("yes");
+      expect(target.AGENT_SERVER_URL).toBe("http://child.invalid/");
+      expect(target.BASH_ENV).toBeTruthy();
+      expect(target.AGENTCTL_SESSION_ID).toBe("sess-copy");
+      expect(
+        execFileSync("bash", ["-c", 'printf "%s" "$AGENTCTL_SESSION_ID"'], {
+          encoding: "utf8",
+          env: { ...bridgeTestEnv(), ...target },
+          stdio: ["ignore", "pipe", "pipe"],
+        }),
+      ).toBe("sess-copy");
+    } finally {
+      bridge.cleanup();
+    }
+  });
+  it("carries the artifact origin across the provider-host boundary", () => {
+    // The host narrows the computed child environment to these names before
+    // the worker sees it, and the worker has no other source for them. An
+    // origin dropped here leaves the agent's capture tool with no interactive
+    // delivery on a server that has one configured.
+    expect(
+      pickStaticAgentEnvironment({
+        AGENT_SERVER_URL: "http://127.0.0.1:3400/",
+        AGENT_ARTIFACT_VIEWER_ORIGIN: "http://artifacts.localhost:3400",
+        YEP_SESSION_WAKE_URL: "http://127.0.0.1:3400/wake",
+        YEP_SESSION_WAKE_TOKEN: "per-session-secret",
+      }),
+    ).toEqual({
+      AGENT_SERVER_URL: "http://127.0.0.1:3400/",
+      AGENT_ARTIFACT_VIEWER_ORIGIN: "http://artifacts.localhost:3400",
+    });
+  });
+  bashIt("publishes the artifact origin to tool subprocesses", () => {
+    const bridge = createAgentctlSessionEnvBridge();
+    try {
+      const env = bridge.extendEnv({
+        ...bridgeTestEnv(),
+        AGENT_ARTIFACT_VIEWER_ORIGIN: "http://stale.invalid",
+      });
+      expect(env.AGENT_ARTIFACT_VIEWER_ORIGIN).toBeUndefined();
+      bridge.publishSessionId("session", {
+        AGENT_ARTIFACT_VIEWER_ORIGIN: "http://artifacts.localhost:3400",
+      });
+      expect(
+        execFileSync(
+          "bash",
+          ["-c", 'printf "%s" "$AGENT_ARTIFACT_VIEWER_ORIGIN"'],
+          { encoding: "utf8", env, stdio: ["ignore", "pipe", "pipe"] },
+        ),
+      ).toBe("http://artifacts.localhost:3400");
     } finally {
       bridge.cleanup();
     }

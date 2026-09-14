@@ -638,22 +638,15 @@ describe("EditRenderer collapsed preview fallback", () => {
     expect(screen.getAllByText(/const/)).toHaveLength(2);
   });
 
-  it("renders stable fallback text when completed row has no patch data", () => {
-    const input = {};
-
-    render(
-      <div>
-        {renderCollapsedPreview(
-          input as never,
-          { ok: true } as never,
-          false,
-          renderContext,
-        )}
-      </div>,
+  it("keeps an empty Edit input inspectable without inventing a patch target", () => {
+    const { container } = render(
+      <I18nProvider>
+        {renderCollapsedPreview({}, { ok: true }, false, renderContext)}
+      </I18nProvider>,
     );
-
+    expect(container.querySelector('[data-tool-display="raw"]')).not.toBeNull();
     expect(screen.queryByText("Computing diff...")).toBeNull();
-    expect(screen.getByText("Patch preview unavailable")).toBeDefined();
+    expect(container.textContent).toContain('"ok": true');
   });
 
   it("derives filename from raw patch when file_path is missing", () => {

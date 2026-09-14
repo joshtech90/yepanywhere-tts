@@ -27,6 +27,18 @@ export class MergedSessionReader implements ISessionReader {
     }
   }
 
+  async readIssueTextBatch(
+    sessionId: string,
+    options: import("./issue-text-reader.js").IssueReadOptions,
+  ) {
+    for (const reader of this.readers) {
+      const path = await reader.getSessionFilePath?.(sessionId);
+      if (path && reader.readIssueTextBatch)
+        return reader.readIssueTextBatch(sessionId, options);
+    }
+    throw new Error("Bounded issue acquisition unavailable for this session");
+  }
+
   async close(): Promise<void> {
     await Promise.all(this.readers.map(async (reader) => reader.close?.()));
   }

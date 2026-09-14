@@ -15,7 +15,6 @@ import {
   createProviderHostToken,
   discoverProviderHost,
   ensurePrivateProviderHostDirectory,
-  readLinuxProcessStartTime,
   readProviderHostReceipts,
   recoverProviderHost,
   removeProviderHostArtifacts,
@@ -24,6 +23,13 @@ import {
   writeProviderHostRecentRuntimes,
   writeProviderHostReceipts,
 } from "./provider-runtime-discovery.mjs";
+import {
+  assertProviderSocketPath,
+  readProcessStartTime,
+  processGroupAlive as isProcessGroupAlive,
+  isOwnedProcessGroupAlive,
+  providerHostCapability,
+} from "./provider-process-identity.mjs";
 import {
   ProviderRuntimeTurnLedger,
   normalizeProviderSessionOptions,
@@ -36,6 +42,7 @@ const COOPERATIVE_STOP_MS = 5_000;
 const TERM_GRACE_MS = 1_500;
 const KILL_VERIFY_MS = 1_000;
 const DEFAULT_ATTACH_TIMEOUT_MS = 30_000;
+const DEFAULT_AUXILIARY_IDLE_TIMEOUT_MS = 60 * 60_000;
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(scriptDir, "..");
@@ -55,6 +62,7 @@ export function resolveProviderRuntimeWorkerPath(env = process.env) {
 // provider child, so a `YEP_`-named marker would reach the worker and vanish
 // one process later. See topics/ya-env-vars.md.
 const AGENT_LAUNCH_ENV_NAMES = [
+  "AGENT_SERVER_URL",
   "AGENT_LAUNCHER",
   "AGENT_LAUNCH_HARNESS",
   "AGENT_LAUNCH_MODEL",
@@ -97,6 +105,9 @@ export function withAgentLaunchEnvironment(
 
   environment.AGENT_LAUNCHER = AGENT_LAUNCHER_NAME;
   environment.AGENT_LAUNCH_HARNESS = agentHarness(providerName);
+  const serverUrl = options?.staticAgentEnvironment?.AGENT_SERVER_URL;
+  if (typeof serverUrl === "string" && serverUrl)
+    environment.AGENT_SERVER_URL = serverUrl;
   const model =
     typeof options?.model === "string" ? options.model.trim() : undefined;
   const effort =
@@ -135,33 +146,14 @@ function removePathIfPresent(path) {
   }
 }
 
-function isProcessGroupAlive(processGroupId) {
-  try {
-    process.kill(-processGroupId, 0);
-    return true;
-  } catch (error) {
-    if (error?.code === "ESRCH") return false;
-    if (error?.code === "EPERM") return true;
-    throw error;
-  }
-}
-
 function captureProcessGroup(processGroupId) {
-  const leaderStartTime = readLinuxProcessStartTime(processGroupId);
+  const leaderStartTime = readProcessStartTime(processGroupId);
   if (!leaderStartTime) {
     throw new Error(
       `Cannot capture provider process group ${processGroupId} identity`,
     );
   }
   return { processGroupId, leaderStartTime };
-}
-
-function isOwnedProcessGroupAlive(target) {
-  if (!isProcessGroupAlive(target.processGroupId)) return false;
-  const currentStartTime = readLinuxProcessStartTime(target.processGroupId);
-  return (
-    currentStartTime === null || currentStartTime === target.leaderStartTime
-  );
 }
 
 async function waitForProcessGroupExit(target, timeoutMs) {
@@ -270,9 +262,11 @@ export class ProviderRuntimeHost {
           });
           return;
         }
+        if (runtime.activeSubmissionId) return;
         this.armAttachDeadline(
           runtime,
           "headless provider runtime stayed idle",
+          runtime.auxiliaryIdleTimeoutMs,
         );
       },
     });
@@ -450,6 +444,9 @@ export class ProviderRuntimeHost {
             "runtime-control",
             "session-turn",
             "session-turn-await",
+            "session-turn-eventual",
+            "session-turn-live-only",
+            "session-turn-idle-timeout",
             "recent-runtime-recovery",
             "provider-session-options",
           ],
@@ -623,6 +620,14 @@ export class ProviderRuntimeHost {
   }
 
   async resolveTurnRuntime(request) {
+    if (
+      request.idleTimeoutMs !== undefined &&
+      (!Number.isFinite(request.idleTimeoutMs) ||
+        request.idleTimeoutMs < 1000 ||
+        request.idleTimeoutMs > 86_400_000)
+    ) {
+      throw new Error("idleTimeoutMs must be between 1000 and 86400000");
+    }
     const matches = this.matchingTurnRuntimes(request.target);
     if (matches.length > 1) {
       throw controlError(
@@ -633,6 +638,12 @@ export class ProviderRuntimeHost {
     if (matches.length === 1) {
       this.forgetRecentRuntime(request.target);
       return matches[0];
+    }
+    if (request.liveOnly === true) {
+      throw controlError(
+        "not-alive",
+        "No live provider worker matches the requested target",
+      );
     }
     if (request.resumeRecentRuntime === true) {
       const recentMatches = this.matchingRecentRuntimes(request.target);
@@ -646,7 +657,10 @@ export class ProviderRuntimeHost {
         const runtime = await this.launchOrClaim(
           {
             target: recentMatches[0].target,
-            launch: recentMatches[0].launch,
+            launch: {
+              ...recentMatches[0].launch,
+              idleTimeoutMs: request.idleTimeoutMs,
+            },
           },
           true,
         );
@@ -658,7 +672,7 @@ export class ProviderRuntimeHost {
     return await this.launchOrClaim(
       {
         target: request.target,
-        launch: request.launch,
+        launch: { ...request.launch, idleTimeoutMs: request.idleTimeoutMs },
       },
       true,
     );
@@ -688,6 +702,7 @@ export class ProviderRuntimeHost {
     const entry = await this.launch(
       {
         auxiliaryOwned: true,
+        auxiliaryIdleTimeoutMs: launch.idleTimeoutMs,
         providerName,
         projectPath: launch.projectPath,
         providerSessionId: request.target.providerSessionId,
@@ -695,7 +710,7 @@ export class ProviderRuntimeHost {
         sessionId:
           request.target.yaSessionId ?? request.target.providerSessionId,
         options: {
-          ...(launch.options ?? {}),
+          ...launch.options,
           cwd: launch.projectPath,
           resumeSessionId: request.target.providerSessionId,
         },
@@ -759,6 +774,7 @@ export class ProviderRuntimeHost {
       this.runtimeDir,
       `provider-${runtimeId.replaceAll("-", "").slice(0, 16)}.sock`,
     );
+    assertProviderSocketPath(socketPath);
     removePathIfPresent(socketPath);
 
     const options = request.options ?? {};
@@ -836,6 +852,8 @@ export class ProviderRuntimeHost {
       attachTimer: null,
       terminationPromise: null,
       activeSubmissionId: undefined,
+      auxiliaryIdleTimeoutMs:
+        request.auxiliaryIdleTimeoutMs ?? DEFAULT_AUXILIARY_IDLE_TIMEOUT_MS,
       launchRecipe: {
         providerName,
         projectPath,
@@ -954,7 +972,11 @@ export class ProviderRuntimeHost {
       if (entry.auxiliaryOwned) {
         entry.state = "detached";
         entry.detachedAt = new Date().toISOString();
-        this.armAttachDeadline(entry, "headless provider runtime stayed idle");
+        this.armAttachDeadline(
+          entry,
+          "headless provider runtime stayed idle",
+          entry.auxiliaryIdleTimeoutMs,
+        );
       } else {
         this.armAttachDeadline(
           entry,
@@ -1107,7 +1129,11 @@ export class ProviderRuntimeHost {
       this.clearAttachDeadline(entry);
     } else if (entry.auxiliaryOwned) {
       entry.state = "detached";
-      this.armAttachDeadline(entry, "headless provider runtime stayed idle");
+      this.armAttachDeadline(
+        entry,
+        "headless provider runtime stayed idle",
+        entry.auxiliaryIdleTimeoutMs,
+      );
     } else {
       entry.state = "starting";
       this.armAttachDeadline(
@@ -1259,7 +1285,7 @@ export class ProviderRuntimeHost {
     entry.attachTimer = null;
   }
 
-  armAttachDeadline(entry, reason) {
+  armAttachDeadline(entry, reason, timeoutMs = this.attachTimeoutMs) {
     this.clearAttachDeadline(entry);
     entry.attachTimer = setTimeout(() => {
       void this.terminateRuntime(entry.runtimeId, reason).catch((error) => {
@@ -1267,7 +1293,7 @@ export class ProviderRuntimeHost {
           `[ProviderRuntimeHost] Failed to reap ${entry.runtimeId}: ${errorMessage(error)}\n`,
         );
       });
-    }, this.attachTimeoutMs);
+    }, timeoutMs);
   }
 
   async handleRuntimeExit(runtimeId) {
@@ -1352,9 +1378,13 @@ export class ProviderRuntimeHost {
     if (this.shuttingDown) return await this.shuttingDown;
     this.shuttingDown = (async () => {
       const recentRuntimeCandidates = [...this.runtimes.values()]
-        .filter(
-          (entry) => entry.providerSessionId && this.isRuntimeClaimable(entry),
-        )
+        .filter((entry) => {
+          try {
+            return entry.providerSessionId && this.isRuntimeClaimable(entry);
+          } catch {
+            return false;
+          } // Cleanup below retains each failed identity.
+        })
         .map((entry) => ({
           target: {
             harness: entry.harness,
@@ -1373,9 +1403,11 @@ export class ProviderRuntimeHost {
       );
       const failures = results.filter((result) => result.status === "rejected");
       const retainedResults = await Promise.allSettled(
-        [...this.retainedProcessGroups.values()].map(this.terminateGroup),
+        [...this.retainedProcessGroups.values()].map(async (target) => {
+          await this.terminateGroup(target);
+          this.retainedProcessGroups.delete(target.processGroupId);
+        }),
       );
-      this.retainedProcessGroups.clear();
       this.refreshDescriptor();
       failures.push(
         ...retainedResults.filter((result) => result.status === "rejected"),
@@ -1422,7 +1454,7 @@ async function main() {
   if (process.argv.includes("--help")) {
     process.stdout.write(
       "Usage: node scripts/provider-runtime-host.mjs --headless\n\n" +
-        "Start the Linux provider host in the foreground. The stable local\n" +
+        "Start the Linux/macOS Node source provider host in the foreground. The stable local\n" +
         "descriptor and private capability token are created automatically.\n",
     );
     return;
@@ -1430,9 +1462,13 @@ async function main() {
   if (!headless && typeof process.send !== "function") {
     throw new Error("Use --headless when starting the provider host directly");
   }
+  const capability = providerHostCapability();
+  if (!capability.supported) throw new Error(capability.reason);
   const stablePaths = resolveProviderHostPaths();
   if (!stablePaths) {
-    throw new Error("The provider runtime host is available only on Linux");
+    throw new Error(
+      "The provider runtime host is unavailable on this platform/runtime",
+    );
   }
   const runtimeDir =
     process.env.YEP_PROVIDER_RUNTIME_DIR ?? stablePaths.runtimeDir;
@@ -1460,6 +1496,7 @@ async function main() {
       process.env.YEP_PROVIDER_RUNTIME_RECENT_RUNTIMES ??
       join(runtimeDir, basename(stablePaths.recentRuntimePath)),
   };
+  assertProviderSocketPath(paths.controlSocketPath);
   ensurePrivateProviderHostDirectory(paths.runtimeDir);
   const workerPath = resolveProviderRuntimeWorkerPath();
   const identities = createProviderHostSourceIdentity({
@@ -1534,6 +1571,9 @@ async function main() {
           "runtime-control",
           "session-turn",
           "session-turn-await",
+          "session-turn-eventual",
+          "session-turn-live-only",
+          "session-turn-idle-timeout",
           "recent-runtime-recovery",
           "provider-session-options",
         ],
@@ -1573,6 +1613,7 @@ async function main() {
   }
   process.on("SIGINT", () => shutdown("SIGINT"));
   process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGHUP", () => shutdown("terminal SIGHUP"));
   try {
     await host.start();
   } catch (error) {

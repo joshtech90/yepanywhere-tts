@@ -54,6 +54,7 @@ function createLaunchSettingsMetadata(
   };
   const service = {
     getMetadata: () => undefined,
+    getGoalCommand: () => undefined,
     getEffectiveLaunchSettings: () => current,
     getRequestedModel: () =>
       current ? (current.requestedModel ?? undefined) : legacyRequestedModel,
@@ -83,8 +84,10 @@ function createLaunchSettingsMetadata(
 
 function testProvider(
   startSession: AgentProvider["startSession"],
+  traits?: Pick<AgentProvider, "initializesOnFirstMessage">,
 ): AgentProvider {
   return {
+    ...traits,
     name: "claude",
     displayName: "Claude",
     supportsPermissionMode: true,
@@ -362,6 +365,99 @@ describe("Supervisor", () => {
       await providerSupervisor.abortProcess(process.id);
     });
 
+    it("starts a session whose first message is a native command", async () => {
+      const runProviderCommand = vi.fn(async () => ({ handled: true }));
+      const prompts: unknown[] = [];
+      // Claude Code reports its session id only once a prompt starts a turn,
+      // so a startup command has to arrive as that prompt.
+      const provider = testProvider(
+        async () => {
+          const queue = new MessageQueue();
+          let aborted = false;
+          async function* iterator() {
+            for await (const message of queue) {
+              if (aborted) return;
+              prompts.push(message.message.content);
+              yield {
+                type: "system" as const,
+                subtype: "init" as const,
+                session_id: "goal-session",
+              };
+            }
+          }
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+            runProviderCommand,
+          };
+        },
+        { initializesOnFirstMessage: true },
+      );
+      const providerSupervisor = new Supervisor({ provider });
+
+      const process = await providerSupervisor.startSession(
+        "/tmp/test",
+        { text: "/goal ship it" },
+        undefined,
+        undefined,
+        { requireProviderSessionId: true },
+      );
+
+      expect(process).toMatchObject({ sessionId: "goal-session" });
+      expect(prompts).toEqual(["/goal ship it"]);
+      expect(runProviderCommand).not.toHaveBeenCalled();
+      await providerSupervisor.abortProcess(process.id);
+    });
+
+    it("dispatches a startup native command once the provider has an id", async () => {
+      const runProviderCommand = vi.fn(async () => ({ handled: true }));
+      const prompts: unknown[] = [];
+      const provider = testProvider(async () => {
+        const queue = new MessageQueue();
+        let aborted = false;
+        // Codex reports its thread as soon as the session starts, so the
+        // command dispatches natively instead of becoming model text.
+        async function* iterator() {
+          yield {
+            type: "system" as const,
+            subtype: "init" as const,
+            session_id: "compact-session",
+          };
+          for await (const message of queue) {
+            if (aborted) return;
+            prompts.push(message.message.content);
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+          runProviderCommand,
+        };
+      });
+      const providerSupervisor = new Supervisor({ provider });
+
+      const process = await providerSupervisor.startSession(
+        "/tmp/test",
+        { text: "/compact" },
+        undefined,
+        undefined,
+        { requireProviderSessionId: true },
+      );
+
+      expect(process).toMatchObject({ sessionId: "compact-session" });
+      expect(runProviderCommand).toHaveBeenCalledWith("compact", "");
+      expect(prompts).toEqual([]);
+      await providerSupervisor.abortProcess(process.id);
+    });
+
     it("classifies create-only provider startup rejection as retryable", async () => {
       const provider = testProvider(async () => {
         throw new Error("Provider rejected this launch");
@@ -409,6 +505,7 @@ describe("Supervisor", () => {
       const onSuccessfulProviderSession = vi.fn(async () => {});
       const providerMetadata = {
         getMetadata: vi.fn(() => undefined),
+        getGoalCommand: vi.fn(() => undefined),
         recordEffectiveLaunchSettings: vi.fn(async () => undefined),
         remapSessionId: vi.fn(async () => {}),
         setProvider: vi.fn(async () => {}),
@@ -3168,6 +3265,7 @@ describe("Supervisor", () => {
       );
       const metadata = {
         getMetadata: () => undefined,
+        getGoalCommand: () => undefined,
         getEffectiveLaunchSettings: () => durable,
         getRequestedModel: () => durable?.requestedModel ?? undefined,
         recordEffectiveLaunchSettings,

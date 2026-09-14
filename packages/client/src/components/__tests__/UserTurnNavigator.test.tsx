@@ -27,6 +27,7 @@ vi.mock("../../i18n", () => ({
         turnNotchForkAfter: "Fork after…",
         turnNotchCopy: "Copy",
         turnNotchShowFrom: "Show from",
+        turnNotchHandoffFrom: "Handoff from…",
         turnNotchDismissMenu: "Dismiss menu",
         turnNotchJumpToTurn: "Jump to turn",
         turnNotchShowFromTurn: "Load client transcript from turn",
@@ -276,6 +277,7 @@ describe("UserTurnNavigator", () => {
     const onForkAfterAnchor = vi.fn();
     const onCopyAnchor = vi.fn();
     const onTrimAnchor = vi.fn();
+    const onHandoffFromAnchor = vi.fn();
 
     firstRow.dataset.renderId = "user-1";
     secondRow.dataset.renderId = "user-2";
@@ -309,6 +311,7 @@ describe("UserTurnNavigator", () => {
         onForkAfterAnchor={onForkAfterAnchor}
         onCopyAnchor={onCopyAnchor}
         onTrimAnchor={onTrimAnchor}
+        onHandoffFromAnchor={onHandoffFromAnchor}
       />,
     );
 
@@ -326,6 +329,9 @@ describe("UserTurnNavigator", () => {
     expect(screen.getByRole("menuitem", { name: "Fork after…" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Show from" })).toBeTruthy();
+    expect(
+      screen.getByRole("menuitem", { name: "Handoff from…" }),
+    ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Fork after…" }));
 
@@ -333,6 +339,74 @@ describe("UserTurnNavigator", () => {
     expect(onForkBeforeAnchor).not.toHaveBeenCalled();
     expect(onCopyAnchor).not.toHaveBeenCalled();
     expect(onTrimAnchor).not.toHaveBeenCalled();
+    expect(onHandoffFromAnchor).not.toHaveBeenCalled();
+  });
+
+  it("hands off from a turn in-tab on click and in a new tab on middle click", async () => {
+    const scrollContainer = document.createElement("div");
+    const messageList = document.createElement("div");
+    const firstRow = document.createElement("div");
+    const secondRow = document.createElement("div");
+    const onHandoffFromAnchor = vi.fn();
+
+    firstRow.dataset.renderId = "user-1";
+    secondRow.dataset.renderId = "user-2";
+    messageList.append(firstRow, secondRow);
+    scrollContainer.append(messageList);
+    document.body.append(scrollContainer);
+    Object.defineProperty(scrollContainer, "scrollTop", {
+      configurable: true,
+      value: 0,
+      writable: true,
+    });
+    setReadonlyNumber(scrollContainer, "scrollHeight", 1000);
+    setReadonlyNumber(scrollContainer, "clientHeight", 200);
+    setReadonlyNumber(scrollContainer, "clientWidth", 360);
+    setReadonlyNumber(scrollContainer, "offsetWidth", 380);
+    scrollContainer.getBoundingClientRect = () =>
+      rect({ top: 100, height: 200 });
+    firstRow.getBoundingClientRect = () => rect({ top: 120, height: 30 });
+    secondRow.getBoundingClientRect = () => rect({ top: 520, height: 30 });
+
+    render(
+      <UserTurnNavigator
+        anchors={[
+          { id: "user-1", preview: "First request" },
+          { id: "user-2", preview: "Second request" },
+        ]}
+        messageListRef={{ current: messageList }}
+        onHandoffFromAnchor={onHandoffFromAnchor}
+      />,
+    );
+
+    act(() => {
+      dispatchPointerMove(scrollContainer, 492, 150);
+    });
+    fireEvent.contextMenu(
+      await screen.findByRole("button", {
+        name: "Jump to turn: First request",
+      }),
+      { clientX: 492, clientY: 150 },
+    );
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Handoff from…" }));
+    expect(onHandoffFromAnchor).toHaveBeenCalledWith("user-1", {
+      newTab: false,
+    });
+
+    fireEvent.contextMenu(
+      await screen.findByRole("button", {
+        name: "Jump to turn: First request",
+      }),
+      { clientX: 492, clientY: 150 },
+    );
+    fireEvent(
+      screen.getByRole("menuitem", { name: "Handoff from…" }),
+      new MouseEvent("auxclick", { bubbles: true, button: 1 }),
+    );
+    expect(onHandoffFromAnchor).toHaveBeenLastCalledWith("user-1", {
+      newTab: true,
+    });
   });
 
   it("reconciles removed bookmarks, previews, menus, and rail geometry", async () => {

@@ -45,7 +45,7 @@ sessions started *outside* YA by agent tools that exported
 the replica's `sessions/` back to the real root so every rollout lands
 in one store and the scanner needs no change — simpler, but symlink
 semantics on Windows make the two-root scan the portable design
-(`AGENTS.md` § Cross-Platform Behavior And Tests).
+([Cross-Platform Behavior And Tests](../docs/development/testing.md#cross-platform-behavior-and-tests)).
 
 ## Setting it in the new-session route
 

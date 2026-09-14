@@ -1,0 +1,212 @@
+import { spawn } from "node:child_process";
+import {
+  chmod,
+  copyFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+} from "node:fs/promises";
+import { createConnection } from "node:net";
+import { tmpdir } from "node:os";
+import { delimiter, dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+import { requestProviderHost } from "../../../../scripts/provider-runtime-discovery.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const root = resolve(here, "../../../..");
+
+async function readEvents(path) {
+  try {
+    return (await readFile(path, "utf8")).trim().split("\n").map(JSON.parse);
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    throw error;
+  }
+}
+
+function reload({ port, token }) {
+  return new Promise((resolveRequest, reject) => {
+    const socket = createConnection({ host: "127.0.0.1", port: Number(port) });
+    socket.setEncoding("utf8");
+    socket.setTimeout(2000, () =>
+      socket.destroy(new Error("reload timed out")),
+    );
+    let response = "";
+    socket.on("error", reject);
+    socket.on("connect", () =>
+      socket.end(`${JSON.stringify({ token, op: "reload" })}\n`),
+    );
+    socket.on("data", (chunk) => {
+      response += chunk;
+    });
+    socket.on("end", () => {
+      try {
+        resolveRequest(JSON.parse(response));
+      } catch (error) {
+        reject(error);
+      }
+    });
+  });
+}
+
+// The real shared provider host and its process-group ownership run on Linux and macOS.
+describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+  "development wrapper reload",
+  () => {
+    it("replaces frontend and backend while preserving a live provider worker", async () => {
+      const directory = await mkdtemp(
+        join(
+          process.platform === "darwin" ? "/tmp" : tmpdir(),
+          "ya-dev-reload-",
+        ),
+      );
+      const bin = join(directory, "bin");
+      const runtime = join(directory, "host");
+      const eventsFile = join(directory, "events.jsonl");
+      await mkdir(bin);
+      await copyFile(
+        join(here, "fixtures/dev-wrapper-child.mjs"),
+        join(bin, "pnpm"),
+      );
+      await chmod(join(bin, "pnpm"), 0o755);
+      const wrapper = spawn(
+        process.execPath,
+        [join(root, "scripts/dev.js"), "--no-frontend-reload"],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            PATH: `${bin}${delimiter}${process.env.PATH}`,
+            PORT: "3499",
+            YA_TEST_WRAPPER_EVENTS: eventsFile,
+            YEP_PROVIDER_HOST_RUNTIME_DIR: runtime,
+            YEP_PROVIDER_RUNTIME_WORKER_PATH: join(
+              here,
+              "../sdk/providers/fixtures/fake-provider-runtime-worker.mjs",
+            ),
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let output = "";
+      wrapper.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      wrapper.stderr.on("data", (chunk) => {
+        output += chunk;
+      });
+      try {
+        await expect
+          .poll(async () => (await readEvents(eventsFile)).length, {
+            timeout: 10000,
+          })
+          .toBe(2);
+        const before = await readEvents(eventsFile);
+        const descriptor = JSON.parse(
+          await readFile(join(runtime, "host.json"), "utf8"),
+        );
+        const connection = {
+          controlSocketPath: descriptor.controlSocketPath,
+          token: (await readFile(join(runtime, "token"), "utf8")).trim(),
+          protocolVersion: descriptor.hostProtocolVersion,
+        };
+        const worker = await requestProviderHost(
+          connection,
+          {
+            op: "launch",
+            auxiliaryOwned: true,
+            providerName: "codex",
+            projectPath: directory,
+            sessionId: "reload-worker",
+            options: {},
+          },
+          5000,
+        );
+        expect(worker.pid).toBeGreaterThan(1);
+        const backend = before.find((event) => event.role === "server");
+        const responses = await Promise.all([reload(backend), reload(backend)]);
+        expect(responses.every((response) => response.ok)).toBe(true);
+        await expect
+          .poll(
+            async () =>
+              (await readEvents(eventsFile)).filter(
+                (event) => event.role === "server",
+              ).length,
+            { timeout: 10000 },
+          )
+          .toBe(2);
+        await expect
+          .poll(
+            async () =>
+              (await readEvents(eventsFile)).filter(
+                (event) => event.role === "client",
+              ).length,
+            { timeout: 2000 },
+          )
+          .toBe(2);
+        const after = await readEvents(eventsFile);
+        for (const role of ["server", "client"]) {
+          const pids = after
+            .filter((event) => event.role === role)
+            .map((event) => event.pid);
+          expect(new Set(pids).size).toBe(2);
+          expect(() => process.kill(pids[0], 0)).toThrow();
+        }
+        expect(
+          JSON.parse(await readFile(join(runtime, "host.json"), "utf8")),
+        ).toMatchObject({
+          descriptorId: descriptor.descriptorId,
+          owner: descriptor.owner,
+          startedAt: descriptor.startedAt,
+        });
+        const inventory = await requestProviderHost(connection, {
+          op: "inventory",
+        });
+        expect(inventory).toEqual([
+          expect.objectContaining({
+            pid: worker.pid,
+            sessionId: "reload-worker",
+          }),
+        ]);
+        expect(() => process.kill(worker.pid, 0)).not.toThrow();
+        // A frontend crash must not turn a recoverable reload into provider loss.
+        process.kill(
+          after.filter((event) => event.role === "client").at(-1).pid,
+          "SIGTERM",
+        );
+        await expect
+          .poll(() => output)
+          .toContain("backend and provider host remain running");
+        expect(wrapper.exitCode ?? wrapper.signalCode).toBeNull();
+        wrapper.kill("SIGHUP");
+        await expect
+          .poll(
+            async () =>
+              (await readEvents(eventsFile)).filter(
+                (event) => event.role === "client",
+              ).length,
+            { timeout: 10000 },
+          )
+          .toBe(3);
+        expect(
+          await requestProviderHost(connection, { op: "inventory" }),
+        ).toEqual(inventory);
+      } catch (error) {
+        throw new Error(`${error.message}\n${output}`, { cause: error });
+      } finally {
+        wrapper.kill("SIGTERM");
+        await expect
+          .poll(() => wrapper.exitCode ?? wrapper.signalCode, {
+            timeout: 10000,
+          })
+          .not.toBeNull();
+        for (const event of await readEvents(eventsFile)) {
+          expect(() => process.kill(event.pid, 0)).toThrow();
+        }
+        await rm(directory, { recursive: true });
+      }
+    }, 30000);
+  },
+);

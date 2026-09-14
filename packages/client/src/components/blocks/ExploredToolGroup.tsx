@@ -19,8 +19,12 @@ import type {
   ExplorationProjection,
 } from "../../lib/sessionDetail/explorationProjection";
 import { makeDisplayPath } from "../../lib/text";
-import type { ToolCallItem } from "../../types/renderItems";
+import type { ToolCallItem } from "@yep-anywhere/shared/transcript/items";
 import { MessageAge } from "../MessageAge";
+import {
+  collectExploredImages,
+  ExploredImageStrip,
+} from "./ExploredImageStrip";
 import { toolRegistry } from "../renderers/tools";
 import type { RenderContext } from "../renderers/types";
 import { SessionFilePathLink } from "../SessionFilePathLink";
@@ -66,9 +70,22 @@ function renderEntrySummary(
     projectPath,
   };
 
+  // Only a renderer that understood this record can supply the one line an
+  // entry occupies. When the payload misses its display contract the renderer
+  // answers with its raw fallback instead — a heading, a notice and
+  // pretty-printed JSON — which does not belong in a single-line cell. The
+  // prepared kind is that judgement, per record rather than per tool, so an
+  // unrecognized envelope takes the group's own compact fallback below.
+  const displayKind = toolRegistry.prepare(item.toolName, {
+    input: item.toolInput,
+    result,
+    status: item.status,
+    isError: item.toolResult?.isError,
+  }).kind;
   if (
     (kind === "read" || kind === "search") &&
     isComplete &&
+    displayKind === "rich" &&
     toolRegistry.hasInteractiveSummary(item.toolName)
   ) {
     const summary = toolRegistry.renderInteractiveSummary(
@@ -153,6 +170,7 @@ export const ExploredToolGroup = memo(function ExploredToolGroup({
     ? t("explorationCollapse")
     : t("explorationExpand");
   const rawParents = projection.parents.filter(parentNeedsRawDetails);
+  const exploredImages = collectExploredImages(projection.parents);
   const bodyId = `${accessibilityId}-body`;
   const intrinsicHeight = estimateExplorationGroupHeightPx({
     detailRowCount: rawParents.length,
@@ -233,7 +251,12 @@ export const ExploredToolGroup = memo(function ExploredToolGroup({
                     <span className="explored-entry-tool">
                       {getExplorationEntryDisplayLabel(parent, entry)}
                     </span>
-                    <span className="explored-entry-summary">
+                    {/* A block container, not an inline one: a renderer that
+                        crashes mid-render still answers with its raw
+                        fallback block, and a block inside an inline box
+                        paints outside the row instead of being clipped by
+                        it. */}
+                    <div className="explored-entry-summary">
                       {isCanonicalExplorationEntry(parent, entry)
                         ? renderEntrySummary(
                             parent.item,
@@ -241,7 +264,7 @@ export const ExploredToolGroup = memo(function ExploredToolGroup({
                             projectPath,
                           )
                         : renderProjectedEntrySummary(entry, projectPath, t)}
-                    </span>
+                    </div>
                   </div>
                 )),
               )}
@@ -284,6 +307,11 @@ export const ExploredToolGroup = memo(function ExploredToolGroup({
                 );
               })}
             </div>
+          )}
+          {/* Outside the entry list: that list is a short scrolling box, and
+              thumbnails inside it would push every filename out of view. */}
+          {expanded && exploredImages.length > 0 && (
+            <ExploredImageStrip images={exploredImages} />
           )}
         </div>
       </div>

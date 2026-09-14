@@ -1,0 +1,6 @@
+.expandedCommand:global(.tool-summary-command) {
+  display: block;
+  text-overflow: clip;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

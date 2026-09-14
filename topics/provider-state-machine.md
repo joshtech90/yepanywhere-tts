@@ -82,6 +82,12 @@ Action gating rules:
 - Process state controls primary action availability; liveness is advisory/copy.
 - Only queue/steer paths are valid when active turn is in progress and there is no
   immediate send path.
+- Prompt keyboard shortcuts (`1`/`2`/`3`, Enter, Escape, Tab in
+  `ToolApprovalPanel` and `QuestionAnswerPanel`) act only while focus is
+  inside that panel. A keystroke aimed at the composer, another input, or
+  the page body never answers a prompt: those keys are ordinary typing, and
+  a tool approval unmounts the composer under a user who is still typing.
+  Neither panel takes focus when it appears.
 - The compacting overlay never changes process-level controls; it only changes
   visible status copy.
 
@@ -160,6 +166,15 @@ A message is considered sent only when one of these confirms:
 - user message echo with matching `tempId`,
 - deferred-queue refresh that omits that `tempId`,
 - reconnect/session snapshot showing the message in history and not in queued summary.
+
+The live user-echo is the fast path, not a required notice. While the tab
+stays connected, a `Sending` chip with no echo must still reconcile from
+durable session history (file-change fetch and a bounded retry) using the
+same content/tempId match as reload. Reload clearing the chip while the
+provider transcript already has the turn is a missed-notice failure, not
+proof that the send had not landed. POST success must not remove the chip
+until a transcript row exists, or the bubble vanishes until the echo
+arrives.
 
 When this mismatch is observed, UI should preserve the queued row for recovery
 actions (`cancel`, `edit`, `retry`) and mark the state as uncertain rather than

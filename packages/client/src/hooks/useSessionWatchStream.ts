@@ -1,11 +1,13 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { isNonRetryableError } from "../lib/connection/types";
 import {
   createManagedStream,
+  isManagedStreamResubscribing,
   type ManagedStream,
   SERVER_PUSH_INACTIVITY_TIMEOUT_MS,
 } from "../lib/transport";
+import { useResubscribeOnFrontendSourceChange } from "./useResubscribeOnFrontendSourceChange";
 
 export interface SessionWatchTarget {
   sessionId: string;
@@ -85,6 +87,7 @@ export function useSessionWatchStream(
   options: UseSessionWatchStreamOptions,
 ) {
   const [connected, setConnected] = useState(false);
+  const [resubscribing, setResubscribing] = useState(false);
   const runtime = useCurrentSourceRuntime();
   const streamRef = useRef<ManagedStream | null>(null);
   const optionsRef = useRef(options);
@@ -93,10 +96,28 @@ export function useSessionWatchStream(
   targetRef.current = target;
   const targetKey = getSessionWatchTargetKey(target);
 
+  const reconnect = useCallback(() => {
+    if (!targetKey) return;
+    const stream = streamRef.current;
+    if (!stream) {
+      // The subscribe effect has not created a stream yet, so treat this as a
+      // pending subscribe rather than a broken pipe.
+      setConnected(false);
+      setResubscribing(true);
+      return;
+    }
+    // restart() publishes a new snapshot on every path that changes anything,
+    // and declines only for an already terminal or closed stream whose
+    // published state is the one we still want to show.
+    stream.restart({ delayMs: 50 });
+  }, [targetKey]);
+  useResubscribeOnFrontendSourceChange(reconnect);
+
   useEffect(() => {
     const currentTarget = targetRef.current;
     if (!currentTarget || !targetKey) {
       setConnected(false);
+      setResubscribing(false);
       return undefined;
     }
 
@@ -147,10 +168,15 @@ export function useSessionWatchStream(
       },
     );
     streamRef.current = stream;
-    const unsubscribe = stream.subscribe(() => {
-      setConnected(stream.getSnapshot().connected);
-    });
-    setConnected(stream.getSnapshot().connected);
+    // Every stream state change publishes a snapshot, so this subscription is
+    // the single owner of both flags.
+    const applySnapshot = () => {
+      const snapshot = stream.getSnapshot();
+      setConnected(snapshot.connected);
+      setResubscribing(isManagedStreamResubscribing(snapshot));
+    };
+    const unsubscribe = stream.subscribe(applySnapshot);
+    applySnapshot();
 
     return () => {
       unsubscribe();
@@ -161,5 +187,5 @@ export function useSessionWatchStream(
     };
   }, [runtime.transport, targetKey]);
 
-  return { connected };
+  return { connected, reconnect, resubscribing };
 }

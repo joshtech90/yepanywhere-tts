@@ -296,6 +296,22 @@ improvise a different one:
 | Manager state `disconnected` (gave up / non-retryable)| `disconnected` |
 | Localhost, always                                     | `ready`        |
 
+## File Download Responses
+
+Successful multiplexed WebSocket and relay file responses requested with
+`download=true`, or marked `Content-Disposition: attachment`, carry the
+existing `{ _binary: true, data: "<base64>" }` body regardless of MIME type.
+Decoding that body must reproduce the original bytes, including empty files,
+non-UTF-8 text, JSON whitespace, and integers beyond JavaScript's safe range.
+Download classification precedes JSON parsing. The file viewer continues to
+use the original file name when saving the resulting blob.
+
+Ordinary text and JSON viewing retain their existing response representation;
+failed downloads retain their normal error bodies and status codes so clients
+can report the cause. Existing legacy public-share response handling and size
+limits remain authoritative. This repairs the server's use of an existing
+binary contract; it adds no client dependency, capability, or protocol version.
+
 ## Request Semantics When Not Ready
 
 The contract splits by traffic type. The transport is the single readiness
@@ -388,6 +404,33 @@ Session, focused-watch, activity, glossary, and worktree streams use one
 
 Raw `subscribe*` primitives on the transport stay dumb and return a plain
 `Subscription`, so fakes remain trivial.
+
+Every managed-stream state change publishes a snapshot to subscribers, so a
+consumer that mirrors stream state into React should derive it in the
+`subscribe` callback alone. Reading the snapshot from inside a `spec` handler
+observes the pre-transition value: `onError` and `onClose` run before the
+retry or terminal snapshot is set.
+
+`isManagedStreamResubscribing(snapshot)` distinguishes a transient gap —
+waiting on the transport, subscribing, or backing off before a retry — from a
+pipe that will stay down. A terminal or closed stream is not resubscribing.
+`restart()` is a no-op for those two states, so a reconnect request must derive
+its state from the published snapshot rather than assuming a subscription is on
+the way back.
+
+## Session Connection Bar
+
+The per-session bar (`getSessionConnectionBarStatus`) is narrower than the
+global diagnostic bar above. A session with no live update stream is `idle`.
+Otherwise `disconnected` is always visible, because a broken live pipe is
+something the user must see; `connected` and `connecting` render only under
+developer connection bars.
+
+A stream that is resubscribing, or a transport that is reconnecting, is
+`connecting` — not `disconnected`. Without that distinction a routine
+resubscribe paints a red bar, most visibly on the frontend-changed resubscribe
+that `useResubscribeOnFrontendSourceChange` triggers while the main transport
+is still ready.
 
 ## Design decisions
 

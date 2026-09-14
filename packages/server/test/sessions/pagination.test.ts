@@ -627,4 +627,35 @@ describe("sliceAtCompactAndUserTurnBoundaries", () => {
     expect(result.pagination.truncatedBeforeMessageId).toBe("cb2");
     expect(result.pagination.truncatedBy).toBe("compact_boundary");
   });
+
+  it("clamps a missing tailFrom to compact scope instead of returning an empty page", () => {
+    const messages = [
+      msg("user", "u1"),
+      compactBoundary("cb1"),
+      msg("user", "u2"),
+      compactBoundary("cb2"),
+      msg("user", "u3"),
+      compactBoundary("cb3"),
+      msg("user", "u4"),
+    ];
+
+    const result = sliceAtCompactAndUserTurnBoundaries(
+      messages,
+      2,
+      20,
+      "missing",
+    );
+
+    expect(result.messages.map((message) => message.uuid)).toEqual([
+      "cb2",
+      "u3",
+      "cb3",
+      "u4",
+    ]);
+    expect(result.pagination).toMatchObject({
+      hasOlderMessages: true,
+      truncatedBeforeMessageId: "cb2",
+      truncatedBy: "compact_boundary",
+    });
+  });
 });

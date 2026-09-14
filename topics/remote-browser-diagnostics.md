@@ -252,6 +252,11 @@ pair of in-memory map updates behind an inactive-lease guard. Message-list
 phase counts describe render/projection invocations, while `message-list.commit`
 measures entry into the component render through the post-DOM layout effect.
 
+Development clients additionally expose `developmentTiming`, a bounded rolling
+React timing summary collected independently of the lease. Its native-buffer
+pruning and detail-cloning policy live in
+[`memory-growth.md`](memory-growth.md#development-measurement-retention).
+
 This is not historical console access. It sees only events after enable.
 Key receipt and animation-frame delivery use `performance.now()` at both ends,
 so their elapsed value is non-negative and does not mix the animation

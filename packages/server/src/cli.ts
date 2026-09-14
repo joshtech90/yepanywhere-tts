@@ -1,6 +1,12 @@
 #!/usr/bin/env node
 
-import "./startupEnv.js";
+import { checkServerRuntime } from "./runtimePreflight.js";
+import {
+  SERVER_NODE_RANGE,
+  SERVER_BUN_RANGE,
+} from "@yep-anywhere/shared/server-runtime";
+
+checkServerRuntime();
 
 /**
  * CLI entry point for yepanywhere
@@ -25,29 +31,9 @@ import { request as requestHttps } from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { whichCommand } from "./sdk/cli-detection.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
-const MINIMUM_NODE_VERSION = 20;
-
-/**
- * Check if Node.js version meets minimum requirements.
- * Exits with error if version is too low.
- */
-function checkNodeVersion(): void {
-  const currentVersion = process.versions.node;
-  const majorVersion = Number.parseInt(currentVersion.split(".")[0] ?? "0", 10);
-
-  if (majorVersion < MINIMUM_NODE_VERSION) {
-    console.error(`Error: Node.js ${MINIMUM_NODE_VERSION}+ is required.`);
-    console.error(`Current version: ${currentVersion}`);
-    console.error("");
-    console.error("Please upgrade Node.js: https://nodejs.org/");
-    process.exit(1);
-  }
-}
 
 /**
  * Check if Claude CLI is installed and warn if not found.
@@ -55,7 +41,7 @@ function checkNodeVersion(): void {
  */
 function checkClaudeCli(): void {
   try {
-    execSync(whichCommand("claude"), {
+    execSync(process.platform === "win32" ? "where claude" : "which claude", {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -186,7 +172,8 @@ DATA DIRECTORY:
   Contains: logs/, indexes/, uploads/, session metadata, push subscriptions
 
 REQUIREMENTS:
-  - Node.js >= 20.12
+  - Node.js ${SERVER_NODE_RANGE}, or Bun ${SERVER_BUN_RANGE}
+  - For Bun execution: bunx --bun yepanywhere
   - Claude CLI installed (curl -fsSL https://claude.ai/install.sh | bash)
 `);
 }
@@ -208,19 +195,30 @@ function showVersion(): void {
 
 // Parse command line arguments
 const args = process.argv.slice(2);
+const isBrowserDebugCommand = args[0] === "browser-debug";
 
-if (args[0] === "browser-debug") {
-  await runBrowserDebugCommand(args.slice(1));
-  process.exit(0);
-}
-
-if (args.includes("--help") || args.includes("-h")) {
+// Informational commands must work before application dependencies are loaded.
+// The browser-debug subcommand owns its own help and argument handling.
+if (
+  !isBrowserDebugCommand &&
+  (args.includes("--help") || args.includes("-h"))
+) {
   showHelp();
   process.exit(0);
 }
 
-if (args.includes("--version") || args.includes("-v")) {
+if (
+  !isBrowserDebugCommand &&
+  (args.includes("--version") || args.includes("-v"))
+) {
   showVersion();
+  process.exit(0);
+}
+
+await import("./startupEnv.js");
+
+if (isBrowserDebugCommand) {
+  await runBrowserDebugCommand(args.slice(1));
   process.exit(0);
 }
 
@@ -358,9 +356,6 @@ if (args.length > 0) {
   console.error("Run 'yepanywhere --help' for usage information.");
   process.exit(1);
 }
-
-// Run prerequisite checks
-checkNodeVersion();
 
 // Set NODE_ENV to production if not already set (CLI users expect production mode)
 if (!process.env.NODE_ENV) {

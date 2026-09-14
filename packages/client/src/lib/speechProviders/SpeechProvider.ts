@@ -40,6 +40,10 @@ export interface SpeechTranscriptionContext {
   clientTurnId?: string;
   draftKey?: string;
   speechTargetId?: string;
+  /** Composed text preceding the insertion cursor, snapshotted for this capture. */
+  textBeforeCursor?: string;
+  /** Sent only to YA servers advertising speech-vocabulary-session-terms. */
+  sessionTerms?: string[];
 }
 
 export type SpeechTurnCommand = "send" | "cancel" | "wait";
@@ -202,6 +206,8 @@ export interface SpeechProviderOptions extends SpeechProviderEvents {
   onAudioSamples?: (samples: Float32Array) => void;
   /** Browser-selected local Parakeet model id for YA Parakeet backends. */
   parakeetModel?: string;
+  /** Browser-selected Whisper model; callers gate this on server support. */
+  whisperModel?: string;
   /** Open a dedicated relayed speech socket when YA is reached through relay. */
   openRelayedSpeechSocket?: () => Promise<ConnectionSpeechSocket>;
 }

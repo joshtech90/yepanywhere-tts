@@ -5,6 +5,7 @@ platforms = ["linux-64"]
 
 [environments]
 stt = { features = ["stt"] }
+stt-nemo = { features = ["stt", "nemo-recent"] }
 
 [feature.stt.dependencies]
 python = ">=3.11,<3.13"
@@ -22,3 +23,8 @@ stt-bootstrap = { depends-on = ["stt-install", "stt-check"] }
 stt-bootstrap-parakeet = { depends-on = ["stt-install-parakeet", "stt-check-parakeet"] }
 stt-bootstrap-nemo = { depends-on = ["stt-install-nemo", "stt-check-nemo"] }
 stt-bootstrap-all = { depends-on = ["stt-bootstrap", "stt-bootstrap-parakeet"] }
+
+[feature.nemo-recent.tasks]
+nemo-install = "python -m pip install --requirement requirements/stt-nemo-recent.txt"
+nemo-check = "python -c \"from nemo.collections.asr.models import ASRModel; print('NeMo ASR import OK')\""
+nemo-bootstrap = { depends-on = ["nemo-install", "nemo-check"] }

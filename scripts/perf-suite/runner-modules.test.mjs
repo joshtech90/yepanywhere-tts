@@ -186,6 +186,38 @@ test("telemetry preserves one non-overlapping request profile", () => {
   });
 });
 
+test("telemetry accounts for metadata separately without changing total coverage", () => {
+  const profile = requestProfile({
+    bodyTransferMs: 5,
+    firstByteMs: 20,
+    headers: {
+      "server-timing": [
+        "ya-project;dur=1",
+        "ya-read;dur=2",
+        "ya-normalize;dur=1",
+        "ya-route;dur=1",
+        "ya-metadata;dur=1",
+        'ya-augment;dur=3;desc="messages=6 changed=3 cache-hit=2 cache-join=1 cache-miss=4"',
+        "ya-total;dur=10",
+      ].join(","),
+    },
+    jsonParseMs: 1,
+    ms: 30,
+  });
+
+  assert.equal(profile.available, true);
+  assert.equal(profile.frameworkSerializeLoopbackMs, 10);
+  assert.equal(profile.serverPhaseResidualMs, 1);
+  assert.equal(profile.coverage.fraction, 1);
+  assert.deepEqual(profile.augmentation, {
+    inputMessages: 6,
+    changedMessages: 3,
+    cacheHits: 2,
+    cacheJoins: 1,
+    cacheMisses: 4,
+  });
+});
+
 test("browser driver deadlines settle and reject independently", async () => {
   assert.equal(await waitWithTimeout(Promise.resolve("ok"), 50, "unit"), "ok");
   await assert.rejects(

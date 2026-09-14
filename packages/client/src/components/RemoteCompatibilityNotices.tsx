@@ -3,6 +3,7 @@ import type { VersionInfo } from "../api/client";
 import { useRemoteCompatibilityNoticeDismissals } from "../hooks/useRemoteCompatibilityNoticeDismissals";
 import {
   type RemoteCompatibilityNotice,
+  type RemoteCompatibilityInput,
   type RemoteNoticeSeverity,
   getRemoteCompatibilityNotices,
 } from "../lib/remoteCompatibilityNotices";
@@ -25,12 +26,14 @@ const severityClassNames: Record<RemoteNoticeSeverity, string | undefined> = {
 };
 
 interface RemoteCompatibilityNoticesProps {
+  runtimeNotice?: RemoteCompatibilityInput["runtimeNotice"];
   versionInfo: VersionInfo | null;
   relayUsername: string | null;
   installId?: string | null;
 }
 
 export function RemoteCompatibilityNotices({
+  runtimeNotice,
   versionInfo,
   relayUsername,
   installId,
@@ -39,6 +42,7 @@ export function RemoteCompatibilityNotices({
     if (!versionInfo) return [];
 
     return getRemoteCompatibilityNotices({
+      runtimeNotice,
       currentVersion: versionInfo?.current ?? null,
       latestVersion: versionInfo?.latest ?? null,
       updateAvailable: versionInfo?.updateAvailable ?? false,
@@ -49,7 +53,7 @@ export function RemoteCompatibilityNotices({
       relayUsername,
       installId,
     });
-  }, [installId, relayUsername, versionInfo]);
+  }, [installId, relayUsername, versionInfo, runtimeNotice]);
   const { dismissNotice, snoozeNotice, visibleNotices } =
     useRemoteCompatibilityNoticeDismissals(notices);
 
@@ -61,7 +65,11 @@ export function RemoteCompatibilityNotices({
       notice={notice}
       noticeCount={visibleNotices.length}
       placement="floating"
-      onDismiss={() => dismissNotice(notice)}
+      onDismiss={
+        notice.id === "server-runtime-node22"
+          ? undefined
+          : () => dismissNotice(notice)
+      }
       onSnooze={() => snoozeNotice(notice)}
     />
   );
@@ -98,6 +106,9 @@ export function RemoteCompatibilityNoticeCard({
       className={[
         styles.root!,
         placementClassNames[placement],
+        placement === "floating" &&
+          notice.id === "server-runtime-node22" &&
+          styles.runtimeFloating,
         severityClassNames[notice.severity],
       ]
         .filter(Boolean)

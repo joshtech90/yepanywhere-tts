@@ -386,7 +386,7 @@ test("restores the high-water position after a server restart and reload", async
       sessionId: restartSessionId,
     },
     env: {
-      CLIENT_DIST_PATH: join(process.cwd(), "dist"),
+      CLIENT_DIST_PATH: e2ePaths.clientDist,
       SERVE_FRONTEND: "true",
     },
   });

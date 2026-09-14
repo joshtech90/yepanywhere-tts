@@ -336,6 +336,25 @@ export type CodexWebSearchCallPayload = z.infer<
 >;
 
 /**
+ * Durable reasoning-effort control Codex 0.154 records in thread history when
+ * the effort changes mid-thread. It carries no user-visible content, so YA
+ * parses it as a known type and renders nothing for it.
+ */
+export const CodexConfigurationUpdatePayloadSchema = z
+  .object({
+    type: z.literal("configuration_update"),
+    reasoning: z
+      .object({ effort: z.string().optional() })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export type CodexConfigurationUpdatePayload = z.infer<
+  typeof CodexConfigurationUpdatePayloadSchema
+>;
+
+/**
  * Ghost commit snapshot for git state tracking.
  */
 export const CodexGhostSnapshotPayloadSchema = z.object({
@@ -366,6 +385,7 @@ export const CodexResponseItemPayloadSchema = z.discriminatedUnion("type", [
   CodexToolSearchCallPayloadSchema,
   CodexToolSearchOutputPayloadSchema,
   CodexWebSearchCallPayloadSchema,
+  CodexConfigurationUpdatePayloadSchema,
   CodexGhostSnapshotPayloadSchema,
 ]);
 

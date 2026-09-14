@@ -13,6 +13,7 @@ bundle portability, terminal jump semantics, peer transfer, and cache reuse
 must be proven in focused experiments before implementation.
 
 Related:
+[working across machines](multi-machine-architecture.md),
 [super-session testbed appliance](../docs/tactical/073-super-session-testbed-appliance.md),
 [cross-host delegation](cross-host-delegation.md),
 [remote executors](../docs/project/remote-executors.md),

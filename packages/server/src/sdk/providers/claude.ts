@@ -1,3 +1,4 @@
+import { startAgentSelfSession } from "./agent-self.js";
 import {
   type ChildProcess,
   type ChildProcessWithoutNullStreams,
@@ -33,6 +34,7 @@ import {
   DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   DEFAULT_SUBAGENT_MAX_DEPTH,
+  GOAL_COMMAND_NAME,
   HELPER_SIDE_MODEL_CHEAPEST,
   type ClaudeAdditionalModelSelection,
   type EffortLevel,
@@ -57,6 +59,12 @@ import {
   getClaudeModelCatalogCacheKey,
   projectClaudeAdditionalModels,
 } from "./claude-additional-models.js";
+import {
+  type ClaudeGoalSnapshot,
+  ClaudeGoalTracker,
+  runClaudeGoalCommand,
+  withClaudeGoalDetails,
+} from "./claude-goal.js";
 import { ClaudeProviderRetentionTracker } from "./claude-retention.js";
 import { ClaudeSteerBackgroundController } from "./claude-steer-background.js";
 import {
@@ -69,6 +77,7 @@ import {
 import { getProjectDirFromCwd, syncSessionFile } from "../session-sync.js";
 import type {
   ContentBlock,
+  ProviderCommandResult,
   ProviderLivenessProbeResult,
   SDKMessage,
 } from "../types.js";
@@ -1030,6 +1039,10 @@ export class ClaudeProvider implements AgentProvider {
   readonly supportsNativeRecaps = false;
   readonly supportsNativePromptSuggestions: boolean = true;
   readonly supportsLaunchCompactPercentOverride: boolean = true;
+  // Claude Code streams nothing until it has a prompt: the SDK emits its init
+  // message when the first turn starts, so the session id only exists once YA
+  // has delivered a message.
+  readonly initializesOnFirstMessage = true;
   readonly promptCacheKeepalive?: PromptCacheKeepaliveProviderInfo = {
     supportsNoContextPollutionNudge: true,
     defaultMode: "auto" as const,
@@ -1928,6 +1941,14 @@ export class ClaudeProvider implements AgentProvider {
    * Start a new Claude session.
    */
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    return startAgentSelfSession(this.name, options, (resolved) =>
+      this.startSessionInternal(resolved),
+    );
+  }
+
+  private async startSessionInternal(
+    options: StartSessionOptions,
+  ): Promise<AgentSession> {
     const log = getLogger();
     const queue = new MessageQueue();
     const abortController = new AbortController();
@@ -1945,6 +1966,7 @@ export class ClaudeProvider implements AgentProvider {
     );
     const baseClaudeEnv = {
       ...this.getEnv(options.model),
+      ...options.agentEnvironment,
       ...autoCompactOverrideEnv,
     };
     const claudeEnv = agentctlSessionEnvBridge
@@ -2296,6 +2318,22 @@ export class ClaudeProvider implements AgentProvider {
       throw error;
     }
 
+    // Claude keeps `/goal` in a session-scoped Stop hook with no query for it,
+    // so YA reads the transcript rows the CLI writes for every transition and
+    // owns the paused state itself (topics/emulated-slash-commands.md).
+    const goalTracker = new ClaudeGoalTracker(
+      effectiveCwd,
+      options.restoredGoal,
+    );
+    let goalCommandTail: Promise<void> = Promise.resolve();
+    const buildCommandInventory = async (): Promise<SlashCommand[]> =>
+      withClaudeGoalDetails(
+        withClaudeGoalAlias(
+          (await sdkQuery.supportedCommands()).map(mapClaudeSlashCommand),
+        ),
+        goalTracker.snapshot,
+      );
+
     const steerBackgroundController = new ClaudeSteerBackgroundController({
       settings:
         options.claudeSteerBackgroundBash ??
@@ -2312,6 +2350,8 @@ export class ClaudeProvider implements AgentProvider {
       cwd: effectiveCwd,
       remoteEnv,
       providerRetention,
+      goalTracker,
+      getCommandInventory: buildCommandInventory,
       onMessage: async (message) => {
         if (message.type === "result") await turnEffort.complete();
         steerBackgroundController.observe(message);
@@ -2411,9 +2451,41 @@ export class ClaudeProvider implements AgentProvider {
         const models = await sdkQuery.supportedModels();
         return this.normalizeSupportedModels(models);
       },
-      supportedCommands: async (): Promise<SlashCommand[]> => {
-        const commands = await sdkQuery.supportedCommands();
-        return withClaudeGoalAlias(commands.map(mapClaudeSlashCommand));
+      supportedCommands: buildCommandInventory,
+      runProviderCommand: async (
+        command,
+        argument,
+      ): Promise<ProviderCommandResult> => {
+        if (normalizedSlashCommandNameValue(command) !== GOAL_COMMAND_NAME) {
+          return { handled: false };
+        }
+        // A Claude build without a native `/goal` gets YA's `/loop wish` alias
+        // instead; that emulation owns the text and there is no goal to track.
+        const commands = await sdkQuery.supportedCommands().catch(() => []);
+        const native = commands.some(
+          (entry) =>
+            normalizedSlashCommandNameValue(entry.name) === GOAL_COMMAND_NAME,
+        );
+        if (!native) return { handled: false };
+        // One goal command at a time: pause and resume each read the state
+        // they are about to change.
+        const operation = goalCommandTail.then(() =>
+          runClaudeGoalCommand(argument, {
+            tracker: goalTracker,
+            // Goal text is a Claude local command, not a visible user turn. It
+            // takes the most urgent lane because the lower lanes wait for a
+            // boundary a goal loop never reaches: releasing the Stop hook is
+            // what ends the turn, and that release is the message itself.
+            send: (text) => {
+              queue.push({ text, priority: "now", metadata: { hidden: true } });
+            },
+          }),
+        );
+        goalCommandTail = operation.then(
+          () => {},
+          () => {},
+        );
+        return operation;
       },
       setModel: async (model?: string) => {
         await sdkQuery.setModel(normalizeClaudeLaunchModel(model));
@@ -2435,6 +2507,9 @@ export class ClaudeProvider implements AgentProvider {
       cwd: string;
       remoteEnv?: Record<string, string>;
       providerRetention?: ClaudeProviderRetentionTracker;
+      goalTracker?: ClaudeGoalTracker;
+      /** Current inventory, already carrying goal state, for goal updates. */
+      getCommandInventory?: () => Promise<SlashCommand[]>;
       onMessage?: (message: SDKMessage) => void | Promise<void>;
     },
   ): AsyncIterableIterator<SDKMessage> {
@@ -2448,10 +2523,19 @@ export class ClaudeProvider implements AgentProvider {
           (message as { session_id?: string }).session_id ?? sessionId;
         logSDKMessage(sessionId, message, { provider: "claude" });
 
-        const converted = this.convertMessage(message);
+        const converted = this.convertMessage(
+          message,
+          remoteOptions?.goalTracker?.snapshot,
+        );
         remoteOptions?.providerRetention?.observeMessage(converted);
         await remoteOptions?.onMessage?.(converted);
         yield converted;
+
+        const goalUpdate = await this.observeClaudeGoal(converted, sessionId, {
+          tracker: remoteOptions?.goalTracker,
+          getCommandInventory: remoteOptions?.getCommandInventory,
+        });
+        if (goalUpdate) yield goalUpdate;
 
         // For remote sessions, sync session files after result messages
         // This keeps the local UI up-to-date with remote progress
@@ -2503,14 +2587,63 @@ export class ClaudeProvider implements AgentProvider {
   }
 
   /**
+   * Claude records goal transitions only in its session transcript, so refresh
+   * that state at turn boundaries and while a dispatched goal command is still
+   * unconfirmed. Returns an inventory update when the goal changed — including
+   * the auto-clear after Claude judges a goal met or impossible — so the
+   * session header's flag follows the provider rather than YA's intent.
+   */
+  private async observeClaudeGoal(
+    message: SDKMessage,
+    sessionId: string,
+    goal: {
+      tracker?: ClaudeGoalTracker;
+      getCommandInventory?: () => Promise<SlashCommand[]>;
+    },
+  ): Promise<SDKMessage | null> {
+    const tracker = goal.tracker;
+    if (!tracker || message.type === "stream_event") return null;
+    if (sessionId !== "unknown") tracker.attachSession(sessionId);
+    const force =
+      message.type === "result" ||
+      (message.type === "system" && message.subtype === "init");
+    try {
+      if (!(await tracker.refreshIfDue(force))) return null;
+      const commands = await goal.getCommandInventory?.();
+      if (!commands) return null;
+      return {
+        type: "system",
+        subtype: "commands_changed",
+        session_id: sessionId,
+        slash_command_inventory: commands,
+      } as SDKMessage;
+    } catch (error) {
+      getLogger().warn(
+        {
+          event: "claude_goal_refresh_failed",
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "Failed to read Claude goal state from the session transcript",
+      );
+      return null;
+    }
+  }
+
+  /**
    * Convert an SDK message to our internal SDKMessage format.
    *
    * We pass through all fields from the SDK without stripping.
    * This preserves debugging info, DAG structure, and metadata.
    */
-  private convertMessage(message: AgentSDKMessage): SDKMessage {
+  private convertMessage(
+    message: AgentSDKMessage,
+    goal?: ClaudeGoalSnapshot,
+  ): SDKMessage {
     // Pass through all fields, only normalize content blocks
     const sdkMessage = message as unknown as SDKMessage;
+    const withGoal = (commands: SlashCommand[]): SlashCommand[] =>
+      goal ? withClaudeGoalDetails(commands, goal) : commands;
     if (
       sdkMessage.type === "system" &&
       sdkMessage.subtype === "commands_changed" &&
@@ -2518,9 +2651,11 @@ export class ClaudeProvider implements AgentProvider {
     ) {
       return {
         ...sdkMessage,
-        slash_command_inventory: withClaudeGoalAlias(
-          (sdkMessage.commands as ClaudeSdkSlashCommand[]).map(
-            mapClaudeSlashCommand,
+        slash_command_inventory: withGoal(
+          withClaudeGoalAlias(
+            (sdkMessage.commands as ClaudeSdkSlashCommand[]).map(
+              mapClaudeSlashCommand,
+            ),
           ),
         ),
       };
@@ -2537,23 +2672,25 @@ export class ClaudeProvider implements AgentProvider {
       );
       return {
         ...sdkMessage,
-        slash_command_inventory: filterClaudeRemoteSlashCommands(
-          sdkMessage.slash_commands as string[],
-          sdkMessage.terminal_slash_commands,
-        ).map(
-          (name): SlashCommand => ({
-            name,
-            description: "",
-            ...(skillNames.has(name.toLowerCase())
-              ? {
-                  invocation: {
-                    kind: "skill",
-                    prefix: "/",
-                    inventoryState: "current",
-                  },
-                }
-              : {}),
-          }),
+        slash_command_inventory: withGoal(
+          filterClaudeRemoteSlashCommands(
+            sdkMessage.slash_commands as string[],
+            sdkMessage.terminal_slash_commands,
+          ).map(
+            (name): SlashCommand => ({
+              name,
+              description: "",
+              ...(skillNames.has(name.toLowerCase())
+                ? {
+                    invocation: {
+                      kind: "skill",
+                      prefix: "/",
+                      inventoryState: "current",
+                    },
+                  }
+                : {}),
+            }),
+          ),
         ),
       };
     }

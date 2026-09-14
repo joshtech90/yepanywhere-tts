@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
@@ -8,7 +10,6 @@ import type {
   AskUserQuestionInput,
   AskUserQuestionResult,
   Question,
-  ToolRenderer,
 } from "./types";
 
 /**
@@ -18,7 +19,7 @@ function QuestionDisplay({
   question,
   selectedAnswer,
 }: {
-  question: Question;
+  question: Omit<Question, "multiSelect"> & { multiSelect?: boolean };
   selectedAnswer?: string | string[];
 }) {
   const selectedAnswers = Array.isArray(selectedAnswer)
@@ -129,7 +130,10 @@ function AskUserQuestionToolResult({
     enabled && validationErrors && !isToolIgnored("AskUserQuestion");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className={styles.error}>
         {showValidationWarning && validationErrors && (
@@ -173,40 +177,35 @@ function AskUserQuestionToolResult({
   );
 }
 
-export const askUserQuestionRenderer: ToolRenderer<
-  AskUserQuestionInput,
-  AskUserQuestionResult
-> = {
-  tool: "AskUserQuestion",
-  displayName: "Asked",
-  pendingDisplayName: "Asking",
+export const askUserQuestionRenderer = defineTool(
+  toolDisplayContracts.AskUserQuestion,
+  {
+    tool: "AskUserQuestion",
+    displayName: "Asked",
+    pendingDisplayName: "Asking",
 
-  renderToolUse(input, _context) {
-    return <AskUserQuestionToolUse input={input as AskUserQuestionInput} />;
-  },
+    renderToolUse(input, _context) {
+      return <AskUserQuestionToolUse input={input} />;
+    },
 
-  renderToolResult(result, isError, _context) {
-    return (
-      <AskUserQuestionToolResult
-        result={result as AskUserQuestionResult}
-        isError={isError}
-      />
-    );
-  },
+    renderToolResult(result, isError, _context) {
+      return <AskUserQuestionToolResult result={result} isError={isError} />;
+    },
 
-  getUseSummary(input) {
-    const questions = (input as AskUserQuestionInput).questions;
-    return `${questions?.length || 0} question${questions?.length === 1 ? "" : "s"}`;
-  },
+    getUseSummary(input) {
+      const questions = input.questions;
+      return `${questions?.length || 0} question${questions?.length === 1 ? "" : "s"}`;
+    },
 
-  getResultSummary(result: AskUserQuestionResult, isError: boolean): string {
-    if (isError) return "Error";
-    const answered = Object.keys(result?.answers || {}).length;
-    const questionCount = result?.questions?.length || 0;
-    // If no answers yet but we have questions, show question count instead
-    if (answered === 0 && questionCount > 0) {
-      return `${questionCount} question${questionCount === 1 ? "" : "s"}`;
-    }
-    return `${answered} answered`;
+    getResultSummary(result, isError): string {
+      if (isError) return "Error";
+      const answered = Object.keys(result?.answers || {}).length;
+      const questionCount = result?.questions?.length || 0;
+      // If no answers yet but we have questions, show question count instead
+      if (answered === 0 && questionCount > 0) {
+        return `${questionCount} question${questionCount === 1 ? "" : "s"}`;
+      }
+      return `${answered} answered`;
+    },
   },
-};
+);

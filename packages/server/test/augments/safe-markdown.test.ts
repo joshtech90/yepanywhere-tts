@@ -16,7 +16,7 @@ describe("Markdown plugin dependency resolution", () => {
     );
 
     expect(serverRequire("markdown-it/package.json").version).toBe("15.0.0");
-    expect(serverRequire("katex/package.json").version).toBe("0.16.45");
+    expect(serverRequire("katex/package.json").version).toBe("0.18.7");
     expect(realpathSync(pluginRequire.resolve("markdown-it"))).toBe(
       realpathSync(serverRequire.resolve("markdown-it")),
     );
@@ -325,7 +325,12 @@ describe("renderSafeMarkdown — embedded HTML", () => {
 <xmp></xmp/><img src=x onerror="alert(document.domain)">
 `);
 
-    expect(html).not.toMatch(/<(?:textarea|xmp|img)\b/i);
+    // Patched htmlparser2 recognizes the malformed closing tags and exposes
+    // the following images to normal sanitization. Images are allowed; raw
+    // text elements and executable attributes must still never survive.
+    expect(html).not.toMatch(/<(?:textarea|xmp)\b/i);
+    expect(html).not.toMatch(/\son\w+\s*=/i);
+    expect(html).not.toContain("alert(document.domain)");
     expect(html).toContain("&lt;textarea&gt;");
     expect(html).toContain("&lt;xmp&gt;");
   });
@@ -800,5 +805,44 @@ describe("renderSafeMarkdown — Quarto includes", () => {
       expect(html).not.toContain("data-ya-resource");
       expect(html).not.toContain("/api/local-file");
     }
+  });
+});
+
+describe("renderSafeMarkdown — URLs in fixed-font contexts", () => {
+  it("links a URL inside a fenced block without altering the text", () => {
+    const html = renderSafeMarkdown(
+      "```\nopen http://artifacts.localhost:3400/a/tok/index.html now\n```",
+    );
+    expect(html).toContain(
+      '<a href="http://artifacts.localhost:3400/a/tok/index.html">http://artifacts.localhost:3400/a/tok/index.html</a>',
+    );
+    expect(html).toContain("<pre><code>open ");
+    expect(html).toContain(" now\n</code></pre>");
+  });
+
+  it("keeps the language class and escapes the rest of the block", () => {
+    const html = renderSafeMarkdown(
+      '```bash\ncurl "https://example.test/a?b=1&c=2" <x>\n```',
+    );
+    expect(html).toContain('<code class="language-bash">');
+    expect(html).toContain(
+      '<a href="https://example.test/a?b=1&amp;c=2">https://example.test/a?b=1&amp;c=2</a>',
+    );
+    expect(html).toContain("&lt;x&gt;");
+  });
+
+  it("links a URL in inline code", () => {
+    const html = renderSafeMarkdown("try `https://example.test/x` first");
+    expect(html).toContain(
+      '<code><a href="https://example.test/x">https://example.test/x</a></code>',
+    );
+  });
+
+  it("leaves a non-web scheme and ordinary code alone", () => {
+    const html = renderSafeMarkdown(
+      "```\njavascript:alert(1) and file:///etc/passwd and const x = 1;\n```",
+    );
+    expect(html).not.toContain("<a ");
+    expect(html).toContain("const x = 1;");
   });
 });

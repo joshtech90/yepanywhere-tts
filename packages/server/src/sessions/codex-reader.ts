@@ -1,3 +1,7 @@
+import {
+  readIssueTextBatch,
+  type IssueReadOptions,
+} from "./issue-text-reader.js";
 /**
  * CodexSessionReader - Reads Codex sessions from disk.
  *
@@ -28,6 +32,7 @@ import {
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
 import type { SessionDiscoveryIndex } from "../indexes/SessionDiscoveryIndex.js";
+import { getForkedSessionFile } from "./fork-discovery.js";
 import type { SourceVersionedSingleFlightStats } from "../lib/sourceVersionedSingleFlight.js";
 import { getLogger } from "../logging/logger.js";
 import {
@@ -42,7 +47,8 @@ import type {
 import {
   codexRolloutRepresentation,
   getCodexRolloutActivityTimeMs,
-  getCodexRolloutSessionId,
+  getCodexRolloutFileIdentity,
+  getCodexRolloutId,
   isCompressedCodexRolloutPath,
   isCodexRolloutFileName,
   preferPlainCodexRollouts,
@@ -91,6 +97,7 @@ import {
   CodexRolloutWindowReader,
 } from "./codex-rollout-window.js";
 import { SummaryParserClient } from "./summary-parser-worker-client.js";
+import { readCodexAsyncQuestions } from "./codex-async-questions.js";
 import type {
   SummaryParserWorkerMode,
   SummaryParserWorkerRequest,
@@ -133,6 +140,33 @@ interface CodexSessionFile {
   mtime: number;
   size: number;
   isSubagent: boolean;
+}
+
+function isNewerCodexSessionFile(
+  candidate: CodexSessionFile,
+  current: CodexSessionFile,
+): boolean {
+  const candidateIdentity = getCodexRolloutFileIdentity(candidate.filePath);
+  const currentIdentity = getCodexRolloutFileIdentity(current.filePath);
+  if (
+    candidateIdentity?.timestamp &&
+    currentIdentity?.timestamp &&
+    candidateIdentity.timestamp !== currentIdentity.timestamp
+  ) {
+    return candidateIdentity.timestamp > currentIdentity.timestamp;
+  }
+  if (
+    candidateIdentity?.timestamp === currentIdentity?.timestamp &&
+    candidateIdentity?.rolloutId !== currentIdentity?.rolloutId
+  ) {
+    return (
+      (candidateIdentity?.rolloutId ?? "") > (currentIdentity?.rolloutId ?? "")
+    );
+  }
+  if (candidate.mtime !== current.mtime) {
+    return candidate.mtime > current.mtime;
+  }
+  return candidate.filePath > current.filePath;
 }
 
 const CODEX_SCAN_CACHE_TTL_MS = 5000;
@@ -223,6 +257,7 @@ export interface CodexSessionReaderScanMetrics {
 
 interface CodexEntryCache {
   filePath: string;
+  startByte: number;
   mtimeMs: number;
   ctimeMs: number;
   size: number;
@@ -303,6 +338,7 @@ type CodexEntryReadPurpose =
 interface CodexReadEntriesOptions {
   purpose: CodexEntryReadPurpose;
   cache?: boolean;
+  startByte?: number;
 }
 
 export interface CodexEntryCacheStats {
@@ -617,7 +653,7 @@ export class CodexSessionReader implements ISessionReader {
 
     for (const cached of this.entryCache.values()) {
       entries += cached.entries.length;
-      sourceBytes += cached.size;
+      sourceBytes += cached.size - cached.startByte;
       partialLineBytes += cached.partialLine.length;
     }
 
@@ -761,9 +797,28 @@ export class CodexSessionReader implements ISessionReader {
   async getSessionListSummary(
     sessionId: string,
     projectId: UrlProjectId,
+    summaryHint?: SessionListSummary,
+    options?: { deferAsyncQuestions?: boolean },
   ): Promise<SessionListSummary | null> {
+    if (summaryHint && options?.deferAsyncQuestions) {
+      return toSessionListSummary(summaryHint);
+    }
+    if (summaryHint) {
+      const sessionFile = await this.findSessionFile(sessionId);
+      if (!sessionFile) return null;
+      try {
+        return {
+          ...toSessionListSummary(summaryHint),
+          asyncQuestions: await readCodexAsyncQuestions(sessionFile.filePath),
+        };
+      } catch {
+        // Match summary reads when the provider source becomes unreadable.
+        return null;
+      }
+    }
     const summary = await this.getSessionSummary(sessionId, projectId, {
       readMode: "head",
+      deferAsyncQuestions: options?.deferAsyncQuestions,
     });
     return summary ? toSessionListSummary(summary) : null;
   }
@@ -788,6 +843,29 @@ export class CodexSessionReader implements ISessionReader {
     }
   }
 
+  async readIssueTextBatch(sessionId: string, options: IssueReadOptions) {
+    options.signal.throwIfAborted();
+    const file = await this.findSessionFile(sessionId);
+    if (!file) throw new Error("Session source unavailable");
+    if (file.filePath.endsWith(".gz"))
+      throw new Error("Compressed issue indexing is unavailable");
+    const lineage = await resolveCodexRolloutLineage({
+      requestedSessionId: sessionId,
+      leafFilePath: file.filePath,
+      resolveRolloutPath: (id) => this.findRolloutPathById(id),
+      maxSegments: 32,
+      signal: options.signal,
+    });
+    const segments = lineage.referenceBacked
+      ? lineage.segments.map((segment) => ({
+          path: segment.filePath,
+          end: segment.end?.end_byte_offset,
+          ordinal: true,
+        }))
+      : [{ path: file.filePath }];
+    return readIssueTextBatch("codex", segments, options);
+  }
+
   async getSession(
     sessionId: string,
     projectId: UrlProjectId,
@@ -804,7 +882,6 @@ export class CodexSessionReader implements ISessionReader {
       let compactWindow: CodexCompactWindowSnapshot | null = null;
       let referenceBackedHistory = false;
       if (
-        afterMessageId === undefined &&
         Number.isInteger(requestedTailCompactions) &&
         requestedTailCompactions !== undefined &&
         requestedTailCompactions > 0 &&
@@ -819,22 +896,36 @@ export class CodexSessionReader implements ISessionReader {
         const snapshotUpdatedAt = new Date(
           getCodexRolloutActivityTimeMs(sessionFile.filePath, stats),
         ).toISOString();
+        // The hint's relationship to the file was validated where it was
+        // fetched, and it only supplies head-derived fields: the window itself
+        // is read from the live file. Reject only a hint claiming to be newer
+        // than the file, which means the rollout was replaced or rewound
+        // rather than appended to.
         if (
           !referenceBackedHistory &&
-          summaryHint.updatedAt === snapshotUpdatedAt
+          summaryHint.updatedAt <= snapshotUpdatedAt
         ) {
-          compactWindow = beforeMessageId
-            ? await this.readCompactPageSnapshot(
+          compactWindow = afterMessageId
+            ? await this.readIncrementalSnapshot(
+                sessionId,
                 sessionFile.filePath,
                 stats,
                 requestedTailCompactions,
-                beforeMessageId,
+                afterMessageId,
+                summaryHint,
               )
-            : await this.readCompactTailSnapshot(
-                sessionFile.filePath,
-                stats,
-                requestedTailCompactions,
-              );
+            : beforeMessageId
+              ? await this.readCompactPageSnapshot(
+                  sessionFile.filePath,
+                  stats,
+                  requestedTailCompactions,
+                  beforeMessageId,
+                )
+              : await this.readCompactTailSnapshot(
+                  sessionFile.filePath,
+                  stats,
+                  requestedTailCompactions,
+                );
         }
       }
 
@@ -846,7 +937,10 @@ export class CodexSessionReader implements ISessionReader {
         }));
       const { entries, transcriptSnapshotUpdatedAt } = transcriptSnapshot;
       const summary = compactWindow
-        ? cloneSessionSummary(summaryHint ?? null)
+        ? this.refreshTailDerivedSummary(
+            cloneSessionSummary(summaryHint ?? null),
+            compactWindow,
+          )
         : await this.buildSessionSummaryFromEntries(
             sessionId,
             projectId,
@@ -854,15 +948,6 @@ export class CodexSessionReader implements ISessionReader {
             transcriptSnapshotUpdatedAt,
           );
       if (!summary) return null;
-
-      // Filter entries if needed (for incremental fetching)
-      // Note: Codex entries are not 1:1 with messages, so standard ID filtering is tricky
-      // with raw format. We return all entries for now.
-      // Ideally the client handles diffing/appending.
-      const finalEntries = entries;
-      if (afterMessageId) {
-        // Logic to filter entries would go here if strict incremental loading is needed
-      }
 
       const provider = compactWindow
         ? summary.provider === "codex-oss"
@@ -894,7 +979,7 @@ export class CodexSessionReader implements ISessionReader {
         data: {
           provider,
           session: {
-            entries: finalEntries,
+            entries,
           },
         },
       };
@@ -1387,7 +1472,7 @@ export class CodexSessionReader implements ISessionReader {
   }
 
   private cacheRolloutPath(filePath: string, overwrite = true): void {
-    const rolloutId = getCodexRolloutSessionId(filePath);
+    const rolloutId = getCodexRolloutId(filePath);
     if (rolloutId && (overwrite || !this.rolloutPathById.has(rolloutId))) {
       this.rolloutPathById.set(rolloutId, filePath);
     }
@@ -1474,12 +1559,12 @@ export class CodexSessionReader implements ISessionReader {
     options?: CodexScanOptions,
     metrics?: CodexSessionReaderScanMetrics,
   ): Promise<CodexSessionFile[]> {
-    const sessions: CodexSessionFile[] = [];
+    const sessionsById = new Map<string, CodexSessionFile>();
     try {
       await stat(this.sessionsDir);
       if (metrics) metrics.sessionsDirExists = true;
     } catch {
-      return sessions;
+      return [];
     }
 
     const files = await this.findJsonlFiles(this.sessionsDir, metrics);
@@ -1489,7 +1574,10 @@ export class CodexSessionReader implements ISessionReader {
       const activeWindowSkipsBefore = metrics?.discovery.activeWindowSkips ?? 0;
       const session = await this.readSessionMeta(filePath, options, metrics);
       if (session) {
-        sessions.push(session);
+        const current = sessionsById.get(session.id);
+        if (!current || isNewerCodexSessionFile(session, current)) {
+          sessionsById.set(session.id, session);
+        }
       } else if (
         metrics &&
         metrics.discovery.activeWindowSkips === activeWindowSkipsBefore
@@ -1499,10 +1587,10 @@ export class CodexSessionReader implements ISessionReader {
     }
     await this.discoveryIndex?.flush();
     if (metrics) {
-      metrics.sessionsParsed = sessions.length;
+      metrics.sessionsParsed = sessionsById.size;
     }
 
-    return sessions;
+    return [...sessionsById.values()];
   }
 
   async getSessionFilePath(sessionId: string): Promise<string | null> {
@@ -1548,6 +1636,27 @@ export class CodexSessionReader implements ISessionReader {
     const cached = this.sessionFileCache.get(sessionId);
     if (cached) return cached;
 
+    // Fork completion supplies an exact path before the scan cache catches up.
+    // Read only that file; an older in-flight scan cannot erase this hint.
+    const forkPath = await getForkedSessionFile(
+      "codex",
+      sessionId,
+      this.sessionsDir,
+    );
+    if (forkPath) {
+      const session = await this.readSessionMeta(forkPath);
+      if (
+        session?.id === sessionId &&
+        !session.isSubagent &&
+        (!this.projectIdentityKey ||
+          getProjectIdentityKey(session.cwd) === this.projectIdentityKey)
+      ) {
+        this.hydrateSessionFileCache([session]);
+        return session;
+      }
+      if (session) return null;
+    }
+
     // Scan if cache miss
     await this.scanSessions();
     return this.sessionFileCache.get(sessionId) ?? null;
@@ -1560,6 +1669,7 @@ export class CodexSessionReader implements ISessionReader {
   ): Promise<CodexEntrySnapshot> {
     const purpose = options?.purpose ?? "detail";
     const shouldWriteCache = options?.cache ?? true;
+    const startByte = options?.startByte ?? 0;
     const startedAt = Date.now();
     const memoryBefore = process.memoryUsage();
 
@@ -1570,17 +1680,19 @@ export class CodexSessionReader implements ISessionReader {
       if (
         cached &&
         cached.filePath === filePath &&
+        cached.startByte === startByte &&
         cached.size === stats.size &&
         cached.mtimeMs === stats.mtimeMs &&
         cached.ctimeMs === stats.ctimeMs
       ) {
-        this.cacheAgentMappingsFromEntries(
-          sessionId,
-          filePath,
-          stats.mtimeMs,
-          stats.size,
-          cached.entries,
-        );
+        if (startByte === 0)
+          this.cacheAgentMappingsFromEntries(
+            sessionId,
+            filePath,
+            stats.mtimeMs,
+            stats.size,
+            cached.entries,
+          );
         this.recordEntryReadMetrics({
           startedAt,
           memoryBefore,
@@ -1623,6 +1735,7 @@ export class CodexSessionReader implements ISessionReader {
         filePath,
         purpose,
         revision,
+        startByte,
       }).finally(() => {
         if (this.entryReadOwners.get(sessionId) === owner) {
           this.entryReadOwners.delete(sessionId);
@@ -1658,15 +1771,24 @@ export class CodexSessionReader implements ISessionReader {
     filePath: string;
     purpose: CodexEntryReadPurpose;
     revision: number;
+    startByte: number;
   }): Promise<CodexEntryCache | null> {
-    const { startedAt, memoryBefore, sessionId, filePath, purpose, revision } =
-      options;
+    const {
+      startedAt,
+      memoryBefore,
+      sessionId,
+      filePath,
+      purpose,
+      revision,
+      startByte,
+    } = options;
     const stats = await stat(filePath);
     const cached = this.entryCache.get(sessionId);
 
     if (
       cached &&
       cached.filePath === filePath &&
+      cached.startByte === startByte &&
       cached.size === stats.size &&
       cached.mtimeMs === stats.mtimeMs &&
       cached.ctimeMs === stats.ctimeMs
@@ -1677,6 +1799,7 @@ export class CodexSessionReader implements ISessionReader {
     if (
       cached &&
       cached.filePath === filePath &&
+      cached.startByte === startByte &&
       !isCompressedCodexRolloutPath(filePath) &&
       cached.size < stats.size
     ) {
@@ -1709,13 +1832,14 @@ export class CodexSessionReader implements ISessionReader {
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
       cached.ctimeMs = stats.ctimeMs;
-      this.cacheAgentMappingsFromEntries(
-        sessionId,
-        filePath,
-        stats.mtimeMs,
-        stats.size,
-        cached.entries,
-      );
+      if (startByte === 0)
+        this.cacheAgentMappingsFromEntries(
+          sessionId,
+          filePath,
+          stats.mtimeMs,
+          stats.size,
+          cached.entries,
+        );
       this.recordEntryReadMetrics({
         startedAt,
         memoryBefore,
@@ -1735,7 +1859,14 @@ export class CodexSessionReader implements ISessionReader {
       return cached;
     }
 
-    const parsed = await this.readEntrySnapshot(sessionId, filePath, stats);
+    const parsed: CodexReadEntrySnapshot =
+      startByte === 0
+        ? await this.readEntrySnapshot(sessionId, filePath, stats)
+        : await this.rolloutWindowReader.readEntryRange(
+            filePath,
+            startByte,
+            stats.size - startByte,
+          );
     if (
       revision !== this.entryCacheRevision ||
       this.entryCache.get(sessionId) !== cached
@@ -1746,6 +1877,7 @@ export class CodexSessionReader implements ISessionReader {
     const cacheStoreStartedAt = Date.now();
     const refreshed: CodexEntryCache = {
       filePath,
+      startByte,
       mtimeMs: stats.mtimeMs,
       ctimeMs: stats.ctimeMs,
       size: stats.size,
@@ -1756,13 +1888,14 @@ export class CodexSessionReader implements ISessionReader {
     };
     this.entryCache.set(sessionId, refreshed);
     const cacheStoreMs = Date.now() - cacheStoreStartedAt;
-    this.cacheAgentMappingsFromEntries(
-      sessionId,
-      filePath,
-      Number(stats.mtimeMs),
-      Number(stats.size),
-      parsed.entries,
-    );
+    if (startByte === 0)
+      this.cacheAgentMappingsFromEntries(
+        sessionId,
+        filePath,
+        Number(stats.mtimeMs),
+        Number(stats.size),
+        parsed.entries,
+      );
     this.recordEntryReadMetrics({
       startedAt,
       memoryBefore,
@@ -1929,6 +2062,119 @@ export class CodexSessionReader implements ISessionReader {
     );
   }
 
+  /**
+   * A compact-tail response pairs an indexed summary with entries read from
+   * the live file, so the index may predate recent appends. Re-derive the
+   * fields the tail window itself carries; head-derived fields (title,
+   * creation, originator, provider) cannot change under append. An older page
+   * is not the session's current state, so it refreshes nothing.
+   *
+   * `messageCount` still reflects only what was indexed and therefore lags a
+   * session that is still being written. It feeds session-list ordering and
+   * the empty-session check, neither of which depends on an exact count.
+   */
+  private refreshTailDerivedSummary(
+    summary: SessionSummary | null,
+    window: CodexCompactWindowSnapshot,
+  ): SessionSummary | null {
+    if (!summary || window.kind !== "compact-tail") return summary;
+
+    const provider = summary.provider === "codex-oss" ? "codex-oss" : "codex";
+    const model = this.extractModel(window.entries) ?? summary.model;
+    const contextUsage =
+      this.extractContextUsage(window.entries, model, provider) ??
+      summary.contextUsage;
+    return {
+      ...summary,
+      updatedAt: window.transcriptSnapshotUpdatedAt,
+      ...(model !== undefined ? { model } : {}),
+      ...(contextUsage ? { contextUsage } : {}),
+    };
+  }
+
+  private async readIncrementalSnapshot(
+    sessionId: string,
+    filePath: string,
+    stats: Awaited<ReturnType<typeof stat>>,
+    compactBoundaries: number,
+    afterMessageId: string,
+    summary: SessionSummary,
+  ): Promise<CodexCompactTailSnapshot | null> {
+    const cached = this.entryCache.get(sessionId);
+    let startByte = cached?.startByte ?? 0;
+    let snapshot: CodexEntrySnapshot | undefined;
+    if (
+      cached?.filePath === filePath &&
+      startByte > 0 &&
+      (cached.size < stats.size ||
+        (cached.size === stats.size &&
+          cached.mtimeMs === stats.mtimeMs &&
+          cached.ctimeMs === stats.ctimeMs))
+    ) {
+      snapshot = await this.readEntries(sessionId, filePath, {
+        purpose: "detail",
+        startByte,
+      });
+      if (
+        snapshot.entries.filter((entry) => entry.type === "compacted")
+          .length !== compactBoundaries
+      ) {
+        snapshot = undefined;
+        stats = await stat(filePath);
+      }
+    }
+    if (!snapshot) {
+      const locatedStart = await this.rolloutWindowReader.findCompactTailStart(
+        filePath,
+        stats,
+        compactBoundaries,
+      );
+      if (locatedStart === null) return null;
+      startByte = locatedStart;
+      snapshot = await this.readEntries(sessionId, filePath, {
+        purpose: "detail",
+        startByte,
+      });
+    }
+    if (snapshot.entries[0]?.type !== "compacted") return null;
+    const provider = summary.provider === "codex-oss" ? "codex-oss" : "codex";
+    const normalized = normalizeSession({
+      summary,
+      transcriptSnapshotUpdatedAt: snapshot.transcriptSnapshotUpdatedAt,
+      data: { provider, session: { entries: snapshot.entries } },
+    });
+    // An older or unknown durable id must take the complete catch-up path.
+    if (
+      !normalized.messages.some(
+        (message) => (message.uuid ?? message.id) === afterMessageId,
+      )
+    ) {
+      return null;
+    }
+    // Results whose calls precede the window need the prefix's tool context.
+    const toolCalls = new Set<string>();
+    for (const message of normalized.messages) {
+      const content = message.message?.content;
+      if (!Array.isArray(content)) continue;
+      for (const block of content) {
+        if (block.type === "tool_use" && block.id) toolCalls.add(block.id);
+        if (
+          block.type === "tool_result" &&
+          block.tool_use_id &&
+          !toolCalls.has(block.tool_use_id)
+        )
+          return null;
+      }
+    }
+    return {
+      ...snapshot,
+      kind: "compact-tail",
+      omittedPrefix: true,
+      startByte,
+      compactBoundaries,
+    };
+  }
+
   private async readCompactTailSnapshot(
     filePath: string,
     stats: Awaited<ReturnType<typeof stat>>,
@@ -1998,13 +2244,16 @@ export class CodexSessionReader implements ISessionReader {
       stats,
       options?.readMode ?? "full",
     );
-    return this.buildSessionSummaryFromState(
+    const summary = this.buildSessionSummaryFromState(
       sessionId,
       projectId,
       filePath,
       stats,
       read.state,
     );
+    if (summary && !options?.deferAsyncQuestions)
+      summary.asyncQuestions = await readCodexAsyncQuestions(filePath);
+    return summary;
   }
 
   private async getCoalescedFullSessionSummary(

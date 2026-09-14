@@ -155,8 +155,9 @@ not need to read it.
 ## On the Node.js runtime
 
 Node + npm carries real supply-chain and runtime-attack surface — this
-process pulls in `ws`, `hono`, `better-sqlite3`, `pino`, and their
-transitive trees. For something that holds nothing but a username
+process pulls in `ws`, `hono`, `pino`, and their
+transitive trees. Storage is the runtime's built-in SQLite, so no
+native addon is compiled. For something that holds nothing but a username
 table and forwards opaque frames between paired sockets, that is more
 trusted code than the design strictly needs.
 

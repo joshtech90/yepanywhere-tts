@@ -118,6 +118,40 @@
 }
 
 /*
+ * Vertical budget for a previous thinking card that wrapped below the current
+ * one.
+ *
+ * Beside the current card the previous one is free: it caps to the current
+ * card's height, which already owns the row. Below it, its height adds to the
+ * row, and the current card is then the one that leaves the top of the viewport
+ * under follow. RenderItemComponent measures the room left once the row still
+ * fits the transcript viewport with two lines of the preceding paragraph
+ * showing, and publishes it as --conversation-previous-thinking-budget. The
+ * current-height cap still applies, so the card takes whichever is smaller.
+ */
+.activityHeightReserve[data-previous-thinking="stacked"]
+  :global(.conversation-thinking-preview[data-preview-slot="previous"])
+  :global(.conversation-thinking-preview-content) {
+  max-height: min(
+    var(--conversation-thinking-height, min(40vh, 24rem)),
+    var(--conversation-previous-thinking-budget, min(40vh, 24rem))
+  );
+}
+
+/*
+ * Not even a two-line thought fits that budget, so the superseded card is
+ * dropped. It keeps its box in the flex layout at zero height rather than
+ * leaving the layout: removing the item would change the wrap the budget was
+ * measured from, and the drop decision would flap on and off.
+ */
+.activityHeightReserve[data-previous-thinking="dropped"]
+:global(.conversation-thinking-preview[data-preview-slot="previous"]) {
+  height: 0;
+  border-width: 0;
+  visibility: hidden;
+}
+
+/*
  * Compact chips are always expandable — outline them so the chevron affordance
  * is obvious even when the provider retained no summary body.
  *

@@ -97,6 +97,7 @@ export const BROWSER_SETTINGS_BACKUP_KEYS = [
   BROWSER_LOCAL_KEYS.speechSmartTurn,
   BROWSER_LOCAL_KEYS.grokSpeechAudio,
   BROWSER_LOCAL_KEYS.parakeetSpeechModel,
+  BROWSER_LOCAL_KEYS.whisperSpeechModel,
   BROWSER_LOCAL_KEYS.notifyInApp,
 ] as const;
 

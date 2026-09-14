@@ -1,4 +1,8 @@
 import { randomUUID } from "node:crypto";
+import {
+  MAX_SPEECH_SESSION_TERMS,
+  speechVocabularyTokens,
+} from "@yep-anywhere/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import type { WSContext, WSEvents } from "hono/ws";
@@ -341,6 +345,19 @@ function parseTranscriptionContext(
     clientTurnId: cleanContextString(value.clientTurnId, 120),
     draftKey: cleanContextString(value.draftKey, 300),
     speechTargetId: cleanContextString(value.speechTargetId, 120),
+    sessionTerms: Array.isArray(value.sessionTerms)
+      ? [
+          ...new Set(
+            value.sessionTerms
+              .slice(0, MAX_SPEECH_SESSION_TERMS)
+              .filter(
+                (term): term is string =>
+                  typeof term === "string" && term.length <= 50,
+              )
+              .flatMap(speechVocabularyTokens),
+          ),
+        ].slice(0, MAX_SPEECH_SESSION_TERMS)
+      : undefined,
   };
   const clean = Object.fromEntries(
     Object.entries(context).filter(([, entry]) => entry !== undefined),
@@ -365,6 +382,18 @@ async function transcribeWithAudit(
     context?: SpeechTranscriptionContext;
   },
 ): Promise<{ text: string; retention: SpeechAudioRetentionResult }> {
+  input.options = {
+    ...input.options,
+    keyterms: await deps.speechBackendRegistry.keyterms(
+      input.backendId,
+      input.options.keyterms,
+      input.context,
+    ),
+  };
+  if (input.context) {
+    const { sessionTerms: _sessionTerms, ...auditContext } = input.context;
+    input.context = auditContext;
+  }
   const requestId = randomUUID();
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
@@ -378,6 +407,7 @@ async function transcribeWithAudit(
     audioBytes: input.audio.length,
     hasPrompt: !!input.options.prompt,
     keytermCount: input.options.keyterms?.length ?? 0,
+    keyterms: input.options.keyterms,
     context: input.context,
   };
 
@@ -400,6 +430,7 @@ async function transcribeWithAudit(
       backendId: input.backendId,
       model: input.options.model,
       mimeType: input.options.mimeType ?? DEFAULT_MIME_TYPE,
+      keyterms: input.options.keyterms,
       audio: input.audio,
       transcript: text,
       startedAt,
@@ -581,6 +612,7 @@ export function createSpeechWebSocketSession(
   let mimeType = DEFAULT_MIME_TYPE;
   let backendId: string | null = null;
   let context: SpeechTranscriptionContext | undefined;
+  let sessionTerms: string[] | undefined;
   let streamSession: SpeechStreamSession | null = null;
   let streamSessionPromise: Promise<SpeechStreamSession> | null = null;
   let pendingAudio: Buffer[] = [];
@@ -592,9 +624,11 @@ export function createSpeechWebSocketSession(
   let streamingSpeechFinalTexts: string[] = [];
   let streamingStopRequested = false;
   let messageChain = Promise.resolve();
+  let closed = false;
 
   const processMessage = async (data: SpeechWsData): Promise<void> => {
     const normalized = await normalizeWsData(data);
+    if (closed) return;
     const msg = parseWsControlMessage(normalized.text);
 
     if (!msg) {
@@ -615,7 +649,10 @@ export function createSpeechWebSocketSession(
       chunks.length = 0;
       backendId = msg.backendId ?? null;
       mimeType = msg.mimeType ?? DEFAULT_MIME_TYPE;
-      context = parseTranscriptionContext(msg.context);
+      const { sessionTerms: terms, ...auditContext } =
+        parseTranscriptionContext(msg.context) ?? {};
+      sessionTerms = terms;
+      context = Object.keys(auditContext).length ? auditContext : undefined;
       streamSession?.close();
       streamSession = null;
       streamSessionPromise = null;
@@ -678,8 +715,9 @@ export function createSpeechWebSocketSession(
 
         const requestId = streamRequestId;
         const isCurrent = (): boolean => streamRequestId === requestId;
-        streamSessionPromise = backend
+        streamSessionPromise = deps.speechBackendRegistry
           .stream(
+            backend,
             {
               mimeType,
               sampleRate,
@@ -732,6 +770,9 @@ export function createSpeechWebSocketSession(
                 sendMessage({ type: "error", message });
               },
             },
+            requestId,
+            isCurrent,
+            { ...context, sessionTerms },
           )
           .then((session) => {
             if (!isCurrent()) {
@@ -746,6 +787,7 @@ export function createSpeechWebSocketSession(
             return session;
           });
         streamSessionPromise.catch((err: unknown) => {
+          if (!isCurrent()) return;
           const message = err instanceof Error ? err.message : String(err);
           logger.error(
             {
@@ -841,7 +883,7 @@ export function createSpeechWebSocketSession(
         backendId,
         audio,
         options: { mimeType },
-        context,
+        context: { ...context, sessionTerms },
       });
       sendMessage({
         type: "final",
@@ -868,6 +910,8 @@ export function createSpeechWebSocketSession(
         });
     },
     close() {
+      closed = true;
+      streamRequestId = null;
       streamSession?.close();
       streamSessionPromise?.then((session) => session.close()).catch(() => {});
       streamSession = null;
@@ -1021,6 +1065,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
       let mimeType = DEFAULT_MIME_TYPE;
       let backendId: string | null = null;
       let context: SpeechTranscriptionContext | undefined;
+      let sessionTerms: string[] | undefined;
       let streamSession: SpeechStreamSession | null = null;
       // The upstream handshake (e.g. xAI returning transcript.created) can take
       // a noticeable moment. We establish it concurrently rather than awaiting
@@ -1039,12 +1084,14 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
       let streamingSpeechFinalTexts: string[] = [];
       let streamingStopRequested = false;
       let messageChain = Promise.resolve();
+      let closed = false;
 
       const processMessage = async (
         data: SpeechWsData,
         ws: WSContext,
       ): Promise<void> => {
         const normalized = await normalizeWsData(data);
+        if (closed) return;
         const msg = parseWsControlMessage(normalized.text);
 
         if (!msg) {
@@ -1066,7 +1113,10 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
           chunks.length = 0;
           backendId = msg.backendId ?? null;
           mimeType = msg.mimeType ?? DEFAULT_MIME_TYPE;
-          context = parseTranscriptionContext(msg.context);
+          const { sessionTerms: terms, ...auditContext } =
+            parseTranscriptionContext(msg.context) ?? {};
+          sessionTerms = terms;
+          context = Object.keys(auditContext).length ? auditContext : undefined;
           streamSession?.close();
           streamSession = null;
           streamSessionPromise = null;
@@ -1142,8 +1192,9 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
             // superseded upstream socket.
             const requestId = streamRequestId;
             const isCurrent = (): boolean => streamRequestId === requestId;
-            streamSessionPromise = backend
+            streamSessionPromise = deps.speechBackendRegistry
               .stream(
+                backend,
                 {
                   mimeType,
                   sampleRate,
@@ -1196,6 +1247,9 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
                     send(ws, { type: "error", message });
                   },
                 },
+                requestId,
+                isCurrent,
+                { ...context, sessionTerms },
               )
               .then((session) => {
                 if (!isCurrent()) {
@@ -1212,6 +1266,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
                 return session;
               });
             streamSessionPromise.catch((err: unknown) => {
+              if (!isCurrent()) return;
               const message = err instanceof Error ? err.message : String(err);
               logger.error(
                 {
@@ -1309,7 +1364,7 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
             backendId,
             audio,
             options: { mimeType },
-            context,
+            context: { ...context, sessionTerms },
           });
           send(ws, {
             type: "final",
@@ -1341,6 +1396,8 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
         },
 
         onClose() {
+          closed = true;
+          streamRequestId = null;
           streamSession?.close();
           // A still-handshaking session must be closed once it resolves, or it
           // leaks an open xAI socket after the client disconnects.

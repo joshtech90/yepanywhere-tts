@@ -281,15 +281,6 @@ button.tool-summary {
   outline-offset: -1px;
 }
 
-.tool-summary-command.is-expanded {
-  display: block;
-  max-height: min(30vh, 16rem);
-  overflow: auto;
-  text-overflow: clip;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
 .tool-summary-command-text {
   min-width: 0;
   overflow: hidden;

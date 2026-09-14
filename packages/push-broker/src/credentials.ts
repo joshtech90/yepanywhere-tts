@@ -20,7 +20,8 @@ export function hashSecret(secret: string): Buffer {
 
 export function verifySecret(
   presentedSecret: string,
-  expectedHash: Buffer | undefined,
+  // SQLite hands back BLOB columns as Uint8Array on both supported runtimes.
+  expectedHash: Uint8Array | undefined,
 ): boolean {
   const presentedHash = hashSecret(presentedSecret);
   return timingSafeEqual(presentedHash, expectedHash ?? DUMMY_HASH);

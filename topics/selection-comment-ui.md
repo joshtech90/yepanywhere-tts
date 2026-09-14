@@ -264,6 +264,14 @@ viewer has copy and new-session actions but no current-session quote target.
 
 The quote block itself:
 
+- File-viewer quote replies prepend `re: path:line` on the line immediately
+  before the blockquote, using the selection's starting source line. Paths
+  inside the project are project-relative; outside paths retain their original
+  spelling, including `~/agents/...`. Selection typing, compact and context-menu
+  quote actions, and rendered-file paragraph replies use the same citation.
+  If source alignment is ambiguous, the quote remains available without an
+  invented citation. Transcript quotes and new-session transfer retain their
+  existing formats.
 - Each source line is prefixed `> `. A selection spanning multiple blocks
   yields one `> ` block per source block, blank-line separated (the existing
   copy path already splits per source element and joins with `\n\n`).

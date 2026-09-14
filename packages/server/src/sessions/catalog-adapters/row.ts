@@ -1,3 +1,4 @@
+import type { Stats } from "node:fs";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import {
   canonicalizeProjectPath,
@@ -5,6 +6,7 @@ import {
   getProjectIdentityKey,
 } from "../../projects/paths.js";
 import type {
+  NativeSessionCatalogAdapter,
   SessionCatalogFidelity,
   SessionCatalogLocation,
   SessionCatalogRow,
@@ -83,4 +85,41 @@ export function isWithinScanMode(
 /** File identity that changes on every append, truncation, or replacement. */
 export function fileSourceVersion(mtimeMs: number, size: number): string {
   return `${Math.trunc(mtimeMs)}:${size}`;
+}
+
+/** Exact identity for cached file projections, including atomic replacement. */
+export function catalogFileVersion(stats: Stats): string {
+  return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeMs}:${stats.ctimeMs}`;
+}
+
+/** Publish a complete retained generation without rediscovering native stores. */
+export function catalogAdaptersForRows(
+  rows: readonly Readonly<SessionCatalogRow>[],
+): NativeSessionCatalogAdapter[] {
+  const groups = new Map<
+    string,
+    {
+      catalogFamily: ProviderCatalogFamily;
+      storeKey: string;
+      rows: SessionCatalogRow[];
+    }
+  >();
+  for (const row of rows) {
+    const key = JSON.stringify([row.catalogFamily, row.storeKey]);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        catalogFamily: row.catalogFamily,
+        storeKey: row.storeKey,
+        rows: [],
+      };
+      groups.set(key, group);
+    }
+    group.rows.push(row);
+  }
+  return [...groups.values()].map(({ catalogFamily, storeKey, rows }) => ({
+    catalogFamily,
+    storeKey,
+    scan: async () => ({ sourceVersion: "retained-projections", rows }),
+  }));
 }

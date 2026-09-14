@@ -228,6 +228,186 @@ describe("ProjectQueueScheduler", () => {
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
+  it("polls external readiness no faster than ten seconds and publishes the hold", async () => {
+    await scheduler.dispose();
+    projectId = toUrlProjectId(testDir);
+    supervisor = new FakeSupervisor(projectId);
+    const gate = path.join(testDir, "occupied");
+    const probes = path.join(testDir, "probes");
+    await fs.writeFile(gate, "occupied");
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 0,
+      blockedRetryMs: 1,
+      getReadinessCommand: () => ({
+        executable: process.execPath,
+        args: [
+          "-e",
+          "const fs = require('node:fs'); fs.appendFileSync('probes', 'x'); if (fs.existsSync('occupied')) { console.log('Editing parser'); process.exitCode = 1; }",
+        ],
+      }),
+    });
+    const events: string[] = [];
+    const unsubscribe = eventBus.subscribe((event) => {
+      if (event.type === "project-queue-changed") events.push(event.reason);
+    });
+    await service.createItem({
+      projectId,
+      projectPath: testDir,
+      request: {
+        target: { type: "new-session", provider: "claude" },
+        message: { text: "after claim" },
+      },
+    });
+    await waitFor(async () => {
+      const status = await scheduler.getProjectStatus(projectId);
+      expect(status.state).toBe("blocked");
+      expect(status.blockers).toContain("readiness:Editing parser");
+    });
+    expect(events).toContain("readiness");
+    for (let i = 0; i < 5; i++)
+      scheduler.sessionProjectChanged(projectId, projectId);
+    const status = await scheduler.getProjectStatus(projectId);
+    expect(Date.parse(status.nextAttemptAt!) - Date.now()).toBeGreaterThan(
+      9000,
+    );
+    expect(await fs.readFile(probes, "utf8")).toBe("x");
+    expect(supervisor.startCalls).toHaveLength(0);
+    await fs.unlink(gate);
+    await waitFor(() => expect(supervisor.startCalls).toHaveLength(1), 15000);
+    expect(await fs.readFile(probes, "utf8")).toBe("xx");
+    unsubscribe();
+  }, 20000);
+
+  it("waits for quiet after readiness clears and checks again before automatic promotion", async () => {
+    await scheduler.dispose();
+    projectId = toUrlProjectId(testDir);
+    supervisor = new FakeSupervisor(projectId);
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 100,
+      getReadinessCommand: () => ({
+        executable: process.execPath,
+        args: ["-e", "require('node:fs').appendFileSync('probes', 'x')"],
+      }),
+    });
+    await service.createItem({
+      projectId,
+      projectPath: testDir,
+      request: {
+        target: { type: "new-session", provider: "claude" },
+        message: { text: "after quiet" },
+      },
+    });
+    await waitFor(async () =>
+      expect((await scheduler.getProjectStatus(projectId)).state).toBe(
+        "waiting-quiet",
+      ),
+    );
+    await wait(150);
+    expect(supervisor.startCalls).toHaveLength(0);
+    expect(await fs.readFile(path.join(testDir, "probes"), "utf8")).toBe("x");
+    await waitFor(() => expect(supervisor.startCalls).toHaveLength(1), 15000);
+    expect(await fs.readFile(path.join(testDir, "probes"), "utf8")).toBe("xx");
+  }, 20000);
+
+  it("cancels a live check when paused and uses the new command on resume", async () => {
+    await scheduler.dispose();
+    projectId = toUrlProjectId(testDir);
+    supervisor = new FakeSupervisor(projectId);
+    let command = {
+      executable: process.execPath,
+      args: [
+        "-e",
+        "require('node:fs').writeFileSync('started', 'x'); setInterval(() => {}, 1000)",
+      ],
+    };
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 0,
+      getReadinessCommand: () => command,
+    });
+    await service.createItem({
+      projectId,
+      projectPath: testDir,
+      request: {
+        target: { type: "new-session", provider: "claude" },
+        message: { text: "after resume" },
+      },
+    });
+    await waitFor(async () =>
+      expect(await fs.readFile(path.join(testDir, "started"), "utf8")).toBe(
+        "x",
+      ),
+    );
+    await service.pauseDispatch();
+    await waitFor(async () =>
+      expect((await scheduler.getProjectStatus(projectId)).inFlight).toBe(
+        false,
+      ),
+    );
+    expect((await scheduler.getProjectStatus(projectId)).state).toBe("paused");
+    expect(supervisor.startCalls).toHaveLength(0);
+    command = { executable: process.execPath, args: ["-e", "process.exit(0)"] };
+    scheduler.readinessSettingsChanged();
+    expect((await scheduler.promoteNow(projectId)).promoted).toBe(true);
+  });
+
+  it("checks Start now, applies changed settings, and lets Force start bypass", async () => {
+    await scheduler.dispose();
+    projectId = toUrlProjectId(testDir);
+    supervisor = new FakeSupervisor(projectId);
+    let command = {
+      executable: process.execPath,
+      args: ["-e", "console.log('Outside editor'); process.exitCode = 1"],
+    };
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 30000,
+      getReadinessCommand: () => command,
+    });
+    await service.createItem({
+      projectId,
+      projectPath: testDir,
+      request: {
+        target: { type: "new-session", provider: "claude" },
+        message: { text: "manual" },
+      },
+    });
+    await waitFor(async () =>
+      expect((await scheduler.getProjectStatus(projectId)).state).toBe(
+        "blocked",
+      ),
+    );
+    const blocked = await scheduler.promoteNow(projectId);
+    expect(blocked.promoted).toBe(false);
+    expect(blocked.status.blockers).toContain("readiness:Outside editor");
+    command = {
+      executable: process.execPath,
+      args: ["-e", "console.log('New check'); process.exitCode = 2"],
+    };
+    scheduler.readinessSettingsChanged();
+    expect((await scheduler.getProjectStatus(projectId)).blockers).toContain(
+      "readiness:Waiting for readiness check",
+    );
+    expect((await scheduler.promoteNow(projectId)).status.blockers).toContain(
+      "readiness:New check",
+    );
+    command = { executable: path.join(testDir, "missing"), args: [] };
+    expect(
+      (await scheduler.promoteNow(projectId, { force: true })).promoted,
+    ).toBe(true);
+    expect(supervisor.startCalls).toHaveLength(1);
+  });
+
   it("promotes an existing-session item when the project is idle", async () => {
     await service.createItem({
       projectId,

@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 
 import type { UrlProjectId } from "@yep-anywhere/shared";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { GlobalSessionItem } from "../../api/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +23,7 @@ import {
 import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
 import { saveSessionDraft } from "../../lib/sessionDraftStorage";
 import { UI_KEYS } from "../../lib/storageKeys";
+import { recordSessionInteraction } from "../../lib/sessionInteractionOrder";
 import { Sidebar } from "../Sidebar";
 
 vi.mock("../../lib/activityBus", () => ({
@@ -269,6 +277,84 @@ describe("Sidebar client summary source registry", () => {
 
     const row = await screen.findByTestId("session-row-full-name-session");
     expect(row.getAttribute("data-project-name")).toBe("draft");
+  });
+
+  it("keeps rows in place through background output and activity transitions", () => {
+    const source = createClientSummaryHostSourceKey("stable-sidebar");
+    const first = session("first", "First", {
+      createdAt: new Date(RECENT_MS + 1000).toISOString(),
+      updatedAt: new Date(RECENT_MS + 1000).toISOString(),
+      activity: "in-turn",
+    });
+    const second = session("second", "Second", { activity: "in-turn" });
+    const report = (rows: GlobalSessionItem[], at: number) =>
+      reportGlobalSessionsCollectionSnapshot(
+        source,
+        { query: { scope: "global-sessions" }, sessions: rows, hasMore: false },
+        at,
+      );
+    act(() => {
+      setCurrentClientSummarySourceKey(source);
+      report([first, second], 100);
+    });
+    const { container } = renderSidebar();
+    expect(sectionRowIds(container, "sidebar-last-24-hours-list")).toEqual([
+      "first",
+      "second",
+    ]);
+    act(() => {
+      report(
+        [
+          { ...second, updatedAt: new Date().toISOString(), title: "Updated" },
+          { ...first, activity: "idle" },
+        ],
+        200,
+      );
+    });
+    expect(screen.getByText("Updated")).toBeDefined();
+    expect(sectionRowIds(container, "sidebar-last-24-hours-list")).toEqual([
+      "first",
+      "second",
+    ]);
+  });
+
+  it("holds user-driven moves and arrivals during pointer and focus interaction", async () => {
+    const source = createClientSummaryHostSourceKey("held-sidebar");
+    const rows = [session("a", "A"), session("b", "B")];
+    act(() => {
+      setCurrentClientSummarySourceKey(source);
+      reportGlobalSessionsCollectionSnapshot(
+        source,
+        { query: { scope: "global-sessions" }, sessions: rows, hasMore: false },
+        100,
+      );
+    });
+    const { container } = renderSidebar();
+    const aside = container.querySelector("aside")!;
+    const ids = () => sectionRowIds(container, "sidebar-last-24-hours-list");
+    await act(async () => {});
+    expect(ids()).toEqual(["a", "b"]);
+    fireEvent.pointerEnter(aside, { pointerType: "mouse" });
+    fireEvent.focus(aside);
+    act(() => {
+      recordSessionInteraction(source, "b");
+      reportGlobalSessionsCollectionSnapshot(
+        source,
+        {
+          query: { scope: "global-sessions" },
+          sessions: [session("new", "New"), ...rows],
+          hasMore: false,
+        },
+        200,
+      );
+    });
+    expect(ids()).toEqual(["a", "b"]);
+    fireEvent.pointerLeave(aside, { pointerType: "mouse" });
+    expect(ids()).toEqual(["a", "b"]);
+    fireEvent.blur(aside, { relatedTarget: document.body });
+    expect(ids()).toEqual(["b", "a", "new"]);
+    act(() => recordSessionInteraction(source, "a"));
+    expect(ids()).toEqual(["a", "b", "new"]);
   });
 
   it("rerenders rows and draft badges from only the current source", async () => {

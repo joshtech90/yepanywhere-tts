@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
+  CodexCyberAccessProgram,
   CodexPlanToolMode,
   CodexReasoningSummary,
   SubagentMaxDepth,
@@ -30,6 +31,18 @@ function getCodexThreadConfig(): Record<string, unknown> {
       buildThreadConfigOverrides(options: object): Record<string, unknown>;
     }
   ).buildThreadConfigOverrides({});
+}
+
+function getCodexTurnStartParams(): Record<string, unknown> {
+  return (
+    codexProvider as unknown as {
+      createTurnStartParams(
+        threadId: string,
+        input: unknown[],
+        options: object,
+      ): Record<string, unknown>;
+    }
+  ).createTurnStartParams("thread-1", [], {});
 }
 
 describe("provider runtime settings", () => {
@@ -123,6 +136,56 @@ describe("provider runtime settings", () => {
         tools: { update_plan: { enabled } },
       });
     }
+  });
+
+  it.each([
+    ["provider-default", undefined],
+    ["standard", "standard"],
+    ["daybreak-blue", "daybreakBlue"],
+    ["daybreak-red", "daybreakRed"],
+  ] as const)(
+    "sends the %s Codex cyber access program on a turn",
+    (program, wireValue) => {
+      createApp({
+        sdk: new MockClaudeSDK(),
+        codexCyberAccessProgram: program,
+      });
+
+      const params = getCodexTurnStartParams();
+      if (wireValue === undefined) {
+        expect(params).not.toHaveProperty("cyberAccessProgram");
+      } else {
+        expect(params).toMatchObject({ cyberAccessProgram: wireValue });
+      }
+    },
+  );
+
+  it("prefers the saved Codex cyber access program over the startup fallback", () => {
+    let codexCyberAccessProgram: CodexCyberAccessProgram | undefined;
+    const getSetting = vi.fn((key: keyof ServerSettings) =>
+      key === "codexCyberAccessProgram" ? codexCyberAccessProgram : undefined,
+    );
+    const serverSettingsService = {
+      getSetting,
+      onSettingsChanged: vi.fn(() => () => {}),
+    } as unknown as ServerSettingsService;
+
+    createApp({
+      sdk: new MockClaudeSDK(),
+      serverSettingsService,
+      codexCyberAccessProgram: "standard",
+    });
+    expect(getCodexTurnStartParams()).toMatchObject({
+      cyberAccessProgram: "standard",
+    });
+
+    codexCyberAccessProgram = "daybreak-blue";
+    expect(getCodexTurnStartParams()).toMatchObject({
+      cyberAccessProgram: "daybreakBlue",
+    });
+
+    codexCyberAccessProgram = "provider-default";
+    expect(getCodexTurnStartParams()).not.toHaveProperty("cyberAccessProgram");
   });
 
   it("prefers the saved Codex plan-tool mode over the startup fallback", () => {

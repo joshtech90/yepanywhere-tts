@@ -1,21 +1,12 @@
+import type { PreparedToolDisplay } from "../renderers/tools/defineTool";
 import { getDisplayBashCommandFromInput } from "../../lib/bashCommand";
 import { getPathBasename } from "../../lib/text";
-import type { ToolCallItem, ToolResultData } from "../../types/renderItems";
+import type {
+  ToolCallItem,
+  ToolResultData,
+} from "@yep-anywhere/shared/transcript/items";
 import { toolRegistry } from "../renderers/tools";
 import type { ToolSummaryContext } from "../renderers/tools/types";
-
-/**
- * Safely call a renderer method, falling back to undefined on error.
- * This handles cases where tool input/result doesn't match expected schema
- * (e.g., Gemini using different field names than Claude SDK).
- */
-function safeCall<T>(fn: () => T): T | undefined {
-  try {
-    return fn();
-  } catch {
-    return undefined;
-  }
-}
 
 /**
  * Get a summary string for a tool call based on its status.
@@ -29,14 +20,22 @@ export function getToolSummary(
   result: ToolResultData | undefined,
   status: ToolCallItem["status"],
   context?: ToolSummaryContext,
+  prepared?: PreparedToolDisplay,
 ): string {
-  const renderer = toolRegistry.get(toolName);
-  const canonicalToolName = renderer.tool;
+  const renderer =
+    prepared ??
+    toolRegistry.prepare(toolName, {
+      input,
+      result: result?.structured ?? result?.content,
+      isError: result?.isError,
+      status,
+    });
+  const canonicalToolName = toolRegistry.metadata(toolName).tool;
 
   if (status === "pending" || status === "aborted" || status === "incomplete") {
     // Show input summary while no ordinary result is available.
     if (renderer.getUseSummary) {
-      const summary = safeCall(() => renderer.getUseSummary?.(input, context));
+      const summary = renderer.getUseSummary(context);
       if (summary !== undefined) return summary;
     }
     return getDefaultInputSummary(canonicalToolName, input);
@@ -46,7 +45,7 @@ export function getToolSummary(
   // For some tools, combine input + result for a complete summary
   let inputSummary: string;
   if (renderer.getUseSummary) {
-    const summary = safeCall(() => renderer.getUseSummary?.(input, context));
+    const summary = renderer.getUseSummary(context);
     inputSummary = summary ?? getDefaultInputSummary(canonicalToolName, input);
   } else {
     inputSummary = getDefaultInputSummary(canonicalToolName, input);
@@ -54,19 +53,14 @@ export function getToolSummary(
 
   let resultSummary: string;
   if (renderer.getResultSummary) {
-    const summary = safeCall(() =>
-      renderer.getResultSummary?.(
-        result?.structured ?? result?.content,
-        result?.isError ?? false,
-        input,
-        context,
-      ),
-    );
+    const summary = renderer.getResultSummary(context);
     resultSummary =
       summary ?? getDefaultResultSummary(canonicalToolName, result, status);
   } else {
     resultSummary = getDefaultResultSummary(canonicalToolName, result, status);
   }
+
+  if (!result) return inputSummary;
 
   // Combine input and result for tools where the input context is valuable
   if (canonicalToolName === "Glob" || canonicalToolName === "Grep") {

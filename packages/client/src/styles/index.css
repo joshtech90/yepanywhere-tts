@@ -4274,16 +4274,6 @@ a.sidebar-nav-item {
   outline: none;
 }
 
-.composer-bottom-overflow {
-  position: relative;
-  display: none;
-  width: var(--composer-control-size);
-  height: var(--composer-control-size);
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-}
-
 .composer-bottom-overflow-button {
   position: relative;
   z-index: 72;
@@ -4407,70 +4397,6 @@ a.sidebar-nav-item {
 .composer-bottom-overflow-menu-group .mode-button .mode-dot {
   width: 8px;
   height: 8px;
-}
-
-/*
- * Overflow menu copies gate by their (priority-derived) tier class uniformly
- * across both menu groups: hidden by default, revealed once the toolbar's
- * measured overflow tier reaches each control's tier. Early menu copies (e.g.
- * the left-group mode/attach controls at their default priority) are revealed
- * at every tier, since the menu only exists once the toolbar has collapsed to
- * `early` or beyond. A control's inline and menu copies thus stay mutually
- * exclusive at every tier and priority — see the show rules below.
- */
-.composer-bottom-overflow-menu-group .composer-bottom-overflow-pinned,
-.composer-bottom-overflow-menu-group .composer-bottom-overflow-early,
-.composer-bottom-overflow-menu-group .composer-bottom-overflow-medium,
-.composer-bottom-overflow-menu-group .composer-bottom-overflow-late {
-  display: none;
-}
-
-.message-input-toolbar.overflow-tier-early .composer-bottom-overflow,
-.message-input-toolbar.overflow-tier-medium .composer-bottom-overflow,
-.message-input-toolbar.overflow-tier-late .composer-bottom-overflow {
-  display: inline-flex;
-}
-
-.message-input-toolbar.overflow-tier-early
-  .composer-bottom-overflow-inline.composer-bottom-overflow-early,
-.message-input-toolbar.overflow-tier-medium
-  .composer-bottom-overflow-inline.composer-bottom-overflow-early,
-.message-input-toolbar.overflow-tier-late
-  .composer-bottom-overflow-inline.composer-bottom-overflow-early {
-  display: none;
-}
-
-.message-input-toolbar.overflow-tier-medium
-  .composer-bottom-overflow-inline.composer-bottom-overflow-medium,
-.message-input-toolbar.overflow-tier-late
-  .composer-bottom-overflow-inline.composer-bottom-overflow-medium {
-  display: none;
-}
-
-.message-input-toolbar.overflow-tier-late
-  .composer-bottom-overflow-inline.composer-bottom-overflow-late {
-  display: none;
-}
-
-.message-input-toolbar.overflow-tier-early
-  .composer-bottom-overflow-menu-group
-  .composer-bottom-overflow-early,
-.message-input-toolbar.overflow-tier-medium
-  .composer-bottom-overflow-menu-group
-  .composer-bottom-overflow-early,
-.message-input-toolbar.overflow-tier-medium
-  .composer-bottom-overflow-menu-group
-  .composer-bottom-overflow-medium,
-.message-input-toolbar.overflow-tier-late
-  .composer-bottom-overflow-menu-group
-  .composer-bottom-overflow-early,
-.message-input-toolbar.overflow-tier-late
-  .composer-bottom-overflow-menu-group
-  .composer-bottom-overflow-medium,
-.message-input-toolbar.overflow-tier-late
-  .composer-bottom-overflow-menu-group
-  .composer-bottom-overflow-late {
-  display: inline-flex;
 }
 
 /* Pending approval indicator button in toolbar */
@@ -12023,7 +11949,7 @@ a.sidebar-nav-item {
   .sidebar-desktop {
     flex-shrink: 0;
     width: var(--sidebar-width, 280px);
-    height: 100dvh;
+    height: 100%;
     background: var(--bg-surface);
     border-right: 1px solid var(--border-color);
     display: flex;
@@ -12051,7 +11977,7 @@ a.sidebar-nav-item {
     display: flex;
     justify-content: center;
     min-width: 0;
-    height: 100dvh;
+    height: 100%;
     overflow: hidden;
   }
 
@@ -12059,7 +11985,7 @@ a.sidebar-nav-item {
     width: 100%;
     display: flex;
     flex-direction: column;
-    height: 100dvh;
+    height: 100%;
   }
 
   /* On desktop, messages scroll container extends full width for scrollbar at edge */

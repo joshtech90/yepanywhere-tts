@@ -6,14 +6,17 @@
  */
 
 import { randomUUID } from "node:crypto";
+import type { ArtifactViewerConfig } from "@yep-anywhere/shared";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { syncDirectory } from "../utils/syncDirectory.js";
 import type {
   AgentContextHints,
   CacheMissBillingSettings,
   ClaudeAdditionalModelSelection,
   ClaudeSteerBackgroundBashSettings,
   ClientDefaults,
+  CodexCyberAccessProgram,
   CodexPlanToolMode,
   CodexReasoningSummary,
   HelperTargetConfig,
@@ -21,6 +24,7 @@ import type {
   HostAwakeMode,
   NewSessionDefaults,
   PromptCacheKeepaliveSettings,
+  ProjectQueueReadinessCommand,
   SessionToolbarPresenceClientDefaults,
   SubagentMaxDepth,
   ToolbarControlPresence,
@@ -46,6 +50,7 @@ import {
   isHostAwakeMode,
   isCodexReasoningSummary,
   isCodexPlanToolMode,
+  isCodexCyberAccessProgram,
   parseClaudeAdditionalModelSelections,
   parseClaudeSteerBackgroundBashSettings,
 } from "@yep-anywhere/shared";
@@ -92,6 +97,10 @@ export type ToolResultMediaPreservation =
 
 /** Server-wide settings */
 export interface ServerSettings {
+  computerControl?: import("../computer-control/service.js").ComputerSettings;
+  /** Experimental issue discovery; absent means disabled, viewed scope. */
+  issueAssociations?: import("@yep-anywhere/shared").IssueSettings;
+  artifactViewer?: ArtifactViewerConfig;
   /** Where YA writes new project-scoped state. */
   projectDirectoryStorage: ProjectDirectoryStorage;
   /** Whether new live tool-result images receive durable YA-owned copies. */
@@ -203,6 +212,11 @@ export interface ServerSettings {
   /** Stored Codex plan-tool override; absent inherits the startup fallback. */
   codexPlanToolMode?: CodexPlanToolMode;
   /**
+   * Stored Codex cyber access program requested per turn; absent inherits the
+   * startup fallback, which omits the field and keeps Codex's own choice.
+   */
+  codexCyberAccessProgram?: CodexCyberAccessProgram;
+  /**
    * How the server handles Codex CLI updates:
    * - "auto": automatically run `npm install -g <pkg>@latest` when an update
    *   is available and the install was done via npm (best effort, logs only).
@@ -237,6 +251,8 @@ export interface ServerSettings {
    * Queue promotes one item. Range 0-300, default 30.
    */
   projectQueueQuietSeconds?: number;
+  /** Optional server-wide executable gate; null disables it. */
+  projectQueueReadinessCheck?: ProjectQueueReadinessCommand | null;
   /**
    * Name new sessions with the cheap helper model instead of leaving the
    * truncated first user message as the list title.
@@ -419,6 +435,11 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.codexPlanToolMode = isCodexPlanToolMode(settings.codexPlanToolMode)
     ? settings.codexPlanToolMode
     : undefined;
+  normalized.codexCyberAccessProgram = isCodexCyberAccessProgram(
+    settings.codexCyberAccessProgram,
+  )
+    ? settings.codexCyberAccessProgram
+    : undefined;
   normalized.codexReloadSafeSessions =
     typeof settings.codexReloadSafeSessions === "boolean"
       ? settings.codexReloadSafeSessions
@@ -545,6 +566,18 @@ export type ServerSettingsChangeListener = (
   previousSettings: Readonly<ServerSettings>,
 ) => void;
 
+/** The file was replaced, but its directory durability could not be confirmed. */
+export class CommittedSettingsSaveError extends Error {
+  constructor(
+    readonly settings: ServerSettings,
+    cause: unknown,
+  ) {
+    super("Settings were saved, but crash durability could not be confirmed", {
+      cause,
+    });
+  }
+}
+
 export class ServerSettingsService {
   private state: SettingsState;
   private dataDir: string;
@@ -591,6 +624,7 @@ export class ServerSettingsService {
         await this.doSave(this.state);
       }
     } catch (error) {
+      if (error instanceof CommittedSettingsSaveError) throw error;
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         console.warn(
           "[ServerSettingsService] Failed to load settings, using defaults:",
@@ -655,7 +689,13 @@ export class ServerSettingsService {
           ...updates,
         },
       };
-      await this.doSave(nextState);
+      let durabilityError: CommittedSettingsSaveError | undefined;
+      try {
+        await this.doSave(nextState);
+      } catch (error) {
+        if (!(error instanceof CommittedSettingsSaveError)) throw error;
+        durabilityError = error;
+      }
       this.state = nextState;
 
       const settings = { ...nextState.settings };
@@ -664,6 +704,7 @@ export class ServerSettingsService {
         listener(settings, previous);
       }
       this.publishDeferredDelivery();
+      if (durabilityError) throw durabilityError;
       return settings;
     });
     this.updateTail = operation.then(
@@ -697,17 +738,15 @@ export class ServerSettingsService {
       }
       await fs.rename(temporaryPath, this.filePath);
       published = true;
-      const directory = await fs.open(this.dataDir, "r");
-      try {
-        await directory.sync();
-      } finally {
-        await directory.close();
-      }
+      await syncDirectory(this.dataDir);
     } catch (error) {
       this.logger.error(
         "[ServerSettingsService] Failed to save settings:",
         error,
       );
+      if (published) {
+        throw new CommittedSettingsSaveError({ ...state.settings }, error);
+      }
       throw error;
     } finally {
       if (!published) {

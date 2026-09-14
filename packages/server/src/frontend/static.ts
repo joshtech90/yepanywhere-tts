@@ -24,7 +24,9 @@ const APP_CONTENT_SECURITY_POLICY = [
   "font-src 'self' data:",
   "img-src 'self' data: blob: https:",
   "media-src 'self' data: blob: https:",
-  "frame-src 'self' blob:",
+  // Artifact origins can be configured while this app document is open.
+  // The viewer validates the selected origin and always applies its sandbox.
+  "frame-src 'self' blob: http: https:",
   "connect-src 'self' http: https: ws: wss:",
   "worker-src 'self' blob:",
   "frame-ancestors 'self' tauri://localhost https://tauri.localhost",

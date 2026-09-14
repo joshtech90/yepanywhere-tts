@@ -1,3 +1,4 @@
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
@@ -203,7 +204,7 @@ for (const direction of ["forward", "reverse"] as const) {
 
     const tint = await quoteSelectionAndReadTint(page);
     await expect(page.locator("[data-composer-input]")).toHaveValue(
-      '> alpha = "first highlighted line";\n> export const beta\n',
+      `re: ${join(e2ePaths.tempDir, "file-browser-project", "src", "index.ts")}:1\n> alpha = "first highlighted line";\n> export const beta\n`,
     );
     expect(tint.nativeSelectionCollapsed).toBe(true);
     expect(tint.highlightCount).toBe(1);
@@ -211,6 +212,20 @@ for (const direction of ["forward", "reverse"] as const) {
     expect(tint.startLineOffset).toBe("0");
     expect(Number(tint.endLineOffset)).toBeGreaterThan(0);
     expect(tint.tintBackground).not.toBe("rgba(0, 0, 0, 0)");
+    const captureDir = process.env.YEP_UI_CAPTURE_DIR;
+    if (captureDir) {
+      mkdirSync(captureDir, { recursive: true });
+      const viewport =
+        direction === "forward"
+          ? { width: 1000, height: 600 }
+          : { width: 375, height: 812 };
+      await page.setViewportSize(viewport);
+      await page.mouse.move(1, 1);
+      await page.screenshot({
+        animations: "disabled",
+        path: join(captureDir, `quote-reply-${viewport.width}.png`),
+      });
+    }
   });
 }
 
@@ -230,7 +245,7 @@ test("keeps a wrapped highlighted-file range narrow after quote reply", async ({
 
   const tint = await quoteSelectionAndReadTint(page);
   await expect(page.locator("[data-composer-input]")).toHaveValue(
-    `> ${selectedSource}\n`,
+    `re: ${join(e2ePaths.tempDir, "file-browser-project", "src", "index.ts")}:3\n> ${selectedSource}\n`,
   );
   expect(tint.highlightCount).toBe(1);
   expect(tint.highlightRectCount).toBeGreaterThan(1);

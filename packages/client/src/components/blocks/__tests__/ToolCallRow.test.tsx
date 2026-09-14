@@ -97,9 +97,12 @@ describe("ToolCallRow", () => {
     const preview = container.querySelector("[data-workflow-output]");
     expect(preview).not.toBeNull();
     expect(preview?.querySelector("pre")?.textContent).toBe("");
-    expect(preview?.querySelector("details")?.textContent).toContain(
-      "[INFO] diagnostic only",
+    fireEvent.click(
+      screen.getByRole("button", { name: "Expand original output" }),
     );
+    expect(
+      preview?.querySelector("[data-workflow-original]")?.textContent,
+    ).toContain("[INFO] diagnostic only");
   });
 
   beforeEach(() => {
@@ -198,17 +201,19 @@ describe("ToolCallRow", () => {
     setStableToolPreviewRenderingPreference(false);
 
     render(
-      <ToolCallRow
-        id="tool-schema-offscreen"
-        toolName="Read"
-        toolInput={{ file_path: "/tmp/example" }}
-        toolResult={{
-          content: "",
-          isError: false,
-          structured: { type: "invalid" },
-        }}
-        status="complete"
-      />,
+      <I18nProvider>
+        <ToolCallRow
+          id="tool-schema-offscreen"
+          toolName="Read"
+          toolInput={{ file_path: "/tmp/example" }}
+          toolResult={{
+            content: "",
+            isError: false,
+            structured: { type: "invalid" },
+          }}
+          status="complete"
+        />
+      </I18nProvider>,
     );
 
     await waitFor(() => {
@@ -1075,7 +1080,7 @@ describe("ToolCallRow", () => {
   });
 
   it("keeps generic shell rows expandable when no inline PTY summary applies", () => {
-    const { container } = render(
+    render(
       <ToolCallRow
         id="tool-pty-generic"
         toolName="WriteStdin"
@@ -1089,12 +1094,14 @@ describe("ToolCallRow", () => {
       />,
     );
 
-    expect(container.querySelector(".expand-chevron")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Collapse" }).textContent).toBe(
+      "−",
+    );
   });
 
   it("auto-expands a shell row whose output fits the preview budget", () => {
     // Default output-preview-lines budget is 2; two lines fit.
-    const { container } = render(
+    render(
       <ToolCallRow
         id="tool-pty-short"
         toolName="WriteStdin"
@@ -1109,14 +1116,21 @@ describe("ToolCallRow", () => {
     );
 
     expect(screen.getByText(/step=2700/)).toBeDefined();
-    expect(container.querySelector(".expand-chevron")).not.toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Collapse" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    expect(screen.getByRole("button", { name: "Collapse" }).textContent).toBe(
+      "−",
+    );
   });
 
   it("keeps a single mega-line shell output collapsed (wrapped-line budget)", () => {
     // One logical line, but far wider than the preview budget once wrapped;
     // a newline count alone would call this "1 line" and auto-expand it.
     const megaLine = `{"chunk_id":"b064ba","output":"${"x".repeat(3000)}"}`;
-    const { container } = render(
+    render(
       <ToolCallRow
         id="tool-pty-megaline"
         toolName="WriteStdin"
@@ -1131,7 +1145,14 @@ describe("ToolCallRow", () => {
 
     expect(screen.queryByText(/chunk_id/)).toBeNull();
     expect(screen.getByText(/1 lines/)).toBeDefined();
-    expect(container.querySelector(".expand-chevron")).not.toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Expand" })
+        .getAttribute("aria-expanded"),
+    ).toBe("false");
+    expect(screen.getByRole("button", { name: "Expand" }).textContent).toBe(
+      "+",
+    );
   });
 
   it("keeps a long shell output collapsed behind its summary", () => {

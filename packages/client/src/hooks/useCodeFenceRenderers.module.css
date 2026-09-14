@@ -1,0 +1,124 @@
+/* Code-fence language label and per-language renderers.
+   See topics/code-fence-renderers.md.
+
+   `useCodeFenceRenderers` puts `.root` on whichever container it was given,
+   so everything below scopes under it. The elements themselves are matched by
+   the data attributes the hook writes, which are also what its tests use. */
+
+.root pre[data-ya-code-language] {
+  position: relative;
+}
+
+/* A pseudo-element, so the label never enters a text selection or the
+   clipboard. It adds no persistent chrome: pointers reveal it on hover, touch
+   reveals it on tap. */
+.root pre[data-ya-code-language]::after {
+  content: attr(data-ya-code-language);
+  position: absolute;
+  top: 0.15rem;
+  right: 0.35rem;
+  padding: 0 0.3rem;
+  border-radius: 0.25rem;
+  background: color-mix(in srgb, var(--bg-surface) 88%, transparent);
+  color: var(--text-muted);
+  font-family: var(--font-sans, sans-serif);
+  font-size: 0.65rem;
+  line-height: 1.5;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+@media (hover: hover) {
+  .root pre[data-ya-code-language]:hover::after {
+    opacity: 1;
+  }
+}
+
+.root pre[data-ya-code-language]:focus-visible::after,
+.root pre[data-ya-code-language][data-ya-code-language-shown]::after {
+  opacity: 1;
+}
+
+.root [data-ya-code-block] {
+  position: relative;
+}
+
+.root [data-ya-code-rendered] {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  padding: 0.5rem 0;
+}
+
+.root [data-ya-code-rendered] svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Whichever view is not current is hidden. These come after the rules they
+   override so specificity runs ascending down the file. */
+.root [data-ya-code-block][data-ya-code-view="rendered"] > pre,
+.root
+  [data-ya-code-block][data-ya-code-view="source"]
+  > [data-ya-code-rendered] {
+  display: none;
+}
+
+/* Matches the Σ source/render affordance used by fixed-font panels. */
+.root [data-ya-code-toggle] {
+  position: absolute;
+  right: 0.4rem;
+  bottom: 0.25rem;
+  width: 1.45rem;
+  height: 1.45rem;
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+  color: var(--text-muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease,
+    border-color 0.15s ease;
+  z-index: 2;
+}
+
+.root [data-ya-code-block]:hover [data-ya-code-toggle],
+.root [data-ya-code-block]:focus-within [data-ya-code-toggle],
+.root [data-ya-code-toggle]:focus {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.root [data-ya-code-toggle]:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong, var(--border-color));
+}
+
+.root [data-ya-code-toggle][aria-pressed="true"] {
+  color: var(--text-primary);
+  border-color: color-mix(
+    in srgb,
+    var(--app-yep-green) 45%,
+    var(--border-color)
+  );
+  background: color-mix(in srgb, var(--app-yep-green) 14%, var(--bg-surface));
+}
+
+/* Without a hover pointer the toggle is the only way back to source. */
+@media (hover: none) {
+  .root [data-ya-code-toggle] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}

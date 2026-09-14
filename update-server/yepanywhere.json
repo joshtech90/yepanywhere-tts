@@ -14,7 +14,19 @@
     "githubRepo": "kzahel/yepanywhere",
     "tagPrefix": "desktop-v",
     "tauriUpdates": true,
-    "pathPrefix": "/desktop"
+    "pathPrefix": "/desktop",
+    "channels": {
+      "stable": {
+        "displayName": "Stable",
+        "tagPrefix": "desktop-v",
+        "releaseKind": "release"
+      },
+      "latest": {
+        "displayName": "Latest",
+        "tagPrefix": "desktop-latest-v",
+        "releaseKind": "prerelease"
+      }
+    }
   },
   {
     "id": "yep-bridge",

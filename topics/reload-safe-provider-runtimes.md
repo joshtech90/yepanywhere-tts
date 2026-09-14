@@ -1,6 +1,6 @@
 # Reload-Safe Provider Runtimes
 
-> Reload-safe provider runtimes keep active local Linux sessions running across
+> Reload-safe provider runtimes keep active supported local sessions running across
 > replacement of YA's Hono server by placing each live provider protocol owner
 > under a durable host outside Hono; shutdown of that host's wrapper or
 > foreground terminal still reaps every hosted provider process within a
@@ -9,8 +9,11 @@
 
 Topic: reload-safe-provider-runtimes
 
-Status: **implemented on Linux for the non-watch development wrapper and the
-foreground headless host.** Codex, Claude, Gemini, Grok, OpenCode, Pi, and
+Status: **implemented on Linux and macOS Node source checkouts for the non-watch
+development wrapper and foreground host.** macOS live Claude, Codex, and
+simultaneous Claude/Codex continuity are verified on canonical project paths.
+See [initial macOS evidence](#macos-verification-2026-09-11) and
+[live completion evidence](#macos-live-verification-2026-09-12). Codex, Claude, Gemini, Grok, OpenCode, Pi, and
 Codex OSS all use the shared provider host. The former
 `codexReloadSafeSessions` setting remains accepted and stored for compatibility
 but is inert and hidden from the current client.
@@ -92,10 +95,10 @@ already-running ordinary sessions, volatile queued work, an unavailable or
 incompatible host, and any session that cannot detach cleanly. Changing the
 Codex setting never attempts to adopt a live process.
 
-Safe Reload replaces Hono, not existing provider workers. A surviving worker
-keeps the provider code and launch facts it started with. New workers load
-current code, a targeted worker relaunch updates one session, and a
-provider-host reboot guarantees that every hosted provider worker adopted a
+Safe Reload replaces Hono and Vite while preserving existing provider workers.
+A surviving worker keeps the provider code and launch facts it started with.
+New workers load current code, a targeted worker relaunch updates one session,
+and a provider-host reboot guarantees that every hosted provider worker adopted a
 provider-layer change. A full wrapper reboot provides that guarantee when the
 wrapper owns the host, but not when it merely attached to a separately owned
 foreground host. Orderly-restart recovery launches a new worker using current
@@ -273,7 +276,11 @@ new request id. A new Hono generation receives the same pending request once
 and routes it through the new `Process.handleToolApproval` callback. If the
 provider cancels the request, the worker aborts that callback's signal so the
 UI cannot wait on a request that no longer exists. YA never auto-approves
-across a reload.
+across a reload. The stable id belongs to the worker protocol: the replacement
+`Process` allocates a fresh UI `InputRequest.id`. Clients answer the currently
+published UI request; its response resolves the original worker promise.
+Continuity checks compare the pending tool/input and original provider
+execution, rather than requiring UI request ids to survive Hono replacement.
 
 Callbacks that are observations rather than questions are represented as
 state: the worker records the most recently applied permission mode, provider
@@ -348,7 +355,7 @@ The wrapper receives every worker process-group id from the host and performs
 the same final sweep if the host itself fails. EOF on the host's inherited IPC
 channel is terminal owner loss, never a reload signal.
 
-Each reported Linux process group is paired with the start time of its leader
+Each reported native process group is paired with the start time of its leader
 from `/proc`. The host and wrapper verify that identity before signaling it, so
 a stale registry entry cannot kill an unrelated process after PID reuse. If a
 leader exits while its original descendants remain in the group, the missing
@@ -361,10 +368,67 @@ Routing is evaluated on every provider launch, including a durable resume:
 | Launch | Runtime backend |
 |---|---|
 | Any provider, shared host available | shared provider host |
-| Shared host unavailable or incompatible | ordinary in-Hono provider only when reload continuity was not explicitly promised |
+| Shared host unavailable or incompatible | Supported boot attaches or starts the host; if that fails, ordinary in-Hono provider plus a non-dismissible degraded banner. SSH remote executors still launch from this server |
 
 The retained Codex setting does not participate in this decision. A runtime
 keeps the owner selected when it launched until it reaches terminal cleanup.
+
+Before an eligible Hono detaches, it serializes and flushes the current standing
+permission mode and launch settings. Failure aborts that session rather than
+retaining a callback under stale policy. Reattachment prefers the durable
+standing permission mode over the worker's original launch mode. The attached
+worker snapshot also supplies its active-turn state, so acknowledged activity
+does not disappear into a transient idle controller after replacement.
+
+## macOS source runtime boundary
+
+The macOS port uses the shared host/worker protocol with Node source checkouts.
+Its availability probe reads the current process identity before starting a
+host. Windows, macOS Bun, compiled/package servers, and Desktop retain ordinary
+in-Hono ownership; their hosting enablement requires separate native evidence.
+`--watch` does not promise continuity. Existing ordinary sessions cannot migrate
+into hosted workers, and volatile input remains a seamless-reload blocker.
+
+Process identity is shared by discovery, host cleanup and the development
+wrapper. Linux retains its `/proc/<pid>/stat` start-time identity. On macOS,
+`/usr/bin/osascript` runs a fixed JavaScript/Objective-C bridge to the system
+`proc_pidinfo(PROC_PIDTBSDINFO)` function. The public 136-byte `proc_bsdinfo`
+record supplies PID and microsecond start time; the bridge includes zombies so
+an unreaped child is not confused with inaccessible metadata. See Apple's
+[record definition](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/proc_info.h)
+and [process-info implementation](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c).
+
+This integration needs no compiler, Python installation, native addon, binary
+packaging or install-time build. Both arm64 and x64 use the fixed-width ABI;
+native CI must exercise each architecture. Each read has a one-second deadline
+and 4 KiB output limit. Invalid/partial output, inaccessible metadata and probe
+failure refuse ownership; they never mean absence. Only a missing process
+confirmed by the OS is absent. Changed identities are never signalled and
+failed cleanup retains its registry/descriptor state. Original process groups
+remain cleanable after their leader exits because Unix retains the group ID
+while its descendants belong to it. Idle hosts add no identity polling loop.
+
+The default Mac directory is `/tmp/yep-anywhere-<uid>/provider-host`, avoiding
+macOS's long per-user temporary-directory names. An explicit
+`YEP_PROVIDER_HOST_RUNTIME_DIR` is authoritative. Control and worker socket
+paths exceeding 103 UTF-8 bytes fail with a short-directory instruction; they
+are never truncated or replaced with TCP. Private directory/file permissions,
+tokens, source fingerprints and exclusive launch reservations still apply.
+
+A wrapper-owned host survives API reload and wrapper HUP. Terminal INT/TERM
+or wrapper IPC loss shuts it down. A separately foreground-owned host survives
+an attached wrapper's shutdown; its own INT/TERM/HUP shuts down its workers.
+On Mac, source-server attach-or-start gives a newly started host an inherited
+IPC owner, so loss of that source launcher ends the host lifetime. Attaching to
+an existing host does not transfer terminal ownership. Linux's obsolete-bind
+provenance reaper remains Linux-only: a Mac bind collision cannot authorize
+killing another development instance.
+
+A failed host ensure advertises the existing `providerHostDegraded` field.
+Its notice reserves space in the shared navigation shell so headers, settings
+and session input remain reachable on desktop and phone. Older servers that
+omit the field retain the existing no-notice fallback; no new client contract
+or capability field is required.
 
 ## Retired Codex-Native Runtime Boundary
 
@@ -661,6 +725,13 @@ rejects new input once its volatile-queue blocker check passes. The wrapper
 waits for the old generation to detach and exit, then starts exactly one
 replacement. It never forwards HUP to Codex app-server.
 
+Delayed exit notifications from a retired backend generation must not start
+recovery or shut down its replacement. On Windows, replacement and terminal
+cleanup stop each owned launcher tree before starting new children; stopping
+only the shell PID must not leave old pnpm, tsx or Vite descendants alive.
+Windows retains ordinary in-Hono provider ownership and interrupting restart
+semantics; process-tree cleanup does not imply provider continuity.
+
 ### Development bind takeover
 
 Every process spawned beneath `scripts/dev.js` carries a non-secret dev
@@ -829,19 +900,20 @@ The server continues to accept, store, and return
 render it, and the native-host availability capability is no longer
 advertised. Its capability ids remain reserved for their original meanings.
 
-The shared host is enabled on Linux under the non-watch development wrapper or
-through `pnpm provider-host`. Host capability requires:
+The shared host is enabled on Linux and macOS Node source checkouts under the
+non-watch development wrapper or through `pnpm provider-host`. Host capability requires:
 
-- `process.platform === "linux"`;
+- a supported platform/runtime and successful native process-identity probe;
 - launch through the recognized development wrapper or foreground host;
 - the exact compatible host protocol;
 - a private, connectable runtime socket;
 - wrapper-generation registration for Hono control; and
 - bounded owner-loss cleanup owned by the host and its terminal owner.
 
-macOS, Windows, direct `pnpm --filter server dev` launches, unsupported Linux
-environments, and failed or ambiguous probes retain ordinary in-Hono provider
-ownership and the existing safe-restart/explicit-interruption choices. An
+Windows, macOS Bun, compiled macOS servers and Desktop retain ordinary in-Hono
+provider ownership. Supported direct source launches attach or start the host
+instead of silently skipping it. Failed or ambiguous probes on supported
+launches continue in-process with the degraded banner. An
 ambiguous stable descriptor is not removed or replaced.
 
 Any later use of `systemd-run --user`, Linux abstract sockets, `/proc`, cgroup
@@ -882,12 +954,187 @@ path. HUP is sent only to the wrapper. Codex app-server interprets HUP as a
 request to drain and exit after active work, so forwarding it would retire the
 very runtime that Hono reload is meant to preserve.
 
+In the development wrapper, both paths also replace Vite after the old Hono
+generation exits. Expected frontend termination is part of reload, so it does
+not trigger wrapper shutdown. The replacement reads current Vite configuration
+and builds a fresh in-memory module graph; backend and frontend process IDs
+change while the wrapper, provider host, and worker identities remain stable.
+Concurrent reload requests coalesce. The safe-restart blocker decision remains
+unchanged; restarting Vite never bypasses the queue or provider-detach checks.
+
+A frontend exit or launch error keeps Hono and the provider host alive. The
+wrapper reports that Vite needs attention and the next server reload retries
+it; there is no automatic retry loop. Terminal wrapper shutdown still reaps
+its owned host and all children. A wrapper source change needs one full wrapper
+restart before the running process adopts this reload behavior.
+
 The client gates the Codex backend-selector field with
 `reload-safe-codex-runtime-settings` and enables it only when the current host
 also advertises `reload-safe-codex-runtime`. The approved compatibility corpus
 was stable releases `v0.7.0` and `v0.6.2`: neither knows the new field, so a new
 client hides it and makes no unsupported write. Older clients omit the field
 and retain the server's default-off behavior.
+
+## macOS verification, 2026-09-11
+
+Tested from the uncommitted implementation based on `1b44fa073`, macOS 26.6.2
+(25G83), arm64, Node 25.8.2. The independent Linux arm64 testbed used Node
+22.16.0: 52 focused tests passed, with only the explicitly Darwin-specific
+identity-failure case skipped. The equivalent Mac suites pass all 54 cases. Final repository checks passed:
+`pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test` (11,757 tests
+passed, 29 skipped), and `pnpm test:e2e` (224 passed, 8 skipped). Lint reports
+two existing informational template-string suggestions, with no errors.
+The focused CI job in `.github/workflows/ci.yml` runs Node 22.16.0 on Linux,
+Mac arm64, Mac Intel and Windows; those hosted CI executions are pending.
+Runner labels follow the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+Bun, compiled macOS servers and Desktop remain disabled. This does not close
+[general CI platform coverage](../gaps/ci-platform-coverage-holes.md).
+
+```bash
+pnpm --filter @yep-anywhere/server exec vitest run \
+  test/scripts/provider-process-identity.test.mjs \
+  test/scripts/dev-reload.test.mjs \
+  test/scripts/provider-host-ownership.test.mjs \
+  test/scripts/provider-host-system.test.mjs \
+  test/sdk/providers/provider-runtime-host.test.ts \
+  test/sdk/providers/provider-host-status.test.ts \
+  test/sdk/providers/managed-runner.test.ts \
+  test/supervisor/sessionActivationCoordinator.test.ts \
+  --maxWorkers=1 --minWorkers=1 --testTimeout=20000
+```
+
+The assembled case runs actual wrapper, Hono, production worker,
+`ProviderSessionOwner`, socket adapter and proxy. An explicit test-only Node
+preload substitutes `getRawProvider("claude").startSession` with a file-barrier
+provider and native child; it does not replace the worker. An output suffix and
+approval are emitted at confirmed detach, the original callback resolves after
+attach, a second turn completes, and exactly one provider start is recorded.
+It also changes the standing mode from bypass to default before replacement,
+preventing the launch-mode regression discovered in the live test. Pure owner
+and socket tests separately assert sequence acknowledgement and replay.
+
+| Live Mac scenario | Result |
+| --- | --- |
+| New Codex session, API reload during numbered command | Same worker, provider group, native session and runtime; command completes |
+| Second Codex turn, wrapper HUP during command | Same retained runtime; numbered command completes |
+| Ordinary durable resume after terminal wrapper shutdown | Same native conversation, fresh hosted worker |
+| Hono-only edit, browser Server changed → Reload | New backend returns the test property; same worker; command and unsent draft survive; edit restored |
+| Native Codex approval across API reload | Request remains actionable under current default mode; answer completes original command in same worker |
+| Terminal shutdown after live runs | Host descriptor/socket absent and all recorded worker/provider groups gone |
+| Real Claude and both providers active | Blocked: native `oauth_org_not_allowed`, organization disables subscription access |
+
+Codex app-server 0.154.0 used `gpt-6-astra` with low effort. The account rejects
+`gpt-5.4-mini`; that failed launch is not counted as continuity. Claude SDK
+0.3.258 was attempted and produced the native organization error before a turn.
+The synthetic project, YA data, ports and private host directory were isolated;
+native same-user Claude/Codex authentication and transcript stores were
+intentionally shared. No credentials were copied. Only created-session evidence
+was read, and no unrelated native session was removed.
+
+Local run evidence is retained under `.artifacts/ui-testing/2026-09-11-macos-provider-host`
+and `.artifacts/ui-testing/2026-09-11-macos-provider-host-live`; compact structured
+results and test logs are archived with the latter. Browser captures at 1000×600
+and 375×812 verify the resulting transcript and the degraded banner's reachable
+navigation. `e2e/provider-host-live.spec.ts` plus
+`playwright.provider-host.config.ts` is an explicit credentialed runner: set
+`YA_LIVE_HOST_STATE` to the isolated launcher metadata and
+`YEP_E2E_UI_CAPTURE_DIR` to a capture directory. Ordinary CI skips this spec.
+The two numbered native turns each have one start and one terminal result;
+both reload intervals fall inside their original native turn. Request-to-attach
+was 2730 ms for API reload and 2556 ms for wrapper HUP on this run. The native
+conversation contains nine distinct test turns with no duplicate starts or
+terminal records across the repeated smoke attempts.
+A live smoke does not provide exact cursor/byte replay telemetry; the native
+transcript and live-only lifecycle evidence serve different assertions.
+
+## macOS live verification, 2026-09-12
+
+The account-access deferral in tactical 128 is closed. Validation used YA
+`6ef7771748797ab5ac5ffb943a54adcf609f3a43` plus the credentialed test extension,
+macOS 26.5.1 (25F80), arm64, Node 24.20.0, and the non-watch source wrapper.
+The actual Claude session used SDK 0.3.258 / bundled CLI 2.1.258 with
+`claude-sonnet-5`; the actual Codex transcript reports app-server
+`0.154.0-alpha.6.2`, `gpt-6-astra`, low effort. The shell's independently
+installed `claude` 2.1.268 and `codex` 0.153.4 were not the runtime-version
+oracle. This validation did not update providers or widen compatibility.
+
+The canonical synthetic project, YA data, private host directory and three
+ports were isolated. Same-user provider authentication and native transcript
+stores were intentionally shared; credentials were not copied or logged.
+
+| Scenario | Result |
+| --- | --- |
+| New Claude session, API reload during a numbered foreground command | Same host, worker, provider process group, YA/native session and original tool call; complete ordered progress |
+| Second Claude command, wrapper HUP | Same retained runtime and original tool call; complete ordered progress |
+| Native Claude approval across reload, then another turn | Reconstructed UI approval resolves the original SDK callback; later turn completes |
+| Claude and Codex commands active together, API and HUP | Both original workers/providers survive each replacement; both commands complete |
+| Terminal shutdown, then durable resume for each provider | Old process groups and sockets disappear; each native conversation resumes into a fresh hosted worker |
+| Hono-only edit and browser Server changed → Reload, each provider | Changed backend property appears, worker/provider identity persists, unsent draft survives, test edit is restored |
+| Browser-run native approvals, each provider | Same pending tool/input after attach; approval completes the original command and persisted history remains readable |
+| Two native approvals pending across the same reload | Both requests return; approving Claude leaves Codex pending; each command executes exactly once |
+| Final terminal cleanup | Every recorded worker/provider process group and owned socket is gone |
+
+The initial Claude API/HUP replacements attached in 1812/1264 ms; its approval
+replacement took 1531 ms. Combined API/HUP replacements took 1791/1786 ms.
+These are observed smoke timings, not performance ceilings. Wrapper-child
+snapshots show the host retained while Hono and Vite were replaced.
+The native audit pairs all eight Claude tool calls with exactly one successful
+result and records ten user turns with ten assistant end-turns. Codex has six
+unique started turns, each with one matching terminal event. Each measured
+API/HUP reload interval lies within its original Claude tool call or Codex
+turn, rather than an implicit restart/resume. After the combined approval run,
+the session-detail API returned 97 Claude and 41 Codex persisted records.
+
+The 54 focused native tests passed locally without skips. The existing
+[CI run for the tested base commit](https://github.com/kzahel/yepanywhere/actions/runs/34641697632)
+also passed native provider-host jobs on Linux, Apple Silicon Mac, Intel Mac,
+and Windows fallback, closing the previously pending CI evidence. The
+assembled production-worker test remains the exact replay/callback oracle:
+its provider seam is fake, while wrapper, Hono, owner, worker and sockets are
+real. Live smokes do not claim exact acknowledgement cursor/byte telemetry.
+Bun, compiled macOS servers and Desktop remain outside the enabled boundary.
+
+Final local checks passed: `pnpm lint` (zero warnings, two informational
+suggestions), `pnpm format:check`, `pnpm typecheck`, `pnpm test` (11,763 passed,
+29 skipped), and `pnpm test:e2e` (226 passed, eight skipped). Both explicit
+credentialed browser runs passed in addition to the ordinary suite. The console
+scan passed with unchanged budgets: 110 ungated sites, 61 warn sites and 92
+error sites; this validation adds no client console calls.
+
+Local evidence is under `.artifacts/ui-testing/2026-09-12-provider-host/`:
+`evidence/live.json`, `native-audit.json`, `dual-approval.json`, both
+`*-browser-live.json` files, and `final-cleanup.json`. Desktop 1000×600 and
+phone 375×812 captures in `canonical-captures/` show recovered transcripts,
+completed approvals and reachable composer controls, without a stale-server
+banner. The artifact capture facility presents those captures.
+
+The credentialed browser runner now selects Claude or Codex explicitly:
+
+```bash
+YA_LIVE_HOST_STATE=/absolute/path/to/state.json \
+YA_LIVE_HOST_PROVIDER=claude \
+YEP_E2E_UI_CAPTURE_DIR=/absolute/path/to/captures \
+pnpm --filter @yep-anywhere/client exec playwright test \
+  --config playwright.provider-host.config.ts
+```
+
+Repeat with `YA_LIVE_HOST_PROVIDER=codex` (the default). State contains the
+canonical fixture `directory`, server `port`, `projectId`, and the chosen
+`claudeSmoke` or `codexSmoke` object with `sessionId` and optional `model`.
+The wrapper must already be running with its host under `directory/host` and
+project under `directory/project`. To prove durable resume, stop the prior
+wrapper, verify cleanup, and start a fresh wrapper with the same isolated data
+before running the browser case. API/HUP command and simultaneous-approval
+smokes use the same session REST routes and private host inventory; wait for
+actual command progress or pending input before requesting replacement.
+
+Resolve the fixture directory with `realpath` before registering the project.
+A `/tmp` alias initially appeared to pass live continuity, but Claude persisted
+under `/private/tmp` and the selected YA route lost access to history. The
+browser test now rejects noncanonical fixtures and explicitly requires
+persisted command/approval records after reload. The general alias-routing
+bug remains in [its own gap](../gaps/claude-symlink-project-transcript-routing.md);
+this test correction does not fix or hide that separate defect.
 
 ## Verification Matrix
 
@@ -900,7 +1147,7 @@ remaining cases are an extended hardening matrix:
 
 1. With the retained Codex setting both off and on, prove new and resumed Codex
    sessions use the shared worker and the saved value remains unchanged.
-2. Start a fresh Linux development wrapper, then launch a new local Codex
+2. Start a fresh supported development wrapper, then launch a new local Codex
    thread and resume an existing one through shared workers. Prove neither path
    starts the retired native host.
 3. Begin a turn that remains active long enough to reload, with visible text or
@@ -934,7 +1181,7 @@ remaining cases are an extended hardening matrix:
     Break wrapper/host control independently and prove the surviving owner reaps
     the provider process rather than leaking it.
 13. Force an incompatible host/server generation and prove no second writer is
-    started. Repeat on a non-Linux target and prove no host/socket launch is
+    started. Repeat on an unsupported target and prove no host/socket launch is
     attempted and **Reload When Safe** remains available.
 
 Record at least:
@@ -1045,7 +1292,7 @@ provider-neutral routing including Codex.
 
 **Still not implied:** survival of a provider process or in-flight turn after
 the provider host's terminal owner ends, crash recovery of a launch recipe, a
-machine-persistent daemon, enabling the mechanism outside Linux, sharing one
+machine-persistent daemon, enabling unsupported runtime distributions, sharing one
 provider process across sandbox boundaries, or replacing the existing safe-
 restart flow. A replacement started within five minutes of an orderly stop may
 resume a later new turn from an exact private recipe. A separately owned

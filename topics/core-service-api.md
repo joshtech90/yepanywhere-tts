@@ -11,6 +11,7 @@
 Topic: core-service-api
 
 See also: [`provider-abstraction.md`](provider-abstraction.md),
+[`multi-machine-architecture.md`](multi-machine-architecture.md),
 [`cross-host-delegation.md`](cross-host-delegation.md),
 [`architecture-mandates.md`](architecture-mandates.md),
 [`ui-architecture.md`](ui-architecture.md),

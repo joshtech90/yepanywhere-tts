@@ -8,6 +8,7 @@ import {
   type UploadedFile,
   type UrlProjectId,
   thinkingOptionToConfig,
+  fromUrlProjectId,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import type { UserMessage } from "../sdk/types.js";
@@ -19,6 +20,10 @@ import {
 } from "../supervisor/Supervisor.js";
 import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
 import type { ProjectQueueService } from "./ProjectQueueService.js";
+import {
+  ProjectQueueReadinessCheck,
+  type ProjectQueueReadinessCommand,
+} from "./ProjectQueueReadinessCheck.js";
 import type {
   PersistedSessionQueuedMessage,
   SessionQueuePersistenceService,
@@ -33,6 +38,14 @@ import {
 
 const DEFAULT_IDLE_GRACE_MS = DEFAULT_PROJECT_QUEUE_QUIET_SECONDS * 1000;
 const BLOCKED_RETRY_MS = 30_000;
+const MIN_READINESS_POLL_MS = 10_000;
+
+interface ReadinessSnapshot {
+  commandKey: string;
+  checkedAtMs: number;
+  blocker: string | null;
+  quietSinceMs?: number;
+}
 
 type ProjectQueueTimerReason = "quiet" | "blocked-retry";
 
@@ -126,6 +139,7 @@ export interface ProjectQueueSchedulerOptions {
   idleGraceMs?: number;
   blockedRetryMs?: number;
   getIdleGraceMs?: () => number;
+  getReadinessCommand?: () => ProjectQueueReadinessCommand | null;
   getEffectiveProcessProjectId?: (
     process: ProjectWorkProcessSnapshot,
   ) => UrlProjectId;
@@ -173,6 +187,12 @@ export class ProjectQueueScheduler {
   >();
   private readonly inFlight = new Set<UrlProjectId>();
   private readonly inFlightRuns = new Set<Promise<RunProjectResult>>();
+  private readonly readinessCheck = new ProjectQueueReadinessCheck();
+  private readonly readiness = new Map<UrlProjectId, ReadinessSnapshot>();
+  private readonly readinessControllers = new Map<
+    UrlProjectId,
+    AbortController
+  >();
   private readonly unsubscribe: () => void;
   private disposed = false;
 
@@ -195,8 +215,12 @@ export class ProjectQueueScheduler {
     }
     this.timers.clear();
     this.userSessionStartReservations.clear();
+    for (const controller of this.readinessControllers.values())
+      controller.abort();
+    await this.readinessCheck.dispose();
     await Promise.allSettled(this.inFlightRuns);
     this.inFlight.clear();
+    this.readiness.clear();
   }
 
   /**
@@ -237,6 +261,22 @@ export class ProjectQueueScheduler {
   }
 
   async getProjectIdleStatus(
+    projectId: UrlProjectId,
+  ): Promise<ProjectIdleStatus> {
+    const status = await this.getProjectWorkStatus(projectId);
+    const command = this.options.getReadinessCommand?.();
+    if (command) {
+      const snapshot = this.readiness.get(projectId);
+      const blocker =
+        snapshot?.commandKey === JSON.stringify(command)
+          ? snapshot.blocker
+          : "Waiting for readiness check";
+      if (blocker) status.blockers.unshift(`readiness:${blocker}`);
+    }
+    return { idle: status.blockers.length === 0, blockers: status.blockers };
+  }
+
+  private async getProjectWorkStatus(
     projectId: UrlProjectId,
   ): Promise<ProjectIdleStatus> {
     // Project Queue ordering and UI semantics are documented in
@@ -368,12 +408,42 @@ export class ProjectQueueScheduler {
     }
   }
 
+  readinessSettingsChanged(): void {
+    for (const controller of this.readinessControllers.values())
+      controller.abort();
+    for (const snapshot of this.readiness.values()) {
+      snapshot.commandKey = "";
+      snapshot.quietSinceMs = undefined;
+    }
+    this.scheduleAllDispatchableProjects();
+    for (const projectId of this.projectQueueService.getProjectIdsWithDispatchableItems()) {
+      this.publishReadinessStatus(projectId);
+    }
+  }
+
+  private publishReadinessStatus(projectId: UrlProjectId): void {
+    this.eventBus.emit({
+      type: "project-queue-changed",
+      projectId,
+      items: this.projectQueueService.listProject(projectId).items,
+      dispatchState: this.projectQueueService.getDispatchState(),
+      reason: "readiness",
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   private readonly handleEvent = (event: BusEvent): void => {
     if (this.disposed) {
       return;
     }
     switch (event.type) {
       case "project-queue-changed":
+        if (event.reason === "readiness") break;
+        if (event.reason === "paused") {
+          this.readinessControllers.get(event.projectId)?.abort();
+          this.clearProjectTimer(event.projectId);
+          break;
+        }
         if (
           event.reason === "created" ||
           event.reason === "updated" ||
@@ -438,7 +508,7 @@ export class ProjectQueueScheduler {
     const projectIds =
       this.projectQueueService.getProjectIdsWithDispatchableItems();
     for (const projectId of projectIds) {
-      this.scheduleProject(projectId, delayMs, reason);
+      this.scheduleProjectIfDispatchable(projectId, delayMs, reason);
     }
   }
 
@@ -451,7 +521,18 @@ export class ProjectQueueScheduler {
       return;
     }
     if (!this.projectQueueService.hasDispatchableItem(projectId)) {
+      this.readinessControllers.get(projectId)?.abort();
       this.clearProjectTimer(projectId);
+      this.readiness.delete(projectId);
+      return;
+    }
+    if (this.options.getReadinessCommand?.()) {
+      const snapshot = this.readiness.get(projectId);
+      if (snapshot) snapshot.quietSinceMs = undefined;
+      const delay = snapshot
+        ? Math.max(0, snapshot.checkedAtMs + MIN_READINESS_POLL_MS - Date.now())
+        : 0;
+      this.scheduleProject(projectId, delay, "blocked-retry");
       return;
     }
     this.scheduleProject(projectId, delayMs, reason);
@@ -495,7 +576,7 @@ export class ProjectQueueScheduler {
   private scheduleBlockedProjectRetry(projectId: UrlProjectId): void {
     if (!this.projectQueueService.hasDispatchableItem(projectId)) return;
     const retryMs = Math.max(
-      0,
+      this.options.getReadinessCommand?.() ? MIN_READINESS_POLL_MS : 0,
       Math.round(
         this.options.blockedRetryMs ??
           Math.max(
@@ -538,6 +619,7 @@ export class ProjectQueueScheduler {
     projectId: UrlProjectId,
     options: PromoteNowOptions = {},
   ): Promise<RunProjectResult> {
+    if (this.disposed) return { promoted: false, reason: "paused" };
     if (this.inFlight.has(projectId)) {
       return { promoted: false, reason: "in-flight" };
     }
@@ -578,17 +660,88 @@ export class ProjectQueueScheduler {
     this.inFlight.add(projectId);
     let item: ProjectQueueItem | null = null;
     let retryBlockedProject = false;
+    let readinessRetry:
+      | { delayMs: number; reason: ProjectQueueTimerReason }
+      | undefined;
 
     try {
       if (!options.force) {
-        const idle = await this.getProjectIdleStatus(projectId);
+        const idle = await this.getProjectWorkStatus(projectId);
         if (!idle.idle) {
+          const snapshot = this.readiness.get(projectId);
+          if (snapshot) snapshot.quietSinceMs = undefined;
           retryBlockedProject = true;
           return {
             promoted: false,
             reason: "blocked",
             ...(options.itemId ? { itemId: options.itemId } : {}),
           };
+        }
+      }
+
+      const command = this.options.getReadinessCommand?.();
+      const commandKey = JSON.stringify(command ?? null);
+      if (!options.force && command && nextItem) {
+        const previous = this.readiness.get(projectId);
+        const nextPollAt = previous
+          ? previous.checkedAtMs + MIN_READINESS_POLL_MS
+          : 0;
+        if (options.automatic && Date.now() < nextPollAt) {
+          readinessRetry = {
+            delayMs: nextPollAt - Date.now(),
+            reason: "blocked-retry",
+          };
+          return { promoted: false, reason: "blocked" };
+        }
+        const controller = new AbortController();
+        this.readinessControllers.set(projectId, controller);
+        const checkedAtMs = Date.now();
+        this.readiness.set(projectId, {
+          commandKey,
+          checkedAtMs,
+          blocker: previous?.blocker ?? "Waiting for readiness check",
+          quietSinceMs: previous?.quietSinceMs,
+        });
+        const blocker = await this.readinessCheck.run(
+          command,
+          fromUrlProjectId(projectId),
+          controller.signal,
+        );
+        if (this.disposed || this.projectQueueService.isDispatchPaused()) {
+          return { promoted: false, reason: "paused" };
+        }
+        if (
+          controller.signal.aborted ||
+          commandKey !==
+            JSON.stringify(this.options.getReadinessCommand?.() ?? null)
+        ) {
+          retryBlockedProject = true;
+          return { promoted: false, reason: "blocked" };
+        }
+        const quietSinceMs =
+          blocker === null
+            ? previous?.commandKey === commandKey && previous.blocker === null
+              ? (this.readiness.get(projectId)?.quietSinceMs ?? Date.now())
+              : Date.now()
+            : undefined;
+        this.readiness.set(projectId, {
+          commandKey,
+          checkedAtMs,
+          blocker,
+          quietSinceMs,
+        });
+        if (blocker !== null) {
+          retryBlockedProject = true;
+          return { promoted: false, reason: "blocked" };
+        }
+        const quietRemaining =
+          (quietSinceMs ?? Date.now()) + this.getIdleGraceMs() - Date.now();
+        if (options.automatic && quietRemaining > 0) {
+          readinessRetry = {
+            delayMs: Math.max(MIN_READINESS_POLL_MS, quietRemaining),
+            reason: "quiet",
+          };
+          return { promoted: false, reason: "blocked" };
         }
       }
 
@@ -600,7 +753,13 @@ export class ProjectQueueScheduler {
 
       if (!options.force) {
         const stillIdle = await this.getProjectIdleStatus(projectId);
-        if (!stillIdle.idle) {
+        if (
+          !stillIdle.idle ||
+          this.disposed ||
+          this.projectQueueService.isDispatchPaused() ||
+          commandKey !==
+            JSON.stringify(this.options.getReadinessCommand?.() ?? null)
+        ) {
           await this.projectQueueService.releaseDispatchingItem(
             projectId,
             item.id,
@@ -674,8 +833,29 @@ export class ProjectQueueScheduler {
       };
     } finally {
       this.inFlight.delete(projectId);
-      if (retryBlockedProject && !this.disposed) {
+      this.readinessControllers.delete(projectId);
+      if (
+        readinessRetry &&
+        !this.disposed &&
+        !this.projectQueueService.isDispatchPaused() &&
+        this.projectQueueService.hasDispatchableItem(projectId)
+      ) {
+        this.scheduleProject(
+          projectId,
+          readinessRetry.delayMs,
+          readinessRetry.reason,
+        );
+      } else if (
+        retryBlockedProject &&
+        !this.disposed &&
+        !this.projectQueueService.isDispatchPaused()
+      ) {
         this.scheduleBlockedProjectRetry(projectId);
+      }
+      if (this.options.getReadinessCommand?.() && !this.disposed) {
+        this.publishReadinessStatus(projectId);
+        if (this.projectQueueService.listProject(projectId).items.length === 0)
+          this.readiness.delete(projectId);
       }
     }
   }

@@ -227,9 +227,25 @@ Design intent and invariants:
   trigger is purely *earlier and additive*; nothing about the harness's own
   auto-compaction changed. When the setting is off, provider behavior is
   exactly the provider default.
-- **No double compaction.** Each assistant-output version is considered once.
-  The compact operation's own idle boundary cannot recursively trigger another
-  compact even if the durable usage summary has not caught up.
+- **No double compaction.** Each assistant-output version is considered once,
+  and one attempt at a time: a second threshold compaction never starts for a
+  process while an earlier one is still waiting on the provider. The compact
+  operation's own idle boundary cannot recursively trigger another compact even
+  if the durable usage summary has not caught up.
+- **Context size after a compaction is unknown until the next real turn.** The
+  durable usage summary keeps reporting the pre-compaction token count until a
+  turn is recorded under the rewritten context, so a settled compaction latches
+  the threshold check off until the assistant-output version advances past it.
+  Reading the stale total back and acting on it is what produced the 2026-09-10
+  storm: roughly three thousand `/compact` turns in fourteen minutes, each
+  answered "Not enough messages to compact."
+- **A slash command's own output is not agent activity.** Claude Code answers
+  every slash command with an assistant-shaped echo carrying the command's
+  output (`model: "<synthetic>"`, `is_meta`, `local_command_source`);
+  `isLocalCommandEchoTurn` in the shared SDK guards identifies it. No model
+  produced it and no context was added, so it advances neither the
+  assistant-activity counter nor the recap buffer. Counting it re-armed the
+  once-per-turn gate on every no-op compact, which is what let the loop run.
 - **Conservative YA fallback (task 002).** Idle only, only when usage is known,
   and best-effort: the turn is delivered regardless of the compaction outcome,
   with no retry loop; failure is logged, never blocks the turn.

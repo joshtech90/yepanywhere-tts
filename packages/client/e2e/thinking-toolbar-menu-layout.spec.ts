@@ -84,20 +84,23 @@ test("keeps the thinking menu inside the phone viewport from the overflow strip"
 }) => {
   const viewport = { width: 320, height: 812 };
   await page.setViewportSize(viewport);
+  // Only the thinking toggle collapses; everything else survives narrowing, so
+  // the toggle is in the overflow strip no matter how the toolbar's widths
+  // happen to add up at this viewport.
   await page.addInitScript(() => {
     localStorage.setItem(
       "yep-anywhere-session-toolbar-presence",
       JSON.stringify({
-        attachments: "first",
-        btw: "first",
-        conversationView: "first",
-        modeSelector: "first",
-        nudge: "first",
-        projectQueue: "first",
-        projectQueueNewSessionShortcut: "first",
-        renderMode: "first",
-        sessionStatus: "first",
-        shortcutsHelp: "first",
+        attachments: "pin",
+        btw: "pin",
+        conversationView: "pin",
+        modeSelector: "pin",
+        nudge: "pin",
+        projectQueue: "pin",
+        projectQueueNewSessionShortcut: "pin",
+        renderMode: "pin",
+        sessionStatus: "pin",
+        shortcutsHelp: "pin",
         thinkingToggle: "first",
       }),
     );

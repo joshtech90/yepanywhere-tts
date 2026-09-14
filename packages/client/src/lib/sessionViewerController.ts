@@ -34,6 +34,7 @@ export type FileViewerRegistration = FileViewerBase &
 
 export type SessionViewerRegistration =
   | PanelViewerRegistration
+  | (SessionViewerBase & { kind: "artifact"; url: string; onClose?: never })
   | FileViewerRegistration;
 
 export type SessionViewerControllerState = SessionViewerRegistration & {

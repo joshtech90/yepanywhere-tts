@@ -1,31 +1,13 @@
-import type { ToolRenderer } from "./types";
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 
-const TASK_SNAPSHOT_FIELD = "_taskSnapshot";
-
-type TaskListStatus =
-  | "pending"
-  | "in_progress"
-  | "completed"
-  | "failed"
-  | "cancelled"
-  | "unknown";
-
-interface TaskListSnapshotItem {
-  id: string;
-  subject: string;
-  status: TaskListStatus | string;
-  description?: string;
-  activeForm?: string;
-  missingCreate?: boolean;
-}
-
-interface TaskListSnapshot {
-  version: 1;
-  tasks: TaskListSnapshotItem[];
-  currentTaskId?: string;
-  sourceToolUseId?: string;
-  unresolvedTaskIds?: string[];
-}
+type TaskListSnapshot = NonNullable<
+  import("zod").z.output<
+    typeof toolDisplayContracts.TaskCreate.input
+  >["_taskSnapshot"]
+>;
+type TaskListStatus = TaskListSnapshot["tasks"][number]["status"];
+type TaskListSnapshotItem = TaskListSnapshot["tasks"][number];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -39,19 +21,18 @@ function stringField(input: unknown, field: string): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function extractSnapshot(value: unknown): TaskListSnapshot | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  const snapshot = value[TASK_SNAPSHOT_FIELD];
-  if (
-    !isRecord(snapshot) ||
-    snapshot.version !== 1 ||
-    !Array.isArray(snapshot.tasks)
-  ) {
-    return undefined;
-  }
-  return snapshot as unknown as TaskListSnapshot;
+type TaskListInput = import("zod").z.output<
+  typeof toolDisplayContracts.TaskCreate.input
+>;
+type TaskListResult = import("zod").z.output<
+  typeof toolDisplayContracts.TaskCreate.result
+>;
+function extractSnapshot(
+  value: TaskListInput | TaskListResult | undefined,
+): TaskListSnapshot | undefined {
+  return typeof value === "object" && value !== null
+    ? value._taskSnapshot
+    : undefined;
 }
 
 function taskId(input: unknown): string | undefined {
@@ -181,8 +162,8 @@ function resultMessage(result: unknown): string | undefined {
 
 function renderTaskEvent(
   toolName: "TaskCreate" | "TaskUpdate",
-  input: unknown,
-  result: unknown,
+  input: TaskListInput | undefined,
+  result: TaskListResult | undefined,
   isError: boolean,
 ) {
   const snapshot = extractSnapshot(result) ?? extractSnapshot(input);
@@ -203,8 +184,8 @@ function renderTaskEvent(
 
 function taskSummary(
   toolName: "TaskCreate" | "TaskUpdate",
-  input: unknown,
-  result?: unknown,
+  input: TaskListInput | undefined,
+  result?: TaskListResult,
 ): string {
   const snapshot = extractSnapshot(result) ?? extractSnapshot(input);
   if (snapshot?.tasks.length) {
@@ -213,7 +194,7 @@ function taskSummary(
   return eventMessage(toolName, input);
 }
 
-export const taskCreateRenderer: ToolRenderer<unknown, unknown> = {
+export const taskCreateRenderer = defineTool(toolDisplayContracts.TaskCreate, {
   tool: "TaskCreate",
   displayName: "Create task",
 
@@ -238,9 +219,9 @@ export const taskCreateRenderer: ToolRenderer<unknown, unknown> = {
   getResultSummary(result, isError, input) {
     return isError ? "Error" : taskSummary("TaskCreate", input, result);
   },
-};
+});
 
-export const taskUpdateRenderer: ToolRenderer<unknown, unknown> = {
+export const taskUpdateRenderer = defineTool(toolDisplayContracts.TaskUpdate, {
   tool: "TaskUpdate",
   displayName: "Update task",
 
@@ -265,4 +246,4 @@ export const taskUpdateRenderer: ToolRenderer<unknown, unknown> = {
   getResultSummary(result, isError, input) {
     return isError ? "Error" : taskSummary("TaskUpdate", input, result);
   },
-};
+});

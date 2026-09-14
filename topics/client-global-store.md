@@ -139,6 +139,11 @@ event invalidation, debounce/deadline timers, and in-flight work. Component
 subscriptions express coverage and render state; mounting the same hook twice
 must not install two revalidation owners.
 
+Session-list refreshes cover the already loaded window, including pages loaded
+by scrolling. They publish the refreshed window atomically rather than
+temporarily replacing it with the first page. Windows beyond the server's
+500-row page limit refresh through bounded cursor pages before publication.
+
 **Landed instance: the session-collection generation.** `GET /api/sessions`
 carries one, and `useGlobalSessionsFeed` replays it as `knownGeneration` behind
 `progressive-session-catalog` to be told `unchanged` instead of re-reading rows

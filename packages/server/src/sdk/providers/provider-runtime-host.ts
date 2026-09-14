@@ -1,5 +1,12 @@
+import { agentSelfEnabled } from "./agent-self.js";
+import { existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { randomUUID } from "node:crypto";
 import { createConnection, type Socket } from "node:net";
+import { getLogger } from "../../logging/logger.js";
+import { getModuleEnv, harvestYaModuleEnv } from "../../yaModuleEnv.js";
+import { setProviderHostDegraded } from "./provider-host-status.js";
 import type {
   PermissionMode,
   ThinkingConfig,
@@ -13,8 +20,7 @@ import type {
   ToolApprovalResult,
   UserMessage,
 } from "../types.js";
-import { getModuleEnv } from "../../yaModuleEnv.js";
-import { pickBrowserDebugAgentEnvironment } from "./agentctl-session-env.js";
+import { pickStaticAgentEnvironment } from "./agentctl-session-env.js";
 import type {
   AgentSession,
   ProviderName,
@@ -41,6 +47,7 @@ interface HostResponse<T> {
 }
 
 interface WorkerCapabilities {
+  publishAgentSelfSelection?: boolean;
   probeLiveness: boolean;
   getProviderActivity: boolean;
   getProviderRetention: boolean;
@@ -158,8 +165,19 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function supportsProviderHostRuntime(): boolean {
+  return (
+    process.platform === "linux" ||
+    (process.platform === "darwin" &&
+      !process.versions.bun &&
+      fileURLToPath(import.meta.url).endsWith(
+        "/src/sdk/providers/provider-runtime-host.ts",
+      ))
+  );
+}
+
 function getEnvironment(): RuntimeHostEnvironment | null {
-  if (process.platform !== "linux") return null;
+  if (!supportsProviderHostRuntime()) return null;
   const runtimeEnv = getModuleEnv("provider-runtime");
   const socketPath = runtimeEnv.SOCKET?.trim();
   const token = runtimeEnv.TOKEN?.trim();
@@ -170,6 +188,133 @@ function getEnvironment(): RuntimeHostEnvironment | null {
 
 export function isProviderRuntimeHostAvailable(): boolean {
   return getEnvironment() !== null && registered;
+}
+
+function resolveProviderHostProjectRoot(): string {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (let i = 0; i < 8; i += 1) {
+    if (existsSync(join(dir, "scripts/provider-runtime-host.mjs"))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return process.cwd();
+}
+
+function applyProviderHostConnection(connection: {
+  paths: {
+    runtimeDir: string;
+    controlSocketPath: string;
+    descriptorPath: string;
+    tokenPath: string;
+    receiptPath: string;
+  };
+  discovery: { token?: string; descriptor?: { controlSocketPath?: string } };
+}): void {
+  const socketPath =
+    connection.discovery.descriptor?.controlSocketPath ??
+    connection.paths.controlSocketPath;
+  process.env.YEP_PROVIDER_RUNTIME_DIR = connection.paths.runtimeDir;
+  process.env.YEP_PROVIDER_RUNTIME_SOCKET = socketPath;
+  if (connection.discovery.token) {
+    process.env.YEP_PROVIDER_RUNTIME_TOKEN = connection.discovery.token;
+  }
+  process.env.YEP_PROVIDER_RUNTIME_DESCRIPTOR = connection.paths.descriptorPath;
+  process.env.YEP_PROVIDER_RUNTIME_TOKEN_FILE = connection.paths.tokenPath;
+  process.env.YEP_PROVIDER_RUNTIME_RECEIPTS = connection.paths.receiptPath;
+  if (!process.env.YEP_SERVER_GENERATION?.trim()) {
+    process.env.YEP_SERVER_GENERATION = `${process.pid}-1`;
+  }
+  harvestYaModuleEnv();
+}
+
+/**
+ * Attach to a live provider host, or start one when absent.
+ * Remote SSH executor sessions stay allowed either way: they still launch
+ * from this YA server. A failed ensure continues in-process and sets the
+ * provider-host degraded notice.
+ */
+export async function ensureProviderRuntimeHost(): Promise<boolean> {
+  if (isProviderRuntimeHostAvailable()) {
+    setProviderHostDegraded(false);
+    return true;
+  }
+  if (!supportsProviderHostRuntime()) return false;
+  // Mock servers must not discover or bootstrap an ambient real-provider host.
+  // A wrapper may still supply an explicit simulated host for lifecycle tests.
+  if (process.env.VITEST || process.env.USE_MOCK_SDK === "true") {
+    return await initializeProviderRuntimeHost();
+  }
+  if (!process.env.YEP_SERVER_GENERATION?.trim()) {
+    process.env.YEP_SERVER_GENERATION = `${process.pid}-1`;
+  }
+  if (await initializeProviderRuntimeHost()) {
+    setProviderHostDegraded(false);
+    return true;
+  }
+
+  try {
+    const projectRoot = resolveProviderHostProjectRoot();
+    const moduleUrl = pathToFileURL(
+      join(projectRoot, "scripts/attach-or-start-provider-host.mjs"),
+    ).href;
+    const { attachOrStartProviderHost } = (await import(moduleUrl)) as {
+      attachOrStartProviderHost: (options: {
+        env?: NodeJS.ProcessEnv;
+        projectRoot?: string;
+      }) => Promise<{
+        state: string;
+        paths?: {
+          runtimeDir: string;
+          controlSocketPath: string;
+          descriptorPath: string;
+          tokenPath: string;
+          receiptPath: string;
+        };
+        discovery?: {
+          token?: string;
+          descriptor?: { controlSocketPath?: string };
+        };
+        error?: string;
+      }>;
+    };
+    const result = await attachOrStartProviderHost({
+      env: process.env,
+      projectRoot,
+    });
+    if (
+      (result.state === "attached" || result.state === "started") &&
+      result.paths &&
+      result.discovery
+    ) {
+      applyProviderHostConnection({
+        paths: result.paths,
+        discovery: result.discovery,
+      });
+      if (await initializeProviderRuntimeHost()) {
+        setProviderHostDegraded(false);
+        return true;
+      }
+    }
+    getLogger().error(
+      {
+        event: "provider_host_ensure_failed",
+        state: result.state,
+        error: result.error,
+      },
+      "YA could not attach or start the provider host",
+    );
+  } catch (error) {
+    getLogger().error(
+      {
+        event: "provider_host_ensure_failed",
+        error: error instanceof Error ? error.message : String(error),
+      },
+      "YA could not attach or start the provider host",
+    );
+  }
+  setProviderHostDegraded(true);
+  return false;
 }
 
 export function hasHostedProviderRuntime(sessionId: string): boolean {
@@ -448,7 +593,8 @@ function cloneableOptions(
   );
   return {
     ...cloneable,
-    staticAgentEnvironment: pickBrowserDebugAgentEnvironment(sessionChildEnv),
+    agentSelf: options.agentSelf ?? agentSelfEnabled(),
+    staticAgentEnvironment: pickStaticAgentEnvironment(sessionChildEnv),
   };
 }
 
@@ -612,6 +758,7 @@ class HostedAgentSession {
   private failure: Error | null = null;
   private detaching = false;
   private providerAlive = true;
+  private activeProviderTurn = false;
   private providerActivity: ProviderActivitySnapshot;
   private providerRetention: ProviderRetentionSnapshot;
   private handledApprovals = new Set<string>();
@@ -651,7 +798,7 @@ class HostedAgentSession {
       if (options.resumeSessionId && options.getSessionChildEnv) {
         await proxy.rpc("publishAgentctlSessionId", [
           options.resumeSessionId,
-          pickBrowserDebugAgentEnvironment(
+          pickStaticAgentEnvironment(
             options.getSessionChildEnv(
               options.resumeSessionId,
               options.executor,
@@ -753,6 +900,7 @@ class HostedAgentSession {
 
   private applyAttachedState(message: Record<string, unknown>): void {
     this.providerAlive = message.providerAlive !== false;
+    this.activeProviderTurn = message.activeProviderTurn === true;
     this.queue.updateDepth(Number(message.queueDepth ?? 0));
     this.providerActivity = reviveActivity(
       message.providerActivity as ProviderActivitySnapshot | undefined,
@@ -1066,6 +1214,7 @@ class HostedAgentSession {
       pid: this.runtime.pid,
       sessionId: this.runtime.worker.sessionId,
       initializedSessionId: this.initializedSessionId,
+      initialTurnState: this.activeProviderTurn ? "in-turn" : "idle",
       ...(capabilities.probeLiveness
         ? {
             probeLiveness: async () => {
@@ -1100,6 +1249,12 @@ class HostedAgentSession {
       ...(capabilities.refreshPromptCache
         ? { refreshPromptCache: (arg) => this.rpc("refreshPromptCache", [arg]) }
         : {}),
+      ...(capabilities.publishAgentSelfSelection
+        ? {
+            publishAgentSelfSelection: (selection) =>
+              this.rpc<void>("publishAgentSelfSelection", [selection]),
+          }
+        : {}),
       publishAgentctlSessionId: async (sessionId, browserDebugEnvironment) => {
         // Make the routing decision synchronous with Process learning the YA
         // session id. A SIGHUP can arrive while the two remote binds await.
@@ -1108,10 +1263,7 @@ class HostedAgentSession {
           "publishAgentctlSessionId",
           browserDebugEnvironment === undefined
             ? [sessionId]
-            : [
-                sessionId,
-                pickBrowserDebugAgentEnvironment(browserDebugEnvironment),
-              ],
+            : [sessionId, pickStaticAgentEnvironment(browserDebugEnvironment)],
         );
         const bound = await requestHost<HostedProviderRuntimeInfo>("bind", {
           runtimeId: this.runtime.runtimeId,

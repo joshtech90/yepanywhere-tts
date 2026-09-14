@@ -1,4 +1,4 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "@yep-anywhere/shared/sqlite";
 import { SPEECH_RELAY_CHANNEL } from "@yep-anywhere/shared";
 import type { WSContext } from "hono/ws";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -45,7 +45,7 @@ function createMockWs(): WSContext & {
 }
 
 describe("ConnectionManager", () => {
-  let db: Database.Database;
+  let db: SqliteDatabase;
   let registry: UsernameRegistry;
   let manager: ConnectionManager;
 

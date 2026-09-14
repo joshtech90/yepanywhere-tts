@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { type FSWatcher, realpathSync, statSync, watch } from "node:fs";
+import { sep } from "node:path";
 
 type Listener = (event: string, filename: string | null) => void;
 interface WatchEntry {
@@ -118,7 +119,7 @@ export class SharedDirectoryWatcher {
         for (const lease of [...entry.leases]) {
           if (
             !lease.closed &&
-            (lease.recursive || !filename || !/[\\/]/.test(filename))
+            (lease.recursive || !filename || !filename.includes(sep))
           )
             lease.emit("change", event, filename);
         }

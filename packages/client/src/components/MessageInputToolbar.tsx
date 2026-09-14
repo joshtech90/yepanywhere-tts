@@ -14,6 +14,8 @@ import {
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import type { CSSProperties, MouseEvent, RefObject, TouchEvent } from "react";
+import { useAsyncQuestions } from "../contexts/AsyncQuestionsContext";
+import { AsyncQuestionsButton } from "./AsyncQuestions";
 import {
   type Dispatch,
   type SetStateAction,
@@ -1314,6 +1316,10 @@ export function MessageInputToolbarView({
   actionsControl,
   hidePrimaryDeliveryActions = false,
 }: MessageInputToolbarViewProps) {
+  const asyncQuestions = useAsyncQuestions();
+  const hasAsyncQuestions =
+    (asyncQuestions?.questions.length ?? 0) > 0 &&
+    asyncQuestions?.reminderTurns !== 0;
   const tooltipMode = useTooltipMode();
   const [hidePopover, setHidePopover] =
     useState<ToolbarHidePopoverState | null>(null);
@@ -1322,15 +1328,12 @@ export function MessageInputToolbarView({
   const toolbarControlMarker = (
     key: SessionToolbarVisibilityKey,
     hasSpecialContextAction = false,
-  ): ToolbarControlMarker =>
-    onHideControl
-      ? {
-          "data-session-toolbar-control": key,
-          "data-session-toolbar-special-context": hasSpecialContextAction
-            ? "true"
-            : undefined,
-        }
-      : {};
+  ): ToolbarControlMarker => ({
+    "data-session-toolbar-control": key,
+    "data-session-toolbar-special-context": hasSpecialContextAction
+      ? "true"
+      : undefined,
+  });
   const normalizedWaveformButtonBackgroundOpacity = Math.min(
     100,
     Math.max(0, waveformButtonBackgroundOpacityPercent),
@@ -1351,9 +1354,8 @@ export function MessageInputToolbarView({
     }
     return configured;
   };
-  // Inline copy always carries `-inline`; append the priority-derived tier (or
-  // nothing when pinned). Menu copy carries just the tier. Both mirror each
-  // other so a control's inline and menu presentations stay mutually exclusive.
+  // Priority classes label measurement candidates. Individual hidden membership
+  // keeps each control's inline and menu presentations mutually exclusive.
   const inlineTierClass = (
     key: SessionToolbarVisibilityKey,
     ...extra: string[]
@@ -1362,6 +1364,7 @@ export function MessageInputToolbarView({
       ...extra,
       "composer-bottom-overflow-inline",
       priorityToTierClass(effectivePriority(key)),
+      hiddenControls.has(key) ? toolbarModuleStyles.overflowHidden : "",
     ]
       .filter(Boolean)
       .join(" ");
@@ -1370,7 +1373,13 @@ export function MessageInputToolbarView({
     ...extra: string[]
   ): string => {
     const tierClass = priorityToTierClass(effectivePriority(key));
-    return [...extra, tierClass || "composer-bottom-overflow-pinned"]
+    return [
+      ...extra,
+      tierClass || "composer-bottom-overflow-pinned",
+      hiddenControls.has(key)
+        ? toolbarModuleStyles.overflowVisible
+        : toolbarModuleStyles.overflowHidden,
+    ]
       .filter(Boolean)
       .join(" ");
   };
@@ -1441,7 +1450,11 @@ export function MessageInputToolbarView({
     }
 
     return (
-      <div ref={ref} className={className}>
+      <div
+        ref={ref}
+        className={className}
+        {...toolbarControlMarker("sessionStatus")}
+      >
         {showLivenessChip && livenessDisplay && (
           <div
             className={`composer-status-chip composer-liveness-status is-${livenessDisplay.tone}`}
@@ -1687,6 +1700,7 @@ export function MessageInputToolbarView({
     );
   };
   const hasBottomOverflowControls = !!(
+    hasAsyncQuestions ||
     (visibility.modeSelector &&
       modeControl &&
       isPriorityCollapsible("modeSelector")) ||
@@ -1802,14 +1816,26 @@ export function MessageInputToolbarView({
     alternate: !hidePrimaryDeliveryActions && !!actionsControl.send?.alternate,
     stop: showStopButton,
     pending: pendingApproval?.type ?? "off",
-  })}|fileViewer:${fileViewerController ? "on" : "off"}`;
+  })}|fileViewer:${fileViewerController ? "on" : "off"}|questions:${hasAsyncQuestions}`;
   const [bottomOverflowOpen, setBottomOverflowOpen] = useState(false);
-  const { tier: bottomOverflowTier, setToolbarRef } =
-    useMeasuredComposerOverflow({
-      layoutKey: bottomOverflowLayoutKey,
-      hasControls: hasBottomOverflowControls,
-      refs,
-    });
+  const questionMenuWasOpen = useRef(false);
+  useEffect(() => {
+    if (questionMenuWasOpen.current && !asyncQuestions?.menuOpen)
+      setBottomOverflowOpen(false);
+    questionMenuWasOpen.current = asyncQuestions?.menuOpen === true;
+  }, [asyncQuestions?.menuOpen]);
+  const {
+    tier: bottomOverflowTier,
+    hiddenControls,
+    setToolbarRef,
+  } = useMeasuredComposerOverflow({
+    layoutKey: bottomOverflowLayoutKey,
+    hasControls: hasBottomOverflowControls,
+    refs,
+  });
+  const showBottomOverflow =
+    hasBottomOverflowControls &&
+    (bottomOverflowTier !== "none" || hasAsyncQuestions);
   const shortcutsLongPressTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
@@ -2197,9 +2223,9 @@ export function MessageInputToolbarView({
           : "composer-status-ages",
         refs?.status,
       )}
-      {hasBottomOverflowControls && bottomOverflowTier !== "none" && (
+      {showBottomOverflow && (
         <div
-          className={`composer-bottom-overflow ${
+          className={`${toolbarModuleStyles.overflow} composer-bottom-overflow ${
             bottomOverflowOpen ? "is-open" : ""
           }`}
         >
@@ -2474,11 +2500,13 @@ export function MessageInputToolbarView({
                   )}
                 {renderProjectQueueButtons(true)}
               </div>
+              <AsyncQuestionsButton overflow />
             </div>
           )}
         </div>
       )}
       <div ref={refs?.actions} className="message-input-actions">
+        <AsyncQuestionsButton compact={bottomOverflowTier} />
         {pendingApproval && (
           <button
             type="button"

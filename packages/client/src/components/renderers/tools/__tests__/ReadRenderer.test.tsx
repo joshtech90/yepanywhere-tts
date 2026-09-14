@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { toUrlProjectId } from "@yep-anywhere/shared";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -6,8 +12,22 @@ import { PublicShareProvider } from "../../../../contexts/PublicShareContext";
 import { SessionMetadataProvider } from "../../../../contexts/SessionMetadataContext";
 import { setInlineMediaExpandedPreference } from "../../../../hooks/useInlineMedia";
 import { I18nProvider } from "../../../../i18n";
+import { asClientSummarySourceKey } from "../../../../lib/clientSummaryStore";
+import type { YaSourceRuntime } from "../../../../lib/sourceRuntime";
+import { SourceRuntimeProvider } from "../../../../lib/sourceRuntimeReact";
+import { FakeSourceTransport } from "../../../../lib/transport";
 import { readRenderer } from "../ReadRenderer";
 import type { ReadResult } from "../types";
+
+function createRuntime(transport: FakeSourceTransport): YaSourceRuntime {
+  return {
+    sourceKey: asClientSummarySourceKey("test:read-renderer"),
+    transport,
+    api: {} as YaSourceRuntime["api"],
+    summary: {} as YaSourceRuntime["summary"],
+    sessionDetails: {} as YaSourceRuntime["sessionDetails"],
+  };
+}
 
 const PNG_BASE64 =
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
@@ -349,6 +369,57 @@ describe("ReadRenderer", () => {
       expect(container.querySelector("img.read-image")).toBeNull();
       fireEvent.click(screen.getByRole("button", { name: /expand image/i }));
       expect(container.querySelector("img.read-image")).not.toBeNull();
+    });
+
+    // Once YA materializes tool-result media, the stored result keeps its
+    // metadata and drops the provider's bytes. The row must still show the
+    // image rather than falling back to raw JSON.
+    it("reads the file back when the result carries no inline bytes", async () => {
+      setInlineMediaExpandedPreference(true);
+      Object.defineProperty(URL, "createObjectURL", {
+        configurable: true,
+        value: vi.fn(() => "blob:read-image"),
+      });
+      Object.defineProperty(URL, "revokeObjectURL", {
+        configurable: true,
+        value: vi.fn(),
+      });
+      const fetchBlob = vi.fn(
+        async () => new Blob(["png"], { type: "image/png" }),
+      );
+      const runtime = createRuntime(
+        new FakeSourceTransport({
+          kind: "secure",
+          capabilities: { sameOriginUrls: false },
+          fetchBlob,
+        }),
+      );
+      const { file, ...rest } = imageResult;
+      const { base64: _dropped, ...strippedFile } = file;
+
+      const { container } = renderInSession(
+        <SourceRuntimeProvider runtime={runtime}>
+          {readRenderer.renderToolResult(
+            { ...rest, file: strippedFile },
+            false,
+            renderContext,
+            { file_path: "/tmp/screenshot.png" },
+          )}
+        </SourceRuntimeProvider>,
+      );
+
+      expect(container.textContent).not.toContain("Rich preview unavailable");
+      await waitFor(() => {
+        expect(fetchBlob).toHaveBeenCalledWith(
+          "/local-image?path=%2Ftmp%2Fscreenshot.png",
+        );
+      });
+      const image = await waitFor(() => {
+        const element = container.querySelector("img.read-image");
+        if (!element) throw new Error("image preview not rendered");
+        return element;
+      });
+      expect(image.getAttribute("src")).toBe("blob:read-image");
     });
   });
 

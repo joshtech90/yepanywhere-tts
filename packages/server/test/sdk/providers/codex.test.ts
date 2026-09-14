@@ -30,7 +30,7 @@ import {
   vi,
 } from "vitest";
 import type { CodexPlanToolMode } from "@yep-anywhere/shared";
-import { compileTranscriptProjection } from "../../../../client/src/lib/transcriptProjection/compiler.ts";
+import { compileTranscriptProjection } from "@yep-anywhere/shared/transcript/compiler";
 import { getLogger } from "../../../src/logging/logger.js";
 import { getCodexCommonPaths } from "../../../src/sdk/cli-detection.js";
 import { logSDKMessage } from "../../../src/sdk/messageLogger.js";
@@ -1015,6 +1015,232 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
+  it("retries manual compaction before releasing queued user input", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-compact-retry-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-compact-retry",
+      buildFakeCodexFailureAppServer(
+        logPath,
+        "serverOverloaded",
+        2,
+        "thread/compact/start",
+      ),
+    );
+    const retryDelays: number[] = [];
+    const testProvider = new CodexProvider({
+      codexPath,
+      overloadRetryWait: async (delayMs) => {
+        retryDelays.push(delayMs);
+        return true;
+      },
+    });
+    const session = await testProvider.startSession({
+      cwd: tempDir,
+      initialMessage: { text: "prepare context" },
+    });
+    try {
+      await consumeCodexTurn(session.iterator);
+      const pending = session.iterator.next();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(await session.runProviderCommand?.("compact")).toMatchObject({
+        handled: true,
+        output: { summary: "Compaction requested" },
+      });
+      session.queue.push({ text: "after compact", uuid: "after-compact" });
+      const messages: Array<Record<string, unknown>> = [];
+      let next = await pending;
+      while (true) {
+        if (next.done) break;
+        messages.push(next.value);
+        if (next.value.type === "result") break;
+        next = await session.iterator.next();
+      }
+      expect(retryDelays).toEqual([20_000, 45_000]);
+      expect(
+        messages.filter((message) => message.type === "error"),
+      ).toMatchObject([
+        { codexWillRetry: true, codexRetryAttempt: 1 },
+        { codexWillRetry: true, codexRetryAttempt: 2 },
+      ]);
+      expect(messages).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: "system",
+            subtype: "compact_boundary",
+          }),
+        ]),
+      );
+      const operations = () =>
+        readFakeCodexRequests(logPath).filter(
+          (request) =>
+            request.method === "turn/start" ||
+            request.method === "thread/compact/start",
+        );
+      expect(operations().map((request) => request.method)).toEqual([
+        "turn/start",
+        "thread/compact/start",
+        "thread/compact/start",
+        "thread/compact/start",
+      ]);
+      await consumeCodexTurn(session.iterator);
+      expect(operations().at(-1)?.params).toMatchObject({
+        input: [{ type: "text", text: "after compact" }],
+      });
+    } finally {
+      await session.abort();
+      await session.iterator.return?.(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    { error: "serverOverloaded" as const, retries: 16 },
+    { error: "usageLimitExceeded" as const, retries: 0 },
+  ])(
+    "ends manual compaction recovery for $error after $retries retries",
+    async ({ error, retries }) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-compact-terminal-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-compact-terminal",
+        buildFakeCodexFailureAppServer(
+          logPath,
+          error,
+          100,
+          "thread/compact/start",
+        ),
+      );
+      const retryDelays: number[] = [];
+      const session = await new CodexProvider({
+        codexPath,
+        overloadRetryWait: async (delayMs) => {
+          retryDelays.push(delayMs);
+          return true;
+        },
+      }).startSession({
+        cwd: tempDir,
+        initialMessage: { text: "prepare context" },
+      });
+      try {
+        await consumeCodexTurn(session.iterator);
+        await session.runProviderCommand?.("compact");
+        const messages: Array<Record<string, unknown>> = [];
+        while (true) {
+          const next = await session.iterator.next();
+          if (next.done) break;
+          messages.push(next.value);
+          if (next.value.type === "result") break;
+        }
+        expect(retryDelays).toHaveLength(retries);
+        if (error === "usageLimitExceeded") {
+          expect(messages).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                type: "system",
+                subtype: "turn_complete",
+              }),
+            ]),
+          );
+        }
+        expect(retryDelays.every((delay) => delay <= 180_000)).toBe(true);
+        expect(
+          readFakeCodexRequests(logPath).filter(
+            (request) => request.method === "thread/compact/start",
+          ),
+        ).toHaveLength(retries + 1);
+        expect(
+          messages.filter((message) => message.type === "error").at(-1),
+        ).toMatchObject({
+          codexErrorInfo: error,
+          codexWillRetry: false,
+          ...(retries > 0 ? { codexOverloadRetryExhausted: true } : {}),
+        });
+        session.queue.push({ text: "continue after failure" });
+        await consumeCodexTurn(session.iterator);
+        expect(
+          readFakeCodexRequests(logPath).filter(
+            (request) => request.method === "turn/start",
+          ),
+        ).toHaveLength(2);
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.each(["turn/start", "thread/compact/start"] as const)(
+    "interrupts the %s overload wait without closing the session",
+    async (failureMethod) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-retry-interrupt-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-retry-interrupt",
+        buildFakeCodexFailureAppServer(
+          logPath,
+          "serverOverloaded",
+          1,
+          failureMethod,
+        ),
+      );
+      let announceWaitStarted = () => {};
+      const waitStarted = new Promise<void>((resolve) => {
+        announceWaitStarted = resolve;
+      });
+      const session = await new CodexProvider({
+        codexPath,
+        overloadRetryWait: async (_delay, signal) => {
+          announceWaitStarted();
+          return await new Promise<boolean>((resolve) => {
+            signal.addEventListener("abort", () => resolve(false), {
+              once: true,
+            });
+          });
+        },
+      }).startSession({
+        cwd: tempDir,
+        initialMessage: { text: "initial turn" },
+      });
+      try {
+        if (failureMethod === "thread/compact/start") {
+          await consumeCodexTurn(session.iterator);
+          await session.runProviderCommand?.("compact");
+        }
+        const pending = consumeCodexTurn(session.iterator);
+        await waitStarted;
+        expect(await session.runProviderCommand?.("compact")).toMatchObject({
+          error: "Cannot compact while a turn is in progress",
+        });
+        expect(await session.interrupt?.()).toBe(true);
+        await pending;
+        expect(session.isProcessAlive?.()).toBe(true);
+        expect(
+          readFakeCodexRequests(logPath).filter(
+            (request) => request.method === failureMethod,
+          ),
+        ).toHaveLength(1);
+        session.queue.push({ text: "continue after stop" });
+        await consumeCodexTurn(session.iterator);
+        expect(
+          readFakeCodexRequests(logPath)
+            .filter((request) => request.method === "turn/start")
+            .at(-1)?.params,
+        ).toMatchObject({
+          input: [{ type: "text", text: "continue after stop" }],
+        });
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("ends overload recovery after the bounded retry budget", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-overload-limit-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -1047,7 +1273,10 @@ describe("CodexProvider app-server lifecycle", () => {
 
       expect(retryDelays).toHaveLength(16);
       expect(retryDelays[0]).toBe(20_000);
-      expect(retryDelays.at(-1)).toBe(1_445_000);
+      expect(retryDelays.slice(0, 5)).toEqual([
+        20_000, 45_000, 80_000, 125_000, 180_000,
+      ]);
+      expect(retryDelays.slice(5)).toEqual(Array(11).fill(180_000));
       expect(
         readFakeCodexRequests(logPath).filter(
           (request) => request.method === "turn/start",
@@ -1737,6 +1966,55 @@ describe("CodexProvider app-server lifecycle", () => {
         expect(turnStartRequest?.agentctlSessionId).toBe("thread-agentctl");
       } finally {
         session?.abort();
+        await consume?.catch(() => undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  bashIt(
+    "executes ya-agent self from a real fake-Codex tool subprocess",
+    async () => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-self-"));
+      const logPath = join(tempDir, "requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-self",
+        buildFakeCodexAppServerWithAgentctlShellProbe(logPath),
+      );
+      let session:
+        | Awaited<ReturnType<CodexProvider["startSession"]>>
+        | undefined;
+      let consume: Promise<void> | undefined;
+      try {
+        session = await new CodexProvider({ codexPath }).startSession({
+          cwd: tempDir,
+          agentSelf: true,
+          permissionMode: "bypassPermissions",
+          model: "gpt-5.4-mini",
+          effort: "low",
+          initialMessage: { text: "inspect self" },
+        });
+        consume = (async () => {
+          for await (const _ of session?.iterator ?? []) {
+          }
+        })();
+        await waitForFakeCodexRequest(logPath, "turn/start");
+        const request = readFakeCodexRequests(logPath).find(
+          (record) => record.method === "turn/start",
+        );
+        expect(request?.agentSelf).toMatchObject({
+          schemaVersion: 1,
+          sessionId: "thread-agentctl",
+          harness: "codex",
+          scope: "owning-session",
+          launch: { effort: { value: "low" } },
+          providerEvidence: {
+            model: { value: "gpt-5.4-mini", source: "provider-config-ack" },
+          },
+        });
+      } finally {
+        await session?.abort();
         await consume?.catch(() => undefined);
         rmSync(tempDir, { recursive: true, force: true });
       }
@@ -2583,7 +2861,10 @@ describe("CodexProvider app-server lifecycle", () => {
         title: "Forked from second turn",
       });
 
-      expect(fork).toEqual({ sessionId: "fork-thread" });
+      expect(fork).toEqual({
+        sessionId: "fork-thread",
+        filePath: join(tempDir, "fork.jsonl"),
+      });
 
       const requests = readFakeCodexRequests(logPath);
       const read = requests.find((request) => request.method === "thread/read");
@@ -2635,7 +2916,10 @@ describe("CodexProvider app-server lifecycle", () => {
         },
       });
 
-      expect(fork).toEqual({ sessionId: "fork-thread" });
+      expect(fork).toEqual({
+        sessionId: "fork-thread",
+        filePath: join(tempDir, "fork.jsonl"),
+      });
       const requests = readFakeCodexRequests(logPath);
       expect(
         requests.find((request) => request.method === "thread/fork")?.params,
@@ -3153,6 +3437,7 @@ function buildFakeCodexFailureAppServer(
   logPath: string,
   codexErrorInfo: "serverOverloaded" | "usageLimitExceeded",
   failuresBeforeSuccess: number,
+  failureMethod: "turn/start" | "thread/compact/start" = "turn/start",
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -3160,8 +3445,10 @@ import { appendFileSync } from "node:fs";
 const logPath = ${JSON.stringify(logPath)};
 const codexErrorInfo = ${JSON.stringify(codexErrorInfo)};
 const failuresBeforeSuccess = ${JSON.stringify(failuresBeforeSuccess)};
+const failureMethod = ${JSON.stringify(failureMethod)};
 let buffer = "";
 let turnSequence = 0;
+let failureSequence = 0;
 
 function write(payload) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
@@ -3227,14 +3514,23 @@ function handleMessage(message) {
         reasoningEffort: "high",
       });
       break;
+    case "thread/compact/start":
     case "turn/start": {
       turnSequence += 1;
       const turnId = \`turn-\${turnSequence}\`;
-      respond(message.id, {
-        turn: { id: turnId, status: "inProgress", error: null },
-      });
+      const isCompact = message.method === "thread/compact/start";
+      const turn = { id: turnId, status: "inProgress", error: null };
+      const shouldFail = message.method === failureMethod && ++failureSequence <= failuresBeforeSuccess;
+      respond(message.id, isCompact ? {} : { turn });
       setTimeout(() => {
-        if (turnSequence <= failuresBeforeSuccess) {
+        if (isCompact) {
+          notify("turn/started", { threadId: "thread-failure", turn });
+          notify("item/started", {
+            threadId: "thread-failure", turnId,
+            item: { id: \`compact-\${turnSequence}\`, type: "contextCompaction" },
+          });
+        }
+        if (shouldFail) {
           const error = {
             message: codexErrorInfo === "serverOverloaded"
               ? "Selected model is at capacity."
@@ -3255,14 +3551,16 @@ function handleMessage(message) {
         notify("item/completed", {
           threadId: "thread-failure",
           turnId,
-          item: {
+          item: isCompact ? {
+            id: \`compact-\${turnSequence}\`, type: "contextCompaction",
+          } : {
             id: \`message-\${turnSequence}\`,
             type: "agentMessage",
             text: "Recovered answer",
           },
         });
         completeTurn(turnId, "completed", null);
-      }, 0);
+      }, isCompact ? 20 : 0);
       break;
     }
     default:
@@ -3913,7 +4211,7 @@ function handleMessage(message) {
       break;
     case "thread/fork":
       respond(message.id, {
-        thread: { id: "fork-thread", turns: [] },
+        thread: { id: "fork-thread", path: ${JSON.stringify(join(dirname(logPath), "fork.jsonl"))}, turns: [] },
         model: "gpt-5.4-mini",
         modelProvider: "openai",
         serviceTier: null,
@@ -4181,6 +4479,9 @@ function logRequest(message) {
   };
   if (message.method === "turn/start") {
     record.agentctlSessionId = agentctlSessionIdFromBash();
+    if (process.env.AGENT_YA_API_URL) {
+      record.agentSelf = JSON.parse(execFileSync("bash", ["-c", "ya-agent self --json"], { env: process.env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 10000 }));
+    }
   }
   appendFileSync(logPath, JSON.stringify(record) + "\\n");
 }
@@ -4243,6 +4544,7 @@ function readFakeCodexRequests(logPath: string): Array<{
   effectiveApprovalPolicy?: string;
   effectiveSandboxPolicy?: Record<string, unknown>;
   agentctlSessionId?: string;
+  agentSelf?: unknown;
   processEnvAgentctlSessionId?: string;
 }> {
   if (!existsSync(logPath)) return [];

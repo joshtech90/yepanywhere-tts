@@ -7,6 +7,8 @@
  * completed blocks while the rest of the content is still streaming.
  */
 
+import { normalizeCodeBlockLanguage } from "./code-language.js";
+
 export interface CompletedBlock {
   type: "paragraph" | "heading" | "code" | "list" | "blockquote" | "hr";
   content: string;
@@ -191,12 +193,12 @@ export class BlockDetector {
 
     // Check for code fence - need complete first line to detect
     if (hasCompleteLine) {
-      const fenceMatch = firstLine.match(/^(`{3,}|~{3,})(\w*)$/);
+      const fenceMatch = firstLine.match(/^(`{3,}|~{3,})(.*)$/);
       if (fenceMatch?.[1]) {
         this.state = {
           kind: "code",
           startOffset: this.offset,
-          lang: fenceMatch[2] || "",
+          lang: normalizeCodeBlockLanguage(fenceMatch[2]) ?? "",
           fence: fenceMatch[1],
         };
         // Try to complete in this same call
@@ -264,7 +266,7 @@ export class BlockDetector {
 
     // Could become a code fence
     if (/^[`~]+$/.test(line)) return true;
-    if (/^(`{3,}|~{3,})\w*$/.test(line)) return true;
+    if (/^(`{3,}|~{3,})(.*)$/.test(line)) return true;
 
     // Could become a list (need to check if just the marker or with space)
     if (line === "-" || line === "*") return true;
@@ -644,7 +646,7 @@ export class BlockDetector {
     if (line === "") return false;
 
     // Code fence - check for start of fence pattern
-    if (/^(`{3,}|~{3,})(\w*)$/.test(line)) return true;
+    if (/^(`{3,}|~{3,})(.*)$/.test(line)) return true;
 
     // Heading
     if (/^#{1,6}\s/.test(line)) return true;
@@ -693,8 +695,8 @@ export class BlockDetector {
   }
 
   private extractCodeLang(line: string): string | undefined {
-    const match = line.match(/^(`{3,}|~{3,})(\w*)/);
-    return match?.[2] || undefined;
+    const match = line.match(/^(`{3,}|~{3,})(.*)/);
+    return normalizeCodeBlockLanguage(match?.[2]);
   }
 
   private finalizeCurrentBlock(): CompletedBlock {

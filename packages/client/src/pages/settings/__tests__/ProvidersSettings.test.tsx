@@ -14,6 +14,7 @@ import {
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
@@ -268,6 +269,45 @@ describe("ProvidersSettings additional models", () => {
     await waitFor(() => {
       expect(mockUpdateSetting).toHaveBeenLastCalledWith(
         "codexPlanToolMode",
+        null,
+      );
+    });
+  });
+
+  it("hides the Codex cyber access setting from older servers", () => {
+    render(<ProvidersSettings />);
+
+    expect(screen.queryByText("providersCodexCyberAccessTitle")).toBeNull();
+  });
+
+  it("inherits the Codex cyber access fallback and saves exact overrides", async () => {
+    versionState.capabilities = [CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY];
+    render(<ProvidersSettings />);
+    const select = screen.getByLabelText(
+      "providersCodexCyberAccessAria",
+    ) as HTMLSelectElement;
+
+    expect(select.value).toBe("inherit");
+
+    for (const program of [
+      "standard",
+      "daybreak-blue",
+      "daybreak-red",
+      "provider-default",
+    ] as const) {
+      fireEvent.change(select, { target: { value: program } });
+      await waitFor(() => {
+        expect(mockUpdateSetting).toHaveBeenLastCalledWith(
+          "codexCyberAccessProgram",
+          program,
+        );
+      });
+    }
+
+    fireEvent.change(select, { target: { value: "inherit" } });
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenLastCalledWith(
+        "codexCyberAccessProgram",
         null,
       );
     });

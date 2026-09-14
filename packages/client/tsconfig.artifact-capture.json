@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "include": ["scripts/artifact-capture*.ts", "scripts/capture-artifact*.ts"]
+}

@@ -1,9 +1,11 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
-import type { TaskOutputInput, TaskOutputResult, ToolRenderer } from "./types";
+import type { TaskOutputInput, TaskOutputResult } from "./types";
 
 const MAX_LINES_COLLAPSED = 20;
 
@@ -83,7 +85,10 @@ function TaskOutputToolResult({
     enabled && validationErrors && !isToolIgnored("TaskOutput");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className="taskoutput-error">
         {showValidationWarning && validationErrors && (
@@ -125,8 +130,8 @@ function TaskOutputToolResult({
       {task && (
         <div className="taskoutput-task">
           <div className="taskoutput-task-status">
-            <StatusIndicator status={task.status} />
-            {task.exitCode !== null && (
+            {task.status && <StatusIndicator status={task.status} />}
+            {task.exitCode != null && (
               <span
                 className={`badge ${task.exitCode === 0 ? "badge-success" : "badge-error"}`}
               >
@@ -158,33 +163,25 @@ function TaskOutputToolResult({
   );
 }
 
-export const taskOutputRenderer: ToolRenderer<
-  TaskOutputInput,
-  TaskOutputResult
-> = {
+export const taskOutputRenderer = defineTool(toolDisplayContracts.TaskOutput, {
   tool: "TaskOutput",
 
   renderToolUse(input, _context) {
-    return <TaskOutputToolUse input={input as TaskOutputInput} />;
+    return <TaskOutputToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context) {
-    return (
-      <TaskOutputToolResult
-        result={result as TaskOutputResult}
-        isError={isError}
-      />
-    );
+    return <TaskOutputToolResult result={result} isError={isError} />;
   },
 
   getUseSummary(input) {
-    return (input as TaskOutputInput).task_id;
+    return input.task_id;
   },
 
   getResultSummary(result, isError) {
     if (isError) return "Error";
-    const r = result as TaskOutputResult;
+    const r = result;
     if (!r) return "Pending";
     return r.retrieval_status;
   },
-};
+});

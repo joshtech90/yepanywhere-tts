@@ -235,7 +235,15 @@ failure.
 
 Native slash commands use the same provider dispatch for live sends, deferred
 sends, and session startup or resume. YA waits for provider initialization
-before dispatching a startup command. A reload-safe runtime reattached after
+before dispatching a startup command, but only where the provider can
+initialize on its own. Claude Code starts a session only when a prompt arrives,
+so no session id can exist while YA holds the command back; for such a provider
+YA delivers a startup command as the ordinary first message, which the provider
+reads as its own slash command. Both cannot be waited for at once: a session
+whose first message is `/goal …` — or any other leading slash command — would
+otherwise never start, because the wait and the delivery each block on the
+other until the provider runtime is reaped and the user sees a
+provider-connection failure. A reload-safe runtime reattached after
 a server restart already initialized in an earlier server generation and never
 replays its init message; the worker's attach handshake reports the provider
 id it saw, so native commands dispatch immediately instead of waiting for an

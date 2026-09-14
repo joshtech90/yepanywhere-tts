@@ -17,6 +17,10 @@
   );
 }
 
+.root td {
+  vertical-align: top;
+}
+
 .root:global(.timeline-item) {
   padding-top: 0;
 }
@@ -37,4 +41,25 @@
   font-family: var(--font-mono);
   font-size: var(--fixed-font-size-sm);
   line-height: var(--source-block-line-height);
+}
+
+.timelineAction {
+  position: absolute;
+  inset-inline-start: -22px;
+  top: calc(var(--first-line-center) - 14px);
+  z-index: 2;
+}
+
+/*
+ * Sits on its own line after the cut text, flush with the prose column so the
+ * marker reads as the end of that text rather than an indented aside.
+ */
+.abortedMidStream {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  margin-block-start: var(--space-1);
+  color: var(--text-muted, #888);
+  font-size: var(--font-size-sm);
+  font-style: italic;
 }

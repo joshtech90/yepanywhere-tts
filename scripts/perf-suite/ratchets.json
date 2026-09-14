@@ -148,6 +148,10 @@
               "max": 2,
               "rationale": "Recent fleet append p95 was 0.1 ms; this broad ceiling catches full-array normalization growth before optimizing the current sub-millisecond path."
             },
+            "profiles.serverDetail.appended.server.metadata.p95Ms": {
+              "max": 40,
+              "rationale": "Fresh provider child-session reads and command metadata previously shared the route clock (19.6 ms fleet append p95 on CI run 34479361388); budget this I/O independently while retaining the 5 ms slicing/anchor ceiling."
+            },
             "profiles.serverDetail.appended.server.route.p95Ms": {
               "max": 5,
               "rationale": "Recent fleet append slicing and anchor-search p95 was 0.6-0.7 ms."
@@ -775,8 +779,8 @@
               "rationale": "Three eight-client full-response herds exposed their transcript marker in 69.8 ms aggregate p95."
             },
             "responseMiB.publicShareHerd": {
-              "max": 16,
-              "rationale": "Eight legacy full-share responses totalled 13.107 MiB in each repetition for the pinned 64 KiB fixture."
+              "max": 24,
+              "rationale": "September 1's public Markdown/media projection (ced769acc) adds required assistant HTML: eight full-share responses now total 19.114 MiB in all three repetitions of CI run 34479361388, versus 13.107 MiB before that feature. The fixture asserts rendered Markdown and reports its HTML bytes; this ceiling preserves comparable headroom for the new representation."
             },
             "memory.settled.heapUsedMiB": {
               "max": 160,

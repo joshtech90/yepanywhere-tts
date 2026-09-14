@@ -16,9 +16,10 @@ import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../../hooks/useInlineMedia";
 import { useI18n, type MessageKey } from "../../i18n";
 import { toSourceTransportApiPath } from "../../lib/sourceTransportPaths";
-import type { ToolCallItem } from "../../types/renderItems";
+import type { ToolCallItem } from "@yep-anywhere/shared/transcript/items";
 import { useImageResourceActions } from "../ImageResourceActions";
 import { LocalMediaModal, type LocalMediaSource } from "../LocalMediaModal";
+import { TimelineDisclosure } from "../TimelineDisclosure";
 import styles from "./ToolResultMediaRows.module.css";
 
 interface ToolResultMediaRowsProps {
@@ -54,7 +55,7 @@ export function ToolResultMediaRows({
   status,
 }: ToolResultMediaRowsProps) {
   return (
-    <div className={`tool-row ${styles.root} timeline-item status-${status}`}>
+    <div className={styles.root}>
       {media.map((item, index) => (
         <ToolResultMediaRow
           key={item.state === "stored" ? item.id : `${item.reason}-${index}`}
@@ -62,6 +63,7 @@ export function ToolResultMediaRows({
           index={index}
           media={item}
           sourcePath={sourcePath}
+          status={status}
         />
       ))}
     </div>
@@ -73,11 +75,13 @@ function ToolResultMediaRow({
   index,
   media,
   sourcePath,
+  status,
 }: {
   displayName: string;
   index: number;
   media: ToolResultMedia;
   sourcePath?: string;
+  status: ToolCallItem["status"];
 }) {
   const { inlineMediaExpandedByDefault } = useInlineMedia();
   const { t } = useI18n();
@@ -86,12 +90,13 @@ function ToolResultMediaRow({
 
   if (media.state === "rejected") {
     return (
-      <div className={`${styles.row} ${styles.rejected}`}>
+      <div
+        className={`tool-row timeline-item status-${status} ${styles.row} ${styles.rejected}`}
+      >
         <div
           className={styles.rowHeader}
           title={t(REJECTION_KEYS[media.reason])}
         >
-          <span className={styles.togglePlaceholder}>+</span>
           <span className="tool-name">{displayName}</span>
           <span className={styles.filename}>{filename}</span>
           <span className={styles.suffix}>
@@ -109,6 +114,7 @@ function ToolResultMediaRow({
       initialExpanded={inlineMediaExpandedByDefault}
       media={media}
       sourcePath={sourcePath}
+      status={status}
     />
   );
 }
@@ -119,12 +125,14 @@ function StoredToolResultMediaRow({
   initialExpanded,
   media,
   sourcePath,
+  status,
 }: {
   displayName: string;
   filename: string;
   initialExpanded: boolean;
   media: StoredToolResultMedia;
   sourcePath?: string;
+  status: ToolCallItem["status"];
 }) {
   const { projectId, sessionId } = useSessionMetadata();
   const transport = useCurrentSourceRuntime().transport;
@@ -198,18 +206,14 @@ function StoredToolResultMediaRow({
     : t("toolResultMediaExpand");
 
   return (
-    <div className={styles.row}>
+    <div className={`tool-row timeline-item status-${status} ${styles.row}`}>
+      <TimelineDisclosure
+        expanded={expanded}
+        label={toggleLabel}
+        status={status}
+        onClick={() => setExpanded((current) => !current)}
+      />
       <div className={styles.rowHeader}>
-        <button
-          type="button"
-          className={styles.toggle}
-          onClick={() => setExpanded((current) => !current)}
-          aria-label={toggleLabel}
-          aria-expanded={expanded}
-          title={toggleLabel}
-        >
-          {expanded ? "−" : "+"}
-        </button>
         <span className="tool-name">{displayName}</span>
         <button
           type="button"

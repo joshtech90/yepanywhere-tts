@@ -557,11 +557,18 @@ export function FloatingActionButton() {
 
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
+      const draft = draftControls.getDraft();
       return {
         draftKey: fabDraftKey,
         speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
+        textBeforeCursor: draft.slice(
+          0,
+          speechInsertionRangeRef.current?.end ??
+            textareaRef.current?.selectionStart ??
+            draft.length,
+        ),
       };
-    }, [fabDraftKey]);
+    }, [draftControls, fabDraftKey]);
 
   // Hide (but don't unmount) when not visible, on new-session page, or while
   // supervising an active session. On session pages it duplicates the sidebar

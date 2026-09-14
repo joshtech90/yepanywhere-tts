@@ -10,6 +10,11 @@ export async function dispatchProviderCommand(
   metadata: SessionMetadataService | undefined,
 ) {
   if (process.supportsNativeCommands) {
+    // Claude Code starts only when it receives a prompt, so holding this
+    // command back until the session id arrives would wait for an event that
+    // this very message has to trigger. Those providers read a leading slash
+    // command out of ordinary input, so let it be delivered that way.
+    if (process.awaitingFirstMessageToStart) return { handled: false };
     await process.waitForProviderSessionId();
   }
   return process.runProviderCommand(command.name, command.argument, {

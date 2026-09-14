@@ -7,13 +7,20 @@
 
 Topic: agent-session-access
 
-Status: direction proposal, 2026-08-24. Nothing is implemented; the
+Status: direction proposal, 2026-08-24. Cross-session access remains unimplemented; the
 script layer, the search route, and the boss conventions below are
 candidate work, not contracts. The launch-time half (PATH injection,
 capability fragment, scoped endpoint channel, virgin instruction scope) lives in
 [`new-session-agent-tooling.md`](new-session-agent-tooling.md). Packaging and
 dispatch use the proposed shared
 [`agent command runtime sketch`](agent-command-runtime.sketches.md).
+
+The runtime's implemented first milestone is [own-session inspection](agent-self.md); its original proposal is
+[`ya-agent self`](agent-command-runtime.sketches.md#first-milestone-inspect-the-owning-session)
+(2026-09-08): read-only inspection of the owning session, with manual
+harness-global instructions for discovery. Catalog, transcript, search,
+messaging, session creation, and boss conventions below remain deferred;
+the self-inspection grant authorizes none of them.
 
 See also:
 [`core-service-api.md`](core-service-api.md) — the external-consumer
@@ -78,7 +85,7 @@ its network confinement remain enforced. Changing the general loopback trust
 model is separate from adding these commands.
 
 Scripts speak canonical YA session ids (usually equal to the provider
-session id), per `AGENTS.md` § Provider Session Identity. Provider-native
+session id), per `DEVELOPMENT.md` § Provider Session Identity. Provider-native
 ids stay internal resume/debug detail.
 
 ## The search gap

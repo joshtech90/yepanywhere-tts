@@ -831,6 +831,9 @@ export class CodexOSSProvider implements AgentProvider {
                   id: item.id,
                   name: normalizedInvocation.toolName,
                   input: normalizedInvocation.input,
+                  ...(normalizedInvocation.displayActions
+                    ? { _displayActions: normalizedInvocation.displayActions }
+                    : {}),
                 },
               ],
             },

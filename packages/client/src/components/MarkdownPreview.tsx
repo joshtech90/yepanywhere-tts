@@ -6,9 +6,14 @@ import {
   type MouseEventHandler,
   useCallback,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useGlossaryArtifact } from "../contexts/GlossaryContext";
+import {
+  codeFenceRootClass,
+  useCodeFenceRenderers,
+} from "../hooks/useCodeFenceRenderers";
 import { annotateGlossaryHtml } from "../lib/glossary/annotateGlossaryHtml";
 
 const FILE_VIEWER_DENSITY_STORAGE_KEY = "yep-anywhere-file-viewer-density-zoom";
@@ -169,6 +174,8 @@ export const MarkdownPreview = memo(
       () => ({ __html: renderedHtml }),
       [renderedHtml],
     );
+    const renderedRef = useRef<HTMLDivElement>(null);
+    useCodeFenceRenderers(renderedRef);
     return (
       <div
         className={classes}
@@ -181,7 +188,8 @@ export const MarkdownPreview = memo(
         style={getMarkdownPreviewStyle(density)}
       >
         <div
-          className="markdown-rendered"
+          className={`markdown-rendered ${codeFenceRootClass}`}
+          ref={renderedRef}
           // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered markdown is sanitized
           dangerouslySetInnerHTML={renderedMarkup}
         />

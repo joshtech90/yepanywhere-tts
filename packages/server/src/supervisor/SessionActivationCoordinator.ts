@@ -23,6 +23,8 @@ import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
 
 /** Launch and live configuration settings for a session. */
 export interface ModelSettings {
+  /** Explicit launch opt-in, never inherited by forks or automatic resumes. */
+  computerControl?: boolean;
   /** Model to use (e.g., "sonnet", "opus", "haiku"). undefined = use CLI default */
   model?: string;
   /** Exact YA request token, including "default", used for durable restore. */
@@ -397,6 +399,14 @@ export class SessionActivationCoordinator {
       state.pendingLaunchSettings = null;
       this.releaseEmptyState(process.sessionId, state);
     }
+  }
+
+  /** Persist standing policy before its replaceable controller releases ownership. */
+  async prepareForServerReload(process: Process): Promise<void> {
+    await this.enqueueConfiguration(process.sessionId, async () => {
+      await this.persistProcessLaunchSettings(process);
+      await this.options.sessionMetadataService?.flushPendingWrites();
+    });
   }
 
   private async flushPendingProcessLaunchSettings(

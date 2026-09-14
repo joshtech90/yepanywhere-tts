@@ -15,6 +15,7 @@
 import { execSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { rewriteSharedImports } from "./rewrite-shared-imports.js";
 
 const ROOT_DIR = path.resolve(import.meta.dirname, "..");
 const CLIENT_DIST = path.join(ROOT_DIR, "packages/client/dist");
@@ -166,14 +167,16 @@ step("Rewrite @yep-anywhere/shared imports", () => {
         const content = fs.readFileSync(fullPath, "utf-8");
         if (!content.includes("@yep-anywhere/shared")) continue;
 
-        let relPath = path.relative(path.dirname(fullPath), sharedEntry);
+        // Module specifiers use forward slashes even when built on Windows.
+        // Backslashes here become JavaScript escapes (e.g. \b in bundled).
+        let relPath = path
+          .relative(path.dirname(fullPath), sharedEntry)
+          .split(path.sep)
+          .join("/");
         // Ensure it starts with ./ for Node.js ESM resolution
         if (!relPath.startsWith(".")) relPath = `./${relPath}`;
 
-        const rewritten = content.replace(
-          /(?<=(from\s+|import\(\s*))(["'])@yep-anywhere\/shared\2/g,
-          `$2${relPath}$2`,
-        );
+        const rewritten = rewriteSharedImports(content, relPath);
         fs.writeFileSync(fullPath, rewritten);
         count++;
       }
@@ -264,7 +267,7 @@ step("Generate package.json for npm", () => {
     exports: {
       ".": "./dist/index.js",
     },
-    files: ["dist", "client-dist", "bundled", "README.md"],
+    files: ["dist", "client-dist", "bundled", "README.md", "LICENSE"],
     // Copy dependencies from source, excluding workspace deps
     dependencies: Object.fromEntries(
       Object.entries(sourcePackageJson.dependencies || {}).filter(
@@ -282,7 +285,7 @@ step("Generate package.json for npm", () => {
     keywords: ["claude", "ai", "agent", "supervisor", "mobile"],
     license: "MIT",
     engines: {
-      node: ">=20.12",
+      node: rootPackageJson.engines.node,
     },
   };
 
@@ -297,6 +300,16 @@ step("Generate package.json for npm", () => {
   log(`  Version: ${NPM_VERSION}`);
   log("  Written to: dist/npm-package/package.json");
   log("  (Original packages/server/package.json unchanged)");
+});
+
+// The license is required in every npm distribution; a missing source fails
+// the build instead of publishing metadata without the full license text.
+step("Copy LICENSE to staging", () => {
+  fs.copyFileSync(
+    path.join(ROOT_DIR, "LICENSE"),
+    path.join(STAGING_DIR, "LICENSE"),
+  );
+  log("  Copied LICENSE from repo root");
 });
 
 // Copy README to staging
@@ -336,7 +349,7 @@ Then open http://localhost:3400 in your browser.
 
 ## License
 
-MIT
+[MIT](LICENSE)
 `;
     fs.writeFileSync(readmeDest, basicReadme);
     log("  Created basic README.md (no repo README found)");

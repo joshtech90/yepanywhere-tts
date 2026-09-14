@@ -17,6 +17,23 @@ activated tags create visual boundaries and display declared title paths
 inside existing transcript rows. Repeated paths retain their source order.
 No provider messages, turns, commands, or completion events are synthesized.
 
+Schema-rendered workflow output is intended to read as regular assistant
+prose, as if generated directly by the assistant. Like [ACLI
+commentary](acli-commentary.md#presentation-intent), its progress and outcomes
+are conversation content, not routine activity. Tool rows with recognized
+workflow markers remain visible in Conversation View when surrounding activity
+is collapsed. A captured parent context alone does not promote unrelated raw
+tool output. Original output and schema details remain available through their
+existing disclosure controls and links.
+
+This prose intent applies to declared progress, not every byte in its tool
+invocation. Complete JSON objects and arrays in workflow spans remain indented
+monospace data, and ACLI banners remain metadata. Neither a JSON string nor a
+parent stage authorizes prose interpretation. Command-output boundaries also
+bound JSON framing: incomplete fragments from different commands cannot form
+one JSON value. A parent-only `spans` annotation retains the ordinary tool
+renderer; `matching-lines` continues to show only declared matching lines.
+
 - The inline `@@visualization-schema/1 ["build",["check","types"]]` form
   accepts exact paths in assistant text and tool output. Activation can arrive
   from either source; a tool activation applies only from its own marker
@@ -65,6 +82,10 @@ No provider messages, turns, commands, or completion events are synthesized.
   cannot activate or advance a workflow. Invalid activations preserve the
   previous valid interpretation. A streaming final line is recognized once
   its newline arrives or the block completes.
+  Producers must emit activation, lifecycle, and stage markers as raw text at
+  column one, without backticks, indentation, list/quote prefixes, or emphasis.
+  Inline-code examples stay literal even when their contents match the schema;
+  Markdown formatting shown in skill instructions is not protocol syntax.
 - Tool calls capture their parent stage and effective output policy when
   launched. Results are interpreted in source-message arrival order, so an
   agent's later stage does not adopt an earlier call's output. Enabled tool
@@ -88,10 +109,30 @@ No provider messages, turns, commands, or completion events are synthesized.
   `[publish][client][build][types]` and `[publish][client][copy]` boundaries.
   Earlier output retains its previous interpretation, including lines hidden
   by `matching-lines` before the script switches to inline `spans`.
-- Highlighted assistant blocks show their literal source with tag/title
-  boundaries. **Original output** exposes the existing rich message renderer
-  and its copy/quote controls. Tagged tool previews likewise retain the full
-  original output, including lines omitted by `matching-lines`. Opaque tools
+- Highlighted assistant blocks keep progress messages visible with tag/title
+  boundaries even while original output is collapsed. Completed assistant
+  stage prose renders as Markdown through the existing capability-gated batch
+  renderer, including clickable file and web links, math, and formatting.
+  Each stage's prose is a Markdown fragment. Expanding original output never
+  changes the preview's link behavior. Streaming, pending or failed rendering,
+  public shares, and servers without `acli-commentary-rendering` retain the
+  ordinary rich assistant message in place; they never hide it behind a
+  plain-text replacement. Unsupported servers receive no rendering request.
+  Rendering requests wait for message completion, remain bound to the source,
+  project and session, and are cancelled when that context leaves the view.
+  Tool commentary's separate setting does not disable assistant Markdown.
+  Schema announcements show
+  only their human-readable label and title (or unresolved status); the raw
+  activation syntax and file reference appear only in the original output.
+  For file-backed declarations, the readable label links to the schema file
+  through the session file viewer, without adjacent copy or version-control
+  controls. Inline and embedded declarations retain their original-output
+  disclosure rather than linking to a potentially different file.
+  A compact first-line gutter control expands the original output
+  underneath, including the existing rich message renderer and its copy/quote
+  controls. It shows `+` while the original is hidden and `−` while visible;
+  there is no separate **Original output** label row. Tagged tool previews retain
+  the full original output, including lines omitted by `matching-lines`. Opaque tools
   keep their ordinary renderer beneath the captured stage label; declared but
   unobserved children produce no progress rows. Conversation View still
   controls whether routine tool activity is expanded.
@@ -104,6 +145,25 @@ No provider messages, turns, commands, or completion events are synthesized.
   the activation, v1 leaves tags ordinary until the earlier source is loaded;
   it does not guess the missing schema. Subagent streams are not activated by
   their parent's declaration.
+
+### Commentary-bearing tools
+
+[ACLI commentary](acli-commentary.md#workflow-composition) participates after
+declared records are decoded. Workflow classification operates on ordinary
+text and decoded commentary fragments, retaining the invocation's captured
+schema and separate stdout/stderr or code-mode leaf contexts. JSON data stays
+opaque. Data precedes prose within a record; commentary tags can label later
+data on the same stream. Tool-origin activation and lifecycle rules above
+remain unchanged.
+
+With both features enabled, selected prose keeps rich Markdown and context
+bullets beside the output box. The data preview uses offsets mapped to its
+own fragments, including when rendering fails and raw records are retained.
+Original-output disclosure recovers the original result, not a second copy
+of the cleaned projection. With commentary presentation disabled, this view
+can show decoded logical lines as plain text without requesting Markdown.
+The producer convention is specified in
+[workflow-tags](https://github.com/graehl/agents/blob/master/topics/workflow-tags.md#composition-with-acli-commentary).
 
 The implementation lives in `transcriptProjection/workflowTags.ts` and the
 shared `WorkflowOutput` renderer. It adds no server route, capability, server

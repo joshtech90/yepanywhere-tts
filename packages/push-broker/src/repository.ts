@@ -1,4 +1,7 @@
-import type Database from "better-sqlite3";
+import type {
+  SqliteDatabase,
+  SqliteStatement,
+} from "@yep-anywhere/shared/sqlite";
 import {
   generateOpaqueId,
   generateSecret,
@@ -32,7 +35,7 @@ export interface AuthenticatedSubscription {
 
 interface InstallationRow {
   id: string;
-  auth_hash: Buffer;
+  auth_hash: Uint8Array;
   provider: string;
   target_kind: string;
   target_value: string;
@@ -43,7 +46,7 @@ interface InstallationRow {
 interface SubscriptionRow {
   id: string;
   installation_id: string;
-  send_hash: Buffer;
+  send_hash: Uint8Array;
   provider: string;
   target_kind: string;
   target_value: string;
@@ -66,7 +69,7 @@ export class PushRepository {
   private readonly now: () => number;
 
   constructor(
-    private readonly db: Database.Database,
+    private readonly db: SqliteDatabase,
     options: PushRepositoryOptions = {},
   ) {
     this.maxSubscriptionsPerInstallation =
@@ -74,26 +77,40 @@ export class PushRepository {
     this.now = options.now ?? Date.now;
   }
 
+  /**
+   * One prepared statement per distinct SQL, reused for the repository's life.
+   * Preparing per call repeats SQLite's parse and plan work on every request,
+   * and under Bun each statement also stays alive until the database closes.
+   */
+  private readonly prepared = new Map<string, SqliteStatement>();
+
+  private statement(sql: string): SqliteStatement {
+    let statement = this.prepared.get(sql);
+    if (!statement) {
+      statement = this.db.prepare(sql);
+      this.prepared.set(sql, statement);
+    }
+    return statement;
+  }
+
   createInstallation(target: PushTarget): InstallationCredentials {
     const installationId = generateOpaqueId();
     const installationSecret = generateSecret();
     const now = this.now();
 
-    this.db
-      .prepare(
-        `INSERT INTO installations
+    this.statement(
+      `INSERT INTO installations
           (id, auth_hash, provider, target_kind, target_value, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        installationId,
-        hashSecret(installationSecret),
-        target.provider,
-        target.kind,
-        target.value,
-        now,
-        now,
-      );
+    ).run(
+      installationId,
+      hashSecret(installationSecret),
+      target.provider,
+      target.kind,
+      target.value,
+      now,
+      now,
+    );
 
     return { installationId, installationSecret };
   }
@@ -102,9 +119,9 @@ export class PushRepository {
     installationId: string,
     installationSecret: string,
   ): InstallationRecord | undefined {
-    const row = this.db
-      .prepare("SELECT * FROM installations WHERE id = ?")
-      .get(installationId) as InstallationRow | undefined;
+    const row = this.statement(
+      "SELECT * FROM installations WHERE id = ?",
+    ).get<InstallationRow>(installationId);
 
     if (!verifySecret(installationSecret, row?.auth_hash) || !row) {
       return undefined;
@@ -117,68 +134,56 @@ export class PushRepository {
     installationId: string,
     target: PushTarget,
   ): boolean {
-    const result = this.db
-      .prepare(
-        `UPDATE installations
+    const result = this.statement(
+      `UPDATE installations
          SET provider = ?, target_kind = ?, target_value = ?, updated_at = ?
          WHERE id = ?`,
-      )
-      .run(
-        target.provider,
-        target.kind,
-        target.value,
-        this.now(),
-        installationId,
-      );
+    ).run(
+      target.provider,
+      target.kind,
+      target.value,
+      this.now(),
+      installationId,
+    );
     return result.changes === 1;
   }
 
   deleteInstallation(installationId: string): boolean {
-    const result = this.db
-      .prepare("DELETE FROM installations WHERE id = ?")
-      .run(installationId);
+    const result = this.statement("DELETE FROM installations WHERE id = ?").run(
+      installationId,
+    );
     return result.changes === 1;
   }
 
   createSubscription(installationId: string): SubscriptionCredentials {
     return this.db.transaction(() => {
-      const count = this.db
-        .prepare(
-          `SELECT COUNT(*) AS count
+      const count = this.statement(
+        `SELECT COUNT(*) AS count
            FROM subscriptions
            WHERE installation_id = ? AND revoked_at IS NULL`,
-        )
-        .get(installationId) as { count: number };
-      if (count.count >= this.maxSubscriptionsPerInstallation) {
+      ).get<{ count: number }>(installationId);
+      if ((count?.count ?? 0) >= this.maxSubscriptionsPerInstallation) {
         throw new SubscriptionLimitError();
       }
 
       const subscriptionId = generateOpaqueId();
       const sendSecret = generateSecret();
-      this.db
-        .prepare(
-          `INSERT INTO subscriptions
+      this.statement(
+        `INSERT INTO subscriptions
             (id, installation_id, send_hash, created_at)
            VALUES (?, ?, ?, ?)`,
-        )
-        .run(
-          subscriptionId,
-          installationId,
-          hashSecret(sendSecret),
-          this.now(),
-        );
+      ).run(subscriptionId, installationId, hashSecret(sendSecret), this.now());
 
       return { subscriptionId, sendSecret };
-    })();
+    });
   }
 
   authenticateSubscription(
     subscriptionId: string,
     sendSecret: string,
   ): AuthenticatedSubscription | undefined {
-    const row = this.db
-      .prepare(
-        `SELECT
+    const row = this.statement(
+      `SELECT
            subscriptions.id,
            subscriptions.installation_id,
            subscriptions.send_hash,
@@ -189,8 +194,7 @@ export class PushRepository {
          JOIN installations
            ON installations.id = subscriptions.installation_id
          WHERE subscriptions.id = ? AND subscriptions.revoked_at IS NULL`,
-      )
-      .get(subscriptionId) as SubscriptionRow | undefined;
+    ).get<SubscriptionRow>(subscriptionId);
 
     if (!verifySecret(sendSecret, row?.send_hash) || !row) {
       return undefined;
@@ -204,45 +208,39 @@ export class PushRepository {
   }
 
   touchSubscription(subscriptionId: string): void {
-    this.db
-      .prepare("UPDATE subscriptions SET last_used_at = ? WHERE id = ?")
-      .run(this.now(), subscriptionId);
+    this.statement(
+      "UPDATE subscriptions SET last_used_at = ? WHERE id = ?",
+    ).run(this.now(), subscriptionId);
   }
 
   revokeSubscription(installationId: string, subscriptionId: string): boolean {
-    const result = this.db
-      .prepare(
-        `UPDATE subscriptions
+    const result = this.statement(
+      `UPDATE subscriptions
          SET revoked_at = ?
          WHERE id = ? AND installation_id = ? AND revoked_at IS NULL`,
-      )
-      .run(this.now(), subscriptionId, installationId);
+    ).run(this.now(), subscriptionId, installationId);
     return result.changes === 1;
   }
 
   countInstallations(): number {
-    const row = this.db
-      .prepare("SELECT COUNT(*) AS count FROM installations")
-      .get() as { count: number };
-    return row.count;
+    const row = this.statement(
+      "SELECT COUNT(*) AS count FROM installations",
+    ).get<{ count: number }>();
+    return row?.count ?? 0;
   }
 
   countActiveSubscriptions(installationId?: string): number {
     const row =
       installationId === undefined
-        ? (this.db
-            .prepare(
-              "SELECT COUNT(*) AS count FROM subscriptions WHERE revoked_at IS NULL",
-            )
-            .get() as { count: number })
-        : (this.db
-            .prepare(
-              `SELECT COUNT(*) AS count
+        ? this.statement(
+            "SELECT COUNT(*) AS count FROM subscriptions WHERE revoked_at IS NULL",
+          ).get<{ count: number }>()
+        : this.statement(
+            `SELECT COUNT(*) AS count
                FROM subscriptions
                WHERE installation_id = ? AND revoked_at IS NULL`,
-            )
-            .get(installationId) as { count: number });
-    return row.count;
+          ).get<{ count: number }>(installationId);
+    return row?.count ?? 0;
   }
 }
 

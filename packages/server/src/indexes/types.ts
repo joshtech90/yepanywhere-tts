@@ -71,12 +71,19 @@ export interface ISessionIndexService {
    * @param projectId - The project ID
    * @param sessionId - The session ID
    * @param reader - Session reader for provider-specific file path/index scope
+   * @param options.acceptAppendedFile - Also return the indexed summary when
+   *   the file has only grown since it was indexed. The summary then describes
+   *   an accurate prefix rather than the whole file: head-derived fields stay
+   *   correct, while `updatedAt` and `messageCount` lag the unindexed tail.
+   *   Callers that read the tail from the live file themselves can use this;
+   *   callers that present the summary as current truth must not.
    */
   getCachedSessionSummary(
     sessionDir: string,
     projectId: UrlProjectId,
     sessionId: string,
     reader: ISessionReader,
+    options?: { acceptAppendedFile?: boolean },
   ): Promise<SessionSummary | null>;
 
   /**

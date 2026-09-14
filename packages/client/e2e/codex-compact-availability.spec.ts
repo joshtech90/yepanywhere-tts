@@ -5,7 +5,7 @@ import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
-import { createServer } from "vite";
+import { createTestViteServer as createServer } from "./support/vite-server";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
 test.use({ serviceWorkers: "block" });

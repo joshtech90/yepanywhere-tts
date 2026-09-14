@@ -4,6 +4,7 @@ import {
   ClaudeSessionEntrySchema,
   getLogicalParentUuid,
   isInjectedContinuationPrompt,
+  isLocalCommandEchoTurn,
   isSyntheticNoResponseTurn,
 } from "../src/claude-sdk-schema/index.js";
 import { AskUserQuestionResultSchema } from "../src/claude-sdk-schema/tool/ToolResultSchemas.js";
@@ -275,6 +276,56 @@ describe("Claude SDK schema", () => {
     it("ignores null and non-object input", () => {
       expect(isInjectedContinuationPrompt(null)).toBe(false);
       expect(isSyntheticNoResponseTurn(undefined)).toBe(false);
+    });
+  });
+
+  describe("isLocalCommandEchoTurn", () => {
+    it("recognizes a slash command's own output", () => {
+      expect(
+        isLocalCommandEchoTurn({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "<synthetic>",
+            content: [{ type: "text", text: "Error: No messages to compact" }],
+          },
+          local_command_source:
+            "<local-command-stderr>Error: No messages to compact</local-command-stderr>",
+        }),
+      ).toBe(true);
+    });
+
+    it("requires the command output carrier, not just the synthetic model", () => {
+      expect(
+        isLocalCommandEchoTurn({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "<synthetic>",
+            content: [{ type: "text", text: "Turn aborted by user." }],
+          },
+        }),
+      ).toBe(false);
+    });
+
+    it("leaves a real assistant turn alone", () => {
+      expect(
+        isLocalCommandEchoTurn({
+          type: "assistant",
+          message: {
+            role: "assistant",
+            model: "claude-opus-5",
+            content: [{ type: "text", text: "Compacted " }],
+          },
+          local_command_source:
+            "<local-command-stdout>Compacted </local-command-stdout>",
+        }),
+      ).toBe(false);
+    });
+
+    it("ignores null and non-object input", () => {
+      expect(isLocalCommandEchoTurn(null)).toBe(false);
+      expect(isLocalCommandEchoTurn(undefined)).toBe(false);
     });
   });
 });

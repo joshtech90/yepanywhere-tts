@@ -1,13 +1,10 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useCallback, useState } from "react";
 import { useCurrentSourceRuntime } from "../../../contexts/SourceRuntimeContext";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { useImageResourceActions } from "../../ImageResourceActions";
 import { fetchLocalMediaBlob, LocalMediaModal } from "../../LocalMediaModal";
-import type { ToolRenderer } from "./types";
-
-interface ViewImageInput {
-  path: string;
-}
 
 function getFileName(path: string): string {
   return getPathBasename(path);
@@ -97,12 +94,12 @@ function ViewImageClickable({
   );
 }
 
-export const viewImageRenderer: ToolRenderer<ViewImageInput, unknown> = {
+export const viewImageRenderer = defineTool(toolDisplayContracts.ViewImage, {
   tool: "ViewImage",
   displayName: "View Image",
 
   renderToolUse(input, context) {
-    const { path } = input as ViewImageInput;
+    const { path } = input;
     return (
       <div className="read-image-result">
         <ViewImageClickable
@@ -115,7 +112,8 @@ export const viewImageRenderer: ToolRenderer<ViewImageInput, unknown> = {
   },
 
   renderToolResult(_result, _isError, context, input) {
-    const { path } = input as ViewImageInput;
+    if (!input) return null;
+    const { path } = input;
     return (
       <div className="read-image-result">
         <ViewImageClickable
@@ -128,7 +126,7 @@ export const viewImageRenderer: ToolRenderer<ViewImageInput, unknown> = {
   },
 
   getUseSummary(input, context) {
-    const path = (input as ViewImageInput)?.path ?? "";
+    const path = input?.path ?? "";
     return getFileName(makeDisplayPath(path, context?.projectPath));
   },
 
@@ -137,7 +135,7 @@ export const viewImageRenderer: ToolRenderer<ViewImageInput, unknown> = {
   },
 
   renderInteractiveSummary(input, _result, _isError, context) {
-    const { path } = input as ViewImageInput;
+    const { path } = input;
     return (
       <ViewImageClickable
         path={path}
@@ -147,4 +145,4 @@ export const viewImageRenderer: ToolRenderer<ViewImageInput, unknown> = {
       />
     );
   },
-};
+});

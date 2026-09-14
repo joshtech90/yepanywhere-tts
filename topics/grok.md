@@ -41,6 +41,13 @@ unreadable-catalog fallback remains `grok-build`. Compact glyphs are
 `Gk 4.6` / `Gk 4.5`. Effort maps to Grok's top-level `--effort`; YA omits
 `-m` for the discovered default.
 
+**`AGENTCTL_SESSION_ID` is published to Grok tool shells.** YA installs
+the same `BASH_ENV` session-id bridge Claude and Codex use. Resume
+seeds the id in the spawned `grok` environment before startup. A new
+session writes it as soon as `session/new` returns the native id, before
+the first user-turn tool shells. Agents must not search
+`~/.grok/sessions/` to recover a YA-launched session id.
+
 **Continuation is `session/load` + `_meta.noReplay`.** Grok advertises
 `agentCapabilities.loadSession`. `session/resume` is not used until
 re-measured. A load failure stays fail-closed and never falls back to
@@ -64,7 +71,11 @@ before returning to the user) as a synthetic user item whose durable
 `user_message_chunk` is wrapped in Grok's "while you were working" /
 `<user_query>` envelope. YA already echoed the raw steer; replay strips
 that outer envelope and keeps any `<user_query>` the user themselves
-quoted. YA Queue remains the end-of-turn path. Grok TUI
+quoted. Two in-flight interjects may land as consecutive
+`user_message_chunk` updates or as one chunk with concatenated envelopes
+(sometimes missing the first opening or last closing). Replay emits one
+user row per inner text so each send can confirm its optimistic echo.
+YA Queue remains the end-of-turn path. Grok TUI
 `follow_up_behavior = steer` is CLI-local; YA does not read it.
 
 **Video output.** Grok writes MP4s under the session `videos/` directory.
@@ -103,7 +114,12 @@ in YA's environment wins. See [vanilla-defaults](vanilla-defaults.md).
 | Session recap / voice / cancel-rewind bits | ignored metadata | new facility if a YA surface wants them |
 
 `updates.jsonl` remains the replay log. A live TUI session may create that
-file after the first persist, not at directory creation.
+file after the first persist, not at directory creation. Every recorded update
+carries `_meta.eventId`, which is also on the live ACP notification, so both
+paths key the same rendered message on it — see
+[stream-durable-id-dedup](stream-durable-id-dedup.md) § Grok for the buffering
+rule that keeps the two sides grouping chunks alike, and for the user-turn
+pairing Grok's self-minted row identity forces.
 
 ## Tool vocabulary
 
@@ -121,13 +137,36 @@ replay share one normalizer.
 | backend web search, `web_fetch` | `WebSearch`, `WebFetch` | Existing web result schemas |
 | `ask_user_question`, `exit_plan_mode` | `AskUserQuestion`, `ExitPlanMode` | Existing interaction/plan schemas |
 | `spawn_subagent` | `spawn_agent` | Existing spawn schema plus native diagnostic text |
-| `list_dir`, background output/kill, enter-plan | Native Grok name | Generic activity row |
+| `list_dir`, enter-plan | Native Grok name | Generic activity row |
+| `get_command_or_subagent_output` | Native Grok name | Canonical polled-task shape (see below) |
+| `kill_command_or_subagent` | Native Grok name | Kill outcome carrying both `task_id` and `shell_id` |
 | `image_gen`, `image_edit` | `ImageGen`, `ImageEdit` | Generic row plus hidden local-path media candidate |
 | `image_to_video`, `reference_to_video`, `video_gen` | `ImageToVideo` / `VideoGen` | Generic row plus `video/mp4` media candidate |
 
 Unknown future kinds keep their native name, canonical metadata, raw
 input, generic row, and terminal output. Image and video capture grants
 only the realpath-resolved session `images/` or `videos/` root.
+
+### Background command completion
+
+A `run_terminal_command` that exceeds its timeout keeps running as a task,
+and its row stays present-tense until the transcript shows the task ended.
+Grok reports that through its own poll and kill tools rather than the
+Claude-shaped `TaskOutput` and `KillShell`, so both the tool names and the
+result shape have to be understood for the row to settle.
+
+Grok returns `Result` for a single polled task and `MultiResult` for a wait
+covering several. The normalizer projects both onto one shape: `tasks` holds
+every polled task with a `task_id`, `status`, `output`, and `exitCode`, and
+`task` repeats the first for consumers that expect one. `retrieval_status`
+is `running` while any polled task is still going. A poll that reports
+several tasks ends every one of them, so a `wait_all` over parallel
+commands settles all their rows rather than only the first. `completed`,
+`failed`, and `cancelled` all count as ended; a not-found task does not,
+since that answer does not establish what happened to the command.
+
+The kill result carries `shell_id` alongside Grok's `task_id` so the kill
+row names its target the same way the launch row does.
 
 ## ACP extension requests
 

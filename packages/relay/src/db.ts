@@ -1,6 +1,20 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import {
+  openSqliteOrThrow,
+  type SqliteDatabase,
+} from "@yep-anywhere/shared/sqlite";
+
+const USERNAMES_SCHEMA = `
+  CREATE TABLE IF NOT EXISTS usernames (
+    username TEXT PRIMARY KEY,
+    install_id TEXT NOT NULL,
+    registered_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_usernames_last_seen
+    ON usernames(last_seen_at);
+`;
 
 /**
  * Creates and initializes the SQLite database for username registry.
@@ -8,33 +22,17 @@ import Database from "better-sqlite3";
  * Schema:
  * - usernames: Maps usernames to installation IDs with timestamps
  */
-export function createDb(dataDir: string): Database.Database {
+export function createDb(dataDir: string): SqliteDatabase {
   // Ensure data directory exists
   if (!existsSync(dataDir)) {
     mkdirSync(dataDir, { recursive: true });
   }
 
-  const dbPath = join(dataDir, "relay.db");
-  const db = new Database(dbPath);
+  const db = openSqliteOrThrow(join(dataDir, "relay.db"));
 
-  // Enable WAL mode for better concurrent read performance
-  db.pragma("journal_mode = WAL");
-
-  // Create usernames table if it doesn't exist
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS usernames (
-      username TEXT PRIMARY KEY,
-      install_id TEXT NOT NULL,
-      registered_at TEXT NOT NULL,
-      last_seen_at TEXT NOT NULL
-    )
-  `);
-
-  // Create index on last_seen_at for efficient reclamation queries
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_usernames_last_seen
-    ON usernames(last_seen_at)
-  `);
+  // WAL mode gives better concurrent read performance
+  db.exec("PRAGMA journal_mode = WAL");
+  db.exec(USERNAMES_SCHEMA);
 
   return db;
 }
@@ -42,22 +40,8 @@ export function createDb(dataDir: string): Database.Database {
 /**
  * Creates an in-memory database for testing.
  */
-export function createTestDb(): Database.Database {
-  const db = new Database(":memory:");
-
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS usernames (
-      username TEXT PRIMARY KEY,
-      install_id TEXT NOT NULL,
-      registered_at TEXT NOT NULL,
-      last_seen_at TEXT NOT NULL
-    )
-  `);
-
-  db.exec(`
-    CREATE INDEX IF NOT EXISTS idx_usernames_last_seen
-    ON usernames(last_seen_at)
-  `);
-
+export function createTestDb(): SqliteDatabase {
+  const db = openSqliteOrThrow(":memory:");
+  db.exec(USERNAMES_SCHEMA);
   return db;
 }

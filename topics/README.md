@@ -1,5 +1,8 @@
 - new session project selection
 - Rich rendering for agent output via yepanywhere
+- [Code-fence language renderers](code-fence-renderers.md) (info-string
+  normalization, the `language-*` marker, the hover/tap language label, and the
+  per-language renderer registry with Mermaid diagrams as its one member)
 - Task-list rendering from incremental Claude `Task*` events (problem framing)
 - Codex GPT-5.5 model and protocol compatibility
 - Pluggable speech recognition providers
@@ -11,6 +14,8 @@
 - Active content security (confirmed same-origin HTML execution, source-first
   file viewing, and isolated origins for agent-built applications)
 - Trusted client packaging for signed/local app installs
+- [Optional computer control](optional-computer-control.md) (on-demand local
+  native control, session eligibility, MCP spike evidence and Codex/Sky mechanics)
 - Hard development rules for upstream-facing defaults
 - Kzahel-disabled feature decisions
 - Session UI customization
@@ -20,6 +25,8 @@
   opt-in, writer audit, and Git-metadata boundary)
 - Storage settings (YA data directory vs. project `.yep`, default lazy media,
   and live managed-session preservation opt-in)
+- [Optional discovery SQLite storage](optional-sqlite.md) (Node/Bun adapters,
+  startup opt-in, migrations, and source-server readiness)
 - OpenCode backend capability and rendering parity
 - OpenCode ses_ session ID unification with YA session ID
 - MessageQueue batch delivery and steering UI
@@ -46,7 +53,7 @@
 - Provider/model compact glyph vocabulary (top-right status)
 - Claude API failures and auto-retry (transient 5xx/overload evidence)
 - Media rendering and routing (image/video/file surfaces, the relay fetch rule, serving doors)
-- Sidebar session ordering (active rows pinned and stable, idle rows deduped by recency)
+- Sidebar session ordering (user activity owns chronology; pointer/focus holds keep rows clickable)
 - Session list hidden duplicates (conservative duplicate-title hiding, fork/helper lineage, current/source session safety)
 - Deferred & tactical roadmap (prioritized: backgrounded-jobs badge, `Task*` list rendering, queue-across-compaction, rich-text gaps, OpenCode/pi provider fleshout)
 - pi provider (Zechner's pi-mono as agnostic backend: integration plan + periodic progress tracking)
@@ -62,6 +69,9 @@
 - Session summary fidelity (bounded list projections, complete-index isolation,
   and partial-observation nondowngrade rules)
 - Client source runtime topology (per-YA-server runtime boundary above summary/query/session-detail stores)
+- [Working Across Machines](multi-machine-architecture.md) (discussion entry
+  point comparing remote tools, runners, independent hosts, grants, central
+  daemons, multiplayer and migration; links Machine Control and prior art)
 - Managed remote executors (default-off manual SSH baseline with injected
   provider-neutral runners, YA-managed Git workspaces, Codex-first validation,
   and controller-fetched incoming heads)
@@ -85,6 +95,10 @@
   large-file extraction campaign)
 - Portable transcript compiler (stable server ingest, bounded window + prefix
   facts, and shared semantic projection for web/Android/iOS native renderers)
+- [Simple Client API](simple-client-api.md) (server-owned typed summaries and
+  Conversation views; multi-server web demo with early Compose consumption and
+  TypeScript/Kotlin schema conformance and a capture-tested server producer;
+  iOS deferred)
 - Agents multi-session activity preview (default-off condensed live activity
   for active processes and last-output previews for recently idle ones)
 - Agents process observability (default-off host metrics plus read-only

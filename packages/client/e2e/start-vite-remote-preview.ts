@@ -25,6 +25,7 @@ async function main() {
 
   const server = await preview({
     configFile: join(clientRoot, "vite.config.remote.ts"),
+    build: { outDir: process.env.YEP_E2E_REMOTE_DIST ?? "dist-remote" },
     preview: {
       port: 0,
       strictPort: false,

@@ -9,9 +9,134 @@ Result meanings:
 
 - **PASS** — the observable behavior completed as expected.
 - **FAIL** — the observable behavior did not complete as expected.
-- **BLOCKED** — the check needed a user-owned credential or secure-desktop
+- **BLOCKED** — the check needed a testbed recovery, credential, or consent
   action that was not available during the run.
 - **NOT RUN** — the check was outside the completed scope; the reason is noted.
+
+## 2026-09-08 — nightly delivery and same-app channels
+
+### Scope and current evidence
+
+This exercise adds scheduled, signed Latest publication and persistent
+Stable/Latest selection in the existing desktop application. Publication uses
+the exact successful general-CI commit, skips unchanged packaged inputs, and
+keeps an incomplete release private until every platform artifact and updater
+signature passes validation.
+
+- Implementation: `b38d162a0`, with updater dismissal and CI concurrency
+  hardening in `741bc6d3d`.
+- Exact-source [general CI](https://github.com/kzahel/yepanywhere/actions/runs/34195316810)
+  passed on `da9db6aa0235f05d917b3521730316a36ab32ee4`: 9,896 unit tests
+  and 192 browser tests passed, with 34 unit and six browser cases skipped.
+  Lint, formatting, types, dependency audit, site build, and both performance
+  checks also passed. Browser fixture isolation, readiness, and teardown fixes
+  were needed before this whole-CI publication gate became green.
+- Exact-source [Desktop CI](https://github.com/kzahel/yepanywhere/actions/runs/34195316788)
+  passed for Apple Silicon macOS, Intel macOS, and Windows on the same commit.
+  An earlier Windows build required a successful retry after the external
+  signing command failed; this run passed without a retry.
+- Local verification passed: desktop script tests, 29 Rust tests, Clippy,
+  desktop build, and the updater interaction harness. Final desktop and phone
+  captures were inspected. The harness covers channel persistence errors,
+  stale checks, dismissed windows, download/install progress, and returning to
+  Stable while the installed Latest version is newer.
+- The published `0.2.0` Windows updater artifact passed Minisign verification;
+  a modified copy was rejected with the same public key.
+- The update service advertises both channels. Its existing Stable routes and
+  the stable versions of all ten configured products were unchanged after
+  deployment of the desktop channel configuration.
+
+### Installed baseline and testbed limits
+
+The Windows 11 ARM64 VM started from the existing per-user `0.2.0` NSIS
+installation. Its native ARM64 Bun passed the isolated packaged-runtime
+startup/authentication smoke test. The launcher initially reported a server
+startup timeout; explicit Retry started the bundled server, and Open Dashboard
+showed the existing project and session. Project and session metadata hashes
+were recorded before upgrading. All desktop observations and actions used
+target-internal Machine Control routes without host input interference.
+
+The macOS VM could not restore its suspended state: the hypervisor returned a
+permission error. Cloning that suspended base was also unavailable. The VM
+was left unchanged and its claim released; discarding saved RAM and cold
+booting requires maintainer approval because unsaved guest work may be lost.
+Installed macOS upgrade acceptance remains **BLOCKED**. Signed macOS CI and
+packaged-app smoke checks do not substitute for that installed upgrade check.
+
+### First published nightly and Windows bootstrap
+
+[`desktop-latest-v0.3.101`](https://github.com/kzahel/yepanywhere/releases/tag/desktop-latest-v0.3.101)
+was published by [Nightly Desktop](https://github.com/kzahel/yepanywhere/actions/runs/34196075016)
+from `da9db6aa0235f05d917b3521730316a36ab32ee4`. The scheduler's branch head
+had advanced, but selection correctly retained the successful CI source.
+Both Mac builds passed signing, notarization, and packaged-app smoke checks;
+Windows passed its build and smoke checks. Finalization verified all three
+distinct updater artifacts with Minisign before publishing the prerelease.
+
+During construction, the draft's Mac assets were unavailable through Latest.
+After publication, the public Latest feed advertised `0.3.101`, confirmed
+`channel: latest`, and selected the signed NSIS executable. Stable remained
+`0.2.0`, and GitHub's overall latest release remained `v0.8.1`.
+
+The Windows VM downloaded the public installer, verified Authenticode, and
+matched GitHub's SHA-256:
+`214841f96432a609878e4fc674a2f341f8ae9bd473fb27e443bc0b8d249e8592`.
+Quiet installation over `0.2.0` completed with one `0.3.101` per-user
+registration and no observed consent prompt. The installed executable's
+signature was valid; project and session metadata hashes were unchanged.
+No channel preference existed, retaining the default Stable selection.
+
+The installed nightly launched the native ARM64 Bun runtime and returned HTTP
+200 from its health endpoint. A target-window capture showed the existing
+project and session. An initial empty accessibility document did not reflect
+the rendered dashboard. One machine-control identity lookup failed during a
+health probe; target status and the repeated probe succeeded.
+
+The installed updater initially showed Stable's waiting-to-catch-up message
+and offered no downgrade. Selecting Latest through the native desktop UI
+saved the preference and reported the installed nightly current on that
+channel. Explicit tray Quit removed all ten recorded app/server/WebView
+processes; the app was then relaunched with the saved preference intact.
+
+### Signed Latest upgrade and unchanged-source skip
+
+[`desktop-latest-v0.3.201`](https://github.com/kzahel/yepanywhere/releases/tag/desktop-latest-v0.3.201)
+was published by a [forced QA run](https://github.com/kzahel/yepanywhere/actions/runs/34199313407)
+from `fb909d664b81f9d01a08fc63498edb9fb747fe95`. That newer source had passed
+general CI; the adjacent readiness-check test needed one retry, as recorded in
+`gaps/project-queue-readiness-test-startup-budget.md`. Both Mac builds, Windows,
+and verification of all three updater signatures passed without release-job
+retries.
+
+The restarted `0.3.101` app offered `0.3.201` without another channel change,
+proving that Latest persisted across restart. **Update and restart** downloaded
+the signed installer and handed off to NSIS. The actual updater download had
+valid Authenticode and matched the public SHA-256:
+`96013ff1efa687e33d029d16a119bd287ca27c9f491d6ab2757ed2a8f6bf06d0`.
+
+The installer automatically relaunched `0.3.201`. The installed signature was
+valid, exactly one per-user NSIS registration remained, and the native ARM64
+Bun process started. All recorded old app/server/WebView processes exited.
+Both project and session metadata hashes remained identical to the original
+`0.2.0` baseline, and the final dashboard capture showed the existing project
+and session. No consent prompt was observed during the update.
+
+The relaunched runtime's health endpoint returned HTTP 200. Switching back to
+Stable replaced the saved preference successfully on Windows and displayed
+the waiting-to-catch-up message. The installed version remained `0.3.201`;
+no downgrade was offered or performed. The final dashboard and updater
+captures were inspected, and the test installation was left on Stable.
+
+An [ordinary nightly run](https://github.com/kzahel/yepanywhere/actions/runs/34202521718)
+then succeeded with its release job skipped: the newest verified packaged
+inputs matched the last published Latest. Newer unverified branch work did not
+cause a release or replace the selected successful source.
+
+Final tray Quit left no recorded app/server/WebView processes running.
+Temporary test installers and process records were removed. The Windows VM,
+which had been off before this exercise, completed a clean shutdown; its
+powered-off state was verified and its claim released. The Mac VM remained
+suspended and unchanged.
 
 ## 2026-08-31 — `desktop-v0.2.0`
 

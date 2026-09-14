@@ -17,6 +17,8 @@ const modelSettings = vi.hoisted(() => {
   const state = {
     parakeetSpeechModel: "nvidia/parakeet-tdt-0.6b-v3",
     setParakeetSpeechModel: vi.fn(),
+    whisperSpeechModel: "",
+    setWhisperSpeechModel: vi.fn(),
   };
   state.setParakeetSpeechModel = vi.fn((model: string) => {
     state.parakeetSpeechModel = model;
@@ -24,11 +26,17 @@ const modelSettings = vi.hoisted(() => {
   return state;
 });
 const prewarmYaServerSpeechBackend = vi.hoisted(() => vi.fn(async () => {}));
+const versionState = vi.hoisted(() => ({ capabilities: [] as string[] }));
+vi.mock("../../hooks/useVersion", () => ({
+  useVersion: () => ({ version: versionState }),
+}));
 
 vi.mock("../../hooks/useModelSettings", () => ({
   useModelSettings: () => ({
     parakeetSpeechModel: modelSettings.parakeetSpeechModel,
     setParakeetSpeechModel: modelSettings.setParakeetSpeechModel,
+    whisperSpeechModel: modelSettings.whisperSpeechModel,
+    setWhisperSpeechModel: modelSettings.setWhisperSpeechModel,
   }),
 }));
 
@@ -65,6 +73,88 @@ async function openSpeechMenu() {
 }
 
 describe("SpeechControlMenu", () => {
+  it("gates recent model choices and prewarms the chosen Whisper model", async () => {
+    installMediaDevices([]);
+    const props = {
+      trigger: <button type="button">voice</button>,
+      showMethodSelector: false,
+      methodOptions: [],
+      selectedMethod: "ya-whisper" as const,
+      onMethodChange: vi.fn(),
+    };
+    const view = renderSpeechControlMenu(props);
+    await openSpeechMenu();
+    expect(
+      screen.queryByRole("combobox", { name: "Whisper model" }),
+    ).toBeNull();
+    expect(prewarmYaServerSpeechBackend).not.toHaveBeenCalled();
+    versionState.capabilities = ["local-speech-model-selection"];
+    view.rerender(
+      <I18nProvider>
+        <SpeechControlMenu {...props} />
+      </I18nProvider>,
+    );
+    await act(async () =>
+      fireEvent.change(
+        screen.getByRole("combobox", { name: "Whisper model" }),
+        { target: { value: "distil-large-v3.5" } },
+      ),
+    );
+    expect(modelSettings.setWhisperSpeechModel).toHaveBeenCalledWith(
+      "distil-large-v3.5",
+    );
+    expect(prewarmYaServerSpeechBackend).toHaveBeenCalledWith(
+      "ya-whisper",
+      "distil-large-v3.5",
+    );
+  });
+
+  it("offers unified English only on capable NeMo servers and preserves server defaults", async () => {
+    installMediaDevices([]);
+    modelSettings.parakeetSpeechModel = "";
+    const props = {
+      trigger: <button type="button">voice</button>,
+      showMethodSelector: false,
+      methodOptions: [],
+      selectedMethod: "ya-nemo" as const,
+      onMethodChange: vi.fn(),
+    };
+    const view = renderSpeechControlMenu(props);
+    await openSpeechMenu();
+    expect(
+      screen.queryByRole("option", { name: "Unified 0.6B English" }),
+    ).toBeNull();
+    versionState.capabilities = ["local-speech-model-selection"];
+    view.rerender(
+      <I18nProvider>
+        <SpeechControlMenu {...props} />
+      </I18nProvider>,
+    );
+    expect(
+      (
+        screen.getByRole("combobox", {
+          name: "Parakeet model preset",
+        }) as HTMLSelectElement
+      ).value,
+    ).toBe("default");
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Parakeet model preset" }),
+      { target: { value: "nvidia/parakeet-unified-en-0.6b" } },
+    );
+    expect(prewarmYaServerSpeechBackend).toHaveBeenLastCalledWith(
+      "ya-nemo",
+      "nvidia/parakeet-unified-en-0.6b",
+    );
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "Parakeet model preset" }),
+      { target: { value: "default" } },
+    );
+    expect(prewarmYaServerSpeechBackend).toHaveBeenLastCalledWith(
+      "ya-nemo",
+      undefined,
+    );
+    expect(modelSettings.setParakeetSpeechModel).toHaveBeenLastCalledWith("");
+  });
   afterEach(() => {
     cleanup();
     localStorage.clear();
@@ -72,6 +162,8 @@ describe("SpeechControlMenu", () => {
     modelSettings.parakeetSpeechModel = "nvidia/parakeet-tdt-0.6b-v3";
     modelSettings.setParakeetSpeechModel.mockClear();
     prewarmYaServerSpeechBackend.mockClear();
+    versionState.capabilities = [];
+    modelSettings.setWhisperSpeechModel.mockClear();
   });
 
   it("persists a selected microphone device for server STT capture", async () => {

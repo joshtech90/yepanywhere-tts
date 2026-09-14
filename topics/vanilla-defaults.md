@@ -71,7 +71,26 @@ defaults to Off, so an agent or installed skill named `/done` continues to
 receive the user's text. Opting into Hidden enables YA's local command without
 adding chrome; visible narrowing tiers also show its toolbar button.
 
+A configurable, visible resource-protection limit may default safer than the
+first-party harness only when invisible nested fan-out can cause unpredictable
+token or quota burn, the provider default remains an explicit choice, and the
+Maintainer has authorized the exact exception.
+
 ## Known Exceptions
+
+The server runtime upgrade notice is default-visible and nonblocking, authorized
+by the Maintainer on 2026-09-08 so remote users can arrange a runtime upgrade
+while continuing to use their existing server. It adds no frontend cutoff or
+update-command gate. See [server runtimes](server-runtime.md).
+
+Structured Codex async questions and their toolbar reminders ship default-on,
+explicitly authorized by graehl on 2026-09-07. They make an existing provider
+question answerable without blocking ongoing work. Clickable choices and the
+inline reply composer send only after a deliberate user action. One searchable
+**Question reminders** slider in Toolbar settings scales both reminder-aging
+stages; zero hides toolbar reminders while transcript answering remains
+available. There is no separate enable setting. See
+[provider-output-contract](provider-output-contract.md#asynchronous-codex-questions).
 
 [provider-runtime-status](provider-runtime-status.md) gives Codex
 `serverOverloaded` turns a built-in, bounded same-model retry. Codex itself
@@ -143,6 +162,13 @@ exposes a no-context-move refresh path. The default must not create visible
 session rows, future-visible provider context, or autonomous server upkeep for
 sessions with no current client viewer; stronger hidden-message keepalive modes
 remain explicit per-provider choices.
+
+**Handoff from…** on the scrollbar turn-notch menu ships default-on.
+Authorized by graehl on 2026-09-09: it is an explicit successor-session
+start from a selected in-memory turn, copies that session's launch
+options, and does not change ordinary send or Conversation view
+presentation. See [fork-from-turn](fork-from-turn.md) and
+[conversation-view](conversation-view.md).
 
 [conversation-view](conversation-view.md) and its Session Toolbar control ship
 default-on. The condensed projection keeps user/agent conversation, media, and

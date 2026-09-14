@@ -1,5 +1,6 @@
 import {
   VOICE_INPUT_CAPABILITY,
+  SERVER_CAPABILITIES,
   hasServerCapabilityAdvertisement,
   serverHasCapability,
 } from "@yep-anywhere/shared";
@@ -11,6 +12,7 @@ import {
   useImperativeHandle,
   useMemo,
   useRef,
+  useState,
   useSyncExternalStore,
 } from "react";
 import { useBrowserXaiSttApiKey } from "../hooks/useBrowserXaiSttApiKey";
@@ -43,8 +45,11 @@ import {
   resolveSpeechMethod,
   type SpeechMethodId,
 } from "../lib/speechProviders/methods";
-import { reconcileParakeetBackendForModel } from "../lib/speechProviders/parakeetModels";
-import { acquireSharedSpeechMicWarmLease } from "../lib/speechProviders/sharedMicCapture";
+import {
+  isParakeetModelBackend,
+  reconcileParakeetBackendForModel,
+  requestedParakeetModel,
+} from "../lib/speechProviders/parakeetModels";
 import {
   clearSpeechWaveform,
   publishSpeechWaveformSamples,
@@ -175,8 +180,13 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     hasStoredSpeechMethod,
     speechSmartTurnSettings,
     parakeetSpeechModel,
+    whisperSpeechModel,
   } = useModelSettings();
   const { version: versionInfo, loading: versionLoading } = useVersion();
+  const recentModels = serverHasCapability(
+    versionInfo,
+    SERVER_CAPABILITIES.localSpeechModelSelection.name,
+  );
   const { hasBrowserXaiSttApiKey } = useBrowserXaiSttApiKey();
   const basePath = useRemoteBasePath();
   const {
@@ -254,15 +264,18 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
   const temporarilyKeepMicWarm = useCallback(() => {
     const current = getSpeechFollowUpSnapshot();
     return (
-      current.active &&
+      (followUpEnabled || current.active) &&
       (current.owner === null ||
         current.owner === speechCaptureOwnerRef.current)
     );
-  }, []);
+  }, [followUpEnabled]);
 
   const handleResult = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
       if (suppressResultsAfterVisibleStopRef.current) return;
+      if (transcript.trim()) {
+        noteSpeechFollowUpActivity(speechCaptureOwnerRef.current);
+      }
       const outcome = onTranscript(transcript, metadata);
       if (
         outcome === "wait" ||
@@ -278,6 +291,9 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
 
   const handleInterim = useCallback(
     (transcript: string) => {
+      if (transcript.trim()) {
+        noteSpeechFollowUpActivity(speechCaptureOwnerRef.current);
+      }
       onInterimTranscript?.(transcript);
     },
     [onInterimTranscript],
@@ -307,7 +323,14 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     reducePlayback,
     unspokenPunctuation,
     onAudioSamples: showWaveform ? publishSpeechWaveformSamples : undefined,
-    parakeetModel: parakeetSpeechModel,
+    parakeetModel:
+      speechMethod !== null && isParakeetModelBackend(speechMethod)
+        ? requestedParakeetModel(parakeetSpeechModel, recentModels)
+        : undefined,
+    whisperModel:
+      speechMethod === "ya-whisper" && recentModels
+        ? whisperSpeechModel?.trim() || undefined
+        : undefined,
     openRelayedSpeechSocket,
     onResult: handleResult,
     onInterimResult: handleInterim,
@@ -341,12 +364,22 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     : isCaptureStarting
       ? "starting"
       : null;
+  const [retainWaveformSlot, setRetainWaveformSlot] = useState(false);
+  useEffect(() => {
+    if (isCapturing) {
+      setRetainWaveformSlot(true);
+      return;
+    }
+    const timer = setTimeout(() => setRetainWaveformSlot(false), 300);
+    return () => clearTimeout(timer);
+  }, [isCapturing]);
   const waveformVisible =
     showWaveform &&
     speechMethod !== null &&
     speechMethod !== DEFAULT_SPEECH_METHOD &&
-    isCapturing;
-  const showPostCaptureStatus = isProcessing || isFinalizing;
+    (isCapturing || (followUpEnabled && retainWaveformSlot && !error));
+  const showPostCaptureStatus =
+    isProcessing || (isFinalizing && !waveformVisible);
   // Keep the parent informed for insertion-target and keyboard-cancel
   // lifecycle. Visual capture/processing status stays with this mic control;
   // the composer never inserts it into the textarea mirror.
@@ -479,16 +512,6 @@ export const VoiceInputButton = forwardRef(function VoiceInputButton(
     },
     [],
   );
-
-  useEffect(() => {
-    if (
-      !followUpSnapshot.active ||
-      followUpSnapshot.owner !== speechCaptureOwnerRef.current
-    ) {
-      return;
-    }
-    return acquireSharedSpeechMicWarmLease();
-  }, [followUpSnapshot.active, followUpSnapshot.owner]);
 
   useEffect(() => {
     if (!followUpSnapshot.active || !followUpEnabled) return;

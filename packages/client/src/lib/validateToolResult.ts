@@ -41,6 +41,9 @@ const toolSchemas: Record<string, ZodType> = {
   KillShell: KillShellResultSchema,
 };
 
+/** Inert diagnostic inventory; these provider schemas do not grant display eligibility. */
+export const diagnosticToolNames = Object.freeze(Object.keys(toolSchemas));
+
 /**
  * Validate a tool result against its schema.
  * Returns valid: true if no schema exists for the tool (graceful fallback).

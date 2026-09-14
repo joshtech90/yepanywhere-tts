@@ -92,6 +92,7 @@ export function aggregateRuns(runs) {
     ...["cold", "warm", "appended"].flatMap((kind) => [
       `profiles.serverDetail.${kind}.server.project.p95Ms`,
       `profiles.serverDetail.${kind}.server.read.p95Ms`,
+      `profiles.serverDetail.${kind}.server.metadata.p95Ms`,
       `profiles.serverDetail.${kind}.server.normalize.p95Ms`,
       `profiles.serverDetail.${kind}.server.route.p95Ms`,
       `profiles.serverDetail.${kind}.server.augment.p95Ms`,

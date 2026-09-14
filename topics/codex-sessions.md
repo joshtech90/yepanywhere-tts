@@ -48,6 +48,16 @@ cutoffs. YA treats that chain as the child's logical transcript:
 - later appends to an ancestor never enter an existing child; and
 - ancestors may themselves be reference-backed, archived, or zstd-compressed.
 
+Codex `thread/revert` keeps the logical thread id stable while switching its
+SQLite row to a new immutable physical rollout. The replacement filename is
+`rollout-<timestamp>-<thread-id>_<rollout-id>.jsonl`: `session_meta.id` remains
+the stable thread id before `_`, while `history_base.thread_id` follows the
+physical rollout ids. YA parses and validates both identities, selects the
+newest physical rollout when scanning files for one logical thread, and keeps
+older physical rollouts available as lineage ancestors. A fork may inherit
+through a reverted rollout, so ancestor metadata is validated against the
+stable thread id in its own filename rather than against the fork's id.
+
 The history reference identifies the immutable rollout id encoded in the
 provider filename, not a YA URL id substitution or a stable provider session
 tree id. Resolution searches active and archived Codex roots, prefers the
@@ -85,6 +95,24 @@ Pinned Codex core source describes `agents.max_depth` as a V1 multi-agent-thread
 limit and explicitly says V2 ignores it. The Providers caption must retain that
 limitation; YA must not imply that the setting constrains Codex V2 or Codex OSS
 without a separately verified control.
+
+## Per-Turn Cyber Access Program
+
+The server-wide **Cyber access program** setting names the access program YA
+requests on every user turn. **Let Codex choose** is the default and omits
+`cyberAccessProgram` from `turn/start` entirely, which is what Codex's own
+terminal client does. The three named selections send `standard`,
+`daybreakBlue`, and `daybreakRed` respectively. `YEP_CODEX_CYBER_ACCESS_PROGRAM`
+supplies the startup fallback and a saved setting takes precedence.
+
+The field is read per turn and not retained by Codex, so YA sends the current
+selection on each user turn rather than at thread scope. YA-internal helper
+turns, such as the ephemeral recap thread, never send it. Codex forwards the
+program only for ChatGPT-authenticated accounts, and upstream states plainly
+that requesting a program does not grant access, so the control must not be
+described as enabling anything. `Thread.daybreakEnabled` is a separate
+client-saved metadata flag that no Codex behavior reads; YA neither writes nor
+consumes it.
 
 ## App-server notification correlation
 
@@ -169,7 +197,10 @@ malformed lineage.
 For an uncursored compact-tail detail request over a large plain rollout, the
 reader can avoid parsing and retaining the hidden prefix. The optimization is
 eligible when the file is larger than 2 MiB times the requested compact-boundary
-count and a cached session summary matches the captured rollout activity time.
+count and a cached session summary describes a valid prefix of the rollout.
+An indexed summary may predate strict file growth; the reader refreshes
+tail-derived fields from the live window. See
+[indexed head fields](session-compact-tail-pagination.md#indexed-head-fields-for-a-session-still-being-written).
 It scans backward from the captured end of file in fixed 1 MiB blocks, carrying
 only the JSONL fragment that crosses each block boundary, until it finds the
 requested Nth `compacted` record.
@@ -183,6 +214,14 @@ visible row without replacing that row's durable message identity. The bounded
 suffix is not published as a complete-entry cache snapshot. The route also
 requires an omitted prefix to retain an older-history cursor; it fails rather
 than presenting the suffix as the start of the session.
+
+Incremental catch-up may retain that suffix in the existing append cache after
+verifying the durable cursor and tool dependencies within it. Cache identity
+includes the source start, so complete reads cannot mistake a suffix for full
+history. Compactions rotate the retained suffix; unchanged reads reuse
+normalization and ordinary appends parse only new bytes. Old or unknown cursors
+and results needing omitted tool context use the complete reader. See the
+[incremental contract and diagnostic comparison](session-compact-tail-pagination.md#incremental-catch-up).
 
 A source-backed `beforeMessageId` continues the same reverse scan from the
 cursor byte instead of the end of file. The reader finds the requested Nth
@@ -272,10 +311,10 @@ current shape has important scale and representation gaps:
   has an archived-session concept; YA's ordinary Codex session path currently
   centers on the configured active sessions directory.
 - Compression is a representation detail, but YA must not pay whole-transcript
-  decompression cost just to rediscover head metadata. Because YA still
-  declares Node `>=20.12`, `.jsonl.zst` rollouts are supported only when the
-  active Node runtime exposes native `node:zlib` zstd APIs; older runtimes skip
-  compressed rollouts cleanly.
+  decompression cost just to rediscover head metadata. `.jsonl.zst` rollouts are supported
+  when the active runtime exposes native `node:zlib` zstd APIs; unavailable
+  implementations skip compressed rollouts cleanly. Runtime eligibility alone
+  does not replace this capability check.
 - The session id visible in YA must remain explicit. Provider-native resume
   handles, filename ids, and `session_meta.id` mappings must not silently swap
   the user-facing YA session id without a documented provider contract.

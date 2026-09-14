@@ -2,6 +2,7 @@
 
 import { rmSync } from "node:fs";
 import { createServer } from "node:net";
+import { appendSimulatedTranscriptTurn } from "./simulated-transcript.mjs";
 
 const socketPath = process.env.YEP_PROVIDER_WORKER_SOCKET;
 const token = process.env.YEP_PROVIDER_WORKER_TOKEN;
@@ -41,6 +42,7 @@ let attachedSocket = null;
 let sequence = 0;
 let acknowledgedSequence = 0;
 let turn = 0;
+let parentUuid = null;
 let queueDepth = 0;
 let streaming = false;
 let initialized = false;
@@ -188,7 +190,7 @@ async function emitTurn(message) {
     event: { type: "content_block_stop", index: 1 },
   });
   sendEvent({ type: "stream_event", event: { type: "message_stop" } });
-  sendEvent({
+  const assistant = {
     type: "assistant",
     uuid: assistantId,
     session_id: sessionId,
@@ -203,7 +205,20 @@ async function emitTurn(message) {
         { type: "text", text: content },
       ],
     },
+  };
+  const transcriptDirectory = process.env.YEP_PERF_TRANSCRIPT_DIR;
+  if (!transcriptDirectory)
+    throw new Error("simulated transcript directory is missing");
+  await appendSimulatedTranscriptTurn({
+    directory: transcriptDirectory,
+    sessionId,
+    cwd: launchRequest.options.cwd,
+    userMessage: message,
+    assistant,
+    parentUuid,
   });
+  parentUuid = assistantId;
+  sendEvent(assistant);
   sendEvent({ type: "result", session_id: sessionId, subtype: "success" });
   streaming = false;
   queueDepth = 0;

@@ -7,7 +7,8 @@
 
 Topic: session-catalog-observation
 
-Status: Accepted architecture contract; implementation is handed off in
+Status: Retained Global Sessions and Inbox collections are implemented below.
+The broader observer and interest architecture is handed off in
 [`docs/tactical/093-provider-session-reconciliation.md`](../docs/tactical/093-provider-session-reconciliation.md).
 
 See also:
@@ -20,6 +21,68 @@ See also:
 - [`inbox.md`](inbox.md)
 - [`architecture-mandates.md`](architecture-mandates.md)
 - [`server-cache-publication.md`](server-cache-publication.md)
+
+## Retained Global Sessions and Inbox
+
+Servers advertising `retained-session-collections` accept `summaryMode=retained`
+on `/api/sessions` and `/api/inbox`. Both read one durable compact generation
+from YA app-data, without waiting for provider discovery, full summaries, or
+question previews. Global filters, pagination, and statistics and Inbox's
+time-dependent tiers are computed from these rows plus current metadata,
+ownership, recap, and notification overlays. Recaps may advance display order
+but do not make provider content unread. Counts describe the accepted catalog,
+so they may change when reconciliation discovers additional sessions.
+
+Each response includes `catalogEpoch`, `catalogGeneration`, `complete`, and
+`refreshing` inside `catalog`, plus `refreshError` after a failed refresh.
+`complete` means a complete enumeration has been accepted in this lineage;
+it does not mean every optional field is fresh. Generation 0 has no accepted
+enumeration. Its empty result cannot delete rows a client already holds.
+Saved rows remain visible while a replacement is built or a provider fails.
+An empty first-ever catalog keeps the existing loading state until refresh
+settles; a failed refresh exposes its error alongside any saved rows.
+
+`RetainedSessionCollections` owns one finite refresh shared by both routes and
+all callers. The first read loads durable state and queues reconciliation after
+300 ms. Eligible Claude/Codex/Gemini stores reuse exact retained or indexed
+facts, otherwise obtain bounded heads (Claude title prefixes stop at 256 KiB).
+Grok, pi, and OpenCode use their native catalog adapters. No list projection
+writes complete-summary cache freshness. Unknown titles, counts, models, full
+prompts, and other detail fields stay absent rather than becoming placeholders.
+
+The base generation publishes before the optional Codex question pass. That
+pass skips archived sessions and obeys the existing bounded preview contract.
+A subsequent generation adds observed questions; clients preserve existing
+detail when compact fields are omitted. File identity includes device, inode,
+size, modification time, and change time. An append or replacement during a
+read cannot certify the mixed result as a fresh projection.
+
+Known file changes update only those rows: they do not enumerate projects or
+list unrelated session files. New or unknown files and session identity changes
+request discovery. Notifications coalesce for 300 ms; events arriving during
+work survive into one trailing pass. The dirty-path set caps at 1,024 paths,
+then becomes a single discovery request. Unarchiving reconsiders deferred
+questions without rediscovery. No timer repeatedly scans an unchanged corpus.
+Failures keep the prior generation and impose a five-second admission backoff;
+a later request or event can retry. Shutdown cancels queued work and prevents
+further publication.
+
+`session-catalog-updated` carries catalog status and revalidates active client
+queries. A capable client joins the source's version request before its first
+collection request, uses retained response statistics rather than the complete
+`/api/sessions/stats` path, and obtains full-prompt search through the existing
+complete path. Catalog generations do not authorize `knownGeneration` shortcuts:
+metadata and read-state overlays have their own clocks. Old clients and servers
+retain the existing complete-request behavior and capability meanings.
+
+The native-file integration check demonstrates two initial head reads, then
+one head read and zero project/file-list discovery calls for one changed file.
+The real route check serves twenty mixed Global Sessions/Inbox requests from
+a saved generation while the single provider refresh is blocked. Failure and
+shutdown checks preserve accepted rows and reject post-disposal publication.
+These are work-count and lifecycle evidence, not browser latency measurements.
+Viewport prioritization, cross-tab persistence, conditional catalog deltas, and
+other collection consumers remain part of the broader architecture below.
 
 ## Continuous-observer model
 
@@ -304,7 +367,7 @@ Global concurrency and byte budgets prioritize live/visible work over cold
 repair and yield between main-thread units. A slow provider shard cannot make
 unrelated catalog reads wait behind one serialized request/transport queue.
 
-### What a cold restart actually costs, measured
+### What a cold restart costs on the complete-request path
 
 Each collection route has its own retention, so two routes reading the same
 cold store could plausibly parse every transcript twice. They do not:
@@ -321,6 +384,16 @@ That bounds the restart cost to one parse per transcript, not one per route
 per transcript — and names what is left. Removing that remaining parse is what
 the durable catalog is for, and it has no production caller, so a restart still
 costs the routes a first read of every project.
+
+## YA-owned provider cache storage
+
+Gemini's YA-owned hash-to-project map lives at
+`<YEP_DATA_DIR>/gemini-project-map.json`, outside the recursively watched native
+session tree. On first use, an existing `<GEMINI_SESSIONS_DIR>/project-map.json`
+is copied into that location; subsequent reads and atomic writes use only the
+new map. The legacy file is retained for older installs. Besides avoiding
+spurious provider events, this keeps short-lived atomic-write files away from
+Node 20's recursive watcher, which can throw while statting a renamed file.
 
 ## Client and browser reuse
 

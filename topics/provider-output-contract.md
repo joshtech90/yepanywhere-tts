@@ -102,7 +102,7 @@ mention here.
 ### Optional client schema diagnostics
 
 The browser's developer **Schema Validation** setting is default-off. When it
-is off, tool renderers do not run their result schemas and the client shows no
+is off, tool renderers do not run their advisory provider-result schemas and the client shows no
 schema-diagnostic chrome. It is a provider-contract diagnostic, not a stream
 health check or a response-delivery mechanism.
 
@@ -118,6 +118,18 @@ runs the same schema so deferral does not leave a summary gap; the renderer
 still owns its inline warning once hydrated. Results that have never entered
 the mounted transcript have not been parsed and therefore cannot appear in the
 summary.
+
+Bounded client display checks run independently of this setting. They grant
+access only to checked callback data and never reject retained server records.
+The 14 diagnostic entries and the deliberately omitted display tools are
+accounted for in the registry inventory test; a provider diagnostic cannot
+substitute for a display contract. Malformed rows still contribute diagnostic
+issues even when rich content cannot mount.
+
+Gemini durable tool results retain their text and failure flag in the result
+block. The routing envelope (`tool_use_id`, `content`) is not a structured tool
+result. New clients also accept that older-server envelope as checked text, so
+the normalization correction does not introduce a server capability dependency.
 
 ## The normalized message envelope
 
@@ -168,6 +180,154 @@ Persisted normalization reads the canonical `item_completed` record whose
 Ordinary completed agent items and legacy `agent_message` events remain
 suppressed because they duplicate full response items.
 
+#### Answering and discovering questions
+
+The web client renders structured async questions as answerable transcript
+content by default. It never guesses controls from arbitrary Markdown lists.
+Servers without the two optional fields retain ordinary readable text; the
+client uses existing message submission and steering routes and introduces no
+endpoint or capability requirement. This optional-field compatibility plan and
+the default-on behavior were explicitly approved by the maintainer on
+2026-09-07. Blocking questions and approvals keep their separate lifecycle.
+
+Each supplied option is a clickable, wrapping bullet row with a filled,
+bordered button treatment and hover feedback matching the blocking interview
+panel. Async options send immediately; they are not multi-select checkboxes.
+A deliberate click
+sends that exact option; no suggested selection submits itself. Selecting a
+question from its menu reveals the original transcript context, highlights
+the question, opens a separate inline free-form composer, and focuses it once.
+Focus remains free to leave. Stream updates and transcript virtualization
+preserve the inline draft and the main composer's independent draft.
+
+In the inline reply composer, Enter sends the reply and Shift+Enter inserts a
+newline. Enter during text composition does not send. Empty replies, repeated
+held-Enter events, and submission while a reply is already sending do not send
+another reply.
+
+Choice and inline free-form replies send the complete question as a Markdown
+blockquote followed by the exact answer, using steering during an active turn
+and ordinary input after it ends. Source message id plus question index identify
+the local question; neither a `Q:` prefix nor a random subsequent user turn
+establishes answer identity. Successful submission shows **Reply sent**, which
+does not assert provider consumption. Failure retains the draft and pending
+state. **Quote reply in main composer** is a secondary action: reveal the
+question, insert its full quote through the existing composer insertion/undo
+path, preserve existing text, and focus the main composer. Moving the reply to
+the main composer immediately marks the question answered locally and clears
+its reminders, including cross-session counts. The transcript says the reply
+was moved to the main composer; it does not claim delivery to the provider.
+Return uses a back-arrow icon and Quote uses a circled right chevron, with
+accessible action labels and tooltips.
+
+Before visiting a question, save the reading anchor, offset, and Follow intent.
+Navigating among questions retains that first return destination. Successful
+inline submission, or **Return to previous position**, restores the saved
+anchor with Follow off, or the current live bottom with Follow restored, then
+focuses the main composer without browser-induced scrolling. Failure does not
+perform this transition. New navigation, focus movement, or pointer/wheel
+interaction while submission is pending takes precedence over stale return
+state. A render row without connected, measurable geometry is not a completed
+navigation target; reveal it through the transcript's normal bounded path.
+Initial progressive transcript loading must finish revealing the rows before
+the question jump consumes its scroll and focus request.
+
+The persistent composer toolbar, including its collapsed form, offers a muted
+amber outlined speech-bubble/question-mark button. With room it reads
+**3 questions · 1 turn ago**, using the youngest counted question's age.
+Actual toolbar space removes the age first and then the noun, retaining the
+icon and count with a full accessible label. There is no pulse or focus theft.
+The wider, viewport-capped menu opens upward and may cover the composer.
+Oldest questions appear at the top, newest at the bottom. Each ellipsized,
+single-line preview has an outlined background, a bare muted turn-age numeral
+outside its left edge, a right-side **×**, and a separator between rows.
+Opening focuses the newest row; arrow keys navigate and Escape closes.
+
+**×** silently dismisses a reminder without navigating, deleting transcript
+content, or asserting an answer. Right-click or long-press opens a one-action
+dismiss menu; holding alone deletes nothing. **Show dismissed** permits
+recovery. Opening or closing the menu resolves nothing. An unseen dot clears
+only after at least 60% of the actual question title is visible in an active
+tab. Seen and sent are independent states.
+
+#### Reminder duration and local state
+
+One searchable **Question reminders** slider lives in **Toolbar** settings.
+It ranges from 0 through 12 and defaults to 3. Zero hides both dedicated and
+overflow reminder controls; transcript answering remains available. There is
+no separate feature-enable setting. For a positive value `n`:
+
+- The count and amber emphasis disappear per question after `n` subsequent
+  user turns or `round(n × 160 / 3)` main-composer text changes.
+- The quiet **Questions** button moves to ordinary toolbar overflow after
+  `ceil(n × 8 / 3)` turns or `n × 200` text changes. At the default these two
+  stages are 3 turns / 160 edits and 8 turns / 600 edits.
+- A text change counts once; unchanged notifications and clearing to empty
+  do not count. Inline answer typing does not age reminders. Whichever turn
+  or edit threshold arrives first governs each stage.
+- A focused button or open menu is not retired underneath the interaction.
+  New questions restore visibility without reviving old aged/dismissed counts.
+
+The transcript menu covers loaded history only, without background history
+fetches. Aging affects reminders, never answer state or transcript content.
+Per-question drafts, seen/sent/dismissed state, and edit ages are browser-local,
+keyed by source, session, message id, and question index. Reloads retain them;
+storage events synchronize tabs on the same browser origin. Other devices are
+independent. When browser storage is unavailable, the current visit still
+works in memory. Receiving the live and durable copy of one question must not
+create duplicate controls or duplicate replies.
+
+#### Discovery from Inbox and session navigation
+
+With `session-async-questions`, Inbox rows and sidebar session rows show the
+same local unanswered count as the transcript reminder. Inbox's toolbar and
+sidebar navigation entry also expose aggregate counts. These controls are
+default-on and share the existing reminder slider; zero hides them. Ordinary
+unread-session counts remain separate. Unknown question inventories never
+masquerade as a known zero.
+
+Session-row question counts sit outside the title area's hover-menu overlay.
+The menu and count retain separate, non-overlapping click targets on desktop
+and touch layouts, including compact sidebar rows. A compact row's trailing
+project name and status letter share that protection: the overlay may cover
+title text only, and they remain visible and clickable while it is shown.
+
+Click or right-click a count to open previews directly. Aggregate menus group
+questions by session, with the most recently updated session last; questions
+within each group remain oldest-first. Compact counts retain an icon and
+accessible description. Where space is tightest — a sidebar session row, the
+sidebar Inbox entry, a crowded composer — the control is the icon plus any
+current count and never spells out its name, so it cannot crowd out the title
+beside it. Menus may be wider than the button and choose the
+available space above or below it. Dismissal and successful inline submission
+update all mounted surfaces in the same tab, including sessions whose
+transcripts have never been opened. Draft typing does not redraw every count.
+
+The additive `asyncQuestions` list/Inbox/activity projection carries source
+message id, question index, preview title, subsequent-user-turn age, and an
+`omitted` flag. The current Codex reader scans at most the final 2 MiB of an
+uncompressed rollout, retains at most 128 questions younger than 32 user turns,
+and clips preview titles to 320 characters. Canonical completed async items
+define identity; duplicate items do not create duplicate previews. Compressed
+rollouts or an observation invalidated by a concurrent file change leave the
+field absent. An `omitted` inventory tells the menu that earlier questions may
+be missing and directs the user to the transcript. This bounded recent window
+is not a complete historical question count.
+
+Selecting a preview opens the source session with the existing 32-turn tail
+request and resolves the exact question in that transcript. Replies always use
+the full source title, never its clipped preview. Cross-session submission or
+Return resumes Follow at the live bottom and focuses the main composer;
+ordinary in-transcript visits retain their saved-position behavior. A missing
+source question is not replaced by guessed text or an unrelated question.
+
+This optional contract uses permanent capability ID 60, version-implied from
+0.8.2 and explicitly advertised by source builds before that release. The
+maintainer approved the plan on 2026-09-07 against v0.8.0 and v0.8.1, both of
+which lack this projection. Without the capability, omit collection counts and
+menus, retain existing transcript controls when structured fields are present,
+and issue no new request. No reply route or older capability meaning changes.
+
 ### Standalone tool output
 
 A provider output that has no call id is visible context, but it is not a
@@ -185,6 +345,12 @@ the structured value. For Codex function outputs whose structured value is a
 nonempty array of only `input_text` items, readable content is the concatenated
 text. Mixed, image, audio, resource, and encrypted arrays retain their
 structured JSON envelope (with the ordinary inline-media sanitization rules).
+
+Codex OSS command-execution messages forward the shared normalizer's
+`_displayActions`, matching rollout-derived file actions. Shell-recognized Read
+calls keep the same file affordances before and after reload. Native OSS parity
+uses the durable `exec_command_end` record for result text and exit code;
+function-output wrappers alone are not the authoritative execution record.
 
 ## Command execution metadata (exit code, runtime)
 
@@ -209,7 +375,7 @@ combined output and `exitCode`. Without `is_error: true`, identical text
 remains command output.
 
 Display rules (client, `getCommandResultMeta`/`formatCommandDuration` in
-`packages/client/src/lib/shellToolOutput.ts`):
+`packages/shared/src/transcript/shellToolOutput.ts`):
 
 - **Exit code 0 is never shown** — success is the default; a visible exit
   code always means failure. Every nonzero command result shows `rc=N` in the

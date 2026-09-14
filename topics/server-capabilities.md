@@ -10,6 +10,17 @@ Topic: server-capabilities
 
 ## Source Of Truth
 
+`session-async-questions` (permanent ID 60, version-implied from 0.8.2)
+owns the optional bounded `asyncQuestions` projection on session lists, Inbox,
+and session-updated events. The approved optional-feature corpus is v0.8.0
+(2026-08-31) and v0.8.1 (2026-09-05), the latest two stable releases and all
+stable releases in the preceding 14 days on 2026-09-07. Both lack this field.
+Without the capability, hide collection counts and menus while retaining
+existing transcript answering when its structured fields are present. Add no
+unsupported request, reply route, or new meaning to an older capability.
+See [question discovery](provider-output-contract.md#discovery-from-inbox-and-session-navigation)
+for preview bounds, omission semantics, and local reminder state.
+
 The permanent global ID ledger lives in
 `packages/shared/src/capability-ids.ts`. The server registry in
 `packages/shared/src/server-capabilities.ts` adds lifecycle, advertisement,
@@ -58,6 +69,11 @@ still useful in source, diagnostics, and the legacy `capabilities: string[]`
 fallback. The earlier `compact-v1` query, `optionalCapabilityBits`, and
 `capabilityExtensions` remain readable for compatibility with intermediate
 source builds, but new clients do not negotiate that representation.
+
+An untagged source checkout may report a bare commit hash instead of semver.
+Its advertisements must still include implemented version-implied contracts,
+including `subagent-max-depth-setting`, in every supported encoding. The
+provider-depth control must remain usable without fetching release tags.
 
 `git-file-diff-projections` owns the exact file-viewer manifest and per-file
 diff routes. Releases `0.6.2` and `0.7.0` have neither route. A client without
@@ -484,9 +500,36 @@ the same ledger:
 | 56 | server | 0.8.2 | `project-file-completion` |
 | 57 | server | 0.8.2 | `session-conversation-context` |
 | 58 | server | 0.8.2 | `turn-effort-modifiers` |
+| 59 | server | 0.8.2 | `artifact-viewer` |
+| 60 | server | 0.8.2 | `session-async-questions` |
+| 61 | server | 0.8.2 | `project-queue-readiness-check` |
+| 62 | server | 0.8.2 | `acli-commentary-rendering` |
+| 63 | server | 0.8.2 | `retained-session-collections` |
+| 64 | server | 0.8.2 | `local-speech-model-selection` |
+| 65 | server | 0.8.2 | `speech-vocabulary` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 59; retired rows stay in the ledger as reserved IDs.
+ID 66; retired rows stay in the ledger as reserved IDs.
+
+`speech-vocabulary` (ID 65, optional bit from 0.8.2) owns GET/PUT
+`/api/speech/vocabulary` and POST `.../scan` and `.../reset`. It is advertised
+only when SQLite is ready. The maintainer approved the v0.8.0/v0.8.1 optional
+corpus on 2026-09-08: both lack these endpoints. Without the capability,
+clients hide the vocabulary controls and issue no vocabulary requests. Existing
+speech and capability meanings remain unchanged. See
+[learned speech vocabulary](pluggable-speech-recognition.md#learned-vocabulary-contract).
+
+`local-speech-model-selection` gates per-request Whisper model overrides and
+recent Parakeet presets, including unified English on the isolated NeMo
+runtime. The maintainer approved this plan on 2026-09-08 against the optional
+support corpus v0.8.0 and v0.8.1: both accept `model` on batch requests but
+ignore it for Whisper, and both use NeMo 2.0. Without the capability, hide
+Whisper selectors and recent Parakeet presets, send no Whisper model override,
+and resolve unset or unsupported new Parakeet presets to the existing v3
+request without rewriting stored preferences. Existing custom Parakeet IDs
+and older capable behavior remain unchanged. No new endpoint is required;
+the existing transcription and prewarm routes carry the model. The permanent
+capability is version-implied from 0.8.2 with source-ahead ID advertisement.
 
 `session-conversation-context` gates the general sequence-of-user/assistant-text
 delivery route; it does not gate question-card fork orchestration. The
@@ -522,26 +565,54 @@ class entirely.
 
 ## Minimum Compatibility Horizons
 
-Capability fallbacks are user-facing support contracts, not rollout
-conveniences. Before a current client depends on a server contract absent from
-a stable release, classify the feature and inspect:
+Hosted clients can update before installed servers. Capability fallbacks are
+user-facing support contracts, not rollout conveniences.
 
-- for an ordinary optional feature, the latest two stable releases and every
-  stable release from the preceding 14 days;
-- for core functionality, the latest two stable releases and every stable
-  release from the preceding 60 days.
+Before making the client depend on a server route, response field, event, or
+changed semantic that is absent from a supported stable release, read
+this topic and [remote hosted compatibility](remote-hosted-compatibility.md).
+Identify whether the feature is core or optional and inspect every stable
+server release in the applicable minimum horizon:
 
-These are minimum horizons. Reaching the end of one only makes a fallback
-eligible for maintainer review; it does not remove the fallback, expand an
-existing capability, or raise a compatibility floor automatically. Preserve a
-cheap fallback longer when practical.
+- optional features: the latest two stable releases and every stable release
+  from the preceding 14 days;
+- core functionality: the latest two stable releases and every stable release
+  from the preceding 60 days.
 
-Before implementation, record the release corpus, new routes/fields/events,
-capability or protocol decision, exact absent-capability behavior, and proof
-that the fallback makes no unsupported request. A maintainer must approve that
-plan. Any proposal to reuse or broaden an already-advertised capability needs
-particular scrutiny: an older server has already claimed the old meaning and
-cannot acquire new routes retroactively.
+Then present a compatibility plan before editing the client/server contract:
+name the releases, new routes/fields/events, proposed capability or protocol
+gate, exact behavior when it is absent, proof that the fallback makes no
+unsupported request, and whether any existing capability meaning or older
+capable fallback changes. Pause for maintainer approval. An
+originating request that already states and approves those decisions satisfies
+the pause; do not ask twice.
+
+Use an available structured async or blocking question form for this approval.
+Use plain text only when neither question form is available.
+
+Never expand an already-advertised capability to cover a contract older servers
+do not provide. A new client must not call a new endpoint until its gate is
+known present. Passing a support horizon permits human review only; it never
+automatically removes a fallback or raises a compatibility floor. Security
+exceptions follow [hard development rules](hard-development-rules.md).
+
+Preserve a cheap fallback longer when practical.
+
+Default a new global capability to `version-implied` when every official build
+from its introducing release onward provides the contract. Use an explicit
+sparse capability bit only when support is clearly experimental or
+withdrawable, or can vary by build, host, or configuration. A version-implied
+capability still receives a permanent ID for registry identity and source-ahead
+advertisement, but released peers normally infer it from the version and do not
+send a positive ID. An exceptional withdrawal uses the standard negative
+capability set; do not classify anticipated variability as version-implied.
+
+Suggested approval prompt:
+
+> Compatibility review for `<feature>`: releases `<corpus>` lack
+> `<routes/fields/events>`. I propose `<capability/protocol>`; without it the
+> client `<fallback>` and makes no unsupported requests. Existing capability
+> meanings and older capable behavior remain unchanged. Approve?
 
 ### Planned storage policy gates
 
@@ -618,6 +689,33 @@ an explicit user refresh always asks for rows, since that is a fidelity request
 rather than a freshness one. Bounded deltas, and the cross-tab/IndexedDB
 persistence in the same plan step, are not built.
 
+### Retained collection gate
+
+Approved 2026-09-08. `retained-session-collections` is permanent ID 63,
+version-implied from 0.8.2. The reviewed core-functionality corpus is v0.6.1,
+v0.6.2, v0.7.0, v0.8.0, and v0.8.1. None provides `summaryMode=retained`
+on `/api/sessions` or `/api/inbox`, their `catalog` status object, or the
+`session-catalog-updated` event. Source builds advertise the new bit explicitly
+until the introducing release implies it.
+
+Capable clients request saved rows immediately and accept later badge/detail
+enrichment. `catalog` contains `catalogEpoch`, `catalogGeneration`, `complete`,
+`refreshing`, and optional `refreshError`. The update event carries that object
+and a timestamp. An incomplete empty generation cannot replace existing client
+membership, and omitted detail fields cannot clear known complete facts.
+Catalog status describes retained source observations, not a new full-summary
+freshness claim.
+
+Before its first request a client joins the source's version acquisition.
+Without this capability, it sends no retained-mode parameter and keeps the
+complete-request path, including any independently supported conditional-read
+behavior. Old clients on new servers also keep that path. Full-prompt search
+continues using complete requests. `progressive-session-catalog` still means
+only the existing global collection revision/`knownGeneration` contract;
+neither its meaning nor that of `session-async-questions` changes.
+The execution and lifecycle contract is in
+[Session Catalog Observation](session-catalog-observation.md#retained-global-sessions-and-inbox).
+
 Tool-result preservation is independently gated by the proposed permanent
 `tool-result-media-preservation-policy` capability. It owns `GET
 /api/settings`, `PUT /api/settings`, and
@@ -636,6 +734,13 @@ unchanged. The complete UI and timing contract is in
 [Storage Settings](storage-settings.md).
 
 ## Server Use
+
+Optional discovery storage reports `sqlite?: { state }` on `/api/version`;
+absence means the server does not report storage status. This diagnostic does
+not allocate a capability or imply session search. Future discovery endpoints
+need their own runtime-dependent optional gate. See
+[optional SQLite](optional-sqlite.md) for startup policy and the approved
+v0.8.0/v0.8.1 compatibility corpus.
 
 `packages/server/src/routes/version.ts` advertises capability names from the
 shared registry. Static capabilities can be included directly. Dynamic
@@ -713,3 +818,35 @@ advertisement.
 The audit complements, rather than replaces, released-server behavior
 fixtures. A capability may be registered perfectly while the client still
 mounts its consumers before checking it.
+
+## Optional Windows Computer Control
+
+Managed downloads add permanent optional ID 71, `computer-control-releases`,
+under the end-to-end install/update request approved on 2026-09-12. Stable
+v0.8.0/v0.8.1 lack its four `/api/computer-control/releases/*` routes and
+`release` status. Without ID 71 the client sends no release-management request
+and shows server-update guidance while retaining ID 70 local-install controls.
+The isolated browser regression exercises both old-server fallbacks. ID 70
+and all existing capabilities retain their meanings.
+
+The 2026-09-12 optional compatibility review covers stable v0.8.0 and v0.8.1;
+neither has the new contract. Permanent optional ID 70,
+`optional-computer-control`, covers the authenticated operator routes and
+explicit session-start selection. Advertisement means the server can report
+availability; Windows/Node/local-Codex eligibility and default-off enablement
+remain separate checks. Absent support sends no computer-control requests or
+launch fields. See [Computer Control](optional-computer-control.md) for the
+exact routes and authority contract. No older capability changes meaning.
+
+## Experimental issue/session associations
+
+The approved 2026-09-10 optional review used v0.8.0 and v0.8.1 (latest two stable
+releases and all releases in the preceding 14 days). Optional sparse capability
+`issue-session-associations-v1`, permanent ID 68, covers automatic discovery,
+settings/scope, issue/reference search, evidence and corrections. It requires
+ready SQLite and the indexing owner, independently of the default-off opt-in.
+Absent support hides settings/sidebar/session controls and sends no issue requests.
+Existing capabilities and protocol levels keep their meanings. The unpublished v1
+contract may evolve before release; released changes need the usual review. See
+[issue/session associations](issue-session-associations.md#compatibility-and-migrations)
+for exact routes, fields and source-switch behavior.

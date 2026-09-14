@@ -32,6 +32,12 @@ returns 409. The request ID is 1–128 word/hyphen characters, the sequence has
 1–64 turns, and combined text is at most 262144 UTF-16 code units. Invalid JSON
 or shape returns 400. The route uses the ordinary authenticated API boundary.
 
+Native insertion waits for confirmed provider initialization, including after
+cold reactivation. A retained session ID alone is insufficient. Startup
+failure or the bounded readiness timeout returns a provider error without
+attempting insertion; uncertain insertion failures retain the existing receipt
+policy below.
+
 The owner invokes optional `AgentSession.appendConversationContext(turns)`:
 
 - `true` returns `{ delivery: "native-history" }`. Role and text are preserved.

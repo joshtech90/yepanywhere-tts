@@ -454,6 +454,44 @@ export class SessionCatalogService {
     return this.snapshotFrom(this.requireManifest());
   }
 
+  /** Read one coherent compact generation without consulting provider storage. */
+  async readRows(): Promise<{
+    snapshot: SessionCatalogSnapshot;
+    rows: ReadonlyArray<Readonly<SessionCatalogRow>>;
+  }> {
+    for (let attempt = 0; attempt < MAX_PROJECT_READ_RETARGETS; attempt += 1) {
+      this.ensureRunning();
+      const manifest = this.requireManifest();
+      const result = await this.projectRowsOwner.run({
+        key: `${manifest.catalogEpoch}:all`,
+        sourceVersion: String(manifest.catalogGeneration),
+        compute: async () => {
+          const rows: SessionCatalogRow[] = [];
+          if (manifest.generationDirectory) {
+            for (const shard of manifest.shards) {
+              const path = this.shardPath(
+                manifest.generationDirectory,
+                shard.file,
+              );
+              for await (const { row } of readShardRows(path)) rows.push(row);
+            }
+          }
+          return { rows: Object.freeze(rows), bytes: manifest.rowsBytes };
+        },
+        isCurrent: () => this.manifest === manifest && !this.stopped,
+      });
+      if (result.status !== "stale") {
+        return {
+          snapshot: this.snapshotFrom(manifest),
+          rows: result.value.rows,
+        };
+      }
+    }
+    throw new Error(
+      "Session catalog generation kept moving during collection read",
+    );
+  }
+
   getConditional(token: SessionCatalogToken): SessionCatalogConditionalResult {
     const manifest = this.requireManifest();
     const current = this.tokenFrom(manifest);
@@ -703,7 +741,7 @@ export class SessionCatalogService {
           storeKey: adapter.storeKey,
           sourceVersion: scan.sourceVersion,
           rowCount: adapterRows,
-          metrics: { ...(scan.metrics ?? {}) },
+          metrics: { ...scan.metrics },
         });
       }
       await writer.close();
@@ -1077,6 +1115,11 @@ function cloneRow(row: SessionCatalogRow): SessionCatalogRow {
     updatedAt: row.updatedAt,
     ...(row.createdAt !== undefined ? { createdAt: row.createdAt } : {}),
     ...(row.title !== undefined ? { title: row.title } : {}),
+    ...(row.provider !== undefined ? { provider: row.provider } : {}),
+    ...(row.projectName !== undefined ? { projectName: row.projectName } : {}),
+    ...(row.asyncQuestions !== undefined
+      ? { asyncQuestions: structuredClone(row.asyncQuestions) }
+      : {}),
     fidelity: row.fidelity,
     sourceVersion: row.sourceVersion,
     location: { ...row.location },

@@ -170,6 +170,7 @@ const REMAP_MERGE_GROUPS = {
     "model",
     "initialPrompt",
     "lastAgentText",
+    "asyncQuestions",
     "providerChildren",
   ],
   metadataObservedAt: [
@@ -1034,6 +1035,7 @@ function upsertInboxItemRecord(
     record,
     {
       title: item.sessionTitle,
+      asyncQuestions: item.asyncQuestions,
       updatedAt: item.updatedAt,
     },
     observation,
@@ -1113,7 +1115,9 @@ function putInboxSnapshot(
     ...next,
     inbox: {
       ...next.inbox,
-      tiers: stableTiers,
+      tiers:
+        snapshot.catalog?.complete === false ? next.inbox.tiers : stableTiers,
+      catalog: snapshot.catalog,
       requestStartedAt,
       fetchedAt: Date.now(),
     },
@@ -1163,6 +1167,7 @@ function withContentFields(
     model?: string;
     initialPrompt?: string;
     lastAgentText?: string;
+    asyncQuestions?: GlobalSessionItem["asyncQuestions"];
     providerChildren?: ProviderChildSessionSummary[];
   },
   observation: SessionCollectionObservation,
@@ -1215,6 +1220,13 @@ function withContentFields(
       isFresh,
     )
       ? { providerChildren: fields.providerChildren }
+      : {}),
+    ...(canApplyObservedField(
+      record.asyncQuestions,
+      fields.asyncQuestions,
+      isFresh,
+    )
+      ? { asyncQuestions: fields.asyncQuestions }
       : {}),
     ...(isFresh ? { contentObservedAt: observation.observedAt } : {}),
     observedAt: Math.max(record.observedAt, observation.observedAt),
@@ -1459,6 +1471,7 @@ function upsertSnapshotRecord(
       model: row.model,
       initialPrompt: row.initialPrompt,
       lastAgentText: row.lastAgentText,
+      asyncQuestions: row.asyncQuestions,
       providerChildren: row.providerChildren,
     },
     observation,
@@ -1528,7 +1541,10 @@ function upsertQuery(
     snapshot.sessions.map((session) => session.id),
   );
   let ids = incomingIds;
-  if (snapshot.mode === "append" && existing) {
+  if (
+    (snapshot.mode === "append" || snapshot.catalog?.complete === false) &&
+    existing
+  ) {
     ids = [
       ...existing.ids,
       ...incomingIds.filter((id) => !existing.ids.includes(id)),
@@ -1553,6 +1569,7 @@ function upsertQuery(
   queries.set(key, {
     key,
     descriptor: snapshot.query,
+    catalog: snapshot.catalog,
     ids,
     hasMore: snapshot.hasMore,
     requestStartedAt,
@@ -1662,7 +1679,7 @@ export function applyGlobalSessionsCollectionSnapshot(
 ): ClientSummaryState {
   const observation = createSessionCollectionObservation(
     requestStartedAt,
-    "full-snapshot",
+    snapshot.catalog ? "partial-snapshot" : "full-snapshot",
     "global-sessions",
   );
   let next = state;
@@ -1996,6 +2013,7 @@ export function applySessionCollectionCreated(
       model: session.model,
       initialPrompt: session.initialPrompt,
       lastAgentText: session.lastAgentText,
+      asyncQuestions: session.asyncQuestions,
       providerChildren: session.providerChildren,
     },
     observation,
@@ -2060,6 +2078,7 @@ export function applySessionCollectionUpdated(
       messageCount: event.messageCount,
       model: event.model,
       lastAgentText: event.lastAgentText,
+      asyncQuestions: event.asyncQuestions,
     },
     observation,
   );
@@ -2161,7 +2180,7 @@ export function applySessionCollectionSeen(
   );
   const record = withUnreadField(
     getRecord(state, event.sessionId),
-    false,
+    event.timestamp === "",
     observation,
   );
   return putRecord(state, record);

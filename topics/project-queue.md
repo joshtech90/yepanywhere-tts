@@ -132,6 +132,61 @@ time required for lower-level queues to actually drain plus the configured
 Project Queue quiet window; Project Queue must not rely on the patient-queue
 safety margin as its only protection against launching too early.
 
+## External readiness check
+
+Settings → Message Delivery → Project Queue can configure one optional
+server-wide readiness executable. It is unset by default. Saving or disabling
+it takes effect on the server immediately and applies to every project's
+queue, regardless of which browser configured it. The server stores
+`projectQueueReadinessCheck` as `{ executable, args }` or `null` (disabled),
+alongside the other server settings. Arguments are passed literally, without
+a shell; the executable runs in the selected project's directory. Use a
+native executable or executable script supported by the server OS; Windows
+shell scripts such as `.bat` are not implicitly run through a shell.
+
+Exit 0 permits promotion, subject to the normal project-idle predicate and
+quiet window. Every nonzero exit holds the item; the first nonempty stdout
+line, or stderr line when stdout has none, supplies the waiting caption.
+Captions have terminal decoration removed and are limited to 512 characters.
+Launch failures, signals, excessive output, and timeouts hold the item with
+a server-generated explanation. No output is interpreted as instructions.
+
+Automatic checking uses the existing blocked retry cadence, with a minimum
+of ten seconds between attempts per project. Activity events and settings
+changes cannot create a faster automatic poll. Queue/status reads never run
+the executable. Once a blocked check clears, the quiet window starts again;
+promotion rechecks readiness after that window, respecting the same polling
+minimum. A zero quiet window permits promotion on the first clear result.
+Readiness changes publish through the existing Project Queue event stream
+(`reason: readiness`), sharing the client's existing revalidation owner.
+
+Start now skips the quiet window and runs a fresh readiness check. Force start
+bypasses the readiness check as well as ordinary idle blockers; the existing
+in-flight dispatch guard still applies. Checks are advisory: YA acquires no
+external claim and cannot eliminate the race between a clear verdict and
+starting a session. A launched session remains responsible for its own claim.
+For example, an independently installed `agentctl` can be configured with
+arguments `others` and `--text`; YA does not depend on or vendor that tool.
+
+The server bounds checks to four concurrent subprocesses and 8 KiB combined
+output per check, with a five-second deadline. Pausing dispatch, emptying the
+queue, changing the command, or disposing the scheduler cancels active checks.
+POSIX checks run in a process group for descendant cleanup. Windows uses a
+bounded `taskkill /T /F` helper, then direct-child cleanup if unavailable.
+Commands must not detach independent background jobs; Windows tree cleanup
+cannot recover descendants that have already outlived their parent. There is
+no recurring check for an empty or paused queue. Server control-plane
+credentials are removed from the child environment.
+
+Compatibility approved 2026-09-07: optional capability
+`project-queue-readiness-check` covers the setting on existing settings GET/PUT
+routes. Stable v0.8.0 and v0.8.1 lack it. Clients hide the control and omit the
+field when the capability is absent; existing capability meanings and queue
+routes stay unchanged. The capability is version-implied from v0.8.2.
+
+Per-project replacement/None choices and a future blocking-until-clear check
+are deferred in [the readiness override gap](../gaps/project-queue-readiness-overrides.md).
+
 ## Project Idle Predicate
 
 A project is not idle while any owned session in that project has:

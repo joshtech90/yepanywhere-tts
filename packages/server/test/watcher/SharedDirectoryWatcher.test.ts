@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { sep } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { SharedDirectoryWatcher } from "../../src/watcher/SharedDirectoryWatcher.js";
 
@@ -94,6 +95,30 @@ it("fans native failures out to all leases and permits a fresh shared watch", ()
   second.close();
   expect(watches[1]?.close).not.toHaveBeenCalled();
   next.close();
+});
+
+it("filters nested paths using the host's filename semantics", () => {
+  const watcher = new NativeWatch();
+  native.watch.mockImplementation((_path, _options, listener) => {
+    watcher.on("change", listener);
+    return watcher;
+  });
+  const changed = vi.fn();
+  const lease = new SharedDirectoryWatcher().watch("/project", {}, changed);
+  try {
+    watcher.emit("change", "rename", `nested${sep}file.txt`);
+    expect(changed).not.toHaveBeenCalled();
+    watcher.emit("change", "rename", "a\\b.txt");
+    if (sep === "/") {
+      expect(changed).toHaveBeenCalledWith("rename", "a\\b.txt");
+    } else {
+      expect(changed).not.toHaveBeenCalled();
+    }
+    watcher.emit("change", "rename", "ordinary.txt");
+    expect(changed).toHaveBeenLastCalledWith("rename", "ordinary.txt");
+  } finally {
+    lease.close();
+  }
 });
 
 it("replaces an old directory inode before sharing a newly acquired lease", () => {

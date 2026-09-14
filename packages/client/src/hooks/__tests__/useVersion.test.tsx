@@ -7,7 +7,11 @@ import {
   resetClientSummaryStoreForTests,
   setCurrentClientSummarySourceKey,
 } from "../../lib/clientSummaryStore";
-import { resetVersionSnapshotsForTests, useVersion } from "../useVersion";
+import {
+  ensureVersionInfo,
+  resetVersionSnapshotsForTests,
+  useVersion,
+} from "../useVersion";
 
 const mocks = vi.hoisted(() => {
   const handlers = new Map<string, Set<() => void>>();
@@ -110,8 +114,26 @@ afterEach(() => {
 });
 
 describe("useVersion", () => {
+  it("shares cold capability acquisition with navigation and later version consumers", async () => {
+    let results: unknown[] = [];
+    await act(async () => {
+      results = await Promise.all(
+        Array.from({ length: 20 }, () => ensureVersionInfo(SOURCE_A)),
+      );
+    });
+    expect(mocks.getVersion).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(20);
+    renderHook(() => useVersion());
+    await settle();
+    expect(mocks.getVersion).toHaveBeenCalledTimes(1);
+  });
   it("shares one request across simultaneously mounted consumers", async () => {
-    mocks.getVersion.mockResolvedValue(versionInfo({ current: "9.9.9" }));
+    mocks.getVersion.mockResolvedValue(
+      versionInfo({
+        current: "9.9.9",
+        serverRuntime: { kind: "bun", version: "1.3.14" },
+      }),
+    );
 
     const first = renderHook(() => useVersion());
     const second = renderHook(() => useVersion());
@@ -121,6 +143,10 @@ describe("useVersion", () => {
     expect(mocks.getVersion).toHaveBeenCalledTimes(1);
     for (const hook of [first, second, third]) {
       expect(hook.result.current.version?.current).toBe("9.9.9");
+      expect(hook.result.current.version?.serverRuntime).toEqual({
+        kind: "bun",
+        version: "1.3.14",
+      });
       expect(hook.result.current.loading).toBe(false);
     }
   });

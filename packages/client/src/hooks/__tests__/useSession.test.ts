@@ -13,6 +13,7 @@ import type {
 } from "../../lib/activityBus";
 import { sessionModelPick } from "../../lib/sessionPickStorage";
 import type { SessionStatus } from "../../types";
+import { PENDING_SEND_RECONCILE_MS } from "../../lib/deliveryState";
 import { __resetAwayRecapTimersForTest, useSession } from "../useSession";
 import type { SessionLoadResult } from "../useSessionMessages";
 import type { SessionWatchChangeEvent } from "../useSessionWatchStream";
@@ -1608,6 +1609,86 @@ describe("useSession completion reconciliation", () => {
         content: "repeatable question",
       },
     ]);
+  });
+
+  const sessionFileChange: FileChangeEvent = {
+    type: "file-change",
+    provider: "codex",
+    path: "/tmp/sess-1.jsonl",
+    relativePath: "sess-1.jsonl",
+    changeType: "modify",
+    timestamp: "2026-05-23T04:36:40.000Z",
+    mtimeMs: 1,
+    size: 10,
+    fileType: "session",
+  };
+
+  it("skips owned-session file-change fetches when no send is pending", () => {
+    renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+    fetchNewMessages.mockClear();
+
+    act(() => {
+      fileActivityOptions?.onFileChange?.(sessionFileChange);
+    });
+
+    expect(fetchNewMessages).not.toHaveBeenCalled();
+  });
+
+  it("fetches owned-session history while a Sending chip has no live echo", () => {
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      result.current.addPendingMessage(
+        "you misinterpreted a difference in labeling",
+        undefined,
+        "2026-05-23T04:36:39.900Z",
+      );
+    });
+    fetchNewMessages.mockClear();
+
+    act(() => {
+      fileActivityOptions?.onFileChange?.(sessionFileChange);
+    });
+
+    expect(fetchNewMessages).toHaveBeenCalled();
+  });
+
+  it("reconciles a stuck Sending chip without waiting for a live echo", () => {
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      result.current.addPendingMessage(
+        "you misinterpreted a difference in labeling",
+        undefined,
+        "2026-05-23T04:36:39.900Z",
+      );
+    });
+    fetchNewMessages.mockClear();
+
+    act(() => {
+      vi.advanceTimersByTime(PENDING_SEND_RECONCILE_MS - 1);
+    });
+    expect(fetchNewMessages).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+    expect(fetchNewMessages).toHaveBeenCalled();
   });
 
   it("captures session liveness snapshots from stream status events", () => {

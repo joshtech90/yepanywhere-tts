@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
@@ -5,7 +7,7 @@ import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
 import { AnsiText } from "../../ui/AnsiText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
-import type { BashOutputInput, BashOutputResult, ToolRenderer } from "./types";
+import type { BashOutputInput, BashOutputResult } from "./types";
 
 const MAX_LINES_COLLAPSED = 20;
 
@@ -111,7 +113,10 @@ function BashOutputToolResult({
     enabled && validationErrors && !isToolIgnored("BashOutput");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className="bashoutput-error">
         {showValidationWarning && validationErrors && (
@@ -204,35 +209,27 @@ function BashOutputToolResult({
   );
 }
 
-export const bashOutputRenderer: ToolRenderer<
-  BashOutputInput,
-  BashOutputResult
-> = {
+export const bashOutputRenderer = defineTool(toolDisplayContracts.BashOutput, {
   tool: "BashOutput",
 
   renderToolUse(input, _context) {
-    return <BashOutputToolUse input={input as BashOutputInput} />;
+    return <BashOutputToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context) {
-    return (
-      <BashOutputToolResult
-        result={result as BashOutputResult}
-        isError={isError}
-      />
-    );
+    return <BashOutputToolResult result={result} isError={isError} />;
   },
 
   getUseSummary(input) {
-    return (input as BashOutputInput).bash_id;
+    return input.bash_id;
   },
 
   getResultSummary(result, isError) {
     if (isError) return "Error";
-    const r = result as BashOutputResult;
+    const r = result;
     if (!r) return "Pending";
     if (r.status === "running") return "Running...";
     if (r.exitCode !== null) return `exit ${r.exitCode}`;
     return r.status;
   },
-};
+});

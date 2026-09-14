@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import type { ZodError } from "zod";
 import { useOptionalSessionMetadata } from "../../../contexts/SessionMetadataContext";
@@ -16,18 +18,13 @@ import { SchemaWarning } from "../../SchemaWarning";
 import { SessionFilePathLink } from "../../SessionFilePathLink";
 import { FilePathDisplay } from "../../ui/FilePathDisplay";
 import { getOutputTailTooltip } from "./outputPreview";
-import type { ToolRenderer, WriteInput, WriteResult } from "./types";
+import type { WriteInput, WriteResult } from "./types";
 
 const MAX_LINES_COLLAPSED = 30;
 const PREVIEW_LINES = 3;
 
 /** Extended input type with embedded augment data from server */
-interface WriteInputWithAugment extends WriteInput {
-  _highlightedContentHtml?: string;
-  _highlightedLanguage?: string;
-  _highlightedTruncated?: boolean;
-  _renderedMarkdownHtml?: string;
-}
+type WriteInputWithAugment = WriteInput;
 
 /**
  * Extract filename from path
@@ -77,7 +74,7 @@ function WriteModalContent({
   file,
   input,
 }: {
-  file: WriteResult["file"];
+  file: NonNullable<WriteResult["file"]>;
   input?: WriteInputWithAugment;
 }) {
   const [showPreview, setShowPreview] = useState(false);
@@ -204,8 +201,11 @@ function WriteToolResult({
     if (typeof result === "string") {
       errorMessage = result;
     } else if (typeof result === "object" && result !== null) {
-      const errorResult = result as { content?: unknown };
-      if (errorResult.content) {
+      const errorResult =
+        result && typeof result === "object" && "content" in result
+          ? result
+          : undefined;
+      if (errorResult?.content) {
         errorMessage = String(errorResult.content);
       }
     }
@@ -382,8 +382,11 @@ function WriteCollapsedPreview({
     if (typeof result === "string") {
       errorMessage = result;
     } else if (typeof result === "object" && result !== null) {
-      const errorResult = result as { content?: unknown };
-      if (errorResult.content) {
+      const errorResult =
+        result && typeof result === "object" && "content" in result
+          ? result
+          : undefined;
+      if (errorResult?.content) {
         errorMessage = String(errorResult.content);
       }
     }
@@ -464,47 +467,37 @@ function WriteCollapsedPreview({
   );
 }
 
-export const writeRenderer: ToolRenderer<WriteInput, WriteResult> = {
+export const writeRenderer = defineTool(toolDisplayContracts.Write, {
   tool: "Write",
 
   renderToolUse(input, _context) {
-    return <WriteToolUse input={input as WriteInput} />;
+    return <WriteToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context, input) {
-    return (
-      <WriteToolResult
-        result={result as WriteResult}
-        isError={isError}
-        input={input as WriteInputWithAugment | undefined}
-      />
-    );
+    return <WriteToolResult result={result} isError={isError} input={input} />;
   },
 
   getUseSummary(input) {
-    return getFileName((input as WriteInput).file_path);
+    return getFileName(input.file_path);
   },
 
   getResultSummary(result, isError, input?) {
     if (isError) return "Error";
-    const r = result as WriteResult;
+    const r = result;
     if (r?.file) {
       return getFileName(r.file.filePath);
     }
     // Fall back to input if result not ready
     if (input) {
-      return getFileName((input as WriteInput).file_path);
+      return getFileName(input.file_path);
     }
     return "Writing...";
   },
 
   renderCollapsedPreview(input, result, isError, _context) {
     return (
-      <WriteCollapsedPreview
-        input={input as WriteInputWithAugment}
-        result={result as WriteResult | undefined}
-        isError={isError}
-      />
+      <WriteCollapsedPreview input={input} result={result} isError={isError} />
     );
   },
-};
+});

@@ -1,443 +1,86 @@
-import type { ReactNode } from "react";
-import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
-import type { UserQuestionAnswers } from "../../../types";
-import type { ToolCallItem } from "../../../types/renderItems";
-import type { ContentBlock, RenderContext } from "../types";
-
-/**
- * Bash tool types
- */
-export interface BashInput {
-  command: string;
-  description?: string;
-  timeout?: number;
-  run_in_background?: boolean;
-  _projectPathLinks?: ProjectPathLinkTarget[];
-}
-
-export interface BashResult {
-  stdout: string;
-  stderr: string;
-  interrupted: boolean;
-  isImage: boolean;
-  backgroundTaskId?: string;
-  exitCode?: number;
-  /** Provider-reported command runtime (spec:
-   * topics/provider-output-contract.md § Command execution metadata). */
-  durationSeconds?: number;
-}
-
-/**
- * Read tool types
- */
-export interface ReadInput {
-  file_path: string;
-  offset?: number;
-  limit?: number;
-}
-
-export interface PdfFile {
-  base64: string;
-  type: string; // MIME type, e.g. "application/pdf"
-  originalSize?: number;
-}
-
-export interface ReadResult {
-  type: "text" | "image" | "pdf";
-  file: TextFile | ImageFile | PdfFile;
-}
-
-export interface TextFile {
-  filePath: string;
-  content: string;
-  numLines: number;
-  startLine: number;
-  totalLines: number;
-}
-
-export interface ImageFile {
-  base64: string;
-  type: string; // MIME type
-  originalSize?: number;
-  dimensions?: {
-    originalWidth: number;
-    originalHeight: number;
-    displayWidth: number;
-    displayHeight: number;
-  };
-}
-
-/**
- * Edit tool types
- */
-export interface EditInput {
-  file_path: string;
-  old_string: string;
-  new_string: string;
-  replace_all?: boolean;
-}
-
-export interface EditResult {
-  filePath: string;
-  oldString: string;
-  newString: string;
-  originalFile: string;
-  replaceAll: boolean;
-  userModified: boolean;
-  structuredPatch: PatchHunk[];
-}
-
-export interface PatchHunk {
-  oldStart: number;
-  oldLines: number;
-  newStart: number;
-  newLines: number;
-  lines: string[]; // Prefixed with ' ', '-', or '+'
-}
-
-/**
- * Write tool types
- */
-export interface WriteInput {
-  file_path: string;
-  content: string;
-}
-
-export interface WriteResult {
-  type: "text";
-  file: {
-    filePath: string;
-    content: string;
-    numLines: number;
-    startLine: number;
-    totalLines: number;
-  };
-}
-
-/**
- * TodoWrite tool types
- */
-export interface TodoWriteInput {
-  todos: Todo[];
-}
-
-export interface TodoWriteResult {
-  oldTodos: Todo[];
-  newTodos: Todo[];
-}
-
-export interface Todo {
-  content: string;
-  status: "pending" | "in_progress" | "completed";
-  activeForm: string;
-}
-
-/**
- * Glob tool types
- */
-export interface GlobInput {
-  pattern: string;
-  path?: string;
-}
-
-export interface GlobResult {
-  filenames: string[];
-  durationMs: number;
-  numFiles: number;
-  truncated: boolean;
-}
-
-/**
- * Grep tool types
- */
-export interface GrepInput {
-  pattern: string;
-  path?: string;
-  glob?: string;
-  output_mode?: "files_with_matches" | "content" | "count";
-}
-
-export interface GrepResult {
-  mode: "files_with_matches" | "content" | "count";
-  filenames: string[];
-  numFiles: number;
-  content?: string;
-  numLines?: number;
-  appliedLimit?: number;
-  matches?: GrepMatch[];
-}
-
-export interface GrepMatchRange {
-  start: number;
-  end: number;
-}
-
-export interface GrepMatch {
-  columnNumber?: number;
-  filePath: string;
-  lineNumber: number;
-  ranges?: GrepMatchRange[];
-  text: string;
-}
-
-/**
- * Task tool types
- */
-export interface TaskInput {
-  description: string;
-  prompt: string;
-  subagent_type: string;
-  model?: string;
-}
-
-export interface TaskResult {
-  status: "completed" | "failed" | "timeout";
-  prompt: string;
-  agentId: string;
-  content: ContentBlock[];
-  totalDurationMs: number;
-  totalTokens: number;
-  totalToolUseCount: number;
-}
-
-/**
- * WebSearch tool types
- */
-export interface WebSearchInput {
-  query: string;
-}
-
-export interface WebSearchResult {
-  query: string;
-  results: Array<{ content: Array<{ title: string; url: string }> }>;
-  durationSeconds: number;
-}
-
-/**
- * WebFetch tool types
- */
-export interface WebFetchInput {
-  url: string;
-  prompt: string;
-}
-
-export interface WebFetchResult {
-  bytes: number;
-  code: number;
-  codeText: string;
-  result: string;
-  durationMs: number;
-  url: string;
-}
-
-/**
- * AskUserQuestion tool types
- */
-export interface AskUserQuestionInput {
-  questions: Question[];
-}
-
-export interface Question {
-  id?: string;
-  question: string;
-  header: string;
-  options: Array<{ label: string; description: string; preview?: string }>;
-  multiSelect: boolean;
-  isOther?: boolean;
-  isSecret?: boolean;
-}
-
-export interface AskUserQuestionResult {
-  questions: Question[];
-  answers: UserQuestionAnswers;
-}
-
-/**
- * ExitPlanMode tool types
- */
-export interface ExitPlanModeInput {
-  plan?: string;
-}
-
-export interface ExitPlanModeResult {
-  plan: string;
-  isAgent: boolean;
-  filePath: string;
-}
-
-/**
- * update_plan tool types
- */
-export interface UpdatePlanStep {
-  step: string;
-  status: "pending" | "in_progress" | "completed" | string;
-}
-
-export interface UpdatePlanInput {
-  explanation?: string;
-  plan?: UpdatePlanStep[];
-}
-
-export type UpdatePlanResult = string | { message?: string };
-
-/**
- * write_stdin tool types
- */
-export interface WriteStdinInput {
-  session_id?: string | number;
-  chars?: string;
-  linked_command?: string;
-  linked_file_path?: string;
-  linked_tool_name?: string;
-}
-
-/** Shell-session poll result: plain text, a normalized command result, or a
- * Codex unified-exec chunk record with raw fields passed through (spec:
- * topics/provider-output-contract.md § Command execution metadata). */
-export type WriteStdinResult =
-  | string
-  | {
-      content?: string;
-      stdout?: string;
-      output?: string;
-      exitCode?: number;
-      exit_code?: number;
-      durationSeconds?: number;
-      wall_time_seconds?: number;
-      [key: string]: unknown;
-    };
-
-/**
- * BashOutput tool types
- */
-export interface BashOutputInput {
-  bash_id: string;
-  block?: boolean;
-  wait_up_to?: number;
-}
-
-export interface BashOutputResult {
-  shellId: string;
-  command: string;
-  status: "running" | "completed" | "failed";
-  exitCode: number | null;
-  stdout: string;
-  stderr: string;
-  stdoutLines: number;
-  stderrLines: number;
-  timestamp: string;
-}
-
-/**
- * TaskOutput tool types
- */
-export interface TaskOutputInput {
-  task_id: string;
-  block?: boolean;
-  timeout?: number;
-}
-
-export interface TaskOutputResult {
-  retrieval_status: "completed" | "timeout" | "running";
-  task: {
-    task_id: string;
-    task_type: "local_bash" | "agent";
-    status: "running" | "completed" | "failed";
-    description: string;
-    output: string;
-    exitCode: number | null;
-  };
-}
-
-/**
- * KillShell tool types
- */
-export interface KillShellInput {
-  shell_id: string;
-}
-
-export interface KillShellResult {
-  message: string;
-  shell_id: string;
-}
-
+import type { z } from "zod";
+import type * as schemas from "./displayContracts";
+export type BashInput = z.output<typeof schemas.BashDisplayInputSchema>;
+export type BashResult = z.output<typeof schemas.BashDisplayResultSchema>;
+export type ReadInput = z.output<typeof schemas.ReadDisplayInputSchema>;
+export type ReadResult = z.output<typeof schemas.ReadDisplayResultSchema>;
+export type EditInput = z.output<typeof schemas.EditDisplayInputSchema>;
+export type EditResult = z.output<typeof schemas.EditDisplayResultSchema>;
+export type WriteInput = z.output<typeof schemas.WriteDisplayInputSchema>;
+export type WriteResult = z.output<typeof schemas.WriteDisplayResultSchema>;
+export type TodoWriteInput = z.output<
+  typeof schemas.TodoWriteDisplayInputSchema
+>;
+export type TodoWriteResult = z.output<
+  typeof schemas.TodoWriteDisplayResultSchema
+>;
+export type GlobInput = z.output<typeof schemas.GlobDisplayInputSchema>;
+export type GlobResult = z.output<typeof schemas.GlobDisplayResultSchema>;
+export type GrepInput = z.output<typeof schemas.GrepDisplayInputSchema>;
+export type GrepResult = z.output<typeof schemas.GrepDisplayResultSchema>;
+export type TaskInput = z.output<typeof schemas.TaskDisplayInputSchema>;
+export type TaskResult = z.output<typeof schemas.TaskDisplayResultSchema>;
+export type WebSearchInput = z.output<
+  typeof schemas.WebSearchDisplayInputSchema
+>;
+export type WebSearchResult = z.output<
+  typeof schemas.WebSearchDisplayResultSchema
+>;
+export type WebFetchInput = z.output<typeof schemas.WebFetchDisplayInputSchema>;
+export type WebFetchResult = z.output<
+  typeof schemas.WebFetchDisplayResultSchema
+>;
+export type AskUserQuestionInput = z.output<
+  typeof schemas.AskUserQuestionDisplayInputSchema
+>;
+export type AskUserQuestionResult = z.output<
+  typeof schemas.AskUserQuestionDisplayResultSchema
+>;
+export type ExitPlanModeInput = z.output<
+  typeof schemas.ExitPlanModeDisplayInputSchema
+>;
+export type ExitPlanModeResult = z.output<
+  typeof schemas.ExitPlanModeDisplayResultSchema
+>;
+export type UpdatePlanInput = z.output<
+  typeof schemas.UpdatePlanDisplayInputSchema
+>;
+export type UpdatePlanResult = z.output<
+  typeof schemas.UpdatePlanDisplayResultSchema
+>;
+export type WriteStdinInput = z.output<
+  typeof schemas.WriteStdinDisplayInputSchema
+>;
+export type WriteStdinResult = z.output<
+  typeof schemas.WriteStdinDisplayResultSchema
+>;
+export type BashOutputInput = z.output<
+  typeof schemas.BashOutputDisplayInputSchema
+>;
+export type BashOutputResult = z.output<
+  typeof schemas.BashOutputDisplayResultSchema
+>;
+export type TaskOutputInput = z.output<
+  typeof schemas.TaskOutputDisplayInputSchema
+>;
+export type TaskOutputResult = z.output<
+  typeof schemas.TaskOutputDisplayResultSchema
+>;
+export type KillShellInput = z.output<
+  typeof schemas.KillShellDisplayInputSchema
+>;
+export type KillShellResult = z.output<
+  typeof schemas.KillShellDisplayResultSchema
+>;
+export type TextFile = z.output<typeof schemas.TextFileDisplaySchema>;
+export type ImageFile = z.output<typeof schemas.MediaFileDisplaySchema>;
+export type PdfFile = z.output<typeof schemas.PdfFileDisplaySchema>;
+export type PatchHunk = z.output<typeof schemas.PatchHunkDisplaySchema>;
+export type Question = z.output<typeof schemas.QuestionDisplaySchema>;
+export type Todo = z.output<typeof schemas.TodoDisplaySchema>;
+export type UpdatePlanStep = NonNullable<UpdatePlanInput["plan"]>[number];
+export type GrepMatch = NonNullable<GrepResult["matches"]>[number];
+export type GrepMatchRange = NonNullable<GrepMatch["ranges"]>[number];
 export interface ToolSummaryContext {
   projectPath?: string | null;
-}
-
-/**
- * Tool renderer interface
- */
-export interface ToolRenderer<TInput = unknown, TResult = unknown> {
-  /** Tool name (e.g., "Bash", "Edit", "Read") */
-  tool: string;
-  /** Display name shown in UI (defaults to tool name) */
-  displayName?: string;
-  /**
-   * Display name shown while the call is still in progress (status "pending"),
-   * so the verb can read in the present tense live and past tense once
-   * finished (e.g. Bash "Running" -> "Ran", AskUserQuestion "Asking" ->
-   * "Asked"). Falls back to `displayName` when unset.
-   */
-  pendingDisplayName?: string;
-  /**
-   * Dynamic display-name override, consulted before displayName /
-   * pendingDisplayName. Lets a renderer reflect call state only the input
-   * carries — e.g. a backgrounded Bash run keeps reading "Running" after
-   * the tool call itself completed. Return undefined to fall through.
-   */
-  displayNameForCall?(
-    input: TInput,
-    status: "pending" | "complete" | "error" | "aborted" | "incomplete",
-  ): string | undefined;
-  /** Render the tool_use block (what Claude wants to do) */
-  renderToolUse(input: TInput, context: RenderContext): ReactNode;
-  /** Render the tool_result block (what happened) */
-  renderToolResult(
-    result: TResult,
-    isError: boolean,
-    context: RenderContext,
-    input?: TInput,
-  ): ReactNode;
-  /** Summary for collapsed tool_use view */
-  getUseSummary?(input: TInput, context?: ToolSummaryContext): string;
-  /** Summary for collapsed tool_result view */
-  getResultSummary?(
-    result: TResult,
-    isError: boolean,
-    input?: TInput,
-    context?: ToolSummaryContext,
-  ): string;
-  /**
-   * Render an interactive summary that replaces the expand/collapse behavior.
-   * When provided, the row won't expand - instead clicking invokes this component.
-   */
-  renderInteractiveSummary?(
-    input: TInput,
-    result: TResult | undefined,
-    isError: boolean,
-    context: RenderContext,
-  ): ReactNode;
-  /**
-   * Render a preview shown in the collapsed state (below the header).
-   * Used to show a condensed view of input/output without expanding.
-   */
-  renderCollapsedPreview?(
-    input: TInput,
-    result: TResult | undefined,
-    isError: boolean,
-    context: RenderContext,
-  ): ReactNode;
-  /**
-   * Render inline without the standard tool row wrapper.
-   * When provided, bypasses the entire tool-row structure (no header, chevrons, margins).
-   * The tool has complete control over its rendering.
-   */
-  renderInline?(
-    input: TInput,
-    result: TResult | undefined,
-    isError: boolean,
-    status: ToolCallItem["status"],
-    context: RenderContext,
-  ): ReactNode;
 }

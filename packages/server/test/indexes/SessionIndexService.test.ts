@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  appendFile,
   mkdir,
   readFile,
   readdir,
@@ -176,6 +177,82 @@ describe("SessionIndexService", () => {
 
       expect(changed).toBeNull();
       expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    });
+
+    it("returns an indexed prefix summary when the file only grew", async () => {
+      await createSession("session-1", "Hello world");
+      const getSessionSummary = vi.spyOn(reader, "getSessionSummary");
+
+      await service.getSessionSummaryWithCache(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+
+      const filePath = join(sessionDir, "session-1.jsonl");
+      await appendFile(
+        filePath,
+        `${JSON.stringify({
+          type: "user",
+          message: { content: "appended while live" },
+          uuid: "msg-session-1-later",
+          timestamp: new Date().toISOString(),
+        })}\n`,
+      );
+
+      // Default: an appended file is not the file that was indexed.
+      expect(
+        await service.getCachedSessionSummary(
+          sessionDir,
+          projectId,
+          "session-1",
+          reader,
+        ),
+      ).toBeNull();
+
+      // Opted in: the indexed bytes are still an accurate prefix.
+      const appended = await service.getCachedSessionSummary(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+        { acceptAppendedFile: true },
+      );
+      expect(appended?.id).toBe("session-1");
+      expect(appended?.title).toBe("Hello world");
+      expect(getSessionSummary).toHaveBeenCalledTimes(1);
+    });
+
+    it("rejects an in-place rewrite even when appended files are accepted", async () => {
+      await createSession("session-1", "Hello world");
+
+      await service.getSessionSummaryWithCache(
+        sessionDir,
+        projectId,
+        "session-1",
+        reader,
+      );
+
+      // Same byte length, different bytes: the index describes other content.
+      await createSession("session-1", "HELLO WORLD");
+      const rewrittenAt = new Date(Date.now() + 1000);
+      await utimes(
+        join(sessionDir, "session-1.jsonl"),
+        rewrittenAt,
+        rewrittenAt,
+      );
+
+      expect(
+        await service.getCachedSessionSummary(
+          sessionDir,
+          projectId,
+          "session-1",
+          reader,
+          { acceptAppendedFile: true },
+        ),
+      ).toBeNull();
     });
 
     it("repairs persisted Claude titles captured from meta rows", async () => {

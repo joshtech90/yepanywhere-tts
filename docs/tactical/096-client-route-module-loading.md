@@ -4,10 +4,10 @@
 > by the current route, so New Session, login, and public-share entry do not
 > evaluate unrelated transcript and Settings code first.
 
-Status: Top-level local and remote route slice implemented 2026-08-10. Per-
-Settings-pane loading, direct/LAN asset delivery, and the full performance
-matrix remain open. Tactical 089 measured the original local and remote build
-graphs and fresh-browser cost.
+Status: Top-level local and remote route slice implemented 2026-08-10;
+per-Settings-pane loading implemented 2026-09-07. Direct/LAN asset delivery and
+the full performance matrix remain open. Tactical 089 measured the original
+local and remote build graphs and fresh-browser cost.
 
 Related contracts and plans:
 
@@ -53,9 +53,8 @@ resolve `tssrp6a`'s Node `crypto` probe to the browser Web Crypto API, and fail
 on any future Vite warning. The Pages publisher retains old hashed assets,
 satisfying generation retention for the hosted path.
 
-Still open: Settings loads every category pane when its route module opens; the
-direct/LAN server still lacks the asset delivery contract; and the full
-route/device measurement matrix has not run.
+Still open after that slice: per-Settings-pane loading (completed below),
+direct/LAN asset delivery, and the full route/device measurement matrix.
 
 This is a real but secondary localhost cost. On an isolated production server
 with browser cache disabled, warm server data produced:
@@ -79,6 +78,40 @@ JavaScript. New Session appeared in 1.36-4.56 seconds while the live dev
 document response itself varied from milliseconds to 1.47 seconds under
 server activity. Preserve this as a development-waterfall diagnostic, not a
 production bundle estimate.
+
+## 2026-09-07 Settings entry and category loading
+
+Contributing-model: 6-Astra
+
+The current localhost browser reproduced sequential acquisition: holding the
+App module prevented the Settings request from starting. Fresh Settings entry
+also inherited an expanded sidebar and fetched inactive category modules.
+Local entry now starts the three independent module downloads together, as
+remote entry already did. Settings starts with a collapsed rail without
+overwriting the saved preference; explicit expansion and minimized mode remain
+available.
+
+Step 3 is implemented: categories load individually, and search starts every
+searchable category with a separate loading/error boundary. Existing matches
+stay editable and jump links stay available while other panes arrive. Search
+marks incomplete results and withholds the no-matches message until loading
+finishes. A failed pane retains the existing Reload Page recovery. Shared
+KaTeX code has its own chunk to preserve the warning-free build ceiling after
+the category graph split.
+
+The desktop and phone Settings geometry was inspected on a fresh isolated dev
+server. Delayed-module and delayed-sidebar browser checks plus focused search
+and sidebar tests cover the behavior; this is dependency-order evidence, not
+a device/network performance benchmark. Asset-delivery and the full measurement
+matrix remain outside this Settings fix.
+
+Completion evidence: the Settings changes landed in `602f4d98f` alongside a
+concurrent async-question commit. All 44 focused unit tests and all four
+Settings browser tests passed; both production builds, typecheck, lint, format,
+and the unchanged console budget passed. Captures at 1200×600, 1000×600, and
+375×812 showed the intended sidebar state and no horizontal overflow. CSS
+extraction was deferred because the layout and search rules have coupled
+owners. Step 3 is complete; steps 4–6 retain their existing scope and status.
 
 ## Route module contract
 

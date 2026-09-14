@@ -1,0 +1,33 @@
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+@media (max-width: 1099px) {
+  :global(body):has(.shell) {
+    /* The frame owns safe-area spacing. Body padding plus the startup root's
+       minimum viewport height would otherwise leave a scrollable document. */
+    padding: 0;
+  }
+
+  .shell {
+    /* Keep body safe-area padding outside the app's viewport geometry. The
+       banner and frame still share this fixed container's available space. */
+    position: fixed;
+    inset: 0;
+    height: auto;
+  }
+}
+
+.frame:global(.session-page) {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  position: relative;
+}
+
+.frame :global(.sidebar-floating-restore) {
+  position: absolute;
+}

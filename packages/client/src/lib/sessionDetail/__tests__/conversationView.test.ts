@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
+import { compileTranscriptProjection } from "@yep-anywhere/shared/transcript/compiler";
 import type { Message } from "../../../types";
 import type {
   ConversationActivityItem,
   RenderItem,
   ToolCallItem,
-} from "../../../types/renderItems";
+} from "@yep-anywhere/shared/transcript/items";
 import {
   compactCommandActivityPreview,
   projectConversationView,
@@ -45,6 +46,75 @@ function summary(items: readonly RenderItem[]): ConversationActivityItem {
 }
 
 describe("projectConversationView", () => {
+  it("keeps schema-rendered tool progress visible with activity collapsed", () => {
+    const items = compileTranscriptProjection(
+      [
+        {
+          id: "activation",
+          role: "assistant",
+          content: '@@visualization-schema/1 ["build"]',
+        },
+        {
+          id: "call",
+          role: "assistant",
+          content: [{ type: "tool_use", id: "build", name: "Bash", input: {} }],
+        },
+        {
+          id: "result",
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "build",
+              content: "[build] Compilation passed.",
+            },
+          ],
+        },
+      ],
+      { workflowTags: true },
+    );
+    const build = items.find((item) => item.type === "tool_call");
+    expect(build?.workflow?.markers.length).toBeGreaterThan(0);
+    expect(
+      projectConversationView(items, { active: false, nowMs: 0 }),
+    ).toContain(build);
+  });
+
+  it.each(["Bash", "Exec"])(
+    "keeps %s commentary visible with activity collapsed",
+    (toolName) => {
+      const text =
+        '# acli: 1 +commentary\n{"_acli":{"commentary":[{"text":"[Artifact](./index.html)"}]}}';
+      const content =
+        toolName === "Exec"
+          ? JSON.stringify([
+              {
+                type: "input_text",
+                text: JSON.stringify({
+                  chunk_id: "capture",
+                  wall_time_seconds: 0,
+                  exit_code: 0,
+                  output: text,
+                }),
+              },
+            ])
+          : text;
+      const artifact = tool("artifact", 2000, {
+        toolName,
+        toolResult: { content, isError: false },
+      });
+      const projected = projectConversationView(
+        [tool("routine", 1000), artifact],
+        {
+          active: false,
+          nowMs: 3000,
+        },
+      );
+      expect(projected).toContain(artifact);
+      expect(summary(projected).activityCount).toBe(1);
+    },
+  );
+
   it("preserves authored text, media, and failures while summarizing routine activity", () => {
     const items: RenderItem[] = [
       {
@@ -730,5 +800,95 @@ describe("selectConversationThinkingPreviews", () => {
       compactSummary.id,
     ]);
     expect(summary(expanded).expanded).toBe(true);
+  });
+
+  it("drops thinking the turn has already spoken past and gone back to work", () => {
+    const items: RenderItem[] = [
+      {
+        type: "thinking",
+        id: "earlier",
+        thinking: "Earlier",
+        status: "complete",
+        sourceMessages: [],
+      },
+      {
+        type: "thinking",
+        id: "stale",
+        thinking: "Stale",
+        status: "complete",
+        sourceMessages: [],
+      },
+      { type: "text", id: "answer", text: "Here it is.", sourceMessages: [] },
+      tool("run", 3_000, {
+        toolName: "Bash",
+        toolInput: { command: "pnpm test" },
+      }),
+    ];
+
+    // The turn answered and then resumed work: the thoughts behind that answer
+    // are accounted for by the answer itself, so the run shows its count alone.
+    expect(selectConversationThinkingPreviews(items)).toEqual([]);
+    expect(
+      summary(projectConversationView(items, { active: true, nowMs: 4_000 }))
+        .thinkingPreviews,
+    ).toBeUndefined();
+  });
+
+  it("keeps the superseded thought only from after that prose", () => {
+    const items: RenderItem[] = [
+      {
+        type: "thinking",
+        id: "stale",
+        thinking: "Stale",
+        status: "complete",
+        sourceMessages: [],
+      },
+      { type: "text", id: "answer", text: "Here it is.", sourceMessages: [] },
+      {
+        type: "thinking",
+        id: "previous",
+        thinking: "Previous",
+        status: "complete",
+        sourceMessages: [],
+      },
+      {
+        type: "thinking",
+        id: "current",
+        thinking: "Current",
+        status: "streaming",
+        sourceMessages: [],
+      },
+    ];
+
+    expect(
+      selectConversationThinkingPreviews(items).map((preview) => preview.id),
+    ).toEqual(["current", "previous"]);
+  });
+
+  it("keeps thinking whose prose ended the turn, for the glance and rollup", () => {
+    const items: RenderItem[] = [
+      {
+        type: "thinking",
+        id: "latest",
+        thinking: "Planning",
+        status: "complete",
+        sourceMessages: [],
+      },
+      tool("run", 2_000, {
+        toolName: "Bash",
+        toolInput: { command: "pnpm test" },
+      }),
+      { type: "text", id: "answer", text: "Here it is.", sourceMessages: [] },
+    ];
+
+    // Nothing resumed after the answer, so the thought is still the freshest
+    // thing the turn said about itself; the 5s auto-hide takes it away instead.
+    expect(
+      selectConversationThinkingPreviews(items).map((preview) => preview.id),
+    ).toEqual(["latest"]);
+    expect(
+      summary(projectConversationView(items, { active: false, nowMs: 3_000 }))
+        .hasFollowingConversationText,
+    ).toBe(true);
   });
 });

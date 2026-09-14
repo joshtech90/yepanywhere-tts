@@ -4,6 +4,10 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const stylesheetUrl = new URL("../index.css", import.meta.url);
+const renderItemModuleUrl = new URL(
+  "../../components/RenderItemComponent.module.css",
+  import.meta.url,
+);
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -91,6 +95,45 @@ describe("conversation preview height contract", () => {
       declarations,
       "previous preview must cap to the published current thinking height",
     ).toMatch(/max-height:\s*var\(\s*--conversation-thinking-height/);
+  });
+
+  it("bounds a wrapped previous preview by the measured room left in the viewport", async () => {
+    const css = await readFile(renderItemModuleUrl, "utf8");
+    const match =
+      /\.activityHeightReserve\[data-previous-thinking="stacked"\][^{]*\{([^}]*)\}/.exec(
+        css,
+      );
+    expect(
+      match,
+      "a wrapped previous preview should have its own cap rule in RenderItemComponent.module.css",
+    ).not.toBeNull();
+    const declarations = match?.[1] ?? "";
+    // Wrapped, the previous card's height adds to the row instead of fitting
+    // inside the current card's, so it takes the smaller of the current height
+    // and the measured remaining budget.
+    expect(declarations).toMatch(/var\(\s*--conversation-thinking-height/);
+    expect(declarations).toMatch(
+      /var\(\s*--conversation-previous-thinking-budget/,
+    );
+    expect(declarations).toMatch(/max-height:\s*min\(/);
+  });
+
+  it("collapses a dropped previous preview without removing it from the layout", async () => {
+    const css = await readFile(renderItemModuleUrl, "utf8");
+    const match =
+      /\.activityHeightReserve\[data-previous-thinking="dropped"\][^{]*\{([^}]*)\}/.exec(
+        css,
+      );
+    expect(
+      match,
+      "a dropped previous preview should have its own rule in RenderItemComponent.module.css",
+    ).not.toBeNull();
+    const declarations = match?.[1] ?? "";
+    // Zero height rather than `display: none`: removing the flex item would
+    // change the wrap the budget was measured from and the drop would flap.
+    expect(declarations).toMatch(/height:\s*0\s*;/);
+    expect(declarations).toMatch(/visibility:\s*hidden\s*;/);
+    expect(declarations).not.toMatch(/display:\s*none/);
   });
 
   it("uses leftover width for activities while keeping the summary pill intrinsic", async () => {

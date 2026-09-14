@@ -22,6 +22,7 @@ The staged implementation and research gates are tracked in
 [`docs/tactical/119-managed-ssh-executor-baseline.md`](../docs/tactical/119-managed-ssh-executor-baseline.md).
 
 Related:
+[working across machines](multi-machine-architecture.md),
 [SSH Remote Executors](../docs/project/remote-executors.md),
 [managed SSH executor tactical](../docs/tactical/119-managed-ssh-executor-baseline.md),
 [managed runner execution targets](managed-runner-execution-targets.md),

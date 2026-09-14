@@ -14,10 +14,12 @@ import {
 } from "../lib/semanticUiActions";
 import {
   createManagedStream,
+  isManagedStreamResubscribing,
   type ManagedStream,
   type ManagedStreamEvent,
   SERVER_PUSH_INACTIVITY_TIMEOUT_MS,
 } from "../lib/transport";
+import { useResubscribeOnFrontendSourceChange } from "./useResubscribeOnFrontendSourceChange";
 import {
   getStreamingEnabled,
   subscribeStreamingEnabled,
@@ -54,6 +56,7 @@ export function useSessionStream(
   options: UseSessionStreamOptions,
 ) {
   const [connected, setConnected] = useState(false);
+  const [resubscribing, setResubscribing] = useState(false);
   const runtime = useCurrentSourceRuntime();
   const wantsLiveDeltas = useSyncExternalStore(
     subscribeStreamingEnabled,
@@ -69,14 +72,26 @@ export function useSessionStream(
   const reconnect = useCallback(() => {
     if (!sessionId) return;
     logSessionUiTrace("session-stream-reconnect-requested", { sessionId });
-    setConnected(false);
-    streamRef.current?.restart({ delayMs: 50 });
+    const stream = streamRef.current;
+    if (!stream) {
+      // The subscribe effect has not created a stream yet, so treat this as a
+      // pending subscribe rather than a broken pipe.
+      setConnected(false);
+      setResubscribing(true);
+      return;
+    }
+    // restart() publishes a new snapshot on every path that changes anything,
+    // and declines only for an already terminal or closed stream whose
+    // published state is the one we still want to show.
+    stream.restart({ delayMs: 50 });
   }, [sessionId]);
+  useResubscribeOnFrontendSourceChange(reconnect);
 
   useEffect(() => {
     if (!sessionId) {
       logSessionUiTrace("session-stream-disabled");
       setConnected(false);
+      setResubscribing(false);
       return undefined;
     }
 
@@ -157,10 +172,15 @@ export function useSessionStream(
       },
     );
     streamRef.current = stream;
-    const unsubscribe = stream.subscribe(() => {
-      setConnected(stream.getSnapshot().connected);
-    });
-    setConnected(stream.getSnapshot().connected);
+    // Every stream state change publishes a snapshot, so this subscription is
+    // the single owner of both flags.
+    const applySnapshot = () => {
+      const snapshot = stream.getSnapshot();
+      setConnected(snapshot.connected);
+      setResubscribing(isManagedStreamResubscribing(snapshot));
+    };
+    const unsubscribe = stream.subscribe(applySnapshot);
+    applySnapshot();
 
     return () => {
       unsubscribe();
@@ -171,5 +191,5 @@ export function useSessionStream(
     };
   }, [runtime.sourceKey, runtime.transport, sessionId, wantsLiveDeltas]);
 
-  return { connected, reconnect };
+  return { connected, reconnect, resubscribing };
 }

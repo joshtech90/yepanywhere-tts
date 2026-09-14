@@ -1,3 +1,4 @@
+import { IssueIcon } from "../../components/IssueIcon";
 import type { ReactNode } from "react";
 import { useSettingsIconStyle } from "../../hooks/useSettingsIconStyle";
 
@@ -36,6 +37,7 @@ function Icon(props: {
 
 export const settingsCategoryEmojiIcons: Record<string, string> = {
   appearance: "🎨",
+  issues: "🎟️",
   performance: "⚡",
   toolbar: "🎛️",
   model: "🧠",
@@ -47,6 +49,7 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
   notifications: "🔔",
   webhooks: "🪝",
   devices: "📱",
+  "computer-control": "🖱️",
   "local-access": "🔒",
   remote: "🌐",
   providers: "🔌",
@@ -59,6 +62,7 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
 };
 
 export const settingsCategoryIcons: Record<string, ReactNode> = {
+  issues: <IssueIcon size={22} />,
   appearance: (
     <Icon strokeWidth={2.5}>
       {/* A font specimen in a card + prominent color swatches. Clean large letter + bigger color blocks + thicker stroke for visual weight matching others. */}
@@ -187,6 +191,14 @@ export const settingsCategoryIcons: Record<string, ReactNode> = {
       {/* Mobile phone */}
       <rect x="7" y="2" width="10" height="20" rx="2" ry="2" />
       <line x1="12" y1="18" x2="12.01" y2="18" />
+    </Icon>
+  ),
+
+  "computer-control": (
+    <Icon>
+      <rect x="2" y="3" width="17" height="12" rx="2" />
+      <path d="M7 20h6m-3-5v5" />
+      <path d="m15 10 7 5-3 1-1 3z" fill="currentColor" />
     </Icon>
   ),
 

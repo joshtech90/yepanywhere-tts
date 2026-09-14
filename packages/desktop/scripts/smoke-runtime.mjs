@@ -49,6 +49,15 @@ for (const [label, path] of [
   }
 }
 
+const agentSelf = spawnSync(bun, [
+  join(desktopDir, "..", "..", "scripts", "agent-self-smoke.mjs"),
+  serverDir,
+], { encoding: "utf8", timeout: 30000, windowsHide: true });
+if (agentSelf.status !== 0) {
+  throw new Error(`Desktop ya-agent smoke failed: ${agentSelf.stdout} ${agentSelf.stderr}`);
+}
+console.log(agentSelf.stdout.trim());
+
 if (
   appBundle &&
   process.platform === "darwin" &&

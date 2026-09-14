@@ -20,6 +20,24 @@ vi.mock("../useVersion", () => ({
 }));
 
 describe("useModelSettings speech defaults", () => {
+  it("persists explicit Whisper choices and leaves unset local models to the server", async () => {
+    const { useModelSettings } = await import("../useModelSettings");
+    const { result, unmount } = renderHook(() => useModelSettings());
+    const microphone = renderHook(() => useModelSettings());
+    expect(result.current.parakeetSpeechModel).toBe("");
+    expect(result.current.whisperSpeechModel).toBe("");
+    act(() => result.current.setWhisperSpeechModel("large-v3"));
+    expect(microphone.result.current.whisperSpeechModel).toBe("large-v3");
+    act(() =>
+      result.current.setParakeetSpeechModel("nvidia/parakeet-unified-en-0.6b"),
+    );
+    expect(microphone.result.current.parakeetSpeechModel).toBe(
+      "nvidia/parakeet-unified-en-0.6b",
+    );
+    unmount();
+    const reloaded = renderHook(() => useModelSettings());
+    expect(reloaded.result.current.whisperSpeechModel).toBe("large-v3");
+  });
   afterEach(() => {
     cleanup();
     window.localStorage.clear();

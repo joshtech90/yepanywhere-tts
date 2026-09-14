@@ -1,3 +1,4 @@
+import { useClientSummarySourceKey } from "../../lib/clientSummaryStore";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, fetchJSON, type VersionInfo } from "../../api/client";
 import { RemoteCompatibilityNoticeCard } from "../../components/RemoteCompatibilityNotices";
@@ -28,6 +29,7 @@ import {
 
 export function AboutSettings() {
   const { t } = useI18n();
+  const sourceKey = useClientSummarySourceKey();
   useSettingsPaneTitle(t("aboutTitle"));
   const { canInstall, isInstalled, install } = usePwaInstall();
   const {
@@ -45,6 +47,7 @@ export function AboutSettings() {
       if (!candidate) return [];
 
       return getRemoteCompatibilityNotices({
+        runtimeNotice: { runtime: candidate.serverRuntime, sourceKey, t },
         currentVersion: candidate?.current ?? null,
         latestVersion: candidate?.latest ?? null,
         updateAvailable: candidate?.updateAvailable ?? false,
@@ -55,7 +58,7 @@ export function AboutSettings() {
         relayUsername: currentRelayUsername,
       });
     },
-    [currentRelayUsername],
+    [currentRelayUsername, sourceKey, t],
   );
   const remoteCompatibilityNotices = useMemo(
     () => getNoticesForVersion(versionInfo),

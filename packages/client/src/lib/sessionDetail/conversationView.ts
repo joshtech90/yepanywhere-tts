@@ -4,6 +4,7 @@ import {
 } from "../messageAge";
 import { getDisplayBashCommandFromInput } from "../bashCommand";
 import { getPathBasename } from "../text";
+import { toolDeclaresCommentary } from "../toolCommentarySource";
 import { toolRegistry } from "../../components/renderers/tools";
 import { getToolSummary } from "../../components/tools/summaries";
 import type {
@@ -13,7 +14,7 @@ import type {
   ConversationThinkingPreviewSlot,
   RenderItem,
   ToolCallItem,
-} from "../../types/renderItems";
+} from "@yep-anywhere/shared/transcript/items";
 import { groupRenderItemsIntoTurns } from "./renderItems";
 
 // Upper bound on activity rows produced; the visible count is decided by
@@ -72,8 +73,49 @@ export function windowConversationViewItems(
   };
 }
 
-function isMediaToolCall(item: ToolCallItem): boolean {
+export function isMediaToolCall(item: ToolCallItem): boolean {
   return (item.toolResult?.media?.length ?? 0) > 0;
+}
+
+/**
+ * Why Conversation view retains or condenses a render item.
+ *
+ * - `activity`: routine work folded into the per-turn summary.
+ * - `error`: retained because it is a failure, not because it is conversation.
+ * - `importance`: retained conversation content (prompts, prose, media, plans).
+ */
+export type ConversationViewSurfaceReason = "activity" | "error" | "importance";
+
+export function conversationViewSurfaceReason(
+  item: RenderItem,
+): ConversationViewSurfaceReason {
+  if (item.type === "thinking" || item.type === "conversation_activity") {
+    return "activity";
+  }
+  if (item.type === "task_notification") {
+    const status = item.status?.toLowerCase();
+    return status === "failed" || status === "error" ? "error" : "activity";
+  }
+  if (item.type === "system") {
+    return item.subtype === "subagent_activity" ? "activity" : "importance";
+  }
+  if (item.type !== "tool_call") {
+    return "importance";
+  }
+  if (item.status === "error" || item.status === "incomplete") {
+    return "error";
+  }
+  if (toolRegistry.metadata(item.toolName).tool === "UpdatePlan") {
+    return "importance";
+  }
+  if (
+    isMediaToolCall(item) ||
+    toolDeclaresCommentary(item) ||
+    (item.workflow?.markers.length ?? 0) > 0
+  ) {
+    return "importance";
+  }
+  return "activity";
 }
 
 /**
@@ -83,27 +125,7 @@ function isMediaToolCall(item: ToolCallItem): boolean {
  * associated with the assistant turn.
  */
 export function isConversationViewActivity(item: RenderItem): boolean {
-  if (item.type === "thinking") {
-    return true;
-  }
-  if (item.type === "task_notification") {
-    const status = item.status?.toLowerCase();
-    return status !== "failed" && status !== "error";
-  }
-  if (item.type === "system") {
-    return item.subtype === "subagent_activity";
-  }
-  if (item.type !== "tool_call") {
-    return false;
-  }
-  if (toolRegistry.get(item.toolName).tool === "UpdatePlan") {
-    return false;
-  }
-  return (
-    !isMediaToolCall(item) &&
-    item.status !== "error" &&
-    item.status !== "incomplete"
-  );
+  return conversationViewSurfaceReason(item) === "activity";
 }
 
 export function groupHasFollowingConversationText(
@@ -251,17 +273,21 @@ function getRecentActivity(
   item: RenderItem,
 ): ConversationRecentActivity | null {
   if (item.type === "tool_call") {
-    const renderer = toolRegistry.get(item.toolName);
-    const label = toolRegistry.getDisplayName(
-      item.toolName,
-      "pending",
-      item.toolInput,
-    );
+    const renderer = toolRegistry.metadata(item.toolName);
+    const prepared = toolRegistry.prepare(item.toolName, {
+      input: item.toolInput,
+      result: item.toolResult?.structured ?? item.toolResult?.content,
+      status: item.status,
+      isError: item.toolResult?.isError,
+    });
+    const label = prepared.getDisplayName("pending");
     const summary = getToolSummary(
       item.toolName,
       item.toolInput,
       item.toolResult,
       item.status,
+      undefined,
+      prepared,
     );
     const preview = getToolActivityPreview(item, renderer.tool, summary);
     return {
@@ -338,16 +364,48 @@ function getRecentActivities(
 }
 
 /**
+ * Where thinking stops being a candidate for preview.
+ *
+ * Agent-authored prose closes off the thinking that produced it: once the turn
+ * has said something and *then* gone back to work, the reader is following the
+ * fresh run of activity summarized beside the previews, and a thought from
+ * before that prose is too stale to be one of the two shown. Prose with no
+ * activity after it is a different case — the thought is still the most recent
+ * thing the turn did, and the completed-turn glance and rollup carry it away on
+ * their own schedule.
+ *
+ * @returns that prose item's index, or -1 when no thinking is stale.
+ */
+function findStaleThinkingBoundaryIndex(items: readonly RenderItem[]): number {
+  let sawActivityAfterProse = false;
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    if (!item) continue;
+    if (item.type === "text") {
+      if (item.text.trim().length > 0 && sawActivityAfterProse) return index;
+      continue;
+    }
+    if (isConversationViewActivity(item)) sawActivityAfterProse = true;
+  }
+  return -1;
+}
+
+/**
  * Keep the latest thinking block. While it is streaming, also keep the
  * immediately preceding completed block so a new turn starts with context;
  * once the latest block completes, the superseded preview disappears.
  * Ordering is by preview priority rather than transcript position.
+ *
+ * Both candidates are drawn from after the staleness boundary above, so a run
+ * of activity that resumed after the turn already spoke shows its count alone
+ * rather than a thought the prose has superseded.
  */
 export function selectConversationThinkingPreviews(
   items: readonly RenderItem[],
 ): ConversationThinkingPreview[] {
+  const staleBoundaryIndex = findStaleThinkingBoundaryIndex(items);
   let latestIndex = -1;
-  for (let index = items.length - 1; index >= 0; index -= 1) {
+  for (let index = items.length - 1; index > staleBoundaryIndex; index -= 1) {
     if (items[index]?.type === "thinking") {
       latestIndex = index;
       break;
@@ -369,7 +427,7 @@ export function selectConversationThinkingPreviews(
   ];
   if (latest.status !== "streaming") return previews;
 
-  for (let index = latestIndex - 1; index >= 0; index -= 1) {
+  for (let index = latestIndex - 1; index > staleBoundaryIndex; index -= 1) {
     const candidate = items[index];
     if (candidate?.type !== "thinking" || candidate.status !== "complete") {
       continue;

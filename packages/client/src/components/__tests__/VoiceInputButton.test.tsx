@@ -85,6 +85,7 @@ vi.mock("../../hooks/useModelSettings", () => ({
     speechMethod: "browser-native",
     hasStoredSpeechMethod: false,
     parakeetSpeechModel: "nvidia/parakeet-ctc-1.1b",
+    whisperSpeechModel: "large-v3",
     grokSpeechAudioSettings: { uplinkMode: "pcm16" },
   }),
 }));
@@ -154,6 +155,31 @@ vi.mock("../SpeechWaveform", () => ({
 }));
 
 describe("VoiceInputButton", () => {
+  it("keeps inactive server models out of browser recognition options when capabilities arrive", () => {
+    const view = render(
+      <VoiceInputButton onTranscript={vi.fn()} speechMethod="browser-native" />,
+    );
+    expect(observedSpeechOptions.at(-1)?.parakeetModel).toBeUndefined();
+    expect(observedSpeechOptions.at(-1)?.whisperModel).toBeUndefined();
+    versionState.capabilities.push("local-speech-model-selection");
+    view.rerender(
+      <VoiceInputButton onTranscript={vi.fn()} speechMethod="browser-native" />,
+    );
+    expect(observedSpeechOptions.at(-1)?.parakeetModel).toBeUndefined();
+    expect(observedSpeechOptions.at(-1)?.whisperModel).toBeUndefined();
+  });
+
+  it("passes a saved Whisper choice only after the server capability is known", () => {
+    const view = render(
+      <VoiceInputButton onTranscript={vi.fn()} speechMethod="ya-whisper" />,
+    );
+    expect(observedSpeechOptions.at(-1)?.whisperModel).toBeUndefined();
+    versionState.capabilities.push("local-speech-model-selection");
+    view.rerender(
+      <VoiceInputButton onTranscript={vi.fn()} speechMethod="ya-whisper" />,
+    );
+    expect(observedSpeechOptions.at(-1)?.whisperModel).toBe("large-v3");
+  });
   beforeEach(() => {
     versionState.capabilities = [VOICE_INPUT_CAPABILITY];
   });
@@ -179,7 +205,7 @@ describe("VoiceInputButton", () => {
     vi.useRealTimers();
   });
 
-  it("warms only an armed follow-up and ends the window on wait", () => {
+  it("shares the first capture for follow-up without enabling idle prewarm", () => {
     speechCaptureState.followUpListenMs = 3_000;
     versionState.voiceBackends = ["ya-grok"];
     versionState.voiceBackendCapabilities = {
@@ -204,7 +230,7 @@ describe("VoiceInputButton", () => {
 
     const options = observedSpeechOptions.at(-1);
     expect(options?.keepMicWarm).toBe(false);
-    expect(options?.temporarilyKeepMicWarm?.()).toBe(false);
+    expect(options?.temporarilyKeepMicWarm?.()).toBe(true);
 
     act(() => ref.current?.continueAfterSpeechSend());
     expect(getSpeechFollowUpSnapshot().active).toBe(true);
@@ -216,48 +242,52 @@ describe("VoiceInputButton", () => {
     expect(getSpeechFollowUpSnapshot().active).toBe(false);
   });
 
-  it("does not restart after the absolute follow-up deadline", () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(10_000);
-    speechCaptureState.followUpListenMs = 3_000;
-    versionState.voiceBackends = ["ya-grok"];
-    versionState.voiceBackendCapabilities = {
-      "ya-grok": { streaming: true, smartTurn: true },
-    };
-    const ref = createRef<VoiceInputButtonRef>();
-    const props = {
-      ref,
-      onTranscript: vi.fn(() => "committed" as const),
-      speechMethod: "ya-grok" as const,
-      smartTurn: {
-        enabled: true,
-        threshold: 0.95,
-        timeoutMs: 3_000,
-        graceMs: 0,
-      },
-    };
+  it.each(["onInterimResult", "onResult"] as const)(
+    "lets speech reported by %s finish after the follow-up deadline",
+    (event) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+      speechCaptureState.followUpListenMs = 3_000;
+      versionState.voiceBackends = ["ya-grok"];
+      versionState.voiceBackendCapabilities = {
+        "ya-grok": { streaming: true, smartTurn: true },
+      };
+      const ref = createRef<VoiceInputButtonRef>();
+      const props = {
+        ref,
+        onTranscript: vi.fn(() => "committed" as const),
+        speechMethod: "ya-grok" as const,
+        smartTurn: {
+          enabled: true,
+          threshold: 0.95,
+          timeoutMs: 3_000,
+          graceMs: 0,
+        },
+      };
 
-    const view = render(<VoiceInputButton {...props} />);
-    act(() => ref.current?.continueAfterSpeechSend());
-    expect(startListening).toHaveBeenCalledOnce();
+      const view = render(<VoiceInputButton {...props} />);
+      act(() => ref.current?.continueAfterSpeechSend());
+      expect(startListening).toHaveBeenCalledOnce();
 
-    speechState.status = "receiving";
-    speechState.isListening = true;
-    view.rerender(<VoiceInputButton {...props} />);
-    act(() => vi.advanceTimersByTime(3_000));
-    expect(getSpeechFollowUpSnapshot()).toMatchObject({
-      active: true,
-      deadlineMs: 13_000,
-      expired: true,
-    });
+      speechState.status = "listening";
+      speechState.isListening = true;
+      view.rerender(<VoiceInputButton {...props} />);
+      act(() => observedSpeechOptions.at(-1)?.[event]?.("still speaking"));
+      act(() => vi.advanceTimersByTime(3_000));
+      expect(getSpeechFollowUpSnapshot()).toMatchObject({
+        active: true,
+        deadlineMs: 13_000,
+        expired: true,
+      });
 
-    const startsAtExpiry = startListening.mock.calls.length;
-    speechState.status = "idle";
-    speechState.isListening = false;
-    view.rerender(<VoiceInputButton {...props} />);
-    expect(getSpeechFollowUpSnapshot().active).toBe(false);
-    expect(startListening).toHaveBeenCalledTimes(startsAtExpiry);
-  });
+      const startsAtExpiry = startListening.mock.calls.length;
+      speechState.status = "idle";
+      speechState.isListening = false;
+      view.rerender(<VoiceInputButton {...props} />);
+      expect(getSpeechFollowUpSnapshot().active).toBe(false);
+      expect(startListening).toHaveBeenCalledTimes(startsAtExpiry);
+    },
+  );
 
   it("keeps the relayed speech socket opener stable across rerenders", () => {
     const props = {
@@ -540,6 +570,53 @@ describe("VoiceInputButton", () => {
     const recordingIcon = document.querySelector(".voice-input-recording");
     expect(recordingIcon).toBeTruthy();
     expect(recordingIcon?.classList.contains("is-speech-active")).toBe(false);
+  });
+
+  it("keeps the waveform slot across a brief Smart Turn handoff", () => {
+    vi.useFakeTimers();
+    speechState.status = "listening";
+    speechState.isListening = true;
+    speechCaptureState.followUpListenMs = 3_000;
+    versionState.voiceBackends = ["ya-grok"];
+    versionState.voiceBackendCapabilities = {
+      "ya-grok": { streaming: true, smartTurn: true },
+    };
+    const onWaveformActiveChange = vi.fn();
+    const props = {
+      onTranscript: vi.fn(),
+      speechMethod: "ya-grok" as const,
+      smartTurn: {
+        enabled: true,
+        threshold: 0.95,
+        timeoutMs: 3000,
+        graceMs: 0,
+      },
+      showWaveform: true,
+      inlineWaveform: true,
+      onWaveformActiveChange,
+    };
+    const view = render(<VoiceInputButton {...props} />);
+    onWaveformActiveChange.mockClear();
+
+    speechState.status = "finalizing";
+    speechState.isListening = false;
+    view.rerender(<VoiceInputButton {...props} />);
+    act(() => vi.advanceTimersByTime(100));
+    speechState.status = "starting";
+    view.rerender(<VoiceInputButton {...props} />);
+    act(() => vi.advanceTimersByTime(100));
+    speechState.status = "listening";
+    speechState.isListening = true;
+    view.rerender(<VoiceInputButton {...props} />);
+    expect(onWaveformActiveChange).not.toHaveBeenCalled();
+    expect(document.querySelector(".composer-speech-waveform")).toBeTruthy();
+
+    speechState.status = "idle";
+    speechState.isListening = false;
+    view.rerender(<VoiceInputButton {...props} />);
+    act(() => vi.advanceTimersByTime(300));
+    expect(document.querySelector(".composer-speech-waveform")).toBeNull();
+    expect(onWaveformActiveChange).toHaveBeenLastCalledWith(false);
   });
 
   it("puts an inline waveform inside the microphone touch target", () => {

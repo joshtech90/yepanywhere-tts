@@ -48,6 +48,7 @@ export interface UseSpeechRecognitionOptions {
   onAudioSamples?: (samples: Float32Array) => void;
   /** Browser-selected local Parakeet model id for the YA Parakeet backend. */
   parakeetModel?: string;
+  whisperModel?: string;
   /** Dedicated secure relay speech socket opener. */
   openRelayedSpeechSocket?: () => Promise<ConnectionSpeechSocket>;
   /** Callback when final transcript is available. */
@@ -98,6 +99,7 @@ function createProvider(
     unspokenPunctuation?: boolean;
     onAudioSamples?: (samples: Float32Array) => void;
     parakeetModel?: string;
+    whisperModel?: string;
     openRelayedSpeechSocket?: () => Promise<ConnectionSpeechSocket>;
     onResult?: (
       t: string,
@@ -154,6 +156,7 @@ export function useSpeechRecognition(
     unspokenPunctuation,
     onAudioSamples,
     parakeetModel,
+    whisperModel,
     openRelayedSpeechSocket,
     onResult,
     onInterimResult,
@@ -200,6 +203,7 @@ export function useSpeechRecognition(
   const reducePlaybackRef = useRef(reducePlayback);
   const unspokenPunctuationRef = useRef(unspokenPunctuation);
   const parakeetModelRef = useRef(parakeetModel);
+  const whisperModelRef = useRef(whisperModel);
   const openRelayedSpeechSocketRef = useRef(openRelayedSpeechSocket);
 
   const providerRef = useRef<SpeechProvider | null>(null);
@@ -222,6 +226,7 @@ export function useSpeechRecognition(
           ? (samples) => onAudioSamplesRef.current?.(samples)
           : undefined,
         parakeetModel: parakeetModelRef.current,
+        whisperModel: whisperModelRef.current,
         openRelayedSpeechSocket: openRelayedSpeechSocketRef.current,
         onResult: (t, metadata) => onResultRef.current?.(t, metadata),
         onInterimResult: (t) => onInterimResultRef.current?.(t),
@@ -255,6 +260,7 @@ export function useSpeechRecognition(
       unspokenPunctuation === unspokenPunctuationRef.current &&
       Boolean(onAudioSamples) === onAudioSamplesEnabledRef.current &&
       parakeetModel === parakeetModelRef.current &&
+      whisperModel === whisperModelRef.current &&
       openRelayedSpeechSocket === openRelayedSpeechSocketRef.current
     ) {
       return;
@@ -270,6 +276,7 @@ export function useSpeechRecognition(
     onAudioSamplesRef.current = onAudioSamples;
     onAudioSamplesEnabledRef.current = Boolean(onAudioSamples);
     parakeetModelRef.current = parakeetModel;
+    whisperModelRef.current = whisperModel;
     openRelayedSpeechSocketRef.current = openRelayedSpeechSocket;
 
     const old = providerRef.current;
@@ -290,6 +297,7 @@ export function useSpeechRecognition(
         ? (samples) => onAudioSamplesRef.current?.(samples)
         : undefined,
       parakeetModel,
+      whisperModel,
       openRelayedSpeechSocket,
       onResult: (t, metadata) => onResultRef.current?.(t, metadata),
       onInterimResult: (t) => onInterimResultRef.current?.(t),
@@ -313,6 +321,7 @@ export function useSpeechRecognition(
     unspokenPunctuation,
     onAudioSamples,
     parakeetModel,
+    whisperModel,
     openRelayedSpeechSocket,
   ]);
 

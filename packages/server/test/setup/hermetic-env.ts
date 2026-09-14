@@ -17,8 +17,32 @@
  * (`REAL_SDK_TESTS`, `FOREGROUND`) and `HOME` (safe-home owns it). Keep
  * CONFIG_ENV_VARS in sync with the `process.env.*` reads in config.ts.
  */
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll } from "vitest";
 import { CONFIG_ENV_VARS } from "./config-env-vars.js";
 
 for (const name of CONFIG_ENV_VARS) {
   delete process.env[name];
 }
+
+/**
+ * Give every test file its own data and scratch directories.
+ *
+ * Clearing `YEP_DATA_DIR` is not enough: the default resolves under `HOME`, and
+ * the targeted `pnpm --filter @yep-anywhere/server exec vitest run <file>` form
+ * documented for focused runs skips the safe-home wrapper. Server construction
+ * then reads and writes the developer's live server state, which has been seen
+ * failing tests outright when a running server was mid-write.
+ */
+const root = mkdtempSync(join(tmpdir(), "ya-server-test-"));
+process.env.YEP_DATA_DIR = join(root, "data");
+process.env.YEP_SCRATCH_DIR = join(root, "scratch");
+// The speech fingerprint filter reserves a quarter gigabyte by default, which
+// is right for a machine learning years of history and wrong for every test
+// process. The shape under test is the same at a small size.
+process.env.YEP_SPEECH_VOCABULARY_BYTES = "1M";
+afterAll(() => {
+  rmSync(root, { recursive: true, force: true });
+});

@@ -217,6 +217,7 @@ export interface ProjectQueueChangedEvent {
     | "dispatching"
     | "released"
     | "reordered"
+    | "readiness"
     | "promoted"
     | "failed";
   itemId?: string;

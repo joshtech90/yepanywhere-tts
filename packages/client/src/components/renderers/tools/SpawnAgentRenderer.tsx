@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useContext, useState } from "react";
 import { Link } from "react-router-dom";
 import { AgentContentContext } from "../../../contexts/AgentContentContext";
@@ -5,66 +7,21 @@ import { useSessionMetadata } from "../../../contexts/SessionMetadataContext";
 import { useRemoteBasePath } from "../../../hooks/useRemoteBasePath";
 import { useI18n } from "../../../i18n";
 import { providerChildSessionHref } from "../../../lib/providerChildSessions";
-import type { ToolCallItem } from "../../../types/renderItems";
-import type { ToolRenderer } from "./types";
-import { Spinner, TaskNestedContent } from "./TaskRenderer";
+import type { ToolCallItem } from "@yep-anywhere/shared/transcript/items";
+import { Spinner, TaskNestedContent } from "./TaskNestedContent";
 import styles from "./TaskRenderer.module.css";
 
-interface SpawnAgentInput {
-  description?: string;
-  prompt?: string;
-  message?: string;
-  task?: string;
-  objective?: string;
-  role?: string;
-  agent_role?: string;
-  agent_type?: string;
-  subagent_type?: string;
-  model?: string;
-}
-
-interface SpawnAgentResult {
-  agentId?: string;
-  nickname?: string;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function stringField(
-  record: Record<string, unknown> | null | undefined,
-  field: string,
-): string | undefined {
-  const value = record?.[field];
-  return typeof value === "string" && value.trim() ? value.trim() : undefined;
-}
-
-function parseJsonRecord(text: string): Record<string, unknown> | null {
-  try {
-    const parsed = JSON.parse(text) as unknown;
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function normalizeSpawnAgentResult(result: unknown): SpawnAgentResult | null {
-  const record =
-    typeof result === "string"
-      ? parseJsonRecord(result)
-      : isRecord(result)
-        ? result
-        : null;
-
-  if (!record) {
-    return null;
-  }
-
-  return {
-    agentId: stringField(record, "agent_id") ?? stringField(record, "agentId"),
-    nickname: stringField(record, "nickname"),
-  };
+type SpawnAgentInput = import("zod").z.output<
+  typeof toolDisplayContracts.spawn_agent.input
+>;
+type SpawnAgentResult = Exclude<
+  import("zod").z.output<typeof toolDisplayContracts.spawn_agent.result>,
+  string
+>;
+function normalizeSpawnAgentResult(
+  result: SpawnAgentResult | string | undefined,
+): SpawnAgentResult | null {
+  return typeof result === "object" ? result : null;
 }
 
 function compactText(value: string | undefined, fallback: string): string {
@@ -165,7 +122,7 @@ function SpawnAgentInline({
   toolUseId,
 }: {
   input: SpawnAgentInput;
-  result: unknown;
+  result: SpawnAgentResult | string | undefined;
   isError: boolean;
   status: ToolCallItem["status"];
   toolUseId?: string;
@@ -266,7 +223,9 @@ function SpawnAgentInline({
       </div>
 
       {failedWithoutAgent && rawResultText(result) && (
-        <pre className="tool-fallback tool-fallback-error">
+        <pre
+          className={`tool-fallback tool-fallback-error ${styles.rejection}`}
+        >
           <code>{rawResultText(result)}</code>
         </pre>
       )}
@@ -295,7 +254,7 @@ function SpawnAgentInline({
   );
 }
 
-export const spawnAgentRenderer: ToolRenderer<SpawnAgentInput, unknown> = {
+export const spawnAgentRenderer = defineTool(toolDisplayContracts.spawn_agent, {
   tool: "spawn_agent",
   displayName: "Spawn agent",
   pendingDisplayName: "Spawning agent",
@@ -307,8 +266,12 @@ export const spawnAgentRenderer: ToolRenderer<SpawnAgentInput, unknown> = {
   renderToolResult(result, isError) {
     const parsed = normalizeSpawnAgentResult(result);
     return (
-      <div className={isError ? "todo-error" : "todo-summary"}>
-        {parsed?.agentId ? `Agent ${parsed.agentId}` : "Agent spawned"}
+      <div
+        className={isError || !parsed?.agentId ? "todo-error" : "todo-summary"}
+      >
+        {parsed?.agentId
+          ? `Agent ${parsed.agentId}`
+          : rawResultText(result) || "Failed to spawn agent"}
       </div>
     );
   },
@@ -322,7 +285,7 @@ export const spawnAgentRenderer: ToolRenderer<SpawnAgentInput, unknown> = {
       return "Error";
     }
     const parsed = normalizeSpawnAgentResult(result);
-    return parsed?.agentId ? `Agent ${parsed.agentId}` : "Spawned";
+    return parsed?.agentId ? `Agent ${parsed.agentId}` : "Failed";
   },
 
   renderInline(input, result, isError, status, context) {
@@ -336,4 +299,4 @@ export const spawnAgentRenderer: ToolRenderer<SpawnAgentInput, unknown> = {
       />
     );
   },
-};
+});

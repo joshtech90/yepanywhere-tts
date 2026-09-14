@@ -1,6 +1,7 @@
 import { memo, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../../i18n";
 import { SettingsCategoryItem } from "./SettingsCategoryItem";
+import { SettingsPane } from "./SettingsPane";
 import { SettingsPaneTitleProvider } from "./SettingsPaneTitleContext";
 import {
   type SettingsSearchScope,
@@ -66,6 +67,7 @@ export function SettingsSearchResults({
   const { t } = useI18n();
   const containerRef = useRef<HTMLDivElement>(null);
   const [matchCount, setMatchCount] = useState<number | null>(null);
+  const [hasIncompletePanes, setHasIncompletePanes] = useState(true);
 
   const categoryMatches = categories.filter((category) =>
     settingsTextMatches(query, [category.label, category.description]),
@@ -78,6 +80,10 @@ export function SettingsSearchResults({
     const container = containerRef.current;
     if (!container) return;
     const recount = () => {
+      setHasIncompletePanes(
+        container.querySelectorAll("[data-settings-pane]").length !==
+          container.querySelectorAll("[data-settings-pane-ready]").length,
+      );
       setMatchCount(
         container.querySelectorAll("[data-settings-item].settings-search-match")
           .length,
@@ -98,7 +104,7 @@ export function SettingsSearchResults({
     categoryMatches.length > 0 || matchCount === null || matchCount > 0;
 
   return (
-    <div className="settings-search-results">
+    <div className="settings-search-results" aria-busy={hasIncompletePanes}>
       {categoryMatches.length > 0 && (
         <div className="settings-search-category-matches">
           <h3 className="settings-search-heading">
@@ -122,19 +128,20 @@ export function SettingsSearchResults({
           const Component = components[category.id];
           if (!Component) return null;
           return (
-            <SettingsSearchPane
-              key={category.id}
-              category={category}
-              Component={Component}
-              query={query}
-              matchValues={matchValues}
-              onJumpToItem={onJumpToItem}
-              onOpenCategory={onOpenCategory}
-            />
+            <SettingsPane key={category.id} label={category.label}>
+              <SettingsSearchPane
+                category={category}
+                Component={Component}
+                query={query}
+                matchValues={matchValues}
+                onJumpToItem={onJumpToItem}
+                onOpenCategory={onOpenCategory}
+              />
+            </SettingsPane>
           );
         })}
       </div>
-      {!hasResults && (
+      {!hasResults && !hasIncompletePanes && (
         <p className="settings-search-no-results">
           {t("settingsSearchNoResults", { query })}
         </p>

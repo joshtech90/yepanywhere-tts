@@ -98,6 +98,28 @@ Sources:
 - xAI Ephemeral Tokens:
   <https://docs.x.ai/developers/model-capabilities/audio/ephemeral-tokens>
 
+## Recognition options review — 2026-09-08
+
+The current [xAI STT reference](https://docs.x.ai/developers/model-capabilities/audio/speech-to-text)
+does not document a selectable STT model. Changing a Grok chat/voice-agent
+model is therefore not a supported dictation-quality control.
+
+- `keyterm` can bias vocabulary (100 terms, up to 50 characters each).
+  YA direct streaming does not yet send it; see
+  [keyterm biasing](pluggable-speech-recognition.md#keyterm-biasing).
+- `vad_threshold` defaults to 0.08 for streaming and 0.5 for batch.
+  Lower values admit quieter speech but can transcribe background noise.
+  YA currently leaves it unset. It does not control endpoint timing.
+- `endpointing` defaults to 400 ms upstream; YA direct streaming sends 250 ms.
+  `language=en` controls formatting, not an English-only recognition model.
+- Streaming Opus requires one raw packet per frame; MediaRecorder WebM chunks
+  are not compatible. This is a bandwidth option, not demonstrated accuracy
+  improvement. YA continues using PCM16.
+- The documented Smart Turn timeout maximum is 5000 ms; YA's 10000 ms setting
+  ceiling needs reconciliation in [the timeout gap](../gaps/xai-smart-turn-timeout-range.md).
+
+No cloud audio replay or model-quality comparison was performed in this review.
+
 ## Key Sources
 
 The client chooses one effective xAI credential source:

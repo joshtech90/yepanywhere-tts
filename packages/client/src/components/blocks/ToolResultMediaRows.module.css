@@ -14,36 +14,6 @@
   padding: 2px 4px;
 }
 
-.toggle,
-.togglePlaceholder {
-  display: inline-grid;
-  place-items: center;
-  flex: 0 0 1.35em;
-  width: 1.35em;
-  height: 1.35em;
-  padding: 0;
-  color: var(--text-muted, #888);
-  font: inherit;
-}
-
-.toggle {
-  border: 1px solid var(--border-color);
-  border-radius: 4px;
-  background: transparent;
-  cursor: pointer;
-}
-
-.toggle:hover,
-.toggle:focus-visible {
-  color: var(--text-primary, #ccc);
-  background: var(--bg-hover, #2a2a2a);
-  border-color: var(--text-secondary);
-}
-
-.togglePlaceholder {
-  opacity: 0.45;
-}
-
 .filename {
   min-width: 0;
   padding: 0;
@@ -83,9 +53,9 @@ button.filename:focus-visible {
 .preview {
   display: grid;
   place-items: center;
-  width: min(100%, var(--tool-result-media-max-width));
+  width: min(calc(100% - 4px), var(--tool-result-media-max-width));
   max-height: min(60vh, 480px);
-  margin: 4px 0 8px 30px;
+  margin: 4px 0 8px 4px;
   overflow: hidden;
   aspect-ratio: var(--tool-result-media-aspect-ratio);
   color: var(--text-muted, #888);
@@ -126,10 +96,5 @@ button.filename:focus-visible {
 
   .dimensions {
     display: none;
-  }
-
-  .preview {
-    width: calc(100% - 30px);
-    margin-left: 30px;
   }
 }

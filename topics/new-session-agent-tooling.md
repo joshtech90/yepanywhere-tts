@@ -7,7 +7,9 @@
 
 Topic: new-session-agent-tooling
 
-Status: direction proposal, 2026-08-24. Nothing is implemented. The
+Status: broader direction proposal, updated 2026-09-08. Opt-in own-session
+command delivery is implemented in [Agent Own-Session Inspection](agent-self.md).
+The remaining tooling and instruction controls here are proposals. The
 consumer-side story (what the scripts do against the server) is
 [`agent-session-access.md`](agent-session-access.md); this topic owns
 what YA injects into a session at launch. Packaging, desktop delivery, the
@@ -16,7 +18,15 @@ shared `ya-agent` dispatcher, and private input live in
 feature — the virgin instruction-scope option — is tracked in
 [`gaps/virgin-new-session-option.md`](../gaps/virgin-new-session-option.md).
 
+The [command runtime's first milestone](agent-command-runtime.sketches.md#first-milestone-inspect-the-owning-session)
+is now read-only `ya-agent self` (2026-09-08). It retains command-path and scoped
+connection delivery, but initially uses operator-managed Claude/Codex global
+instructions for advertisement. The capability fragments, New Session UI,
+private input, and broader session tooling described here remain later work.
+
 See also:
+[optional computer control](optional-computer-control.md) — session-selective,
+on-demand native control and the Codex/Sky execution reference;
 [`agent-context-injection.md`](agent-context-injection.md) — current
 instruction placement and the dormant personal-launch-integration
 sketch this overlaps;
@@ -88,7 +98,7 @@ it.
 
 Commands and fragments identify sessions by canonical YA session id —
 which is usually the provider session id — never by provider-native
-resume handles (`AGENTS.md` § Provider Session Identity). A session's
+resume handles (`DEVELOPMENT.md` § Provider Session Identity). A session's
 own id is already delivered as `AGENTCTL_SESSION_ID`; the fragment
 should say so rather than introduce a second name for the same value.
 

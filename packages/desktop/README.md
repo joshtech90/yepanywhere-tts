@@ -93,6 +93,25 @@ artifacts.
 End-to-end checks against published installers and updater feeds are recorded
 in the [desktop release QA log](../../docs/testing/desktop-release-qa-log.md).
 
+## Nightly Latest builds
+
+Older desktop releases without the channel selector need a one-time install
+from the [Latest desktop releases](https://github.com/kzahel/yepanywhere/releases?q=desktop-latest-v).
+
+Open the tray menu’s **Check for Updates** window and choose **Latest
+(nightly)**. The same app retains its data and offers signed updates with an
+explicit **Update and restart** action. Stable remains the default. Returning
+to Stable waits until its version exceeds your installed nightly; immediate
+rollback uses a manual signed reinstall, with a backup of desktop data first.
+
+The Nightly Desktop workflow checks for eligible verified source at 02:37 UTC
+and skips unchanged packaged inputs. Its manual dispatch can force an unchanged
+source rebuild for release QA. Published `desktop-latest-v*` prereleases contain
+the version, exact source SHA, and all three platform downloads. Failed builds
+remain drafts, leaving the previous successful Latest available. See the
+[desktop contract](../../topics/desktop-v0.md#stable-and-nightly-latest-channels)
+for selection, versioning, signing, and Stable catch-up rules.
+
 ## Rust checks (`cargo check` / `cargo build`)
 
 `src-tauri/tauri.conf.json` declares a Bun sidecar via

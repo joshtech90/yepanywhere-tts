@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   appendFile,
   mkdir,
+  readFile,
   rm,
   stat,
   utimes,
@@ -13,9 +14,11 @@ import { fileURLToPath } from "node:url";
 import * as zlib from "node:zlib";
 import type { CodexSessionEntry, UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SessionIndexService } from "../../src/indexes/SessionIndexService.js";
 import { getLogger } from "../../src/logging/logger.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
+import { findSessionListSummaryAcrossProviders } from "../../src/sessions/provider-resolution.js";
 import {
   getCodexMessageSourceByteCursor,
   normalizeSession,
@@ -167,6 +170,115 @@ describe("CodexSessionReader - OSS Support", () => {
       `${lines.join("\n")}\n`,
     );
   };
+
+  it("discovers recent async questions without loading transcript history", async () => {
+    const sessionId = "questions-without-open-transcript";
+    await createSessionFile(sessionId, "openai", "gpt-6-astra");
+    const filePath = join(testDir, `${sessionId}.jsonl`);
+    const event = (payload: object) =>
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: new Date().toISOString(),
+        payload,
+      });
+    const question = event({
+      type: "item_completed",
+      item: {
+        type: "AgentMessage",
+        id: "question-source",
+        delivery: "async",
+        content: [{ type: "Text", text: "Which path?" }],
+        questions: [{ title: "Which path?", options: ["First", "Second"] }],
+      },
+    });
+    await appendFile(
+      filePath,
+      `\n${event({ type: "agent_message", message: "x".repeat(2 * 1024 * 1024) })}\n${question}\n`,
+    );
+    const projectId = "test-project" as UrlProjectId;
+    const first = await reader.getSessionListSummary(sessionId, projectId);
+    expect(first?.asyncQuestions).toEqual({
+      questions: [
+        {
+          messageId: "question-source",
+          index: 0,
+          title: "Which path?",
+          age: 0,
+        },
+      ],
+      omitted: true,
+    });
+    expect(first).not.toHaveProperty("messageCount");
+    expect(reader.getEntryCacheStats().entries).toBe(0);
+    await appendFile(
+      filePath,
+      `${event({ type: "user_message", message: "Keep working" })}\n`,
+    );
+    const next = await reader.getSessionListSummary(sessionId, projectId);
+    expect(next?.asyncQuestions?.questions[0]?.age).toBe(1);
+    expect(first?.asyncQuestions?.questions[0]?.age).toBe(0);
+    const full = await reader.getSessionSummary(sessionId, projectId);
+    expect(full?.asyncQuestions).toEqual(next?.asyncQuestions);
+  });
+
+  it("adds question previews to a fresh indexed row without rereading its head", async () => {
+    const sessionId = "indexed-before-question-previews";
+    await createSessionFile(sessionId, "openai", "gpt-6-astra");
+    const projectId = "test-project" as UrlProjectId;
+    const options = { dataDir: join(testDir, "indexes") };
+    const initialIndex = new SessionIndexService(options);
+    await initialIndex.initialize();
+    const indexed = await initialIndex.getSessionSummaryWithCache(
+      testDir,
+      projectId,
+      sessionId,
+      reader,
+    );
+    expect(indexed).not.toBeNull();
+    const indexPath = initialIndex.getIndexPath(testDir, reader);
+    const persisted = JSON.parse(await readFile(indexPath, "utf8"));
+    delete persisted.sessions[sessionId].asyncQuestions;
+    initialIndex.dispose();
+    await writeFile(indexPath, JSON.stringify(persisted));
+    const index = new SessionIndexService(options);
+    await index.initialize();
+    const freshReader = new CodexSessionReader({ sessionsDir: testDir });
+    try {
+      const resolved = await findSessionListSummaryAcrossProviders(
+        {
+          id: projectId,
+          path: "/test/project",
+          name: "test",
+          sessionCount: 1,
+          sessionDir: testDir,
+          activeOwnedCount: 0,
+          activeExternalCount: 0,
+          lastActivity: null,
+          provider: "codex",
+        },
+        sessionId,
+        projectId,
+        {
+          readerFactory: () => freshReader,
+          codexReaderFactory: () => freshReader,
+          sessionIndexService: index,
+        },
+        "codex",
+      );
+      const summary = resolved?.summary;
+      expect(summary?.title).toBe(indexed!.title);
+      expect(summary?.asyncQuestions).toEqual({
+        questions: [],
+        omitted: false,
+      });
+      expect(freshReader.getLastSummaryStreamMetrics()).toBeNull();
+      expect(summary).not.toHaveProperty("messageCount");
+      expect(await readFile(indexPath, "utf8")).toBe(JSON.stringify(persisted));
+    } finally {
+      index.dispose();
+      await freshReader.close();
+    }
+  });
 
   it("identifies session as codex-oss when model_provider is ollama", async () => {
     const sessionId = "oss-session-1";
@@ -832,6 +944,7 @@ describe("CodexSessionReader - OSS Support", () => {
       title: "cheap summary title",
     });
     expect(Object.keys(listSummary ?? {}).sort()).toEqual([
+      "asyncQuestions",
       "fullTitle",
       "id",
       "projectId",
@@ -2231,6 +2344,345 @@ describe("CodexSessionReader - OSS Support", () => {
     expect(tailBoundaryId).toBe(matchingFullBoundary?.uuid);
   });
 
+  it("bounds incremental reads while preserving old cursors and append reuse", async () => {
+    const sessionId = "bounded-incremental";
+    const projectId = "test-project" as UrlProjectId;
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    const timestamp = "2026-09-08T00:00:00.000Z";
+    const message = (id: string) => ({
+      type: "response_item",
+      timestamp,
+      payload: {
+        type: "message",
+        role: "assistant",
+        id,
+        content: [{ type: "output_text", text: id }],
+      },
+    });
+    const lines = [
+      {
+        type: "session_meta",
+        timestamp,
+        payload: {
+          id: sessionId,
+          cwd: "/test/project",
+          timestamp,
+        },
+      },
+      message("old-anchor"),
+      {
+        type: "response_item",
+        timestamp,
+        payload: {
+          type: "function_call",
+          name: "shell_command",
+          call_id: "old-call",
+          arguments: JSON.stringify({ command: "true" }),
+        },
+      },
+      {
+        type: "world_state",
+        timestamp,
+        payload: {
+          full: true,
+          state: { filler: "x".repeat(5 * 1024 * 1024) },
+        },
+      },
+      ...[1, 2, 3].flatMap((i) => [
+        { type: "compacted", timestamp, payload: { message: `compact ${i}` } },
+        message(`anchor-${i}`),
+      ]),
+    ];
+    await writeFile(
+      sessionPath,
+      `${lines.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
+    const summary = await reader.getSessionSummary(sessionId, projectId);
+    if (!summary) throw new Error("Expected summary");
+    const options = { tailCompactions: 2, summaryHint: summary };
+    const first = await reader.getSession(
+      sessionId,
+      projectId,
+      "anchor-3",
+      options,
+    );
+    if (!first) throw new Error("Expected incremental session");
+    const normalized = normalizeSession(first);
+    expect(normalized.messages.map((m) => m.uuid)).not.toContain("old-anchor");
+    expect(reader.getEntryCacheStats().sourceBytes).toBeLessThan(4096);
+
+    const reads = vi.spyOn(
+      reader as unknown as CodexEntryReadInternals,
+      "readFileRange",
+    );
+    const unchanged = await reader.getSession(
+      sessionId,
+      projectId,
+      "anchor-3",
+      options,
+    );
+    if (!unchanged) throw new Error("Expected unchanged session");
+    expect(normalizeSession(unchanged).messages).toBe(normalized.messages);
+    expect(reads).not.toHaveBeenCalled();
+    await appendFile(sessionPath, `${JSON.stringify(message("appended"))}\n`);
+    const appended = await reader.getSession(
+      sessionId,
+      projectId,
+      "anchor-3",
+      options,
+    );
+    if (!appended) throw new Error("Expected appended session");
+    const appendedMessages = normalizeSession(appended).messages;
+    expect(appendedMessages.at(-1)?.uuid).toBe("appended");
+    expect(appendedMessages[0]).toBe(normalized.messages[0]);
+    expect(normalized.messages.at(-1)?.uuid).toBe("anchor-3");
+
+    const old = await reader.getSession(
+      sessionId,
+      projectId,
+      "old-anchor",
+      options,
+    );
+    if (!old) throw new Error("Expected old cursor fallback");
+    expect(old.readWindow).toBeUndefined();
+    expect(normalizeSession(old).messages.map((m) => m.uuid)).toContain(
+      "old-anchor",
+    );
+    const recent = await reader.getSession(
+      sessionId,
+      projectId,
+      "appended",
+      options,
+    );
+    if (!recent) throw new Error("Expected recent cursor");
+    expect(reader.getEntryCacheStats().sourceBytes).toBeLessThan(4096);
+    expect(normalizeSession(recent).messages).toEqual(appendedMessages);
+
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({ type: "compacted", timestamp, payload: { message: "compact 4" } })}\n${JSON.stringify(message("after-compact"))}\n`,
+    );
+    const rotated = await reader.getSession(
+      sessionId,
+      projectId,
+      "appended",
+      options,
+    );
+    if (!rotated) throw new Error("Expected rotated window");
+    expect(normalizeSession(rotated).messages.map((m) => m.uuid)).not.toContain(
+      "anchor-2",
+    );
+    expect(normalizeSession(rotated).messages.at(-1)?.uuid).toBe(
+      "after-compact",
+    );
+
+    const partial = Buffer.from(`${JSON.stringify(message("partial-😀"))}\n`);
+    const split = partial.indexOf(Buffer.from("😀")) + 2;
+    await appendFile(sessionPath, partial.subarray(0, split));
+    await reader.getSession(sessionId, projectId, "after-compact", options);
+    await appendFile(sessionPath, partial.subarray(split));
+    const [bounded, full] = await Promise.all([
+      reader.getSession(sessionId, projectId, "after-compact", options),
+      reader.getSession(sessionId, projectId),
+    ]);
+    if (!bounded || !full) throw new Error("Expected concurrent snapshots");
+    expect(normalizeSession(bounded).messages.at(-1)?.uuid).toBe("partial-😀");
+    expect(normalizeSession(full).messages.map((m) => m.uuid)).toContain(
+      "old-anchor",
+    );
+    expect(normalizeSession(bounded).messages).toEqual(
+      normalizeSession(full).messages.slice(
+        -normalizeSession(bounded).messages.length,
+      ),
+    );
+
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "response_item",
+        timestamp,
+        payload: {
+          type: "function_call_output",
+          call_id: "old-call",
+          output: "late output",
+        },
+      })}\n`,
+    );
+    const dependent = await reader.getSession(
+      sessionId,
+      projectId,
+      "after-compact",
+      options,
+    );
+    if (!dependent) throw new Error("Expected prefix-dependent result");
+    expect(dependent.readWindow).toBeUndefined();
+    expect(normalizeSession(dependent).messages.map((m) => m.uuid)).toContain(
+      "old-anchor",
+    );
+  });
+
+  it("keeps the compact tail when the rollout grew past its indexed summary", async () => {
+    const sessionId = "growing-compact-tail";
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    const compactTimestamps = [
+      "2026-09-02T01:00:00.000Z",
+      "2026-09-02T02:00:00.000Z",
+      "2026-09-02T03:00:00.000Z",
+    ];
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-09-02T00:00:00.000Z",
+        payload: {
+          id: sessionId,
+          cwd: "/test/project",
+          timestamp: "2026-09-02T00:00:00.000Z",
+          model_provider: "openai",
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-09-02T00:00:01.000Z",
+        payload: { type: "user_message", message: "first turn" },
+      }),
+      JSON.stringify({
+        type: "world_state",
+        timestamp: "2026-09-02T00:00:02.000Z",
+        payload: { full: true, state: { filler: "x".repeat(5 * 1024 * 1024) } },
+      }),
+      ...compactTimestamps.flatMap((timestamp, index) => [
+        JSON.stringify({
+          type: "compacted",
+          timestamp,
+          payload: { message: `compact ${index + 1}` },
+        }),
+        JSON.stringify({
+          type: "event_msg",
+          timestamp: timestamp.replace("00.000Z", "01.000Z"),
+          payload: { type: "user_message", message: `turn ${index + 1}` },
+        }),
+      ]),
+    ];
+    await writeFile(sessionPath, `${lines.join("\n")}\n`);
+
+    // The hint an index pass would have produced for the file as it stood.
+    const summary = await reader.getSessionSummary(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    if (!summary) throw new Error("Expected the indexed summary hint");
+
+    // Codex keeps writing: the hint is now a correct prefix, not current truth.
+    await appendFile(
+      sessionPath,
+      `${JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-09-02T04:00:00.000Z",
+        payload: { type: "user_message", message: "turn while live" },
+      })}\n`,
+    );
+    await utimes(sessionPath, new Date(), new Date());
+
+    const loaded = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+      undefined,
+      { tailCompactions: 2, summaryHint: summary },
+    );
+
+    expect(loaded?.readWindow).toMatchObject({
+      kind: "compact-tail",
+      omittedPrefix: true,
+      compactBoundaries: 2,
+    });
+    if (
+      !loaded ||
+      (loaded.data.provider !== "codex" && loaded.data.provider !== "codex-oss")
+    ) {
+      throw new Error("Expected the compact-tail detail read");
+    }
+    expect(loaded.data.session.entries.map((entry) => entry.type)).toEqual([
+      "compacted",
+      "event_msg",
+      "compacted",
+      "event_msg",
+      "event_msg",
+    ]);
+    // The appended turn is inside the window, and the reported snapshot time
+    // comes from the live file rather than the older indexed summary.
+    expect(loaded.summary.updatedAt).toBe(loaded.transcriptSnapshotUpdatedAt);
+    expect(loaded.summary.updatedAt).not.toBe(summary.updatedAt);
+  });
+
+  it("falls back to a full read when the hint claims to be newer than the file", async () => {
+    const sessionId = "rewound-compact-tail";
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    const lines = [
+      JSON.stringify({
+        type: "session_meta",
+        timestamp: "2026-09-02T00:00:00.000Z",
+        payload: {
+          id: sessionId,
+          cwd: "/test/project",
+          timestamp: "2026-09-02T00:00:00.000Z",
+          model_provider: "openai",
+        },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-09-02T00:00:01.000Z",
+        payload: { type: "user_message", message: "first turn" },
+      }),
+      JSON.stringify({
+        type: "world_state",
+        timestamp: "2026-09-02T00:00:02.000Z",
+        payload: { full: true, state: { filler: "x".repeat(5 * 1024 * 1024) } },
+      }),
+      JSON.stringify({
+        type: "compacted",
+        timestamp: "2026-09-02T01:00:00.000Z",
+        payload: { message: "compact 1" },
+      }),
+      JSON.stringify({
+        type: "compacted",
+        timestamp: "2026-09-02T02:00:00.000Z",
+        payload: { message: "compact 2" },
+      }),
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-09-02T02:00:01.000Z",
+        payload: { type: "user_message", message: "last turn" },
+      }),
+    ];
+    await writeFile(sessionPath, `${lines.join("\n")}\n`);
+
+    const summary = await reader.getSessionSummary(
+      sessionId,
+      "test-project" as UrlProjectId,
+    );
+    if (!summary) throw new Error("Expected the indexed summary hint");
+
+    const compactTailRead = vi.spyOn(
+      reader as unknown as CodexEntryReadInternals,
+      "readCompactTailSnapshot",
+    );
+    const loaded = await reader.getSession(
+      sessionId,
+      "test-project" as UrlProjectId,
+      undefined,
+      {
+        tailCompactions: 2,
+        summaryHint: {
+          ...summary,
+          updatedAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+    );
+
+    expect(compactTailRead).not.toHaveBeenCalled();
+    expect(loaded?.readWindow).toBeUndefined();
+  });
+
   it("accepts only well-formed safe source byte cursors", () => {
     expect(parseCodexSourceByteCursor("codex-cursor-byte-42")).toBe(42);
     expect(
@@ -2250,7 +2702,11 @@ describe("CodexSessionReader - OSS Support", () => {
     }
   });
 
-  it("uses the complete reader when the summary hint is stale", async () => {
+  it("still attempts the compact tail with a summary hint older than the file", async () => {
+    // An older hint describes an indexed prefix of an append-only rollout, which
+    // is exactly the state of a session Codex is still writing. The window
+    // itself comes from the live file, so the read is attempted; this fixture is
+    // too small for a compact tail, so it falls back to the complete reader.
     const sessionId = "stale-compact-tail-summary";
     await createSessionFile(sessionId, "openai", "gpt-5");
     const summary = await reader.getSessionSummary(
@@ -2277,7 +2733,7 @@ describe("CodexSessionReader - OSS Support", () => {
       },
     );
 
-    expect(compactTailRead).not.toHaveBeenCalled();
+    expect(compactTailRead).toHaveBeenCalledTimes(1);
     expect(loaded?.readWindow).toBeUndefined();
     expect(loaded?.data.session.entries[0]?.type).toBe("session_meta");
   });

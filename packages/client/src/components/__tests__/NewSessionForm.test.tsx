@@ -604,8 +604,8 @@ vi.mock("../FilterDropdown", () => ({
 }));
 
 vi.mock("../../lib/newSessionPrefill", () => ({
-  clearNewSessionPrefill: vi.fn(),
-  getNewSessionPrefill: () => "",
+  consumeNewSessionPrefill: () => null,
+  consumeNewSessionPrefillToken: () => null,
 }));
 
 vi.mock("../VoiceInputButton", () => ({

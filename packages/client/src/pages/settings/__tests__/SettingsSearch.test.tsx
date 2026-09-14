@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
   waitFor,
 } from "@testing-library/react";
-import { useEffect, useState } from "react";
+import { lazy, useEffect, useState } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsItem } from "../SettingsItem";
 import { SettingsSearchBar } from "../SettingsSearchBar";
@@ -389,5 +390,41 @@ describe("SettingsSearchResults", () => {
     await waitFor(() =>
       expect(screen.queryByText("settingsSearchNoResults")).toBeNull(),
     );
+  });
+
+  it("keeps results operable while another pane loads and finds its rows later", async () => {
+    let resolvePane!: (module: { default: typeof ToyPane }) => void;
+    const pending = new Promise<{ default: typeof ToyPane }>((resolve) => {
+      resolvePane = resolve;
+    });
+    const delayed = lazy(() => pending);
+    const props = {
+      categories,
+      components: { toy: ToyPane, other: delayed },
+      query: "streaming",
+      matchValues: false,
+      onJumpToItem: vi.fn(),
+      onOpenCategory: vi.fn(),
+    };
+    const { rerender } = render(<SettingsSearchResults {...props} />);
+    fireEvent.click(screen.getByLabelText("Streaming"));
+    expect(
+      (screen.getByLabelText("Streaming") as HTMLInputElement).checked,
+    ).toBe(true);
+    expect(screen.getByRole("status").textContent).toBe("Other: loading");
+
+    rerender(<SettingsSearchResults {...props} query="missing" />);
+    expect(screen.queryByText("settingsSearchNoResults")).toBeNull();
+    await act(async () => {
+      resolvePane({ default: ToyPane });
+      await pending;
+    });
+    await waitFor(() =>
+      expect(screen.getByText("settingsSearchNoResults")).toBeTruthy(),
+    );
+    rerender(<SettingsSearchResults {...props} />);
+    expect(screen.getAllByLabelText("Streaming")).toHaveLength(2);
+    fireEvent.click(screen.getByText("Other › General ›"));
+    expect(props.onJumpToItem).toHaveBeenCalledWith("other", "streaming");
   });
 });

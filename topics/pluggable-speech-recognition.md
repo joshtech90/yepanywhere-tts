@@ -119,6 +119,9 @@ streaming/confidence surface exists.
   committed for that index, and a higher index remains a distinct result. A
   recognizer restart clears that index ownership before accepting results from
   the new run.
+  Server model-selection options are passed only to their owning backend.
+  Discovering Parakeet or Whisper capabilities must not recreate an active
+  browser-native recognizer or interrupt its next result.
 - `YaServerProvider` captures microphone audio with `MediaRecorder`, buffers a
   complete utterance, and posts it to `/api/speech/transcribe` through the
   shared client API helper. Remote/SecureConnection clients therefore use the
@@ -398,10 +401,436 @@ client through `fetchJSON("/speech/transcribe", ...)`.
    audio-as-modality. Providers that accept audio should get the original
    audio content, while text-only providers keep the transcript-first path.
 
+## Local recognition candidates — 2026-09-08
+
+The server defaults to `distil-large-v3.5` for Whisper and
+`nvidia/parakeet-unified-en-0.6b` for NeMo Parakeet, at the maintainer's
+request. Explicit `WHISPER_MODEL` and `NEMO_MODEL` settings remain authoritative.
+Transformers Parakeet retains `nvidia/parakeet-tdt-0.6b-v3`; unified RNNT is a
+NeMo model. These choices are not verified tablet-quality improvements.
+
+Speech settings and the microphone menu offer recent model presets and custom
+IDs. Whisper offers distilled v3.5, full large-v3, turbo, and distilled v3;
+NeMo adds unified English and TDT v2 alongside the existing compatible models.
+The microphone menu lists only models supported by its selected backend.
+Its popup stays inside the viewport horizontally when opened or resized,
+including phone widths where the microphone sits away from the left edge.
+An unset browser preference or "Server default" omits the model override on
+capable servers, preserving the server configuration. Explicit saved browser
+choices persist and take effect immediately across mounted composers.
+
+The `local-speech-model-selection` capability gates the new choices. Without
+it, Whisper sends no model override; Parakeet uses its existing v3 fallback
+when unset or when a saved new preset is unsupported. Saved preferences are
+preserved, not rewritten when connecting to an older server. Existing custom
+Parakeet IDs remain available. Whisper loads, prewarms, and transcriptions share
+one queue: a model switch waits for the preceding transcription and the old
+worker's exit. A failed load returns an error and permits a later retry.
+
+| Candidate | Why compare it | Existing YA execution path |
+| --- | --- | --- |
+| [Distil-Whisper v3.5](https://huggingface.co/distil-whisper/distil-large-v3.5) | A newer English distilled model, trained with more varied data and augmentation. The authors report better short-form results than v3; this is not a tablet measurement. | `WHISPER_MODEL=distil-whisper/distil-large-v3.5-ct2` uses the published faster-whisper weights. The inspected faster-whisper 1.2.1 also recognizes `distil-large-v3.5`. |
+| [Whisper large-v3](https://huggingface.co/openai/whisper-large-v3) | Full model as the accuracy-oriented comparison; expect more work per utterance than the distilled default. | `WHISPER_MODEL=large-v3`; the existing worker remains batch-only. |
+| [Whisper large-v3-turbo](https://huggingface.co/openai/whisper-large-v3-turbo) | Pruned decoder trades some quality for speed according to its model card. Compare when full large-v3 latency is unacceptable. | `WHISPER_MODEL=large-v3-turbo`; supported by the inspected faster-whisper registry. |
+| [Parakeet TDT 0.6B v2](https://huggingface.co/nvidia/parakeet-tdt-0.6b-v2) | English-only comparison against multilingual v3; not evidence that older v2 is better. | Custom Parakeet model name `nvidia/parakeet-tdt-0.6b-v2`; verify load/decoding in the selected backend before adopting. |
+| [Parakeet unified English 0.6B](https://huggingface.co/nvidia/parakeet-unified-en-0.6b) | Released April 2026; supports offline and buffered streaming inference with configurable context. Vendor leaderboard gains do not establish tablet gains. | Default on NeMo's isolated `stt-nemo` runtime. CPU and GPU worker transcription checked; YA currently uses batch inference. |
+| [Canary-Qwen 2.5B](https://huggingface.co/nvidia/canary-qwen-2.5b) | English speech-language model worth a later accuracy comparison. | Requires a different `speechlm2`/`SALM.generate` worker, not the existing Parakeet `ASRModel.transcribe` contract. |
+
+First compare distilled v3.5 and full large-v3 on the same retained tablet
+clips, with manually verified text. Keep capture settings and preprocessing
+identical, count dropped/substituted words and invented text on silence, and
+measure latency separately. Follow with Parakeet v2/v3 and the isolated newer
+NeMo candidate if needed. Do not upgrade the shared STT environment to make
+the newer NeMo model fit; the coexistence constraints below still apply.
+
 ## Keyterm Biasing
 
-Status 2026-08-09: assessed, deliberately not wired. Revisit when retained
-speech traces show recognition misses that vocabulary bias would plausibly fix.
+Status 2026-09-09: persistent vocabulary collection and Grok-through-YA
+biasing are implemented as independent, default-off Speech settings. The
+speech-vocabulary UI still appears only when discovery SQLite is ready (the
+default `YEP_SQLITE=auto`). Explicit `YEP_SQLITE=off` remains authoritative.
+Ranking approximations are recorded in
+`gaps/speech-vocabulary-ranking-approximations.md`.
+
+### Where the learned table lives
+
+The learned table and its fingerprint filter live in the data directory,
+alongside the settings file. That directory is local disk whenever this feature
+can run at all: learning is gated on discovery SQLite being ready, and startup
+refuses to open that database on a network filesystem, so the placement the
+earlier separate reservation searched for is now guaranteed rather than sought
+(see [optional SQLite](optional-sqlite.md) § Data directory placement). The
+filter is still sized against free space and keeps a gigabyte of headroom, so a
+machine with little room gets a smaller filter rather than a full disk. Profiles
+stay separate because their data directories are separate. Installs that used
+the previous reserved directory are moved on first open: the table is renamed or
+copied, and the filter is renamed when that is free and abandoned otherwise,
+since it only saves relearning that the table's own checkpoints already prevent.
+
+Losing either file costs a rescan, never a wrong answer, and the table is
+written with synchronous commits off: a power loss or kernel crash can drop
+recent counts, an ordinary process crash cannot, and the journal mode stays
+write-ahead so the failure is lost counts rather than a corrupt file.
+
+Word counts, observed spellings, and scan checkpoints are rows in a SQLite
+database there. Only the rows a scan touched are written, in bounded
+transactions that yield between them, so recording a scan costs what the scan
+observed rather than the size of everything ever learned. Iteration returns the
+word strings, which top-N ranking needs.
+
+Content fingerprints are a blocked Bloom filter, resident in memory and backed
+by a fixed-size file in the same directory. Each key sets eight bits inside one
+64-byte block, so a flush writes only the 64 KB regions that changed, in place,
+with no truncate and no window where a reader sees an empty set. The default
+reservation is 256 MB, holding well over a hundred million distinct messages
+before its design load; `YEP_SPEECH_VOCABULARY_BYTES` moves it. The filter is
+allocated on first use, so a server whose owner never turned learning on pays
+nothing. Membership is approximate in one direction: a message that was counted
+always reads as seen, while an uncounted one can read as seen at well under a
+percent, which skips that message. Adding never clears a bit, so a partial write
+can lose evidence but never invent it.
+
+Nothing on the scan path waits for those writes. A flush commits to memory,
+hands the changed rows to a single coalescing writer, and returns; the writer
+runs one batch at a time and folds in whatever arrived meanwhile. A scan that
+observed nothing new does not flush at all, so the catalog republications that
+live sessions produce every few seconds cost no writes, no rebuilt ranking, and
+no new revision.
+
+Writes are also floored at one every ten minutes, moved by
+`YEP_SPEECH_VOCABULARY_WRITE_SECONDS`. Waiting shrinks the work rather than
+merely delaying it, because a word seen fifty times inside one interval is still
+one row written once. A crash costs at most one interval of learning, and even
+that is recovered by a rescan, since each session's checkpoint is written in the
+same batch as the counts it covers. Shutdown, reset, and the adoption of the
+previous layout's files write immediately instead of waiting; the old files are
+deleted only after the adopting write lands, so a server killed inside the
+interval still has them.
+
+The filter has two responses to filling up, and the cheap one gets the first
+chance. At a false-positive rate of a tenth of a percent — 137.6 million
+messages for the 256 MB default, against the 179.0 million at which the filter
+is called full — YA compacts it: a replacement filter is built from the last
+epsilon of history in the same small yielding steps a scan uses, then swapped in
+by rename, and a floor is recorded at the moment the rebuild started. Learned
+counts are untouched. The floor is what makes the forgetting safe: content at or
+before it counts as already seen without consulting the filter, so the messages
+the rebuild dropped cannot be counted twice. Epsilon defaults to two hours and
+`YEP_SPEECH_VOCABULARY_EPSILON_HOURS` moves it; hours rather than minutes
+because provider timestamps are not assumed to come from a monotonic,
+daylight-saving-immune clock, so the window has to absorb a wall-clock step.
+Compaction backs off for an hour, since a window that cannot fit the filter
+would otherwise rebuild in a loop.
+
+Only if the filter still passes its design load does YA empty it along with
+everything counted through it and relearn the retained window, since a filter
+that can no longer tell new text from old would silently stop counting. That
+path discards learned counts, which is why compaction exists to precede it. Settings, which a
+rescan cannot rebuild, stay in `{dataDir}/speech-vocabulary-state.json`, written
+through a temporary file and a rename so no reader sees a partial file. An
+unreadable settings file reverts to defaults with a logged warning rather than
+failing server construction. The previous layout's `speech-words.json`,
+`speech-word-case.json`, and `speech-seen.hash` are adopted once on first start
+and then deleted.
+
+The controls live at the top of Settings → Speech backends, under Learned
+speech vocabulary. Settings search finds them by vocabulary, keyterms, lexicon,
+Scan + Learn, Stop + Clear, and Explore vocabulary. When the capability is absent,
+the same searchable entry explains disabled/unavailable storage or the need to
+update the server; it mounts no controls and makes no vocabulary requests.
+
+### Learned vocabulary contract
+
+The server learns submitted user text and assistant text from durable provider
+history through the existing session readers and normalization. It does not
+learn unsubmitted browser drafts, tool arguments/results, reasoning blocks,
+explicit metadata messages, or compact summaries. Untimestamped records are
+excluded because they cannot be assigned to the requested history window.
+The catalog supplies source identity and recency; UI order and live partial
+message IDs are never learning inputs.
+
+Speech settings offer a numeric hours field and slider, a
+green Scan + Learn and red Stop + Clear actions, progress, and a separate
+recognition-biasing switch. Clicking Scan + Learn turns learning on if it
+was off, then starts a scan. Stop + Clear cancels the current scan and clears
+counts, hashes, and checkpoints while preserving the opt-in settings.
+Enabling collection starts the selected retrospective scan. Catalog changes
+and completed/live session activity schedule coalesced subsequent learning.
+
+Hours accepts any finite value of zero or more, fractions included; one hour
+looks back an hour and zero looks back at nothing. The slider's track stops at
+8760 because a year is a reasonable end for a drag, not because larger values
+are refused — the field takes them.
+
+The hours setting says how far back to look, and that is all it says. It does
+not expire anything already collected: only Stop and Clear followed by a fresh
+start does that. It permits, and does not promise against, content before the
+window going uncollected. Nor does it promise that everything inside the window
+is collected — the floor described above can sit inside it after a compaction,
+and a scan counts nothing below the floor. So the setting bounds a scan's reach
+downward and guarantees nothing upward.
+
+Pausing collection and resuming it leaves a gap, and the slider is not moved to
+cover it. Progress is per session rather than one global mark: each session
+records the version and cutoff it was scanned at, so resuming rescans any
+session whose source changed during the pause or whose stored cutoff is later
+than the new one, and the fingerprint filter keeps the rescan from counting
+anything twice. Content from the gap that falls outside the current window is
+simply not collected, which the setting permits. YA does not widen the user's
+window on their behalf to close a gap; the setting is theirs, and a silent
+change to it would be a worse surprise than the omission it prevents.
+
+Stop and Clear discards the floor along with the counts, receipts, and
+checkpoints. That coupling belongs to the stop rather than to the fingerprint
+filter: the floor records how far counting already reached, so any future mode
+that dedupes differently, or not at all, still keeps a floor and still has to
+clear it here. A floor that survived a clear would tell the next scan that
+everything older was already counted, and the cleared store would silently
+refuse to relearn it.
+Disabling collection stops it without clearing committed counts or progress;
+recognition can independently continue using the saved vocabulary. Interrupted
+scans resume by reconciling incomplete sessions on reentry. Reset clears counts,
+contribution receipts, and scan checkpoints together; it cancels old work but
+keeps the two opt-in settings. A later explicit scan can relearn that history.
+Automatic catalog publications after reset learn only records timestamped
+after reset; stale catalog work cannot silently restore old history.
+
+Word counts use Unicode NFKC normalization and lowercase, retaining internal
+apostrophes, underscores, dots, and hyphens. Numeric-only tokens and tokens
+longer than 100 characters are excluded. User and assistant counts remain
+separate; no generated contribution is relabeled as user text.
+
+Alongside each count the server records how the word was written, so a term can
+be sent to a recognizer spelled as its writers spell it. Two positions withhold
+that evidence. A capital at the start of a line, a sentence, or anywhere in a
+Markdown heading line is forced by position and says nothing about the first
+letter; quotes, brackets, list markers and emphasis are looked past to find the
+real position. An all-lowercase spelling is discounted rather than trusted,
+because typing everything lowercase is as ordinary as capitalizing a sentence,
+and it leaves every letter open rather than only the first. Interior capitals
+are never forced and always count. At most three spellings are kept per word,
+the newcomer inheriting the weakest slot so a spelling that appears late can
+still overtake. Case evidence is not user-visible: exploration and the stored
+counts stay keyed by the lowercase word.
+
+A word is then sent spelled as its strongest free-position evidence, or as the
+plain lowercase word where the only capitals were forced and carry no interior
+capital. `The` at a hundred sentence starts is still `the`; `YA`, `JSONL` and
+`SQLite` keep their capitals.
+
+The local-disk table owns the word counts, the observed spellings, and the scan
+checkpoints; the filter beside it owns the fingerprints. Spellings are their own
+rows, so a server without this feature reads the counts unchanged and a server
+with it treats missing spellings as no evidence. Already-seen fingerprints skip
+tokenize; new messages are tailed. Scan work yields in small bursts so the Node
+process stays responsive. Distinctive ranking uses
+`(observed - expected) / sqrt(expected + 1)` from this topic, not raw
+excess count. The server keeps a global top-500 heap and a per-session
+top-100 with the session multiplier already applied. A recognition request
+merges them by word, and the session entry replaces the global one rather than
+adding to it, so a term in both scores exactly its multiplier and not one more.
+The multiplier is applied once, where the word is offered to the session heap.
+Any path that feeds these heaps therefore offers each word to both, at its plain
+score globally and its multiplied score per session; feeding only the session
+heap would leave the global list stale between rebuilds.
+Live increments re-score only the updated word; a full rebuild of those
+heaps runs on flush. A receipt fingerprints the durable
+role, timestamp, and complete extracted text using SHA-256. Exact duplicate
+records with those same fields in the same source session count once;
+identical text at different durable timestamps counts separately. Presentation
+IDs, record positions, read-window indexes, and metadata unrelated to the text
+do not affect the fingerprint. No vocabulary row stores a list of fingerprints.
+
+A session's counts and its scan checkpoint are written together, so a session
+that finished scanning is not scanned again while its source version holds.
+Previously learned history outside the window is preserved. Revised or removed
+text is not subtracted: the fingerprint of the old wording simply stops
+appearing, and its counts stand. Reset advances a persistent generation; an
+in-flight scan from an older generation cannot restore cleared data. Losing only
+scan checkpoints causes a rescan rather than double counting, because the
+fingerprint filter still recognizes the messages already counted. Losing the
+filter as well means those messages are counted a second time, which is why
+Reset clears counts, spellings, checkpoints, and fingerprints together.
+
+The collector keeps only its current reader window and 32-message batch; it
+does not retain transcripts in its own cache. It reuses provider reader bounds
+and caches, including Codex compact-window paging where available. Cold reader
+costs remain those of the existing provider readers. The synchronous database
+transactions never await provider I/O; scan work yields between batches and
+windows. Disabling or disposing the service prevents further publication, and
+closing Settings releases its progress timer.
+
+#### Vocabulary exploration
+
+Speech settings provide an **Explore vocabulary** action. Its default view
+shows up to 18 distinctive recurring words in a compact table with counts and
+baseline-frequency ratios. In-cell bars have length proportional to count,
+split blue/purple for user/assistant contributions. Green bars extend left
+from the ratio column's right edge, scaled by `log(1 + ratio)` relative to the
+largest visible value (with a denominator floor of one). Missing baseline
+words have no ratio bar. Hover shows a tooltip; click, tap, or keyboard focus
+selects a word and expands exact source counts directly beneath its row.
+The table leads the view, with filters and explanation below it; a top-right
+close icon dismisses the view even while loading. A **Most frequent** view and
+adjustable minimum count (initially six learned occurrences, combining user
+and assistant counts) make early scan results browsable. Totals update
+after each completed session, while message progress also advances during
+scanning. Candidate counts are requested only while exploration is open, using
+GET `/api/speech/vocabulary?includeWords=1`; at most 2,000 words are returned,
+ordered by combined count then spelling. This is a bounded frequent-word view,
+not an exhaustive search of every learned outlier.
+
+The browser fetches Hermit Dave's English OpenSubtitles 2018 top-50,000
+unigram counts on first opening the view, pinned to FrequencyWords commit
+`525f9b560de45753a5ea01069454e72e9aa541c6`. The plain-text resource is
+approximately 623 KB, lives outside Git, and needs no runtime decoding library.
+The view links to its source and CC BY-SA 4.0 license. It sends no learned words,
+credentials, or referrer to that fixed public URL. Browser HTTP caching may
+reuse the response. A failed fetch leaves raw-count exploration available;
+reopening retries. There is no startup download. Recognition independently
+loads the same pinned resource on demand and caches it in server app data.
+
+Baseline frequencies are normalized within that published list. Distinctive
+words must exceed their expected count, and rank by
+`(observed - expected) / sqrt(expected + 1)`. Smoothing limits the influence of
+tiny reference counts; this is exploratory ranking, not a significance test.
+Unknown words have no ratio and appear separately by count. Subtitle language,
+code, other languages, and differing tokenization make this a rough reference.
+
+Closing exploration aborts an outstanding reference fetch, releases its parsed
+reference map and candidate arrays, and stops detailed word requests. The full
+learned lexicon stays in the in-memory count map, with `count > k` as a
+linear filter for display and recognition.
+Any future permanent server reference cache may retain about 10,000 word/frequency
+pairs; larger reference tables require eviction. Display-only resources may load
+on demand. Corpus-derived embeddings, cooccurrences, or occurrence references
+change collection and remain in the
+[semantic-map sketch](pluggable-speech-recognition.sketches.md).
+
+Recognition selects up to 100 terms of at most 50 characters, xAI's documented
+limits. All learned terms with positive excess over English are candidates,
+including single occurrences, assistant-only terms, and words absent from the
+reference. The top 1,000 English words are explicitly excluded, even when locally
+overrepresented.
+
+One exception admits an excluded word: where writing settles on a spelling with
+an interior capital, that spelling is a different term from the English word and
+is counted and offered under itself. `YA`, `HEAD` and `OK` become terms while
+`ya` stays blocked, and a spelling loses this standing as soon as it stops being
+the word's dominant form, so an occasionally shouted `NOT` never qualifies. Such
+a term is charged the rarest listed English frequency rather than treated as
+never seen, and at most a fifth of a selection may be these spellings. Case is
+not meaning-carrying and a spoken acronym is usually transcribed correctly
+anyway; the point is to spell it as the reader expects, not to crowd out jargon
+the recognizer has no prior for. The selector uses the in-memory distinctive heaps (global ~500, per-session
+100) rather than walking every stored word; exploration's 2,000-word view and
+six-occurrence display filter do not constrain recognition.
+
+Usage and rarity supply a first approximation to expected missed uses. Global
+priority uses `(observed - expected) / sqrt(expected + 1)`, with expected count
+computed from all counted user and assistant tokens. Unlisted words use zero
+reference frequency in this heuristic and compete normally, except where the
+reference splits a token YA keeps joined. The published list carries `'s`, `'t`
+and `'ll` as their own rows, so every contraction and possessive is missing from
+it and would otherwise rank as maximally distinctive — `i'll` and `i'm` were the
+two highest-scoring terms before this. A joined form is never more frequent than
+any of its parts, so the smallest listed part bounds it, which also keeps
+`agentctl's` from competing with `agentctl`. Eligible active-
+session terms receive a configurable priority multiplier, five by default:
+that many times the score the same term would carry globally, not one more.
+Ties break lexically.
+
+A multiplier alone cannot keep a fresh session visible, and the setting exists
+to be turned down rather than up. Global counts grow with history without
+bound while a new session's stay small, so for any fixed factor there is a
+history long enough to swamp it. The reservation is the mechanism that does
+not decay: a configurable share of the selection, zero by default, is held for
+the active session before score alone decides the rest. It is a floor and not
+a ceiling — session terms that outrank everything still take more than their
+share, and the list is filled to its limit with unique terms either way. A
+principled replacement would blend session and global evidence in probability
+space rather than scale a score; see
+[the ranking approximations gap](../gaps/speech-vocabulary-ranking-approximations.md). The score only selects the list inside YA: Grok receives plain
+repeated `keyterm` values, never numeric scores or weights. Acoustic confusion,
+homophones, and measured error probabilities remain in the requested
+[error-modeling gap](../gaps/speech-recognition-error-modeling.md); no
+transcription-quality gain is established by this heuristic.
+Caller-supplied keyterms take priority within Grok's same limits. Batch and
+both direct-to-YA and relayed streaming requests use the same selection;
+request logs record exactly the selected terms, and retained batch audio
+metadata also records them. No new words are implicitly added to the
+send/cancel/wait command vocabulary.
+
+With biasing off, recognition does not load the English reference. First use
+with biasing on reads the pinned app-data text cache or downloads the fixed
+public resource with a five-second network timeout and 2 MB response limit.
+Concurrent requests share the load. No learned text is sent to the resource
+host, and no frequency table ships in Git. The parsed 50,000-row map is retained
+for the process lifetime once loaded, and is pre-warmed at startup when learning
+or biasing is already enabled, so no dictation request pays for it. Parsing that
+list measured about 60 ms: 49 ms to parse, 10 ms to rank the common words, 2 ms
+to find the floor. A derived on-disk form was measured and rejected — it saved
+25 ms of that once per server start for a file 2.6 times the size of the source,
+because rebuilding the map dominates and no format avoids it. Its text cache
+still survives server restart. Shutdown aborts loading and releases the map. Reset or disabling biasing during loading cannot
+publish stale terms. A reference load/cache failure logs a diagnostic and
+continues ordinary recognition with caller-supplied terms only; another request
+may retry after one minute. A malformed on-disk cache must be removed to refetch.
+Reference loading shares the streaming handshake promise, so incoming audio can
+buffer in order. A disconnected or superseded stream cannot open an upstream
+connection after that load completes.
+
+The browser maintains a growing active-session term set from messages already
+loaded in its current session view. It starts on speech use, includes submitted
+user and assistant text, and ignores provisional streaming text, tool payloads,
+reasoning, and metadata messages. Trimming the rendered transcript window does
+not discard observed terms. The set has no time window or decay, makes no
+additional history reads, and is released with the view. Terms first introduced
+by an ASR result alone are excluded from the bonus. Later assistant use, including
+an echo, establishes discussion relevance and makes the term eligible; terms
+already present before that ASR result remain eligible. Live ASR callbacks
+and loaded `messageMetadata.speech` establish origin independently of a visible
+prefix such as 🎤. Historical records lacking speech metadata cannot establish
+ASR origin; this is not retrospective recovery of missing provenance.
+
+At most 10,000 terms travel in `context.sessionTerms`; larger local sets retain
+all terms and send their latest 10,000 additions. The server normalizes and bounds
+this list. Hints only boost existing learned candidates and do not increment
+durable counts. It caches at most 16 selected 100-term lists, keyed by a digest
+of the supplied set and invalidated by committed count changes or reset. An
+unchanged selection can be reused without consulting the reference map. Hint lists
+are omitted from retained audio metadata and request logs; selected keyterms
+remain auditable.
+
+The optional `speech-vocabulary-session-terms` capability (permanent ID 66,
+introduced in 0.8.2) gates this field on existing batch and stream requests and
+is advertised only with ready SQLite. The maintainer-approved release corpus
+is v0.8.0 and v0.8.1; both lack session hints. Without it, the browser neither
+maintains nor sends the hint set, and existing recognition continues. The older
+`speech-vocabulary` capability retains its original meaning.
+
+The session-terms contract extends the request payload on the existing
+transcription route and WebSocket GET upgrade. It does not own the whole
+speech route module or gate its key, prewarm, and other recognition routes.
+
+The [project-specific vocabulary gap](../gaps/project-specific-speech-vocabulary.md)
+tracks project-wide selection beyond the active-session bonus. Durable learned
+counts remain installation-wide; no per-project occurrence records are added.
+
+The optional `speech-vocabulary` capability (permanent ID 65, introduced in
+0.8.2) is advertised only with ready SQLite. It owns GET/PUT
+`/api/speech/vocabulary` and POST `.../scan` and `.../reset`. The approved
+optional release corpus is v0.8.0 (2026-08-31) and v0.8.1 (2026-09-05);
+both lack these routes. Without the capability, clients hide the controls and
+make no vocabulary request. Existing capabilities retain their meanings.
+
+Direct Grok does not consume learned vocabulary in version 1. Its later
+in-memory replica needs a separately approved snapshot/reset version and
+incremental synchronization contract. Deepgram and other backend integrations
+also remain future work. Whisper's full text before the insertion cursor is a
+separate context input, not a replacement for or use of unigram statistics.
+
+### Backend biasing primitives
 
 What the backends offer. xAI STT (batch and streaming) and Deepgram accept a
 repeatable `keyterm` parameter that biases recognition *toward* the listed
@@ -412,12 +841,10 @@ confidence, n-best alternatives, or any "score this audio against a command
 list" query, so a resemblance-style constrained-command match cannot be built
 from the API surface — only a thumb on the transcript scale.
 
-YA plumbing status. The batch path is plumbed except at the source:
-`POST /api/speech/transcribe` accepts `keyterms` and both cloud backends
-forward it (`routes/speech.ts`, `xaiSttBackend.ts`, `deepgramBackend.ts`), but
-no client code sends any. The streaming path has no keyterm support at all:
-the client WS start frame, the server's xAI streaming URL builder, and the
-direct-xAI `buildXaiSttUrl` would each need the parameter added.
+`POST /api/speech/transcribe` accepts explicit `keyterms`; Grok and Deepgram
+forward them. Learned terms currently augment Grok requests only. The server
+adds streaming Grok terms when opening the upstream session; browser-direct
+Grok has no learned-vocabulary integration.
 
 Candidate uses, in rough value order:
 
@@ -631,11 +1058,8 @@ The 2026-06-16 coexistence spike found:
   encoder does not accept that argument. Keep the unified streaming target on
   the separate/newer-NeMo track.
 
-YA now exposes this as a separate batch-only `ya-nemo` backend. The shared
-Parakeet model selector includes the current NeMo 2.0.0-compatible set:
-`nvidia/parakeet-tdt-0.6b-v3`, `nvidia/parakeet-rnnt-1.1b`, and
-`nvidia/parakeet-ctc-1.1b`; `nvidia/parakeet-unified-en-0.6b` remains the
-desired streaming-quality target for a separate newer-NeMo environment. Any
+The current batch-only `ya-nemo` backend uses the isolated runtime below. The
+older shared add-on remains a recovery recipe, not its active runtime. Any
 NIM/NGC multilingual RNNT variant should be considered only if there is a
 host-installable local runtime that fits the Rocky 8 / pixi deployment
 constraints.
@@ -644,6 +1068,31 @@ Hosted relay support for server-local STT is a product choice, not a technical
 requirement. If the operator wants phone-to-local-Whisper dictation through
 YA, the existing batch YA API path is the safer first target; relayed streaming
 to a local model remains a later optimization after local batch is solid.
+
+### Isolated NeMo runtime
+
+`ya-nemo` launches in the separate pixi `stt-nemo` environment with
+`nemo_toolkit[asr]==3.0.0`, installed by
+`pixi run -e stt-nemo nemo-bootstrap`. Whisper and Transformers remain in
+`stt`; their lock entries and the known-good recovery pins are unchanged.
+The committed pixi environments currently support Linux x86-64 only.
+
+The [unified model card](https://huggingface.co/nvidia/parakeet-unified-en-0.6b)
+names NeMo 2.7.3, but that release fails to load its encoder configuration.
+The failure is also recorded in
+[NVIDIA's issue tracker](https://github.com/NVIDIA-NeMo/Speech/issues/15705).
+[NeMo Speech 3.0](https://github.com/NVIDIA-NeMo/Speech/releases/tag/v3.0.0)
+includes the required encoder. Its file-input transcription path still reads
+a missing `validation_ds` from this checkpoint, so YA decodes every upload to
+16 kHz mono float samples and uses NeMo's supported waveform-array input.
+This also normalizes WAV input instead of assuming its channel/sample rate.
+Hypothesis results contribute their text, never an object representation.
+
+The backend remains batch-only. Model-native streaming support does not make
+the YA endpoint a streaming recognizer. Failed model loads and requests return
+explicit errors; the worker never substitutes a different model. Validation
+checks/imports bootstrap this isolated environment, while actual model loading
+remains deferred to prewarm or transcription.
 
 ## Verification Checklist
 

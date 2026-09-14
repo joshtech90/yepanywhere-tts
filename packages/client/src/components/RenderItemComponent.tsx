@@ -9,6 +9,7 @@ import {
 } from "react";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { useI18n } from "../i18n";
+import { AsyncQuestionMessage } from "./AsyncQuestions";
 import {
   MESSAGE_STALE_THRESHOLD_MS,
   getEarliestMessageTimestampMs,
@@ -26,8 +27,8 @@ import type {
   ConversationThinkingPreview as ConversationThinkingPreviewData,
   ConversationThinkingPreviewSlot,
   RenderItem,
-} from "../types/renderItems";
-import { formatCommandDuration } from "../lib/shellToolOutput";
+} from "@yep-anywhere/shared/transcript/items";
+import { formatCommandDuration } from "@yep-anywhere/shared/transcript/shellToolOutput";
 import { useStickToBottom } from "../lib/stickToBottom";
 import {
   type ActivityHeightReserve,
@@ -43,6 +44,12 @@ import {
   CONVERSATION_THINKING_AUTO_HIDE_ROLLUP_MS,
   conversationThinkingAutoHideDelayMs,
 } from "../lib/sessionDetail/thinkingPreviewAutoHide";
+import {
+  CONVERSATION_CONTEXT_RESERVE_LINES,
+  CONVERSATION_PROSE_LINE_HEIGHT_RATIO,
+  conversationRowHeightCeilingPx,
+  stackedThinkingBudgetPx,
+} from "../lib/sessionDetail/thinkingPreviewBudget";
 import { ThinkingText } from "./ThinkingText";
 import { MessageAge } from "./MessageAge";
 import {
@@ -59,7 +66,8 @@ import { ToolCallRow } from "./blocks/ToolCallRow";
 import { UserPromptBlock } from "./blocks/UserPromptBlock";
 import { LinkifiedText } from "./ui/LinkifiedText";
 import styles from "./RenderItemComponent.module.css";
-import { WorkflowContext, WorkflowOutput } from "./WorkflowOutput";
+import { WorkflowContext } from "./WorkflowOutput";
+import { WorkflowAssistantOutput } from "./WorkflowAssistantOutput";
 
 interface Props {
   item: RenderItem;
@@ -300,16 +308,193 @@ interface ActivityHeightReserveController {
   timer: number | null;
 }
 
+const LATEST_THINKING_PREVIEW_SELECTOR =
+  '.conversation-thinking-preview[data-preview-slot="latest"]';
+const PREVIOUS_THINKING_PREVIEW_SELECTOR =
+  '.conversation-thinking-preview[data-preview-slot="previous"]';
+const THINKING_PREVIEW_CONTENT_SELECTOR =
+  ".conversation-thinking-preview-content";
+const STACKED_THINKING_BUDGET_VAR = "--conversation-previous-thinking-budget";
+/**
+ * Measured state of the previous thinking card, read by the stylesheet:
+ * `stacked` when it wrapped below the current card, so its height adds to the
+ * row; `dropped` when even a short thought no longer fits the budget. Absent
+ * while the two cards share a flex line and the ordinary cap suffices.
+ */
+const PREVIOUS_THINKING_STATE_ATTR = "previousThinking";
+/** Rounding slack when deciding whether two cards share a flex line. */
+const SHARED_FLEX_LINE_TOLERANCE_PX = 1;
+
+/**
+ * The scrolling ancestor the row has to fit inside — `.session-messages` in an
+ * ordinary session, the read-only shell's own scroller in a public share.
+ * Resolved from computed overflow rather than a class name so both surfaces
+ * work without naming either.
+ */
+function findTranscriptViewport(row: HTMLElement): HTMLElement | null {
+  for (let node = row.parentElement; node; node = node.parentElement) {
+    const { overflowY } = window.getComputedStyle(node);
+    if (overflowY === "auto" || overflowY === "scroll") return node;
+  }
+  return null;
+}
+
+/**
+ * Two lines of the preceding paragraph, in the prose metrics actually in force,
+ * plus whatever separates that paragraph from the row.
+ *
+ * A thinking card's own prose is styled from the same `--output-prose-*`
+ * variables as the conversation text above the row, so its rendered line height
+ * *is* the measurement. With no rendered prose in the row — every card
+ * collapsed — fall back to the row's font size times the prose line-height
+ * ratio, which still moves with the reader's font and UI size settings rather
+ * than freezing a pixel guess. The separating gap is counted because two lines
+ * of *space* above the row would otherwise be spent on the paragraph's own
+ * trailing margin, leaving one line of text on screen instead of two. See
+ * topics/responsive-layout-gaps.md.
+ */
+function conversationContextReservePx(
+  row: HTMLElement,
+  rowRect: DOMRect,
+): number {
+  const prose = row.querySelector<HTMLElement>(
+    `${THINKING_PREVIEW_CONTENT_SELECTOR} .thinking-text`,
+  );
+  const measuredLinePx = prose
+    ? Number.parseFloat(window.getComputedStyle(prose).lineHeight)
+    : Number.NaN;
+  const linePx =
+    Number.isFinite(measuredLinePx) && measuredLinePx > 0
+      ? measuredLinePx
+      : CONVERSATION_PROSE_LINE_HEIGHT_RATIO *
+        (Number.parseFloat(window.getComputedStyle(row).fontSize) || 0);
+  const precedingBottomPx =
+    row.previousElementSibling?.getBoundingClientRect().bottom;
+  const gapPx =
+    precedingBottomPx === undefined
+      ? 0
+      : Math.max(0, rowRect.top - precedingBottomPx);
+  return CONVERSATION_CONTEXT_RESERVE_LINES * linePx + gapPx;
+}
+
+/**
+ * Scroll content below the row: later transcript rows plus the transcript's own
+ * bottom padding and fade. At the live edge that sits between the row and the
+ * bottom of the viewport, so the row cannot spend it. Measured as a distance
+ * from the row's bottom to the end of the scrollable content, which is
+ * independent of both the current scroll position and the row's own height.
+ */
+function trailingScrollContentPx(
+  rowRect: DOMRect,
+  viewport: HTMLElement | null,
+): number {
+  if (!viewport) return 0;
+  const rowBottomInContentPx =
+    viewport.scrollTop + rowRect.bottom - viewport.getBoundingClientRect().top;
+  return Math.max(0, viewport.scrollHeight - rowBottomInContentPx);
+}
+
+function clearStackedThinkingBudget(row: HTMLElement): void {
+  delete row.dataset[PREVIOUS_THINKING_STATE_ATTR];
+  row.style.removeProperty(STACKED_THINKING_BUDGET_VAR);
+}
+
+/**
+ * Bound a previous thinking card that wrapped below the current one, and drop
+ * it when even a short thought no longer fits.
+ *
+ * Beside the current card the previous one costs nothing: it caps to the
+ * current card's height, which already owns the row. Below it, its height adds
+ * to the row, so the pair can outgrow the transcript viewport — and since the
+ * current card comes first, that is the one that leaves the top of the screen
+ * under follow.
+ *
+ * Every input is read off the row's first line and the current card, never off
+ * the previous card's own height, and a dropped card keeps its box in the flex
+ * layout at zero height. Both matter for the same reason: removing the item
+ * would change the wrap the budget was measured from, and the drop decision
+ * would flap. See topics/responsive-layout-gaps.md on conditional visibility.
+ *
+ * @returns the tallest the row may be, for the height reserve to respect.
+ */
+function syncStackedThinkingBudget(
+  row: HTMLElement,
+  viewport: HTMLElement | null,
+): number | null {
+  const viewportHeightPx = viewport?.clientHeight || window.innerHeight;
+  if (!(viewportHeightPx > 0)) {
+    clearStackedThinkingBudget(row);
+    return null;
+  }
+  const rowRect = row.getBoundingClientRect();
+  const contextReservePx = conversationContextReservePx(row, rowRect);
+  const trailingContentPx = trailingScrollContentPx(rowRect, viewport);
+  const rowCeilingPx = conversationRowHeightCeilingPx(
+    viewportHeightPx,
+    trailingContentPx + contextReservePx,
+  );
+
+  const latestCard = row.querySelector<HTMLElement>(
+    LATEST_THINKING_PREVIEW_SELECTOR,
+  );
+  const previousCard = row.querySelector<HTMLElement>(
+    PREVIOUS_THINKING_PREVIEW_SELECTOR,
+  );
+  if (!latestCard || !previousCard) {
+    clearStackedThinkingBudget(row);
+    return rowCeilingPx;
+  }
+
+  const latestRect = latestCard.getBoundingClientRect();
+  const previousRect = previousCard.getBoundingClientRect();
+  if (previousRect.top - latestRect.top <= SHARED_FLEX_LINE_TOLERANCE_PX) {
+    // Side by side: the previous card fits inside the height the current card
+    // already claims, so its ordinary current-height cap is the whole contract.
+    clearStackedThinkingBudget(row);
+    return rowCeilingPx;
+  }
+
+  const latestContent = latestCard.querySelector<HTMLElement>(
+    THINKING_PREVIEW_CONTENT_SELECTOR,
+  );
+  const budgetPx = stackedThinkingBudgetPx({
+    viewportHeightPx,
+    trailingContentPx,
+    contextReservePx,
+    previousTopPx: previousRect.top - rowRect.top,
+    previousChromePx:
+      latestRect.height -
+      (latestContent?.getBoundingClientRect().height ?? 0) +
+      (Number.parseFloat(window.getComputedStyle(latestCard).marginBottom) ||
+        0),
+  });
+  if (budgetPx === null) {
+    row.dataset[PREVIOUS_THINKING_STATE_ATTR] = "dropped";
+    row.style.removeProperty(STACKED_THINKING_BUDGET_VAR);
+  } else {
+    row.dataset[PREVIOUS_THINKING_STATE_ATTR] = "stacked";
+    row.style.setProperty(
+      STACKED_THINKING_BUDGET_VAR,
+      `${Math.round(budgetPx)}px`,
+    );
+  }
+  return rowCeilingPx;
+}
+
 /**
  * Apply the row's held height and re-arm the release.
  *
  * The natural height is measured from the children's bottoms rather than the
  * row's own box: the reserve is applied as the row's `min-height`, so measuring
  * the row would feed the reserve back into itself and it could never fall.
+ *
+ * `ceilingPx` bounds what may be held. The reserve exists to keep the reader's
+ * place, so holding more than the viewport can show would defeat it.
  */
 function syncActivityHeightReserve(
   row: HTMLElement,
   controller: ActivityHeightReserveController,
+  ceilingPx: number | null = null,
 ): void {
   const rowTop = row.getBoundingClientRect().top;
   let naturalHeightPx = 0;
@@ -328,7 +513,7 @@ function syncActivityHeightReserve(
   controller.reserve = reserve;
   row.style.setProperty(
     "--conversation-activity-reserved-height",
-    `${reserve.heightPx}px`,
+    `${ceilingPx === null ? reserve.heightPx : Math.min(reserve.heightPx, ceilingPx)}px`,
   );
   if (controller.timer !== null) {
     window.clearTimeout(controller.timer);
@@ -458,7 +643,7 @@ function ConversationActivitySummary({
     const row = rowRef.current;
     if (!row) return;
     const latestCard = row.querySelector<HTMLElement>(
-      '.conversation-thinking-preview[data-preview-slot="latest"]',
+      LATEST_THINKING_PREVIEW_SELECTOR,
     );
     if (!latestCard) {
       // No current/latest preview: nothing to cap to (the previous preview
@@ -468,7 +653,7 @@ function ConversationActivitySummary({
       return;
     }
     const content = latestCard.querySelector<HTMLElement>(
-      ".conversation-thinking-preview-content",
+      THINKING_PREVIEW_CONTENT_SELECTOR,
     );
     if (!content) {
       // The current/latest card is collapsed to its header. Publish 0 so the
@@ -502,29 +687,47 @@ function ConversationActivitySummary({
     reserve: null,
     timer: null,
   });
+  const transcriptViewportRef = useRef<HTMLElement | null>(null);
   const syncHeightReserve = useCallback(() => {
     const row = rowRef.current;
-    if (row) syncActivityHeightReserve(row, reserveRef.current);
+    if (!row) return;
+    // Bound a wrapped previous card first: the reserve has to measure the row
+    // after that cap lands, and it must not hold a height the viewport lost.
+    const ceilingPx = syncStackedThinkingBudget(
+      row,
+      transcriptViewportRef.current,
+    );
+    syncActivityHeightReserve(row, reserveRef.current, ceilingPx);
   }, []);
+  const hasThinkingPreviews = (item.thinkingPreviews?.length ?? 0) > 0;
   // biome-ignore lint/correctness/useExhaustiveDependencies: previewLayoutKey re-attaches the observers when the measured children mount/unmount
   useLayoutEffect(() => {
     const row = rowRef.current;
     if (!row) return;
+    // Only a row carrying previews can outgrow the viewport, so only that row
+    // watches the scroller — every other activity row would be a spare observer
+    // on a shared element.
+    const viewport = hasThinkingPreviews ? findTranscriptViewport(row) : null;
+    transcriptViewportRef.current = viewport;
     syncHeightReserve();
     // Watch the children, not just the row: while the reserve holds, the row's
     // own box stays put and only a child's resize reveals the shrink.
     const observer = new ResizeObserver(syncHeightReserve);
     observer.observe(row);
     for (const child of Array.from(row.children)) observer.observe(child);
+    // A shrinking viewport (rotation, a growing composer) tightens the budget
+    // without any content changing.
+    if (viewport) observer.observe(viewport);
     const controller = reserveRef.current;
     return () => {
       observer.disconnect();
+      transcriptViewportRef.current = null;
       if (controller.timer !== null) {
         window.clearTimeout(controller.timer);
         controller.timer = null;
       }
     };
-  }, [previewLayoutKey, syncHeightReserve]);
+  }, [hasThinkingPreviews, previewLayoutKey, syncHeightReserve]);
   // The hold is for space the reader still needs; two gestures say otherwise
   // and release it at once. Collapsing a card with its chevron asks for a
   // shorter row and keeps that card collapsed as later blocks stream into the
@@ -1055,15 +1258,21 @@ export const RenderItemComponent = memo(function RenderItemComponent({
     switch (item.type) {
       case "text":
         return (
-          <TextBlock
-            text={item.text}
-            isStreaming={item.isStreaming}
-            augmentHtml={item.augmentHtml}
-            projectPathLinks={item.projectPathLinks}
-            renderItemId={item.id}
-            onQuoteBlock={onQuoteTextBlock}
-            alwaysShowQuoteCircle={alwaysShowQuoteCircle}
-            paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+          <AsyncQuestionMessage
+            renderId={item.id}
+            fallback={
+              <TextBlock
+                text={item.text}
+                isStreaming={item.isStreaming}
+                abortedMidStream={item.abortedMidStream}
+                augmentHtml={item.augmentHtml}
+                projectPathLinks={item.projectPathLinks}
+                renderItemId={item.id}
+                onQuoteBlock={onQuoteTextBlock}
+                alwaysShowQuoteCircle={alwaysShowQuoteCircle}
+                paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+              />
+            }
           />
         );
 
@@ -1280,10 +1489,22 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           <WorkflowContext workflow={item.workflow} />
         ) : null}
         {item.type === "text" && item.workflow?.markers.length ? (
-          <WorkflowOutput
+          <WorkflowAssistantOutput
             text={item.text}
             workflow={item.workflow}
+            isStreaming={item.isStreaming}
             original={renderContent()}
+            renderText={(text, html) => (
+              <TextBlock
+                text={text}
+                augmentHtml={html}
+                projectPathLinks={item.projectPathLinks}
+                renderItemId={item.id}
+                onQuoteBlock={onQuoteTextBlock}
+                alwaysShowQuoteCircle={alwaysShowQuoteCircle}
+                paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+              />
+            )}
           />
         ) : (
           renderContent()

@@ -14,6 +14,7 @@ grant fields, project mapping, exact wire schemas, and the worker-session
 presentation remain intentionally open.
 
 Related:
+[working across machines](multi-machine-architecture.md),
 [client source runtime topology](client-source-runtime-topology.md),
 [managed remote executors](managed-remote-executors.md),
 [managed runner execution targets](managed-runner-execution-targets.md),

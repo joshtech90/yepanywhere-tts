@@ -49,6 +49,7 @@ vi.mock("../useFileActivity", () => ({
 
 vi.mock("../useVersion", () => ({
   useRetainedVersionInfo: () => mocks.versionInfo(),
+  ensureVersionInfo: async () => mocks.versionInfo(),
 }));
 
 interface Deferred<T> {
@@ -144,6 +145,173 @@ afterEach(() => {
 });
 
 describe("useGlobalSessionsFeed", () => {
+  it("refreshes the loaded window without dropping and reloading older rows", async () => {
+    mocks.getGlobalSessions
+      .mockResolvedValueOnce(
+        globalSessionsResponse(["a", "b"], { hasMore: true }),
+      )
+      .mockResolvedValueOnce(
+        globalSessionsResponse(["c", "d"], { hasMore: true }),
+      )
+      .mockImplementation(async (request) =>
+        globalSessionsResponse(["a", "b", "c", "d"].slice(0, request.limit), {
+          hasMore: true,
+        }),
+      );
+    const lengths: number[] = [];
+    const { result } = renderHook(() => {
+      const value = useFeedWithRecords({ limit: 2 });
+      lengths.push(value.records.length);
+      return value;
+    });
+    await waitFor(() => expect(result.current.records).toHaveLength(2));
+    await act(() => result.current.feed.loadMore());
+    expect(result.current.records).toHaveLength(4);
+    lengths.length = 0;
+    await act(() => result.current.feed.refetch());
+    expect(mocks.getGlobalSessions.mock.calls.at(-1)?.[0]).toMatchObject({
+      limit: 4,
+    });
+    expect(result.current.records).toHaveLength(4);
+    expect(lengths).not.toContain(2);
+  });
+
+  it("refreshes beyond the server page limit atomically, including removals", async () => {
+    const rows = Array.from({ length: 600 }, (_, index) =>
+      globalSession(`session-${index}`, {
+        updatedAt: new Date(Date.parse(RECENT) - index * 1000).toISOString(),
+      }),
+    );
+    const finalPage = deferred<GlobalSessionsResponse>();
+    mocks.getGlobalSessions
+      .mockResolvedValueOnce(
+        globalSessionsResponse([], {
+          sessions: rows.slice(0, 500),
+          hasMore: true,
+        }),
+      )
+      .mockResolvedValueOnce(
+        globalSessionsResponse([], {
+          sessions: rows.slice(500),
+        }),
+      )
+      .mockResolvedValueOnce(
+        globalSessionsResponse([], {
+          sessions: rows.slice(0, 500),
+          hasMore: true,
+        }),
+      )
+      .mockReturnValueOnce(finalPage.promise);
+    const lengths: number[] = [];
+    const { result } = renderHook(() => {
+      const value = useFeedWithRecords({ limit: 500 });
+      lengths.push(value.records.length);
+      return value;
+    });
+    await waitFor(() => expect(result.current.records).toHaveLength(500));
+    await act(() => result.current.feed.loadMore());
+    expect(result.current.records).toHaveLength(600);
+    lengths.length = 0;
+    let refresh!: Promise<void>;
+    act(() => {
+      refresh = result.current.feed.refetch();
+    });
+    await waitFor(() =>
+      expect(mocks.getGlobalSessions).toHaveBeenCalledTimes(4),
+    );
+    expect(result.current.records).toHaveLength(600);
+    expect(mocks.getGlobalSessions.mock.calls[3]?.[0]).toMatchObject({
+      limit: 100,
+      after: rows[499]?.updatedAt,
+    });
+    await act(async () => {
+      finalPage.resolve(
+        globalSessionsResponse([], { sessions: rows.slice(500, 590) }),
+      );
+      await refresh;
+    });
+    expect(result.current.records).toHaveLength(590);
+    expect(lengths).not.toContain(500);
+  });
+
+  it("uses retained mode on capable servers and refreshes on catalog publication without full stats", async () => {
+    mocks.versionInfo.mockReturnValue({ current: "0.8.2" });
+    const catalog = {
+      catalogEpoch: "epoch",
+      catalogGeneration: 1,
+      complete: true,
+      refreshing: true,
+    };
+    mocks.getGlobalSessions.mockResolvedValue(
+      globalSessionsResponse(["saved"], { catalog }),
+    );
+    const { result } = renderHook(() =>
+      useFeedWithRecords({ includeStats: true }),
+    );
+    await waitFor(() => expect(result.current.records).toHaveLength(1));
+    expect(mocks.getGlobalSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ summaryMode: "retained" }),
+    );
+    expect(mocks.getGlobalSessions.mock.calls[0]?.[0]).not.toHaveProperty(
+      "knownGeneration",
+    );
+    expect(mocks.getGlobalSessionStats).not.toHaveBeenCalled();
+    mocks.getGlobalSessions.mockResolvedValue(
+      globalSessionsResponse(["saved", "new"], {
+        catalog: { ...catalog, catalogGeneration: 2, refreshing: false },
+      }),
+    );
+    act(() =>
+      activityBus.emitLocal("session-catalog-updated", {
+        type: "session-catalog-updated",
+        catalog: { ...catalog, catalogGeneration: 2, refreshing: false },
+        timestamp: RECENT,
+      }),
+    );
+    await waitFor(() => expect(result.current.records).toHaveLength(2));
+  });
+
+  it("keeps cold catalog loading visible and surfaces refresh failure", async () => {
+    mocks.versionInfo.mockReturnValue({ current: "0.8.2" });
+    const catalog = {
+      catalogEpoch: "new",
+      catalogGeneration: 0,
+      complete: false,
+      refreshing: true,
+    };
+    mocks.getGlobalSessions.mockResolvedValue(
+      globalSessionsResponse([], { catalog }),
+    );
+    const { result } = renderHook(() => useFeedWithRecords());
+    await waitFor(() =>
+      expect(mocks.getGlobalSessions).toHaveBeenCalledTimes(1),
+    );
+    expect(result.current.feed.loading).toBe(true);
+    mocks.getGlobalSessions.mockResolvedValue(
+      globalSessionsResponse([], {
+        catalog: {
+          ...catalog,
+          refreshing: false,
+          refreshError: "Provider unavailable",
+        },
+      }),
+    );
+    await act(async () => {
+      await result.current.feed.refetch();
+    });
+    expect(result.current.feed.loading).toBe(false);
+    expect(result.current.feed.error?.message).toBe("Provider unavailable");
+  });
+
+  it("keeps the complete request on an older server", async () => {
+    mocks.versionInfo.mockReturnValue({ current: "0.8.1" });
+    mocks.getGlobalSessions.mockResolvedValue(globalSessionsResponse(["old"]));
+    const { result } = renderHook(() => useFeedWithRecords());
+    await waitFor(() => expect(result.current.records).toHaveLength(1));
+    expect(mocks.getGlobalSessions.mock.calls[0]?.[0]).not.toHaveProperty(
+      "summaryMode",
+    );
+  });
   it("releases query and activity work while disabled", () => {
     const { result } = renderHook(() =>
       useGlobalSessionsFeed({ enabled: false, limit: 50 }),
@@ -307,8 +475,8 @@ describe("useGlobalSessionsFeed", () => {
 
     const metrics = getQueryRevalidationMetrics();
     expect(metrics.subscribers).toBe(3);
-    // One owner, so one `reconnect` listener rather than one per mount.
-    expect(metrics.eventSubscriptions).toBe(1);
+    // One listener per event (reconnect and catalog publication), shared by all mounts.
+    expect(metrics.eventSubscriptions).toBe(2);
 
     const requestsBefore = mocks.getGlobalSessions.mock.calls.length;
     vi.useFakeTimers();

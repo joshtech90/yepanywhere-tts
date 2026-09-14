@@ -21,6 +21,23 @@ default-off).
 
 ## Current state
 
+- Bash and decoded Exec output distinguish complete JSON objects/arrays,
+  ordinary text, and ACLI v1 declaration lines, including a banner merged
+  after another command's text. Metadata is secondary source text, not a
+  document heading. Recognition grants no execution or commentary capability.
+  Full JSON presentation uses indented monospace while preserving number
+  spelling, duplicate keys, and encoded strings; compact previews retain their
+  existing source-line limits. Malformed, truncated, fenced, and unrecognized
+  output remains literal. JSON strings and declared metadata do not activate
+  inferred Markdown/math presentation. Original output remains inspectable.
+  Each decoded command is framed independently and retains its existing exit
+  status and duration. Workflow parent context alone does not replace that
+  renderer; matching workflow spans keep JSON as code beside stage prose.
+
+- Tool-output [commentary presentation](acli-commentary.md) recognizes
+  declarations in an invocation's output. It is implemented independently of
+  the composer discovery and registration proposals below.
+
 - The completion server invokes `tool --acli-complete <argv-prefix...>`
   for the last pipeline segment's command, gated on an explicit
   allowlist (`YA_BANG_ACLI_COMPLETERS` env plus the built-in

@@ -6,6 +6,7 @@ import {
   FakeSourceTransport,
   type FakeSourceTransportSubscriptionKind,
   type FakeSourceTransportSubscriptionRecord,
+  isManagedStreamResubscribing,
   type ManagedStreamScheduler,
   type ManagedStreamSpec,
 } from "../index";
@@ -429,5 +430,61 @@ describe("createManagedStream", () => {
 
     expect(firstTransport.getSubscriptions("session")).toHaveLength(2);
     expect(secondTransport.getSubscriptions("session")).toHaveLength(1);
+  });
+});
+
+describe("isManagedStreamResubscribing", () => {
+  it("covers waiting, retrying and open, but not terminal or closed", () => {
+    const timers = new MockTimers();
+    const transport = new FakeSourceTransport({
+      initialSnapshot: {
+        kind: "secure",
+        state: "disconnected",
+        channels: [{ name: "secure-websocket", state: "disconnected" }],
+      },
+    });
+    const stream = createManagedStream(transport, createSessionSpec(), {
+      scheduler: schedulerFromTimers(timers),
+      retry: { initialDelayMs: 25, maxDelayMs: 25 },
+    });
+
+    expect(isManagedStreamResubscribing(stream.getSnapshot())).toBe(true);
+
+    transport.setState("ready");
+    const first = getOnlySubscription(transport, "session");
+    transport.openSubscription(first.id);
+    expect(isManagedStreamResubscribing(stream.getSnapshot())).toBe(false);
+
+    transport.failSubscription(first.id, new Error("transient"));
+    expect(stream.getSnapshot()).toMatchObject({ state: "retrying" });
+    expect(isManagedStreamResubscribing(stream.getSnapshot())).toBe(true);
+
+    timers.advance(25);
+    const second = getLastSubscription(transport, "session");
+    transport.failSubscription(
+      second.id,
+      new SubscriptionError(404, "No active process"),
+    );
+    expect(stream.getSnapshot()).toMatchObject({ terminal: true });
+    expect(isManagedStreamResubscribing(stream.getSnapshot())).toBe(false);
+
+    // A terminal stream declines restart(), so a reconnect request must not
+    // leave the caller believing a subscription is on the way back.
+    stream.restart({ delayMs: 50 });
+    timers.advance(1_000);
+    expect(isManagedStreamResubscribing(stream.getSnapshot())).toBe(false);
+  });
+
+  it("stops reporting a resubscribe once the stream is closed", () => {
+    const transport = new FakeSourceTransport();
+    const stream = createManagedStream(transport, createSessionSpec());
+
+    stream.close();
+
+    expect(stream.getSnapshot()).toMatchObject({
+      state: "closed",
+      terminal: false,
+    });
+    expect(isManagedStreamResubscribing(stream.getSnapshot())).toBe(false);
   });
 });

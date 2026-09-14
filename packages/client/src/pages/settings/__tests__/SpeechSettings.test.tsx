@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { VOICE_INPUT_CAPABILITY } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SpeechSettings } from "../SpeechSettings";
+import { SettingsSearchScopeProvider } from "../SettingsSearchContext";
 
 const modelSettings = vi.hoisted(() => {
   const state = {
@@ -20,6 +21,8 @@ const modelSettings = vi.hoisted(() => {
     setSpeechSmartTurnSettings: vi.fn(),
     parakeetSpeechModel: "nvidia/parakeet-tdt-0.6b-v3",
     setParakeetSpeechModel: vi.fn(),
+    whisperSpeechModel: "",
+    setWhisperSpeechModel: vi.fn(),
   };
   state.setSpeechMethod = vi.fn((method: string) => {
     state.speechMethod = method;
@@ -56,6 +59,7 @@ const speechSourceRuntime = vi.hoisted(() => ({
   relayedServerSpeechAvailable: false,
 }));
 const versionState = vi.hoisted(() => ({
+  sqlite: { state: "disabled" },
   capabilities: [] as string[],
   voiceBackends: ["ya-grok", "ya-parakeet", "ya-nemo"],
   voiceBackendStatuses: [] as Array<{
@@ -93,6 +97,7 @@ vi.mock("../../../hooks/useSpeechSourceRuntime", () => ({
 vi.mock("../../../hooks/useVersion", () => ({
   useVersion: () => ({
     version: {
+      sqlite: versionState.sqlite,
       capabilities: versionState.capabilities,
       voiceBackends: versionState.voiceBackends,
       voiceBackendStatuses: versionState.voiceBackendStatuses,
@@ -122,6 +127,50 @@ vi.mock("../../../lib/speechProviders/YaServerProvider", () => ({
 vi.mock("../SettingsUndoContext", () => undoMocks);
 
 describe("SpeechSettings", () => {
+  it("finds vocabulary by keyterms and explains disabled storage without mounting controls", () => {
+    const scope = {
+      query: "keyterms",
+      matchValues: false,
+      sectionMatched: false,
+      categoryLabel: "Speech backends",
+      jumpToItem: vi.fn(),
+    };
+    const view = render(
+      <SettingsSearchScopeProvider value={scope}>
+        <SpeechSettings />
+      </SettingsSearchScopeProvider>,
+    );
+    expect(screen.getByText("speechVocabularyTitle")).toBeTruthy();
+    expect(screen.getByText("speechVocabularyStorageDisabled")).toBeTruthy();
+    expect(screen.queryByText("speechVocabularyScan")).toBeNull();
+    view.rerender(
+      <SettingsSearchScopeProvider
+        value={{ ...scope, query: "unrelated-query" }}
+      >
+        <SpeechSettings />
+      </SettingsSearchScopeProvider>,
+    );
+    expect(screen.queryByText("speechVocabularyTitle")).toBeNull();
+  });
+
+  it("shows Whisper presets only on a capable server", () => {
+    modelSettings.speechMethod = "ya-whisper";
+    versionState.voiceBackends = ["ya-whisper"];
+    const view = render(<SpeechSettings />);
+    expect(
+      screen.queryByRole("combobox", {
+        name: "speechSettingsWhisperModelTitle",
+      }),
+    ).toBeNull();
+    versionState.capabilities.push("local-speech-model-selection");
+    view.rerender(<SpeechSettings />);
+    expect(
+      screen.getByRole("combobox", { name: "speechSettingsWhisperModelTitle" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("option", { name: "Distil large v3.5 English" }),
+    ).toBeTruthy();
+  });
   beforeEach(() => {
     versionState.capabilities = [VOICE_INPUT_CAPABILITY];
   });

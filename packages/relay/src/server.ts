@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getRequestListener } from "@hono/node-server";
 import { RELAY_CLIENT_MUX_V1_CAPABILITY } from "@yep-anywhere/shared";
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "@yep-anywhere/shared/sqlite";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import pino, { type Logger } from "pino";
@@ -114,7 +114,7 @@ export interface RelayServer {
   /** The username registry */
   registry: UsernameRegistry;
   /** The database instance */
-  db: Database.Database;
+  db: SqliteDatabase;
   /** The logger instance */
   logger: Logger;
   /** Structured telemetry status */

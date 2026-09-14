@@ -3,14 +3,17 @@ import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
 import {
   type DraftAttachmentState,
   draftStorageValueForAttachments,
+  draftStorageValueForPendingSend,
   draftStorageValueForText,
   hasDraftContentValue,
   readDraftAttachmentStateValue,
+  readDraftPendingSendValue,
   readDraftTextValue,
 } from "../lib/draftEnvelope";
 import { publishDraftPresenceChange } from "../lib/draftPresenceEvents";
 import {
   createSessionDraftStorageKey,
+  markSessionDraftPendingSend,
   removeSessionDraft,
   saveSessionDraft,
   saveSessionDraftAttachmentState,
@@ -38,12 +41,19 @@ export interface DraftControls {
   clearInput: () => void;
   /** Confirm an optimistic clear without deleting a newer live draft. */
   confirmInputClear: () => void;
+  /**
+   * Discard an untouched post-submit recovery copy once `isAccountedFor`
+   * proves the session already holds that text. Returns true if it discarded.
+   */
+  discardPendingSendDraft: (
+    isAccountedFor: (text: string) => boolean,
+  ) => boolean;
   /** Clear both input state and localStorage (call on confirmed success) */
   clearDraft: () => void;
   /** Restore from localStorage (call on failure) */
   restoreFromStorage: () => void;
   /** Focus the textarea that owns this draft, if it is mounted. */
-  focus?: () => void;
+  focus?: (options?: FocusOptions) => void;
   /** Place the textarea caret/selection, if it is mounted. */
   setSelectionRange?: (start: number, end: number) => void;
 }
@@ -121,6 +131,31 @@ function saveAttachmentStateToStorage(
   }
 }
 
+/**
+ * Mark the stored text as a post-submit recovery copy. Content is unchanged,
+ * so draft presence does not change and no presence event is published.
+ */
+function markPendingSendInStorage(
+  key: string,
+  sessionDraft?: UseDraftPersistenceOptions["sessionDraft"],
+): void {
+  if (sessionDraft) {
+    markSessionDraftPendingSend(sessionDraft);
+    return;
+  }
+
+  try {
+    const nextValue = draftStorageValueForPendingSend(
+      localStorage.getItem(key),
+    );
+    if (nextValue) {
+      localStorage.setItem(key, nextValue);
+    }
+  } catch {
+    // localStorage might be full or unavailable.
+  }
+}
+
 function removeFromStorage(
   key: string,
   sessionDraft?: UseDraftPersistenceOptions["sessionDraft"],
@@ -149,6 +184,14 @@ function readStorageText(key: string): string {
     return readDraftTextValue(localStorage.getItem(key));
   } catch {
     return "";
+  }
+}
+
+function readStoragePendingSend(key: string): boolean {
+  try {
+    return readDraftPendingSendValue(localStorage.getItem(key));
+  } catch {
+    return false;
   }
 }
 
@@ -214,6 +257,10 @@ export function useDraftPersistence(
   // Track pending value so we can flush on unmount/beforeunload
   const pendingValueRef = useRef<string | null>(null);
   const valueRef = useRef(value);
+  // False while the composer still holds exactly what hydration put there.
+  // `discardPendingSendDraft` refuses to touch anything the user has since
+  // typed, recalled, or otherwise chosen to keep.
+  const composerEditedSinceHydrationRef = useRef(false);
 
   useEffect(() => {
     valueRef.current = value;
@@ -242,6 +289,7 @@ export function useDraftPersistence(
 
     keyRef.current = key;
     sessionDraftRef.current = sessionDraft;
+    composerEditedSinceHydrationRef.current = false;
 
     try {
       const hasStoredDraft = hasStorageDraftContent(key);
@@ -253,6 +301,8 @@ export function useDraftPersistence(
       ) {
         saveToStorage(key, previousValue, sessionDraft);
         valueRef.current = previousValue;
+        // Carried-over text is the user's, not a hydrated recovery copy.
+        composerEditedSinceHydrationRef.current = true;
         setValueInternal(previousValue);
         return;
       }
@@ -308,6 +358,7 @@ export function useDraftPersistence(
   // events before React remounts and restores the previous storage value.
   const setValue = useCallback((newValue: string) => {
     valueRef.current = newValue;
+    composerEditedSinceHydrationRef.current = true;
     setValueInternal(newValue);
     pendingValueRef.current = null;
     if (timeoutRef.current) {
@@ -329,6 +380,7 @@ export function useDraftPersistence(
   // as editing a queued message, needs to take over the composer.
   const setDraft = useCallback((newValue: string) => {
     valueRef.current = newValue;
+    composerEditedSinceHydrationRef.current = true;
     setValueInternal(newValue);
     pendingValueRef.current = null;
     if (timeoutRef.current) {
@@ -359,6 +411,7 @@ export function useDraftPersistence(
       );
     }
     valueRef.current = "";
+    composerEditedSinceHydrationRef.current = false;
     setValueInternal("");
     pendingValueRef.current = null;
     // Cancel pending write so we don't overwrite the recovery draft with ""
@@ -366,7 +419,42 @@ export function useDraftPersistence(
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
+    // Label the surviving copy as post-submit recovery text. It stays visible
+    // to a reload or a sibling tab, but becomes eligible for discard once the
+    // session proves the same text was actually sent.
+    markPendingSendInStorage(keyRef.current, sessionDraftRef.current);
   }, []);
+
+  /**
+   * Drop a post-submit recovery copy the session has accounted for. Applies
+   * only to storage this hook marked `pendingSend` and only while the composer
+   * still holds exactly that copy (a sibling tab) or nothing at all (the
+   * submitting tab). Returns true when a draft was discarded.
+   */
+  const discardPendingSendDraft = useCallback(
+    (isAccountedFor: (text: string) => boolean): boolean => {
+      if (composerEditedSinceHydrationRef.current) return false;
+      const key = keyRef.current;
+      if (!readStoragePendingSend(key)) return false;
+      const storedText = readStorageText(key);
+      if (!storedText.trim()) return false;
+      if (valueRef.current !== "" && valueRef.current !== storedText) {
+        return false;
+      }
+      if (!isAccountedFor(storedText)) return false;
+
+      valueRef.current = "";
+      setValueInternal("");
+      pendingValueRef.current = null;
+      if (timeoutRef.current) {
+        clearTimeout(timeoutRef.current);
+        timeoutRef.current = null;
+      }
+      removeFromStorage(key, sessionDraftRef.current);
+      return true;
+    },
+    [],
+  );
 
   // A successful async submission may settle after the user has already
   // started the next turn. Remove the recovery copy only while the optimistic
@@ -394,6 +482,9 @@ export function useDraftPersistence(
     try {
       const storedText = readStorageText(keyRef.current);
       valueRef.current = storedText;
+      // The user has been told the send failed and is looking at their text
+      // again; never discard it out from under them.
+      composerEditedSinceHydrationRef.current = true;
       setValueInternal(storedText);
     } catch {
       // Ignore errors
@@ -426,6 +517,7 @@ export function useDraftPersistence(
       flushDraft: flushPending,
       clearInput,
       confirmInputClear,
+      discardPendingSendDraft,
       clearDraft,
       restoreFromStorage,
     }),
@@ -437,6 +529,7 @@ export function useDraftPersistence(
       flushPending,
       clearInput,
       confirmInputClear,
+      discardPendingSendDraft,
       clearDraft,
       restoreFromStorage,
     ],

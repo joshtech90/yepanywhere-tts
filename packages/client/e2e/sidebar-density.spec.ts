@@ -66,6 +66,11 @@ test("keeps sidebar density spatial and the create action recognizable", async (
   await page.goto(`${baseURL}/settings/appearance`);
   await dismissOnboardingIfVisible(page);
 
+  // Settings deliberately starts collapsed; density is measured expanded.
+  await page
+    .getByRole("button", { name: "Expand sidebar", exact: true })
+    .click();
+
   const densityRow = page.locator('[data-settings-item="sidebar-density"]');
   await expect(densityRow).toBeVisible();
   await expect(densityRow).toContainText(

@@ -272,8 +272,8 @@ verbatim (`scripts/build-bundle.ts`) and advertises zero external deps, so
 `better-sqlite3` would force a native build on every install plus the host's
 GLIBCXX friction. The DB reader is an *optimization with a working fallback*, so
 a dependency-free builtin fits better. It is loaded via `createRequire("node:sqlite")`
-(not a static/dynamic `import`): that degrades to null on Node < 22.5 (engines is
-`>=20.12`) instead of crashing at module load, and sidesteps vitest's module runner,
+(not a static/dynamic `import`): that degrades to null on Node < 22.5 (the main server now requires the
+[Node 22/Bun floor](server-runtime.md)) instead of crashing at module load, and sidesteps vitest's module runner,
 which can't transform this newer-than-vite builtin. On old runtimes the reader
 returns null and the export/file-tree fallbacks run exactly as before. One-time
 `ExperimentalWarning` on first use is left intact (reliable suppression needs a
@@ -299,8 +299,7 @@ omitted from those top-level lists and exposed through
 every OpenCode session path falls back to CLI export / file tree, exactly as
 before the reader existed. The check sits at the single `ensureDb` choke point,
 so the whole sqlite dependency is conditional and switchable per environment.
-This keeps the builtin off any path that doesn't want it (and is what lets CI
-run on Node 20.12 without exercising it).
+This keeps the builtin off any path that does not want it.
 
 **Detail route had to be taught the `ses_*` shape, not just metadata.** The
 reader is necessary but not sufficient: the session-detail route
@@ -315,13 +314,10 @@ shape; the shape gate keeps non-opencode UUIDs from triggering a wasted
 summary/list path's `getSessionSources` resolution and could gap again for other
 providers.)
 
-**CI runs Node 20.12; the reader is exercised locally on Node 24.** node:sqlite
-needs Node >=22.5, so a Node-24 CI run was tried to execute the reader's test —
-but the server suite then hung for >1h in CI's environment (a channel/handle
-that resolves locally in ~30s but not on the runner). Since the reader is opt-in
-with a working fallback, CI stays on the Node-20 engines floor (where
-`opencode-db-reader.test.ts` cleanly skips), and the reader is verified locally
-on Node 24. `.github/workflows/ci.yml` carries a do-not-rebump note.
+**CI runs at the Node 22.16 floor and exercises the reader.** Previously the
+Node 20 lane skipped the builtin tests after an older Node-24 CI run hung.
+The runtime cutover restores builtin coverage with the existing bounded CI job
+timeout. No reader fallback or opt-out was removed by raising the server floor.
 
 **Evaluation (live `opencode.db`, this repo's project, 2026-06-21).** Reading the
 430 KB `/harsh-review` session (`ses_11777a2c…`, 23 messages) via the DB reader:

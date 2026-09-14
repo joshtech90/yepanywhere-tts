@@ -51,6 +51,20 @@ describe("initial remote route preloading", () => {
     ).toEqual(["remoteApp", "relayConnectionGate", "layouts", "filePage"]);
   });
 
+  it.each(["/", "/remote/"])(
+    "preloads issue browsing under base %s",
+    (base) => {
+      expect(getInitialRemoteRouteModuleKeys(`${base}issues`, base)).toEqual([
+        "remoteApp",
+        "layouts",
+        "issuesPage",
+      ]);
+      expect(
+        getInitialRemoteRouteModuleKeys(`${base}-/relay/host/issues`, base),
+      ).toEqual(["remoteApp", "relayConnectionGate", "layouts", "issuesPage"]);
+    },
+  );
+
   it("preloads the legacy redirect without the authenticated page graph", () => {
     expect(
       getInitialRemoteRouteModuleKeys("/old-host/projects/project-1", "/"),

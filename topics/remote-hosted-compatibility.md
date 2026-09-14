@@ -257,4 +257,13 @@ one-release-old client is still a defect.
 
 Upstream (`origin`/kzahel) is a different matter entirely: those users run
 their own servers and clients on their own schedule, so nothing here relaxes
-the review CLAUDE.md requires for changes on that path.
+the review DEVELOPMENT.md requires for changes on that path.
+
+## Server runtime cutover
+
+The Node 22/Bun server floor is independent of hosted frontend compatibility.
+The Maintainer approved immediate enforcement for new server releases on
+2026-09-08, with advisory runtime notices while old servers remain usable.
+There is no new frontend minimum version or update-action gate. Any future
+cutoff needs a separate compatibility review and advance notice. See
+[server runtimes](server-runtime.md) for metadata, notices and upgrade guidance.

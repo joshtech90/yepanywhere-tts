@@ -33,6 +33,37 @@ const ENV_HOSTS: Set<string> | "*" = (() => {
  */
 let settingsHosts: Set<string> | "*" | null = null;
 
+const artifactHosts = new Set<string>();
+
+export function registerArtifactOrigins(
+  origins: readonly (string | undefined)[],
+): void {
+  for (const origin of origins)
+    if (origin) {
+      artifactHosts.add(new URL(origin).hostname);
+    }
+}
+
+export function isArtifactOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  // A navigated artifact may acquire an opaque origin; it must not gain API access.
+  if (origin === "null") return artifactHosts.size > 0;
+  try {
+    return artifactHosts.has(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function isArtifactHost(host: string | undefined): boolean {
+  if (!host) return false;
+  try {
+    return artifactHosts.has(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Update allowed hosts from in-app settings. Called on startup (from persisted settings)
  * and when the user changes the setting via the UI.
@@ -74,6 +105,7 @@ export function allowAllHosts(): boolean {
  */
 export function isAllowedHostname(hostname: string): boolean {
   const h = hostname.toLowerCase();
+  if (artifactHosts.has(h)) return false;
 
   // Localhost variants (IPv4 + IPv6)
   if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]")
@@ -104,6 +136,7 @@ export function isAllowedHostname(hostname: string): boolean {
  * Returns true for allowed hosts, false otherwise.
  */
 export function isAllowedHost(host: string | undefined): boolean {
+  if (isArtifactHost(host)) return false;
   // No Host header = not a browser request (HTTP/1.1 browsers always send Host).
   // No DNS rebinding risk, so allow. Also allows Hono's app.request() in tests.
   if (!host) return true;
@@ -134,6 +167,7 @@ export function isAllowedHost(host: string | undefined): boolean {
  * Returns true for missing/null origins (same-origin or non-browser clients).
  */
 export function isAllowedOrigin(origin: string | undefined): boolean {
+  if (isArtifactOrigin(origin)) return false;
   // No origin = same-origin request or non-browser client (allowed).
   // "null" = about:blank, file://, sandboxed iframe, etc. (allowed).
   if (!origin || origin === "null") return true;

@@ -3,7 +3,7 @@ import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import { I18nProvider } from "../../i18n";
-import type { SourceApiClient } from "../../lib/sourceRuntime";
+import type { SessionApi } from "../../api/sessionClient";
 import { useQuestionAside } from "../useQuestionAside";
 
 describe("one-shot question aside", () => {
@@ -47,10 +47,11 @@ describe("one-shot question aside", () => {
       const inject = vi
         .spyOn(api, "sendConversationContext")
         .mockResolvedValue({ delivery: "native-history" });
-      const sourceApi: SourceApiClient = {
+      const sourceApi: SessionApi = {
+        ...api,
         getSession: async () => ({
           session: { id: "child" } as Awaited<
-            ReturnType<SourceApiClient["getSession"]>
+            ReturnType<SessionApi["getSession"]>
           >["session"],
           ownership: { owner: "none" },
           messages: [
@@ -68,13 +69,13 @@ describe("one-shot question aside", () => {
             },
           ],
         }),
-        getSessionMetadata: vi.fn(),
       };
       const showToast = vi.fn();
       const { result } = renderHook(
         () =>
           useQuestionAside({
             projectId: "project",
+            sourceKey: "test-source",
             sessionId: "parent",
             sourceApi,
             provider: "codex",
@@ -83,6 +84,8 @@ describe("one-shot question aside", () => {
             nativeContextRoute,
             showToast,
             onSaved: vi.fn(),
+            sendToMain: vi.fn(),
+            onContinueAsBtw: vi.fn(),
           }),
         { wrapper: I18nProvider },
       );
@@ -135,6 +138,173 @@ describe("one-shot question aside", () => {
     },
   );
 
+  it("continues the answered child once and retains the card when moving fails", async () => {
+    const clone = vi.spyOn(api, "cloneSession").mockResolvedValue({
+      sessionId: "child",
+      messageCount: 1,
+      clonedFrom: "parent",
+      provider: "codex",
+    });
+    const metadata = vi
+      .spyOn(api, "updateSessionMetadata")
+      .mockResolvedValue({ updated: true });
+    const resume = vi.spyOn(api, "resumeSession").mockResolvedValue({
+      processId: "child-process",
+      permissionMode: "default",
+      modeVersion: 1,
+      serverTimestamp: 0,
+    });
+    vi.spyOn(api, "getProcessInfo").mockResolvedValue({ process: null });
+    const inject = vi.spyOn(api, "sendConversationContext");
+    const onContinueAsBtw = vi.fn();
+    const sourceApi: SessionApi = {
+      ...api,
+      getSession: async () => ({
+        session: { id: "child" } as Awaited<
+          ReturnType<SessionApi["getSession"]>
+        >["session"],
+        ownership: { owner: "none" },
+        messages: [
+          { type: "user", content: resume.mock.calls[0]?.[2] ?? "" },
+          { type: "assistant", content: "Answer." },
+        ],
+      }),
+    };
+    const { result } = renderHook(
+      () =>
+        useQuestionAside({
+          projectId: "project",
+          sessionId: "parent",
+          sourceApi,
+          sourceKey: "test-source",
+          provider: "codex",
+          model: undefined,
+          executor: undefined,
+          nativeContextRoute: true,
+          showToast: vi.fn(),
+          onSaved: vi.fn(),
+          sendToMain: vi.fn(),
+          onContinueAsBtw,
+        }),
+      { wrapper: I18nProvider },
+    );
+    await act(async () => {
+      result.current.ask("Why?");
+    });
+    await act(async () => {
+      await result.current.continueAsBtw();
+    });
+    expect(onContinueAsBtw).not.toHaveBeenCalled();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1500);
+    });
+    expect(result.current.aside?.status).toBe("complete");
+    metadata.mockRejectedValueOnce(new Error("Network unavailable"));
+    await act(async () => {
+      await result.current.continueAsBtw();
+    });
+    expect(result.current.aside).toMatchObject({
+      status: "complete",
+      answers: ["Answer."],
+      error: expect.stringContaining("Network unavailable"),
+    });
+    expect(onContinueAsBtw).not.toHaveBeenCalled();
+    let finishMove!: (value: { updated: boolean }) => void;
+    metadata.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          finishMove = resolve;
+        }),
+    );
+    let moving!: Promise<void>;
+    act(() => {
+      moving = result.current.continueAsBtw();
+      void result.current.continueAsBtw();
+      result.current.discard();
+      void result.current.save();
+    });
+    expect(result.current.aside?.status).toBe("moving");
+    expect(metadata).toHaveBeenCalledTimes(3);
+    await act(async () => {
+      finishMove({ updated: true });
+      await moving;
+    });
+    expect(metadata).toHaveBeenLastCalledWith("child", {
+      archived: false,
+      parentSessionId: "parent",
+      title: "/btw Why?",
+    });
+    expect(result.current.aside).toBeNull();
+    expect(onContinueAsBtw).toHaveBeenCalledTimes(1);
+    expect(onContinueAsBtw).toHaveBeenCalledWith("child");
+    expect(clone).toHaveBeenCalledTimes(1);
+    expect(resume).toHaveBeenCalledTimes(1);
+    expect(inject).not.toHaveBeenCalled();
+  });
+
+  it("steers a failed question once, preserves it on send failure, and closes on success", async () => {
+    const clone = vi
+      .spyOn(api, "cloneSession")
+      .mockRejectedValue(new Error("Provider session startup did not settle"));
+    let finishSend!: (sent: boolean) => void;
+    const sendToMain = vi.fn(
+      () =>
+        new Promise<boolean>((resolve) => {
+          finishSend = resolve;
+        }),
+    );
+    const { result } = renderHook(
+      () =>
+        useQuestionAside({
+          projectId: "project",
+          sessionId: "parent",
+          sourceApi: { ...api, getSession: vi.fn() },
+          sourceKey: "test-source",
+          provider: "codex",
+          model: undefined,
+          executor: undefined,
+          nativeContextRoute: false,
+          showToast: vi.fn(),
+          onSaved: vi.fn(),
+          sendToMain,
+          onContinueAsBtw: vi.fn(),
+        }),
+      { wrapper: I18nProvider },
+    );
+    await act(async () => {
+      result.current.ask("  Why did this fail?");
+    });
+    expect(result.current.aside?.status).toBe("failed");
+    let pending!: Promise<void>;
+    act(() => {
+      pending = result.current.steer();
+      void result.current.steer();
+      result.current.discard();
+    });
+    expect(result.current.aside?.status).toBe("sending");
+    expect(sendToMain).toHaveBeenCalledTimes(1);
+    expect(sendToMain).toHaveBeenCalledWith("  Why did this fail?");
+    await act(async () => {
+      finishSend(false);
+      await pending;
+    });
+    expect(result.current.aside?.status).toBe("failed");
+    expect(result.current.aside?.question).toBe("  Why did this fail?");
+    sendToMain.mockRejectedValueOnce(new Error("Network unavailable"));
+    await act(async () => {
+      await result.current.steer();
+    });
+    expect(result.current.aside?.status).toBe("failed");
+    expect(result.current.aside?.error).toContain("Network unavailable");
+    sendToMain.mockResolvedValueOnce(true);
+    await act(async () => {
+      await result.current.steer();
+    });
+    expect(result.current.aside).toBeNull();
+    expect(sendToMain).toHaveBeenCalledTimes(3);
+    expect(clone).toHaveBeenCalledTimes(1);
+  });
+
   it("cancels a dismissed child even when its launch finishes afterward", async () => {
     vi.spyOn(api, "cloneSession").mockResolvedValue({
       sessionId: "child",
@@ -165,13 +335,16 @@ describe("one-shot question aside", () => {
         useQuestionAside({
           projectId: "project",
           sessionId: "parent",
-          sourceApi: { getSession, getSessionMetadata: vi.fn() },
+          sourceApi: { ...api, getSession },
+          sourceKey: "test-source",
           provider: "codex",
           model: undefined,
           executor: undefined,
           nativeContextRoute: false,
           showToast: vi.fn(),
           onSaved: vi.fn(),
+          sendToMain: vi.fn(),
+          onContinueAsBtw: vi.fn(),
         }),
       { wrapper: I18nProvider },
     );

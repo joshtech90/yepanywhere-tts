@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import process from "node:process";
 
-export const SUITE_VERSION = 8;
+export const SUITE_VERSION = 9;
 export const PERF_RUN_MARKER_PREFIX = "ya-perf-suite-";
 export const GENERALIZED_PROJECT_PATHS_BASE =
   "61cb5f358b9ccb56549d0515ded703ec534996a6";

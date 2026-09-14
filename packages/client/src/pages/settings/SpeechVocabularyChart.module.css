@@ -1,0 +1,131 @@
+.chart {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.controls label {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.controls input,
+.controls select,
+.unknown button {
+  min-height: 44px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.controls input {
+  width: 100px;
+}
+
+.table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+}
+
+.table th,
+.table td {
+  padding: 0 6px;
+  height: 44px;
+  border-bottom: 1px solid var(--border-color);
+  text-align: right;
+  font-weight: normal;
+}
+
+.table th:first-child {
+  width: 45%;
+  text-align: left;
+}
+
+.table thead th {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.word {
+  width: 100%;
+  min-height: 44px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  cursor: pointer;
+}
+
+.value {
+  position: relative;
+  padding: 10px 0;
+}
+
+.countBar {
+  position: absolute;
+  display: flex;
+  left: 0;
+  bottom: 2px;
+  height: 3px;
+}
+
+.userBar {
+  background: #3889d8;
+}
+
+.agentBar {
+  background: #a571d9;
+}
+
+.ratioBar {
+  position: absolute;
+  right: 0;
+  bottom: 2px;
+  height: 3px;
+  background: #398579;
+}
+
+.table tr[data-selected="true"],
+.table tbody tr:hover,
+.unknown button[aria-pressed="true"] {
+  background: var(--bg-primary);
+}
+
+.word:focus-visible,
+.unknown button:focus-visible {
+  outline: 2px solid var(--text-primary);
+  outline-offset: 4px;
+}
+
+.unknown {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.unknown p {
+  flex-basis: 100%;
+}
+
+.table .detailCell {
+  padding: 8px 6px;
+  text-align: left;
+}

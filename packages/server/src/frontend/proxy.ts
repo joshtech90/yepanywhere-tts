@@ -13,6 +13,10 @@ import * as net from "node:net";
 import type { Duplex } from "node:stream";
 
 import { isProxyDebugEnabled } from "../maintenance/index.js";
+import {
+  isArtifactHost,
+  isArtifactOrigin,
+} from "../middleware/allowed-hosts.js";
 
 /** Counter for tracking connections */
 let connectionCounter = 0;
@@ -325,6 +329,15 @@ export function attachUnifiedUpgradeHandler(
   const { frontendProxy, isApiPath, app, wss } = options;
 
   server.on("upgrade", (req, socket, head) => {
+    if (
+      isArtifactHost(req.headers.host) ||
+      isArtifactOrigin(req.headers.origin)
+    ) {
+      socket.end(
+        "HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+      );
+      return;
+    }
     const connId = ++connectionCounter;
     const urlPath = req.url || "/";
     debugLog("Upgrade", `[${connId}] Upgrade request`, { path: urlPath });

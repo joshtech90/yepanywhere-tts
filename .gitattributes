@@ -1,0 +1,5 @@
+# Keep Node ESM scripts executable and their shebangs parseable by Vite on Windows.
+*.mjs text eol=lf
+
+# Signed fixture payloads must retain their exact bytes on every platform.
+packages/server/test/fixtures/computer-release/message.txt -text

@@ -8,6 +8,7 @@ export const execFileAsync = promisify(execFile);
 
 export const PIXI_COMMAND = "pixi";
 export const PIXI_STT_ENV = "stt";
+export const PIXI_NEMO_ENV = "stt-nemo";
 export const PIXI_PYTHON_ARGS = [
   "run",
   "--frozen",
@@ -17,8 +18,11 @@ export const PIXI_PYTHON_ARGS = [
 ];
 const LOCAL_STT_BOOTSTRAP_TIMEOUT_MS = 20 * 60_000;
 
-export function localSttReadyHint(task: string): string {
-  return `Run \`pixi run -e ${PIXI_STT_ENV} ${task}\` from the YA checkout, then restart YA.`;
+export function localSttReadyHint(
+  task: string,
+  environment = PIXI_STT_ENV,
+): string {
+  return `Run \`pixi run -e ${environment} ${task}\` from the YA checkout, then restart YA.`;
 }
 
 export function formatBytes(bytes: number): string {
@@ -55,12 +59,18 @@ export async function ensureLocalSttRuntime(opts: {
   backendLabel: string;
   checkPython: string;
   bootstrapTask: string;
+  environment?: string;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const environment = opts.environment ?? PIXI_STT_ENV;
   const check = () =>
-    execFileAsync(PIXI_COMMAND, [...PIXI_PYTHON_ARGS, "-c", opts.checkPython], {
-      cwd: process.cwd(),
-      timeout: 30_000,
-    });
+    execFileAsync(
+      PIXI_COMMAND,
+      ["run", "--frozen", "-e", environment, "python", "-c", opts.checkPython],
+      {
+        cwd: process.cwd(),
+        timeout: 30_000,
+      },
+    );
 
   try {
     await check();
@@ -69,7 +79,7 @@ export async function ensureLocalSttRuntime(opts: {
     try {
       await execFileAsync(
         PIXI_COMMAND,
-        ["run", "-e", PIXI_STT_ENV, opts.bootstrapTask],
+        ["run", "-e", environment, opts.bootstrapTask],
         { cwd: process.cwd(), timeout: LOCAL_STT_BOOTSTRAP_TIMEOUT_MS },
       );
       await check();
@@ -77,7 +87,7 @@ export async function ensureLocalSttRuntime(opts: {
     } catch (bootstrapError) {
       return {
         ok: false,
-        reason: `${opts.backendLabel} pixi environment is not ready. ${localSttReadyHint(opts.bootstrapTask)} Initial check: ${summarizeChildError(checkError)} Bootstrap: ${summarizeChildError(bootstrapError)}`,
+        reason: `${opts.backendLabel} pixi environment is not ready. ${localSttReadyHint(opts.bootstrapTask, environment)} Initial check: ${summarizeChildError(checkError)} Bootstrap: ${summarizeChildError(bootstrapError)}`,
       };
     }
   }

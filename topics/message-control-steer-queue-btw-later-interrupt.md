@@ -101,6 +101,24 @@ acknowledgement confirms only that optimistic empty state. If the user has
 already begun the next draft, the acknowledgement must preserve both its live
 text and its recovery copy; it must never clear the newer turn.
 
+The recovery copy stays visible like any other draft — a reload or a second tab
+on the same session shows it in the composer, because a send that never landed
+must remain recoverable. It carries a `pendingSend` marker in the stored draft
+envelope, which distinguishes it from text the user typed or recalled. Only a
+marked copy is eligible for automatic discard, and only once the session proves
+that exact text is already accounted for: a durable (non-optimistic) user turn
+in the recent transcript tail, or a message the server reports as queued.
+Comparison is exact after trimming and queued-turn-marker removal, so anything
+YA appended on the way out simply fails to match and the draft stays.
+
+A draft the user typed, recalled into the composer, or saw restored after a
+failed send carries no marker and is never discarded automatically. This
+matters because the marker's own tab may never run its confirm: it can be
+closed, reloaded, or lose the acknowledgement, which is exactly how a sibling
+tab used to inherit the last sent prompt as an unsent draft. The reconciliation
+runs on the receiving tab from its own session history
+(`lib/draftSendReconcile.ts`), not from cross-tab messaging.
+
 ### Patient countdown and promotion proposal
 
 Status: promotion landed 2026-07-03; countdown still a proposal.

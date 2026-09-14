@@ -1,3 +1,5 @@
+import type { PreparedToolDisplay } from "../renderers/tools/defineTool";
+import { RawToolDisplay, ToolDisplayBoundary } from "./ToolDisplayBoundary";
 import {
   type CSSProperties,
   type MouseEvent,
@@ -25,19 +27,22 @@ import {
 import { useQuoteableTextSource } from "../../hooks/useQuoteableTextSource";
 import { useSchemaValidationContext } from "../../contexts/SchemaValidationContext";
 import { getDisplayBashCommandFromInput } from "../../lib/bashCommand";
-import { readProjectPathLinkTargets } from "../../lib/projectPathLinks";
+import { readProjectPathLinkTargets } from "@yep-anywhere/shared/transcript/projectPathLinks";
 import { PREDICTIVE_SCROLL_ROOT_MARGIN } from "../../lib/predictiveScroll";
 import {
   formatCommandDuration,
   getCommandResultMeta,
   parseShellToolOutput,
-} from "../../lib/shellToolOutput";
+} from "@yep-anywhere/shared/transcript/shellToolOutput";
 import {
   getVisibilityAwareTooltipText,
   isElementFullyScrollVisible,
 } from "../../lib/tooltipVisibility";
 import { validateToolResult } from "../../lib/validateToolResult";
-import type { ToolCallItem, ToolResultData } from "../../types/renderItems";
+import type {
+  ToolCallItem,
+  ToolResultData,
+} from "@yep-anywhere/shared/transcript/items";
 import { observeViewportActivityAnimation } from "../../lib/viewportActivityAnimation";
 import { ProjectPathLinkedText } from "../ProjectPathLinkedText";
 import {
@@ -49,8 +54,11 @@ import { getOutputTailTooltip } from "../renderers/tools/outputPreview";
 import type { RenderContext } from "../renderers/types";
 import { getToolSummary } from "../tools/summaries";
 import { HiddenContentBadge } from "../ui/HiddenContentBadge";
-import type { WorkflowAnnotation } from "../../lib/transcriptProjection/workflowTags";
+import type { WorkflowAnnotation } from "@yep-anywhere/shared/transcript/workflowTags";
 import { WorkflowOutput } from "../WorkflowOutput";
+import { ToolCommentaryBoundary } from "../ToolCommentaryBoundary";
+import { TimelineDisclosure } from "../TimelineDisclosure";
+import styles from "./ToolCallRow.module.css";
 
 interface Props {
   id: string;
@@ -533,7 +541,84 @@ function useNearViewportHydration(
   };
 }
 
-export const ToolCallRow = memo(function ToolCallRow({
+export const ToolCallRow = memo(function ToolCallRow(props: Props) {
+  const originalOutput =
+    props.toolResult?.structured ?? props.toolResult?.content;
+  return (
+    <ToolDisplayBoundary {...props} toolResult={originalOutput}>
+      <ToolCommentaryBoundary {...props}>
+        {(toolInput, toolResult, workflow) => (
+          <PreparedToolCallRow
+            {...props}
+            toolInput={toolInput}
+            toolResult={toolResult}
+            workflow={workflow}
+            originalOutput={originalOutput}
+          />
+        )}
+      </ToolCommentaryBoundary>
+    </ToolDisplayBoundary>
+  );
+});
+
+function PreparedToolCallRow(props: Props & { originalOutput?: unknown }) {
+  const output = props.toolResult?.structured ?? props.toolResult?.content;
+  const prepared = useMemo(
+    () =>
+      toolRegistry.prepare(props.toolName, {
+        input: props.toolInput,
+        result: output,
+        status: props.status,
+        isError: props.toolResult?.isError,
+      }),
+    [
+      props.toolName,
+      props.toolInput,
+      output,
+      props.status,
+      props.toolResult?.isError,
+    ],
+  );
+  const metadata = toolRegistry.metadata(props.toolName);
+  const { enabled, reportValidationError } = useSchemaValidationContext();
+  useEffect(() => {
+    if (prepared.kind !== "raw" || !enabled || !props.toolResult?.structured)
+      return;
+    const validation = validateToolResult(
+      metadata.tool,
+      props.toolResult.structured,
+    );
+    if (!validation.valid && validation.errors)
+      reportValidationError(metadata.tool, validation.errors);
+  }, [
+    prepared.kind,
+    enabled,
+    props.toolResult?.structured,
+    metadata.tool,
+    reportValidationError,
+  ]);
+  // Stored media has its own validated server contract and presentation.
+  // Eligibility for an unrelated text preview must not hide those assets.
+  if (props.toolResult?.media?.length) {
+    return (
+      <ToolResultMediaRows
+        displayName={prepared.getDisplayName()}
+        media={props.toolResult.media}
+        sourcePath={getToolResultImageSourcePath(
+          props.toolName,
+          props.toolInput,
+          props.toolResult.media.length,
+        )}
+        status={props.status}
+      />
+    );
+  }
+  if (prepared.kind === "raw" && metadata.registered)
+    return <RawToolDisplay {...props} toolResult={output} />;
+  return <ToolCallRowContent {...props} prepared={prepared} />;
+}
+
+const ToolCallRowContent = memo(function ToolCallRowContent({
   id,
   toolName,
   toolInput,
@@ -543,7 +628,9 @@ export const ToolCallRow = memo(function ToolCallRow({
   sessionProvider,
   startTimestampMs,
   resultTimestampMs,
-}: Props) {
+  originalOutput,
+  prepared,
+}: Props & { originalOutput?: unknown; prepared: PreparedToolDisplay }) {
   const [summaryExpanded, setSummaryExpanded] = useRememberedDisclosureState(
     id,
     "interactive-summary",
@@ -617,7 +704,7 @@ export const ToolCallRow = memo(function ToolCallRow({
     status,
     noOutputBashResult !== null,
   );
-  const rendererToolName = toolRegistry.get(toolName).tool;
+  const rendererToolName = toolRegistry.metadata(toolName).tool;
   useEffect(() => {
     if (
       !schemaValidationEnabled ||
@@ -639,7 +726,9 @@ export const ToolCallRow = memo(function ToolCallRow({
     structuredResult,
   ]);
   const mayHaveCollapsedPreview =
-    toolRegistry.hasCollapsedPreview(toolName) && !suppressCollapsedPreview;
+    (prepared.kind === "partial" ||
+      toolRegistry.hasCollapsedPreview(toolName)) &&
+    !suppressCollapsedPreview;
   const isEditTool = rendererToolName === "Edit";
   const isReadTool = rendererToolName === "Read";
   const isBashTool = rendererToolName === "Bash";
@@ -703,22 +792,18 @@ export const ToolCallRow = memo(function ToolCallRow({
   );
 
   const interactiveSummaryContent = useMemo(() => {
-    if (!canRenderInteractiveSummary || !shouldHydrateRichContent) {
+    if (
+      !canRenderInteractiveSummary ||
+      !toolRegistry.hasInteractiveSummary(toolName) ||
+      !shouldHydrateRichContent
+    ) {
       return null;
     }
-    return toolRegistry.renderInteractiveSummary(
-      toolName,
-      toolInput,
-      structuredResult,
-      toolResult?.isError ?? false,
-      interactiveSummaryContext,
-    );
+    return prepared.renderInteractiveSummary(interactiveSummaryContext);
   }, [
     toolName,
-    toolInput,
-    structuredResult,
-    toolResult,
     interactiveSummaryContext,
+    prepared,
     shouldHydrateRichContent,
     canRenderInteractiveSummary,
   ]);
@@ -729,32 +814,43 @@ export const ToolCallRow = memo(function ToolCallRow({
     interactiveSummaryContent !== false;
 
   const collapsedPreviewContent = useMemo(() => {
-    if (suppressCollapsedPreview || !shouldHydrateRichContent) {
+    if (
+      suppressCollapsedPreview ||
+      (prepared.kind !== "partial" &&
+        !toolRegistry.hasCollapsedPreview(toolName) &&
+        !workflow?.view) ||
+      !shouldHydrateRichContent
+    ) {
       return null;
     }
-    if (workflow?.view && toolResult) {
+    if (
+      workflow?.view &&
+      toolResult &&
+      (workflow.markers.length > 0 || workflow.view === "matching-lines")
+    ) {
       return (
         <WorkflowOutput
           text={workflow.outputText ?? toolResult.content}
           workflow={workflow}
+          original={
+            <pre>
+              {typeof originalOutput === "string"
+                ? originalOutput
+                : JSON.stringify(originalOutput, null, 2)}
+            </pre>
+          }
         />
       );
     }
-    return toolRegistry.renderCollapsedPreview(
-      toolName,
-      toolInput,
-      structuredResult,
-      toolResult?.isError ?? false,
-      renderContext,
-    );
+    return prepared.renderCollapsedPreview(renderContext);
   }, [
+    toolName,
     suppressCollapsedPreview,
     workflow,
-    toolName,
-    toolInput,
-    structuredResult,
+    originalOutput,
     toolResult,
     renderContext,
+    prepared,
     shouldHydrateRichContent,
   ]);
 
@@ -886,10 +982,24 @@ export const ToolCallRow = memo(function ToolCallRow({
   };
 
   const summary = useMemo(() => {
-    return getToolSummary(toolName, toolInput, toolResult, status, {
-      projectPath: sessionMetadata?.projectPath ?? null,
-    });
-  }, [toolName, toolInput, toolResult, status, sessionMetadata?.projectPath]);
+    return getToolSummary(
+      toolName,
+      toolInput,
+      toolResult,
+      status,
+      {
+        projectPath: sessionMetadata?.projectPath ?? null,
+      },
+      prepared,
+    );
+  }, [
+    toolName,
+    toolInput,
+    toolResult,
+    status,
+    sessionMetadata?.projectPath,
+    prepared,
+  ]);
   const headerCommand = isBashTool
     ? getDisplayBashCommandFromInput(toolInput)
     : "";
@@ -1062,6 +1172,13 @@ export const ToolCallRow = memo(function ToolCallRow({
         : dotExpanded
           ? "Collapse inline view"
           : "Expand inline view";
+  const disclosureExpanded = !isNonExpandable
+    ? expanded
+    : hasPreviewToggle
+      ? previewExpanded
+      : hasSummaryDotToggle
+        ? summaryExpanded
+        : dotExpanded;
 
   useLayoutEffect(() => {
     if (
@@ -1074,33 +1191,11 @@ export const ToolCallRow = memo(function ToolCallRow({
     queueExpandedToolTopFocus(rowRef);
   }, [previewExpanded, expanded, dotExpanded, rowRef]);
 
-  if (toolResult?.media?.length) {
-    return (
-      <ToolResultMediaRows
-        displayName={toolRegistry.getDisplayName(toolName, status, toolInput)}
-        media={toolResult.media}
-        sourcePath={getToolResultImageSourcePath(
-          toolName,
-          toolInput,
-          toolResult.media.length,
-        )}
-        status={status}
-      />
-    );
-  }
-
   // Inline renderers bypass the entire tool-row structure
   if (hasInlineRenderer) {
     return (
       <div className="tool-inline timeline-item">
-        {toolRegistry.renderInline(
-          toolName,
-          toolInput,
-          structuredResult,
-          toolResult?.isError ?? false,
-          status,
-          renderContext,
-        )}
+        {prepared.renderInline(renderContext)}
       </div>
     );
   }
@@ -1114,11 +1209,11 @@ export const ToolCallRow = memo(function ToolCallRow({
       className={`tool-row timeline-item ${expanded ? "expanded" : "collapsed"} status-${status} ${isNonExpandable ? "interactive" : ""} ${shouldHydrateRichContent ? "" : "rich-deferred"} ${isBashTool ? "ran-tool-row" : ""}`}
     >
       {showDotBtn && (
-        <button
-          type="button"
-          className="timeline-dot-btn"
+        <TimelineDisclosure
           onClick={handleDotClick}
-          aria-label={dotAriaLabel}
+          label={dotAriaLabel}
+          expanded={disclosureExpanded}
+          status={status}
         />
       )}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: interactive header has role, tabIndex, and keyboard handlers when enabled */}
@@ -1221,7 +1316,7 @@ export const ToolCallRow = memo(function ToolCallRow({
         )}
 
         <span className="tool-name" onPointerEnter={handleToolNamePointerEnter}>
-          {toolRegistry.getDisplayName(toolName, status, toolInput)}
+          {prepared.getDisplayName()}
         </span>
 
         {hasInteractiveSummary && canRenderInteractiveSummary ? (
@@ -1256,7 +1351,7 @@ export const ToolCallRow = memo(function ToolCallRow({
             className={[
               "tool-summary",
               "tool-summary-command",
-              bashCommandExpanded ? "is-expanded" : "",
+              bashCommandExpanded ? styles.expandedCommand : "",
             ]
               .filter(Boolean)
               .join(" ")}
@@ -1330,16 +1425,6 @@ export const ToolCallRow = memo(function ToolCallRow({
           <ToolHeaderCopyButton text={headerCommand} label="Copy command" />
         )}
 
-        {!isNonExpandable && (
-          <span className="expand-chevron" aria-hidden="true">
-            {expanded ? "▾" : "▸"}
-          </span>
-        )}
-        {hasHeaderDotToggle && (
-          <span className="expand-chevron" aria-hidden="true">
-            {dotExpanded ? "▾" : "▸"}
-          </span>
-        )}
         {showBashCommandTarget &&
           !bashCommandExpanded &&
           bashCommandPreview.hiddenCount && (
@@ -1384,8 +1469,7 @@ export const ToolCallRow = memo(function ToolCallRow({
         <div className="tool-row-content">
           <ToolRowCollapseStrip onCollapse={() => setDotExpanded(false)} />
           <ToolResultExpanded
-            toolName={toolName}
-            toolInput={toolInput}
+            prepared={prepared}
             toolResult={toolResult}
             context={renderContext}
           />
@@ -1405,15 +1489,10 @@ export const ToolCallRow = memo(function ToolCallRow({
           ) : status === "pending" ||
             status === "aborted" ||
             status === "incomplete" ? (
-            <ToolUseExpanded
-              toolName={toolName}
-              toolInput={toolInput}
-              context={renderContext}
-            />
+            <ToolUseExpanded prepared={prepared} context={renderContext} />
           ) : (
             <ToolResultExpanded
-              toolName={toolName}
-              toolInput={toolInput}
+              prepared={prepared}
               toolResult={toolResult}
               context={renderContext}
             />
@@ -1605,48 +1684,29 @@ function BashNoOutputExpanded({ command }: { command: string }) {
 }
 
 function ToolUseExpanded({
-  toolName,
-  toolInput,
+  prepared,
   context,
 }: {
-  toolName: string;
-  toolInput: unknown;
+  prepared: PreparedToolDisplay;
   context: RenderContext;
 }) {
   return (
-    <div className="tool-use-expanded">
-      {toolRegistry.renderToolUse(toolName, toolInput, context)}
-    </div>
+    <div className="tool-use-expanded">{prepared.renderToolUse(context)}</div>
   );
 }
-
 function ToolResultExpanded({
-  toolName,
-  toolInput,
+  prepared,
   toolResult,
   context,
 }: {
-  toolName: string;
-  toolInput: unknown;
+  prepared: PreparedToolDisplay;
   toolResult: ToolResultData | undefined;
   context: RenderContext;
 }) {
-  if (!toolResult) {
-    return <div className="tool-no-result">No result data</div>;
-  }
-
-  // Use structured result if available, otherwise fall back to content
-  const result = toolResult.structured ?? toolResult.content;
-
+  if (!toolResult) return <div className="tool-no-result">No result data</div>;
   return (
     <div className="tool-result-expanded">
-      {toolRegistry.renderToolResult(
-        toolName,
-        result,
-        toolResult.isError,
-        context,
-        toolInput,
-      )}
+      {prepared.renderToolResult(context)}
     </div>
   );
 }

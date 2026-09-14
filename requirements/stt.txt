@@ -9,4 +9,4 @@
 # Keep the default install focused on local Whisper. NVIDIA Parakeet uses the
 # same pixi environment, but its heavier dependencies are installed through
 # requirements/stt-parakeet.txt and the stt-bootstrap-parakeet task.
-faster-whisper>=1.1,<2
+faster-whisper>=1.2.1,<2

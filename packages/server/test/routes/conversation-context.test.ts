@@ -8,6 +8,51 @@ import {
 } from "../process.test-support.js";
 
 describe("conversation context delivery", () => {
+  it("waits for resumed provider initialization before accepting context", async () => {
+    vi.useFakeTimers();
+    const controller = createControllableIterator();
+    const append = vi.fn(async () => true);
+    const process = new Process(controller.iterator, {
+      projectPath: "/project",
+      projectId: toUrlProjectId("project"),
+      sessionId: "parent",
+      initialState: "idle",
+      appendConversationContextFn: append,
+      abortFn: () => controller.finish(),
+    });
+    const routes = createConversationContextRoutes({
+      supervisor: { getProcessForSession: () => process },
+    });
+    const submit = () =>
+      routes.request(
+        `/${process.projectId}/sessions/parent/conversation-context`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            requestId: "save-once",
+            turns: [{ role: "user", text: "Saved question" }],
+          }),
+        },
+      );
+    try {
+      const pending = submit();
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(append).not.toHaveBeenCalled();
+      controller.push({
+        type: "system",
+        subtype: "init",
+        session_id: "parent",
+      });
+      expect((await pending).status).toBe(200);
+      expect((await submit()).status).toBe(200);
+      expect(append).toHaveBeenCalledTimes(1);
+    } finally {
+      await process.abort();
+      vi.useRealTimers();
+    }
+  });
+
   it.each([true, false])(
     "delivers generic ordered turns once through a live process (native %s)",
     async (native) => {

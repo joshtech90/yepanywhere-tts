@@ -1,10 +1,17 @@
-import { Fragment, lazy, StrictMode } from "react";
+import "./lib/developmentPerformanceBootstrap";
+import { Fragment, lazy, StrictMode, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 
 // Toggle to disable StrictMode for easier debugging (avoids double renders)
 const STRICT_MODE = false;
 const Wrapper = STRICT_MODE ? StrictMode : Fragment;
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import {
+  BrowserRouter,
+  Navigate,
+  Route,
+  Routes,
+  useLocation,
+} from "react-router-dom";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { RouteModule, routeModule } from "./components/RouteModule";
 import { TooltipLayer } from "./components/ui/TooltipLayer";
@@ -15,10 +22,21 @@ import { initializeOutputAppearance } from "./hooks/useOutputAppearance";
 import { initializeTabSize } from "./hooks/useTabSize";
 import { initializeTheme } from "./hooks/useTheme";
 import { initializeTooltipAppearance } from "./hooks/useTooltipAppearance";
-import { I18nProvider } from "./i18n";
+import { I18nProvider, useI18n } from "./i18n";
 import "./styles/index.css";
 
 const App = lazy(() => import("./App").then(({ App }) => ({ default: App })));
+const ConversationPreviewPage = lazy(() =>
+  import("./pages/ConversationPreviewPage").then(
+    ({ ConversationPreviewPage }) => ({ default: ConversationPreviewPage }),
+  ),
+);
+
+/** The experimental client owns its connections without the full app runtime. */
+function LocalAppShell({ children }: { children: ReactNode }) {
+  const { pathname } = useLocation();
+  return /^\/-\/preview\/?$/.test(pathname) ? children : <App>{children}</App>;
+}
 const NavigationLayout = lazy(() =>
   import("./layouts").then(({ NavigationLayout }) => ({
     default: NavigationLayout,
@@ -38,6 +56,9 @@ const AgentsPage = lazy(() =>
   import("./pages/AgentsPage").then(({ AgentsPage }) => ({
     default: AgentsPage,
   })),
+);
+const IssuesPage = lazy(() =>
+  import("./pages/IssuesPage").then((m) => ({ default: m.IssuesPage })),
 );
 const BangCommandsPage = lazy(() =>
   import("./pages/BangCommandsPage").then(({ BangCommandsPage }) => ({
@@ -116,6 +137,7 @@ const WorkstreamsPage = lazy(() =>
  * self-contained inline styles rather than relying on app CSS variables.
  */
 function WrongPortNotice({ backendUrl }: { backendUrl: string }) {
+  const { t } = useI18n();
   return (
     <div
       style={{
@@ -151,10 +173,10 @@ function WrongPortNotice({ backendUrl }: { backendUrl: string }) {
             marginBottom: 10,
           }}
         >
-          Wrong port
+          {t("wrongPortLabel")}
         </div>
         <h1 style={{ fontSize: 20, fontWeight: 650, margin: "0 0 10px" }}>
-          This is the Vite dev server, not the app
+          {t("wrongPortTitle")}
         </h1>
         <p
           style={{
@@ -164,9 +186,7 @@ function WrongPortNotice({ backendUrl }: { backendUrl: string }) {
             color: "#b6bcc8",
           }}
         >
-          You've hit the internal HMR / asset server on port {__VITE_DEV_PORT__}
-          , which has no backend. The Yep Anywhere UI runs on the main server —
-          open the link below instead.
+          {t("wrongPortBody", { port: __VITE_DEV_PORT__ })}
         </p>
         <a
           href={backendUrl}
@@ -181,7 +201,7 @@ function WrongPortNotice({ backendUrl }: { backendUrl: string }) {
             textDecoration: "none",
           }}
         >
-          Open Yep Anywhere →
+          {t("wrongPortOpen")}
         </a>
         <div
           style={{
@@ -211,7 +231,11 @@ if (!rootElement) {
 // pointer to the real app instead. Stripped from production via import.meta.env.DEV.
 if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
   const backendUrl = `${window.location.protocol}//${window.location.hostname}:${__BACKEND_PORT__}${window.location.pathname}${window.location.search}${window.location.hash}`;
-  createRoot(rootElement).render(<WrongPortNotice backendUrl={backendUrl} />);
+  createRoot(rootElement).render(
+    <I18nProvider>
+      <WrongPortNotice backendUrl={backendUrl} />
+    </I18nProvider>,
+  );
 } else {
   // Apply saved preferences before React renders to avoid flash
   initializeTheme();
@@ -242,6 +266,19 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
   // Remove trailing slash for BrowserRouter basename
   const basename = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
 
+  const initialPath = basename
+    ? window.location.pathname.slice(basename.length)
+    : window.location.pathname;
+  if (/^\/settings(?:\/|$)/.test(initialPath)) {
+    // Start independent downloads before lazy ancestors can serialize them.
+    // React.lazy retains ownership of any import failure's route error UI.
+    void Promise.allSettled([
+      import("./App"),
+      import("./layouts"),
+      import("./pages/settings"),
+    ]);
+  }
+
   createRoot(rootElement).render(
     <Wrapper>
       <ErrorBoundary>
@@ -249,8 +286,12 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
         <BrowserRouter basename={basename}>
           <I18nProvider>
             <RouteModule>
-              <App>
+              <LocalAppShell>
                 <Routes>
+                  <Route
+                    path="/-/preview"
+                    element={routeModule(<ConversationPreviewPage local />)}
+                  />
                   <Route
                     path="/"
                     element={<Navigate to="/projects" replace />}
@@ -293,6 +334,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     <Route
                       path="/agents"
                       element={routeModule(<AgentsPage />)}
+                    />
+                    <Route
+                      path="/issues"
+                      element={routeModule(<IssuesPage />)}
                     />
                     <Route path="/inbox" element={routeModule(<InboxPage />)} />
                     <Route
@@ -355,7 +400,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     element={routeModule(<ActivityPage />)}
                   />
                 </Routes>
-              </App>
+              </LocalAppShell>
             </RouteModule>
           </I18nProvider>
         </BrowserRouter>

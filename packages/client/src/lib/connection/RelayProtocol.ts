@@ -1,3 +1,8 @@
+import {
+  CONVERSATION_API_REVISION,
+  CONVERSATION_CHANNEL,
+} from "@yep-anywhere/shared/experimental/conversation-protocol";
+import type { ConversationQuery } from "@yep-anywhere/shared/experimental/simple-client.generated";
 import type {
   ClientPing,
   DeviceServerMessage,
@@ -19,6 +24,7 @@ import type {
   UploadedFile,
   YepMessage,
 } from "@yep-anywhere/shared";
+import { API_REQUEST_DEADLINE_MS } from "../../api/requestDeadline";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
 import { generateUUID } from "../uuid";
 import type {
@@ -266,8 +272,8 @@ export class RelayProtocol {
     handlers: StreamHandlers,
     buildMessage: (subscriptionId: string) => RelaySubscribe,
     lifecycle: RelaySubscriptionLifecycle = {},
+    subscriptionId = generateId(),
   ): Subscription {
-    const subscriptionId = generateId();
     let state: SubscriptionState = "pending";
 
     const settle = (settlement: SubscriptionSettlement): void => {
@@ -637,7 +643,7 @@ export class RelayProtocol {
         }
         this.pendingRequests.delete(id);
         reject(new Error("Request timeout"));
-      }, 30000);
+      }, API_REQUEST_DEADLINE_MS);
 
       this.pendingRequests.set(id, {
         resolve: (response: RelayResponse) => {
@@ -731,7 +737,7 @@ export class RelayProtocol {
         }
         this.pendingRequests.delete(id);
         reject(new Error("Request timeout"));
-      }, 30000);
+      }, API_REQUEST_DEADLINE_MS);
 
       this.pendingRequests.set(id, {
         resolve: (response: RelayResponse) => {
@@ -773,9 +779,26 @@ export class RelayProtocol {
     });
   }
 
-  /**
-   * Subscribe to session events.
-   */
+  /** Subscribe to bounded experimental Conversation snapshots. */
+  subscribeConversation(
+    subscriptionId: string,
+    query: ConversationQuery,
+    handlers: StreamHandlers,
+  ): Subscription {
+    return this.createSubscription(
+      handlers,
+      (id) => ({
+        type: "subscribe",
+        subscriptionId: id,
+        channel: CONVERSATION_CHANNEL,
+        apiRevision: CONVERSATION_API_REVISION,
+        query,
+      }),
+      {},
+      subscriptionId,
+    );
+  }
+
   subscribeSession(
     sessionId: string,
     handlers: StreamHandlers,

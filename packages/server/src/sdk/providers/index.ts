@@ -5,9 +5,11 @@
  */
 
 import {
+  DEFAULT_CODEX_CYBER_ACCESS_PROGRAM,
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_SUBAGENT_MAX_DEPTH,
   type ClaudeAdditionalModelSelection,
+  type CodexCyberAccessProgram,
   type CodexPlanToolMode,
   type CodexReasoningSummary,
   type SubagentMaxDepth,
@@ -117,6 +119,7 @@ export interface ProviderRuntimeConfig {
 export interface ProviderRuntimeSnapshot {
   codexCliPath?: string;
   codexPlanToolMode?: CodexPlanToolMode;
+  codexCyberAccessProgram?: CodexCyberAccessProgram;
   codexReasoningSummary?: CodexReasoningSummary;
   claudeAdditionalModels?: readonly ClaudeAdditionalModelSelection[];
   claudeGatewayUrl?: string;
@@ -149,6 +152,9 @@ export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
     DEFAULT_CODEX_REASONING_SUMMARY;
   const getCodexPlanToolMode = (): CodexPlanToolMode =>
     getProviderRuntimeSnapshot().codexPlanToolMode ?? "provider-default";
+  const getCodexCyberAccessProgram = (): CodexCyberAccessProgram =>
+    getProviderRuntimeSnapshot().codexCyberAccessProgram ??
+    DEFAULT_CODEX_CYBER_ACCESS_PROGRAM;
   const getSubagentMaxDepth = (): SubagentMaxDepth => {
     const configured = getProviderRuntimeSnapshot().subagentMaxDepth;
     return configured === undefined ? DEFAULT_SUBAGENT_MAX_DEPTH : configured;
@@ -159,6 +165,7 @@ export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
   grokACPProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
   codexProvider.setReasoningSummaryGetter(getCodexReasoningSummary);
   codexProvider.setPlanToolModeGetter(getCodexPlanToolMode);
+  codexProvider.setCyberAccessProgramGetter(getCodexCyberAccessProgram);
   codexProvider.setSubagentMaxDepthGetter(getSubagentMaxDepth);
 }
 

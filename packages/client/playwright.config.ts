@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { defineConfig } from "@playwright/test";
 
 // Playwright forces color for its worker output after loading this config. Do
@@ -7,8 +8,12 @@ if (process.env.NO_COLOR) {
   delete process.env.NO_COLOR;
 }
 
+process.env.YEP_E2E_RESULTS_DIR ??= `test-results/${randomUUID()}`;
+const outputDir = process.env.YEP_E2E_RESULTS_DIR;
+
 export default defineConfig({
   testDir: "./e2e",
+  outputDir,
   fullyParallel: false,
   forbidOnly: !!process.env.CI,
   retries: process.env.CI ? 2 : 0,

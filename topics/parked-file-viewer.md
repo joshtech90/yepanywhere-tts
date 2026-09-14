@@ -237,6 +237,35 @@ session-viewer provider and links in public shares retain their local,
 close-only modal ownership; session metadata alone never publishes into a host
 that is not present.
 
+## Interactive artifact links
+
+An ordinary tap on a configured artifact-domain grant link in an authenticated
+session opens the artifact in the session's existing viewer layer, above the
+composer. The session route, mounted transcript, composer draft, and connection
+remain in place. Close and browser Back destroy only the preview; minimize and
+restore retain the same iframe, including its form state and scroll position.
+Tapping the original link while parked restores that same preview. Replacing
+the originating rich-text row does not own or end the preview's lifetime.
+
+The empty viewer layer is already present in session layouts. It contains no
+iframe and performs no artifact requests, probes, polling, or grant creation
+until a user opens an artifact. Opening an existing grant URL consumes that URL
+directly; closing it does not revoke someone else's shared grant. A file viewer
+that creates its own grant retains its existing close-and-revoke contract.
+
+Only grant paths on the current source's configured, isolated artifact origins
+are handled. Other external links, public-share links, downloads, and modified
+browser clicks retain normal browser handling. The frame has no referrer or YA
+credentials and uses the same script/same-origin sandbox as file-backed
+interactive previews. A blocked parent frame policy displays an explanation
+inside the container and leaves Close available; it does not navigate the
+session away or automatically open a tab.
+
+**Use the existing session layer** (vs. a separate browser tab or a newly
+mounted session route): mobile return must preserve the active session, while
+the empty layer adds no artifact runtime work. The preview consumes the
+transcript row rather than narrowing the phone composer.
+
 ## Evaluation
 
 The first trial is successful only if captures and interaction checks show all

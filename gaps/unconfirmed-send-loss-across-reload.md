@@ -44,3 +44,21 @@ waits for verified provider teardown before replacement ownership.
 This explains the later typed-message cluster, but it does not close the
 broader gap above. The earlier isolated Smart Turn/ASR observation still lacks
 a durable receipt or trace proving whether the server accepted it.
+
+## 2026-09-07 possible Enter-sent message loss
+
+During mockup review, the user reported losing text asking for delivery on the
+artifact domain in a tab/container. They clarified that it may have been a
+recently Enter-sent message rather than an unsent composer draft. No separate
+message with that request appears in the provider transcript or live session
+history before the report; the process reported zero queued/deferred messages
+when checked. The contemporaneous inline-question reply is present in both
+transcripts. These observations do not establish whether the missing text
+reached the server, and do not prove that inline submission erased it.
+
+The current async-question browser check preserves the main draft on both
+successful and failed inline replies. The live tab's pending-send state was
+not available. Continue from durable receipt/browser submission evidence, not
+a guessed draft-restoration patch. The accompanying reminder report is in
+[async-question-reply-reminder-state](async-question-reply-reminder-state.md).
+Contributing-model: 6-Astra

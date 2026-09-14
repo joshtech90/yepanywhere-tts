@@ -2,11 +2,16 @@ import {
   createContext,
   type ReactNode,
   type RefObject,
+  useCallback,
   useContext,
   useEffect,
   useId,
   useRef,
 } from "react";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { useRetainedVersionInfo } from "../hooks/useVersion";
+import { isArtifactLink } from "../lib/artifactPreview";
+import { ArtifactLinkViewer } from "./ArtifactLinkViewer";
 import {
   type SendSessionViewerComment,
   SessionViewerCommentProvider,
@@ -14,6 +19,7 @@ import {
 import {
   clearSessionViewer,
   presentSessionViewer,
+  restoreSessionViewer,
   useSessionViewerController,
 } from "../lib/sessionViewerController";
 import { Modal } from "./ui/Modal";
@@ -31,6 +37,13 @@ interface SessionManagedPanelProps {
 }
 
 const SessionViewerContext = createContext<string | null>(null);
+const SessionArtifactLinkContext = createContext<
+  ((url: string, label: string) => boolean) | null
+>(null);
+
+export function useSessionArtifactLink() {
+  return useContext(SessionArtifactLinkContext);
+}
 
 export function useSessionViewerSessionId(): string | null {
   return useContext(SessionViewerContext);
@@ -101,12 +114,36 @@ export function SessionViewerProvider({
   onSendComment?: SendSessionViewerComment;
   children: ReactNode;
 }) {
+  const runtime = useCurrentSourceRuntime();
+  const version = useRetainedVersionInfo(runtime.sourceKey);
+  const viewerId = useId();
+  const openArtifact = useCallback(
+    (url: string, label: string) => {
+      if (
+        inactive ||
+        !isArtifactLink(url, version?.artifactViewer, window.location.href)
+      )
+        return false;
+      presentSessionViewer({
+        id: viewerId,
+        kind: "artifact",
+        sessionId,
+        url,
+        label,
+      });
+      restoreSessionViewer(viewerId);
+      return true;
+    },
+    [inactive, sessionId, version?.artifactViewer, viewerId],
+  );
   return (
     <SessionViewerContext.Provider value={sessionId}>
-      <SessionViewerCommentProvider onSendComment={onSendComment}>
-        {children}
-        <SessionManagedViewerHost sessionId={sessionId} inactive={inactive} />
-      </SessionViewerCommentProvider>
+      <SessionArtifactLinkContext.Provider value={openArtifact}>
+        <SessionViewerCommentProvider onSendComment={onSendComment}>
+          {children}
+          <SessionManagedViewerHost sessionId={sessionId} inactive={inactive} />
+        </SessionViewerCommentProvider>
+      </SessionArtifactLinkContext.Provider>
     </SessionViewerContext.Provider>
   );
 }
@@ -169,6 +206,14 @@ export function SessionManagedViewerHost({
   }, [sessionId]);
 
   if (file) return file.renderContent(inactive);
+  if (controller?.kind === "artifact" && controller.sessionId === sessionId)
+    return (
+      <ArtifactLinkViewer
+        key={controller.url}
+        controller={controller}
+        inactive={inactive}
+      />
+    );
   if (!panel) return null;
   return (
     <Modal

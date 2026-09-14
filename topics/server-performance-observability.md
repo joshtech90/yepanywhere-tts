@@ -8,8 +8,11 @@
 
 Topic: server-performance-observability
 
-Status: Draft proposal. No route, recorder, monitor, cache registry, or client
-panel described here is implemented or approved for implementation yet.
+Status: Draft proposal, with one implemented piece. The periodic resource
+sample under *Server metrics* below exists
+(`packages/server/src/logging/resource-sample.ts`). No route, recorder, cache
+registry, pressure coordinator, or client panel described here is implemented
+or approved for implementation yet.
 
 ## Vocabulary
 
@@ -179,6 +182,30 @@ The snapshot must not scan projects or sessions in order to answer. Owners
 maintain their counters as work occurs. Reading metrics must remain useful when
 the ordinary HTTP server is impaired; the maintenance listener and its default
 configuration therefore belong to the implementation investigation.
+
+### The periodic resource sample
+
+A query-time snapshot answers nothing about a server that has already stopped
+answering, and nothing at all after it restarts. The first row above is
+therefore also written to the server log once a minute as
+`server_resource_sample`, from process start until shutdown, whatever the
+ordinary HTTP server is doing. `YEP_RESOURCE_SAMPLE_SECONDS` changes the
+period; `0` turns sampling off.
+
+Each line carries uptime, CPU share of one core since the previous line,
+resident set size, V8 used/total heap against `heap_size_limit`, external and
+array-buffer memory, and the maximum, 99th-percentile, and mean event-loop
+delay since the previous line. It also times one `stat` of the data directory.
+Reading the pair matters: a large event-loop delay means JavaScript work or
+garbage collection held the loop, while a slow data-directory `stat` beside a
+healthy delay means filesystem or libuv threadpool saturation, which is the
+shape a network-mounted data directory produces.
+
+Sampling stays one process-wide interval that allocates nothing per session,
+project, or client, so it can be left on permanently. The reported memory
+figures are the ones *Address space is not heap* above distinguishes: resident
+set size and heap are separate facts, and VIRT is deliberately absent because a
+large stable reservation is not a pressure signal.
 
 ## Performance events
 

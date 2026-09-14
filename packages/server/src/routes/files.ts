@@ -6,7 +6,6 @@ import {
   stat,
   type FileHandle,
 } from "node:fs/promises";
-import { homedir } from "node:os";
 import { Readable } from "node:stream";
 import {
   basename,
@@ -37,6 +36,7 @@ import {
   readFileHandleBounded,
 } from "../utils/projectFileAccess.js";
 import { isLikelyUtf8Text } from "../utils/utf8Text.js";
+import { expandHomePath } from "../utils/expandHomePath.js";
 import { createLocalResourcePathPolicy } from "./local-resource-policy.js";
 import {
   createMutableFileCacheMetadata,
@@ -762,16 +762,6 @@ async function isSniffedTextFile(
   } finally {
     if (typeof source === "string") await file.close();
   }
-}
-
-function expandHomePath(requestedPath: string): string {
-  if (requestedPath === "~") {
-    return homedir();
-  }
-  if (requestedPath.startsWith("~/") || requestedPath.startsWith("~\\")) {
-    return resolve(homedir(), requestedPath.slice(2));
-  }
-  return requestedPath;
 }
 
 /**

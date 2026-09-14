@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import {
   type ReactNode,
   useEffect,
@@ -16,7 +18,7 @@ import { ActivityDetailModal } from "../../ActivityDetailModal";
 import { SchemaWarning } from "../../SchemaWarning";
 import { SessionFilePathLink } from "../../SessionFilePathLink";
 import styles from "./GrepRenderer.module.css";
-import type { GrepInput, GrepMatch, GrepResult, ToolRenderer } from "./types";
+import type { GrepInput, GrepMatch, GrepResult } from "./types";
 
 const MAX_FILES_COLLAPSED = 20;
 const MAX_LINES_COLLAPSED = 30;
@@ -434,7 +436,10 @@ function GrepToolResult({
     enabled && validationErrors && !isToolIgnored("Grep");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className={styles.error}>
         {showValidationWarning && validationErrors && (
@@ -786,24 +791,19 @@ function GrepInteractiveSummary({
   );
 }
 
-export const grepRenderer: ToolRenderer<GrepInput, GrepResult> = {
+export const grepRenderer = defineTool(toolDisplayContracts.Grep, {
   tool: "Grep",
   displayName: "Grep",
 
   renderToolUse(input, context) {
-    return (
-      <GrepToolUse
-        input={input as GrepInput}
-        projectPath={context.projectPath}
-      />
-    );
+    return <GrepToolUse input={input} projectPath={context.projectPath} />;
   },
 
   renderToolResult(result, isError, context, input) {
     return (
       <GrepToolResult
-        input={input as GrepInput | undefined}
-        result={result as GrepResult}
+        input={input}
+        result={result}
         isError={isError}
         projectPath={context.projectPath}
       />
@@ -811,12 +811,12 @@ export const grepRenderer: ToolRenderer<GrepInput, GrepResult> = {
   },
 
   getUseSummary(input, context) {
-    return getGrepUseSummary(input as GrepInput, context?.projectPath);
+    return getGrepUseSummary(input, context?.projectPath);
   },
 
   getResultSummary(result, isError) {
     if (isError) return "Error";
-    const r = result as GrepResult;
+    const r = result;
     if (!r) return "Results";
     return getGrepResultLabel(r).text;
   },
@@ -824,8 +824,8 @@ export const grepRenderer: ToolRenderer<GrepInput, GrepResult> = {
   renderInteractiveSummary(input, result, isError, context) {
     return (
       <GrepInteractiveSummary
-        input={input as GrepInput}
-        result={result as GrepResult | undefined}
+        input={input}
+        result={result}
         isError={isError}
         projectPath={context.projectPath}
         summaryExpanded={context.summaryExpanded}
@@ -837,11 +837,11 @@ export const grepRenderer: ToolRenderer<GrepInput, GrepResult> = {
   renderCollapsedPreview(input, result, isError, context) {
     return (
       <GrepCollapsedPreview
-        input={input as GrepInput | undefined}
-        result={result as GrepResult | undefined}
+        input={input}
+        result={result}
         isError={isError}
         projectPath={context.projectPath}
       />
     );
   },
-};
+});

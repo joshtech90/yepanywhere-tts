@@ -1,4 +1,5 @@
 export const DEFAULT_PARAKEET_SPEECH_MODEL = "nvidia/parakeet-tdt-0.6b-v3";
+export const UNIFIED_PARAKEET_SPEECH_MODEL = "nvidia/parakeet-unified-en-0.6b";
 
 export type ParakeetModelBackendId = "ya-parakeet" | "ya-nemo";
 
@@ -6,9 +7,16 @@ export interface ParakeetSpeechModelPreset {
   value: string;
   label: string;
   supportedBackends: readonly ParakeetModelBackendId[];
+  requiresRecentModels?: boolean;
 }
 
 export const PARAKEET_SPEECH_MODEL_PRESETS: ParakeetSpeechModelPreset[] = [
+  {
+    value: UNIFIED_PARAKEET_SPEECH_MODEL,
+    label: "Unified 0.6B English",
+    supportedBackends: ["ya-nemo"],
+    requiresRecentModels: true,
+  },
   {
     value: DEFAULT_PARAKEET_SPEECH_MODEL,
     label: "TDT 0.6B v3 multilingual",
@@ -18,6 +26,12 @@ export const PARAKEET_SPEECH_MODEL_PRESETS: ParakeetSpeechModelPreset[] = [
     value: "nvidia/parakeet-ctc-1.1b",
     label: "CTC 1.1B English lowercase",
     supportedBackends: ["ya-parakeet", "ya-nemo"],
+  },
+  {
+    value: "nvidia/parakeet-tdt-0.6b-v2",
+    label: "TDT 0.6B v2 English",
+    supportedBackends: ["ya-nemo"],
+    requiresRecentModels: true,
   },
   {
     value: "nvidia/parakeet-rnnt-1.1b",
@@ -52,6 +66,19 @@ export function cleanParakeetSpeechModel(
 ): string {
   const trimmed = value?.trim();
   return trimmed || DEFAULT_PARAKEET_SPEECH_MODEL;
+}
+
+/** Resolve the request without overwriting a saved preference on an old server. */
+export function requestedParakeetModel(
+  value: string,
+  recentModels: boolean,
+): string | undefined {
+  const model = value?.trim();
+  if (!model) return recentModels ? undefined : DEFAULT_PARAKEET_SPEECH_MODEL;
+  if (!recentModels && getParakeetSpeechPreset(model)?.requiresRecentModels) {
+    return DEFAULT_PARAKEET_SPEECH_MODEL;
+  }
+  return model;
 }
 
 export function isParakeetModelBackend(
@@ -122,6 +149,7 @@ export function getCompatibleParakeetModelForBackend(
   modelValue: string,
   backendId: ParakeetModelBackendId,
 ): string {
+  if (!modelValue.trim()) return "";
   const model = cleanParakeetSpeechModel(modelValue);
   const preset = getParakeetSpeechPreset(model);
   if (!preset || preset.supportedBackends.includes(backendId)) {

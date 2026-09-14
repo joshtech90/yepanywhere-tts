@@ -96,8 +96,8 @@ export function cspPlugin(options: CspPluginOptions = {}): Plugin {
           // This is necessary because users connect to their own servers via LAN/Tailscale
           directives.push("connect-src 'self' ws: wss: http: https:");
         } else {
-          // Local client: Only connect to same origin
-          directives.push("connect-src 'self' ws: wss:");
+          // Artifact health probes use an operator-configured separate origin.
+          directives.push("connect-src 'self' ws: wss: http: https:");
         }
 
         // img-src: Allow self, data URIs (icons), and blob (uploads/previews)
@@ -111,6 +111,11 @@ export function cspPlugin(options: CspPluginOptions = {}): Plugin {
 
         // object-src: Block plugins (Flash, etc.)
         directives.push("object-src 'none'");
+
+        // The preview validates the server-selected artifact origin before
+        // embedding. Static hosted builds cannot know that origin at build time;
+        // origins can also change while an already loaded client stays open.
+        directives.push("frame-src 'self' blob: http: https:");
 
         // Note: frame-ancestors cannot be set via meta tag (per CSP spec).
         // It's set via HTTP header in the server instead.

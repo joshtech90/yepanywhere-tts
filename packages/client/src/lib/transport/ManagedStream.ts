@@ -25,6 +25,20 @@ export interface ManagedStreamSnapshot {
   readonly error?: Error;
 }
 
+/**
+ * True while the stream is between subscriptions but still expects to come
+ * back: waiting on the transport, subscribing, or backing off before a retry.
+ * A terminal or closed stream is not resubscribing, so callers can tell a
+ * transient gap apart from a pipe that will stay down.
+ */
+export function isManagedStreamResubscribing(
+  snapshot: ManagedStreamSnapshot,
+): boolean {
+  return (
+    !snapshot.connected && !snapshot.terminal && snapshot.state !== "closed"
+  );
+}
+
 export interface ManagedStreamSubscribeInput {
   readonly transport: SourceTransport;
   readonly handlers: StreamHandlers;

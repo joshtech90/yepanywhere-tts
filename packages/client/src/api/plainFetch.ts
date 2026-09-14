@@ -1,5 +1,6 @@
 import { authEvents } from "../lib/authEvents";
 import { getClientVersion } from "../lib/clientVersion";
+import { requestDeadlineSignal } from "./requestDeadline";
 
 export const API_BASE = "/api";
 
@@ -139,6 +140,7 @@ export async function fetchPlainJSON<T>(
     ...requestInit,
     credentials: "include",
     headers: createPlainFetchHeaders(requestInit?.headers, options),
+    signal: requestDeadlineSignal(requestInit?.signal),
   });
 
   if (!response.ok) {
@@ -176,6 +178,7 @@ export async function fetchPlainResponse(
     ...requestInit,
     credentials: "include",
     headers: createPlainFetchHeaders(requestInit?.headers, options),
+    signal: requestDeadlineSignal(requestInit?.signal),
   });
 
   if (!response.ok && response.status !== 304) {

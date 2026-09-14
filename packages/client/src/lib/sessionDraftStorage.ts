@@ -2,6 +2,7 @@ import type { ClientSummarySourceKey } from "./clientSummaryStore";
 import {
   type DraftAttachmentState,
   draftStorageValueForAttachments,
+  draftStorageValueForPendingSend,
   draftStorageValueForText,
   hasDraftContentValue,
 } from "./draftEnvelope";
@@ -177,6 +178,16 @@ export function saveSessionDraftAttachmentState(
 ): void {
   persistSessionDraftEnvelope(reference, (previousValue) =>
     draftStorageValueForAttachments(value, previousValue),
+  );
+}
+
+export function markSessionDraftPendingSend(
+  reference: SessionDraftReference,
+): void {
+  persistSessionDraftEnvelope(
+    reference,
+    (previousValue) =>
+      draftStorageValueForPendingSend(previousValue) ?? previousValue,
   );
 }
 

@@ -92,6 +92,26 @@ function applyVersionSnapshot(
   acceptVersionSnapshot(context.sourceKey, version, context.requestStartedAt);
 }
 
+/** Resolve capability-dependent first requests through the existing source owner. */
+export async function ensureVersionInfo(
+  sourceKey: ClientSummarySourceKey,
+): Promise<VersionInfo | null> {
+  const retained = getVersionSnapshot(sourceKey).version;
+  if (retained) return retained;
+  try {
+    await ensureClientQuery<VersionInfo>({
+      sourceKey,
+      key: VERSION_QUERY_KEY,
+      fetcher: versionFetcher,
+      applySnapshot: applyVersionSnapshot,
+    });
+    return getVersionSnapshot(sourceKey).version;
+  } catch {
+    // A failed optional capability read keeps the established API path usable.
+    return null;
+  }
+}
+
 /**
  * A forced update check for one source. Concurrent callers coalesce through the
  * controller's in-flight sharing; the resolved snapshot is returned so the
@@ -217,8 +237,8 @@ function useVersionSnapshot(
  * answer, not another acquisition: `useVersion` retains this fact at the
  * `route` tier, so a second retainer here would only add a consumer competing
  * for a request already in flight. Before it resolves this reads `null`, which
- * every gate must treat as "capability absent" — the first request of a
- * session is unconditional either way.
+ * every synchronous gate treats as "capability absent". Collection fetchers
+ * join `ensureVersionInfo` before choosing their first request's mode.
  */
 export function useRetainedVersionInfo(
   sourceKey: ClientSummarySourceKey,

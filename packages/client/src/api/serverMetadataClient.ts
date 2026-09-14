@@ -1,4 +1,7 @@
+import type { ServerRuntimeInfo } from "@yep-anywhere/shared/server-runtime";
 import type {
+  ArtifactViewerStatus,
+  SqliteStatus,
   CapabilityBitset,
   ClientDefaults,
   OptionalServerCapabilityBitset,
@@ -7,6 +10,11 @@ import type {
 import { fetchJSON } from "./sourceApiFetch";
 
 export interface VersionInfo {
+  /** Absent on older servers; never implies storage readiness. */
+  serverRuntime?: ServerRuntimeInfo;
+  /** Storage diagnostic only; absent on older servers. */
+  sqlite?: SqliteStatus;
+  artifactViewer?: ArtifactViewerStatus;
   current: string;
   latest: string | null;
   updateAvailable: boolean;
@@ -60,6 +68,11 @@ export interface VersionInfo {
   clientDefaults?: ClientDefaults;
   /** True when this server is bundled with the native desktop shell. */
   desktopRuntime?: boolean;
+  /**
+   * Linux boot tried to attach or start the provider host and still has none.
+   * Absent on healthy servers and on non-Linux hosts.
+   */
+  providerHostDegraded?: boolean;
 }
 
 export interface ServerInfo {

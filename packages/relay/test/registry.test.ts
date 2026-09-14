@@ -1,10 +1,10 @@
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "@yep-anywhere/shared/sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createTestDb } from "../src/db.js";
 import { UsernameRegistry } from "../src/registry.js";
 
 describe("UsernameRegistry", () => {
-  let db: Database.Database;
+  let db: SqliteDatabase;
   let registry: UsernameRegistry;
 
   beforeEach(() => {

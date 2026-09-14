@@ -1,9 +1,9 @@
 # Media Rendering and Routing
 
 > YA shows images, video, and file previews from many places in the UI. Every
-> one must pull the bytes *over the active connection* and display them from an
-> object URL — never point an `<img>`/`<a>` straight at an `/api/...` URL — or
-> it silently 404s in relay mode. Separately, each file is served by the route
+> ordinary file/media surface must pull bytes *over the active connection* and
+> display them from an object URL — never point an `<img>`/`<a>` straight at an
+> `/api/...` URL — or it silently 404s in relay mode. Separately, each file is served by the route
 > that matches where it lives (in-project, allow-listed local path, uploaded
 > attachment, or public share).
 
@@ -58,6 +58,12 @@ The recurring bug is any surface that skips this and emits a bare API URL: it
 works on the developer's own machine (direct mode) and 404s for everyone on a
 phone through the relay. The base64 `data:` surfaces are immune (no network).
 
+Interactive HTML artifacts have an explicit separate-origin delivery contract:
+grant creation/revocation uses the active authenticated transport, while the
+browser loads original HTML and neighboring assets directly from the configured
+artifact host. See [interactive HTML artifacts](active-content-security.md#interactive-html-artifacts).
+This exception does not permit embedding a raw YA API URL.
+
 ## Mutable path freshness
 
 Filesystem paths are mutable coordinates, not content identities. Raw bytes
@@ -93,6 +99,20 @@ and the route it pulls from.
   unmaterialized `Read` results retain their base64 renderer as a compatibility
   fallback. The same handle and row play Grok session `videos/*.mp4`
   tool results as `<video>` when the stored mime is `video/mp4`.
+- **`Read` image result without inline bytes** — inline bytes are optional in
+  the `Read` display contract, because a materialized result keeps its metadata
+  and path and drops the provider's base64. `ReadRenderer` prefers inline bytes
+  when present and otherwise reads the file back through `/api/local-image`,
+  so the row shows the image instead of falling back to raw JSON. Requiring
+  `base64` there was the reason a stripped result printed "Rich preview
+  unavailable".
+- **Images inside a grouped exploration** — `ExploredImageStrip`
+  (`blocks/ExploredImageStrip.tsx`) lists the image reads a collapsed
+  "Explored" group would otherwise show only by filename. It sits below the
+  entry list rather than inside it, since that list is a short scrolling box.
+  Its `+ / -` toggle takes its initial state from Expand Inline Media by
+  Default; thumbnails load lazily through `/api/local-image` and open
+  `LocalMediaModal` with prev/next across the strip.
 - **Embedded media inside rendered Markdown/HTML** — an `![](...)` image or
   video that appears inline within an assistant/user message body.
   `useLocalMediaInlinePreviews` (`components/LocalMediaModal.tsx`) hydrates the
@@ -181,6 +201,11 @@ vocabulary even though their authorization routes remain distinct:
   one **Raw source** icon button whose pressed state means the source is
   showing; the local-file modal takes its initial representation from the
   context menu in this first convergence step.
+- When isolated artifact serving is enabled, the HTML preview offers an
+  explicit **Run interactive preview** action. Both static and interactive
+  frames fill the file viewer's available document area beneath its controls;
+  longer documents scroll inside the frame. The preview owns its internal
+  toolbar/frame layout, so host placement styles must preserve that layout.
 - The project `FileViewer` toolbar's **Open in new tab** action is a real link
   to the stable viewer route. Ordinary activation, middle-click, browser
   context-menu opening, and native modifier-click therefore keep their normal
@@ -248,8 +273,11 @@ every byte source is a file:
 
 Markdown image references remain compact prose while tool images remain
 ordered activity rows with tool identity and status. Their disclosure control
-size, filename/suffix treatment, preview border/background/containment, and
-full-screen viewer behavior are aligned without flattening those two roles.
+uses the same compact, status-colored gutter `+`/`−` as Ran and other tool
+rows. Each stored image owns its own expansion state; an unavailable image
+does not show an expand control. Filename/suffix treatment, preview
+border/background/containment, and full-screen viewer behavior remain aligned
+with Markdown image references without flattening those two roles.
 
 ### Composer and new-session
 
@@ -693,3 +721,29 @@ project/file-access allow-set without fallback lookup or filesystem guessing.
   its already-loaded blob for its own actions, but cross-surface blob sharing
   is not yet a bounded client cache. Add one only with explicit lifetime,
   byte-budget, object-URL revocation, and source-runtime scoping.
+
+## Interactive artifact relay verification
+
+`packages/client/e2e/artifact-relay.spec.ts` starts a disposable YA app, relay,
+hosted-client development server, and HTTPS artifact gateway. It exercises
+real relay authentication and resume, the project file route, fonts, dynamic
+modules, mocked data, menu/save controls, linked documents, and revocation.
+The hosted development server must retain its remote entry when a route's
+query string contains a filename; only the URL pathname identifies an asset.
+It also checks that no direct grant API requests, YA cookies, Authorization
+headers, or referrers reach artifact delivery, and that artifact code cannot
+read YA DOM/storage. Desktop and phone frame dimensions are checked to catch
+host CSS overriding the preview's internal layout.
+
+Run with an isolated home so unrelated provider readers cannot inspect the
+operator's history. Set `PLAYWRIGHT_BROWSERS_PATH` to the existing browser cache
+before invoking the wrapper, since the temporary home has no installed browser:
+
+```bash
+pnpm --filter @yep-anywhere/client exec node ../../scripts/run-with-safe-home.js --temporary-home playwright test --config playwright.artifact-relay.config.ts
+```
+
+The HTTPS gateway requires OpenSSL; the test explicitly skips when it is
+unavailable. Chromium on Linux is verified. WebKit, macOS, and Windows remain
+unverified. This covers the hosted-client embedding path with local services;
+it does not verify a particular published client build or external tunnel.

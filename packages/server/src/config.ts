@@ -4,11 +4,20 @@ import * as path from "node:path";
 import type { Level as LogLevel } from "pino";
 import {
   ALL_PERMISSION_MODES,
+  CODEX_CYBER_ACCESS_PROGRAMS,
   CODEX_PLAN_TOOL_MODES,
+  DEFAULT_CODEX_CYBER_ACCESS_PROGRAM,
+  isCodexCyberAccessProgram,
   isCodexPlanToolMode,
+  type CodexCyberAccessProgram,
   type CodexPlanToolMode,
 } from "@yep-anywhere/shared";
 import "./startupEnv.js";
+import { readArtifactConfig, type ArtifactConfig } from "./artifacts/config.js";
+import {
+  parseSqliteMode,
+  type SqliteMode,
+} from "./storage/discovery-sqlite.js";
 import { DEFAULT_IDLE_TIMEOUT_SECONDS } from "./defaults.js";
 import { captureStartupEnvSettings } from "./envSettings.js";
 import { getDefaultCodexSessionsDir } from "./projects/codex-scanner.js";
@@ -24,6 +33,16 @@ function parseCodexPlanToolMode(value: string | undefined): CodexPlanToolMode {
   if (isCodexPlanToolMode(value)) return value;
   throw new Error(
     `YEP_CODEX_UPDATE_PLAN must be one of: ${CODEX_PLAN_TOOL_MODES.join(", ")}`,
+  );
+}
+
+function parseCodexCyberAccessProgram(
+  value: string | undefined,
+): CodexCyberAccessProgram {
+  if (value === undefined) return DEFAULT_CODEX_CYBER_ACCESS_PROGRAM;
+  if (isCodexCyberAccessProgram(value)) return value;
+  throw new Error(
+    `YEP_CODEX_CYBER_ACCESS_PROGRAM must be one of: ${CODEX_CYBER_ACCESS_PROGRAMS.join(", ")}`,
   );
 }
 
@@ -51,14 +70,19 @@ export function getDataDir(): string {
  * Server configuration loaded from environment variables.
  */
 export interface Config {
+  artifacts?: ArtifactConfig;
   /** Data directory for yep-anywhere state files (indexes, metadata, uploads, etc.) */
   dataDir: string;
   /** Whether this server was launched by the Tauri desktop app. */
   desktopRuntime: boolean;
+  /** Optional discovery storage; evaluated once at startup. */
+  sqliteMode: SqliteMode;
   /** Desktop-provided Codex CLI path. When set, it is authoritative. */
   codexCliPath?: string;
   /** Startup fallback for Codex update_plan availability. */
   codexPlanToolMode: CodexPlanToolMode;
+  /** Startup fallback for the cyber access program requested per Codex turn. */
+  codexCyberAccessProgram: CodexCyberAccessProgram;
   /** Directory where Claude projects are stored */
   claudeProjectsDir: string;
   /** Claude sessions directory (~/.claude/projects) */
@@ -178,7 +202,7 @@ export interface Config {
   ambientXaiApiKey?: string;
   /** Whether authenticated clients may borrow the server's xAI STT key. */
   shareXaiSttApiKeyWithClients: boolean;
-  /** Whisper model name for ya-whisper backend (default: distil-large-v3). */
+  /** Whisper model name for ya-whisper backend (default: distil-large-v3.5). */
   whisperModel?: string;
   /** Whisper device for ya-whisper backend (default: cpu). */
   whisperDevice?: string;
@@ -188,7 +212,7 @@ export interface Config {
   parakeetModel?: string;
   /** Parakeet device for ya-parakeet backend (default: auto). */
   parakeetDevice?: string;
-  /** NeMo Parakeet fallback model name for ya-nemo backend (default: nvidia/parakeet-tdt-0.6b-v3). */
+  /** NeMo Parakeet fallback model name for ya-nemo backend (default: nvidia/parakeet-unified-en-0.6b). */
   nemoModel?: string;
   /** NeMo Parakeet device for ya-nemo backend (default: auto). */
   nemoDevice?: string;
@@ -336,10 +360,15 @@ export function loadConfig(): Config {
 
   return {
     dataDir,
+    artifacts: readArtifactConfig(process.env),
     desktopRuntime,
+    sqliteMode: parseSqliteMode(process.env.YEP_SQLITE),
     codexCliPath,
     codexPlanToolMode: parseCodexPlanToolMode(
       process.env.YEP_CODEX_UPDATE_PLAN,
+    ),
+    codexCyberAccessProgram: parseCodexCyberAccessProgram(
+      process.env.YEP_CODEX_CYBER_ACCESS_PROGRAM,
     ),
     claudeProjectsDir: process.env.CLAUDE_PROJECTS_DIR ?? claudeSessionsDir,
     claudeSessionsDir,

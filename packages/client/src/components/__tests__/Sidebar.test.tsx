@@ -138,8 +138,11 @@ vi.mock("../../hooks/useSidebarSessionFeeds", () => ({
   }),
 }));
 
-vi.mock("../../lib/clientSummaryStore", () => {
+vi.mock("../../lib/clientSummaryStore", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../lib/clientSummaryStore")>();
   return {
+    ...actual,
     useDraftSessionIds: () => new Set<string>(),
     useInboxCounts: () => ({
       needsAttention: 0,
@@ -1249,9 +1252,8 @@ describe("Sidebar collapsed toggle", () => {
     });
   });
 
-  // Active sessions (activity = in-turn / waiting-input) and sessions targeted
-  // by Project Queue are pinned above idle rows in a stable order, and never run
-  // through the recency sort or the duplicate-title grouping.
+  // Activity and Project Queue protect rows from duplicate hiding, while
+  // chronology follows user interaction (creation time for unvisited rows).
   // See topics/sidebar-session-ordering.md.
   describe("active session ordering", () => {
     const now = Date.now();
@@ -1271,7 +1273,7 @@ describe("Sidebar collapsed toggle", () => {
       );
     }
 
-    it("pins active sessions above idle sessions", () => {
+    it("orders unvisited sessions by creation regardless of activity", () => {
       globalSessionsState.sessions = [
         makeSession("idle-old", ago(3 * 60_000)),
         makeSession("active-1", ago(60_000), { activity: "in-turn" }),
@@ -1280,18 +1282,15 @@ describe("Sidebar collapsed toggle", () => {
 
       const { container } = renderExpanded();
 
-      // active first, then idle sorted by recency (newest idle before oldest).
+      // No active-first partition can move a row when a turn starts or ends.
       expect(last24HourIds(container)).toEqual([
-        "active-1",
         "idle-new",
+        "active-1",
         "idle-old",
       ]);
     });
 
-    it("keeps active sessions in input order, not sorted by updatedAt", () => {
-      // Input order [A, B] but B has the newer updatedAt. A recency sort would
-      // flip them to [B, A]; the active group must preserve the stable input
-      // order the data hook hands down.
+    it("uses creation order for active sessions without recorded visits", () => {
       globalSessionsState.sessions = [
         makeSession("active-A", ago(10_000), { activity: "in-turn" }),
         makeSession("active-B", ago(5_000), { activity: "in-turn" }),
@@ -1299,10 +1298,10 @@ describe("Sidebar collapsed toggle", () => {
 
       const { container } = renderExpanded();
 
-      expect(last24HourIds(container)).toEqual(["active-A", "active-B"]);
+      expect(last24HourIds(container)).toEqual(["active-B", "active-A"]);
     });
 
-    it("treats waiting-input as active and pins it above newer idle rows", () => {
+    it("keeps waiting-input rows in chronology", () => {
       globalSessionsState.sessions = [
         makeSession("idle-new", ago(10_000)),
         makeSession("waiting", ago(5 * 60_000), { activity: "waiting-input" }),
@@ -1310,11 +1309,10 @@ describe("Sidebar collapsed toggle", () => {
 
       const { container } = renderExpanded();
 
-      // 'waiting' has an older updatedAt but is active, so it sits on top.
-      expect(last24HourIds(container)).toEqual(["waiting", "idle-new"]);
+      expect(last24HourIds(container)).toEqual(["idle-new", "waiting"]);
     });
 
-    it("pins queued target sessions above newer idle rows without thinking", () => {
+    it("keeps queued target sessions in chronology without thinking", () => {
       versionState.capabilities = [PROJECT_QUEUE_CAPABILITY];
       globalSessionsState.sessions = [
         makeSession("idle-new", ago(10_000)),
@@ -1333,7 +1331,7 @@ describe("Sidebar collapsed toggle", () => {
 
       const { container } = renderExpanded();
 
-      expect(last24HourIds(container)).toEqual(["queued-old", "idle-new"]);
+      expect(last24HourIds(container)).toEqual(["idle-new", "queued-old"]);
       expect(screen.getByTestId("session-queued-old").textContent).toContain(
         "Q",
       );

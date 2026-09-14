@@ -215,16 +215,49 @@ classifies a selected model at capacity as non-retryable, but the failed turn
 has already recorded its user input. After consuming the matching failed
 `turn/completed`, YA starts a new turn with empty input; Codex treats that as a
 new sample over existing thread history without adding or resending a user
-message. The same selected model is retried up to 16 times after quadratic
-delays of `5 × (attempt + 1)²` seconds: 20, 45, 80, 125, and so on through
-1,445 seconds. The full wait budget is about 2 hours 29 minutes. Retry status
-includes the next delay, attempt, and limit. Stop or provider shutdown cancels
-the current timer immediately.
+message. The same selected model is retried up to 16 times. Delays are
+`min(180, 5 × (attempt + 1)²)` seconds: 20, 45, 80, 125, then 180 seconds
+for every remaining retry. This is the wait after the failed attempt completes,
+not a start-to-start interval or a deadline on the request itself. The full
+backoff budget is 40 minutes 30 seconds, excluding provider request durations.
+Retry status includes the next delay, attempt, and limit. Stop cancels the
+current timer immediately while keeping the session available; provider
+shutdown also cancels the timer.
+
+An explicitly requested `/compact` uses the same bounded overload policy,
+repeating `thread/compact/start` on the same thread. It never substitutes an
+empty-input ordinary turn for a failed manual compact. From acceptance through
+completion or recovery exhaustion, queued user input waits behind compaction
+and another manual compact is refused. Successful compaction, terminal failure,
+or an interrupted retry releases the operation. Provider-started work not
+requested by YA does not acquire a manual-compaction retry policy.
 
 This exception matches only the structured `serverOverloaded` category.
 `usageLimitExceeded`, `sessionBudgetExceeded`, HTTP 429 retry exhaustion, and
 all other terminal failures retain Codex's non-retry behavior. If all 16
 overload retries fail, the last error becomes terminal.
+
+### Compaction request patience
+
+YA does not impose a three-minute deadline on active Codex compaction. In
+Codex 0.153.3 and 0.153.4, the native streaming inactivity default is five
+minutes; incoming transport activity renews that wait. V2 compaction permits
+two stream retries per transport, switching from WebSocket to HTTPS with a
+fresh retry budget while preserving V2 compaction semantics. It does not
+automatically select the legacy `/responses/compact` endpoint after V2 fails.
+Native timeout/reconnection exhaustion remains terminal under the adapter
+policy above; increasing request patience does not increase YA's backoff.
+
+Codex owns `model_providers.<id>.stream_idle_timeout_ms`. These versions reject
+redefining the reserved built-in `openai` provider, so increasing its timeout
+requires an explicitly selected custom provider configuration or an upstream
+runtime change. YA does not silently change provider identity to set patience.
+
+A custom provider name is not an equivalent timeout-only override. The native
+resume picker filters by provider id, and persisted thread metadata can restore
+the original provider on resume. Changing the default therefore does not
+guarantee longer patience for existing threads. A ten-minute setting means
+`stream_idle_timeout_ms = 600000`, not a ten-minute total turn deadline.
 
 ### Terminal error pipeline and classification
 
@@ -233,6 +266,11 @@ Core `EventMsg::Error` values that affect turn status become app-server
 error in the following failed `turn/completed` payload. YA should use the
 boolean for red/yellow recovery semantics and the error info only for reason,
 copy, and suggested action.
+
+The adapter consumes the matching `turn/completed` before releasing queued
+work, even when a preceding terminal error has already been surfaced. A dead
+app-server is the exception: process exit ends consumption without waiting for
+an event that can no longer arrive.
 
 | App-server `CodexErrorInfo` | Codex meaning | Suggested YA reason/action |
 | --- | --- | --- |

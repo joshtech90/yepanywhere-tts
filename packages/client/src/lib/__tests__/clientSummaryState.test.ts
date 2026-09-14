@@ -27,6 +27,7 @@ import {
   applySessionCollectionIdRemapped,
   applySessionCollectionMetadataChanged,
   applySessionCollectionProcessStateChanged,
+  applySessionCollectionSeen,
   applySessionCollectionUpdated,
   createEmptyClientSummaryState,
 } from "../clientSummaryState";
@@ -61,6 +62,45 @@ import { sessionCollectionRecordToGlobalSessionItem } from "../sessionCollection
 const PROJECT_ID = "project-1" as UrlProjectId;
 const NOW = Date.parse("2026-06-27T12:00:00.000Z");
 const RECENT = "2026-06-27T11:00:00.000Z";
+
+it("shares both mark-read and mark-unread events and accepts later server state", () => {
+  let state = applySessionCollectionSeen(
+    createEmptyClientSummaryState(),
+    {
+      type: "session-seen",
+      sessionId: "session-1",
+      timestamp: RECENT,
+    },
+    NOW,
+  );
+  expect(selectSessionCollectionRecord(state, "session-1")?.hasUnread).toBe(
+    false,
+  );
+  state = applySessionCollectionSeen(
+    state,
+    {
+      type: "session-seen",
+      sessionId: "session-1",
+      timestamp: "",
+    },
+    NOW + 1,
+  );
+  expect(selectSessionCollectionRecord(state, "session-1")?.hasUnread).toBe(
+    true,
+  );
+  state = applySessionCollectionSeen(
+    state,
+    {
+      type: "session-seen",
+      sessionId: "session-1",
+      timestamp: RECENT,
+    },
+    NOW + 2,
+  );
+  expect(selectSessionCollectionRecord(state, "session-1")?.hasUnread).toBe(
+    false,
+  );
+});
 const RUNTIME_STATUS: Exclude<ProviderRuntimeStatus, null> = {
   kind: "retrying",
   provider: "claude",
@@ -204,6 +244,58 @@ function projectQueueStatus(
 }
 
 describe("clientSummaryState", () => {
+  it("preserves question previews across partial updates and projects known empty results", () => {
+    const asyncQuestions = {
+      omitted: false,
+      questions: [
+        { messageId: "question", index: 0, title: "Continue?", age: 1 },
+      ],
+    };
+    let state = applySessionCollectionUpdated(
+      createEmptyClientSummaryState(),
+      {
+        type: "session-updated",
+        sessionId: "session",
+        projectId: PROJECT_ID,
+        timestamp: RECENT,
+        updatedAt: RECENT,
+        asyncQuestions,
+      },
+      100,
+    );
+    state = applySessionCollectionUpdated(
+      state,
+      {
+        type: "session-updated",
+        sessionId: "session",
+        projectId: PROJECT_ID,
+        timestamp: RECENT,
+        updatedAt: RECENT,
+        title: "New title",
+      },
+      200,
+    );
+    expect(
+      selectSessionCollectionRecord(state, "session")?.asyncQuestions,
+    ).toEqual(asyncQuestions);
+    state = applySessionCollectionUpdated(
+      state,
+      {
+        type: "session-updated",
+        sessionId: "session",
+        projectId: PROJECT_ID,
+        timestamp: RECENT,
+        updatedAt: RECENT,
+        asyncQuestions: { omitted: false, questions: [] },
+      },
+      300,
+    );
+    expect(
+      selectSessionCollectionRecord(state, "session")?.asyncQuestions
+        ?.questions,
+    ).toEqual([]);
+  });
+
   it("merges a provisional session ID into every canonical projection", () => {
     const temporaryId = "temporary-session";
     const canonicalId = "canonical-session";
@@ -1133,6 +1225,92 @@ describe("clientSummaryState", () => {
     expect(selectSessionCollectionRecord(state, "session-1")?.isStarred).toBe(
       true,
     );
+  });
+
+  it("keeps visible rows through a cold catalog and preserves omitted details", () => {
+    const query = { scope: "global-sessions" as const, limit: 50 };
+    let state = applyGlobalSessionsCollectionSnapshot(
+      createEmptyClientSummaryState(),
+      {
+        query,
+        sessions: [globalSession("saved", { messageCount: 42 })],
+        hasMore: false,
+      },
+      100,
+    );
+    const catalog = {
+      catalogEpoch: "restart",
+      catalogGeneration: 0,
+      complete: false,
+      refreshing: true,
+    };
+    state = applyGlobalSessionsCollectionSnapshot(
+      state,
+      {
+        query,
+        sessions: [],
+        hasMore: false,
+        catalog,
+      },
+      200,
+    );
+    expect(selectSessionCollectionQueryState(state, query)?.ids).toEqual([
+      "saved",
+    ]);
+    state = applyGlobalSessionsCollectionSnapshot(
+      state,
+      {
+        query,
+        sessions: [
+          globalSession("saved", {
+            title: undefined,
+            fullTitle: undefined,
+            createdAt: undefined,
+            messageCount: undefined,
+          }),
+        ],
+        hasMore: false,
+        catalog: {
+          ...catalog,
+          catalogGeneration: 1,
+          complete: true,
+          refreshing: false,
+        },
+      },
+      300,
+    );
+    expect(selectSessionCollectionRecord(state, "saved")).toMatchObject({
+      title: "Session saved",
+      fullTitle: "Session saved",
+      messageCount: 42,
+      createdAt: RECENT,
+    });
+    state = applyInboxCollectionSnapshot(
+      state,
+      {
+        needsAttention: [],
+        active: [],
+        recentActivity: [inboxItem("saved")],
+        unread8h: [],
+        unread24h: [],
+      },
+      400,
+    );
+    state = applyInboxCollectionSnapshot(
+      state,
+      {
+        needsAttention: [],
+        active: [],
+        recentActivity: [],
+        unread8h: [],
+        unread24h: [],
+        catalog,
+      },
+      500,
+    );
+    expect(
+      selectInboxResponse(state).recentActivity.map((item) => item.sessionId),
+    ).toEqual(["saved"]);
   });
 
   it("stores query ids separately from entity facts", () => {

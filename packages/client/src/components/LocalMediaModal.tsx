@@ -27,7 +27,7 @@ import {
   writeClipboardTextLater,
 } from "../lib/clipboard";
 import { downloadBlob, writeClipboardImageLater } from "../lib/imageActions";
-import { createScriptlessHtmlPreviewDocument } from "../lib/scriptlessHtmlPreview";
+import { ArtifactPreview } from "./ArtifactPreview";
 import {
   requireRenderedFileClipboardPayload,
   requireRenderedHtmlClipboardPayload,
@@ -70,7 +70,10 @@ import {
   type ImageViewerNavigationInput,
 } from "./ImageViewer";
 import styles from "./LocalMediaModal.module.css";
-import { useSessionViewerSessionId } from "./SessionManagedViewer";
+import {
+  useSessionArtifactLink,
+  useSessionViewerSessionId,
+} from "./SessionManagedViewer";
 import { Modal } from "./ui/Modal";
 
 export interface LocalMediaSource {
@@ -854,13 +857,13 @@ export function LocalFileModal({
           </div>
         )}
         {state.status === "html" && (
-          <iframe
-            aria-label={fileName}
+          <ArtifactPreview
+            html={state.html}
+            path={resource.path}
+            projectId={
+              resource.kind === "project-file" ? resource.projectId : undefined
+            }
             className={styles.fileHtmlFrame}
-            data-tooltip=""
-            sandbox=""
-            referrerPolicy="no-referrer"
-            srcDoc={createScriptlessHtmlPreviewDocument(state.html)}
             title={fileName}
           />
         )}
@@ -1169,6 +1172,7 @@ export function useLocalResourceClick(
   options: UseLocalResourceClickOptions = {},
 ): UseLocalResourceClickResult {
   const publicShare = usePublicShareContext();
+  const openArtifact = useSessionArtifactLink();
   const sessionMetadata = useOptionalSessionMetadata();
   const transport = useCurrentSourceRuntime().transport;
   const sameOriginUrls = transport.capabilities.sameOriginUrls;
@@ -1278,6 +1282,21 @@ export function useLocalResourceClick(
     if (!target) return;
 
     const href = target.getAttribute("href");
+    if (
+      publicShare === null &&
+      !e.defaultPrevented &&
+      e.button === 0 &&
+      !e.metaKey &&
+      !e.ctrlKey &&
+      !e.shiftKey &&
+      !e.altKey &&
+      !target.hasAttribute("download") &&
+      openArtifact?.(target.href, target.textContent?.trim() || target.hostname)
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     const resource = parseLocalResourceLink(
       {
         attributes: getLocalResourceAttributes(target),

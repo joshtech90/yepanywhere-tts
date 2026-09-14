@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { filterEnvForChildProcess } from "../../../src/sdk/providers/env-filter.js";
 
 describe("filterEnvForChildProcess", () => {
+  it("removes ambient own-session grants before the owner injects a new grant", () => {
+    const env = filterEnvForChildProcess({
+      AGENT_YA_API_URL: "http://127.0.0.1:1234",
+      AGENT_YA_API_TOKEN: "outer-launch-grant",
+      AGENT_LAUNCH_MODEL: "launch-history",
+    });
+    expect(env.AGENT_YA_API_URL).toBeUndefined();
+    expect(env.AGENT_YA_API_TOKEN).toBeUndefined();
+    expect(env.AGENT_LAUNCH_MODEL).toBe("launch-history");
+  });
   it("sets Claude Code's one-hour prompt cache TTL by default", () => {
     const env = filterEnvForChildProcess({
       HOME: "/home/test",
@@ -114,6 +124,7 @@ describe("filterEnvForChildProcess", () => {
 
   it("passes the agent's own launch markers through to the child", () => {
     const env = filterEnvForChildProcess({
+      AGENT_SERVER_URL: "http://localhost:4010/",
       AGENT_LAUNCHER: "yepanywhere",
       AGENT_LAUNCH_HARNESS: "claude",
       AGENT_LAUNCH_MODEL: "claude-opus-5",
@@ -121,6 +132,7 @@ describe("filterEnvForChildProcess", () => {
     });
 
     expect(env.AGENT_LAUNCHER).toBe("yepanywhere");
+    expect(env.AGENT_SERVER_URL).toBe("http://localhost:4010/");
     expect(env.AGENT_LAUNCH_HARNESS).toBe("claude");
     expect(env.AGENT_LAUNCH_MODEL).toBe("claude-opus-5");
     expect(env.AGENT_LAUNCH_EFFORT).toBe("xhigh");

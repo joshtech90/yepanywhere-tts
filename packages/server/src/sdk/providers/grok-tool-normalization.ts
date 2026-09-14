@@ -168,9 +168,9 @@ export function buildGrokStructuredToolResult(
     case "Text":
       return buildTextToolResult(rawOutput, state);
     case "KillTask":
-      return asRecord(rawOutput.Result) ?? rawOutput;
+      return buildKillTaskResult(rawOutput);
     case "TaskOutput":
-      return rawOutput;
+      return buildTaskOutputResult(rawOutput);
     case "EnterPlanMode":
       return asRecord(rawOutput.Entered) ?? rawOutput;
     case "ListDir":
@@ -534,9 +534,13 @@ function normalizeCanonicalInput(
       }
       break;
     }
-    case "kill_command_or_subagent":
+    case "kill_command_or_subagent": {
       copyString(rawInput, input, "task_id");
+      // Grok names the target by task id; YA's kill row reads shell_id.
+      const killTarget = stringField(rawInput, "task_id");
+      if (killTarget) input.shell_id = killTarget;
       break;
+    }
     case "ask_user_question": {
       const questions = normalizeQuestions(rawInput?.questions);
       if (questions.length > 0) input.questions = questions;
@@ -607,6 +611,70 @@ function buildBackgroundCommandResult(rawOutput: Record<string, unknown>) {
     interrupted: false,
     isImage: false,
     backgroundTaskId: stringField(rawOutput, "task_id"),
+  };
+}
+
+/**
+ * A polled task as the transcript reports it: Grok's own fields, plus the
+ * `task_id`/`status`/`output`/`exitCode` names the rest of YA reads. A task
+ * carrying a shell command is a local command; anything else is a subagent.
+ */
+function buildPolledTask(entry: Record<string, unknown>) {
+  const command = rawStringField(entry, "command");
+  const exitCode = numberField(entry, "exit_code");
+  return {
+    ...entry,
+    task_id: stringField(entry, "task_id") ?? "",
+    task_type: command !== undefined ? "local_bash" : "agent",
+    status: stringField(entry, "status") ?? "running",
+    description: command ?? stringField(entry, "description") ?? "",
+    output: rawStringField(entry, "output") ?? "",
+    exitCode: exitCode ?? null,
+  };
+}
+
+/**
+ * Grok returns `Result` when one task id was polled and `MultiResult` when a
+ * wait covered several. Project both onto one shape so a reader — and the
+ * client's background-command folding — finds every polled task the same way.
+ * `tasks` always holds the full set; `task` repeats the first for consumers
+ * that only ever expect one.
+ */
+function buildTaskOutputResult(rawOutput: Record<string, unknown>): unknown {
+  const single = asRecord(rawOutput.Result);
+  const multi = asRecord(rawOutput.MultiResult);
+  const entries = single
+    ? [single]
+    : Array.isArray(multi?.results)
+      ? multi.results.flatMap((entry) => {
+          const record = asRecord(entry);
+          return record ? [record] : [];
+        })
+      : [];
+  if (entries.length === 0) return rawOutput;
+
+  const tasks = entries.map(buildPolledTask);
+  const pending = tasks.some((task) => task.status === "running");
+  return {
+    retrieval_status: pending ? "running" : "completed",
+    task: tasks[0],
+    tasks,
+    ...(multi?.mode ? { mode: stringField(multi, "mode") } : {}),
+  };
+}
+
+/** Grok kills by task id; YA's kill row reads the shell id it launched with. */
+function buildKillTaskResult(rawOutput: Record<string, unknown>): unknown {
+  const result = asRecord(rawOutput.Result);
+  if (!result) return rawOutput;
+  const taskId = stringField(result, "task_id");
+  return {
+    ...result,
+    ...(taskId ? { shell_id: taskId } : {}),
+    message:
+      stringField(result, "message") ??
+      stringField(result, "outcome") ??
+      "killed",
   };
 }
 

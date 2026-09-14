@@ -333,6 +333,8 @@ export class ManagedSshTarget {
       "-o",
       "BatchMode=yes",
       "-o",
+      "ForwardAgent=no",
+      "-o",
       `ConnectTimeout=${this.connectTimeoutSeconds}`,
       "--",
       this.hostAlias,
@@ -349,6 +351,8 @@ export class ManagedSshTarget {
       "-T",
       "-o",
       "BatchMode=yes",
+      "-o",
+      "ForwardAgent=no",
       "-o",
       `ConnectTimeout=${this.connectTimeoutSeconds}`,
     ].join(" ");

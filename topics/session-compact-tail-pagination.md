@@ -49,10 +49,14 @@ size bound.
 The effective start is the later of the compact-boundary start and the
 turn-selector start. Consequently, `tailTurns=20` means "up to twenty turns
 within the authorized compact scope," not "return twenty turns even if that
-crosses older compactions." The browser preserves that twenty-turn narrowing
-for the unchanged default of two boundaries. A custom compact-boundary value
-uses the requested compact scope without that implicit turn selector, while
-Unlimited requests true full history.
+crosses older compactions." If `tailFrom` is older than the compact start, or
+is absent from a provider-omitted prefix, the selector clamps to the compact
+start. It must not return an empty page or clear `hasOlderMessages` while the
+reader omitted known-hidden bytes; Load older and older-history reverse search
+share that cursor. The browser preserves that twenty-turn narrowing for the
+unchanged default of two boundaries. A custom compact-boundary value uses the
+requested compact scope without that implicit turn selector, while Unlimited
+requests true full history.
 
 `fullHistory=1` is the explicit authorization to remove the default compact
 scope. It may be combined with `tailTurns` or `tailFrom` so the server selects
@@ -107,6 +111,74 @@ source window rather than the complete provider file because skipped bytes were
 intentionally never normalized or counted. The route rejects a provider-bounded
 response whose omitted prefix lacks the older-history boolean or cursor instead
 of presenting the suffix as the beginning of the session.
+
+#### Indexed head fields for a session still being written
+
+Omitting that prefix needs head-derived summary fields the window itself does
+not contain — title, creation time, originator, provider — which the Codex
+reader takes from the session index. A session Codex is actively writing grows
+between index passes, so requiring an exactly-current index surrendered the
+bounded window at the worst possible moment: opening a long session mid-turn
+then read and normalized the whole rollout.
+
+An append-only transcript that has only grown still has an accurate indexed
+prefix. The index may therefore supply those head-derived fields while the
+window is read from the live file, and the response re-derives what the window
+carries: `updatedAt` comes from the live file, and the model and context usage
+come from the window whenever it contains them. `messageCount` stays the
+indexed count and lags a session still being written; it feeds session-list
+ordering and the empty-session check, neither of which needs an exact count. An
+older page refreshes nothing, because it is not the session's current state.
+
+A file that shrank, or whose size held while its modification time moved, was
+rewritten rather than appended to, so its index describes different bytes and
+is refused. A hint claiming to be newer than the file means the rollout was
+replaced or rewound, and also falls back to the complete reader.
+
+#### Incremental catch-up
+
+For a large plain Codex rollout with usable indexed head fields, an
+`afterMessageId` request first tries the requested compact window (two
+boundaries by default). The reader verifies the durable id in that window;
+the route then returns only the rows after it. A successful incremental
+response does not acquire older-page pagination metadata merely because the
+reader omitted a prefix: the client already owns the cursor's earlier rows.
+Message ids and the API response shape remain unchanged.
+
+The reader retains and incrementally extends only that source suffix. An
+unchanged file reuses its normalized projection without a reverse scan;
+appends parse only new bytes. A new compaction or a changed requested boundary
+count selects a new suffix, releasing the prior cache. A complete read and a
+bounded read share the existing per-session read owner but cannot reuse each
+other's differently scoped entries. Retained source-byte accounting measures
+the suffix rather than charging the entire file.
+
+An id outside the candidate window, an unknown id, or a tool result whose call
+precedes the window uses the complete reader. This preserves catch-up across
+arbitrarily old cursors and tool-specific result interpretation. Unknown ids
+still receive the route's existing bounded recovery response. Missing or
+invalid summary hints, compressed rollouts, reference-backed forks, and files
+below the compact-tail crossover retain the complete-reader path;
+`fullHistory=1` also bypasses this optimization. The next eligible recent
+cursor replaces a previously cached complete transcript with its suffix.
+
+**Design decision:** reuse the append cache with an explicit source start
+instead of keeping a second full-transcript cursor index or reparsing the tail
+on each request. This bounds ordinary catch-up retention while preserving warm
+parse/normalization reuse and the established fallback for old cursors.
+
+A diagnostic on a deterministic 20,000-message, ten-compaction, 13.8 MB
+rollout compared complete and two-boundary incremental reads in three paired
+process runs. Both returned exactly the expected zero-to-three appended rows.
+Retained heap fell from 26.1 MB to 5.6 MB; retained entries from 20,014 to 4,005;
+source-byte charges from 13.8 MB to 2.8 MB. Warm read/normalize/slice totals
+were 3.8–24.0 ms versus 1.2–4.5 ms. Re-parsing the bounded window on each call
+was separately measured and rejected because it lost warm-cache performance.
+These are diagnostic measurements on a shared 16-CPU EPYC 7R13 Linux host
+(Node 24.14.0), not latency ratchets or an attribution of the original live
+session's stalls. Host capacity, load, memory, and swap were sampled at both
+ends; pressure telemetry was unavailable. The original gap did not establish
+a user-visible symptom or repeated full parsing.
 
 ## Why This Matters
 

@@ -1,4 +1,5 @@
 import type { Stats } from "node:fs";
+import { open } from "node:fs/promises";
 import {
   DEFAULT_PROVIDER,
   type ProviderName,
@@ -177,6 +178,35 @@ function getFirstUserTitleCandidate(
       typeof block === "object" && block !== null,
   );
   return extractTitleContent(objectBlocks);
+}
+
+/** Collection discovery never parses past this prefix to obtain a title. */
+export async function readClaudeCatalogTitle(
+  filePath: string,
+): Promise<string | undefined> {
+  const file = await open(filePath, "r");
+  try {
+    const buffer = Buffer.alloc(256 * 1024);
+    const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
+    const text = buffer.subarray(0, bytesRead).toString("utf8");
+    const lines = text.split("\n");
+    if (bytesRead === buffer.length) lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      let entry: ClaudeSessionEntry;
+      try {
+        entry = JSON.parse(line) as ClaudeSessionEntry;
+      } catch {
+        continue;
+      }
+      if (!entry || typeof entry !== "object") continue;
+      const title = getFirstUserTitleCandidate(entry);
+      if (title !== undefined) return truncateSessionTitle(title) || undefined;
+    }
+    return undefined;
+  } finally {
+    await file.close();
+  }
 }
 
 function getAssistantUsage(entry: ClaudeSessionEntry): UsageFields | undefined {

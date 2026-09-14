@@ -9,7 +9,7 @@ import type {
   ConversationActivityItem,
   ConversationThinkingPreviewSlot,
   RenderItem,
-} from "../../types/renderItems";
+} from "@yep-anywhere/shared/transcript/items";
 import { RenderItemComponent } from "../RenderItemComponent";
 
 // jsdom has no ResizeObserver and reports offsetHeight 0, so drive the
@@ -478,6 +478,157 @@ describe("conversation activity height reserve", () => {
     rerender(renderActivity({ ...base, thinkingPreviews: [] }));
     stubRowMetrics(row, () => naturalHeightPx);
     expect(reservedHeight(row)).toBe("90px");
+  });
+});
+
+describe("stacked previous thinking preview budget", () => {
+  const BUDGET_VAR = "--conversation-previous-thinking-budget";
+  /** Two lines of the row's own rendered prose, at the line height stubbed below. */
+  const PROSE_LINE_HEIGHT_PX = 24;
+  const CONTEXT_RESERVE_PX = 2 * PROSE_LINE_HEIGHT_PX;
+  const VIEWPORT_HEIGHT_PX = 600;
+
+  let host: HTMLElement;
+
+  beforeEach(() => {
+    observers = [];
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+    host = document.createElement("div");
+    host.style.overflowY = "auto";
+    Object.defineProperty(host, "clientHeight", {
+      configurable: true,
+      get: () => VIEWPORT_HEIGHT_PX,
+    });
+    document.body.appendChild(host);
+  });
+
+  afterEach(() => {
+    cleanup();
+    host.remove();
+    vi.unstubAllGlobals();
+  });
+
+  /**
+   * jsdom lays nothing out. Place the row at the top of the viewport, give the
+   * current card a rendered height, and put the previous card's top wherever
+   * the case under test needs it. The rendered thinking prose carries the line
+   * height the context reserve is measured from.
+   */
+  function stubStackedMetrics(
+    container: HTMLElement,
+    previousTopPx: number,
+    naturalHeightPx = 0,
+    rowBottomPx = 0,
+  ) {
+    const rect = (top: number, height: number) =>
+      ({ top, height, bottom: top + height }) as unknown as DOMRect;
+    const row = container.querySelector<HTMLElement>(
+      ".conversation-activity-row",
+    ) as HTMLElement;
+    row.getBoundingClientRect = () => rect(0, rowBottomPx);
+    for (const prose of Array.from(
+      row.querySelectorAll<HTMLElement>(
+        ".conversation-thinking-preview-content .thinking-text",
+      ),
+    )) {
+      prose.style.lineHeight = `${PROSE_LINE_HEIGHT_PX}px`;
+    }
+    for (const child of Array.from(row.children)) {
+      (child as HTMLElement).getBoundingClientRect = () =>
+        rect(0, naturalHeightPx);
+    }
+    const latestCard = container.querySelector<HTMLElement>(
+      '.conversation-thinking-preview[data-preview-slot="latest"]',
+    ) as HTMLElement;
+    latestCard.getBoundingClientRect = () => rect(0, 300);
+    const latestContent = latestCard.querySelector<HTMLElement>(
+      ".conversation-thinking-preview-content",
+    ) as HTMLElement;
+    latestContent.getBoundingClientRect = () => rect(0, 260);
+    const previousCard = container.querySelector<HTMLElement>(
+      '.conversation-thinking-preview[data-preview-slot="previous"]',
+    ) as HTMLElement;
+    previousCard.getBoundingClientRect = () => rect(previousTopPx, 0);
+    return row;
+  }
+
+  function renderStacked(
+    previousTopPx: number,
+    naturalHeightPx = 0,
+    rowBottomPx = 0,
+  ) {
+    const { container } = render(
+      <I18nProvider>
+        <RenderItemComponent
+          item={conversationActivityItem()}
+          isStreaming
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </I18nProvider>,
+      { container: host },
+    );
+    const row = stubStackedMetrics(
+      container,
+      previousTopPx,
+      naturalHeightPx,
+      rowBottomPx,
+    );
+    act(() => {
+      for (const observer of observers.filter((candidate) =>
+        candidate.targets.includes(row),
+      )) {
+        observer.cb([], observer as unknown as ResizeObserver);
+      }
+    });
+    return row;
+  }
+
+  it("bounds a wrapped card by the room left after the preceding paragraph", () => {
+    // 600 viewport - 48 reserved for two prose lines - 320 first line - 40 of
+    // card chrome leaves 192 for the superseded thought.
+    const row = renderStacked(320);
+
+    expect(row.dataset.previousThinking).toBe("stacked");
+    expect(row.style.getPropertyValue(BUDGET_VAR)).toBe("192px");
+  });
+
+  it("drops the card when even a two-line thought no longer fits", () => {
+    const row = renderStacked(480);
+
+    expect(row.dataset.previousThinking).toBe("dropped");
+    expect(row.style.getPropertyValue(BUDGET_VAR)).toBe("");
+  });
+
+  it("leaves side-by-side cards on their ordinary current-height cap", () => {
+    const row = renderStacked(0);
+
+    expect(row.dataset.previousThinking).toBeUndefined();
+    expect(row.style.getPropertyValue(BUDGET_VAR)).toBe("");
+  });
+
+  it("cannot spend the transcript padding sitting below the row", () => {
+    // The transcript's own bottom padding is inside the viewport at the live
+    // edge, so the 54px between the row's bottom and the end of the scrollable
+    // content is not the row's to take.
+    Object.defineProperty(host, "scrollHeight", {
+      configurable: true,
+      get: () => 554,
+    });
+    const row = renderStacked(320, 0, 500);
+
+    expect(row.dataset.previousThinking).toBe("stacked");
+    expect(row.style.getPropertyValue(BUDGET_VAR)).toBe("138px");
+  });
+
+  it("never holds a reserve taller than the viewport can show", () => {
+    // The row's own content wants 700px, but holding that would push the
+    // current card off the top — exactly what the reserve exists to prevent.
+    const row = renderStacked(320, 700);
+
+    expect(
+      row.style.getPropertyValue("--conversation-activity-reserved-height"),
+    ).toBe(`${VIEWPORT_HEIGHT_PX - CONTEXT_RESERVE_PX}px`);
   });
 });
 

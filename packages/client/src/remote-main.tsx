@@ -17,6 +17,7 @@
 
 console.log("[RemoteClient] Loading remote-main.tsx entry point");
 
+import "./lib/developmentPerformanceBootstrap";
 import { Fragment, lazy, StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 
@@ -77,8 +78,14 @@ const loadHostPickerPageModule = cachedModule(
 );
 const loadHostsPageModule = cachedModule(() => import("./pages/HostsPage"));
 const loadInboxPageModule = cachedModule(() => import("./pages/InboxPage"));
+const loadIssuesPageModule = cachedModule(() => import("./pages/IssuesPage"));
 const loadLegacyRelayRouteRedirectModule = cachedModule(
   () => import("./pages/LegacyRelayRouteRedirect"),
+);
+const ConversationPreviewPage = lazy(() =>
+  import("./pages/ConversationPreviewPage").then(
+    ({ ConversationPreviewPage }) => ({ default: ConversationPreviewPage }),
+  ),
 );
 const loadMultiHostMonitorPageModule = cachedModule(
   () => import("./pages/MultiHostMonitorPage"),
@@ -190,6 +197,9 @@ const InboxPage = lazy(() =>
     default: InboxPage,
   })),
 );
+const IssuesPage = lazy(() =>
+  loadIssuesPageModule().then(({ IssuesPage }) => ({ default: IssuesPage })),
+);
 const LegacyRelayRouteRedirect = lazy(() =>
   loadLegacyRelayRouteRedirectModule().then(({ LegacyRelayRouteRedirect }) => ({
     default: LegacyRelayRouteRedirect,
@@ -271,6 +281,7 @@ const initialRemoteModuleLoaders: Record<
   hostPickerPage: loadHostPickerPageModule,
   hostsPage: loadHostsPageModule,
   inboxPage: loadInboxPageModule,
+  issuesPage: loadIssuesPageModule,
   layouts: loadLayoutsModule,
   legacyRelayRouteRedirect: loadLegacyRelayRouteRedirectModule,
   multiHostMonitorPage: loadMultiHostMonitorPageModule,
@@ -358,6 +369,7 @@ const APP_ROUTES = (
       <Route path="sessions" element={routeModule(<GlobalSessionsPage />)} />
       <Route path="agents" element={routeModule(<AgentsPage />)} />
       <Route path="inbox" element={routeModule(<InboxPage />)} />
+      <Route path="issues" element={routeModule(<IssuesPage />)} />
       <Route path="-/hosts" element={routeModule(<HostsRoute />)} />
       <Route path="git-status" element={routeModule(<GitStatusPage />)} />
       <Route path="bang-commands" element={routeModule(<BangCommandsPage />)} />
@@ -417,6 +429,10 @@ createRoot(rootElement).render(
           <Route
             path="/remote/share/:secret"
             element={routeModule(<PublicSharePage />)}
+          />
+          <Route
+            path="/-/preview"
+            element={routeModule(<ConversationPreviewPage />)}
           />
           <Route
             path="/-/monitor"

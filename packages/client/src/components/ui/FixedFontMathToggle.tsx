@@ -36,6 +36,7 @@ import {
 import { useScrollPreservingToggle } from "../../lib/scrollAnchor";
 import { copySemanticHtmlSelectionToClipboard } from "../../lib/semanticHtmlClipboard";
 import { makeDisplayPath } from "../../lib/text";
+import { presentToolOutput } from "../../lib/toolOutputPresentation";
 import { FileViewerModal } from "../FilePathLink";
 import { createPublicShareFileViewerSource } from "../publicShareFileViewerSource";
 import { RenderModeGlyph } from "./RenderModeGlyph";
@@ -935,6 +936,14 @@ function renderFixedFontRichContentInner(
   const baseFilePath =
     options.baseFilePath ?? inferBaseFilePathFromDiff(renderText);
   const diffAware = options.diffAware ?? looksLikeUnifiedDiff(renderText);
+  // Structured output owns its strings. Markdown and math inside JSON are
+  // data unless a separately declared renderer explicitly interprets them.
+  if (
+    !diffAware &&
+    presentToolOutput(renderText).some((part) => part.kind !== "text")
+  ) {
+    return { html: escapeHtml(renderText), changed: false };
+  }
   const renderOptions: RenderOptions = {
     ...options,
     baseFilePath,

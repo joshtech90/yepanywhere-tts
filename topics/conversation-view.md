@@ -61,6 +61,15 @@ provider-history rewrite and not deletion.
   objects, agent-authored text, ordinary system notices, warnings, and errors.
   Tool calls with media remain visible, using their existing media renderer, so
   images stay associated with the agent turn's text.
+- Tool invocations declaring ACLI commentary also remain at their transcript
+  position, including declarations inside code-mode output blocks. Their
+  human-facing links, reports, and capture tables must not require expanding
+  routine activity. The existing Tool commentary setting and server capability
+  still govern rich presentation; when unavailable, the original output remains
+  accessible through the ordinary tool row.
+- Recognized schema-rendered workflow output has the same prose-level status.
+  Tool rows containing workflow markers remain visible; merely running under
+  a workflow's parent stage does not exempt unrelated routine activity.
 - Routine tool calls (pending, complete, or aborted), Thinking rows,
   non-failing task notifications, and subagent-activity notices condense.
   Provider plan-checklist updates rendered through the canonical `UpdatePlan`
@@ -87,11 +96,16 @@ provider-history rewrite and not deletion.
   changing the button's hit target.
 - Clicking the summary restores every condensed row in its original transcript
   position. The summary remains at the turn end as the one-click collapse
-  control. While reading above the live edge, direct expansion or collapse
-  keeps that clicked summary at the same viewport position even though the
-  document height and scrollbar change. Manual expansion remains sticky while
-  that session view stays mounted. A coarse-pointer browser may enlarge or
-  adjust the target of a nearby tap, but disclosure changes only when the
+  control. Direct expansion or collapse pauses tail-follow and keeps that
+  clicked summary at the same viewport position from the first painted frame,
+  including at the live edge, even though document height and scrollbar change.
+  If that offset is
+  unreachable, scroll position clamps to the new document bounds.
+  New output does not pull the reader away from the disclosed activities;
+  ordinary scrolling to the live edge or **Follow** resumes following.
+  Manual expansion remains sticky while that session view stays mounted.
+  A coarse-pointer browser may enlarge or adjust the target of a nearby tap,
+  but disclosure changes only when the
   initiating touch lies within the summary's rendered bounds; a transcript
   gesture beginning in the neighboring blank area remains a scroll gesture.
 - Switching the whole mode preserves bottom-follow when already at the live
@@ -127,7 +141,13 @@ provider-history rewrite and not deletion.
   behind. When that completed turn also has visible agent-authored
   conversation text after the thinking, the thinking preview and the
   thinking-height activity names hide after
-  `CONVERSATION_THINKING_AUTO_HIDE_MS` (5s). The hide is a
+  `CONVERSATION_THINKING_AUTO_HIDE_MS` (5s). Prose the turn has already gone
+  back to work after is stronger than that: once agent-authored text is
+  followed by condensed activity, thinking from before that text is no longer a
+  candidate for either preview slot, so the resumed run shows its activity
+  count alone. Prose with nothing after it keeps its thinking, because that
+  thought is still the most recent thing the turn said about itself and the 5s
+  glance and rollup below are what carry it away. The hide is a
   `CONVERSATION_THINKING_AUTO_HIDE_ROLLUP_MS` (1.5s) CSS height rollup of
   the activity+thinking row down to the compact summary: overflow clips
   from the bottom while a bottom-edge mask fades the clipping line, and
@@ -155,6 +175,36 @@ provider-history rewrite and not deletion.
   shrink — and so no main-conversation autofollow flicker. The same cap covers
   the activity names, which shorten at turn completion as the bound below moves
   to the newly completed block.
+- **A previous preview that wrapped below the current one gets a vertical
+  budget instead.** The cap above is free only while the two cards share a flex
+  line, where the previous card fits inside the height the current one already
+  claims. Wrapped below it — the common tablet width, where the activity column
+  and the current card fill the first line — its height adds to the row, the
+  pair can outgrow the transcript viewport, and because the current card comes
+  first it is the one that leaves the top of the screen under follow. So a
+  wrapped previous card takes the smaller of the current height and the room
+  left once the whole row still fits the viewport with two lines of the
+  preceding paragraph showing. The transcript's own trailing content — later
+  rows, bottom padding and fade — sits below the row inside the viewport at the
+  live edge, so it is subtracted rather than spent. When even a two-line
+  thought does not fit what remains,
+  the previous card is dropped rather than shown clipped to nothing; the
+  current card and the activity summary keep their ordinary treatment.
+  Policy lives in
+  `packages/client/src/lib/sessionDetail/thinkingPreviewBudget.ts` as pure
+  functions; `RenderItemComponent` measures the geometry and publishes
+  `--conversation-previous-thinking-budget` with `is-thinking-stacked` or
+  `is-previous-thinking-dropped` on the row. Three invariants make the decision
+  stable, since dropping a card changes the space the next decision sees:
+  - **Measure the first line and the current card, never the previous card's
+    own height.** The wrap position, the card chrome, and the prose line height
+    all come from siblings that are never dropped.
+  - **A dropped card keeps its box in the flex layout at zero height.**
+    Removing the item would change the wrap the budget was measured from, and
+    the drop would then flap on and off.
+  - **The held reserve below is bounded by the same budget.** After the
+    viewport shrinks — rotation, a taller composer — the row must not go on
+    claiming a height the viewport no longer has.
 - **The row keeps its high-water height for a cooling-off period.** The cap
   above stops the row growing past the current thinking block, but says nothing
   about shrinking: a long streamed block followed by a short one hands the

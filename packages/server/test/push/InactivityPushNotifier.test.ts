@@ -111,6 +111,50 @@ describe("InactivityPushNotifier", () => {
     return notifier;
   }
 
+  it("cancels an inactivity edge pending when shutdown starts", async () => {
+    const process = createProcess(projectId, { state: { type: "in-turn" } });
+    supervisor.processes = [process];
+    createNotifier();
+    const event = {
+      type: "process-state-changed" as const,
+      sessionId: process.sessionId,
+      projectId,
+      timestamp: new Date().toISOString(),
+    };
+    eventBus.emit({ ...event, activity: "in-turn" });
+    await wait(20);
+    process.state = { type: "idle" };
+    eventBus.emit({ ...event, activity: "idle" });
+    notifier.dispose();
+    await wait(20);
+    expect(pushService.sendToAll).not.toHaveBeenCalled();
+  });
+
+  it("does not send an in-flight inactivity check after disposal", async () => {
+    const process = createProcess(projectId, { state: { type: "in-turn" } });
+    supervisor.processes = [process];
+    createNotifier();
+    const event = {
+      type: "process-state-changed" as const,
+      sessionId: process.sessionId,
+      projectId,
+      timestamp: new Date().toISOString(),
+    };
+    eventBus.emit({ ...event, activity: "in-turn" });
+    await wait(20);
+    process.state = { type: "idle" };
+    const readProcesses = vi.spyOn(supervisor, "getAllProcesses");
+    // Dispose while runChecks is awaiting its project/global observation.
+    readProcesses.mockImplementationOnce(() => {
+      notifier.dispose();
+      return [process];
+    });
+    eventBus.emit({ ...event, activity: "idle" });
+    await wait(20);
+    expect(readProcesses).toHaveBeenCalled();
+    expect(pushService.sendToAll).not.toHaveBeenCalled();
+  });
+
   it("does not notify when the first observed project state is inactive", async () => {
     supervisor.processes = [createProcess(projectId)];
     createNotifier();

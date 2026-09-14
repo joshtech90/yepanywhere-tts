@@ -146,10 +146,12 @@ export class InactivityPushNotifier {
     this.inFlight = true;
     try {
       const projectIds = await this.consumeDirtyProjectIds();
+      if (this.disposed) return;
       const projectEdges: ProjectInactivePayload[] = [];
 
       for (const projectId of projectIds) {
         const status = await this.getProjectInactiveStatus(projectId);
+        if (this.disposed) return;
         const edge = this.updateProjectState(projectId, status);
         if (edge) {
           projectEdges.push(edge);
@@ -157,6 +159,7 @@ export class InactivityPushNotifier {
       }
 
       const globalEdge = await this.updateGlobalState();
+      if (this.disposed) return;
       const yaEnabled =
         this.pushService.isNotificationTypeEnabled("yaInactive");
 
@@ -243,6 +246,7 @@ export class InactivityPushNotifier {
         this.getProjectInactiveStatus(projectId),
       ),
     );
+    if (this.disposed) return null;
     const inactive = statuses.every((status) => status.inactive);
     const previous = this.globalState;
 
@@ -328,7 +332,7 @@ export class InactivityPushNotifier {
   private async sendProjectInactive(
     payload: ProjectInactivePayload,
   ): Promise<void> {
-    if (this.pushService.getSubscriptionCount() === 0) {
+    if (this.disposed || this.pushService.getSubscriptionCount() === 0) {
       return;
     }
 
@@ -349,7 +353,7 @@ export class InactivityPushNotifier {
   }
 
   private async sendYaInactive(payload: YaInactivePayload): Promise<void> {
-    if (this.pushService.getSubscriptionCount() === 0) {
+    if (this.disposed || this.pushService.getSubscriptionCount() === 0) {
       return;
     }
 

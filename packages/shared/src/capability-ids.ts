@@ -372,6 +372,84 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "turn-effort-modifiers",
     introducedIn: "0.8.2",
   },
+  artifactViewer: {
+    id: 59,
+    direction: "server",
+    name: "artifact-viewer",
+    introducedIn: "0.8.2",
+  },
+  sessionAsyncQuestions: {
+    id: 60,
+    direction: "server",
+    name: "session-async-questions",
+    introducedIn: "0.8.2",
+  },
+  projectQueueReadinessCheck: {
+    id: 61,
+    direction: "server",
+    name: "project-queue-readiness-check",
+    introducedIn: "0.8.2",
+  },
+  acliCommentaryRendering: {
+    id: 62,
+    direction: "server",
+    name: "acli-commentary-rendering",
+    introducedIn: "0.8.2",
+  },
+  retainedSessionCollections: {
+    id: 63,
+    direction: "server",
+    name: "retained-session-collections",
+    introducedIn: "0.8.2",
+  },
+  localSpeechModelSelection: {
+    id: 64,
+    direction: "server",
+    name: "local-speech-model-selection",
+    introducedIn: "0.8.2",
+  },
+  speechVocabulary: {
+    id: 65,
+    direction: "server",
+    name: "speech-vocabulary",
+    introducedIn: "0.8.2",
+  },
+  speechVocabularySessionTerms: {
+    id: 66,
+    direction: "server",
+    name: "speech-vocabulary-session-terms",
+    introducedIn: "0.8.2",
+  },
+  experimentalConversation: {
+    id: 69,
+    direction: "server",
+    name: "experimental-simple-client-conversation",
+    introducedIn: "0.8.2",
+  },
+  issueSessionAssociations: {
+    id: 68,
+    direction: "server",
+    name: "issue-session-associations-v1",
+    introducedIn: "0.8.2",
+  },
+  computerControl: {
+    id: 70,
+    direction: "server",
+    name: "optional-computer-control",
+    introducedIn: "0.8.2",
+  },
+  computerControlReleases: {
+    id: 71,
+    direction: "server",
+    name: "computer-control-releases",
+    introducedIn: "0.8.2",
+  },
+  codexCyberAccessProgramSetting: {
+    id: 67,
+    direction: "server",
+    name: "codex-cyber-access-program-setting",
+    introducedIn: "0.8.2",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

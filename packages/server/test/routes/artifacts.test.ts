@@ -1,0 +1,360 @@
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { afterEach, expect, it, vi } from "vitest";
+import { ArtifactServer } from "../../src/artifacts/ArtifactServer.js";
+import { createArtifactRoutes } from "../../src/routes/artifacts.js";
+import { createLocalResourcePathPolicy } from "../../src/routes/local-resource-policy.js";
+import { createApp } from "../setup/create-app.js";
+import { MockClaudeSDK } from "../../src/sdk/mock.js";
+import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
+import { initFileAccess } from "../../src/middleware/file-access.js";
+import {
+  updateAllowedHosts,
+  isAllowedOrigin,
+} from "../../src/middleware/allowed-hosts.js";
+import {
+  readArtifactConfig,
+  validateArtifactConfig,
+} from "../../src/artifacts/config.js";
+import { createServer, request } from "node:http";
+import { getRequestListener } from "@hono/node-server";
+
+let directory: string;
+afterEach(async () => {
+  vi.restoreAllMocks();
+  if (directory) await rm(directory, { recursive: true });
+  directory = "";
+});
+
+it("grants the same home-relative HTML file with or without project context", async () => {
+  directory = await mkdtemp(join(homedir(), ".ya-artifact-test-"));
+  const entry = join(directory, "index.html");
+  await writeFile(entry, "<h1>Home-relative</h1>");
+  const server = new ArtifactServer(
+    { port: 4402, localOrigin: "http://artifacts.localhost:4402" },
+    createLocalResourcePathPolicy({ allowedPaths: [directory] }),
+  );
+  const routes = createArtifactRoutes({
+    server,
+    scanner: { getProject: vi.fn().mockResolvedValue({ path: directory }) },
+    locked: true,
+  });
+  try {
+    for (const projectId of [undefined, "project"]) {
+      for (const path of [
+        entry,
+        `~/${relative(homedir(), entry)}`,
+        `~\\${relative(homedir(), entry)}`,
+      ]) {
+        const response = await routes.request("/artifacts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path, projectId, audience: "local" }),
+        });
+        expect(response.status).toBe(200);
+        const grant = await response.json();
+        expect(await (await server.app.request(grant.url)).text()).toBe(
+          "<h1>Home-relative</h1>",
+        );
+      }
+    }
+  } finally {
+    await server.close();
+  }
+});
+
+it("configures, creates, and revokes artifacts through the app's public routes", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-routes-"));
+  const entry = join(directory, "index.html");
+  await writeFile(entry, "<h1>Public route</h1>");
+  const dataDir = join(directory, "data");
+  const settings = new ServerSettingsService({ dataDir });
+  await settings.initialize();
+  initFileAccess({
+    uploadsDir: directory,
+    homeDir: directory,
+    tempPaths: [directory],
+    envPaths: [directory],
+  });
+  const instance = createApp({
+    sdk: new MockClaudeSDK(),
+    dataDir,
+    projectsDir: join(directory, "sessions"),
+    serverSettingsService: settings,
+  });
+  const call = (path: string, method: string, body?: object) =>
+    instance.app.request(path, {
+      method,
+      headers: { "Content-Type": "application/json", "X-Yep-Anywhere": "true" },
+      ...(body ? { body: JSON.stringify(body) } : {}),
+    });
+  try {
+    expect(
+      (await call("/api/artifacts", "POST", { path: entry, audience: "local" }))
+        .status,
+    ).toBe(409);
+    expect(
+      (
+        await call("/api/artifacts/config", "PUT", {
+          port: 4402,
+          localOrigin: "http://artifacts.localhost:3400",
+          expiryDays: 2,
+        })
+      ).status,
+    ).toBe(200);
+    expect(settings.getSetting("artifactViewer")?.expiryDays).toBe(2);
+    const response = await call("/api/artifacts", "POST", {
+      path: entry,
+      audience: "local",
+    });
+    expect(response.status).toBe(200);
+    const grant = await response.json();
+    expect(
+      await (await instance.artifactServer.app.request(grant.url)).text(),
+    ).toBe("<h1>Public route</h1>");
+    expect((await call(`/api/artifacts/${grant.id}`, "DELETE")).status).toBe(
+      200,
+    );
+    expect((await instance.artifactServer.app.request(grant.url)).status).toBe(
+      404,
+    );
+  } finally {
+    await instance.artifactServer.close();
+    await instance.disposeSessionReaders();
+  }
+});
+
+it("serves an authorized HTML directory with executable bytes and revocable access", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-"));
+  const root = join(directory, "mockup");
+  await mkdir(root);
+  await writeFile(join(root, "index.html"), '<script src="app.js"></script>');
+  await writeFile(join(root, "app.js"), 'document.title = "working";');
+  const server = new ArtifactServer(
+    { port: 4402, localOrigin: "http://artifacts.localhost:4402" },
+    createLocalResourcePathPolicy({ allowedPaths: [directory] }),
+  );
+  const grant = await server.createGrant(join(root, "index.html"), "local");
+  const html = await server.app.request(grant.url);
+  expect(html.status).toBe(200);
+  expect(html.headers.get("content-type")).toContain("text/html");
+  expect(html.headers.get("content-security-policy")).toContain(
+    "sandbox allow-scripts allow-same-origin",
+  );
+  expect(await html.text()).toContain('<script src="app.js">');
+  const script = await server.app.request(new URL("app.js", grant.url));
+  expect(script.status).toBe(200);
+  expect(script.headers.get("content-type")).toContain("javascript");
+  expect(await script.text()).toContain('"working"');
+  const range = await server.app.request(new URL("app.js", grant.url), {
+    headers: { Range: "bytes=0-7" },
+  });
+  expect(range.status).toBe(206);
+  expect(await range.text()).toBe("document");
+  const head = await server.app.request(grant.url, { method: "HEAD" });
+  expect(head.status).toBe(200);
+  expect(await head.text()).toBe("");
+  for (const path of [
+    "../secret.txt",
+    "%2e%2e%2fsecret.txt",
+    ".env",
+    "app.js%00",
+  ]) {
+    expect(
+      (await server.app.request(new URL(path, grant.url))).status,
+    ).not.toBe(200);
+  }
+  expect(
+    (await server.app.request(new URL("/api/version", grant.url))).status,
+  ).toBe(404);
+  expect((await server.app.request(grant.url, { method: "POST" })).status).toBe(
+    405,
+  );
+  expect(
+    (
+      await server.app.request(grant.url, {
+        headers: { Host: "localhost:4402" },
+      })
+    ).status,
+  ).toBe(421);
+  server.revoke(grant.id);
+  expect((await server.app.request(grant.url)).status).toBe(404);
+});
+
+it("routes the artifact Host on YA's actual HTTP port before YA APIs", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-host-"));
+  await writeFile(join(directory, "index.html"), "<h1>Isolated</h1>");
+  initFileAccess({
+    uploadsDir: directory,
+    homeDir: directory,
+    tempPaths: [directory],
+    envPaths: [directory],
+  });
+  const instance = createApp({
+    sdk: new MockClaudeSDK(),
+    dataDir: join(directory, "data"),
+    projectsDir: join(directory, "sessions"),
+    artifacts: {
+      port: 4402,
+      localOrigin: "http://artifacts.localhost:3400",
+    },
+  });
+  const listener = createServer(getRequestListener(instance.app.fetch));
+  await new Promise<void>((ready) => listener.listen(0, "127.0.0.1", ready));
+  const address = listener.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing listener port");
+  const port = address.port;
+  const get = (path: string, host: string, origin?: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port,
+          path,
+          headers: { Host: host, ...(origin ? { Origin: origin } : {}) },
+        },
+        (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            body += chunk;
+          });
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  try {
+    const grant = await instance.artifactServer.createGrant(
+      join(directory, "index.html"),
+      "local",
+    );
+    expect(
+      await get(new URL(grant.url).pathname, "artifacts.localhost:3400"),
+    ).toMatchObject({ status: 200, body: "<h1>Isolated</h1>" });
+    expect((await get("/health", "artifacts.localhost:3400")).body).toBe(
+      '{"artifactViewer":1}',
+    );
+    for (const path of [
+      "/api/version",
+      "/public-api/shares/test",
+      "/desktop-bootstrap",
+      "/api/ws",
+    ]) {
+      expect((await get(path, "artifacts.localhost:3400")).status).toBe(404);
+    }
+    updateAllowedHosts("*");
+    expect(
+      (
+        await get(
+          "/api/version",
+          "localhost:3400",
+          "http://artifacts.localhost:3400",
+        )
+      ).status,
+    ).toBe(403);
+    expect((await get("/api/version", "localhost:3400", "null")).status).toBe(
+      403,
+    );
+    expect(isAllowedOrigin("http://artifacts.localhost:9999")).toBe(false);
+  } finally {
+    updateAllowedHosts(undefined);
+    listener.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve())),
+    );
+    await instance.disposeSessionReaders();
+  }
+});
+
+it("expires each link at its original lifetime after an expiry-only settings change", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-expiry-"));
+  const entry = join(directory, "index.html");
+  await writeFile(entry, "<h1>Expires</h1>");
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const server = new ArtifactServer(
+    { port: 4402, localOrigin: "http://artifacts.localhost:3400" },
+    createLocalResourcePathPolicy({ allowedPaths: [directory] }),
+  );
+  const original = await server.createGrant(entry, "local");
+  expect(original.expiresAt).toBe(now + 7 * 24 * 3600_000);
+  await server.configure({ ...server.config, expiryDays: 2 });
+  const shorter = await server.createGrant(entry, "local");
+  expect(shorter.expiresAt).toBe(now + 2 * 24 * 3600_000);
+  clock.mockReturnValue(shorter.expiresAt - 1);
+  expect(
+    (await server.app.request(shorter.url, { method: "HEAD" })).status,
+  ).toBe(200);
+  clock.mockReturnValue(shorter.expiresAt);
+  expect((await server.app.request(shorter.url)).status).toBe(404);
+  expect(
+    (await server.app.request(original.url, { method: "HEAD" })).status,
+  ).toBe(200);
+  await server.configure({ ...server.config, port: 4403 });
+  expect((await server.app.request(original.url)).status).toBe(404);
+  await server.close();
+});
+
+it("validates whole expiry days, rounding a legacy hours write up to a day", () => {
+  expect(validateArtifactConfig({ port: 4402 }).expiryDays).toBe(7);
+  expect(validateArtifactConfig({ port: 4402 }, 3).expiryDays).toBe(3);
+  for (const expiryDays of [1, 30]) {
+    expect(validateArtifactConfig({ port: 4402, expiryDays }).expiryDays).toBe(
+      expiryDays,
+    );
+  }
+  // Hours remain readable for an older client and a settings file written
+  // before days existed; anything under a day becomes one day.
+  expect(validateArtifactConfig({ port: 4402, expiryHours: 2 })).toMatchObject({
+    expiryDays: 1,
+    expiryHours: 24,
+  });
+  expect(
+    validateArtifactConfig({ port: 4402, expiryHours: 168 }).expiryDays,
+  ).toBe(7);
+  // Days win when a client sends both.
+  expect(
+    validateArtifactConfig({ port: 4402, expiryDays: 3, expiryHours: 168 })
+      .expiryDays,
+  ).toBe(3);
+  for (const expiryDays of [0, 31, 1.5, "7", null, NaN]) {
+    expect(() => validateArtifactConfig({ port: 4402, expiryDays })).toThrow(
+      "whole days",
+    );
+  }
+  for (const expiryHours of [0, 169, 1.5, "24", null, NaN]) {
+    expect(() => validateArtifactConfig({ port: 4402, expiryHours })).toThrow(
+      "whole hours",
+    );
+  }
+  expect(() =>
+    validateArtifactConfig({ port: 4402, deleteOnExpiry: "yes" }),
+  ).toThrow("true or false");
+});
+
+it("keeps launch overrides explicit and rejects shared-loopback origins", () => {
+  expect(readArtifactConfig({})).toBeUndefined();
+  expect(
+    readArtifactConfig({
+      YEP_ARTIFACT_PORT: "0",
+      YEP_ARTIFACT_PUBLIC_ORIGIN: "https://artifacts.example.org",
+    }),
+  ).toEqual({ port: 4402 });
+  expect(() => validateArtifactConfig({ port: 0 })).toThrow();
+  expect(() =>
+    validateArtifactConfig({
+      port: 4402,
+      localOrigin: "http://localhost:4402",
+    }),
+  ).toThrow();
+  expect(() =>
+    validateArtifactConfig({
+      port: 4402,
+      publicOrigin: "http://artifacts.example.org",
+    }),
+  ).toThrow();
+});

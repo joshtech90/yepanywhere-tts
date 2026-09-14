@@ -1,6 +1,7 @@
 import {
   memo,
   type MouseEvent,
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -29,6 +30,10 @@ function useReadAloudSubscription(): ReadAloudState {
   return useSyncExternalStore(subscribeReadAloud, getReadAloudState);
 }
 import { useStreamingMarkdownContext } from "../../contexts/StreamingMarkdownContext";
+import {
+  codeFenceRootClass,
+  useCodeFenceRenderers,
+} from "../../hooks/useCodeFenceRenderers";
 import { useStreamingMarkdown } from "../../hooks/useStreamingMarkdown";
 import { useI18n } from "../../i18n";
 import { registerMarkdownCopySource } from "../../lib/markdownSelectionCopy";
@@ -96,6 +101,12 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
 interface Props {
   text: string;
   isStreaming?: boolean;
+  /**
+   * The provider cut this text off mid-generation to take a steering message,
+   * so it stops wherever generation stopped rather than where the agent meant
+   * to end.
+   */
+  abortedMidStream?: boolean;
   /** Pre-rendered HTML from server (for completed messages) */
   augmentHtml?: string;
   projectPathLinks?: readonly ProjectPathLinkTarget[];
@@ -103,17 +114,20 @@ interface Props {
   alwaysShowQuoteCircle?: boolean;
   paragraphQuoteCirclesEnabled?: boolean;
   renderItemId?: string;
+  timelineAction?: ReactNode;
 }
 
 export const TextBlock = memo(function TextBlock({
   text,
   isStreaming = false,
+  abortedMidStream = false,
   augmentHtml,
   projectPathLinks,
   onQuoteBlock,
   alwaysShowQuoteCircle = false,
   paragraphQuoteCirclesEnabled = true,
   renderItemId,
+  timelineAction,
 }: Props) {
   const { t } = useI18n();
   const [copied, setCopied] = useState(false);
@@ -250,6 +264,7 @@ export const TextBlock = memo(function TextBlock({
   useLocalMediaInlinePreviews(copySourceRef, undefined, undefined, {
     suppressAutomaticImages: turnImageGallery?.available === true,
   });
+  useCodeFenceRenderers(copySourceRef);
   const handleContentClick = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
       const content = copySourceRef.current;
@@ -376,6 +391,9 @@ export const TextBlock = memo(function TextBlock({
       className={`${styles.root} text-block text-block-assistant timeline-item${isStreaming ? " streaming" : ""}`}
       data-turn-image-source-id={renderItemId}
     >
+      {timelineAction ? (
+        <span className={styles.timelineAction}>{timelineAction}</span>
+      ) : null}
       {onQuoteBlock ? (
         <ParagraphQuoteRail
           alwaysShowQuoteCircle={alwaysShowQuoteCircle}
@@ -433,7 +451,7 @@ export const TextBlock = memo(function TextBlock({
       {/* biome-ignore lint/a11y/useKeyWithClickEvents: keyboard activation remains on the descendant links/controls */}
       <div
         ref={copySourceRef}
-        className="text-block-content"
+        className={`text-block-content ${codeFenceRootClass}`}
         onClick={handleContentClick}
         onContextMenu={handleContextMenu}
       >
@@ -479,6 +497,15 @@ export const TextBlock = memo(function TextBlock({
               <code>{text}</code>
             </pre>
           ))}
+        {abortedMidStream && (
+          <span
+            className={`${styles.abortedMidStream} text-block-aborted-mid-stream`}
+            title={t("textBlockAbortedMidStreamTitle")}
+          >
+            <span aria-hidden="true">⨯</span>
+            {t("textBlockAbortedMidStream")}
+          </span>
+        )}
       </div>
       {galleryActionHost
         ? createPortal(

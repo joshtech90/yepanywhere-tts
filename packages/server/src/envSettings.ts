@@ -182,6 +182,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
 
   // Data & profiles
   {
+    name: "YEP_SQLITE",
+    group: "Data & profiles",
+    description:
+      "Discovery storage: auto (default), off, or on to open it even when the data directory is on a network share. Restart to apply.",
+  },
+  {
     name: "YEP_DATA_DIR",
     group: "Data & profiles",
     description:
@@ -383,6 +389,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
       "Fallback for the Codex Plan checklist tool setting (provider-default|disabled|enabled). A saved provider setting takes precedence.",
   },
   {
+    name: "YEP_CODEX_CYBER_ACCESS_PROGRAM",
+    group: "Providers & features",
+    description:
+      "Fallback for the Codex Cyber access program setting (provider-default|standard|daybreak-blue|daybreak-red). A saved provider setting takes precedence, and provider-default sends nothing so Codex chooses.",
+  },
+  {
     name: "OLLAMA_URL",
     group: "Providers & features",
     description:
@@ -461,7 +473,7 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "WHISPER_MODEL",
     group: "Speech & transcription",
     description:
-      "Model name for the ya-whisper backend (default distil-large-v3).",
+      "Model name for the ya-whisper backend (default distil-large-v3.5).",
   },
   {
     name: "WHISPER_DEVICE",

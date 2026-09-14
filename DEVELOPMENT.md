@@ -1,196 +1,51 @@
 # Development
 
-## Setup
+This is the shared contributor guide for humans and agents. Read it before
+planning implementation or making repository changes, including documentation
+and configuration changes. Read every applicable entry in **Required reading
+by task** before choosing an approach; those linked requirements are binding
+when their trigger applies. Recheck the table if the task expands.
+General discussion and read-only orientation do not require the full development
+workflow; applicable topic-reading triggers still apply.
+[AGENTS.md](AGENTS.md) supplies the agent entry rules.
+
+This file owns the common rules and reading triggers. Contributor procedures
+live in [docs/development/](docs/development/README.md); product behavior and
+technical contracts live in their owning `topics/` documents. Follow direct
+links for the task at hand; reading the whole development directory is not
+required.
+
+## Project Context
+
+Yep Anywhere is a mobile-first, multi-session supervisor for coding agents.
+Server-owned provider processes keep running when clients disconnect. A Hono
+server and React client exchange live events over WebSockets; provider-native
+transcripts preserve session history. Direct access uses Tailscale/LAN; relay
+access uses SRP authentication and end-to-end NaCl encryption.
+
+The server/web core needs no hosted account or Firebase dependency. The optional
+published native app uses its separate hosted push broker for notifications.
+See [project context](docs/project/) for detail, [historical vision](docs/archive/)
+for background, and `~/code/dotfiles/projects/README.md` for cross-project context.
+
+## Quick Start
+
+Use Node.js `^22.16 || ^23.11 || >=24.10` (a maintained LTS is recommended).
+From the repository root:
 
 ```bash
-git clone https://github.com/kzahel/yepanywhere.git
-cd yepanywhere
-pnpm install
-pnpm dev
+pnpm install          # Or pnpm setup:core to skip the relay workspace
+pnpm dev              # Open http://localhost:3400
+pnpm lint             # Lint diagnostics
+pnpm format:check     # Non-writing formatter verification
+pnpm typecheck        # TypeScript checking, no emit
+pnpm test             # Non-Android workspace unit tests
+pnpm test:e2e         # Required for UI source changes
 ```
 
-Open http://localhost:3400 in your browser.
-
-If you only want the main app and do not want to install the relay workspace, use:
-
-```bash
-pnpm setup:core
-pnpm dev
-```
-
-## Commands
-
-```bash
-pnpm setup:core       # Install root + client + server + shared, skipping relay
-pnpm dev              # Start dev server
-pnpm lint             # Biome linter
-pnpm format:check     # Biome formatter verification (does not write)
-pnpm format           # Intentionally format all tracked supported files
-pnpm typecheck        # TypeScript type checking
-pnpm test             # Unit tests for non-Android workspaces
-pnpm --filter @yep-anywhere/android test # Android unit tests
-pnpm test:e2e         # E2E tests
-pnpm references:sync  # Clone/sync upstream source to pinned provider versions
-pnpm references:check # Verify local references match pinned provider versions
-```
-
-Commits should be warning-free: `pnpm lint` reports zero warnings, and test
-runs emit no runtime warnings (e.g. React "cannot update while rendering" or
-`act(...)` notices). Fix the cause rather than suppressing the report; a
-warning that must stand needs an inline justification.
-
-Formatting is a separate repository invariant. CI runs `pnpm format:check`,
-which never writes. During feature work in a dirty or shared worktree, format
-only the exact files you edited:
-
-```bash
-node scripts/biome.cjs format --write path/to/file.ts path/to/other.tsx
-```
-
-Reserve repository-wide `pnpm format` for a deliberate clean baseline or a
-formatter-version migration, and keep such a rewrite in its own commit. Add
-the full hash of a verified mechanical rewrite to `.git-blame-ignore-revs` in
-a follow-up commit. GitHub honors that file automatically; enable it for local
-Git blame with:
-
-```bash
-git config blame.ignoreRevsFile .git-blame-ignore-revs
-```
-
-The general CI unit-test job runs `pnpm test`. Android unit, lint, build, and
-instrumentation coverage belongs to the dedicated Android App workflow so its
-Gradle work does not contend with the JavaScript workspace test processes.
-Android JVM unit-test tasks have a five-minute task timeout and emit per-test
-lifecycle output so a stalled worker fails with attributable evidence.
-
-Environment-dependent subprocess tests must control both the child environment
-and relevant process descriptors. In particular, Bash `BASH_ENV` probes use
-ignored stdin rather than inheriting a test runner's socket-backed stdin. See
-[subprocess environment boundaries](topics/subprocess-environment.md) for the
-runtime and hermetic-test contract.
-
-## Reference Source
-
-`pnpm references:sync` shallow-clones upstream source into `references/` for
-local reading (currently the Codex Rust source, `codex-rs`, under
-`references/codex`). The directory is gitignored and optional. The Codex
-checkout is aligned with the official `rust-v<expectedVersion>` tag derived
-from root `package.json`; the command refuses to move a checkout with local
-changes. Use `pnpm references:check` for a read-only alignment check.
-`pnpm clone-references` remains an alias for the sync command. The Claude SDK
-is not open source and is not included.
-
-## Client I18n
-
-Client UI copy should be i18n-ready by default. When adding visible sentences,
-labels, headings, placeholders, tooltips, or aria text, add an English key to
-`packages/client/src/i18n/en.json` and render it through `useI18n().t(...)`.
-Non-English locale files are sparse overlays; only add translated locale values
-when an actual translation is available.
-
-Do not spend effort localizing brand/provider names, keyboard keys, terminal
-commands, code tokens, protocol values, or source-like renderer text unless
-they are embedded in real explanatory copy. To catch obvious misses, run:
-
-```bash
-pnpm i18n:scan
-```
-
-The scan is intentionally permissive and advisory. It warns on likely raw
-English prose in client TSX, hides low-priority technical labels by default,
-and can be inspected with `pnpm i18n:scan -- --include-info`. Use
-`--max-warnings <n>` only when intentionally ratcheting it toward a blocking
-check.
-
-To review untranslated sparse-locale backlog without enforcing it on ordinary
-code changes, run:
-
-```bash
-pnpm i18n:missing
-pnpm i18n:missing -- --markdown --limit all > reports/i18n-missing-$(date +%F).md
-```
-
-`i18n:missing` reports English keys absent from non-English locale overlays and
-always treats missing translations as advisory. Use this for daily or weekly
-translation planning rather than as a blocking lint rule.
-
-## Client CSS
-
-Use co-located CSS Modules (`Component.module.css`) for component-owned client
-styles. The legacy global stylesheets are frozen at ratcheting line-count
-ceilings, enforced by:
-
-```bash
-pnpm css:check
-pnpm css:modules:check
-```
-
-`css:modules:check` is also part of `pnpm lint`. It blocks undeclared,
-production-unused, test-only, unimported, computed, and side-effect module
-usage, plus `:global(...)` references that are missing or lack a local anchor.
-Use `pnpm css:unused` for the broader investigative report; its known legacy
-findings are advisory and do not make ordinary lint fail.
-
-When moving rules out of a legacy global file lowers its line count, record the
-new lower ceiling in the same change:
-
-```bash
-pnpm css:check --record
-```
-
-Do not raise a ceiling to land a feature. Generated HTML vocabularies, themes,
-tokens, and document-level rules may remain global under the narrow exceptions
-in [`topics/css-architecture.md`](topics/css-architecture.md); ordinary React
-component layout and states belong in modules.
-
-The dedicated migration campaign is complete. Ongoing paydown is
-opportunistic: when a task changes a component that still emits legacy global
-classes, inspect its current ownership and move a bounded, locally verifiable
-slice with the feature change. Zero global CSS is not a target, and a feature
-task should not grow into generated-markup, dynamic-class, or cross-owner
-composition work merely to reduce a line count.
-
-Before finishing such a change, run:
-
-```bash
-pnpm css:touched
-```
-
-The command compares the working tree with `HEAD`; pass `--base <ref>` to
-include committed branch work from that ref's merge base. It prints concise
-ownership facts for changed React owners, labels bounded slices as
-opportunities, and labels coupled, scattered, dynamic, or unresolved evidence
-for deferral. The report is advisory and always succeeds for either outcome.
-
-For standalone paydown work, select a bounded owner from the parser-backed
-inventory instead of maintaining a speculative migration queue:
-
-```bash
-pnpm css:inventory
-pnpm css:inventory -- --owner <component-or-path>
-```
-
-The inventory is advisory. Inspect its coupled, generated, unresolved, dynamic,
-and test-reference findings before defining a slice. The full selection and
-verification protocol lives in the CSS architecture topic.
-
-If the touched component is not a safe extraction candidate, record the
-specific reason in the change handoff rather than adding it to a migration
-queue. CSS health is evaluated on demand across containment, ownership,
-module-contract, escape-hatch, dead-code, and shipping-size signals; the global
-line ratchet is one guardrail, not a complete progress score.
-
-For a CSS-focused review or occasional architecture audit, run:
-
-```bash
-pnpm css:health
-```
-
-This composes the existing analyzers into a human-readable summary; `--json`
-is available for a one-off comparison. It reports separate facts rather than a
-score and does not build the client, persist results, or fail on observational
-debt. Continue to use `css:check`, `lint`, and `css:unused` for their own exit
-contracts.
+See [local development](docs/development/local-development.md) for cloning,
+commands, ports, profiles, and environment variables, and
+[server runtimes](topics/server-runtime.md) for Bun and remote upgrades.
 
 ## Contribution Ethos: Minimalist Runtime
 
@@ -226,84 +81,122 @@ provider events flow through the server to the client, the transport modes,
 and the large-scope refactor proposals. Read it before changing message-flow
 or render-path code.
 
+Before fielding a user request to improve **stability**, **performance**, or **security**, read `ARCHITECTURE.md` first. Check whether the issue is already addressed in the large-scope refactor proposals or the per-doc cleanup tables, and whether a relevant trigger condition has now been met. If the proposed work would touch a load-bearing piece named in `ARCHITECTURE.md` (fan-out, replay buffer, streaming throttle, transport framing, auth state), prefer reading the linked detailed doc and surfacing the existing trade-off to the user before writing code.
+
+## Architecture Mandates
+
+Before modifying background loops, watchers, polling, retry timers, heartbeat
+scheduling, session liveness, client stream/reconnect behavior, or server
+catch-up paths, read `topics/architecture-mandates.md`. In particular, an idle
+provider session and a closed client tab must never indefinitely consume server
+resources.
+
+## Project Directory Storage
+
+Before adding or changing any YA-managed write inside a selected project or
+its Git metadata, read `topics/project-directory-storage.md`. App-data-only is
+the default: browsing, rendering, replaying, indexing, caching, and preserving
+viewer state must not create `.yep`, `.attachments`, Git excludes, or YA-owned
+refs. A helper that creates or excludes a directory is not authorization;
+project-local storage requires the explicit global opt-in, and feature-level
+retention choices remain separate.
+
+## Provider Session Identity
+
+YA URL session ids are the canonical user-facing session ids. Provider-native
+ids such as OpenCode `ses_*`, Codex thread ids, or other backend resume handles
+may be stored and passed back to the provider for resume, export, or debugging,
+but they must not silently replace the YA-visible session id in URLs, persisted
+YA metadata, REST/WebSocket payloads, or UI copy. If a provider truly requires
+using its own id as a public/session id, document that exception in the
+provider contract and make the mapping explicit in the UI/debug surfaces.
+
+## Vanilla Defaults
+
+YA-novel user-visible behavior, including changes to submitted provider text,
+ships configurable and default-off. Novel features remain welcome; a plausible
+benefit earns an option, not a default. Before adding or enabling any user-visible
+feature that is not configurable default-off, read
+[vanilla defaults](topics/vanilla-defaults.md) for the first-party UX contract
+and its explicitly bounded exceptions.
+
 ## Client/Server Compatibility Review
 
-Hosted clients can update before installed servers. When a client change
-depends on a new server route, response field, event, or semantic, record and
-obtain maintainer approval for the compatibility decision before
-implementation:
+Hosted clients can update before installed servers. Before making a client
+depend on a route, field, event, or semantic absent from a supported stable
+release, read [server capabilities](topics/server-capabilities.md#minimum-compatibility-horizons)
+and [hosted compatibility](topics/remote-hosted-compatibility.md).
+Present the required release-corpus, gate, and fallback plan and obtain
+maintainer approval before editing the contract. An originating request that
+already approves those decisions satisfies the gate; do not ask twice.
+Never broaden an advertised capability to include a contract older servers lack
+or remove a fallback merely because a support horizon passed.
 
-- identify whether the feature is core or optional;
-- inspect the latest two stable releases and every stable release from the
-  preceding 14 days (optional) or 60 days (core);
-- name the capability/protocol gate and the exact behavior when it is absent;
-- prove the fallback makes no unsupported request; and
-- call out any proposed change to an already-advertised capability or older
-  capable behavior.
+## Hard Development Rules
 
-Existing capability meanings cannot be expanded retroactively: released
-servers already advertised the old contract. Passing the minimum support
-horizon allows a human review but does not automatically remove the fallback.
-See [`topics/server-capabilities.md`](topics/server-capabilities.md) and
-[`topics/remote-hosted-compatibility.md`](topics/remote-hosted-compatibility.md).
+Follow `topics/hard-development-rules.md` for binding upstream-facing
+development rules. Read it before changing deployment-sensitive defaults,
+configuration precedence, relay or endpoint selection, provider/model settings,
+hosted-client endpoint selection, migrations, or maintainer-specific deploy
+configuration.
 
-## Port Configuration
+## Required Reading By Task
 
-Ports are derived from a single `PORT` variable (default: 3400):
+These triggers apply in addition to the common rules above. A task can match
+several rows. Read the named guide or topic before the affected planning,
+implementation, verification, or commit action; linked background references
+are not a requirement to read every neighboring document.
 
-| Port | Purpose |
-|------|---------|
-| PORT + 0 | Main server |
-| PORT + 1 | Maintenance server |
-| PORT + 2 | Vite dev server |
+| When the task involves… | Read / required action |
+| --- | --- |
+| Source edits or OS-sensitive behavior | [Testing](docs/development/testing.md): required checks, Linux/macOS/Windows coverage, and platform limitations. |
+| Source formatting, warning cleanup, or a commit | [Code quality](docs/development/code-quality.md): warning-free checks, exact-file formatting, and no routine import/export reordering. |
+| Any change in `packages/client`, UI copy, or a chatty client console | [Client development](docs/development/client.md): English-only i18n additions and `pnpm console:scan`. |
+| Client styles, a legacy stylesheet, or a React component emitting legacy global classes | [CSS architecture](topics/css-architecture.md): CSS Modules, containment, and the `css:touched` ownership check. Run `pnpm css:check` for style changes. |
+| UI appearance/interaction proposals or mockup authoring/export | [UI design](topics/ui-design.md), before choosing fixtures or rendering/export commands. Prose-only requests remain prose-only. |
+| UI tweaks or browser verification | [UI testing](topics/ui-testing.md): final desktop/phone captures by default, produced through the repository's artifact capture facility so the images are presented rather than only archived; browser fallback and explicit user-owned visual verification. |
+| UI rendering boundaries or shared views | [UI architecture](topics/ui-architecture.md). |
+| Rendering or rich-renderer changes | [Rendering performance](packages/client/RENDERING_PERFORMANCE.md). |
+| Benchmark/regression evidence or measurement-host selection | [Performance regression suite](topics/performance-regression-suite.md#performance-measurement-hosts), before treating measurements as regression evidence. |
+| Device streaming, `/api/devices`, `deviceBridge`, or `packages/device-bridge` | [Device control testing](docs/development/testing.md#device-control-testing): emulator testing is scoped to this feature. |
+| Chromebook testing or debugging | [ChromeOS debugging](docs/development/testing.md#chromeos-debugging): use the chromeos-testbed CLI. |
+| Codex provider schemas, scanner, normalization, app-server protocol, or target-version/API/protocol refreshes | [Provider development](docs/development/providers.md): inspect pinned upstream source; read-only audits may proceed, but enacting Codex compatibility edits requires user approval. |
+| Any provider refresh, transcript schema, or tool-result schema change | [Provider development](docs/development/providers.md) and the applicable [provider refresh](topics/provider-refresh.md) sections; preserve audited-through version markers and run schema validation. |
+| SQLite adapter changes, SQL callers, statement lifetimes, or test ceilings | [Runtime-portable SQLite](topics/optional-sqlite.md#runtime-portable-sqlite): use the shared runtime intersection, reuse prepared statements, and obtain maintainer consensus before widening the boundary. |
+| Dependencies, install scripts, lockfile updates, or audit findings | [Dependency maintenance](docs/development/dependencies.md): install-script allowlist and advisory justifications/revisit triggers. |
+| Creating/editing tactical plans or retiring completed plans/gaps | [Documentation and plans](docs/development/documentation.md): descriptive step names and durable-content migration before retirement. |
+| Creating a commit | [Commit conventions](docs/development/commits.md): motivation, wrapping, provenance, and series trailers. |
+| Local instances, ports, profiles, or provider/feature environment configuration | [Local development](docs/development/local-development.md). |
+| Server/client logs or maintenance diagnostics | [Debugging](docs/development/debugging.md). |
+| npm or website releases, or staging deployment | [Releasing](docs/development/releasing.md), then the applicable linked runbook. |
 
-```bash
-PORT=4000 pnpm dev  # Uses 4000, 4001, 4002
-```
+## Before Finishing
 
-## Data Directory
+After editing TypeScript or other source files, pass `pnpm lint`,
+`pnpm format:check`, `pnpm typecheck`, and `pnpm test`; also run
+`pnpm test:e2e` for UI changes. Site source changes require `pnpm site:build`.
+Fix errors before considering the task complete. Follow the
+[testing guide](docs/development/testing.md) for platform-specific requirements.
+Before committing, checks must be warning-free; follow
+[code quality](docs/development/code-quality.md) for isolated cleanup and
+recording debt that cannot safely be isolated. Preserve unrelated concurrent
+edits and format only the exact files changed by the task.
 
-Server state is stored in `~/.yep-anywhere/` by default:
+## Observable Behavior Contracts
 
-- `logs/` — Server logs
-- `indexes/` — Session index cache
-- `uploads/` — Uploaded files
-- `session-metadata.json` — Custom titles, archive/starred status
+Before an implementation is complete, verify that every intentional observable
+behavior it adds or changes is covered by a contract in the owning
+`topics/*.md`; update or create that contract when it is not. State externally
+testable outcomes and constraints, including deliberate failure or fallback
+behavior, rather than implementation narration. Tests and commit messages are
+evidence and history, not substitutes for the product contract.
 
-### Running Multiple Instances
+## Keeping This Guide Small
 
-Use profiles to run dev and production instances simultaneously:
-
-```bash
-# Production (default profile, port 3400)
-PORT=3400 pnpm start
-
-# Development (dev profile, port 4000)
-PORT=4000 YEP_PROFILE=dev pnpm dev
-```
-
-Environment variables:
-- `YEP_PROFILE` — Profile name suffix (creates `~/.yep-anywhere-{profile}/`)
-- `YEP_DATA_DIR` — Full path override for data directory
-
-## Server Logs
-
-Logs are written to `{dataDir}/logs/server.log`. View in real-time:
-
-```bash
-tail -f ~/.yep-anywhere/logs/server.log
-```
-
-Environment variables:
-- `LOG_LEVEL` — Minimum level: fatal, error, warn, info, debug, trace (default: info)
-- `LOG_TO_FILE` — Set to "true" to enable file logging (default: off)
-- `LOG_PRETTY` — Set to "false" to disable pretty console logs (default: on)
-
-## Maintenance Server
-
-A lightweight HTTP server runs on PORT + 1 for diagnostics when the main server is unresponsive:
-
-```bash
-curl http://localhost:3401/status          # Server status
-curl -X POST http://localhost:3401/reload  # Restart server
-```
+Keep common rules, short reminders of consequential constraints, and explicit
+reading triggers here. Put detailed commands, examples, exceptions, and
+maintenance records in their owning topic or development guide. Extend an
+existing owner before creating a new document; do not duplicate a procedure in
+both places. Keep mandatory current requirements distinct from proposals and
+historical evidence. When moving a section, preserve its requirements and
+update incoming links and section references.

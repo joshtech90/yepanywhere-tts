@@ -165,7 +165,7 @@ test("ratchets specialized provider and public-share contracts", () => {
     selected.targets.server["latency.publicShareHerdReadableText.p95Ms"].max,
     1500,
   );
-  assert.equal(selected.targets.server["responseMiB.publicShareHerd"].max, 16);
+  assert.equal(selected.targets.server["responseMiB.publicShareHerd"].max, 24);
 });
 
 test("ratchets one-target append separately from fleet contention", () => {

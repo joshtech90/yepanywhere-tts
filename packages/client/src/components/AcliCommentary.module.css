@@ -1,0 +1,65 @@
+.bullet {
+  position: relative;
+  display: block;
+  inline-size: 28px;
+  block-size: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  cursor: pointer;
+}
+
+.bullet::before {
+  content: "";
+  position: absolute;
+  inset: 11px;
+  border-radius: 50%;
+  background: var(--timeline-dot-default);
+}
+
+.bullet:hover::before,
+.bullet[aria-expanded="true"]::before {
+  background: var(--text-primary);
+  box-shadow: 0 0 0 3px var(--bg-hover);
+}
+
+.bullet:focus-visible {
+  outline: 2px solid var(--accent-color);
+  outline-offset: -2px;
+}
+
+.context {
+  position: fixed;
+  z-index: 2000;
+  box-sizing: border-box;
+  inline-size: min(480px, calc(100vw - 16px));
+  padding: 12px;
+  overflow: auto;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: 0 4px 20px rgb(0 0 0 / 25%);
+}
+
+.context pre {
+  margin: 0;
+  padding-inline-end: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--fixed-font-size-sm);
+}
+
+.close {
+  float: right;
+  inline-size: 28px;
+  block-size: 28px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 20px;
+}

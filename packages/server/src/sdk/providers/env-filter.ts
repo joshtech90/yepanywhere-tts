@@ -25,6 +25,9 @@ const EXCLUDED_PREFIXES = [
 
 /** Exact variable names to exclude */
 const EXCLUDED_VARS = new Set([
+  // A nested YA session must never adopt its caller's self-inspection grant.
+  "AGENT_YA_API_URL",
+  "AGENT_YA_API_TOKEN",
   // npm/pnpm specific
   "npm_execpath",
   "npm_node_execpath",

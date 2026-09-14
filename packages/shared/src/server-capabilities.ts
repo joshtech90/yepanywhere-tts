@@ -12,6 +12,41 @@ import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 export type ServerCapabilityKind = "permanent" | "transitional";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  computerControlReleases: {
+    name: "computer-control-releases",
+    index: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
+    introducedIn: "0.8.2",
+  },
+  computerControl: {
+    name: "optional-computer-control",
+    index: CAPABILITY_ID_ALLOCATIONS.computerControl.id,
+    introducedIn: "0.8.2",
+  },
+  experimentalConversation: {
+    name: "experimental-simple-client-conversation",
+    index: CAPABILITY_ID_ALLOCATIONS.experimentalConversation.id,
+    introducedIn: "0.8.2",
+  },
+  issueSessionAssociations: {
+    name: "issue-session-associations-v1",
+    index: CAPABILITY_ID_ALLOCATIONS.issueSessionAssociations.id,
+    introducedIn: "0.8.2",
+  },
+  speechVocabularySessionTerms: {
+    name: "speech-vocabulary-session-terms",
+    index: CAPABILITY_ID_ALLOCATIONS.speechVocabularySessionTerms.id,
+    introducedIn: "0.8.2",
+  },
+  speechVocabulary: {
+    name: "speech-vocabulary",
+    index: CAPABILITY_ID_ALLOCATIONS.speechVocabulary.id,
+    introducedIn: "0.8.2",
+  },
+  artifactViewer: {
+    name: "artifact-viewer",
+    index: CAPABILITY_ID_ALLOCATIONS.artifactViewer.id,
+    introducedIn: "0.8.2",
+  },
   voiceInput: {
     name: "voiceInput",
     index: CAPABILITY_ID_ALLOCATIONS.voiceInput.id,
@@ -154,6 +189,281 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  computerControlReleases: {
+    id: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
+    name: "computer-control-releases",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
+    },
+    description:
+      "Verified Machine Control release downloads and managed updates.",
+    clientFallback:
+      "Show server-update guidance; send no release-management requests.",
+    serverContract: {
+      routes: [
+        "POST /api/computer-control/releases/check",
+        "POST /api/computer-control/releases/update",
+        "PUT /api/computer-control/releases/enabled",
+        "PUT /api/computer-control/releases/automatic",
+      ],
+      routeModules: ["packages/server/src/routes/computer-control-releases.ts"],
+      responseFields: ["release"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Optional managed Windows component.",
+    },
+  },
+  computerControl: {
+    id: CAPABILITY_ID_ALLOCATIONS.computerControl.id,
+    name: "optional-computer-control",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.computerControl.id,
+    },
+    description:
+      "Operator-managed signed Windows preview and explicit local Codex session grants.",
+    clientFallback:
+      "Hide computer controls and send no computer-control requests or launch fields.",
+    serverContract: {
+      routes: [
+        "GET /api/computer-control",
+        "PUT /api/computer-control/settings",
+        "POST /api/computer-control/install",
+        "POST /api/computer-control/stop",
+        "DELETE /api/computer-control/installation",
+        "DELETE /api/computer-control/sessions/:sessionId",
+      ],
+      routeModules: ["packages/server/src/routes/computer-control.ts"],
+      requestFields: ["computerControl"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Experimental Windows-only optional component.",
+    },
+  },
+  experimentalConversation: {
+    id: CAPABILITY_ID_ALLOCATIONS.experimentalConversation.id,
+    name: "experimental-simple-client-conversation",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.experimentalConversation.id,
+    },
+    description:
+      "Experimental bounded Conversation reads and snapshot subscriptions with an exact schema revision.",
+    clientFallback:
+      "Show this source as update-required and offer its existing full client; send no experimental requests.",
+    serverContract: {
+      routes: [
+        "GET /api/experimental/conversation",
+        "GET /api/experimental/conversation/subscribe",
+      ],
+      requestFields: [
+        "apiRevision",
+        "subscriptionId",
+        "sessionId",
+        "maxMessages",
+        "anchorMessageId",
+        "query",
+      ],
+      responseFields: ["experimentalSimpleClientApiRevision"],
+      events: ["snapshot", "closed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "The allocation remains reserved when the experimental API is promoted or retired.",
+    },
+  },
+  issueSessionAssociations: {
+    id: CAPABILITY_ID_ALLOCATIONS.issueSessionAssociations.id,
+    name: "issue-session-associations-v1",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.issueSessionAssociations.id,
+    },
+    description:
+      "Opt-in automatic issue/PR discovery, scoped search, durable evidence and corrections with ready SQLite.",
+    clientFallback: "Hide issue controls and send no issue requests.",
+    serverContract: {
+      routes: [
+        "GET /api/issues",
+        "GET /api/issues/settings",
+        "PUT /api/issues/settings",
+        "GET /api/issues/credentials",
+        "PUT /api/issues/credentials",
+        "GET /api/issues/evidence",
+        "GET /api/issues/sessions",
+        "POST /api/issues/confirm",
+        "POST /api/issues/decision",
+        "POST /api/issues/resolve",
+        "PATCH /api/issues/item",
+        "DELETE /api/issues/item",
+      ],
+      routeModules: ["packages/server/src/routes/issues.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Experimental feature depends on optional SQLite availability.",
+    },
+  },
+  speechVocabularySessionTerms: {
+    id: CAPABILITY_ID_ALLOCATIONS.speechVocabularySessionTerms.id,
+    name: "speech-vocabulary-session-terms",
+    kind: "permanent",
+    area: "speech",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.speechVocabularySessionTerms.id,
+    },
+    description:
+      "Bias learned speech keyterms toward a supplied active-session term set when SQLite is ready.",
+    clientFallback:
+      "Omit context.sessionTerms and preserve existing speech recognition.",
+    serverContract: {
+      routes: ["POST /api/speech/transcribe", "GET /api/speech/ws"],
+      // Extends requests on shared speech routes; it does not own the module.
+      requestFields: ["context.sessionTerms"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Learned vocabulary depends on ready SQLite storage.",
+    },
+  },
+  speechVocabulary: {
+    id: CAPABILITY_ID_ALLOCATIONS.speechVocabulary.id,
+    name: "speech-vocabulary",
+    kind: "permanent",
+    area: "speech",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.speechVocabulary.id,
+    },
+    description:
+      "Persistent opt-in speech vocabulary learning and Grok biasing when SQLite is ready.",
+    clientFallback: "Hide vocabulary controls and make no vocabulary requests.",
+    serverContract: {
+      routes: [
+        "GET /api/speech/vocabulary",
+        "PUT /api/speech/vocabulary",
+        "POST /api/speech/vocabulary/scan",
+        "POST /api/speech/vocabulary/reset",
+      ],
+      routeModules: ["packages/server/src/routes/speech-vocabulary.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Vocabulary availability depends on server storage configuration and readiness.",
+    },
+  },
+  localSpeechModelSelection: {
+    id: CAPABILITY_ID_ALLOCATIONS.localSpeechModelSelection.id,
+    name: "local-speech-model-selection",
+    kind: "permanent",
+    area: "speech",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Per-request Whisper model selection and unified English Parakeet on NeMo.",
+    clientFallback:
+      "Hide Whisper and recent Parakeet choices; retain older Parakeet requests without modifying saved preferences.",
+    serverContract: {
+      requestFields: ["model"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers ignore Whisper model overrides and lack the recent NeMo runtime.",
+    },
+  },
+  acliCommentaryRendering: {
+    id: CAPABILITY_ID_ALLOCATIONS.acliCommentaryRendering.id,
+    name: "acli-commentary-rendering",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Bounded tool commentary rendering through the assistant Markdown path.",
+    clientFallback:
+      "Keep ordinary raw tool output and make no commentary rendering request.",
+    serverContract: {
+      routes: ["POST /api/projects/:projectId/tool-commentary/render"],
+      routeModules: ["packages/server/src/routes/tool-commentary.ts"],
+      requestFields: ["texts"],
+      responseFields: ["html"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers lack the commentary rendering endpoint.",
+    },
+  },
+  sessionAsyncQuestions: {
+    id: CAPABILITY_ID_ALLOCATIONS.sessionAsyncQuestions.id,
+    name: "session-async-questions",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Bounded recent async question previews on session collections and activity updates.",
+    clientFallback:
+      "Keep transcript question controls; omit cross-session counts and menus and make no new request.",
+    serverContract: {
+      responseFields: ["session.asyncQuestions", "inboxItem.asyncQuestions"],
+      events: ["session-updated"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Question discovery across sessions requires server-owned previews without loading every transcript in the browser.",
+    },
+  },
+  artifactViewer: {
+    id: CAPABILITY_ID_ALLOCATIONS.artifactViewer.id,
+    name: "artifact-viewer",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.artifactViewer.id,
+    },
+    description:
+      "An explicitly configured isolated listener serves authorized interactive HTML directories.",
+    clientFallback:
+      "Retain source and scriptless preview; make no artifact grant request. Configuration is separately gated by version.artifactViewer metadata.",
+    serverContract: {
+      routes: [
+        "POST /api/artifacts",
+        "DELETE /api/artifacts/:id",
+        "PUT /api/artifacts/config",
+      ],
+      routeModules: ["packages/server/src/routes/artifacts.ts"],
+      responseFields: ["version.artifactViewer"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Artifact listener availability depends on explicit operator configuration.",
+    },
+  },
   publicShareSessionChunks: {
     name: PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
     kind: "permanent",
@@ -333,6 +643,29 @@ export const SERVER_CAPABILITIES = {
         "YA is self-hosted with no forced upgrade, so the population of servers without the conditional read never converges and the client's enumeration fallback never becomes removable.",
     },
   },
+  retainedSessionCollections: {
+    id: CAPABILITY_ID_ALLOCATIONS.retainedSessionCollections.id,
+    name: "retained-session-collections",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Session collections serve durable compact rows while catalog and optional badges refresh independently.",
+    clientFallback:
+      "Omit summaryMode and use the existing complete-request collection paths.",
+    serverContract: {
+      routes: ["GET /api/sessions", "GET /api/inbox"],
+      requestFields: ["summaryMode"],
+      responseFields: ["catalog"],
+      events: ["session-catalog-updated"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Independently updated clients and servers retain the complete-list fallback.",
+    },
+  },
   projectDirectoryStoragePolicy: {
     id: CAPABILITY_ID_ALLOCATIONS.projectDirectoryStoragePolicy.id,
     name: "project-directory-storage-policy",
@@ -441,6 +774,28 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Hosted clients may outpace installed servers, and older servers do not expose the Codex plan-tool policy.",
+    },
+  },
+  codexCyberAccessProgramSetting: {
+    id: CAPABILITY_ID_ALLOCATIONS.codexCyberAccessProgramSetting.id,
+    name: "codex-cyber-access-program-setting",
+    kind: "permanent",
+    area: "providers",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server persists the Codex cyber access program requested on each app-server turn.",
+    clientFallback:
+      "Hide the Codex cyber access program control and make no unsupported settings write.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.codexCyberAccessProgram"],
+      responseFields: ["settings.codexCyberAccessProgram"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients may outpace installed servers, and older servers do not expose the Codex cyber access program policy.",
     },
   },
   codexStreamDurableIdAlignment: {
@@ -1844,6 +2199,28 @@ export const SERVER_CAPABILITIES = {
         "Project Queue availability remains a server feature boundary for older servers and hosted remote clients.",
     },
   },
+  projectQueueReadinessCheck: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectQueueReadinessCheck.id,
+    name: "project-queue-readiness-check",
+    kind: "permanent",
+    area: "projectQueue",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server persists an optional global executable that gates Project Queue readiness, with bounded polling and Force start bypass.",
+    clientFallback:
+      "Hide the readiness executable setting and omit its field from settings updates.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings"],
+      requestFields: ["settings.projectQueueReadinessCheck"],
+      responseFields: ["settings.projectQueueReadinessCheck"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers cannot persist or execute an external Project Queue readiness command.",
+    },
+  },
   projectQueueAttachmentEditing: {
     id: CAPABILITY_ID_ALLOCATIONS.projectQueueAttachmentEditing.id,
     name: "project-queue-attachment-editing",
@@ -2232,6 +2609,8 @@ export const CODEX_REASONING_SUMMARY_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.codexReasoningSummarySetting.name;
 export const CODEX_PLAN_TOOL_SETTING_CAPABILITY =
   SERVER_CAPABILITIES.codexPlanToolSetting.name;
+export const CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY =
+  SERVER_CAPABILITIES.codexCyberAccessProgramSetting.name;
 export const CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY =
   SERVER_CAPABILITIES.codexStreamDurableIdAlignment.name;
 export const CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY =
@@ -2242,7 +2621,15 @@ export const TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY =
   SERVER_CAPABILITIES.toolResultMediaPreservationPolicy.name;
 export const PROGRESSIVE_SESSION_CATALOG_CAPABILITY =
   SERVER_CAPABILITIES.progressiveSessionCatalog.name;
+export const RETAINED_SESSION_COLLECTIONS_CAPABILITY =
+  SERVER_CAPABILITIES.retainedSessionCollections.name;
+export const SESSION_ASYNC_QUESTIONS_CAPABILITY =
+  SERVER_CAPABILITIES.sessionAsyncQuestions.name;
+export const ACLI_COMMENTARY_RENDERING_CAPABILITY =
+  SERVER_CAPABILITIES.acliCommentaryRendering.name;
 export const PROJECT_QUEUE_CAPABILITY = SERVER_CAPABILITIES.projectQueue.name;
+export const PROJECT_QUEUE_READINESS_CHECK_CAPABILITY =
+  SERVER_CAPABILITIES.projectQueueReadinessCheck.name;
 export const PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY =
   SERVER_CAPABILITIES.projectQueueAttachmentEditing.name;
 

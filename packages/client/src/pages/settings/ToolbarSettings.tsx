@@ -36,6 +36,11 @@ import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import {
+  setQuestionReminderTurns,
+  useQuestionReminderTurns,
+} from "../../hooks/useQuestionReminderTurns";
+import { getQuestionReminderThresholds } from "../../lib/asyncQuestions";
+import {
   serverSupportsProjectQueue,
   serverSupportsProjectQueueNewSessionShortcutSetting,
 } from "../../lib/projectQueueVisibility";
@@ -227,6 +232,8 @@ function ControlPresenceSlider({
 export function ToolbarSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("appearanceSessionToolbarTitle"));
+  const questionReminderTurns = useQuestionReminderTurns();
+  const questionLimits = getQuestionReminderThresholds(questionReminderTurns);
   const {
     presence: toolbarPresence,
     setControlPresence,
@@ -266,6 +273,7 @@ export function ToolbarSettings() {
             busyComposerDefaultAction,
             collapsedComposerButton,
             conversationViewTurnLimit,
+            questionReminderTurns,
             waveformButtonBackgroundOpacityPercent,
           }
         : null,
@@ -273,6 +281,7 @@ export function ToolbarSettings() {
       busyComposerDefaultAction,
       collapsedComposerButton,
       conversationViewTurnLimit,
+      questionReminderTurns,
       settings,
       toolbarPresence,
       waveformButtonBackgroundOpacityPercent,
@@ -285,6 +294,7 @@ export function ToolbarSettings() {
         setControlPresence(key as SessionToolbarVisibilityKey, value);
       }
       setConversationViewTurnLimit(snapshot.conversationViewTurnLimit);
+      setQuestionReminderTurns(snapshot.questionReminderTurns);
       setWaveformButtonBackgroundOpacityPercent(
         snapshot.waveformButtonBackgroundOpacityPercent,
       );
@@ -654,6 +664,43 @@ export function ToolbarSettings() {
             unit={t("appearanceToolbarConversationViewTurnLimitUnit")}
             ariaLabel={t("appearanceToolbarConversationViewTurnLimitTitle")}
             onCommit={setConversationViewTurnLimit}
+          />
+        </SettingsItem>
+
+        <SettingsItem
+          id="question-reminders"
+          label={t("asyncQuestionReminderSetting")}
+          description={
+            questionReminderTurns === 0
+              ? t("asyncQuestionReminderHidden")
+              : t("asyncQuestionReminderDescription", { ...questionLimits })
+          }
+          keywords={[
+            "questions",
+            "async",
+            "count",
+            "fade",
+            "decay",
+            "typing",
+            "turns",
+            "hide",
+            "overflow",
+          ]}
+          className="settings-item--wide-control"
+        >
+          <CommittedRangeNumberInput
+            id="question-reminder-turns"
+            min={0}
+            max={12}
+            step={1}
+            value={questionReminderTurns}
+            unit={t(
+              questionReminderTurns === 0
+                ? "asyncQuestionHideReminder"
+                : "asyncQuestionReminderTurnsUnit",
+            )}
+            ariaLabel={t("asyncQuestionReminderSetting")}
+            onCommit={setQuestionReminderTurns}
           />
         </SettingsItem>
 

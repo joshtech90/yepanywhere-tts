@@ -39,6 +39,7 @@ import {
 } from "../../lib/speechProviders/methods";
 import { setBrowserXaiSttApiKey } from "../../lib/speechProviders/xaiCredentials";
 import { MessageInput } from "../MessageInput";
+import toolbarStyles from "../MessageInputToolbar.module.css";
 import { getSourceRuntimeRegistry } from "../../lib/sourceRuntime";
 import {
   MessageInputToolbarView,
@@ -2531,6 +2532,21 @@ describe("MessageInput", () => {
 
     fireEvent.keyDown(textarea, { key: "Escape" });
     expect(mockVoiceCancelProcessing).toHaveBeenCalledTimes(1);
+  });
+
+  it("supplies composed text before the speech insertion cursor", () => {
+    const textarea = renderMessageInput() as HTMLTextAreaElement;
+    fireEvent.change(textarea, {
+      target: { value: "Parakeet context replace me suffix" },
+    });
+    act(() => {
+      textarea.focus();
+      textarea.setSelectionRange(17, 27);
+      voicePropsState.current?.onListeningStart?.();
+    });
+    expect(voicePropsState.current?.getTranscriptionContext?.()).toMatchObject({
+      textBeforeCursor: "Parakeet context ",
+    });
   });
 
   it("does not insert a Listening label into the draft", async () => {
@@ -5389,6 +5405,57 @@ describe("MessageInput", () => {
     ).toBe(null);
   });
 
+  it("shows the Now steering toggle only when the provider has a now lane", () => {
+    const renderSteerToolbar = (showSteerNowMode: boolean) =>
+      render(
+        <MessageInputToolbarView
+          t={toolbarT}
+          visibility={toolbarVisibility}
+          attachmentControl={{ attachmentCount: 0 }}
+          shortcutsControl={{
+            open: false,
+            isearchScope: null,
+            setOpen:
+              vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setOpen"],
+            settingsOpen: false,
+            setSettingsOpen:
+              vi.fn() as unknown as MessageInputToolbarViewProps["shortcutsControl"]["setSettingsOpen"],
+            hasDualActions: true,
+            enterActionKind: "steer",
+            canSwapEnterAction: true,
+            queueShortcutLabel: "Queue while agent runs",
+          }}
+          actionsControl={{
+            send: {
+              onSteer: vi.fn(),
+              canSend: true,
+              primaryActionKind: "steer",
+              primaryActionLabel: "Steer",
+              tooltip: "Steer current turn",
+              icon: "↗",
+              showSteerNowMode,
+              steerNowEnabled: true,
+              onToggleSteerNow: vi.fn(),
+              queue: {
+                onQueue: vi.fn(),
+                hasDualActions: true,
+                queueTooltip: "Queue",
+              },
+            },
+          }}
+        />,
+      );
+
+    // Codex and other steering providers have no "now" lane, so the toggle
+    // would change nothing there and must stay hidden.
+    const withoutLane = renderSteerToolbar(false);
+    expect(screen.queryByRole("checkbox", { name: "Steer now" })).toBe(null);
+    withoutLane.unmount();
+
+    renderSteerToolbar(true);
+    expect(screen.getByRole("checkbox", { name: "Steer now" })).toBeDefined();
+  });
+
   it("renders the project queue toolbar action when visible", () => {
     const onProjectQueue = vi.fn();
     const onProjectQueueNewSession = vi.fn();
@@ -6175,32 +6242,8 @@ describe("MessageInput", () => {
     });
     vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
 
-    const currentTier = (
-      element: Element,
-    ): "none" | "early" | "medium" | "late" => {
-      const toolbar = element.closest(".message-input-toolbar");
-      if (!toolbar) return "none";
-      if (toolbar.classList.contains("overflow-tier-late")) return "late";
-      if (toolbar.classList.contains("overflow-tier-medium")) return "medium";
-      if (toolbar.classList.contains("overflow-tier-early")) return "early";
-      return "none";
-    };
-    const inlineHidden = (element: Element): boolean => {
-      if (!element.classList.contains("composer-bottom-overflow-inline")) {
-        return false;
-      }
-      const tier = currentTier(element);
-      return (
-        (element.classList.contains("composer-bottom-overflow-early") &&
-          tier !== "none") ||
-        (element.classList.contains("composer-bottom-overflow-medium") &&
-          (tier === "medium" || tier === "late")) ||
-        (element.classList.contains("composer-bottom-overflow-late") &&
-          tier === "late")
-      );
-    };
     vi.spyOn(window, "getComputedStyle").mockImplementation((element) => {
-      const hidden = inlineHidden(element);
+      const hidden = element.classList.contains(toolbarStyles.overflowHidden!);
       return {
         display: hidden ? "none" : "block",
         position: "static",

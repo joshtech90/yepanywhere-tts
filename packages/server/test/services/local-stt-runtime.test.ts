@@ -63,6 +63,39 @@ describe("local STT runtime validation", () => {
     ]);
   });
 
+  it("bootstraps NeMo in its isolated environment", async () => {
+    execFileMock
+      .mockImplementationOnce(completeExecFile(new Error("missing package")))
+      .mockImplementationOnce(completeExecFile(null))
+      .mockImplementationOnce(completeExecFile(null));
+    const { LocalNemoBackend } = await import(
+      "../../src/services/voice/localNemoBackend.js"
+    );
+
+    expect(await new LocalNemoBackend().validate()).toEqual({ ok: true });
+    expect(execFileMock.mock.calls.map((call) => call[1])).toEqual([
+      [
+        "run",
+        "--frozen",
+        "-e",
+        "stt-nemo",
+        "python",
+        "-c",
+        "from nemo.collections.asr.models import ASRModel",
+      ],
+      ["run", "-e", "stt-nemo", "nemo-bootstrap"],
+      [
+        "run",
+        "--frozen",
+        "-e",
+        "stt-nemo",
+        "python",
+        "-c",
+        "from nemo.collections.asr.models import ASRModel",
+      ],
+    ]);
+  });
+
   it("runs the matching pixi bootstrap when the first import check fails", async () => {
     execFileMock
       .mockImplementationOnce(completeExecFile(new Error("missing package")))

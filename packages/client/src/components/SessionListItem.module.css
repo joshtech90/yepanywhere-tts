@@ -2,6 +2,59 @@
   column-gap: var(--space-2);
 }
 
+/* The hover menu may cover title text, never adjacent row actions. */
+.body {
+  position: relative;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-self: stretch;
+}
+
+/*
+ * A compact row's project name and status letter close the row beside the
+ * overlay rather than beneath it. They repeat the title link's destination, so
+ * they stay a click target for the same session while keeping their own
+ * keyboard focus out of the tab order.
+ */
+.compactTrailing {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--sidebar-row-min-height, 34px);
+  padding-block: var(--sidebar-row-padding-block, var(--space-1));
+  padding-inline: 0 0.75ch;
+  color: var(--text-primary);
+  text-decoration: none;
+}
+
+/*
+ * With the row split into a title link and its trailing furniture, the wash
+ * for hover and the current row belongs to the row itself; two separately
+ * washed chips with a gap between them read as two controls.
+ */
+.compactRow:hover,
+.compactRow:global(.current) {
+  background: var(--bg-hover);
+  border-radius: var(--radius-sm);
+}
+.compactRow:global(.session-list-item--compact):hover
+  :global(.session-list-item__link),
+.compactRow:global(.session-list-item--compact):global(.current)
+  :global(.session-list-item__link) {
+  background: transparent;
+}
+
+.questions {
+  flex: 0 0 auto;
+  align-self: center;
+  margin-inline-end: 4px;
+}
+.questions:empty {
+  display: none;
+}
+
 .providerChildrenBadge {
   display: inline-flex;
   align-items: center;
@@ -37,6 +90,12 @@
 
 .compactWithProviderChildren .compactLink {
   min-width: 0;
+}
+
+/* This row drops the flex gap so its outline wraps flush; restore the space
+ * the trailing furniture would otherwise lose against the title. */
+.compactWithProviderChildren .compactTrailing {
+  padding-inline-start: var(--space-2);
 }
 
 /*

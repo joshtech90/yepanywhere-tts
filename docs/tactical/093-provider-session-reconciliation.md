@@ -7,14 +7,14 @@
 Status: Implementation in progress. Shared source-versioned work ownership,
 Codex child projection, install-scoped successful-use eligibility, gated
 post-listener file watching, the durable catalog coordinator, and the Pi/Grok/
-OpenCode catalog adapters are implemented and measured. Claude, Codex, and
-Gemini adapters are ruled out for list amplification (step 2 records why, and
-corrects a wrong premise about their storage layouts), and command recognition
-is extracted into `services/providerProcessClassifier.ts`. Retained collection
-routes, interest leases, native session id recognition, and exact process
-reconciliation remain pending; nothing wires the coordinator into a route yet,
-which is what the compatibility checkpoint below gates. The provider/storage
-and process-discovery contracts are accepted in the linked topics.
+OpenCode catalog adapters are implemented and measured. Global Sessions and
+Inbox now use the durable catalog under `retained-session-collections`, with
+Claude/Codex/Gemini projection adapters justified by cold retained rows rather
+than repeated native enumeration. Command recognition is extracted into
+`services/providerProcessClassifier.ts`. Interest leases, conditional catalog
+deltas, focused-watch location lookup, native session id recognition, and exact
+process reconciliation remain pending. The current collection execution and
+compatibility contracts live in the linked topics.
 
 Related contracts:
 
@@ -28,6 +28,19 @@ Related contracts:
 - [`089-main-thread-startup-cpu-investigation.md`](089-main-thread-startup-cpu-investigation.md)
 
 ## Implementation progress
+
+- **2026-09-08 — retained collection publication.** Contributing-model:
+  6-Astra. `48efdc238` wires both collection routes to one durable generation
+  and one finite background refresh. Base rows publish before optional Codex
+  question previews; archived previews are skipped. Twenty mixed route requests
+  read saved rows while provider discovery is blocked. A modification among two
+  native sessions causes one head read, no project discovery, and no file-list
+  call. Clients negotiate the new capability before their initial request,
+  preserve rows through an incomplete rebuild, and retain the complete-request
+  fallback. Full-prompt search and the legacy stats endpoint keep their existing
+  paths; capable ordinary lists obtain compact stats from their row response.
+  The live restart timing check remains open in
+  `gaps/sidebar-slow-after-server-restart.md`.
 
 - **2026-08-05 — Pi, Grok, and OpenCode catalog adapters.** The three families
   whose readers rescan a provider-global store for every project now have
@@ -134,6 +147,12 @@ stop sequential unchanged reads; TTL freshness can publish obsolete work and
 retain source generations after the source has moved.
 
 ## Current fault and measured cost
+
+These measurements describe the pre-integration complete-request path. Retained
+mode now separates native reconciliation from response projection; legacy
+clients and full-prompt search still use complete requests. The broader scope
+below, including unused-provider discovery and range-cache retirement, remains
+unfinished.
 
 Collection routes build a provider candidate list per project.
 `mayHaveGrokSessions()`, `mayHavePiSessions()`, and
@@ -378,9 +397,12 @@ and that is only true of one:
 
 None of the three repeats a whole-store walk per project the way pi and Grok
 did, so the 134x-shaped win is not available. An adapter for them may still be
-justified later by what the *durable* catalog needs — cheap cold rows after
-restart, which is a different argument from list amplification and should be
-made on its own evidence, not inherited from this step.
+justified by what the *durable* catalog needs — cheap cold rows after restart.
+That separate rationale now supports the Claude/Codex/Gemini projection
+adapters: they reuse existing discovery and reader mechanisms, retain compact
+facts, and defer optional badge reads. The September 8 route and native-file
+checks above establish this work separation without claiming the earlier
+134x-shaped enumeration gain for these families.
 
 **The process classifier is extracted.** `classifyProviderProcess` and its
 three helpers now live in `services/providerProcessClassifier.ts`, so step 8's
@@ -411,6 +433,10 @@ event-loop delay, directories/files visited, and first useful catalog delta.
 
 ### 5 — serve Inbox from retained state
 
+Implemented for capable clients. The complete-request compatibility path stays
+available; catalog update events trigger a fresh compact response. Catalog delta
+transport remains in step 7.
+
 Replace the route's project-wide `Promise.all` with a snapshot read and
 version. Publish in-place deltas as provider/project shards complete; preserve
 tier ordering, notification/unread semantics, archived filtering, and the
@@ -418,6 +444,11 @@ tier ordering, notification/unread semantics, archived filtering, and the
 completion.
 
 ### 6 — serve global lists and stats from one retained generation
+
+Implemented for capable ordinary global/project-filtered list requests and
+their returned stats. Full-prompt search, the legacy stats endpoint, project
+route consumers, and incremental overlay materialization remain on existing
+paths; this does not claim those broader migrations are complete.
 
 Replace per-request project/provider loops in unfiltered, starred, filtered,
 and stats routes with indexed projections over the catalog generation. Apply
@@ -459,6 +490,14 @@ many simultaneous interest leases, and an unused provider whose native
 directory exists but must never be touched.
 
 ## Compatibility review checkpoint
+
+The collection portion was approved on 2026-09-08 and implemented with the new
+permanent `retained-session-collections` capability (ID 63), not by expanding
+`progressive-session-catalog`. The reviewed corpus is v0.6.1, v0.6.2, v0.7.0,
+v0.8.0, and v0.8.1. The approved fields/event and exact fallback are recorded in
+`topics/server-capabilities.md` under Retained collection gate. Further interest
+leases and conditional catalog deltas still require their own concrete review;
+the proposal below is historical direction, not approval to extend a gate.
 
 Changing Inbox/global lists from request-complete enumeration to a progressive
 retained snapshot is an observable client/server semantic. Before editing that

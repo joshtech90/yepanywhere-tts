@@ -239,6 +239,79 @@ describe("MessageDeliverySettings", () => {
     ).toBe(null);
   });
 
+  it("hides the readiness setting on older Project Queue servers", () => {
+    render(<MessageDeliverySettings />);
+    expect(
+      screen.queryByLabelText("projectQueueReadinessSettingTitle"),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "projectQueueReadinessSave" }),
+    ).toBeNull();
+  });
+
+  it("includes the saved readiness command in header Undo on capable servers", async () => {
+    versionState.version = {
+      capabilities: [PROJECT_QUEUE_CAPABILITY, "project-queue-readiness-check"],
+    };
+    const holder: { registration: SettingsUndoRegistration | null } = {
+      registration: null,
+    };
+    const pane = () => (
+      <SettingsUndoProvider
+        value={(next) => {
+          holder.registration = next;
+        }}
+      >
+        <MessageDeliverySettings />
+      </SettingsUndoProvider>
+    );
+    const view = render(pane());
+    expect(holder.registration).toBeNull();
+    hookState.settings = {
+      ...baseSettings,
+      projectQueueReadinessCheck: {
+        executable: "/tools/agentctl",
+        args: ["others", "--text"],
+      },
+    };
+    view.rerender(pane());
+    await waitFor(() => expect(holder.registration?.canUndo).toBe(true));
+    await act(async () => {
+      await holder.registration?.undo();
+    });
+    expect(mockUpdateSettings).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        projectQueueReadinessCheck: null,
+      }),
+    );
+  });
+
+  it("saves the external readiness executable explicitly on capable servers", async () => {
+    versionState.version = {
+      capabilities: [PROJECT_QUEUE_CAPABILITY, "project-queue-readiness-check"],
+    };
+    render(<MessageDeliverySettings />);
+    fireEvent.click(screen.getByLabelText("projectQueueReadinessSettingTitle"));
+    fireEvent.change(screen.getByLabelText("projectQueueReadinessExecutable"), {
+      target: { value: "/tools/agentctl" },
+    });
+    fireEvent.change(screen.getByLabelText("projectQueueReadinessArguments"), {
+      target: { value: "others\n--text" },
+    });
+    expect(mockUpdateSettings).not.toHaveBeenCalled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "projectQueueReadinessSave" }),
+    );
+    await waitFor(() =>
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        projectQueueReadinessCheck: {
+          executable: "/tools/agentctl",
+          args: ["others", "--text"],
+        },
+      }),
+    );
+  });
+
   it("registers a header undo that reverts to the open-time snapshot", async () => {
     const holder: { registration: SettingsUndoRegistration | null } = {
       registration: null,

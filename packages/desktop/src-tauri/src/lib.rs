@@ -1,3 +1,4 @@
+mod channels;
 mod config;
 mod runtime_metadata;
 mod server;
@@ -111,9 +112,17 @@ pub fn run() {
             windows::open_server_output_window,
             windows::open_diagnostics_window,
             windows::open_updater_window,
+            channels::get_update_channel,
+            channels::set_update_channel,
+            channels::clear_update,
+            channels::check_update,
+            channels::install_update,
             quit_app,
         ])
         .setup(|app| {
+            app.manage(std::sync::Mutex::new(channels::Updates::new(
+                channels::read_track(&config::data_dir()),
+            )));
             // The packaged main window hosts updater and recovery UI. It is
             // never an ordinary startup surface, even if an older build saved
             // it as visible through the window-state plugin.

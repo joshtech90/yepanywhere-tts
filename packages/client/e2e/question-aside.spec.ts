@@ -5,7 +5,7 @@ import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
-import { createServer } from "vite";
+import { createTestViteServer as createServer } from "./support/vite-server";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
 test.use({ serviceWorkers: "block" });
@@ -23,12 +23,17 @@ test("question cards use existing forks, keep main typing, and save on empty", a
   const childId = "question-aside-child";
   const childPath = `/api/projects/${projectId}/sessions/${childId}`;
   let questionPrompt = "";
+  let followupPrompt = "";
+  let childResumes = 0;
+  let childParentId: string | undefined;
   let native = true;
   let busy = true;
   let forks = 0;
   let nativeSaves = 0;
   let ordinarySaves = 0;
   let archived = false;
+  let failStartup = false;
+  const steers: Record<string, unknown>[] = [];
   let publishState: (() => void) | undefined;
   const deferredMessages = [
     {
@@ -64,6 +69,8 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       const pathname = new URL(route.request().url()).pathname;
       if (pathname.endsWith("/clone")) {
         forks += 1;
+        followupPrompt = "";
+        childParentId = undefined;
         return route.fulfill({
           json: {
             sessionId: childId,
@@ -124,7 +131,18 @@ test("question cards use existing forks, keep main typing, and save on empty", a
     (url) => url.pathname.startsWith(childPath),
     async (route) => {
       if (route.request().method() === "POST") {
-        questionPrompt = route.request().postDataJSON().message;
+        childResumes += 1;
+        const prompt = route.request().postDataJSON().message as string;
+        if (prompt.startsWith("[YA question aside ")) questionPrompt = prompt;
+        else followupPrompt = prompt;
+        if (failStartup)
+          return route.fulfill({
+            status: 503,
+            json: {
+              error:
+                "Provider session startup did not settle: Provider session completed before reporting a session id",
+            },
+          });
         return route.fulfill({
           json: {
             processId: "aside-child-process",
@@ -140,8 +158,11 @@ test("question cards use existing forks, keep main typing, and save on empty", a
             id: childId,
             projectId,
             provider: "codex",
-            title: "Quick answer",
-            isArchived: true,
+            title: childParentId
+              ? "/btw Why is this still running?"
+              : "Quick answer",
+            isArchived: archived,
+            parentSessionId: childParentId,
           },
           ownership: { owner: "none" },
           messages: [
@@ -158,13 +179,32 @@ test("question cards use existing forks, keep main typing, and save on empty", a
               content:
                 "The main agent is still running its checks. Saving this answer keeps that context available.",
             },
+            ...(followupPrompt
+              ? [
+                  { id: "followup", type: "user", content: followupPrompt },
+                  {
+                    id: "followup-answer",
+                    type: "assistant",
+                    content:
+                      "The same side session can answer another question.",
+                  },
+                ]
+              : []),
           ],
         },
       });
     },
   );
+  await page.route(`**/api/sessions/${sessionId}/messages`, async (route) => {
+    steers.push(route.request().postDataJSON());
+    await route.fulfill({
+      json: { queued: true, serverTimestamp: Date.now() },
+    });
+  });
   await page.route(`**/api/sessions/${childId}/metadata`, async (route) => {
-    archived = route.request().postDataJSON().archived === true;
+    const body = route.request().postDataJSON();
+    archived = body.archived === true;
+    childParentId = body.parentSessionId;
     await route.fulfill({ json: { updated: true } });
   });
   await page.route(`**/api/sessions/${childId}/process`, async (route) => {
@@ -244,6 +284,12 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       );
       const composer = page.locator("[data-composer-input]");
       await expect(composer).toBeVisible({ timeout: 30000 });
+      await expect(
+        page.getByText(
+          "Latest live activity: checking the remaining changes.",
+          { exact: true },
+        ),
+      ).toBeVisible({ timeout: 30000 });
       await composer.fill("Why is this still running?");
       const hint = page.getByText(
         `${native ? "Enter" : "Send"}: quick answer · Space: keep typing`,
@@ -256,6 +302,13 @@ test("question cards use existing forks, keep main typing, and save on empty", a
       await composer.fill("Why is this still running? ");
       await expect(hint).toHaveCount(0);
       await composer.fill("Why is this still running?");
+      // Establish the contract's already-following reader before resizing the
+      // transcript with a question card.
+      await page.locator("main.session-messages").hover();
+      await page.mouse.wheel(0, 10000);
+      await expect(
+        page.getByText("Then summarize the results.", { exact: true }),
+      ).toBeInViewport();
       if (native) await composer.press("Enter");
       else
         await page
@@ -276,6 +329,7 @@ test("question cards use existing forks, keep main typing, and save on empty", a
         exact: true,
       });
       await expect(queue).toBeVisible();
+      await expect(queue).toBeInViewport();
       const queueBox = await queue.boundingBox();
       const cardBox = await card.boundingBox();
       const composerBox = await composer.boundingBox();
@@ -310,8 +364,92 @@ test("question cards use existing forks, keep main typing, and save on empty", a
           .getByRole("button", { name: "Save Q+A", exact: true })
           .click();
       await expect(card).toHaveCount(0);
+      failStartup = true;
+      const question = "  Why did the question fail?";
+      await composer.fill(question);
+      if (native) await composer.press("Enter");
+      else
+        await page
+          .locator(".message-input-wrapper")
+          .getByRole("button", { name: "Quick answer", exact: true })
+          .click();
+      await expect(card.getByRole("alert")).toContainText(
+        "Provider session startup did not settle",
+      );
+      await expect(card.getByRole("button", { name: "Save Q+A" })).toHaveCount(
+        0,
+      );
+      const steer = card.getByRole("button", { name: "Steer", exact: true });
+      await expect(steer).toBeEnabled();
+      await composer.fill("Keep my separate main draft");
+      if (captureDir)
+        await page.screenshot({
+          path: join(captureDir, `${viewport.name}-failed.png`),
+        });
+      await steer.click();
+      await expect(card).toHaveCount(0);
+      await expect(composer).toHaveValue("Keep my separate main draft");
+      expect(steers.at(-1)?.message).toBe(question);
+      expect(steers.at(-1)?.attachments).toBeUndefined();
+      expect(steers.at(-1)?.deferred).toBeUndefined();
+      await composer.fill("");
+      failStartup = false;
+      await composer.fill("Why is this still running?");
+      if (native) await composer.press("Enter");
+      else
+        await page
+          .locator(".message-input-wrapper")
+          .getByRole("button", { name: "Quick answer", exact: true })
+          .click();
+      await expect(
+        card.getByRole("button", { name: "Continue /btw" }),
+      ).toBeEnabled({ timeout: 15000 });
+      const forksBeforeMove = forks;
+      const resumesBeforeMove = childResumes;
+      await card.getByRole("button", { name: "Continue /btw" }).click();
+      await expect(card).toHaveCount(0);
+      await expect(page).toHaveURL(new RegExp(`btw=${childId}`));
+      await expect(
+        page
+          .getByText(
+            "The main agent is still running its checks. Saving this answer keeps that context available.",
+            { exact: true },
+          )
+          .last(),
+      ).toBeVisible();
+      expect(archived).toBe(false);
+      expect(childParentId).toBe(sessionId);
+      expect(forks).toBe(forksBeforeMove);
+      expect(childResumes).toBe(resumesBeforeMove);
+      await composer.fill("Can I ask another question?");
+      if (native) await composer.press("Enter");
+      else
+        await page
+          .locator(".message-input-wrapper")
+          .getByRole("button", { name: "Send", exact: true })
+          .click();
+      await expect
+        .poll(() => followupPrompt)
+        .toContain("[Side request]\nCan I ask another question?");
+      await expect(
+        page
+          .getByText("The same side session can answer another question.", {
+            exact: true,
+          })
+          .last(),
+      ).toBeVisible({ timeout: 15000 });
+      expect(forks).toBe(forksBeforeMove);
+      expect(childResumes).toBe(resumesBeforeMove + 1);
+      expect(followupPrompt).toContain(
+        "one-question-only limit no longer applies",
+      );
+      if (captureDir)
+        await page.screenshot({
+          path: join(captureDir, `${viewport.name}-continued.png`),
+        });
     }
-    expect(forks).toBe(2);
+    expect(forks).toBe(6);
+    expect(steers).toHaveLength(2);
     expect(nativeSaves).toBe(1);
     expect(ordinarySaves).toBe(1);
     busy = false;
@@ -320,6 +458,24 @@ test("question cards use existing forks, keep main typing, and save on empty", a
     await expect(
       page.getByText("Send: quick answer · Space: keep typing"),
     ).toHaveCount(0);
+    for (const viewport of [
+      { name: "desktop", width: 1000, height: 600 },
+      { name: "phone", width: 375, height: 812 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.goto(
+        `http://127.0.0.1:${address.port}/settings/message-delivery`,
+      );
+      const warning = page.getByText(
+        /100% of measured Codex quick-answer forks/,
+      );
+      await expect(warning).toBeVisible();
+      await warning.scrollIntoViewIfNeeded();
+      if (captureDir)
+        await page.screenshot({
+          path: join(captureDir, `${viewport.name}-setting.png`),
+        });
+    }
   } finally {
     await page.close();
     await server.close();

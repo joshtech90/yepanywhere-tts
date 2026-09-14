@@ -22,7 +22,7 @@
  */
 
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import {
   PI_SESSIONS_DIR,
@@ -48,6 +48,8 @@ import type {
   LoadedSession,
 } from "./types.js";
 import { extractLastAgentExcerpt } from "./agent-excerpt.js";
+import { getForkedSessionFile } from "./fork-discovery.js";
+import { readFirstLine } from "../utils/jsonl.js";
 
 export interface PiSessionReaderOptions {
   /** Override for testing (defaults to ~/.pi/agent/sessions) */
@@ -211,11 +213,47 @@ export class PiSessionReader implements ISessionReader {
     return Array.from(this.sessionCache.values());
   }
 
-  private findSessionInfo(
-    sessions: PiSessionInfo[],
+  private async findSessionInfo(
     sessionId: string,
-  ): PiSessionInfo | undefined {
-    return sessions.find((s) => s.id === sessionId);
+  ): Promise<PiSessionInfo | undefined> {
+    const forkPath = await getForkedSessionFile(
+      "pi",
+      sessionId,
+      this.sessionsDir,
+    );
+    if (
+      forkPath &&
+      this.sessionIdFromFilename(basename(forkPath)) === sessionId
+    ) {
+      try {
+        const line = await readFirstLine(forkPath, 1024 * 1024);
+        const header = line ? (JSON.parse(line) as PiRawNode | null) : null;
+        if (
+          header?.type === "session" &&
+          header.id === sessionId &&
+          typeof header.cwd === "string" &&
+          (!this.projectIdentityKey ||
+            getProjectIdentityKey(header.cwd) === this.projectIdentityKey)
+        ) {
+          const stats = await stat(forkPath);
+          if (stats.isFile()) {
+            const info = {
+              id: sessionId,
+              filePath: forkPath,
+              cwd: header.cwd,
+              mtime: stats.mtimeMs,
+              size: stats.size,
+            };
+            this.sessionCache.set(sessionId, info);
+            return info;
+          }
+        }
+        return undefined;
+      } catch {
+        // The provider may have removed or moved the file; use discovery.
+      }
+    }
+    return (await this.scanSessions()).find((s) => s.id === sessionId);
   }
 
   /** Parse a session file into its active-leaf→root message path. Cached by mtime. */
@@ -469,8 +507,7 @@ export class PiSessionReader implements ISessionReader {
     sessionId: string,
     projectId: UrlProjectId,
   ): Promise<SessionSummary | null> {
-    const sessions = await this.scanSessions();
-    const info = this.findSessionInfo(sessions, sessionId);
+    const info = await this.findSessionInfo(sessionId);
     if (!info) return null;
     const parsed = await this.parseSession(info);
     if (!parsed) return null;
@@ -483,8 +520,7 @@ export class PiSessionReader implements ISessionReader {
     cachedMtime: number,
     _cachedSize: number,
   ): Promise<{ summary: SessionSummary; mtime: number; size: number } | null> {
-    const sessions = await this.scanSessions();
-    const info = this.findSessionInfo(sessions, sessionId);
+    const info = await this.findSessionInfo(sessionId);
     if (!info) return null;
     if (info.mtime <= cachedMtime) return null;
     const parsed = await this.parseSession(info);
@@ -502,8 +538,7 @@ export class PiSessionReader implements ISessionReader {
     afterMessageId?: string,
     _options?: GetSessionOptions,
   ): Promise<LoadedSession | null> {
-    const sessions = await this.scanSessions();
-    const info = this.findSessionInfo(sessions, sessionId);
+    const info = await this.findSessionInfo(sessionId);
     if (!info) return null;
     const parsed = await this.parseSession(info);
     if (!parsed) return null;
@@ -545,13 +580,11 @@ export class PiSessionReader implements ISessionReader {
   }
 
   async getSessionFilePath(sessionId: string): Promise<string | null> {
-    const sessions = await this.scanSessions();
-    return this.findSessionInfo(sessions, sessionId)?.filePath ?? null;
+    return (await this.findSessionInfo(sessionId))?.filePath ?? null;
   }
 
   async getLastAgentExcerpt(sessionId: string): Promise<string | undefined> {
-    const sessions = await this.scanSessions();
-    const info = this.findSessionInfo(sessions, sessionId);
+    const info = await this.findSessionInfo(sessionId);
     if (!info) return undefined;
     const parsed = await this.parseSession(info);
     return parsed
@@ -568,8 +601,7 @@ export class PiSessionReader implements ISessionReader {
   }
 
   async getSessionProjectPath(sessionId: string): Promise<string | null> {
-    const sessions = await this.scanSessions();
-    const info = this.findSessionInfo(sessions, sessionId);
+    const info = await this.findSessionInfo(sessionId);
     return info ? canonicalizeProjectPath(info.cwd) : null;
   }
 

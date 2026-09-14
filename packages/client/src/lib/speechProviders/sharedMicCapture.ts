@@ -1,4 +1,5 @@
 import { UI_KEYS } from "../storageKeys";
+import { setSpeechCaptureActivity } from "../speechCaptureActivity";
 
 export const SPEECH_CAPTURE_SAMPLE_RATE = 16_000;
 export const SHARED_SPEECH_MIC_LEASE_STORAGE_KEY =
@@ -431,6 +432,19 @@ export function stopSpeechStreamTracks(stream: MediaStream): void {
   stream.getTracks().forEach((track) => {
     track.stop();
   });
+  setSpeechCaptureActivity(stream, null);
+}
+
+function muteWhileMicOpen(stream: MediaStream): void {
+  setSpeechCaptureActivity(stream, "capturing");
+  for (const track of stream.getTracks()) {
+    // These tracks are newly acquired and privately owned by YA.
+    track.onended = () => {
+      if (!hasLiveSpeechTracks(stream)) {
+        setSpeechCaptureActivity(stream, null);
+      }
+    };
+  }
 }
 
 export function startSpeechWaveformMonitor(
@@ -534,7 +548,10 @@ export function getSpeechMicStream({
   const key = deviceKey(micDeviceId, reducePlayback);
   const constraints = speechMicConstraints(micDeviceId, reducePlayback);
   if (!keepWarm) {
-    return navigator.mediaDevices.getUserMedia(constraints);
+    return navigator.mediaDevices.getUserMedia(constraints).then((stream) => {
+      if (reducePlayback) muteWhileMicOpen(stream);
+      return stream;
+    });
   }
   installSharedMicLifecycle();
   if (retainWhenIdle) sharedWarmRequested = true;
@@ -578,6 +595,7 @@ export function getSpeechMicStream({
         (sharedActiveCaptureLeases > 0 ||
           (isDocumentVisible() && idleLeaseHeld))
       ) {
+        if (reducePlayback) muteWhileMicOpen(stream);
         managedSharedStreams.add(stream);
         sharedWarmStream = stream;
         activeLease?.bind(stream);

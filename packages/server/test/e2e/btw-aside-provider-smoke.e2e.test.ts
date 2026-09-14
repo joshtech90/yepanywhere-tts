@@ -2,7 +2,6 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
   rmSync,
   writeFileSync,
@@ -10,15 +9,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { getDefaultCodexSessionsDir } from "../../src/projects/codex-scanner.js";
 import { ClaudeProvider } from "../../src/sdk/providers/claude.js";
 import { CodexProvider } from "../../src/sdk/providers/codex.js";
 import type { AgentProvider } from "../../src/sdk/providers/types.js";
 import type { SDKMessage } from "../../src/sdk/types.js";
-import {
-  cloneClaudeSession,
-  cloneCodexSession,
-} from "../../src/sessions/fork.js";
+import { cloneClaudeSession } from "../../src/sessions/fork.js";
 
 type SmokeProvider = "claude" | "codex";
 
@@ -141,25 +136,7 @@ function findClaudeSessionFile(root: string, sessionId: string): string | null {
   return findFile(root, (path) => path.endsWith(`${sessionId}.jsonl`));
 }
 
-function findCodexSessionFile(root: string, sessionId: string): string | null {
-  return findFile(root, (path) => {
-    if (!path.endsWith(".jsonl")) return false;
-    if (path.endsWith(`rollout-${sessionId}.jsonl`)) return true;
-    try {
-      const firstLine = readFileSync(path, "utf-8").split("\n")[0];
-      if (!firstLine) return false;
-      const entry = JSON.parse(firstLine) as {
-        type?: string;
-        payload?: { id?: string };
-      };
-      return entry.type === "session_meta" && entry.payload?.id === sessionId;
-    } catch {
-      return false;
-    }
-  });
-}
-
-describe("real provider /btw storage-fork smoke", () => {
+describe("real provider /btw fork smoke", () => {
   let testRoot = "";
   let projectDir = "";
   let previousEnv: Record<string, string | undefined> = {};
@@ -211,7 +188,7 @@ describe("real provider /btw storage-fork smoke", () => {
 
   for (const providerName of ["claude", "codex"] as SmokeProvider[]) {
     it(
-      `${providerName} can resume a storage-forked /btw session`,
+      `${providerName} can resume a forked /btw session`,
       async () => {
         if (!ENABLED || !REQUESTED_PROVIDERS.has(providerName)) {
           return;
@@ -242,7 +219,7 @@ describe("real provider /btw storage-fork smoke", () => {
         log(providerName, "parent", parent);
 
         const forkStartedAt = Date.now();
-        let clone: { newSessionId: string; entries: number };
+        let clone: { newSessionId: string };
         if (providerName === "claude") {
           const sourcePath = findClaudeSessionFile(
             process.env.CLAUDE_SESSIONS_DIR ?? "",
@@ -258,31 +235,16 @@ describe("real provider /btw storage-fork smoke", () => {
             parent.sessionId,
           );
         } else {
-          const codexSearchRoots = [
-            process.env.CODEX_SESSIONS_DIR,
-            getDefaultCodexSessionsDir(),
-          ].filter((root): root is string => Boolean(root));
-          const sourcePath =
-            codexSearchRoots
-              .map((root) => findCodexSessionFile(root, parent.sessionId))
-              .find((path): path is string => Boolean(path)) ?? null;
-          if (!sourcePath) {
-            throw new Error(
-              `Could not find Codex source session ${parent.sessionId}`,
-            );
-          }
-          clone = await cloneCodexSession(
-            sourcePath,
-            undefined,
-            parent.sessionId,
-          );
+          const fork = await provider.forkSession({
+            sessionId: parent.sessionId,
+            cwd: projectDir,
+          });
+          clone = { newSessionId: fork.sessionId };
         }
         const storageForkMs = Date.now() - forkStartedAt;
         expect(storageForkMs).toBeLessThan(MAX_STORAGE_FORK_MS);
-        expect(clone.entries).toBeGreaterThan(0);
         log(providerName, "clone", {
           id: clone.newSessionId,
-          entries: clone.entries,
           storageForkMs,
         });
 

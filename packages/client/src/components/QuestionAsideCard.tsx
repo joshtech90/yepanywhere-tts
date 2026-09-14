@@ -5,10 +5,19 @@ import styles from "./QuestionAsideCard.module.css";
 export interface QuestionAsideCardProps {
   question: string;
   answers: readonly string[];
-  status: "starting" | "running" | "complete" | "failed" | "saving";
+  status:
+    | "starting"
+    | "running"
+    | "complete"
+    | "failed"
+    | "saving"
+    | "sending"
+    | "moving";
   error?: string;
   onSave: () => void;
   onDiscard: () => void;
+  onSteer: () => void;
+  onContinueAsBtw: () => void;
 }
 
 export function QuestionAsideHint({ mobile }: { mobile: boolean }) {
@@ -27,12 +36,17 @@ export function QuestionAsideCard({
   error,
   onSave,
   onDiscard,
+  onSteer,
+  onContinueAsBtw,
 }: QuestionAsideCardProps) {
   const { t } = useI18n();
   const [helpOpen, setHelpOpen] = useState(false);
   const helpId = useId();
   const complete = status === "complete" && answers.length > 0;
   const saving = status === "saving";
+  const sending = status === "sending";
+  const moving = status === "moving";
+  const showSteer = status === "failed" || sending;
   return (
     <section
       className={styles.card}
@@ -68,22 +82,47 @@ export function QuestionAsideCard({
         )}
       </div>
       <footer className={styles.actions}>
+        {showSteer ? (
+          <button
+            className={styles.save}
+            type="button"
+            disabled={sending}
+            onClick={onSteer}
+            title={t("toolbarShortcutSteerCurrentTurn")}
+          >
+            {t(sending ? "asyncQuestionSending" : "toolbarSteerShortLabel")}
+          </button>
+        ) : (
+          <>
+            <button
+              className={styles.save}
+              type="button"
+              aria-label={t(
+                saving ? "questionAsideSaving" : "questionAsideSave",
+              )}
+              disabled={!complete || saving}
+              onClick={onSave}
+              title={t("questionAsideSaveShortcut")}
+            >
+              {t(saving ? "questionAsideSaving" : "questionAsideSave")}
+            </button>
+            <kbd title={t("questionAsideSaveShortcut")}>↵</kbd>
+          </>
+        )}
         <button
-          className={styles.save}
+          className={styles.discard}
           type="button"
-          aria-label={t(saving ? "questionAsideSaving" : "questionAsideSave")}
-          disabled={!complete || saving}
-          onClick={onSave}
-          title={t("questionAsideSaveShortcut")}
+          disabled={!complete || moving}
+          onClick={onContinueAsBtw}
+          title={t("questionAsideContinueDescription")}
         >
-          {t(saving ? "questionAsideSaving" : "questionAsideSave")}
+          {t(moving ? "questionAsideContinuing" : "questionAsideContinue")}
         </button>
-        <kbd title={t("questionAsideSaveShortcut")}>↵</kbd>
         <button
           className={styles.discard}
           type="button"
           aria-label={t("questionAsideDiscard")}
-          disabled={saving}
+          disabled={saving || sending || moving}
           onClick={onDiscard}
         >
           {t("questionAsideDiscard")}

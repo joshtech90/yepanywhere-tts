@@ -8,13 +8,13 @@
 
 Topic: active-content-security
 
-Status: **current raw-file containment implemented; executable-application
-origin remains a product constraint (2026-08-21).** Active local, project,
+Status: **raw-file containment and opt-in isolated HTML artifact serving
+implemented (2026-09-07).** Active local, project,
 upload, and public-share file responses now share a lightweight native-
 navigation policy. Browser-active HTML, XHTML, SVG, XML, and XSLT responses
 are attachments with `nosniff`, an inert response CSP, no-referrer policy, and
-a restrictive permissions policy. This document owns the required behavior;
-the separate executable-application origin remains unimplemented.
+a restrictive permissions policy. Interactive previews use the separately
+configured artifact origin described below; the normal raw endpoints remain inert.
 
 See also:
 
@@ -98,6 +98,23 @@ HTML preview.
 decision. Only output from the owning reviewed renderer/sanitizer belongs in
 this class.
 
+A reviewed renderer that converts agent-authored text into markup belongs to
+this class even when its output is SVG, and even though the SVG rule under
+untrusted active documents below reads as a blanket prohibition. That rule
+governs SVG *bytes* YA received and cannot reason about — a project file, an
+upload, a share. It does not govern markup a renderer YA chose and ships
+produced from text. KaTeX is the standing example: `renderSafeMarkdown`
+buffers its `span`/`svg` output past the sanitizer rather than growing the
+allowlist to cover it. The trust rests on renderer selection and upkeep, so an
+advisory against such a renderer is an upgrade-or-drop decision. See
+[`code-fence-renderers.md`](code-fence-renderers.md), where this is settled
+for Mermaid diagrams.
+
+An unreviewed renderer has no such standing, and YA currently has neither an
+SVG sanitizer to hand it nor a mechanical check that separates the two classes.
+See
+[`gaps/svg-sanitization-for-unreviewed-renderers.md`](../gaps/svg-sanitization-for-unreviewed-renderers.md).
+
 ### Untrusted active documents
 
 HTML, XHTML, SVG, and other browser-active formats supplied by a project,
@@ -125,8 +142,9 @@ that they are inert.
 ### Untrusted executable applications
 
 An Interactive or another deliberately runnable agent-built app is allowed to
-execute only inside an isolated application environment. It is not a richer
-file preview and cannot use the authenticated YA or hosted-client origin.
+execute only inside an isolated application environment. An interactive file
+preview uses that same boundary and cannot use the authenticated YA or
+hosted-client origin.
 
 ## Observable Safety Contract
 
@@ -270,3 +288,228 @@ reachability, not this isolation requirement.
   intentionally denies ambient network loads.
 - Whether trusted hosted-client headers justify moving the primary static
   deployment; this is hardening, not the active-content fix.
+
+## Interactive HTML artifacts
+
+The operator can enable interactive previews of ordinary `.html`/`.htm` files
+from project sessions and allowed local paths. A directory of neighboring
+files is sufficient; no YA manifest or ZIP packaging is required. Artifact
+producers provide compatible relative asset URLs and any mocked or real
+services needed by the application. YA serves original bytes; it does not
+rewrite JavaScript, emulate an application backend, or run a project's dev server.
+
+### Configuration and delivery
+
+Settings → Local Access and Remote Access expose the same artifact settings.
+Serving defaults off. Enabling local access pre-fills
+`http://artifacts.localhost:<YA port>`; the complete address remains editable.
+A blank public address disables hosted artifact access. With both addresses
+absent, no grants are available and no artifact listener runs.
+
+The main YA listener dispatches the configured artifact Host to the isolated
+handler before application routes, authentication, or the development proxy.
+Consequently, `localhost:3400` and `artifacts.localhost:3400` can use the same
+SSH forward while retaining different browser hosts. The operator must arrange
+client-side resolution if their browser/OS does not resolve `*.localhost`.
+The local address's port is the browser's forwarded port, which can differ
+from YA's actual listening port.
+
+A configured public HTTPS address additionally starts a plain HTTP listener on
+`127.0.0.1:<artifact port>`, default port 4402, for a reverse proxy or tunnel.
+The proxy preserves the artifact Host and terminates HTTPS. No second SSH
+forward is needed for the local same-port route. The listener port is editable;
+changing it also requires updating the operator's proxy route. YA does not
+install DNS records or change the tunnel configuration.
+
+`YEP_ARTIFACT_PORT` pins the artifact settings at launch, together with
+`YEP_ARTIFACT_LOCAL_ORIGIN` and `YEP_ARTIFACT_PUBLIC_ORIGIN`. An absent port uses
+persisted settings; `0` overrides them and disables serving. Positive ports
+must be 1–65535. Origins must be bare HTTP(S) origins with separate hostnames;
+public origins require HTTPS. The public listener starts only when a public
+origin is configured. Address or listener-port changes revoke outstanding grants.
+Failed listener binding or settings persistence restores the previous
+configuration; a failed startup is reported rather than quietly changing ports.
+
+Grant management uses the current source's authenticated YA transport, including
+encrypted relay connections. Artifact documents and assets themselves travel
+directly to the selected artifact origin. They are outside YA's encrypted relay
+protocol: a TLS-terminating proxy can read them. No session, relay-resume, or
+public-share credentials are attached to artifact requests by YA.
+
+### Preview and authority
+
+HTML continues to open as source or scriptless preview. An explicit **Run
+interactive preview** first performs one credential-free `/health` request to
+the selected origin, with redirects rejected and a 2.5-second deadline.
+Loopback browser access selects the local origin; other browser access selects
+the public origin. Failure leaves the static preview with an explicit Retry
+action; there is no polling, grant request, or interactive frame on failure.
+The client rejects a selected origin sharing YA's hostname and refuses mixed
+HTTPS-page/HTTP-frame configuration.
+
+In the full file viewer, the existing top-row source/preview toggle starts
+interactive HTML directly when clicked from source; no second Run button is
+needed. Switching back to source unmounts the preview and revokes its grant.
+The context menu's explicit Preview action uses the same path. Merely opening
+a file, restoring a source view, or receiving a link does not request a grant.
+An initially requested scriptless presentation retains its explicit Run action.
+Older/disabled servers retain scriptless viewing without unsupported requests.
+
+Artifact requests expand home-relative paths with the same rules as source
+viewing: `~`, `~/...`, and `~\...` refer to the server user's home directory.
+Expansion precedes optional project-relative resolution and the artifact
+file-access policy. Equivalent absolute and home-relative HTML paths can be
+previewed with or without a project ID; expansion grants no extra file access.
+
+A browser-enforced parent `frame-src` violation replaces the broken frame with
+an explanation and an **Open interactive preview in a new tab** link to the
+same grant. The new tab has no opener or referrer; stopping/closing the owning
+viewer still revokes that grant. The viewer never relaxes the browser policy.
+A stale frontend policy requires an operator-owned restart and page reload
+for embedding to work; the separate artifact tab can be used independently.
+
+The granted directory supports relative stylesheets, images/SVG, webfonts,
+classic scripts, modules/dynamic imports, JSON fetches, and linked HTML files.
+Root-relative paths address the artifact host itself and are not mapped to a
+grant. Directory indexes, history-router fallback, service workers, nested
+frames, popups, forms, downloads, native bridges, and device permissions are
+not supplied. External HTTP(S)/WebSocket services remain subject to the
+browser's ordinary network/CORS rules and the artifact author's setup.
+
+Both iframe sandbox and artifact response CSP allow scripts and same-origin
+behavior on the **separate artifact host**. This deliberate allowance preserves
+module fetches and artifact-local storage. Artifact applications share that
+origin's storage and authority with each other; this is for an operator's own
+artifacts, not mutually hostile tenants. They never receive YA storage or a
+host bridge. YA's parent-document CSP permits HTTP(S) frames so configuration
+can change without reloading an already open document; only the validated
+artifact URL is used by the interactive viewer.
+
+The artifact handler exposes only GET/HEAD health and granted files. `/api`,
+`/public-api`, desktop bootstrap, and WebSocket upgrades are unavailable.
+Registered artifact hostnames stay excluded from YA host/CORS/WebSocket trust
+until process exit, including after disable/reconfiguration and with wildcard
+allowed-host settings. Opaque `Origin: null` is also rejected once an artifact
+host has been registered, preventing a navigated artifact from borrowing that
+legacy origin allowance. Native named Tauri origins keep their existing rules.
+
+Admission authorizes the selected HTML file's containing directory, subject to
+the current file-access allow-set on every read. Relative traversal, hidden
+path components, and symlinks escaping that directory are rejected. A random
+256-bit bearer URL permits reads for the configured lifetime or until revocation
+or delivery reconfiguration;
+the application can disclose that URL, so it is not a secret from the artifact.
+Limits are 256 live grants, 1,024 distinct files per grant, and 64 MiB per file.
+Responses are streamed, range-capable, and marked `no-store`. Closing/stopping
+the preview revokes its grant; offline revocation falls back to expiry. This
+does not erase files already read or artifact-origin local storage.
+
+The saved **Link expiry (days)** slider and paired numeric field accept whole
+days from 1 through 30, defaulting to 7. The lifetime is fixed when each grant
+is created. Changing only expiry preserves existing grants and their original
+deadlines; it affects newly created links. Saving unchanged settings likewise
+preserves grants. Manual inventory/revocation controls remain deferred in
+[the revocation UI gap](../gaps/artifact-grant-revocation-ui.md).
+
+Days are the stored and transported unit, `expiryDays`, and
+`version.artifactViewer` reports both fields so an older client keeps its
+hours slider and its gate. An `expiryHours` value, whether saved by an earlier
+install or written by an older client, is converted by rounding up to whole
+days: a two-hour lifetime becomes one day. Expiry shorter than a day is
+therefore no longer expressible, which is the price of the unit people
+actually reason about for a shared link. An older client that omits both
+fields preserves the saved lifetime, and one that writes hours cannot exceed
+its own 168-hour ceiling.
+
+#### Grants survive restart
+
+Grants outlive the server process. A link that says it expires in seven days
+is usable for seven days, across restarts, upgrades and crashes, because the
+lifetime a user was shown is the contract rather than an accident of process
+lifetime.
+
+State lives in `{dataDir}/artifacts/grants.json`, written atomically inside a
+directory created mode 700. That file holds live bearer tokens, so its
+protection is the directory's: anyone who can read it holds every unexpired
+artifact URL. It never holds artifact content, and artifact files keep the
+permissions their producer gave them.
+
+Restoring drops grants that expired while the server was down, and applies the
+same limits and validation as a fresh grant. Address or listener-port changes
+revoke outstanding grants as before, and a revoked or expired grant is removed
+from the file, not merely from memory. Unreadable or corrupt state is reported
+and discarded rather than blocking startup: the cost is that outstanding links
+stop working, which is the previous behaviour of every restart.
+
+#### Owned artifacts are deleted when their link expires
+
+A grant is created either **owning** its directory or **borrowing** it. A
+borrowed grant never deletes anything: expiry only withdraws access, which is
+what every grant did before this contract existed.
+
+An owning grant freezes the fileset it was created over: the files present in
+the granted directory at that moment, recorded relative to it. When the grant
+expires or is revoked, exactly those files are removed, then the directories
+they emptied, and the granted directory itself only if it is now empty. A file
+written into that directory afterwards belongs to whoever put it there and is
+never removed, and a directory still holding anything is left standing.
+Ownership is refused, and the grant created as borrowing, when the directory
+holds more files than an artifact bundle plausibly has.
+
+Ownership is fixed when the grant is created and is never inferred later, and
+it is never inherited from configuration. `POST /api/artifacts` grants
+ownership only to a request that asks for it with `owned`; everything else
+borrows. That asymmetry is deliberate: an interactive preview of a file the
+user already had must not delete it when the viewer closes, and only the
+caller that produced a directory can know it is disposable. YA's capture
+command asks, because it wrote the directory it is publishing. The setting
+**Delete captured artifacts when their link expires**, on by default, is what
+that caller consults. Changing it is not retroactive in either direction:
+existing grants keep the mode they were created with.
+
+A pending deletion is part of the persisted state, so a server that stops
+between expiry and deletion still deletes on its next start. Deletion is
+refused, and the grant is created as borrowing instead, when the directory is
+a Git working tree, a home directory, the checkout root, or the YA data
+directory; a directory that holds a repository or an operator's home is not a
+disposable artifact bundle, whatever a caller claims. A deletion that fails is
+recorded and dropped rather than retried forever.
+
+The frame remains in the existing viewer owner while parked; no cooperative
+suspension or CPU/memory containment is claimed. Dedicated HTML viewport,
+drag/pinch inspection, and broader viewer-navigation work remain tracked in
+[the HTML viewer gap](../gaps/html-document-viewer.md).
+
+### Compatibility and verification
+
+Optional permanent capability `artifact-viewer` (ID 59) gates grants. The
+reviewed optional-feature corpus was v0.8.0 (2026-08-31) and v0.8.1
+(2026-09-05); neither has this contract. Without the capability, clients keep
+source/scriptless viewing and never POST or DELETE grants. New servers expose
+`version.artifactViewer` configuration metadata even while disabled; its
+presence independently gates PUT `/api/artifacts/config` and the settings UI.
+The optional `version.artifactViewer.expiryHours` field additionally gates
+the expiry slider and its write field. Earlier artifact-capable servers omit
+it, so clients retain their existing settings UI and fixed 24-hour expiry.
+`version.artifactViewer.expiryDays` gates the day-unit control and the
+deletion setting; a client seeing only `expiryHours` keeps the hours control,
+writes hours, and neither shows nor changes ownership.
+The same v0.8.0/v0.8.1 corpus lacks artifact configuration entirely; the
+maintainer approved this additive metadata gate on 2026-09-07. The existing
+`artifact-viewer` capability is not broadened to imply configurable expiry.
+Public shares never request private artifact grants. Existing capability
+meanings and transport formats do not change.
+
+Focused tests cover actual main-port hostname dispatch, original bytes,
+revocation, ranges, traversal rejection, wildcard/opaque-origin exclusion,
+older-server fallback, and failed reachability. The browser fixture in
+`packages/server/test/fixtures/artifact` exercises fonts, media, modules,
+mocked JSON, local state, controls, and linked documents with no source dev
+server. Run `pnpm --filter @yep-anywhere/client exec playwright test --config
+playwright.artifacts.config.ts`. Chromium was verified at desktop and phone
+sizes; this host lacks WebKit's required system libraries. After the operator
+restarted YA on 2026-09-07, a live public HTTPS tunnel served the demo with
+working fonts, modules, mocked JSON, menu, and save interaction in Chromium.
+The same grant also returned HTTP 200 through local same-port Host dispatch.
+The complete hosted-client embedded flow, Safari/WebKit, macOS, and Windows
+verification remain outstanding.

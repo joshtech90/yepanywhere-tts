@@ -6,6 +6,7 @@ import {
   CODEX_REASONING_SUMMARIES,
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   CODEX_PLAN_TOOL_MODES,
+  CODEX_CYBER_ACCESS_PROGRAMS,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
@@ -19,7 +20,9 @@ import {
   isHostAwakeMode,
   isCodexReasoningSummary,
   isCodexPlanToolMode,
+  isCodexCyberAccessProgram,
   isSubagentMaxDepth,
+  isProjectQueueReadinessCommand,
   normalizeAutoSessionTitleSettings,
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
@@ -44,6 +47,7 @@ import type {
 } from "../services/ServerSettingsService.js";
 import {
   CODEX_UPDATE_POLICIES,
+  CommittedSettingsSaveError,
   DEFAULT_SERVER_SETTINGS,
   MAX_SOURCE_REVIEW_RESPONSE_TURNS,
   MIN_SOURCE_REVIEW_RESPONSE_TURNS,
@@ -97,6 +101,7 @@ export interface SettingsRoutesDeps {
   onOllamaUrlChanged?: (url: string | undefined) => void;
   /** Callback to re-plan heartbeat deadlines when the global quiet period moves. */
   onHeartbeatSettingsChanged?: () => void;
+  onProjectQueueReadinessChanged?: () => void;
   /** Callback to apply Ollama system prompt changes at runtime */
   onOllamaSystemPromptChanged?: (prompt: string | undefined) => void;
   /** Callback to apply Ollama full system prompt toggle at runtime */
@@ -372,6 +377,26 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
             {
               error:
                 "deferredJoinWindowSeconds must be a non-negative number of seconds (0 = never join)",
+            },
+            400,
+          );
+        }
+      }
+      if ("projectQueueReadinessCheck" in body) {
+        if (body.projectQueueReadinessCheck === null) {
+          updates.projectQueueReadinessCheck = null;
+        } else if (
+          isProjectQueueReadinessCommand(body.projectQueueReadinessCheck)
+        ) {
+          updates.projectQueueReadinessCheck = {
+            executable: body.projectQueueReadinessCheck.executable,
+            args: [...body.projectQueueReadinessCheck.args],
+          };
+        } else {
+          return c.json(
+            {
+              error:
+                "projectQueueReadinessCheck must be null or an executable with string args (up to 128 args and 16 KiB total)",
             },
             400,
           );
@@ -887,6 +912,24 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         }
       }
 
+      if ("codexCyberAccessProgram" in body) {
+        if (
+          body.codexCyberAccessProgram === undefined ||
+          body.codexCyberAccessProgram === null
+        ) {
+          updates.codexCyberAccessProgram = undefined;
+        } else if (isCodexCyberAccessProgram(body.codexCyberAccessProgram)) {
+          updates.codexCyberAccessProgram = body.codexCyberAccessProgram;
+        } else {
+          return c.json(
+            {
+              error: `codexCyberAccessProgram must be one of: ${CODEX_CYBER_ACCESS_PROGRAMS.join(", ")}, or null`,
+            },
+            400,
+          );
+        }
+      }
+
       if ("codexUpdatePolicy" in body) {
         if (
           body.codexUpdatePolicy === undefined ||
@@ -965,8 +1008,18 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         }
       }
 
-      const persistSettings = () =>
-        serverSettingsService.updateSettings(updates);
+      let durabilityError: CommittedSettingsSaveError | undefined;
+      const persistSettings = async () => {
+        try {
+          return await serverSettingsService.updateSettings(updates);
+        } catch (error) {
+          if (!(error instanceof CommittedSettingsSaveError)) throw error;
+          // The replacement happened. Complete storage transitions and runtime
+          // callbacks before reporting the durability failure to the client.
+          durabilityError = error;
+          return error.settings;
+        }
+      };
       const settings =
         updates.projectDirectoryStorage !== undefined && projectStoragePolicy
           ? await projectStoragePolicy.transitionMode(
@@ -990,6 +1043,9 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
           : undefined;
 
       // Apply allowedHosts change to middleware at runtime
+      if ("projectQueueReadinessCheck" in updates) {
+        deps.onProjectQueueReadinessChanged?.();
+      }
       if ("allowedHosts" in updates && onAllowedHostsChanged) {
         onAllowedHostsChanged(settings.allowedHosts);
       }
@@ -1049,6 +1105,8 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       if (typeof updates.idleReapHours === "number" && onIdleReapHoursChanged) {
         onIdleReapHoursChanged(updates.idleReapHours);
       }
+
+      if (durabilityError) throw durabilityError;
 
       return c.json({
         settings: {

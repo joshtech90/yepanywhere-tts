@@ -26,7 +26,7 @@ import {
   packTurnGalleryRows,
   type TurnInlineImage,
 } from "../lib/turnInlineMedia";
-import type { RenderItem } from "../types/renderItems";
+import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import {
   fetchLocalMediaBlob,
   LocalMediaModal,
@@ -173,9 +173,7 @@ function GalleryThumbnail({
           />
         ) : (
           <span className={styles.placeholder}>
-            {error
-              ? t("turnImageGalleryUnavailable")
-              : t("turnImageGalleryLoading")}
+            {error ? t("inlineImageUnavailable") : t("inlineImageLoading")}
           </span>
         )}
       </button>

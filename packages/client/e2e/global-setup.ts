@@ -3,20 +3,19 @@ import {
   copyFileSync,
   existsSync,
   mkdirSync,
-  mkdtempSync,
   readFileSync,
   writeFileSync,
 } from "node:fs";
-import { hostname, tmpdir } from "node:os";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { InstallService } from "../../server/src/services/InstallService.js";
+import { ensureColorEmojiFont } from "../scripts/emoji-font.js";
+
+import { createE2ERunDirectory } from "./support/run-directory.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-
-// Session file stores the path to the unique temp directory for this test run
-// This is the only fixed-path file - everything else goes in the unique temp dir
-const SESSION_FILE = join(tmpdir(), "claude-e2e-session");
 
 // These will be set after creating the unique temp directory
 let E2E_TEMP_DIR: string;
@@ -36,6 +35,7 @@ let E2E_CLAUDE_SESSIONS_DIR: string;
 let E2E_CODEX_SESSIONS_DIR: string;
 let E2E_GEMINI_SESSIONS_DIR: string;
 let E2E_DATA_DIR: string;
+let E2E_PROVIDER_HOST_RUNTIME_DIR: string;
 
 /**
  * Wait for a port file to be written with a valid port number.
@@ -65,17 +65,19 @@ function shouldStartRelay(): boolean {
 }
 
 export default async function globalSetup() {
+  // Screenshots of emoji-bearing UI are only truthful when the host has a color
+  // emoji font; this installs one once per machine and is silent afterwards.
+  const emojiFont = await ensureColorEmojiFont();
+  if (emojiFont.status !== "present")
+    console.log(`[E2E] Emoji font: ${emojiFont.detail}`);
   const serverLogLevel = process.env.E2E_SERVER_LOG_LEVEL ?? "warn";
   const serverFileLogLevel =
     process.env.E2E_SERVER_FILE_LOG_LEVEL ?? serverLogLevel;
 
   // Create a unique temp directory for this test run
   // This prevents collisions between parallel test runs
-  E2E_TEMP_DIR = mkdtempSync(join(tmpdir(), "claude-e2e-"));
+  E2E_TEMP_DIR = createE2ERunDirectory();
   console.log(`[E2E] Using temp directory: ${E2E_TEMP_DIR}`);
-
-  // Write session file so teardown can find our temp directory
-  writeFileSync(SESSION_FILE, E2E_TEMP_DIR);
 
   // Set up file paths within the unique temp directory
   PORT_FILE = join(E2E_TEMP_DIR, "port");
@@ -94,6 +96,12 @@ export default async function globalSetup() {
   E2E_CODEX_SESSIONS_DIR = join(E2E_TEST_DIR, "codex", "sessions");
   E2E_GEMINI_SESSIONS_DIR = join(E2E_TEST_DIR, "gemini", "tmp");
   E2E_DATA_DIR = join(E2E_TEST_DIR, "yep-anywhere");
+  // The provider host otherwise lives at a per-user path under XDG_RUNTIME_DIR
+  // shared by every YA server on the machine. A developer's own running YA
+  // holds that path with a host built from whatever sources it started with,
+  // so this server would find an incompatible host, decline to replace it, and
+  // serve the whole suite in its "provider host is not running" degraded mode.
+  E2E_PROVIDER_HOST_RUNTIME_DIR = join(E2E_TEMP_DIR, "provider-host");
 
   // Create isolated test directories
   console.log(`[E2E] Creating isolated test directories at ${E2E_TEST_DIR}`);
@@ -101,6 +109,12 @@ export default async function globalSetup() {
   mkdirSync(E2E_CODEX_SESSIONS_DIR, { recursive: true });
   mkdirSync(E2E_GEMINI_SESSIONS_DIR, { recursive: true });
   mkdirSync(E2E_DATA_DIR, { recursive: true });
+  // This fixture models an installation with saved sessions from these
+  // providers. Retained collections only discover successfully used stores;
+  // creating transcript files alone intentionally does not enroll a provider.
+  const installService = new InstallService({ dataDir: E2E_DATA_DIR });
+  await installService.initialize();
+  await installService.recordSuccessfulProviders(["claude", "codex", "gemini"]);
   writeFileSync(
     join(E2E_DATA_DIR, "server-settings.json"),
     JSON.stringify(
@@ -210,6 +224,67 @@ export default async function globalSetup() {
   console.log(
     `[E2E] Created scroll memory session at ${scrollMemorySessionFile}`,
   );
+
+  // A mermaid fence and an ordinary highlighted fence, so one fixture covers
+  // both the per-language renderer and the language label.
+  const mermaidDiagram = [
+    "```mermaid",
+    "sequenceDiagram",
+    "  participant Phone",
+    "  participant Server",
+    "  participant Claude",
+    "  Phone->>Server: send prompt",
+    "  Server->>Claude: start turn",
+    "  Claude-->>Server: stream tokens",
+    "  Server-->>Phone: rendered augments",
+    "```",
+  ].join("\n");
+  const codeFenceMarkdown = [
+    "Supervising a turn moves through three hops.",
+    "",
+    mermaidDiagram,
+    "",
+    "The server owns the process, so a disconnect does not stop it:",
+    "",
+    "```typescript",
+    "export function streamTurn(prompt: string): AsyncIterable<Augment> {",
+    "  return supervisor.start(prompt);",
+    "}",
+    "```",
+  ].join("\n");
+  const codeFenceSessionFile = join(
+    mockSessionDir,
+    "code-fence-mermaid-001.jsonl",
+  );
+  writeFileSync(
+    codeFenceSessionFile,
+    [
+      {
+        type: "user",
+        cwd: mockProjectPath,
+        message: { role: "user", content: "Diagram how a turn reaches Claude" },
+        timestamp: "2026-01-05T00:00:00.000Z",
+        uuid: "code-fence-user-1",
+      },
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [{ type: "text", text: codeFenceMarkdown }],
+        },
+        timestamp: "2026-01-05T00:00:01.000Z",
+        uuid: "code-fence-assistant-1",
+        parentUuid: "code-fence-user-1",
+      },
+    ]
+      .map((message) => JSON.stringify(message))
+      .join("\n"),
+  );
+  writeFileSync(
+    join(mockProjectPath, "diagram-notes.md"),
+    ["# Turn flow", "", mermaidDiagram, ""].join("\n"),
+  );
+  console.log(`[E2E] Created code fence session at ${codeFenceSessionFile}`);
 
   const providerChildSessionId = "provider-child-layout-001";
   writeFileSync(
@@ -364,6 +439,84 @@ export default async function globalSetup() {
       .join("\n"),
   );
   console.log(`[E2E] Created transcript specimen at ${transcriptSpecimenFile}`);
+
+  // Grouped image reads whose results carry metadata and a path but no bytes:
+  // the shape YA stores once it materializes tool-result media. The strip in the
+  // explored group re-reads these files, so they must exist in the project.
+  const exploredImageNames = ["diagram.png", "badge.png"];
+  const exploredImageSources = [
+    join(__dirname, "..", "public", "icon-192.png"),
+    join(__dirname, "..", "public", "icon-512.png"),
+  ];
+  for (const [index, name] of exploredImageNames.entries()) {
+    const source = exploredImageSources[index];
+    if (source) copyFileSync(source, join(mockProjectPath, name));
+  }
+  const exploredImageMessages = [
+    {
+      type: "user",
+      cwd: mockProjectPath,
+      message: { role: "user", content: "Look at the two screenshots" },
+      timestamp: "2026-01-01T00:00:00.000Z",
+      uuid: "explored-images-user-1",
+    },
+    {
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: exploredImageNames.map((name, index) => ({
+          type: "tool_use",
+          id: `explored-image-${index}`,
+          name: "Read",
+          input: { file_path: join(mockProjectPath, name) },
+        })),
+      },
+      timestamp: "2026-01-01T00:00:01.000Z",
+      uuid: "explored-images-assistant-1",
+      parentUuid: "explored-images-user-1",
+    },
+    ...exploredImageNames.map((name, index) => ({
+      type: "user",
+      message: {
+        role: "user",
+        content: [
+          {
+            type: "tool_result",
+            tool_use_id: `explored-image-${index}`,
+            content: `Read image ${name}`,
+          },
+        ],
+      },
+      toolUseResult: {
+        type: "image",
+        file: {
+          type: "image/png",
+          originalSize: 4096,
+          dimensions: {
+            originalWidth: 192,
+            originalHeight: 192,
+            displayWidth: 192,
+            displayHeight: 192,
+          },
+        },
+      },
+      timestamp: `2026-01-01T00:00:0${2 + index}.000Z`,
+      uuid: `explored-images-result-${index}`,
+      parentUuid: "explored-images-assistant-1",
+    })),
+    {
+      type: "assistant",
+      message: { role: "assistant", content: "Both screenshots look right." },
+      timestamp: "2026-01-01T00:00:05.000Z",
+      uuid: "explored-images-assistant-2",
+      parentUuid: "explored-images-result-1",
+    },
+  ];
+  writeFileSync(
+    join(mockSessionDir, "explored-images-001.jsonl"),
+    exploredImageMessages.map((message) => JSON.stringify(message)).join("\n"),
+  );
+  console.log("[E2E] Created explored image-read session");
 
   const historySearchSessionFile = join(
     mockSessionDir,
@@ -954,8 +1107,8 @@ export default async function globalSetup() {
 
   const repoRoot = join(__dirname, "..", "..", "..");
   const serverRoot = join(repoRoot, "packages", "server");
-  const clientDist = join(repoRoot, "packages", "client", "dist");
-  const remoteClientDist = join(repoRoot, "packages", "client", "dist-remote");
+  const clientDist = join(E2E_TEMP_DIR, "client-dist");
+  const remoteClientDist = join(E2E_TEMP_DIR, "remote-dist");
 
   // Build shared first (client depends on it), then client
   console.log("[E2E] Building shared package...");
@@ -965,22 +1118,47 @@ export default async function globalSetup() {
   });
 
   console.log("[E2E] Building client...");
-  execSync("pnpm --filter @yep-anywhere/client build", {
-    cwd: repoRoot,
-    env: {
-      ...process.env,
-      // Global first-run overlays are outside this suite's contracts and can
-      // arrive after a page-specific readiness check, obscuring its controls.
-      VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS: "true",
-      VITE_DISABLE_ONBOARDING: "true",
-      VITE_E2E_SOURCE_TRANSPORT_SMOKE: "true",
+  execFileSync(
+    "pnpm",
+    [
+      "--filter",
+      "@yep-anywhere/client",
+      "build",
+      "--outDir",
+      clientDist,
+      "--emptyOutDir",
+    ],
+    {
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        // Global first-run overlays are outside this suite's contracts and can
+        // arrive after a page-specific readiness check, obscuring its controls.
+        VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS: "true",
+        VITE_DISABLE_ONBOARDING: "true",
+        VITE_E2E_SOURCE_TRANSPORT_SMOKE: "true",
+      },
+      stdio: "inherit",
     },
-    stdio: "inherit",
-  });
+  );
 
   console.log("[E2E] Building remote client production preview...");
-  execSync(
-    "pnpm --filter @yep-anywhere/client exec vite build --config vite.config.remote.ts --base /",
+  execFileSync(
+    "pnpm",
+    [
+      "--filter",
+      "@yep-anywhere/client",
+      "exec",
+      "vite",
+      "build",
+      "--config",
+      "vite.config.remote.ts",
+      "--base",
+      "/",
+      "--outDir",
+      remoteClientDist,
+      "--emptyOutDir",
+    ],
     {
       cwd: repoRoot,
       env: {
@@ -1085,6 +1263,7 @@ export default async function globalSetup() {
         CODEX_SESSIONS_DIR: E2E_CODEX_SESSIONS_DIR,
         GEMINI_SESSIONS_DIR: E2E_GEMINI_SESSIONS_DIR,
         YEP_DATA_DIR: E2E_DATA_DIR,
+        YEP_PROVIDER_HOST_RUNTIME_DIR: E2E_PROVIDER_HOST_RUNTIME_DIR,
       },
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
@@ -1095,9 +1274,19 @@ export default async function globalSetup() {
     writeFileSync(PID_FILE, String(serverProcess.pid));
   }
 
-  // Log stderr for debugging
+  // Drain both pipes: the shared server outlives setup, and a full stdout
+  // pipe must not become backpressure on its logging path. Keep bounded
+  // context for a failure annotation without retaining the whole run in RAM.
+  let serverOutput = "";
+  const rememberServerOutput = (message: string) => {
+    serverOutput = `${serverOutput}${message}`.slice(-16_384);
+  };
+  serverProcess.stdout?.on("data", (data: Buffer) => {
+    rememberServerOutput(data.toString());
+  });
   serverProcess.stderr?.on("data", (data: Buffer) => {
     const msg = data.toString();
+    rememberServerOutput(msg);
     if (!msg.includes("ExperimentalWarning")) {
       console.error("[E2E Server]", msg);
     }
@@ -1105,6 +1294,16 @@ export default async function globalSetup() {
 
   serverProcess.on("error", (err) => {
     console.error("[E2E Server] Process error:", err);
+  });
+  serverProcess.on("exit", (code, signal) => {
+    if (code === 0 || signal === "SIGTERM" || signal === "SIGINT") return;
+    const message = `E2E main server exited (${code}/${signal})\n${serverOutput}`;
+    console.error(message);
+    if (process.env.GITHUB_ACTIONS === "true") {
+      console.error(
+        `::error::${message.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A")}`,
+      );
+    }
   });
 
   // Wait for both port files
@@ -1196,6 +1395,7 @@ export default async function globalSetup() {
       cwd: join(repoRoot, "packages", "client"),
       env: {
         ...process.env,
+        YEP_E2E_REMOTE_DIST: remoteClientDist,
         VITE_PORT_FILE: REMOTE_PREVIEW_PORT_FILE,
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -1228,6 +1428,3 @@ export default async function globalSetup() {
   );
   remotePreviewProcess.unref();
 }
-
-// Export session file path for teardown
-export { SESSION_FILE };

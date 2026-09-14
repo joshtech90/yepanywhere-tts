@@ -1,10 +1,12 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
 import styles from "./KillShellRenderer.module.css";
-import type { KillShellInput, KillShellResult, ToolRenderer } from "./types";
+import type { KillShellInput, KillShellResult } from "./types";
 
 /**
  * KillShell tool use - shows shell_id being killed
@@ -50,7 +52,10 @@ function KillShellToolResult({
     enabled && validationErrors && !isToolIgnored("KillShell");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className={styles.error}>
         {showValidationWarning && validationErrors && (
@@ -80,30 +85,24 @@ function KillShellToolResult({
   );
 }
 
-export const killShellRenderer: ToolRenderer<KillShellInput, KillShellResult> =
-  {
-    tool: "KillShell",
+export const killShellRenderer = defineTool(toolDisplayContracts.KillShell, {
+  tool: "KillShell",
 
-    renderToolUse(input, _context) {
-      return <KillShellToolUse input={input as KillShellInput} />;
-    },
+  renderToolUse(input, _context) {
+    return <KillShellToolUse input={input} />;
+  },
 
-    renderToolResult(result, isError, _context) {
-      return (
-        <KillShellToolResult
-          result={result as KillShellResult}
-          isError={isError}
-        />
-      );
-    },
+  renderToolResult(result, isError, _context) {
+    return <KillShellToolResult result={result} isError={isError} />;
+  },
 
-    getUseSummary(input) {
-      return (input as KillShellInput).shell_id;
-    },
+  getUseSummary(input) {
+    return input.shell_id;
+  },
 
-    getResultSummary(result, isError) {
-      if (isError) return "Error";
-      const r = result as KillShellResult;
-      return r?.message || "Killed";
-    },
-  };
+  getResultSummary(result, isError) {
+    if (isError) return "Error";
+    const r = result;
+    return r?.message || "Killed";
+  },
+});

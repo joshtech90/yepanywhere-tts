@@ -664,6 +664,22 @@ export function reconcileCodexSteerEchoes(messages: Message[]): Message[] {
   );
 }
 
+// Grok records each user turn under an id of its own with no hook for YA to
+// supply or predict one, so neither a direct send nor an interject can dedup
+// by id — every mid-turn backfill re-rendered the prompt and left the echo
+// permanently "sent". The echo is always stamped before Grok writes its row,
+// and Grok's record timestamp has whole-second granularity, so an echo can
+// postdate its row only by that truncation.
+const SELF_SEND_ECHO_FUTURE_SKEW_MS = 2000;
+
+export function reconcileSelfSendUserEchoes(messages: Message[]): Message[] {
+  return reconcileDeliveredUserTurns(
+    messages,
+    isUnconfirmedSelfSend,
+    SELF_SEND_ECHO_FUTURE_SKEW_MS,
+  );
+}
+
 export function hasEquivalentJsonlMessage(
   existing: Message[],
   incoming: Message,

@@ -1,3 +1,7 @@
+import {
+  readIssueTextBatch,
+  type IssueReadOptions,
+} from "./issue-text-reader.js";
 import { randomUUID } from "node:crypto";
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
@@ -297,6 +301,12 @@ export class ClaudeSessionReader implements ISessionReader {
    * Claude sessions are `<sessionDir>/<sessionId>.jsonl`; a project can map to
    * more than one session dir (alias/encoding), so probe each candidate.
    */
+  async readIssueTextBatch(sessionId: string, options: IssueReadOptions) {
+    const path = await this.getSessionFilePath(sessionId);
+    if (!path) throw new Error("Session source unavailable");
+    return readIssueTextBatch("claude", [{ path }], options);
+  }
+
   async getSessionFilePath(sessionId: string): Promise<string | null> {
     for (const dir of this.allSessionDirs) {
       const filePath = join(dir, `${sessionId}.jsonl`);

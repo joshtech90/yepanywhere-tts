@@ -17,6 +17,11 @@ import {
 } from "react";
 import { type InboxItem, type InboxResponse, api } from "../api/client";
 import {
+  RETAINED_SESSION_COLLECTIONS_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
+import { ensureVersionInfo } from "../hooks/useVersion";
+import {
   type RetainedClientQueryEvent,
   useRetainedClientQuery,
 } from "../hooks/useRetainedClientQuery";
@@ -48,6 +53,7 @@ const INBOX_REVALIDATE_EVENTS = [
   "session-created",
   "session-metadata-changed",
   "session-updated",
+  "session-catalog-updated",
   "project-queue-changed",
 ] as const;
 const INBOX_STALE_TIME_MS = 0;
@@ -73,6 +79,7 @@ function mergeWithStableOrder(
   currentOrder: TierOrder,
 ): InboxResponse {
   const result: InboxResponse = {
+    ...(newData.catalog ? { catalog: newData.catalog } : {}),
     needsAttention: [],
     active: [],
     recentActivity: [],
@@ -315,7 +322,17 @@ export function InboxProvider({
     staleTimeMs: INBOX_STALE_TIME_MS,
     revalidateOn: INBOX_REVALIDATE_EVENTS,
     shouldRevalidateEvent: shouldRevalidateInboxEvent,
-    fetcher: () => api.getInbox(),
+    fetcher: async () => {
+      const version = await ensureVersionInfo(sourceKey);
+      if (sourceKeyRef.current !== sourceKey)
+        throw new Error("Session source changed");
+      return serverHasCapability(
+        version,
+        RETAINED_SESSION_COLLECTIONS_CAPABILITY,
+      )
+        ? api.getInbox(undefined, "retained")
+        : api.getInbox();
+    },
     applySnapshot: applyInboxSnapshot,
   });
 
@@ -354,8 +371,17 @@ export function InboxProvider({
         unread8h: inbox.unread8h,
         unread24h: inbox.unread24h,
         inbox,
-        loading,
-        error,
+        loading:
+          loading ||
+          (queryEnabled &&
+            totalItems === 0 &&
+            inbox.catalog?.complete === false &&
+            inbox.catalog.refreshing),
+        error:
+          error ??
+          (inbox.catalog?.refreshError
+            ? new Error(inbox.catalog.refreshError)
+            : null),
         refresh,
         refetch,
         totalNeedsAttention,

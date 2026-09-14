@@ -77,7 +77,13 @@ import type {
   ToolApprovalResult,
 } from "../types.js";
 import { ACPClient } from "./acp/client.js";
+import {
+  copyAgentctlBashEnvInto,
+  createAgentctlSessionEnvBridge,
+  type AgentctlSessionEnvBridge,
+} from "./agentctl-session-env.js";
 import { grokInterjectAccepted } from "./grok-interject-text.js";
+import { grokEventUuid } from "./grok-message-identity.js";
 import {
   type NormalizedGrokToolState,
   buildGrokStructuredToolResult,
@@ -513,6 +519,10 @@ export class GrokACPProvider implements AgentProvider {
       activePromptCount: 0,
       promptError: null,
     };
+    const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
+      options.resumeSessionId,
+      options.getSessionChildEnv,
+    );
     const iterator = this.runSession(
       client,
       options,
@@ -520,6 +530,7 @@ export class GrokACPProvider implements AgentProvider {
       abortController.signal,
       runtime,
       commandInventory,
+      agentctlSessionEnvBridge,
     );
 
     return {
@@ -528,9 +539,16 @@ export class GrokACPProvider implements AgentProvider {
       abort: () => {
         abortController.abort();
         client.close();
+        agentctlSessionEnvBridge.cleanup();
       },
       get pid() {
         return client.pid;
+      },
+      publishAgentctlSessionId: (sessionId, browserDebugEnvironment) => {
+        agentctlSessionEnvBridge.publishSessionId(
+          sessionId,
+          browserDebugEnvironment,
+        );
       },
       steer: async (message) =>
         this.steerWithInterject(client, runtime, message),
@@ -548,9 +566,11 @@ export class GrokACPProvider implements AgentProvider {
     signal: AbortSignal,
     runtime: GrokPromptRuntime,
     commandInventory: GrokCommandInventory,
+    agentctlSessionEnvBridge: AgentctlSessionEnvBridge,
   ): AsyncIterableIterator<SDKMessage> {
     const grokPath = await this.findGrokPath();
     if (!grokPath) {
+      agentctlSessionEnvBridge.cleanup();
       yield {
         type: "error",
         error:
@@ -610,11 +630,14 @@ export class GrokACPProvider implements AgentProvider {
           ? { XAI_API_KEY: xaiApiKey }
           : {}),
       };
+      copyAgentctlBashEnvInto(extraEnv, agentctlSessionEnvBridge, {
+        sessionId: options.resumeSessionId,
+      });
       await client.connect({
         command: grokPath,
         args,
         cwd: options.cwd,
-        env: Object.keys(extraEnv).length > 0 ? extraEnv : undefined,
+        env: extraEnv,
         excludeEnv: passXaiApiKey
           ? GROK_BILLING_ENV_DENYLIST.filter((key) => key !== "XAI_API_KEY")
           : GROK_BILLING_ENV_DENYLIST,
@@ -663,6 +686,7 @@ export class GrokACPProvider implements AgentProvider {
         this.log.debug({ sessionId }, "Grok ACP session created");
       }
       runtime.sessionId = sessionId;
+      agentctlSessionEnvBridge.publishSessionId(sessionId);
 
       // Emit init
       yield {
@@ -751,6 +775,7 @@ export class GrokACPProvider implements AgentProvider {
       runtime.sessionId = undefined;
       runtime.activePromptCount = 0;
       client.close();
+      agentctlSessionEnvBridge.cleanup();
     }
   }
 
@@ -1157,6 +1182,33 @@ export class GrokACPProvider implements AgentProvider {
     let thinkingBuffer = "";
     let thinkingMessageId: string | null = null;
 
+    const buildThinkingMessage = (): SDKMessage =>
+      ({
+        type: "assistant",
+        uuid: thinkingMessageId ?? undefined,
+        session_id: sessionId,
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "thinking",
+              thinking: thinkingBuffer,
+            },
+          ],
+        },
+      }) as SDKMessage;
+
+    const buildTextMessage = (): SDKMessage =>
+      ({
+        type: "assistant",
+        uuid: assistantMessageId ?? undefined,
+        session_id: sessionId,
+        message: {
+          role: "assistant",
+          content: assistantTextBuffer,
+        },
+      }) as SDKMessage;
+
     while (
       !signal.aborted &&
       (runtime.activePromptCount > 0 || updateQueue.length > 0)
@@ -1168,6 +1220,7 @@ export class GrokACPProvider implements AgentProvider {
         if (!notification) break;
 
         const sessionUpdate = notification.update;
+        const eventUuid = grokEventUuid(notification._meta);
 
         // Handle both text and thought chunks by accumulating (Grok streams thoughts
         // as many small agent_thought_chunk events, just like message chunks).
@@ -1184,17 +1237,28 @@ export class GrokACPProvider implements AgentProvider {
             content.type === "text" &&
             "text" in content
           ) {
+            // A chunk of the other kind ends the run being buffered. The durable
+            // reader groups chunks the same way, so both sides produce the same
+            // messages keyed on the same first-chunk event id; buffering the two
+            // kinds concurrently would let the two sides disagree on where a
+            // message starts and reintroduce duplicate rows.
             if (sessionUpdate.sessionUpdate === "agent_thought_chunk") {
-              thinkingBuffer += content.text;
-              if (!thinkingMessageId) {
-                thinkingMessageId = randomUUID();
+              if (assistantTextBuffer) {
+                yield buildTextMessage();
+                assistantTextBuffer = "";
+                assistantMessageId = null;
               }
+              thinkingBuffer += content.text;
+              thinkingMessageId ??= eventUuid ?? randomUUID();
               continue; // keep accumulating; flush later with other content or on done
             }
-            assistantTextBuffer += content.text;
-            if (!assistantMessageId) {
-              assistantMessageId = randomUUID();
+            if (thinkingBuffer) {
+              yield buildThinkingMessage();
+              thinkingBuffer = "";
+              thinkingMessageId = null;
             }
+            assistantTextBuffer += content.text;
+            assistantMessageId ??= eventUuid ?? randomUUID();
             continue;
           }
         }
@@ -1203,34 +1267,13 @@ export class GrokACPProvider implements AgentProvider {
         // (e.g. tool calls, final text). This produces one (or few) growing thinking blocks
         // instead of dozens of tiny ones.
         if (thinkingBuffer) {
-          yield {
-            type: "assistant",
-            uuid: thinkingMessageId ?? undefined,
-            session_id: sessionId,
-            message: {
-              role: "assistant",
-              content: [
-                {
-                  type: "thinking",
-                  thinking: thinkingBuffer,
-                },
-              ],
-            },
-          } as SDKMessage;
+          yield buildThinkingMessage();
           thinkingBuffer = "";
           thinkingMessageId = null;
         }
 
         if (assistantTextBuffer) {
-          yield {
-            type: "assistant",
-            uuid: assistantMessageId ?? undefined,
-            session_id: sessionId,
-            message: {
-              role: "assistant",
-              content: assistantTextBuffer,
-            },
-          } as SDKMessage;
+          yield buildTextMessage();
           assistantTextBuffer = "";
           assistantMessageId = null;
         }
@@ -1240,6 +1283,7 @@ export class GrokACPProvider implements AgentProvider {
           sessionId,
           toolStates,
           commandInventory,
+          eventUuid,
         );
         if (sdkMessage) {
           yield sdkMessage;
@@ -1248,32 +1292,12 @@ export class GrokACPProvider implements AgentProvider {
     }
 
     // Final flush: thinking first (so reasoning appears before any trailing text), then text.
+    // Only one of the two can be pending, since a kind switch flushes the other.
     if (thinkingBuffer) {
-      yield {
-        type: "assistant",
-        uuid: thinkingMessageId ?? undefined,
-        session_id: sessionId,
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "thinking",
-              thinking: thinkingBuffer,
-            },
-          ],
-        },
-      } as SDKMessage;
+      yield buildThinkingMessage();
     }
     if (assistantTextBuffer) {
-      yield {
-        type: "assistant",
-        uuid: assistantMessageId ?? undefined,
-        session_id: sessionId,
-        message: {
-          role: "assistant",
-          content: assistantTextBuffer,
-        },
-      } as SDKMessage;
+      yield buildTextMessage();
     }
 
     if (runtime.promptError) {
@@ -1339,6 +1363,7 @@ export class GrokACPProvider implements AgentProvider {
     sessionId: string,
     toolStates: Map<string, GrokLiveToolState>,
     commandInventory: GrokCommandInventory,
+    eventUuid?: string,
   ): SDKMessage | null {
     const updateType = update.sessionUpdate;
 
@@ -1357,6 +1382,7 @@ export class GrokACPProvider implements AgentProvider {
           ) {
             return {
               type: "assistant",
+              uuid: eventUuid,
               session_id: sessionId,
               message: {
                 role: "assistant",
@@ -1443,6 +1469,7 @@ export class GrokACPProvider implements AgentProvider {
         if (entries.length > 0) {
           return {
             type: "assistant",
+            uuid: eventUuid,
             session_id: sessionId,
             message: {
               role: "assistant",

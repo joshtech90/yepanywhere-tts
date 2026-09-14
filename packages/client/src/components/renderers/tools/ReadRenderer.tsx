@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import {
   type ReactNode,
   useCallback,
@@ -8,6 +10,8 @@ import {
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { useOptionalSessionMetadata } from "../../../contexts/SessionMetadataContext";
+import { useCurrentSourceRuntime } from "../../../contexts/SourceRuntimeContext";
+import { useI18n } from "../../../i18n";
 import { useInlineMedia } from "../../../hooks/useInlineMedia";
 import { useQuoteableTextSource } from "../../../hooks/useQuoteableTextSource";
 import { isMarkdownLikeFile } from "../../../lib/markdownFiles";
@@ -20,7 +24,11 @@ import {
   MarkdownPreview,
 } from "../../MarkdownPreview";
 import { useImageResourceActions } from "../../ImageResourceActions";
-import { LocalMediaModal, type LocalMediaSource } from "../../LocalMediaModal";
+import {
+  fetchLocalMediaBlob,
+  LocalMediaModal,
+  type LocalMediaSource,
+} from "../../LocalMediaModal";
 import { SchemaWarning } from "../../SchemaWarning";
 import { SessionFilePathLink } from "../../SessionFilePathLink";
 import {
@@ -35,17 +43,11 @@ import type {
   ReadInput,
   ReadResult,
   TextFile,
-  ToolRenderer,
 } from "./types";
 import styles from "./ReadRenderer.module.css";
 
 /** Extended result type with server-rendered syntax highlighting */
-interface ReadResultWithAugment extends ReadResult {
-  _highlightedContentHtml?: string;
-  _highlightedLanguage?: string;
-  _highlightedTruncated?: boolean;
-  _renderedMarkdownHtml?: string;
-}
+type ReadResultWithAugment = ReadResult;
 
 /**
  * Extract filename from path
@@ -54,28 +56,12 @@ function getFileName(filePath: string): string {
   return getPathBasename(filePath);
 }
 
-/**
- * Runtime check that a Read result `file` is a fully-populated text file.
- *
- * The Zod schema marks every TextFile field `.optional()`, so `result.file as
- * TextFile` is unsound: a successful (non-error) Read can return a `file` with
- * only `filePath`. Claude Code's read-dedup does exactly this — when a file is
- * unchanged since the last Read it skips re-sending the body ("Wasted call —
- * file unchanged since your last Read") and omits `content`/`numLines`. Use this
- * guard instead of casting so the incomplete case is handled explicitly rather
- * than crashing in `undefined.replace(...)` or printing "undefined lines".
- *
- * A genuinely empty file still passes (content: "", numLines: 0); only the
- * content-less dedup shape is excluded.
- */
-function isCompleteTextFile(file: unknown): file is TextFile {
-  const f = file as Partial<TextFile> | null | undefined;
-  return typeof f?.content === "string" && typeof f.numLines === "number";
+/** Narrow the checked union without parsing the record again. */
+function isCompleteTextFile(file: ReadResult["file"]): file is TextFile {
+  return "content" in file && typeof file.content === "string";
 }
-
-function getResultFilePath(file: unknown): string {
-  const f = file as { filePath?: unknown } | null | undefined;
-  return typeof f?.filePath === "string" ? f.filePath : "";
+function getResultFilePath(file: ReadResult["file"]): string {
+  return "filePath" in file ? (file.filePath ?? "") : "";
 }
 
 /**
@@ -430,6 +416,15 @@ function TextFileResult({
   );
 }
 
+function blobFromBase64(base64: string, type: string): Blob {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return new Blob([bytes], { type });
+}
+
 /**
  * Image file result - renders as img tag
  */
@@ -440,6 +435,7 @@ function ImageFileResult({
   file: ImageFile;
   filePath?: string;
 }) {
+  const { t } = useI18n();
   const sizeKB = file.originalSize ? Math.round(file.originalSize / 1024) : 0;
   const { dimensions } = file;
   const meta = useOptionalSessionMetadata();
@@ -456,22 +452,56 @@ function ImageFileResult({
   const [override, setOverride] = useState<boolean | null>(null);
   const expanded = override ?? inlineMediaExpandedByDefault;
   const [modalOpen, setModalOpen] = useState(false);
-  const imageBlob = useMemo(() => {
-    const binary = atob(file.base64);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      bytes[index] = binary.charCodeAt(index);
+  const transport = useCurrentSourceRuntime().transport;
+  // Provider bytes survive only until YA materializes tool-result media, after
+  // which the result carries metadata and a path. Read the file back for those
+  // rows rather than showing a broken preview.
+  const inlineBase64 = file.base64;
+  const loadBlob = useCallback(async () => {
+    if (inlineBase64) return blobFromBase64(inlineBase64, file.type);
+    if (filePath) {
+      return fetchLocalMediaBlob(filePath, undefined, "inline", transport);
     }
-    return new Blob([bytes], { type: file.type });
-  }, [file.base64, file.type]);
-  const loadBlob = useCallback(async () => imageBlob, [imageBlob]);
-  const mediaSource = useMemo<LocalMediaSource>(
-    () => ({
-      buildApiPath: () => "inline-read-image",
-      fetchBlob: loadBlob,
-    }),
-    [loadBlob],
+    throw new Error("Read image result carries neither bytes nor a file path");
+  }, [file.type, filePath, inlineBase64, transport]);
+  const mediaSource = useMemo<LocalMediaSource | undefined>(
+    () =>
+      inlineBase64
+        ? { buildApiPath: () => "inline-read-image", fetchBlob: loadBlob }
+        : undefined,
+    [inlineBase64, loadBlob],
   );
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewFailed, setPreviewFailed] = useState(false);
+  useEffect(() => {
+    if (!expanded) {
+      setPreviewUrl(null);
+      setPreviewFailed(false);
+      return;
+    }
+    if (inlineBase64) {
+      setPreviewUrl(`data:${file.type};base64,${inlineBase64}`);
+      setPreviewFailed(false);
+      return;
+    }
+    let cancelled = false;
+    let objectUrl: string | null = null;
+    setPreviewUrl(null);
+    setPreviewFailed(false);
+    void loadBlob()
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setPreviewUrl(objectUrl);
+      })
+      .catch(() => {
+        if (!cancelled) setPreviewFailed(true);
+      });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [expanded, file.type, inlineBase64, loadBlob]);
   const openViewer = useCallback(() => setModalOpen(true), []);
   const fileName = filePath ? getFileName(filePath) : "image";
   const imageActions = useImageResourceActions({
@@ -513,29 +543,41 @@ function ImageFileResult({
             </>
           )}
           {hasDimensions && sizeKB > 0 && " "}
-          {sizeKB > 0 && <>({sizeKB}\u202fkb)</>}
+          {sizeKB > 0 && (
+            <>
+              ({sizeKB}
+              {"\u202f"}kb)
+            </>
+          )}
         </div>
       )}
-      {expanded && (
-        <button
-          type="button"
-          className={styles.imagePreviewButton}
-          aria-label={`Open ${fileName}`}
-          onClick={openViewer}
-          onContextMenu={imageActions.handleContextMenu}
-        >
-          <img
-            className="read-image"
-            src={`data:${file.type};base64,${file.base64}`}
-            alt="File content"
-            width={dimensions?.displayWidth}
-            height={dimensions?.displayHeight}
-          />
-        </button>
-      )}
+      {expanded &&
+        (previewUrl ? (
+          <button
+            type="button"
+            className={styles.imagePreviewButton}
+            aria-label={`Open ${fileName}`}
+            onClick={openViewer}
+            onContextMenu={imageActions.handleContextMenu}
+          >
+            <img
+              className="read-image"
+              src={previewUrl}
+              alt="File content"
+              width={dimensions?.displayWidth}
+              height={dimensions?.displayHeight}
+            />
+          </button>
+        ) : (
+          <span className="file-line-count-inline">
+            {previewFailed
+              ? t("inlineImageUnavailable")
+              : t("inlineImageLoading")}
+          </span>
+        ))}
       {modalOpen ? (
         <LocalMediaModal
-          path={fileName}
+          path={inlineBase64 ? fileName : (filePath ?? fileName)}
           filePath={filePath ?? null}
           mediaType="image"
           mediaSource={mediaSource}
@@ -583,10 +625,22 @@ function PdfFileResult({
       <div className="read-pdf-result">
         <ReadFilePathSummary displayPath={displayPath} filePath={filePath}>
           {sizeKB > 0 && (
-            <span className="file-line-count-inline">({sizeKB}\u202fkb)</span>
+            <span className="file-line-count-inline">
+              ({sizeKB}
+              {"\u202f"}kb)
+            </span>
           )}
           <span className="file-line-count-inline">PDF</span>
         </ReadFilePathSummary>
+      </div>
+    );
+  }
+
+  const base64 = file.base64;
+  if (!base64) {
+    return (
+      <div className="read-pdf-result">
+        <span className="file-line-count-inline">PDF</span>
       </div>
     );
   }
@@ -596,11 +650,14 @@ function PdfFileResult({
       <button
         type="button"
         className="file-link-button"
-        onClick={() => openPdfInNewTab(file.base64)}
+        onClick={() => openPdfInNewTab(base64)}
       >
         {fileName}
         {sizeKB > 0 && (
-          <span className="file-line-count">({sizeKB}\u202fkb)</span>
+          <span className="file-line-count">
+            ({sizeKB}
+            {"\u202f"}kb)
+          </span>
         )}
         <span className="file-line-count">Open PDF</span>
       </button>
@@ -642,7 +699,10 @@ function ReadToolResult({
     enabled && validationErrors && !isToolIgnored("Read");
 
   if (isError || !result?.file) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className="read-error">
         {showValidationWarning && validationErrors && (
@@ -662,8 +722,8 @@ function ReadToolResult({
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
         <PdfFileResult
-          file={result.file as PdfFile}
-          filePath={input?.file_path}
+          file={result.file}
+          filePath={input?.file_path ?? result.file.filePath}
         />
       </>
     );
@@ -676,8 +736,8 @@ function ReadToolResult({
           <SchemaWarning toolName="Read" errors={validationErrors} />
         )}
         <ImageFileResult
-          file={result.file as ImageFile}
-          filePath={input?.file_path}
+          file={result.file}
+          filePath={input?.file_path ?? result.file.filePath}
         />
       </>
     );
@@ -838,31 +898,25 @@ function ReadInteractiveSummary({
   );
 }
 
-export const readRenderer: ToolRenderer<ReadInput, ReadResult> = {
+export const readRenderer = defineTool(toolDisplayContracts.Read, {
   tool: "Read",
 
   renderToolUse(input, _context) {
-    return <ReadToolUse input={input as ReadInput} />;
+    return <ReadToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context, input) {
-    return (
-      <ReadToolResult
-        input={input as ReadInput | undefined}
-        result={result as ReadResultWithAugment}
-        isError={isError}
-      />
-    );
+    return <ReadToolResult input={input} result={result} isError={isError} />;
   },
 
   getUseSummary(input) {
-    return getFileName((input as ReadInput).file_path);
+    return getFileName(input.file_path);
   },
 
   getResultSummary(result, isError, input?) {
-    if (isError && input) return getFileName((input as ReadInput).file_path);
+    if (isError && input) return getFileName(input.file_path);
     if (isError) return "Error";
-    const r = result as ReadResultWithAugment;
+    const r = result;
     if (!r?.file) return "Reading...";
     if (r.type === "pdf") return "PDF";
     if (r.type === "image") return "Image";
@@ -872,11 +926,7 @@ export const readRenderer: ToolRenderer<ReadInput, ReadResult> = {
 
   renderInteractiveSummary(input, result, isError, _context) {
     return (
-      <ReadInteractiveSummary
-        input={input as ReadInput}
-        result={result as ReadResultWithAugment | undefined}
-        isError={isError}
-      />
+      <ReadInteractiveSummary input={input} result={result} isError={isError} />
     );
   },
-};
+});

@@ -30,6 +30,7 @@ import {
   clampPatientPatienceSeconds,
   hasInvocationCandidate,
   isClaudeProviderName,
+  isLocalCommandEchoTurn,
   normalizeRecapAfterSeconds,
   stripPatientQueuePrefix,
 } from "@yep-anywhere/shared";
@@ -725,6 +726,21 @@ function isProviderRuntimeProgressMessage(message: SDKMessage): boolean {
   );
 }
 
+/** Control-plane updates are observable, but do not make a transcript unread. */
+function isProviderContentMessage(message: SDKMessage): boolean {
+  if (message.type === "system") {
+    switch (message.subtype) {
+      case "init":
+      case "commands_changed":
+      case "config_ack":
+      case "session_state_changed":
+      case "token_usage":
+        return false;
+    }
+  }
+  return true;
+}
+
 function getClaudeSessionStateChange(
   message: SDKMessage,
 ): ClaudeSessionState | null {
@@ -886,6 +902,9 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
   setMaxThinkingTokensFn?: (tokens: number | null) => Promise<void>;
   /** Function to change effort without restarting the provider process. */
+  publishAgentSelfSelectionFn?: (
+    selection: import("../agent-tools/protocol.js").AgentSelfSelection,
+  ) => void | Promise<void>;
   setEffortFn?: (effort?: EffortLevel) => Promise<void>;
   /** Whether effort changes can be published into an active provider turn. */
   effortUpdatesActiveTurn?: boolean;
@@ -918,6 +937,12 @@ export interface ProcessConstructorOptions extends ProcessOptions {
     command: string,
     argument?: string,
   ) => Promise<ProviderCommandResult>;
+  /**
+   * Whether this provider starts its session only when the first message
+   * arrives, so waiting for its session id before delivering input would wait
+   * for an event that message itself has to trigger.
+   */
+  providerInitializesOnFirstMessage?: boolean;
   /**
    * Publish the provider's real session id to environment bridges that affect
    * future tool shells spawned by the provider child process.
@@ -1071,6 +1096,7 @@ export class Process {
     | ((tokens: number | null) => Promise<void>)
     | null;
   /** Function to change effort without restarting the provider process. */
+  private publishAgentSelfSelectionFn: ProcessConstructorOptions["publishAgentSelfSelectionFn"];
   private setEffortFn: ((effort?: EffortLevel) => Promise<void>) | null;
   private effortUpdatesActiveTurn: boolean;
 
@@ -1100,6 +1126,7 @@ export class Process {
   private publishAgentctlSessionIdFn:
     | ((sessionId: string) => void | Promise<void>)
     | null;
+  private readonly providerStartsOnFirstMessage: boolean;
 
   /** Resolvers waiting for the real session ID */
   private sessionIdResolvers: Array<(id: string) => void> = [];
@@ -1114,6 +1141,8 @@ export class Process {
   private _lastMessageTime: Date;
   /** Timestamp of last real provider/SDK message; null until one arrives. */
   private _lastProviderMessageTime: Date | null;
+  /** Last provider content receipt, excluding command/configuration telemetry. */
+  private _lastProviderContentTime: Date | null = null;
   /** Timestamp of last Process state transition. */
   private _lastStateChangeTime: Date;
 
@@ -1234,6 +1263,7 @@ export class Process {
     this._thinking = options.thinking;
     this._effort = options.effort;
     this.setMaxThinkingTokensFn = options.setMaxThinkingTokensFn ?? null;
+    this.publishAgentSelfSelectionFn = options.publishAgentSelfSelectionFn;
     this.setEffortFn = options.setEffortFn ?? null;
     this.effortUpdatesActiveTurn = options.effortUpdatesActiveTurn === true;
     this.interruptFn = options.interruptFn ?? null;
@@ -1245,6 +1275,8 @@ export class Process {
     this._pidResolver = options.pid;
     this.setModelFn = options.setModelFn ?? null;
     this.runProviderCommandFn = options.runProviderCommandFn ?? null;
+    this.providerStartsOnFirstMessage =
+      options.providerInitializesOnFirstMessage === true;
     this.publishAgentctlSessionIdFn =
       options.publishAgentctlSessionIdFn ?? null;
     this._isProcessAlive = options.isProcessAlive ?? null;
@@ -1413,6 +1445,10 @@ export class Process {
   /** Last real provider message, or null before this Process observes one. */
   get lastProviderMessageTime(): Date | null {
     return this._lastProviderMessageTime;
+  }
+
+  get lastProviderContentTime(): Date | null {
+    return this._lastProviderContentTime;
   }
 
   get lastPromptCacheRefreshTime(): Date | null {
@@ -2148,6 +2184,10 @@ export class Process {
     }
 
     this.pendingEffortUpdate = { effort };
+    await this.publishAgentSelfSelectionFn?.({
+      effort: effort ?? null,
+      pendingEffort: true,
+    });
     const canDeferUntilBoundary =
       (this._state.type === "in-turn" ||
         this._state.type === "waiting-input") &&
@@ -2223,6 +2263,10 @@ export class Process {
       }
       if (this.pendingEffortUpdate === pending) {
         this.pendingEffortUpdate = null;
+        await this.publishAgentSelfSelectionFn?.({
+          effort: pending.effort ?? null,
+          pendingEffort: false,
+        });
       }
     }
   }
@@ -2370,11 +2414,25 @@ export class Process {
     return this.runProviderCommandFn !== null;
   }
 
+  /** Whether the provider has reported the canonical session id for this run. */
+  get providerSessionIdSettled(): boolean {
+    return this.sessionIdResolved;
+  }
+
+  /**
+   * Whether the provider is still waiting for its first message to start. A
+   * native command sent now would be the message that starts it, so it cannot
+   * be dispatched out of band ahead of that delivery.
+   */
+  get awaitingFirstMessageToStart(): boolean {
+    return this.providerStartsOnFirstMessage && !this.sessionIdResolved;
+  }
+
   async appendConversationContext(
     turns: ConversationContextTurn[],
   ): Promise<boolean> {
     if (!this.appendConversationContextFn) return false;
-    await this.waitForSessionId();
+    await this.waitForProviderSessionId();
     return this.appendConversationContextFn(turns);
   }
 
@@ -4759,6 +4817,9 @@ export class Process {
         const receivedAt = new Date();
         this._lastMessageTime = receivedAt;
         this._lastProviderMessageTime = receivedAt;
+        if (isProviderContentMessage(message)) {
+          this._lastProviderContentTime = receivedAt;
+        }
         this.recordNativeRecap(message, receivedAt);
         this.observeProviderRuntimeStatus(message, receivedAt);
         if (Array.isArray(message.slash_command_inventory)) {
@@ -4791,8 +4852,11 @@ export class Process {
 
         // Capture assistant text for the recap buffer (topics/recaps.md).
         // Stream_event partials are skipped — we only want completed assistant
-        // turns so the recap input is coherent.
-        if (message.type === "assistant") {
+        // turns so the recap input is coherent. A slash command's own output
+        // arrives in the same assistant shape but is neither agent prose nor
+        // agent activity, so it belongs in neither the recap buffer nor the
+        // activity counter.
+        if (message.type === "assistant" && !isLocalCommandEchoTurn(message)) {
           this._assistantActivityVersion += 1;
           const text = extractMessageText(message);
           if (text) {

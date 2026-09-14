@@ -19,7 +19,11 @@
  * for opt-in smoke conventions.
  */
 
-import type { ChildProcess, ExecException } from "node:child_process";
+import {
+  execFileSync,
+  type ChildProcess,
+  type ExecException,
+} from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -429,6 +433,13 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
   let failLoad = false;
   let extensionMethodCallback: ExtensionMethodCallback | null = null;
   let promptUpdates: Array<Record<string, unknown>> = [];
+  // Full `session/update` notifications, for cases that need the per-update
+  // `_meta` Grok attaches beside the update (its event id). Takes precedence
+  // over promptUpdates, which only carries the update body.
+  let promptNotifications: Array<{
+    update: Record<string, unknown>;
+    _meta?: Record<string, unknown>;
+  }> = [];
 
   // Minimal fake ACPClient that records calls and allows controlling flow
   class FakeACPClient {
@@ -505,7 +516,15 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
     }
     async prompt(_sessionId: string, _text: string) {
       promptCalls.push({ sessionId: _sessionId, text: _text });
-      if (this.updateCb && promptUpdates.length > 0) {
+      if (this.updateCb && promptNotifications.length > 0) {
+        for (const notification of promptNotifications) {
+          this.updateCb({
+            sessionId: _sessionId,
+            ...(notification._meta ? { _meta: notification._meta } : {}),
+            update: notification.update as never,
+          });
+        }
+      } else if (this.updateCb && promptUpdates.length > 0) {
         for (const update of promptUpdates) {
           this.updateCb({
             sessionId: _sessionId,
@@ -542,6 +561,7 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
     failLoad = false;
     extensionMethodCallback = null;
     promptUpdates = [];
+    promptNotifications = [];
     acpClientMock = vi.fn(() => new FakeACPClient());
 
     // Mock fs for isInstalled / findGrokPath to always succeed in these tests
@@ -613,6 +633,41 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
     session.abort();
     return session;
   }
+
+  function isBashAvailable(): boolean {
+    try {
+      execFileSync("bash", ["--version"], { stdio: "ignore" });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  function readAgentctlSessionId(connectEnv?: Record<string, string>): string {
+    const env = { ...process.env, ...connectEnv };
+    delete env.AGENTCTL_SESSION_ID;
+    if (connectEnv?.AGENTCTL_SESSION_ID) {
+      env.AGENTCTL_SESSION_ID = connectEnv.AGENTCTL_SESSION_ID;
+    }
+    delete env.BASH_ENV;
+    if (connectEnv?.BASH_ENV) env.BASH_ENV = connectEnv.BASH_ENV;
+    delete env.YEP_ORIGINAL_BASH_ENV;
+    if (connectEnv?.YEP_ORIGINAL_BASH_ENV) {
+      env.YEP_ORIGINAL_BASH_ENV = connectEnv.YEP_ORIGINAL_BASH_ENV;
+    }
+    return execFileSync(
+      "bash",
+      ["-c", 'printf "%s" "$' + '{AGENTCTL_SESSION_ID-}"'],
+      {
+        encoding: "utf-8",
+        env,
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+  }
+
+  const bashIt =
+    process.platform !== "win32" && isBashAvailable() ? it : it.skip;
 
   it("surfaces Grok command inventory through slash commands", async () => {
     const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
@@ -777,6 +832,58 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
         totalLines: 2,
       },
     });
+  });
+
+  it("keys streamed text and thinking on the update event id the transcript records", async () => {
+    const sessionId = "grok-stream-identity";
+    const chunk = (
+      eventSuffix: number,
+      sessionUpdate: string,
+      text: string,
+    ) => ({
+      update: { sessionUpdate, content: { type: "text", text } },
+      _meta: { eventId: `${sessionId}-${eventSuffix}` },
+    });
+    promptNotifications = [
+      chunk(44, "agent_thought_chunk", "Checking "),
+      chunk(45, "agent_thought_chunk", "host pressure."),
+      chunk(85, "agent_message_chunk", "Host is fine; "),
+      chunk(86, "agent_message_chunk", "relay is healthy."),
+      chunk(90, "agent_thought_chunk", "Now the queue."),
+    ];
+    const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
+    const session = await provider.startSession({
+      cwd: "/tmp",
+      initialMessage: { text: "look into the stall" },
+    });
+    const messages: SDKMessage[] = [];
+
+    try {
+      for await (const message of session.iterator) {
+        messages.push(message);
+        if (message.type === "result") break;
+      }
+    } finally {
+      session.abort();
+    }
+
+    // Same grouping and same ids as GrokSessionReader derives from the
+    // recorded updates, so a durable backfill merges instead of duplicating.
+    expect(
+      messages
+        .filter((message) => message.type === "assistant")
+        .map((message) => [message.uuid, message.message?.content]),
+    ).toEqual([
+      [
+        `grok-evt-${sessionId}-44`,
+        [{ type: "thinking", thinking: "Checking host pressure." }],
+      ],
+      [`grok-evt-${sessionId}-85`, "Host is fine; relay is healthy."],
+      [
+        `grok-evt-${sessionId}-90`,
+        [{ type: "thinking", thinking: "Now the queue." }],
+      ],
+    ]);
   });
 
   it("builds correct args for `grok agent stdio` including effort mapping", async () => {
@@ -1262,6 +1369,47 @@ describe("GrokACPProvider — ACP integration (mocked)", () => {
       session.abort();
     }
   });
+
+  bashIt("publishes AGENTCTL_SESSION_ID to Grok Bash tool shells", async () => {
+    const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
+    const session = await provider.startSession({
+      cwd: "/tmp",
+      initialMessage: { text: "hi" },
+    });
+    try {
+      const init = await session.iterator.next();
+      const sessionId = (init.value as { session_id?: string }).session_id;
+      expect(sessionId).toMatch(/^grok_ses_new_/);
+      expect(session.publishAgentctlSessionId).toBeTypeOf("function");
+      expect(connectCalls[0]?.env?.BASH_ENV).toBeTruthy();
+      expect(connectCalls[0]?.env?.AGENTCTL_SESSION_ID).toBeUndefined();
+      expect(readAgentctlSessionId(connectCalls[0]?.env)).toBe(sessionId);
+    } finally {
+      session.abort();
+    }
+  });
+
+  bashIt(
+    "seeds AGENTCTL_SESSION_ID in the Grok spawn env on resume",
+    async () => {
+      const provider = await loadFreshGrokProvider({ grokPath: "/fake/grok" });
+      const session = await provider.startSession({
+        cwd: "/tmp",
+        resumeSessionId: "existing_ses_123",
+      });
+      try {
+        await session.iterator.next();
+        expect(connectCalls[0]?.env?.AGENTCTL_SESSION_ID).toBe(
+          "existing_ses_123",
+        );
+        expect(readAgentctlSessionId(connectCalls[0]?.env)).toBe(
+          "existing_ses_123",
+        );
+      } finally {
+        session.abort();
+      }
+    },
+  );
 });
 
 /**

@@ -20,6 +20,11 @@
   transform: translateX(-50%);
 }
 
+.runtimeFloating {
+  /* Keep the navigation header reachable while the advisory is visible. */
+  top: calc(env(safe-area-inset-top, 0px) + 48px);
+}
+
 .inline {
   width: 100%;
   box-shadow: none;

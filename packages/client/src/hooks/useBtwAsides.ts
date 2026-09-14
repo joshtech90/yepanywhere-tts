@@ -168,9 +168,9 @@ function getLatestAssistantText(messages: Message[]): string | null {
 function findLatestBtwPromptIndex(messages: Message[]): number {
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     if (
-      getMessagePlainText(messages[index] ?? {}).includes(
-        BTW_ASIDE_PROMPT_MARKER,
-      )
+      isUserRole(messages[index]) &&
+      getBtwSideRequestFromPromptText(getMessagePlainText(messages[index])) !==
+        null
     ) {
       return index;
     }
@@ -181,9 +181,9 @@ function findLatestBtwPromptIndex(messages: Message[]): number {
 function findFirstBtwPromptIndex(messages: Message[]): number {
   for (let index = 0; index < messages.length; index += 1) {
     if (
-      getMessagePlainText(messages[index] ?? {}).includes(
-        BTW_ASIDE_PROMPT_MARKER,
-      )
+      isUserRole(messages[index]) &&
+      getBtwSideRequestFromPromptText(getMessagePlainText(messages[index])) !==
+        null
     ) {
       return index;
     }
@@ -192,7 +192,9 @@ function findFirstBtwPromptIndex(messages: Message[]): number {
 }
 
 function getBtwSideRequestFromPromptText(text: string): string | null {
-  const requestMarker = "[Side request]";
+  const isQuestion = text.startsWith("[YA question aside ");
+  if (!isQuestion && !text.includes(BTW_ASIDE_PROMPT_MARKER)) return null;
+  const requestMarker = isQuestion ? "[Question]" : "[Side request]";
   const requestIndex = text.indexOf(requestMarker);
   if (requestIndex < 0) {
     return null;
@@ -274,6 +276,7 @@ export function buildBtwAsideFollowupPrompt(prompt: string): string {
   return [
     BTW_ASIDE_PROMPT_MARKER,
     "(Continuing the side session. Mother remains responsible for the main task; refer to Mother's prior turns as 'Mother said ...'; share working directory with care; end with a short paste-ready report.)",
+    "The user is continuing this conversation; any earlier one-question-only limit no longer applies.",
     "",
     "[Side request]",
     prompt,

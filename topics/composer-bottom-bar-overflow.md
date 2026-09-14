@@ -78,8 +78,17 @@ they can reach a control.
   visible and able to reveal it.
 - The collapse tier should be based on measured rendered control widths, not
   viewport breakpoints. Sum the visible child widths and gaps for the left
-  control list, overflow affordance, and right control list, then advance tiers
-  only until that total fits the toolbar width.
+  control list, inline status, overflow affordance, and right control list.
+  Hide one control at a time until that total fits. Configured narrowing
+  priority sorts first; `COMPOSER_OVERFLOW_ORDER` supplies a fixed,
+  non-configurable tie-break order within a priority. One control hiding does
+  not hide its entire priority group. Only individually hidden controls appear
+  in the overflow menu, and widening or changing the control set recomputes
+  the required hidden set before paint.
+- Changes to the control set settle their measured collapse tier before the
+  browser paints, so typing never exposes an overlapping expanded intermediate
+  row. The active browser-debug performance readout reserves a constant width;
+  changing digit counts cannot move neighboring controls or overflow tiers.
 - Hidden controls must remain reachable by tap/click from the popup menu, not
   disappear.
 - The eligible set includes controls from both the left and right toolbar

@@ -407,8 +407,12 @@ export function sliceAtCompactAndUserTurnBoundaries(
   const turnSlice = sliceAtUserTurnBoundary(messages, tailTurns, fromMessageId);
   const turnSelectorMissing =
     fromMessageId !== undefined && turnSlice.messages.length === 0;
+  // A fromMessageId absent from this list is older than the window, or
+  // unknown. Compact scope still wins: the selector must not return an empty
+  // page that looks like the start of history. Provider compact-window reads
+  // omit the prefix, so an older-but-valid id looks missing here.
   const turnWins =
-    turnSelectorMissing ||
+    !turnSelectorMissing &&
     turnSlice.messages.length < compactSlice.messages.length;
   const selected = turnWins ? turnSlice : compactSlice;
   const hasOlderMessages = selected.pagination.hasOlderMessages;
@@ -426,7 +430,7 @@ export function sliceAtCompactAndUserTurnBoundaries(
         hasOlderMessages && firstId ? firstId : undefined,
       totalCompactions: compactSlice.pagination.totalCompactions,
       totalUserTurns: turnSlice.pagination.totalUserTurns,
-      ...(turnSelectorMissing || hasOlderMessages
+      ...(hasOlderMessages
         ? {
             truncatedBy: turnWins
               ? ("user_turn" as const)

@@ -240,3 +240,9 @@ Before any provider gains an in-app install/update command, its change must:
 
 Copying `CodexUpdateChecker` and changing the command is not a supported
 provider-update architecture.
+
+The Windows owner-generation probe reads process creation ticks directly through
+`System.Diagnostics.Process`, avoiding `Get-Process` module auto-loading. Its
+15-second cold-start deadline is bounded; failure to verify the current process
+still blocks admission and retains the PowerShell error as the startup cause.
+Other unavailable process generations remain unknown, never proof of stale ownership.

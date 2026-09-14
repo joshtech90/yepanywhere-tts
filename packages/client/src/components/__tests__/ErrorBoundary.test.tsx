@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { activityBus } from "../../lib/activityBus";
 import { ErrorBoundary, redactClientCrashUrl } from "../ErrorBoundary";
 
 function ThrowingSessionView(): never {
@@ -76,6 +77,42 @@ describe("ErrorBoundary", () => {
     expect(emitted).not.toContain("fatal-secret");
     expect(emitted).not.toContain("private.txt");
     expect(emitted).not.toContain("viewer-state");
+  });
+
+  it("copies the diagnostic from its header without expanding it", async () => {
+    render(
+      <ErrorBoundary>
+        <ThrowingSessionView />
+      </ErrorBoundary>,
+    );
+    await screen.findByText("0.7.0-server");
+    const details = screen.getByText("Diagnostic details").closest("details");
+    const copy = screen.getAllByRole("button", { name: "Copy Diagnostics" })[0];
+    expect(copy?.querySelector("svg")).toBeTruthy();
+    fireEvent.click(copy!);
+    await screen.findByText("Diagnostics Copied");
+    expect(details?.open).toBe(false);
+    expect(writeText).toHaveBeenCalledOnce();
+    expect(writeText).toHaveBeenCalledWith(
+      details?.querySelector("pre")?.textContent,
+    );
+  });
+
+  it("names the activity traffic the tab was reacting to", async () => {
+    activityBus.emitLocal("refresh", undefined);
+
+    render(
+      <ErrorBoundary>
+        <ThrowingSessionView />
+      </ErrorBoundary>,
+    );
+    await waitFor(() => expect(consoleError).toHaveBeenCalled());
+
+    const emitted = String(consoleError.mock.calls.at(-1)?.[0]);
+    expect(emitted).toMatch(
+      /Activity events before the crash \(newest first\): refresh \(local\) 0\.0s/,
+    );
+    expect(emitted).toContain("Tab: visible");
   });
 
   it("preserves the component stack and session render context", async () => {

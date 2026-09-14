@@ -1,0 +1,91 @@
+/* Aligned with the entry list's indent: 10px margin plus 8px padding. */
+.strip {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  margin: var(--space-1) 0 var(--space-2) 18px;
+}
+
+.row {
+  display: flex;
+  flex-flow: row wrap;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.item {
+  display: flex;
+  flex: none;
+  max-width: 220px;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.thumbnail {
+  display: block;
+  width: 100%;
+  max-width: 220px;
+  height: 120px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  cursor: zoom-in;
+}
+
+.thumbnail:hover {
+  border-color: var(--accent-color);
+}
+
+.thumbnail img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  user-select: none;
+}
+
+.placeholder {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  padding: var(--space-2);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.caption {
+  overflow: hidden;
+  color: var(--text-dimmed);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .strip {
+    margin-left: 11px;
+  }
+
+  .row {
+    flex-wrap: nowrap;
+    padding-bottom: var(--space-1);
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: thin;
+  }
+
+  .item {
+    max-width: 60vw;
+    scroll-snap-align: center;
+  }
+
+  .thumbnail {
+    width: 60vw;
+    max-width: 220px;
+  }
+}

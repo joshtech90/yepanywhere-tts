@@ -8,12 +8,54 @@ import type {
   ComposerDraftSignal,
 } from "../lib/composerDraftSignal";
 import { useSelectionQuoteAnchors } from "./useSelectionQuoteAnchors";
+import { registerMarkdownCopySource } from "../lib/markdownSelectionCopy";
 
 afterEach(() => {
   document.body.replaceChildren();
 });
 
 describe("useSelectionQuoteAnchors", () => {
+  it.each([
+    "src/example.ts",
+    "~/agents/topics/example.md",
+    "C:/other/example.ts",
+  ])(
+    "prefaces a selected file quote with its path and starting line: %s",
+    (filePath) => {
+      const container = document.createElement("div");
+      const sourceElement = document.createElement("pre");
+      const source = "unselected\nselected line\nnext line";
+      sourceElement.textContent = source;
+      container.append(sourceElement);
+      document.body.append(container);
+      const unregister = registerMarkdownCopySource(sourceElement, source, {
+        projectId: "project-1",
+        filePath,
+        contentStartLine: 40,
+      });
+      const range = document.createRange();
+      range.setStart(sourceElement.firstChild as Text, "unselected\n".length);
+      range.setEnd(sourceElement.firstChild as Text, source.length);
+      document.getSelection()?.addRange(range);
+      const onQuoteSelection = vi.fn((text: string) => text);
+      const { result } = renderHook(() =>
+        useSelectionQuoteAnchors({
+          containerRef: { current: container },
+          onQuoteSelection,
+          quoteClearSignal: 0,
+        }),
+      );
+
+      act(() => {
+        expect(result.current.applyQuoteFromSelection("c")).toBe(true);
+      });
+      expect(onQuoteSelection).toHaveBeenCalledWith(
+        `re: ${filePath}:41\n> selected line\n> next line\nc`,
+      );
+      unregister();
+    },
+  );
+
   it("subscribes only while a quote anchor is live", () => {
     const sourceElement = document.createElement("div");
     const textNode = document.createTextNode("Selected text");

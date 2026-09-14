@@ -42,6 +42,16 @@ export interface ProviderCapabilities {
    * defaults to false. See topics/stream-durable-id-dedup.md.
    */
   dedupQueueOperationEchoes?: boolean;
+
+  /**
+   * Whether the provider mints its own durable user-turn id with no hook for
+   * YA to supply or predict one, so an optimistic self-send echo can never
+   * dedup by id against its durable copy. When true, the client pairs each
+   * durable user row with the in-order run of unconfirmed self-send echoes
+   * whose text it exactly reproduces. Grok only; defaults to false. See
+   * topics/stream-durable-id-dedup.md.
+   */
+  dedupSelfSendUserEchoes?: boolean;
 }
 
 /**

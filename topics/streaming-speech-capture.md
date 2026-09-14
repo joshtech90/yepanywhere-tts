@@ -182,6 +182,25 @@ settings surface):
   follow-up listening ends; the visibility-scoped idle stream remains under the
   ordinary warm-mic contract.
 
+  The first user-started capture already uses this shared stream when
+  follow-up is enabled; follow-up alone never triggers speculative prewarm.
+  During automatic-send finalization, retain the device until transcript
+  delivery has synchronously established the next turn's warm ownership.
+  The coordinator owns this retention across composer navigation. A missing
+  final response releases temporary ownership after five seconds, salvages
+  recognized text, and does not send. Manual stop, disconnect, and disposal
+  also release the handoff. The audio graph and socket remain per-dictation;
+  retaining a device does not buffer speech during the finalization gap.
+  Non-empty partial or final text marks a follow-up as speech-started, without
+  depending on a backend-specific status transition.
+
+  With playback reduction enabled, an open YA microphone stream itself owns
+  the YA-media mute. Only actual track closure releases that ownership, even
+  if the composer has become idle or unmounted. Explicit track stop and
+  browser-originated track termination both restore playback when the last
+  capture owner ends. This extends to intentionally retained idle warm mics;
+  system-wide audio focus remains controlled by the tablet OS/browser.
+
   Settings copy should name this visibility scope. Prefer wording like "Keep
   this browser's microphone stream ready while this tab is visible between
   server-routed dictations. The browser may show the mic indicator while the

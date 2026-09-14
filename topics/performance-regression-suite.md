@@ -121,6 +121,8 @@ provider-runtime worker exercises YA's real runtime host, proxy, supervisor,
 subscription, augmentation, and idle release. It must produce the configured
 thinking-capable stream, raw final message, and same-id enriched replacement,
 then release verified-idle ownership after the final viewer unsubscribes.
+Its semantic-action replay also launches Chromium, so CI must install the
+Playwright browser for this driver as well as the browser and built-client legs.
 
 The public-share leg creates a real frozen share against a local simulated
 relay, verifies bounded chunk metadata, drives the configured reader herd
@@ -140,6 +142,27 @@ multi-quality score.
 Routine server/browser/built-client runs use an in-process post-provider mock
 and disable provider discovery. They cannot support claims about provider
 startup, parsing, transcript production, or provider teardown.
+Standalone mock legs do not bootstrap a detached provider host. The specialized
+wrapper explicitly supplies its simulated host and owns that host's teardown.
+
+## Performance Measurement Hosts
+
+Before treating benchmark output as regression evidence, follow this topic.
+The host need not be fully uncontended, but the run must record its automatic
+capacity key plus start/end CPU pressure, load, available physical/effective
+RAM, and swap evidence, with
+enough headroom for the scenario. If contention is uncertain, run a small
+speculative sample first and expand only when it reproduces. Compare historical
+baselines and machine-specific ratchets only within one capacity key; portable
+checked-in ceilings may run on any host whose samples show enough headroom, but
+they are not same-machine historical evidence.
+
+Small low-cost cloud instances may be created for performance verification
+without a separate permission question. The launch still gets the normal
+big-effect gate record and must install an external TTL or cleanup guard before
+the instance starts. Record provider, region, instance class, and instance ID;
+verify deletion after success or failure, including attached disks, reserved
+addresses, and other paid resources.
 
 ## Host capacity and history
 
@@ -265,3 +288,37 @@ not provider speed. A one-second reap scenario does not establish multi-hour
 timer stability. Provider-backed timing, adapter parsing, transcript-write
 behavior, long-duration timer drift, and remote-relay effects require live
 calibration or a lower harness-level simulator.
+
+Session-detail `ya-metadata` measures dynamic commands, queue summaries and fresh
+provider child-session reads independently of `ya-route` slicing and anchor
+lookup. Suite version 9 includes that phase in non-overlapping totals and keeps
+the fleet append 5 ms route ceiling alongside a 40 ms metadata ceiling. Older
+execution revisions retain their original combined route clock.
+
+The specialized public-share byte budget includes safe assistant Markdown HTML
+introduced by `ced769acc` (see [public transcript media](media-rendering-and-routing.md#read-only-shares)).
+CI run [34479361388](https://github.com/kzahel/yepanywhere/actions/runs/34479361388)
+measured 19.114 MiB for all three eight-response herds, versus the pre-feature
+13.107 MiB baseline. The 24 MiB ceiling replaces that obsolete 16 MiB budget;
+the harness also requires rendered assistant Markdown and reports its byte
+contribution, so removing rendering cannot masquerade as an optimization.
+
+The simulated provider persists its deterministic user/assistant fixture rows
+before publishing each final assistant/result pair. Browser REST catch-up can
+therefore read the same stable message IDs even between live-process snapshots.
+This fixture writer is part of the simulated leg; the real provider SDK's writer
+remains outside the measured boundary. The no-browser-diagnostics assertion and
+verified-idle release assertion remain required.
+
+Semantic browser setup and replay run with idle reaping disabled. After Chromium
+closes, the specialized driver sets the one-second deadline through the public
+settings API, verifies the remaining raw subscriber retains the idle provider
+past that deadline, then measures release after its final unsubscribe. Failures
+include the owned-server diagnostic tail rather than discarding that evidence.
+
+The owned fixture creates its session with explicit `thinking: "off"`,
+matching the browser's initial setting for the simulated model. An unspecified
+launch value followed by the browser's explicit off value is a real
+launch-setting change and restarts the worker, which invalidates this replay's
+stable-process and prior-turn assumptions. The deterministic worker still emits
+its synthetic thinking block to exercise that transport/rendering shape.

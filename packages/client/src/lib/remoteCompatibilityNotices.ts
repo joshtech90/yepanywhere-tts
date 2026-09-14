@@ -1,3 +1,9 @@
+import {
+  isSupportedServerRuntime,
+  type ServerRuntimeInfo,
+} from "@yep-anywhere/shared/server-runtime";
+import type { TranslationFn } from "../i18n";
+
 export type RemoteNoticeSeverity =
   | "info"
   | "recommended"
@@ -29,6 +35,11 @@ export type RemoteInstallSource =
   | "unknown";
 
 export interface RemoteCompatibilityInput {
+  runtimeNotice?: {
+    runtime?: ServerRuntimeInfo;
+    sourceKey: string;
+    t: TranslationFn;
+  };
   currentVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;
@@ -81,11 +92,13 @@ interface ParsedSemver {
 export function getRemoteCompatibilityNotices(
   input: RemoteCompatibilityInput,
 ): RemoteCompatibilityNotice[] {
-  if (!input.relayUsername) {
-    return [];
-  }
-
-  const notices: RemoteCompatibilityNotice[] = [];
+  const runtimeNotice = getRuntimeNotice(input.runtimeNotice);
+  const notices: RemoteCompatibilityNotice[] = runtimeNotice
+    ? [runtimeNotice]
+    : [];
+  // Existing protocol/update notices remain relay-specific. Runtime guidance
+  // also applies to authenticated direct and same-origin clients.
+  if (!input.relayUsername) return notices;
   const current = parseSemver(input.currentVersion);
   const remoteCompatibilityLevel = getRemoteCompatibilityLevel(input);
   const requiredRemoteCompatibilityLevel =
@@ -285,6 +298,7 @@ function getNoticePriority(id: string): number {
   if (id === "relay-resume-security" || id === "relay-resume-v3-grace") {
     return 0;
   }
+  if (id === "server-runtime-node22") return 0.5;
   if (id.startsWith("remote-compat-")) return 1;
   if (id.startsWith("backend-api-compat-")) return 2;
   if (id === "remote-update-available") return 3;
@@ -470,4 +484,49 @@ function buildDismissKey(
     input.installId?.trim() ||
     (input.relayUsername ? `relay-${input.relayUsername}` : "unknown-server");
   return `remote-notice-dismissed:${scope}:${noticeId}:${state}`;
+}
+
+/** Advisory only: never changes capability checks, update actions or login. */
+function getRuntimeNotice(
+  input: RemoteCompatibilityInput["runtimeNotice"],
+): RemoteCompatibilityNotice | null {
+  if (!input) return null;
+  const { runtime, sourceKey, t } = input;
+  if (runtime && isSupportedServerRuntime(runtime)) return null;
+  const kind =
+    runtime?.version && (runtime.kind === "node" || runtime.kind === "bun")
+      ? runtime.kind
+      : "unknown";
+  const id = "server-runtime-node22";
+  return {
+    id,
+    severity: "recommended",
+    title: t(
+      kind === "node"
+        ? "runtimeNoticeNodeTitle"
+        : kind === "bun"
+          ? "runtimeNoticeBunTitle"
+          : "runtimeNoticeUnknownTitle",
+    ),
+    body: t(
+      kind === "node"
+        ? "runtimeNoticeNodeBody"
+        : kind === "bun"
+          ? "runtimeNoticeBunBody"
+          : "runtimeNoticeUnknownBody",
+    ),
+    ...(kind !== "unknown"
+      ? {
+          versionSummary: t("runtimeNoticeObserved", {
+            runtime: kind === "bun" ? "Bun" : "Node.js",
+            version: runtime?.version ?? "",
+          }),
+        }
+      : {}),
+    action: {
+      label: t("runtimeNoticeInstructions"),
+      href: "https://github.com/kzahel/yepanywhere/blob/main/topics/server-runtime.md#upgrading-a-remote-server",
+    },
+    dismissKey: `remote-notice-dismissed:${encodeURIComponent(sourceKey)}:${id}:${kind}:${runtime?.version ?? "metadata-absent"}`,
+  };
 }

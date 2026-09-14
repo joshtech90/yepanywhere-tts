@@ -134,7 +134,7 @@ test("keeps the viewer open and responsive across session width changes", async 
     await expect(quoteButtons.last()).toBeVisible();
     await quoteButtons.last().click();
     await expect(page.locator("[data-composer-input]")).toHaveValue(
-      "> Paragraph 3000 keeps enough wrapping text in the expanded viewer to exercise responsive layout.\n",
+      `re: ${externalReadmePath}:6003\n> Paragraph 3000 keeps enough wrapping text in the expanded viewer to exercise responsive layout.\n`,
     );
     await expect(viewer).toBeVisible();
     await capture(page, "desktop-1000-large-resize");

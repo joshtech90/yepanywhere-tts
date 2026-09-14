@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "@yep-anywhere/shared/sqlite";
 import { afterEach, describe, expect, it } from "vitest";
 import { createDatabase, createTestDatabase } from "../src/db.js";
 import { PushRepository, SubscriptionLimitError } from "../src/repository.js";
@@ -14,11 +14,12 @@ const TARGET: PushTarget = {
 };
 
 describe("PushRepository", () => {
-  let db: Database.Database | undefined;
+  let db: SqliteDatabase | undefined;
   let temporaryDirectory: string | undefined;
 
   afterEach(() => {
-    if (db?.open) db.close();
+    // The shared adapter's close is idempotent, so no open check is needed.
+    db?.close();
     db = undefined;
     if (temporaryDirectory) {
       rmSync(temporaryDirectory, { recursive: true, force: true });
@@ -41,18 +42,19 @@ describe("PushRepository", () => {
          JOIN subscriptions
            ON subscriptions.installation_id = installations.id`,
       )
-      .get() as { auth_hash: Buffer; send_hash: Buffer };
+      .get<{ auth_hash: Uint8Array; send_hash: Uint8Array }>();
+    if (!row) throw new Error("expected one joined installation row");
 
-    expect(Buffer.isBuffer(row.auth_hash)).toBe(true);
-    expect(Buffer.isBuffer(row.send_hash)).toBe(true);
+    // Built-in SQLite returns BLOB columns as Uint8Array, not Node Buffer.
+    const decode = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+    expect(row.auth_hash).toBeInstanceOf(Uint8Array);
+    expect(row.send_hash).toBeInstanceOf(Uint8Array);
     expect(row.auth_hash).toHaveLength(32);
     expect(row.send_hash).toHaveLength(32);
-    expect(row.auth_hash.toString("utf8")).not.toContain(
+    expect(decode(row.auth_hash)).not.toContain(
       installation.installationSecret,
     );
-    expect(row.send_hash.toString("utf8")).not.toContain(
-      subscription.sendSecret,
-    );
+    expect(decode(row.send_hash)).not.toContain(subscription.sendSecret);
   });
 
   it("authenticates installations and atomically replaces their target", () => {

@@ -9,6 +9,18 @@ import {
 } from "../FixedFontMathToggle";
 
 describe("FixedFontMathToggle", () => {
+  it("keeps JSON strings and ACLI declarations out of inferred rich prose", () => {
+    for (const source of [
+      '{"text":"**bold** and $x$ and [notes](notes.md)"}',
+      '# acli: 1 complete\n{"ok":true}\n',
+    ]) {
+      const rendered = renderFixedFontRichContent(source);
+      expect(rendered.changed).toBe(false);
+      expect(rendered.html).not.toContain("<strong>");
+      expect(rendered.html).not.toContain("katex");
+    }
+  });
+
   afterEach(() => {
     cleanup();
     window.localStorage.removeItem(UI_KEYS.tooltipMode);

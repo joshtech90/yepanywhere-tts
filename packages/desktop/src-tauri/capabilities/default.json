@@ -5,7 +5,6 @@
   "windows": ["main", "server-output", "diagnostics"],
   "permissions": [
     "core:default",
-    "updater:default",
     "process:allow-restart",
     "autostart:allow-enable",
     "autostart:allow-disable",
@@ -25,6 +24,11 @@
     "allow-open-server-output-window",
     "allow-open-diagnostics-window",
     "allow-open-updater-window",
+    "allow-get-update-channel",
+    "allow-set-update-channel",
+    "allow-clear-update",
+    "allow-check-update",
+    "allow-install-update",
     "allow-quit-app"
   ]
 }

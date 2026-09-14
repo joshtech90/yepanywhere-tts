@@ -151,6 +151,28 @@ describe("ClientLogCollector", () => {
     });
   });
 
+  it("attributes every entry to the writing tab", async () => {
+    await collector.start();
+    console.log("[ConnectionManager] connected");
+    await new Promise((r) => setTimeout(r, 10));
+
+    vi.mocked(fetchJSON).mockResolvedValueOnce({ received: 3 });
+    await collector.flush();
+
+    const body = JSON.parse(
+      vi.mocked(fetchJSON).mock.calls[0]?.[1]?.body as string,
+    );
+    const tabIds = new Set(
+      body.entries.map((e: { tabId?: string }) => e.tabId),
+    );
+    expect(tabIds.size).toBe(1);
+    const [tabId] = [...tabIds] as (string | undefined)[];
+    expect(tabId).toBeTruthy();
+    // The id is the tab's, so a reload of this tab keeps the same series while
+    // a second tab of the same origin gets its own.
+    expect(sessionStorage.getItem("yep-anywhere-tab-id")).toBe(tabId);
+  });
+
   it("restores console on stop", async () => {
     await collector.start();
     expect(console.log).not.toBe(testLog);

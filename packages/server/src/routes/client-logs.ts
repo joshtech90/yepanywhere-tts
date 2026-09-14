@@ -12,6 +12,8 @@ interface LogEntry {
   level: string;
   prefix: string;
   message: string;
+  /** Which tab wrote the entry; one device's tabs share a collection queue. */
+  tabId?: string;
 }
 
 interface ClientLogsBody {

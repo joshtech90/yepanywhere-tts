@@ -12,7 +12,10 @@ import type {
   ToolApprovalResult,
   UserMessage,
 } from "../types.js";
-import { pickBrowserDebugAgentEnvironment } from "./agentctl-session-env.js";
+import {
+  pickStaticAgentEnvironment,
+  type AgentctlSessionEnvBridge,
+} from "./agentctl-session-env.js";
 import type {
   AgentSession,
   ProviderSessionOptions,
@@ -54,6 +57,12 @@ interface AuxiliarySubmission {
   lastProviderEventSequence?: number;
 }
 
+interface DeferredSubmission {
+  submissionId: string;
+  userMessage: UserMessage;
+  sessionOptions: Required<ProviderSessionOptions>;
+}
+
 interface AttachedController {
   id: string;
   generation: string;
@@ -73,6 +82,7 @@ export interface ProviderSessionReadyMetadata {
   providerActivity: ProviderActivitySnapshot;
   providerRetention: ProviderRetentionSnapshot;
   capabilities: {
+    publishAgentSelfSelection?: boolean;
     probeLiveness: boolean;
     getProviderActivity: boolean;
     getProviderRetention: boolean;
@@ -106,6 +116,11 @@ export interface ProviderSessionStartResult {
   session: AgentSession;
   sandbox?: ProviderSessionSandboxMetadata;
   diagnostics?: Record<string, unknown>;
+  /**
+   * Host-owned Bash bridge so every hosted provider publishes
+   * `AGENTCTL_SESSION_ID`, including adapters that have no session method.
+   */
+  agentctlSessionEnvBridge?: AgentctlSessionEnvBridge;
 }
 
 export type StartOwnedProviderSession = (
@@ -123,6 +138,7 @@ export interface ProviderSessionAttachedState {
   protocolVersion: number;
   runtimeId: string;
   acknowledgedSequence: number;
+  activeProviderTurn: boolean;
   queueDepth: number;
   providerAlive: boolean;
   providerActivity: ProviderActivitySnapshot;
@@ -168,11 +184,13 @@ export class ProviderSessionOwner {
   private observesQueueYield = false;
   private activeProviderTurn = false;
   private auxiliarySubmission: AuxiliarySubmission | null = null;
+  private deferredSubmissions: DeferredSubmission[] = [];
   private browserDebugEnvironment: Record<string, string> = {};
   private iteratorStarted = false;
   private terminalSignalled = false;
   private sandboxMetadata: ProviderSessionSandboxMetadata | undefined;
   private diagnostics: Record<string, unknown> | undefined;
+  private agentctlSessionEnvBridge: AgentctlSessionEnvBridge | null = null;
 
   constructor(private readonly options: ProviderSessionOwnerOptions) {}
 
@@ -181,7 +199,7 @@ export class ProviderSessionOwner {
     initialBrowserDebugEnvironment?: Record<string, string>,
   ): Promise<ProviderSessionReadyMetadata> {
     if (this.session) throw new Error("Provider session owner already started");
-    this.browserDebugEnvironment = pickBrowserDebugAgentEnvironment(
+    this.browserDebugEnvironment = pickStaticAgentEnvironment(
       initialBrowserDebugEnvironment,
     );
     const result = await startSession({
@@ -203,6 +221,7 @@ export class ProviderSessionOwner {
     this.session = result.session;
     this.sandboxMetadata = result.sandbox;
     this.diagnostics = result.diagnostics;
+    this.agentctlSessionEnvBridge = result.agentctlSessionEnvBridge ?? null;
     this.reportProviderPid();
     this.providerActivity = result.session.getProviderActivity?.() ?? {};
     this.providerRetention = result.session.getProviderRetention?.() ?? {
@@ -230,11 +249,14 @@ export class ProviderSessionOwner {
       providerActivity: this.providerActivity,
       providerRetention: this.providerRetention,
       capabilities: {
+        publishAgentSelfSelection: Boolean(session.publishAgentSelfSelection),
         probeLiveness: Boolean(session.probeLiveness),
         getProviderActivity: Boolean(session.getProviderActivity),
         getProviderRetention: Boolean(session.getProviderRetention),
         refreshPromptCache: Boolean(session.refreshPromptCache),
-        publishAgentctlSessionId: Boolean(session.publishAgentctlSessionId),
+        publishAgentctlSessionId: Boolean(
+          session.publishAgentctlSessionId || this.agentctlSessionEnvBridge,
+        ),
         steer: Boolean(session.steer),
         appendConversationContext: Boolean(session.appendConversationContext),
         setMaxThinkingTokens: Boolean(session.setMaxThinkingTokens),
@@ -374,6 +396,7 @@ export class ProviderSessionOwner {
       protocolVersion: PROVIDER_SESSION_PROTOCOL_VERSION,
       runtimeId: this.options.runtimeId,
       acknowledgedSequence: this.acknowledgedSequence,
+      activeProviderTurn: this.activeProviderTurn,
       queueDepth: this.queueDepth,
       providerAlive: this.providerAlive,
       providerActivity: this.providerActivity,
@@ -394,7 +417,10 @@ export class ProviderSessionOwner {
         };
         this.reportProviderPid();
         this.bufferEvent(message);
-        if (message.type === "result") this.activeProviderTurn = false;
+        if (message.type === "result") {
+          this.activeProviderTurn = false;
+          this.drainDeferredSubmissions();
+        }
       }
       if (this.shuttingDown) return;
       this.providerAlive = false;
@@ -423,6 +449,10 @@ export class ProviderSessionOwner {
       typeof message.session_id === "string"
     ) {
       this.providerSessionId = message.session_id;
+      this.agentctlSessionEnvBridge?.publishSessionId(
+        message.session_id,
+        this.browserDebugEnvironment,
+      );
     }
     const sequence = ++this.sequence;
     const bytes = Buffer.byteLength(JSON.stringify(message));
@@ -481,6 +511,7 @@ export class ProviderSessionOwner {
     this.unsubscribeQueueDepth = concrete.subscribeDepth((depth) => {
       this.queueDepth = depth;
       this.emitController({ type: "queueDepth", depth });
+      queueMicrotask(() => this.drainDeferredSubmissions());
     });
     if (typeof concrete.subscribeRemoved === "function") {
       this.unsubscribeQueueRemoved = concrete.subscribeRemoved((messages) => {
@@ -576,8 +607,18 @@ export class ProviderSessionOwner {
       reject("rejected", providerSessionErrorMessage(error));
       return;
     }
-    if (!this.providerAlive || !this.session) {
-      reject("unavailable", "Provider session is not alive");
+    if (
+      !this.providerAlive ||
+      !this.session ||
+      this.shuttingDown ||
+      this.terminalSignalled
+    ) {
+      reject(
+        message.eventual === true || message.liveOnly === true
+          ? "not-alive"
+          : "unavailable",
+        "Provider session is not alive",
+      );
       return;
     }
     if (!this.observesQueueYield) {
@@ -587,8 +628,27 @@ export class ProviderSessionOwner {
       );
       return;
     }
+    if (message.eventual === true) {
+      if (this.deferredSubmissions.length >= 1000) {
+        reject("busy", "Provider deferred submission queue is full");
+        return;
+      }
+      this.deferredSubmissions.push({
+        submissionId,
+        userMessage,
+        sessionOptions: requestedSessionOptions,
+      });
+      this.emitSupervisor({
+        type: "sessionTurnAccepted",
+        submissionId,
+        delivery: "queued",
+      });
+      this.drainDeferredSubmissions();
+      return;
+    }
     if (
       this.auxiliarySubmission ||
+      this.deferredSubmissions.length > 0 ||
       this.activeProviderTurn ||
       this.queueDepth > 0
     ) {
@@ -602,6 +662,42 @@ export class ProviderSessionOwner {
       );
       return;
     }
+    await this.startAuxiliarySubmission(
+      submissionId,
+      userMessage,
+      requestedSessionOptions,
+      false,
+    );
+  }
+
+  private drainDeferredSubmissions(): void {
+    if (
+      this.shuttingDown ||
+      this.terminalSignalled ||
+      !this.providerAlive ||
+      this.auxiliarySubmission ||
+      this.activeProviderTurn ||
+      this.queueDepth > 0 ||
+      this.pendingApprovals.size > 0
+    )
+      return;
+    const next = this.deferredSubmissions.shift();
+    if (next)
+      void this.startAuxiliarySubmission(
+        next.submissionId,
+        next.userMessage,
+        next.sessionOptions,
+        true,
+      );
+  }
+
+  private async startAuxiliarySubmission(
+    submissionId: string,
+    userMessage: UserMessage,
+    requestedSessionOptions: Required<ProviderSessionOptions>,
+    alreadyAccepted: boolean,
+  ): Promise<void> {
+    const session = this.requireSession();
     const messageUuid = randomUUID();
     const tempId = `provider-host:${submissionId}`;
     const auxiliarySubmission: AuxiliarySubmission = {
@@ -613,20 +709,27 @@ export class ProviderSessionOwner {
     this.auxiliarySubmission = auxiliarySubmission;
     let sessionOptionsResult: ProviderSessionOptionsUpdateResult;
     try {
-      sessionOptionsResult = this.session.setSessionOptions
-        ? await this.session.setSessionOptions(requestedSessionOptions)
+      sessionOptionsResult = session.setSessionOptions
+        ? await session.setSessionOptions(requestedSessionOptions)
         : unknownProviderSessionOptionsResult(
             requestedSessionOptions,
             "This provider adapter has no session-option control implementation",
           );
     } catch (error) {
-      if (this.auxiliarySubmission === auxiliarySubmission) {
+      if (this.auxiliarySubmission !== auxiliarySubmission) return;
+      const detail = `Provider session options failed: ${providerSessionErrorMessage(error)}`;
+      if (alreadyAccepted)
+        this.finishAuxiliarySubmission("provider-failed", detail);
+      else {
         this.auxiliarySubmission = null;
+        this.emitSupervisor({
+          type: "sessionTurnRejected",
+          submissionId,
+          outcome: "rejected",
+          error: detail,
+        });
       }
-      reject(
-        "rejected",
-        `Provider session options failed: ${providerSessionErrorMessage(error)}`,
-      );
+      this.drainDeferredSubmissions();
       return;
     }
     if (this.auxiliarySubmission !== auxiliarySubmission) return;
@@ -636,7 +739,7 @@ export class ProviderSessionOwner {
       tempId,
     });
     this.emitSupervisor({
-      type: "sessionTurnAccepted",
+      type: alreadyAccepted ? "sessionTurnReady" : "sessionTurnAccepted",
       submissionId,
       sessionOptionsResult,
     });
@@ -645,6 +748,18 @@ export class ProviderSessionOwner {
   private async interruptAuxiliarySubmission(
     submissionId: string,
   ): Promise<void> {
+    const deferredIndex = this.deferredSubmissions.findIndex(
+      (item) => item.submissionId === submissionId,
+    );
+    if (deferredIndex >= 0) {
+      this.deferredSubmissions.splice(deferredIndex, 1);
+      this.emitSupervisor({
+        type: "sessionTurnTerminal",
+        submissionId,
+        outcome: "interrupted",
+      });
+      return;
+    }
     const auxiliary = this.auxiliarySubmission;
     if (!auxiliary || auxiliary.submissionId !== submissionId) return;
     if (!auxiliary.started) {
@@ -679,6 +794,7 @@ export class ProviderSessionOwner {
       providerSessionId: this.session?.sessionId,
       lastProviderEventSequence: auxiliary.lastProviderEventSequence,
     });
+    queueMicrotask(() => this.drainDeferredSubmissions());
   }
 
   private acknowledge(sequence: number): void {
@@ -708,6 +824,10 @@ export class ProviderSessionOwner {
     const session = this.requireSession();
     const args = Array.isArray(rawArgs) ? rawArgs : [];
     switch (method) {
+      case "publishAgentSelfSelection":
+        return await session.publishAgentSelfSelection?.(
+          args[0] as import("../../agent-tools/protocol.js").AgentSelfSelection,
+        );
       case "drainQueue":
         return session.queue.drain();
       case "probeLiveness":
@@ -724,10 +844,14 @@ export class ProviderSessionOwner {
           typeof requestedEnvironment === "object" &&
           !Array.isArray(requestedEnvironment)
         ) {
-          this.browserDebugEnvironment = pickBrowserDebugAgentEnvironment(
+          this.browserDebugEnvironment = pickStaticAgentEnvironment(
             requestedEnvironment as Record<string, string>,
           );
         }
+        this.agentctlSessionEnvBridge?.publishSessionId(
+          sessionId,
+          this.browserDebugEnvironment,
+        );
         await session.publishAgentctlSessionId?.(
           sessionId,
           this.browserDebugEnvironment,
@@ -894,6 +1018,7 @@ export class ProviderSessionOwner {
 
   async shutdown(reason: string): Promise<void> {
     if (this.shuttingDown) return await this.shuttingDown;
+    this.providerAlive = false;
     this.shuttingDown = (async () => {
       for (const pending of this.pendingApprovals.values()) {
         pending.removeAbortListener();
@@ -911,7 +1036,17 @@ export class ProviderSessionOwner {
       this.unsubscribeQueueYielded?.();
       this.unsubscribeQueueYielded = null;
       this.finishAuxiliarySubmission("interrupted");
+      for (const deferred of this.deferredSubmissions.splice(0)) {
+        this.emitSupervisor({
+          type: "sessionTurnTerminal",
+          submissionId: deferred.submissionId,
+          outcome: "not-alive",
+          error: "Provider runtime ended before the queued turn started",
+        });
+      }
       await Promise.resolve(this.session?.abort()).catch(() => {});
+      this.agentctlSessionEnvBridge?.cleanup();
+      this.agentctlSessionEnvBridge = null;
       this.attachedController = null;
     })();
     return await this.shuttingDown;

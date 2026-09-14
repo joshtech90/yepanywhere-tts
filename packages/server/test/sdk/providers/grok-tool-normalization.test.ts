@@ -324,4 +324,127 @@ describe("Grok tool normalization", () => {
       },
     });
   });
+
+  it("reports a polled background command as one finished task", () => {
+    const state = normalizeGrokToolUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "poll-1",
+      rawInput: { variant: "TaskOutput", task_ids: ["task-7"], timeout_ms: 0 },
+      ...toolMeta("get_command_or_subagent_output", "task", "Task Output"),
+    });
+
+    expect(state.input).toMatchObject({
+      task_id: "task-7",
+      task_ids: ["task-7"],
+    });
+
+    const result = buildGrokStructuredToolResult(
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "poll-1",
+        status: "completed",
+        rawOutput: {
+          type: "TaskOutput",
+          Result: {
+            task_id: "task-7",
+            command: "pnpm lint",
+            status: "completed",
+            exit_code: 0,
+            output: "ok\n",
+          },
+        },
+      },
+      state,
+    );
+
+    expect(result).toMatchObject({
+      retrieval_status: "completed",
+      task: {
+        task_id: "task-7",
+        task_type: "local_bash",
+        status: "completed",
+        description: "pnpm lint",
+        output: "ok\n",
+        exitCode: 0,
+      },
+      tasks: [{ task_id: "task-7", status: "completed" }],
+    });
+  });
+
+  it("keeps every task a multi-task wait returned", () => {
+    const result = buildGrokStructuredToolResult({
+      sessionUpdate: "tool_call_update",
+      toolCallId: "poll-2",
+      status: "completed",
+      rawOutput: {
+        type: "TaskOutput",
+        MultiResult: {
+          mode: "wait_all",
+          results: [
+            {
+              task_id: "task-1",
+              command: "pnpm lint",
+              status: "completed",
+              exit_code: 0,
+              output: "lint ok\n",
+            },
+            {
+              task_id: "task-2",
+              command: "pnpm typecheck",
+              status: "running",
+              output: "",
+            },
+          ],
+        },
+      },
+    });
+
+    expect(result).toMatchObject({
+      // One task is still going, so the poll as a whole has not finished.
+      retrieval_status: "running",
+      mode: "wait_all",
+      tasks: [
+        { task_id: "task-1", status: "completed", exitCode: 0 },
+        { task_id: "task-2", status: "running", exitCode: null },
+      ],
+    });
+  });
+
+  it("names the killed task by the shell id the launch row carries", () => {
+    const state = normalizeGrokToolUpdate({
+      sessionUpdate: "tool_call",
+      toolCallId: "kill-1",
+      rawInput: { variant: "KillTask", task_id: "task-9" },
+      ...toolMeta("kill_command_or_subagent", "task", "Kill Task"),
+    });
+
+    expect(state.input).toMatchObject({
+      task_id: "task-9",
+      shell_id: "task-9",
+    });
+
+    const result = buildGrokStructuredToolResult(
+      {
+        sessionUpdate: "tool_call_update",
+        toolCallId: "kill-1",
+        status: "completed",
+        rawOutput: {
+          type: "KillTask",
+          Result: {
+            task_id: "task-9",
+            outcome: "killed",
+            message: "Task was terminated successfully",
+          },
+        },
+      },
+      state,
+    );
+
+    expect(result).toMatchObject({
+      task_id: "task-9",
+      shell_id: "task-9",
+      outcome: "killed",
+      message: "Task was terminated successfully",
+    });
+  });
 });

@@ -1,10 +1,19 @@
+import { CONVERSATION_API_REVISION } from "@yep-anywhere/shared/experimental/conversation-protocol";
+import {
+  getServerRuntime,
+  type ServerRuntimeInfo,
+} from "@yep-anywhere/shared/server-runtime";
 import { exec } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { isProviderHostDegraded } from "../sdk/providers/provider-host-status.js";
 import {
   APPROVAL_AUDIT_LOG_CAPABILITY,
+  SERVER_CAPABILITIES,
+  type SqliteStatus,
+  ACLI_COMMENTARY_RENDERING_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
@@ -15,6 +24,7 @@ import {
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
@@ -46,12 +56,16 @@ import {
   HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
+  RETAINED_SESSION_COLLECTIONS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_FILE_COMPLETION_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
+  SESSION_ASYNC_QUESTIONS_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
+  PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
@@ -81,6 +95,7 @@ import {
   type SessionSandboxAvailability,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import type { ArtifactViewerStatus } from "@yep-anywhere/shared";
 import { getSessionSandboxAvailability as getLocalSessionSandboxAvailability } from "../session-sandbox.js";
 import type {
   SpeechBackendCapabilities,
@@ -299,6 +314,12 @@ async function getLatestVersion(
 }
 
 export interface VersionInfo {
+  experimentalSimpleClientApiRevision?: typeof CONVERSATION_API_REVISION;
+  /** Absent on older servers; never implies storage readiness. */
+  serverRuntime?: ServerRuntimeInfo;
+  /** Storage diagnostic only; absent on older servers. */
+  sqlite?: SqliteStatus;
+  artifactViewer?: ArtifactViewerStatus;
   current: string;
   latest: string | null;
   updateAvailable: boolean;
@@ -341,6 +362,11 @@ export interface VersionInfo {
   clientDefaults?: ClientDefaults;
   /** Whether this process is the server bundled with the desktop shell. */
   desktopRuntime?: boolean;
+  /**
+   * Linux boot tried to attach or start the provider host and still has none.
+   * Absent on healthy servers and on non-Linux hosts.
+   */
+  providerHostDegraded?: boolean;
 }
 
 /** Resume protocol version with mutual nonce challenge + server proof binding. */
@@ -349,6 +375,9 @@ export const RESUME_PROTOCOL_VERSION = 3;
 export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
+  SERVER_CAPABILITIES.localSpeechModelSelection.name,
+  ACLI_COMMENTARY_RENDERING_CAPABILITY,
+  SESSION_ASYNC_QUESTIONS_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
   PROJECT_FILE_COMPLETION_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
@@ -378,6 +407,7 @@ const BASE_CAPABILITIES: string[] = [
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
@@ -386,10 +416,13 @@ const BASE_CAPABILITIES: string[] = [
   HOST_AGENT_PROCESS_OBSERVABILITY_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY,
   PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
+  RETAINED_SESSION_COLLECTIONS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
+  PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PROJECT_DIRECTORY_STORAGE_POLICY_CAPABILITY,
@@ -421,6 +454,11 @@ export interface DeviceBridgeStatus {
 }
 
 export interface VersionRouteOptions {
+  getExperimentalConversationAvailable?: () => boolean;
+  /** Read retained startup state; never probe storage in the version route. */
+  getSqliteStatus?: () => SqliteStatus;
+  getIssueAssociationsAvailable?: () => boolean;
+  getArtifactViewerStatus?: () => ArtifactViewerStatus;
   /** Test/service override for the process-generation version snapshot. */
   getCurrentVersionInfo?: () => Promise<CurrentVersionInfo>;
   /** Whether the signed security-client audit routes are mounted. */
@@ -504,6 +542,18 @@ function getCapabilitiesForDeviceBridgeState(
 
 export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   const capabilities: string[] = [...BASE_CAPABILITIES];
+  capabilities.push(SERVER_CAPABILITIES.computerControl.name);
+  capabilities.push(SERVER_CAPABILITIES.computerControlReleases.name);
+  if (options?.getExperimentalConversationAvailable?.())
+    capabilities.push(SERVER_CAPABILITIES.experimentalConversation.name);
+  if (options?.getSqliteStatus?.().state === "ready") {
+    capabilities.push(SERVER_CAPABILITIES.speechVocabulary.name);
+    if (options.getIssueAssociationsAvailable?.())
+      capabilities.push(SERVER_CAPABILITIES.issueSessionAssociations.name);
+    capabilities.push(SERVER_CAPABILITIES.speechVocabularySessionTerms.name);
+  }
+  if (options?.getArtifactViewerStatus?.().available)
+    capabilities.push(SERVER_CAPABILITIES.artifactViewer.name);
   if (options?.sessionSandboxAvailability?.state === "available") {
     capabilities.push(SESSION_SANDBOXING_CAPABILITY);
   }
@@ -621,6 +671,13 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
 
     const info: VersionInfo = {
       current,
+      serverRuntime: getServerRuntime(process.versions),
+      ...(options?.getSqliteStatus
+        ? { sqlite: options.getSqliteStatus() }
+        : {}),
+      ...(options?.getArtifactViewerStatus
+        ? { artifactViewer: options.getArtifactViewerStatus() }
+        : {}),
       latest,
       updateAvailable,
       installSource: currentVersionInfo.installSource,
@@ -639,6 +696,11 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
               deniedCapabilities,
             )
           : { capabilities }),
+      ...(capabilities.includes(
+        SERVER_CAPABILITIES.experimentalConversation.name,
+      )
+        ? { experimentalSimpleClientApiRevision: CONVERSATION_API_REVISION }
+        : {}),
       sessionSandboxing: sessionSandboxAvailability,
       voiceBackends,
       voiceBackendStatuses,
@@ -648,6 +710,7 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       latestDeviceBridgeVersion: deviceBridgeStatus.latestVersion ?? null,
       ...(clientDefaults ? { clientDefaults } : {}),
       ...(options?.desktopRuntime ? { desktopRuntime: true } : {}),
+      ...(isProviderHostDegraded() ? { providerHostDegraded: true } : {}),
     };
 
     return c.json(info);

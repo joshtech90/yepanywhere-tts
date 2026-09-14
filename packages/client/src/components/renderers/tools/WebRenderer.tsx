@@ -1,4 +1,5 @@
-import type { CodexWebRunPage, CodexWebRunResult } from "@yep-anywhere/shared";
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { type CSSProperties, useCallback, useMemo, useState } from "react";
 import { useOutputToolPreviewLineCount } from "../../../hooks/useOutputAppearance";
 import {
@@ -15,7 +16,6 @@ import {
   OutputCopyButton,
   truncateOutput,
 } from "./outputPreview";
-import type { ToolRenderer } from "./types";
 
 const MAX_PAGE_LINES = 24;
 const MAX_PREVIEW_PAGES = 3;
@@ -29,34 +29,16 @@ const MAX_TOOLTIP_PAGES = 20;
  * collapsed preview mirrors the shell-output affordances (first-N-lines
  * clip, tail tooltip, +N badge, copy button, click-for-full-content modal).
  */
-interface WebSearchQueryOp {
-  q?: string;
-  recency?: number;
-  domains?: string[];
-}
-
-interface WebRefOp {
-  ref_id?: string;
-  lineno?: number | null;
-  pattern?: string;
-  id?: number;
-}
-
-export interface WebInput {
-  search_query?: WebSearchQueryOp[];
-  image_query?: WebSearchQueryOp[];
-  open?: WebRefOp[];
-  click?: WebRefOp[];
-  find?: WebRefOp[];
-  response_length?: string;
-}
-
-function isWebRunResult(result: unknown): result is CodexWebRunResult {
-  return (
-    !!result &&
-    typeof result === "object" &&
-    Array.isArray((result as { pages?: unknown }).pages)
-  );
+export type WebInput = import("zod").z.output<
+  typeof toolDisplayContracts.Web.input
+>;
+type WebResult = import("zod").z.output<typeof toolDisplayContracts.Web.result>;
+type CodexWebRunResult = Exclude<WebResult, string>;
+type CodexWebRunPage = CodexWebRunResult["pages"][number];
+function isWebRunResult(
+  result: WebResult | undefined,
+): result is CodexWebRunResult {
+  return typeof result === "object" && result !== null;
 }
 
 function hostnameOf(url: string | undefined): string | undefined {
@@ -400,7 +382,7 @@ function WebToolResult({
   result,
   isError,
 }: {
-  result: unknown;
+  result: WebResult;
   isError: boolean;
 }) {
   if (isError) {
@@ -431,7 +413,7 @@ function WebToolResult({
   return <div className="webrun-text">No content</div>;
 }
 
-export const webRenderer: ToolRenderer<WebInput, unknown> = {
+export const webRenderer = defineTool(toolDisplayContracts.Web, {
   tool: "Web",
   displayName: "Web",
   pendingDisplayName: "Browsing",
@@ -477,8 +459,8 @@ export const webRenderer: ToolRenderer<WebInput, unknown> = {
     }
     const isSearch =
       pages.every((page) => !page.lines) &&
-      ((input as WebInput | undefined)?.search_query?.length ?? 0) > 0;
+      (input?.search_query?.length ?? 0) > 0;
     const noun = isSearch ? "results" : "pages";
     return [duration, `${pages.length} ${noun}`].filter(Boolean).join(" · ");
   },
-};
+});

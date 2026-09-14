@@ -329,6 +329,20 @@ accidental `flex-wrap: wrap` with that named ladder.
   unused space, then `…`" artifact — the symptom of mixing a wrap with a
   separate char-count truncation.
 
+## Provider limit rows
+
+The Providers pane's subagent nesting and idle-reaping rows divide a wide
+row's available space equally between the explanation and the control with
+its coverage note. Long coverage text wraps within that allocation; it must
+not consume the explanation's width or overlap it. Narrow settings panes
+retain the existing stacked presentation with full-width explanations and
+controls. The allocation follows the available pane width and font metrics,
+including when the app sidebar and settings category rail are both visible.
+
+`packages/client/e2e/settings-provider-layout.spec.ts` checks readable
+explanation widths and row containment across phone, tablet, and desktop
+widths with default and enlarged text.
+
 ## Verification Direction
 
 Add a browser-level layout check for the Appearance page that sets:

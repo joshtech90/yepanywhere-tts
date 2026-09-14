@@ -47,12 +47,13 @@ function serveRemoteHtml(): Plugin {
     configureServer(server) {
       // Add middleware BEFORE Vite's internal middleware (no return statement)
       server.middlewares.use((req, _res, next) => {
+        const pathname = req.url?.split("?", 1)[0];
         // Skip actual file requests (assets, source files)
         if (
-          req.url?.startsWith("/@") || // Vite internal
-          req.url?.startsWith("/src/") || // Source files
-          req.url?.startsWith("/node_modules/") || // Node modules
-          req.url?.includes(".") // Files with extensions
+          pathname?.startsWith("/@") || // Vite internal
+          pathname?.startsWith("/src/") || // Source files
+          pathname?.startsWith("/node_modules/") || // Node modules
+          pathname?.includes(".") // Files with extensions
         ) {
           return next();
         }
@@ -67,6 +68,8 @@ function serveRemoteHtml(): Plugin {
 }
 
 export default defineConfig(({ command }) => ({
+  // Keep remote development independent of the local app's dependency graph.
+  cacheDir: `node_modules/.vite-remote-${remoteDevPort}`,
   clearScreen: false,
   customLogger:
     command === "build" ? warningFreeBuildLogger("Remote client") : undefined,
@@ -94,6 +97,9 @@ export default defineConfig(({ command }) => ({
     // client source is already public (open-source repo + npm package).
     sourcemap: true,
     emptyOutDir: !isWatchMode, // Don't empty in watch mode to avoid race conditions
+    // Same reason as the local client build: Mermaid's lazily imported chunks
+    // sit just under 700 kB and are never part of the initial load.
+    chunkSizeWarningLimit: 750,
     rollupOptions: {
       input: {
         main: resolve(__dirname, "remote.html"),
@@ -101,6 +107,7 @@ export default defineConfig(({ command }) => ({
       output: {
         manualChunks: {
           "react-runtime": ["react", "react-dom/client"],
+          katex: ["katex"],
         },
       },
     },

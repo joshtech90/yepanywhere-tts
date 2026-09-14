@@ -12,6 +12,7 @@ export type RemoteRouteModuleKey =
   | "hostPickerPage"
   | "hostsPage"
   | "inboxPage"
+  | "issuesPage"
   | "layouts"
   | "legacyRelayRouteRedirect"
   | "multiHostMonitorPage"
@@ -59,6 +60,7 @@ function selectedAppPageModules(pathname: string): RemoteRouteModuleKey[] {
   if (pathname === "/sessions") return [...modules, "globalSessionsPage"];
   if (pathname === "/agents") return [...modules, "agentsPage"];
   if (pathname === "/inbox") return [...modules, "inboxPage"];
+  if (pathname === "/issues") return [...modules, "issuesPage"];
   if (pathname === "/-/hosts") return [...modules, "hostsPage"];
   if (pathname === "/git-status") return [...modules, "gitStatusPage"];
   if (pathname === "/bang-commands") {

@@ -1,3 +1,32 @@
+export type {
+  ArtifactViewerConfig,
+  ArtifactViewerStatus,
+  ArtifactViewerGrant,
+} from "./artifact-viewer.js";
+export type {
+  RetainedSessionCollectionState,
+  SessionCatalogUpdatedEvent,
+} from "./retained-session-collections.js";
+
+export {
+  ACLI_COMMENTARY_MAX_TEXTS,
+  ACLI_COMMENTARY_MAX_BODY_BYTES,
+  AcliRecordFramer,
+  acliCommentaryFormat,
+  decodeAcliCommentaryLine,
+  decodeAcliRecord,
+  declaresAcliCommentary,
+  getAcliContext,
+  type AcliRecord,
+  type AcliCommentaryItem,
+} from "./acli-commentary.js";
+export {
+  AcliStreamDecoder,
+  initialAcliFormat,
+  acliRecordFragments,
+  type AcliDecodedRecord,
+  type AcliOutputFragment,
+} from "./acli-output.js";
 export {
   formatConversationContextTurn,
   type ConversationContextTurn,
@@ -290,6 +319,7 @@ export type {
   HelperTargetConfig,
   SlashCommand,
   SlashCommandArgumentCompletion,
+  SlashCommandGoalDetails,
   SlashCommandInvocation,
   SlashCommandInvocationKind,
   SlashCommandInvocationPrefix,
@@ -343,6 +373,12 @@ export {
   type InvocationCandidate,
   type SkillInvocationMatch,
 } from "./skill-invocations.js";
+export {
+  GOAL_COMMAND_NAME,
+  findGoalCommand,
+  readGoalDetails,
+  readInventoryGoalDetails,
+} from "./slash-command-goal.js";
 export {
   detectNestedHarnessLaunch,
   type NestedHarnessLaunch,
@@ -544,6 +580,10 @@ export type {
   UpdateProjectQueueItemRequest,
 } from "./project-queue.js";
 export {
+  type ProjectQueueReadinessCommand,
+  isProjectQueueReadinessCommand,
+} from "./project-queue-readiness.js";
+export {
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
   clampProjectQueueQuietSeconds,
@@ -579,7 +619,15 @@ export {
   type CodexPlanToolMode,
 } from "./codex-plan-tool.js";
 export {
+  CODEX_CYBER_ACCESS_PROGRAMS,
+  DEFAULT_CODEX_CYBER_ACCESS_PROGRAM,
+  codexCyberAccessProgramWireValue,
+  isCodexCyberAccessProgram,
+  type CodexCyberAccessProgram,
+} from "./codex-cyber-access.js";
+export {
   APPROVAL_AUDIT_LOG_CAPABILITY,
+  ACLI_COMMENTARY_RENDERING_CAPABILITY,
   BANG_COMMANDS_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
   CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY,
@@ -593,6 +641,7 @@ export {
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
+  CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
@@ -603,6 +652,7 @@ export {
   GIT_WORKING_TREE_FILES_CAPABILITY,
   PROJECT_FILE_COMPLETION_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
+  SESSION_ASYNC_QUESTIONS_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
   GLOSSARY_TOOLTIPS_CAPABILITY,
@@ -615,8 +665,10 @@ export {
   SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
   PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
+  RETAINED_SESSION_COLLECTIONS_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
+  PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
@@ -772,6 +824,7 @@ export {
   getLogicalParentUuid,
   isConversationEntry,
   isInjectedContinuationPrompt,
+  isLocalCommandEchoTurn,
   isSyntheticNoResponseTurn,
   getMessageContent,
 } from "./claude-sdk-schema/guards.js";
@@ -1279,3 +1332,53 @@ export {
 } from "./relay-mux.js";
 
 export * from "./glossary/index.js";
+
+export type { SqliteStatus } from "./sqlite-status.js";
+export type { SpeechVocabularyStatus } from "./speech-vocabulary.js";
+export type {
+  SpeechVocabularyOccurrence,
+  VocabularyCaseForms,
+} from "./speech-vocabulary.js";
+export {
+  parseVocabularyBaseline,
+  rankVocabulary,
+  VOCABULARY_BASELINE_URL,
+  speechVocabularyTokens,
+  speechVocabularyOccurrences,
+  observeVocabularyCase,
+  projectVocabularyCase,
+  hasInteriorCapital,
+  vocabularyFrequency,
+  commonVocabularyWords,
+  vocabularyDistinctiveScore,
+  MAX_VOCABULARY_CASE_FORMS,
+  MAX_SPEECH_SESSION_TERMS,
+  COMMON_VOCABULARY_LIMIT,
+  VOCABULARY_FLUSH_COUNTS,
+} from "./speech-vocabulary.js";
+
+export { DEFAULT_JIRA_KEY_BLOCKLIST } from "./issues.js";
+export type {
+  IssueSettings,
+  IssueConfirmationSettings,
+  IssueCredentialProvider,
+  IssueCredentialSource,
+  IssueCredentialStatus,
+  IssueCredentialsResult,
+  IssueItem,
+  IssueSort,
+  IssueEvidence,
+  IssueCoverage,
+  IssueSearchResult,
+  IssueEvidenceResult,
+  IssueSession,
+  IssueSessionsResult,
+  KnownJiraProject,
+} from "./issues.js";
+
+export {
+  containsLinkifiableUrl,
+  splitUrlSegments,
+  type LinkifySegment,
+  type SplitUrlSegmentsOptions,
+} from "./linkify.js";

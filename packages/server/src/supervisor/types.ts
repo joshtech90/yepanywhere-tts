@@ -1,4 +1,5 @@
 import type {
+  AppSessionSummary,
   AgentActivity,
   CodexAsyncUserInputQuestion,
   ContextUsage,
@@ -133,6 +134,7 @@ export interface SessionSummary {
    * topics/session-hovercard-recent-activity.md.
    */
   lastAgentText?: string;
+  asyncQuestions?: AppSessionSummary["asyncQuestions"];
   /** Launcher identifier from session metadata (e.g. "Codex Desktop", "yep-anywhere") */
   originator?: string;
   /** CLI version from session metadata (e.g. "0.101.0") */

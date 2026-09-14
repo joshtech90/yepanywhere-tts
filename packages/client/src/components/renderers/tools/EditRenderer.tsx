@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import {
   memo,
   type ReactNode,
@@ -52,7 +54,7 @@ import {
   CHANGED_DIFF_LINE_SELECTOR,
   UnifiedDiff,
 } from "../../../pages/UnifiedDiff";
-import type { EditInput, EditResult, PatchHunk, ToolRenderer } from "./types";
+import type { EditInput, EditResult, PatchHunk } from "./types";
 
 const MAX_VISIBLE_LINES = 12;
 
@@ -62,11 +64,7 @@ interface FileLineRange {
 }
 
 /** Extended input type with embedded augment data from server */
-interface EditInputWithAugment extends EditInput {
-  _structuredPatch?: PatchHunk[];
-  _diffHtml?: string;
-  _rawPatch?: string;
-}
+type EditInputWithAugment = EditInput;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1143,8 +1141,11 @@ function EditCollapsedPreview({
     if (typeof result === "string") {
       errorMessage = result;
     } else if (typeof result === "object" && result !== null) {
-      const errorResult = result as { content?: unknown };
-      if (errorResult.content) {
+      const errorResult =
+        result && typeof result === "object" && "content" in result
+          ? result
+          : undefined;
+      if (errorResult?.content) {
         errorMessage = String(errorResult.content);
       }
     }
@@ -1229,8 +1230,8 @@ function EditCollapsedPreview({
               diffHtml={diffHtml}
               structuredPatch={structuredPatch}
               filePath={filePath}
-              oldString={oldString}
-              newString={newString}
+              oldString={oldString ?? ""}
+              newString={newString ?? ""}
               selection={modalSelection}
             />
           </EditDetailModal>
@@ -1333,8 +1334,8 @@ function EditCollapsedPreview({
             diffHtml={diffHtml}
             structuredPatch={structuredPatch}
             filePath={filePath}
-            oldString={oldString}
-            newString={newString}
+            oldString={oldString ?? ""}
+            newString={newString ?? ""}
             originalFile={originalFile}
             selection={modalSelection}
           />
@@ -1494,8 +1495,8 @@ function EditInteractiveSummary({
             diffHtml={diffHtml}
             structuredPatch={structuredPatch}
             filePath={filePath}
-            oldString={oldString}
-            newString={newString}
+            oldString={oldString ?? ""}
+            newString={newString ?? ""}
             originalFile={originalFile}
           />
         </EditDetailModal>
@@ -1587,8 +1588,11 @@ function EditToolResult({
     if (typeof result === "string") {
       errorMessage = result;
     } else if (typeof result === "object" && result !== null) {
-      const errorResult = result as { content?: unknown };
-      if (errorResult.content) {
+      const errorResult =
+        result && typeof result === "object" && "content" in result
+          ? result
+          : undefined;
+      if (errorResult?.content) {
         errorMessage = String(errorResult.content);
       }
     }
@@ -1605,7 +1609,7 @@ function EditToolResult({
     const isRejection = isUserRejection(classification.classification);
 
     // For user rejections, show the proposed diff alongside the declined badge
-    const inputWithAugment = input as EditInputWithAugment | undefined;
+    const inputWithAugment = input;
     const hasProposedDiff =
       isRejection &&
       inputWithAugment?._structuredPatch &&
@@ -1683,14 +1687,27 @@ function EditToolResult({
               diffHtml={inputWithAugment._diffHtml}
               structuredPatch={inputWithAugment._structuredPatch ?? []}
               filePath={filePath}
-              oldString={inputWithAugment.old_string}
-              newString={inputWithAugment.new_string}
+              oldString={inputWithAugment.old_string ?? ""}
+              newString={inputWithAugment.new_string ?? ""}
               selection={modalSelection}
             />
           </EditDetailModal>
         )}
       </>
     );
+  }
+
+  // An acknowledgement has no replacement body. Preserve its text instead of
+  // inventing an empty before/after diff (also useful without the original input).
+  if (
+    result.content &&
+    !result.structuredPatch?.length &&
+    result.oldString === undefined &&
+    result.newString === undefined &&
+    input?.old_string === undefined &&
+    input?.new_string === undefined
+  ) {
+    return <div className="edit-result">{result.content}</div>;
   }
 
   // Handle case where result doesn't have structuredPatch
@@ -1762,7 +1779,7 @@ function EditToolResult({
       </div>
       {showModal && (
         <EditDetailModal
-          filePath={result.filePath}
+          filePath={result.filePath ?? ""}
           displayText={getFileName(result.filePath)}
           lineRange={getPatchFileLineRange(result.structuredPatch)}
           label={getFileName(result.filePath)}
@@ -1770,7 +1787,7 @@ function EditToolResult({
         >
           <DiffModalContent
             structuredPatch={result.structuredPatch}
-            filePath={result.filePath}
+            filePath={result.filePath ?? ""}
             oldString={result.oldString ?? input?.old_string ?? ""}
             newString={result.newString ?? input?.new_string ?? ""}
             originalFile={result.originalFile}
@@ -1782,22 +1799,16 @@ function EditToolResult({
   );
 }
 
-export const editRenderer: ToolRenderer<EditInput, EditResult> = {
+export const editRenderer = defineTool(toolDisplayContracts.Edit, {
   tool: "Edit",
   displayName: "Edit",
 
   renderToolUse(input) {
-    return <EditToolUse input={input as EditInputWithAugment} />;
+    return <EditToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context, input) {
-    return (
-      <EditToolResult
-        result={result as EditResult}
-        input={input as EditInput | undefined}
-        isError={isError}
-      />
-    );
+    return <EditToolResult result={result} input={input} isError={isError} />;
   },
 
   getUseSummary(input) {
@@ -1811,8 +1822,11 @@ export const editRenderer: ToolRenderer<EditInput, EditResult> = {
       if (typeof result === "string") {
         errorMessage = result;
       } else if (typeof result === "object" && result !== null) {
-        const errorResult = result as { content?: unknown };
-        if (errorResult.content) {
+        const errorResult =
+          result && typeof result === "object" && "content" in result
+            ? result
+            : undefined;
+        if (errorResult?.content) {
           errorMessage = String(errorResult.content);
         }
       }
@@ -1822,27 +1836,19 @@ export const editRenderer: ToolRenderer<EditInput, EditResult> = {
       }
       return "Error";
     }
-    const r = result as EditResult;
+    const r = result;
     return getPatchTargetSummary(input, r);
   },
 
   renderCollapsedPreview(input, result, isError) {
     return (
-      <EditCollapsedPreview
-        input={input as EditInputWithAugment}
-        result={result as EditResult | undefined}
-        isError={isError}
-      />
+      <EditCollapsedPreview input={input} result={result} isError={isError} />
     );
   },
 
   renderInteractiveSummary(input, result, isError, _context) {
     return (
-      <EditInteractiveSummary
-        input={input as EditInputWithAugment}
-        result={result as EditResult | undefined}
-        isError={isError}
-      />
+      <EditInteractiveSummary input={input} result={result} isError={isError} />
     );
   },
-};
+});

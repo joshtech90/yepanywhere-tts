@@ -134,7 +134,7 @@ import {
 } from "./VoiceInputButton";
 import styles from "./MessageInput.module.css";
 import { useProjectFileCompletion } from "../hooks/useProjectFileCompletion";
-import type { RenderItem } from "../types/renderItems";
+import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { ProjectFileCompletionMenu } from "./ProjectFileCompletionMenu";
 import { QuestionAsideHint } from "./QuestionAsideCard";
 
@@ -285,6 +285,7 @@ interface Props {
   /** Project ID for uploads (required to enable attach button) */
   projectId?: string;
   completionRenderItems?: RenderItem[];
+  speechVocabulary?: { terms(): string[]; heard(text: string): void };
   /** Session ID for uploads (required to enable attach button) */
   sessionId?: string;
   /** Completed file attachments */
@@ -443,6 +444,7 @@ export function MessageInput({
   providerRuntimeStatus,
   projectId,
   completionRenderItems,
+  speechVocabulary,
   sessionId,
   attachments = [],
   onAttach,
@@ -947,14 +949,29 @@ export function MessageInput({
 
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
+      const draft = controls.getDraft();
       return {
         projectId,
         sessionId,
         draftKey,
+        sessionTerms: speechVocabulary?.terms(),
         clientTurnId: ensureSpeechTurnId(),
         speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
+        textBeforeCursor: draft.slice(
+          0,
+          speechInsertionRangeRef.current?.end ??
+            textareaRef.current?.selectionStart ??
+            draft.length,
+        ),
       };
-    }, [draftKey, ensureSpeechTurnId, projectId, sessionId]);
+    }, [
+      controls,
+      draftKey,
+      ensureSpeechTurnId,
+      projectId,
+      sessionId,
+      speechVocabulary,
+    ]);
 
   const buildSubmissionMetadata = useCallback(
     (
@@ -1119,7 +1136,7 @@ export function MessageInput({
   const draftControls = useMemo<DraftControls>(
     () => ({
       ...controls,
-      focus: () => textareaRef.current?.focus(),
+      focus: (options) => textareaRef.current?.focus(options),
       setSelectionRange: (start, end) =>
         textareaRef.current?.setSelectionRange(start, end),
       replaceDraftRangeUndoably,
@@ -3209,6 +3226,7 @@ export function MessageInput({
   );
   const handleVoiceTranscript = useCallback(
     (transcript: string, metadata?: SpeechTranscriptionResultMetadata) => {
+      speechVocabulary?.heard(transcript);
       const pendingDelivery = pendingSpeechDeliveryRef.current;
       const pendingRange = metadata?.speechTargetId
         ? (pendingDelivery?.speechInsertionRangesRef.current.get(
@@ -3241,7 +3259,7 @@ export function MessageInput({
       clearPendingSpeechFinal();
       return commitVoiceTranscript(transcript, metadata);
     },
-    [clearPendingSpeechFinal, commitVoiceTranscript],
+    [clearPendingSpeechFinal, commitVoiceTranscript, speechVocabulary],
   );
 
   const flushPendingSpeechFinal = useCallback(() => {

@@ -1,3 +1,4 @@
+import { SERVER_CAPABILITIES, serverHasCapability } from "@yep-anywhere/shared";
 import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
@@ -6,12 +7,15 @@ import {
   useCallback,
   useEffect,
   useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
 } from "react";
 import type { FilterOption } from "./FilterDropdown";
 import { SpeechMessagePrefixControls } from "./SpeechMessagePrefixControls";
+import { WhisperModelControls } from "./WhisperModelControls";
+import { useVersion } from "../hooks/useVersion";
 import { SpeechSmartTurnControls } from "./SpeechSmartTurnControls";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
@@ -25,6 +29,7 @@ import {
   PARAKEET_SPEECH_MODEL_PRESETS,
   type ParakeetModelBackendId,
   resolveParakeetModelBackend,
+  requestedParakeetModel,
 } from "../lib/speechProviders/parakeetModels";
 import type { SpeechSmartTurnSettings } from "../lib/speechProviders/SpeechProvider";
 import { prewarmYaServerSpeechBackend } from "../lib/speechProviders/YaServerProvider";
@@ -81,12 +86,39 @@ export function SpeechControlMenu({
   const methodDescriptionIdPrefix = useId();
   const { micDeviceId, setMicDeviceId, reducePlayback, setReducePlayback } =
     useSpeechCaptureSettings();
-  const { parakeetSpeechModel, setParakeetSpeechModel } = useModelSettings();
+  const {
+    parakeetSpeechModel,
+    setParakeetSpeechModel,
+    whisperSpeechModel,
+    setWhisperSpeechModel,
+  } = useModelSettings();
+  const { version } = useVersion();
+  const recentModels = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.localSpeechModelSelection.name,
+  );
   const [open, setOpen] = useState(false);
   const [micDevices, setMicDevices] = useState<MediaDeviceInfo[]>([]);
   const [micDeviceError, setMicDeviceError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    if (!open) return;
+    const panel = panelRef.current;
+    if (!panel) return;
+    const keepInsideViewport = () => {
+      const rect = panel.getBoundingClientRect();
+      const desiredLeft = Math.max(
+        8,
+        Math.min(rect.left, window.innerWidth - rect.width - 8),
+      );
+      const shift = desiredLeft - rect.left;
+      if (shift !== 0) panel.style.left = `${panel.offsetLeft + shift}px`;
+    };
+    keepInsideViewport();
+    window.addEventListener("resize", keepInsideViewport);
+    return () => window.removeEventListener("resize", keepInsideViewport);
+  }, [open]);
   const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressOpenedRef = useRef(false);
   const pointerNearRef = useRef(false);
@@ -124,19 +156,25 @@ export function SpeechControlMenu({
   const parakeetPresetOptions = useMemo(
     () =>
       selectedMethod !== null && isParakeetModelBackend(selectedMethod)
-        ? PARAKEET_SPEECH_MODEL_PRESETS.filter((preset) =>
-            preset.supportedBackends.includes(selectedMethod),
+        ? PARAKEET_SPEECH_MODEL_PRESETS.filter(
+            (preset) =>
+              preset.supportedBackends.includes(selectedMethod) &&
+              (recentModels || !preset.requiresRecentModels),
           )
         : [],
-    [selectedMethod],
+    [selectedMethod, recentModels],
   );
-  const storedParakeetPreset =
-    getParakeetSpeechPresetValue(parakeetSpeechModel);
-  const selectedParakeetPreset = parakeetPresetOptions.some(
-    (preset) => preset.value === storedParakeetPreset,
-  )
-    ? storedParakeetPreset
-    : "";
+  const storedParakeetPreset = getParakeetSpeechPresetValue(
+    requestedParakeetModel(parakeetSpeechModel, recentModels) ?? "",
+  );
+  const selectedParakeetPreset =
+    recentModels && !parakeetSpeechModel.trim()
+      ? "default"
+      : parakeetPresetOptions.some(
+            (preset) => preset.value === storedParakeetPreset,
+          )
+        ? storedParakeetPreset
+        : "";
   const selectedMicDeviceUnavailable =
     !!micDeviceId &&
     !micDevices.some((device) => device.deviceId === micDeviceId);
@@ -147,7 +185,7 @@ export function SpeechControlMenu({
       if (targetBackend === null || !isParakeetModelBackend(targetBackend)) {
         return;
       }
-      const model = cleanParakeetSpeechModel(modelValue);
+      const model = requestedParakeetModel(modelValue, recentModels);
       void prewarmYaServerSpeechBackend(targetBackend, model).catch(
         (err: unknown) => {
           console.warn(
@@ -157,7 +195,7 @@ export function SpeechControlMenu({
         },
       );
     },
-    [selectedMethod],
+    [selectedMethod, recentModels],
   );
 
   const handleParakeetModelKeyDown = useCallback(
@@ -171,7 +209,7 @@ export function SpeechControlMenu({
   const selectParakeetPreset = useCallback(
     (modelValue: string) => {
       if (selectedMethod === null) return;
-      const model = cleanParakeetSpeechModel(modelValue);
+      const model = modelValue.trim();
       const backendId = resolveParakeetModelBackend(
         model,
         selectedMethod,
@@ -421,10 +459,15 @@ export function SpeechControlMenu({
                   const preset = event.currentTarget.value;
                   if (!preset) return;
                   onBeforeCaptureChange?.();
-                  selectParakeetPreset(preset);
+                  selectParakeetPreset(preset === "default" ? "" : preset);
                 }}
                 aria-label={t("speechSettingsParakeetModelPresetLabel")}
               >
+                {recentModels && (
+                  <option value="default">
+                    {t("speechSettingsModelServerDefault")}
+                  </option>
+                )}
                 <option value="">
                   {t("speechSettingsParakeetCustomModel")}
                 </option>
@@ -438,7 +481,11 @@ export function SpeechControlMenu({
                 id={parakeetModelInputId}
                 className="speech-parakeet-model-input"
                 value={parakeetSpeechModel}
-                placeholder={t("speechSettingsParakeetModelPlaceholder")}
+                placeholder={t(
+                  recentModels
+                    ? "speechSettingsModelServerDefault"
+                    : "speechSettingsParakeetModelPlaceholder",
+                )}
                 autoComplete="off"
                 spellCheck={false}
                 onChange={(event) => {
@@ -450,6 +497,18 @@ export function SpeechControlMenu({
                 }
                 onKeyDown={handleParakeetModelKeyDown}
                 aria-label={t("speechSettingsParakeetModelInputLabel")}
+              />
+            </section>
+          )}
+          {selectedMethod === "ya-whisper" && recentModels && (
+            <section className="speech-options-section">
+              <div className="speech-options-section-title">
+                {t("speechSettingsWhisperModelTitle")}
+              </div>
+              <WhisperModelControls
+                model={whisperSpeechModel}
+                onChange={setWhisperSpeechModel}
+                onBeforeChange={onBeforeCaptureChange}
               />
             </section>
           )}

@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
@@ -5,7 +7,7 @@ import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
 import styles from "./GlobRenderer.module.css";
-import type { GlobInput, GlobResult, ToolRenderer } from "./types";
+import type { GlobInput, GlobResult } from "./types";
 
 const MAX_FILES_COLLAPSED = 20;
 
@@ -73,7 +75,10 @@ function GlobToolResult({
     enabled && validationErrors && !isToolIgnored("Glob");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className={styles.error}>
         {showValidationWarning && validationErrors && (
@@ -143,23 +148,18 @@ function GlobToolResult({
   );
 }
 
-export const globRenderer: ToolRenderer<GlobInput, GlobResult> = {
+export const globRenderer = defineTool(toolDisplayContracts.Glob, {
   tool: "Glob",
   displayName: "List",
 
   renderToolUse(input, context) {
-    return (
-      <GlobToolUse
-        input={input as GlobInput}
-        projectPath={context.projectPath}
-      />
-    );
+    return <GlobToolUse input={input} projectPath={context.projectPath} />;
   },
 
   renderToolResult(result, isError, context) {
     return (
       <GlobToolResult
-        result={result as GlobResult}
+        result={result}
         isError={isError}
         projectPath={context.projectPath}
       />
@@ -167,7 +167,7 @@ export const globRenderer: ToolRenderer<GlobInput, GlobResult> = {
   },
 
   getUseSummary(input, context) {
-    const globInput = input as GlobInput;
+    const globInput = input;
     const pattern = `pattern: "${globInput.pattern}"`;
     return globInput.path
       ? `${pattern} in ${makeDisplayPath(globInput.path, context?.projectPath)}`
@@ -176,9 +176,9 @@ export const globRenderer: ToolRenderer<GlobInput, GlobResult> = {
 
   getResultSummary(result, isError) {
     if (isError) return "Error";
-    const r = result as GlobResult;
+    const r = result;
     if (r?.numFiles === undefined) return "Searching...";
     if (r.numFiles === 0) return "No files found";
     return `Found ${r.numFiles} files`;
   },
-};
+});

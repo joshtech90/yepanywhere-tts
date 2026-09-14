@@ -1,5 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import { I18nProvider } from "../i18n";
 import {
   type SessionToolbarVisibility,
   SESSION_TOOLBAR_CONTROL_KEYS,
@@ -48,6 +49,7 @@ function renderToolbar(overrides: Partial<MessageInputToolbarViewProps> = {}) {
       actionsControl={{}}
       {...overrides}
     />,
+    { wrapper: I18nProvider },
   );
 }
 

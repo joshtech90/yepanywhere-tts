@@ -13,6 +13,12 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
 
 ## Runtime contracts
 
+- Opt-in [`ya-agent self`](agent-self.md) injects `AGENT_YA_API_URL` and
+  `AGENT_YA_API_TOKEN` plus the owning runtime's private command directory.
+  Ambient self credentials are stripped by the child filter before eligible
+  Claude/Codex launches receive their own grant. `AGENTCTL_SESSION_ID` is an
+  optional cross-check; the credential itself determines ownership.
+
 - Treat `process.env` as ambient input, not a stable default. A developer shell,
   package runner, service manager, or parent agent may contribute variables
   that are absent in CI or a production service.
@@ -41,8 +47,12 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
   with its launch snapshot before creating a worker, and deletes the markers'
   pre-2026-08-17 `YEP_AGENT_*` names so a nested YA cannot present the outer
   session's launch as this one's. Model and effort markers describe the initial
-  launch only; the later session-id bridge remains separate because new
-  canonical YA ids are not known at process creation.
+  launch only. The later session-id bridge is host-owned: every hosted worker
+  installs `BASH_ENV` before `startSession` so Grok, Gemini, OpenCode, and Pi
+  inherit it even when the adapter has no session method. Claude and Codex
+  still chain their own bridges. A resume may also set `AGENTCTL_SESSION_ID`
+  on the worker environment; a new session receives it through the bridge
+  file once the provider reports its canonical id.
 - Publish agent-facing markers under the unprefixed `AGENT_` namespace. The
   shared child filter strips arbitrary inherited `YEP_*` / `YA_*` values as YA
   configuration; current wake, browser-debug, Gateway-route, and Copilot-backend
@@ -67,8 +77,10 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
   relevant environment and stdio topology match the real launcher. Make those
   choices visible at the spawn site rather than relying on Node or test-runner
   defaults.
-- The local `agentctl` bridge preserves an existing `BASH_ENV` through
-  `YEP_ORIGINAL_BASH_ENV`, then sources YA's atomically updated session-env
+- The local `agentctl` bridge captures an existing `BASH_ENV` path at launch,
+  avoiding recursive lookup through a nested bridge's inherited environment.
+  It also records that path in `YEP_ORIGINAL_BASH_ENV` for compatibility,
+  sources the captured file, then sources YA's atomically updated session-env
   file. That file publishes `AGENTCTL_SESSION_ID` plus session-scoped outputs.
   Current builds use the legacy `YEP_*` wake and browser-debug pairs; the
   reader-first migration to canonical `AGENT_*` pairs is tracked in
@@ -107,6 +119,9 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
 - The agentctl bridge stops chaining the prior `BASH_ENV`, publishing a later
   session id with its wake environment, or seeding a known resume id before
   provider startup.
+- A hosted provider other than Claude/Codex (Grok, Gemini, OpenCode, Pi)
+  starts without `BASH_ENV` or without `AGENTCTL_SESSION_ID` in later Bash
+  shells after init.
 - A Bash bridge probe accidentally inherits socket-backed stdin and silently
   exercises `.bashrc` startup instead of the intended `BASH_ENV` path.
 

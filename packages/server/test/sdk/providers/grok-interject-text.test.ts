@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   grokInterjectAccepted,
+  splitGrokUserMessageTexts,
   unwrapGrokInterjectText,
 } from "../../../src/sdk/providers/grok-interject-text.js";
 
@@ -41,6 +42,63 @@ describe("unwrapGrokInterjectText", () => {
   it("leaves a partial envelope alone", () => {
     const partial = `${WRAP_PREFIX}still typing`;
     expect(unwrapGrokInterjectText(partial)).toBe(partial);
+  });
+});
+
+describe("splitGrokUserMessageTexts", () => {
+  it("returns ordinary user text as one part", () => {
+    expect(splitGrokUserMessageTexts("just a normal steer")).toEqual([
+      "just a normal steer",
+    ]);
+  });
+
+  it("unwraps a single envelope", () => {
+    expect(splitGrokUserMessageTexts(wrap("stop and fix the test"))).toEqual([
+      "stop and fix the test",
+    ]);
+  });
+
+  it("keeps quoted inner user_query markup in one part", () => {
+    const inner = [
+      "show only what is inside the user_query tags ",
+      "'The user sent a message while you were working:",
+      "<user_query>",
+      "quoted example",
+      "</user_query>",
+      "Make sure to complete any unfinished tasks from previous turns.'",
+    ].join("\n");
+    expect(splitGrokUserMessageTexts(wrap(inner))).toEqual([inner]);
+  });
+
+  it("does not split on a bare </user_query> mention inside one envelope", () => {
+    const inner =
+      "doubles resolve on reload except the </user_query> noise joined user turn";
+    expect(splitGrokUserMessageTexts(wrap(inner))).toEqual([inner]);
+  });
+
+  it("splits concatenated full envelopes into one inner per send", () => {
+    expect(
+      splitGrokUserMessageTexts(
+        `${wrap("first steer")}${wrap("second steer")}`,
+      ),
+    ).toEqual(["first steer", "second steer"]);
+  });
+
+  it("splits a prompt glued to a following interject envelope", () => {
+    const first =
+      "grok message acknowledgment gap:\ndisplayed\nso i'm saying: use handles";
+    const second =
+      "you know better than i what additional client resident turns data model exists";
+    const glued = `${first}${WRAP_SUFFIX}${WRAP_PREFIX}${second}`;
+    expect(splitGrokUserMessageTexts(glued)).toEqual([first, second]);
+  });
+
+  it("splits envelopes glued without a newline after the first suffix", () => {
+    expect(
+      splitGrokUserMessageTexts(
+        `${wrap("first steer")}${WRAP_PREFIX}second steer${WRAP_SUFFIX}`,
+      ),
+    ).toEqual(["first steer", "second steer"]);
   });
 });
 

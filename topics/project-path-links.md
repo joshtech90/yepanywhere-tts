@@ -489,7 +489,9 @@ remaining lease requests that behavior.
 Recursive and non-recursive requests for the same directory share one native
 registration. Changing required coverage closes the old registration before
 opening its replacement and invalidates the old leases' observation gap.
-Non-recursive consumers receive only direct-child events. Acquiring a path whose
+Non-recursive consumers receive only direct-child events, using the host's
+native path separator. A backslash in a POSIX basename is a filename character
+and must not cause its event to be dropped. Acquiring a path whose
 directory inode changed also replaces the old native registration. Native
 failure invalidates every lease so each consumer can use its existing fallback.
 The registry admits at most 1,024 native registrations; existing consumers'

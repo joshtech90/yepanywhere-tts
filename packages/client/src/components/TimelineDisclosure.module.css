@@ -1,0 +1,105 @@
+.toggle {
+  position: absolute;
+  inset-inline-start: -20px;
+  inset-block-start: -1px;
+  display: grid;
+  place-items: center;
+  inline-size: 24px;
+  block-size: 24px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--timeline-dot-default);
+  font: 16px / 1 var(--font-mono);
+  cursor: pointer;
+  z-index: 1;
+}
+
+.toggle[data-status="complete"] {
+  color: var(--timeline-dot-tool);
+}
+
+.toggle[data-status="error"] {
+  color: var(--timeline-dot-error);
+}
+
+.toggle[data-status="pending"] {
+  color: var(--timeline-dot-working);
+  animation: pending 1.5s ease-in-out infinite var(--ya-activity-play, paused);
+}
+
+@keyframes pending {
+  50% {
+    opacity: 0.5;
+  }
+}
+
+.toggle[data-status="aborted"],
+.toggle[data-status="incomplete"] {
+  color: var(--timeline-dot-warning);
+}
+
+.toggle > span {
+  position: relative;
+  /* Odd-sized ink stays symmetric around a single whole-pixel stem. */
+  inline-size: 9px;
+  block-size: 9px;
+  translate: 0.5px 0.5px;
+  font-size: 0;
+}
+
+.toggle > span::before,
+.toggle[aria-expanded="false"] > span::after {
+  content: "";
+  position: absolute;
+  background: currentColor;
+}
+
+.toggle > span::before {
+  inset: 4px 0;
+}
+
+.toggle[aria-expanded="false"] > span::after {
+  inset: 0 4px;
+}
+
+.toggle:hover {
+  filter: brightness(1.2);
+}
+
+.toggle:focus-visible {
+  outline: 2px solid var(--focus-border, var(--accent-color));
+  outline-offset: -2px;
+}
+
+:global(.timeline-item):has(> button.toggle[aria-expanded])::before {
+  display: block;
+  top: -4px;
+  height: 8px;
+  border-radius: 0;
+  animation: none;
+}
+
+:global(.timeline-item):has(> .toggle)::after {
+  top: 19px;
+  bottom: -4px;
+}
+
+/* Keep three pixels of clear space around the visible ink in either state. */
+:global(.timeline-item):has(> button.toggle[aria-expanded="true"])::before {
+  height: 12px;
+}
+
+:global(.timeline-item):has(> .toggle[aria-expanded="true"])::after {
+  top: 15px;
+}
+
+:global(.timeline-item):has(> button.toggle[aria-expanded])::before,
+:global(.timeline-item):has(> button.toggle[aria-expanded])::after {
+  left: -8px;
+  width: 1px;
+  background: var(--timeline-line-color);
+  opacity: 0.45;
+  pointer-events: none;
+}

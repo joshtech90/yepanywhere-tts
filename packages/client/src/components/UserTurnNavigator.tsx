@@ -65,6 +65,8 @@ interface Props {
   onCopyAnchor?: (id: string) => void;
   /** Whether the external copy callback can resolve a particular turn. */
   canCopyAnchor?: (id: string) => boolean;
+  /** Open a new session prefilled from this turn's conversation source. */
+  onHandoffFromAnchor?: (id: string, options: { newTab: boolean }) => void;
   /** Reports the timestamp for a hovered/focused turn marker, if any. */
   onPreviewTimestampChange?: (timestampMs: number | null) => void;
   /** Estimated transcript offset for a render row outside the mounted window. */
@@ -756,6 +758,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
   forkAfterDisabled = false,
   onCopyAnchor,
   canCopyAnchor,
+  onHandoffFromAnchor,
   onPreviewTimestampChange,
   getRenderIdTop,
   revealRenderId,
@@ -1066,7 +1069,11 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
     [handleJump, onSearchMatchSelect, searchState],
   );
   const hasNotchMenu = Boolean(
-    onForkBeforeAnchor || onForkAfterAnchor || onCopyAnchor || onTrimAnchor,
+    onForkBeforeAnchor ||
+      onForkAfterAnchor ||
+      onCopyAnchor ||
+      onTrimAnchor ||
+      onHandoffFromAnchor,
   );
   const openNotchMenu = useCallback(
     (id: string, targetId: string, x: number, y: number) => {
@@ -1554,7 +1561,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
               className={styles.contextMenu}
               role="menu"
               style={{
-                top: Math.min(notchMenu.y, window.innerHeight - 180),
+                top: Math.min(notchMenu.y, window.innerHeight - 220),
                 right: Math.max(8, window.innerWidth - notchMenu.x),
               }}
             >
@@ -1620,6 +1627,27 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
                   }}
                 >
                   {t("turnNotchShowFrom")}
+                </button>
+              )}
+              {onHandoffFromAnchor && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  onMouseDown={(event) => {
+                    if (event.button === 1) event.preventDefault();
+                  }}
+                  onClick={() => {
+                    onHandoffFromAnchor(notchMenu.id, { newTab: false });
+                    closeNotchMenu();
+                  }}
+                  onAuxClick={(event) => {
+                    if (event.button !== 1) return;
+                    event.preventDefault();
+                    onHandoffFromAnchor(notchMenu.id, { newTab: true });
+                    closeNotchMenu();
+                  }}
+                >
+                  {t("turnNotchHandoffFrom")}
                 </button>
               )}
             </div>

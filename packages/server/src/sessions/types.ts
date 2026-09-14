@@ -17,7 +17,7 @@ import type { Message, SessionSummary } from "../supervisor/types.js";
 
 /**
  * Bounded session facts for collection routes that only need identity, title,
- * and recency. Transcript-tail fields intentionally do not belong here.
+ * and recency, with independently bounded question previews when observed.
  */
 export interface SessionListSummary {
   id: SessionSummary["id"];
@@ -29,6 +29,7 @@ export interface SessionListSummary {
   customTitle?: SessionSummary["customTitle"];
   isArchived?: SessionSummary["isArchived"];
   isStarred?: SessionSummary["isStarred"];
+  asyncQuestions?: SessionSummary["asyncQuestions"];
 }
 
 /**
@@ -56,6 +57,7 @@ export function toSessionListSummary(
     | "customTitle"
     | "isArchived"
     | "isStarred"
+    | "asyncQuestions"
   >,
 ): SessionListSummary {
   return {
@@ -65,6 +67,9 @@ export function toSessionListSummary(
     fullTitle: summary.fullTitle,
     updatedAt: summary.updatedAt,
     provider: summary.provider,
+    ...(summary.asyncQuestions !== undefined
+      ? { asyncQuestions: summary.asyncQuestions }
+      : {}),
     ...(summary.customTitle !== undefined
       ? { customTitle: summary.customTitle }
       : {}),
@@ -97,6 +102,8 @@ export type SessionSummaryReadMode = "full" | "head";
  * Options for reading summary metadata.
  */
 export interface GetSessionSummaryOptions {
+  /** Collection discovery may defer the independent question-tail projection. */
+  deferAsyncQuestions?: boolean;
   /**
    * `head` permits a provider to stop after stable head metadata. It preserves
    * the SessionSummary wire shape but may omit tail-derived optional fields
@@ -153,6 +160,10 @@ export interface RecoveredSessionLaunchSettings {
  * For example, ClaudeSessionReader has getAgentSession() for subagent support.
  */
 export interface ISessionReader {
+  readIssueTextBatch?(
+    sessionId: string,
+    options: import("./issue-text-reader.js").IssueReadOptions,
+  ): Promise<import("./issue-text-reader.js").IssueTextBatch>;
   /**
    * Release any reader-owned resources such as parser child processes.
    */
@@ -189,6 +200,9 @@ export interface ISessionReader {
   getSessionListSummary?(
     sessionId: string,
     projectId: UrlProjectId,
+    /** Fresh indexed base facts; optional projections may still be absent. */
+    summaryHint?: SessionListSummary,
+    options?: { deferAsyncQuestions?: boolean },
   ): Promise<SessionListSummary | null>;
 
   /**

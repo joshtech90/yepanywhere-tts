@@ -10,6 +10,7 @@
 import { basename } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { decodeProjectId, getProjectName } from "../projects/paths.js";
+import type { Process } from "../supervisor/Process.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { InputRequest } from "../supervisor/types.js";
 import type {
@@ -32,6 +33,12 @@ export interface PushNotifierOptions {
   supervisor: Supervisor;
 }
 
+interface NotificationState {
+  active: boolean;
+  stoppedAtUserTurn?: number;
+  errorNotified: boolean;
+}
+
 export class PushNotifier {
   private eventBus: EventBus;
   private pushService: PushService;
@@ -39,8 +46,10 @@ export class PushNotifier {
   private unsubscribe: (() => void) | null = null;
   /** Track sessions we've sent notifications for (to know when to send dismiss) */
   private sessionsWithNotification = new Set<string>();
-  /** Sessions intentionally aborted by this server; suppress halt/error push. */
-  private abortedSessions = new Set<string>();
+  // Key by process lifetime: replacement sessions cannot inherit suppression,
+  // and terminated processes do not leave an unbounded session-id ledger.
+  private processStates = new WeakMap<Process, NotificationState>();
+  private disposed = false;
 
   constructor(options: PushNotifierOptions) {
     this.eventBus = options.eventBus;
@@ -49,6 +58,7 @@ export class PushNotifier {
 
     // Subscribe to EventBus for process state changes
     this.unsubscribe = this.eventBus.subscribe((event: BusEvent) => {
+      if (this.disposed) return;
       if (event.type === "process-state-changed") {
         void this.handleProcessStateChange(event);
       } else if (event.type === "process-terminated") {
@@ -67,21 +77,25 @@ export class PushNotifier {
   private async handleProcessStateChange(
     event: ProcessStateEvent,
   ): Promise<void> {
-    if (event.activity === "in-turn" || event.activity === "waiting-input") {
-      this.abortedSessions.delete(event.sessionId);
+    const process = this.supervisor.getProcessForSession(event.sessionId);
+    const state = process ? this.getNotificationState(process) : undefined;
+    // Consume the edge before any asynchronous dismiss/send. Iterator closure
+    // can publish another idle event while the first delivery is still pending.
+    const completed = state?.active === true && event.activity === "idle";
+    if (state) {
+      state.active = event.activity !== "idle";
     }
 
     // Send dismiss when leaving waiting-input (if we sent a notification for it)
     if (event.activity !== "waiting-input") {
-      if (this.sessionsWithNotification.has(event.sessionId)) {
+      if (this.sessionsWithNotification.delete(event.sessionId)) {
         await this.sendDismiss(event.sessionId);
-        this.sessionsWithNotification.delete(event.sessionId);
       }
       if (event.activity !== "idle") {
         return;
       }
 
-      if (this.abortedSessions.delete(event.sessionId)) {
+      if (!completed) {
         return;
       }
 
@@ -95,10 +109,10 @@ export class PushNotifier {
     }
 
     // Get the process to access the InputRequest details
-    const process = this.supervisor.getProcessForSession(event.sessionId);
     if (process?.state.type !== "waiting-input") {
       return;
     }
+    if (state?.stoppedAtUserTurn !== undefined || this.disposed) return;
 
     const request = process.state.request;
     const inputType =
@@ -128,7 +142,7 @@ export class PushNotifier {
     try {
       const results = await this.pushService.sendToAll(payload);
       const successCount = results.filter((r) => r.success).length;
-      if (successCount > 0) {
+      if (successCount > 0 && !this.disposed) {
         console.log(
           `[PushNotifier] Sent pending-input notification to ${successCount}/${results.length} devices`,
         );
@@ -149,7 +163,11 @@ export class PushNotifier {
    */
   private async handleSessionIdle(event: ProcessStateEvent): Promise<void> {
     const process = this.supervisor.getProcessForSession(event.sessionId);
-    if (process?.state.type !== "idle") {
+    if (
+      this.disposed ||
+      process?.state.type !== "idle" ||
+      this.getNotificationState(process).stoppedAtUserTurn !== undefined
+    ) {
       return;
     }
 
@@ -168,11 +186,14 @@ export class PushNotifier {
   private async handleProcessTerminated(
     event: ProcessTerminatedEvent,
   ): Promise<void> {
-    if (this.abortedSessions.delete(event.sessionId)) {
-      return;
-    }
-
     const process = this.supervisor.getProcessForSession(event.sessionId);
+    if (this.disposed) return;
+    if (process) {
+      const state = this.getNotificationState(process);
+      if (state.stoppedAtUserTurn !== undefined || state.errorNotified) return;
+      state.active = false;
+      state.errorNotified = true;
+    }
     await this.sendSessionHalted({
       sessionId: event.sessionId,
       projectId: event.projectId,
@@ -183,7 +204,34 @@ export class PushNotifier {
   }
 
   private handleSessionAborted(event: SessionAbortedEvent): void {
-    this.abortedSessions.add(event.sessionId);
+    this.suppressSession(event.sessionId);
+  }
+
+  /** Called before an intentional Stop/Kill can emit provider cleanup events. */
+  suppressSession(sessionId: string): void {
+    const process = this.supervisor.getProcessForSession(sessionId);
+    if (process) {
+      this.getNotificationState(process).stoppedAtUserTurn =
+        process.userTurnVersion;
+    }
+  }
+
+  private getNotificationState(process: Process): NotificationState {
+    let state = this.processStates.get(process);
+    if (!state) {
+      state = { active: false, errorNotified: false };
+      this.processStates.set(process, state);
+    }
+    // Cleanup may repeat idle/in-turn/waiting-input. Only accepted fresh user
+    // work (or a new Process) ends intentional-stop suppression.
+    if (
+      state.stoppedAtUserTurn !== undefined &&
+      state.stoppedAtUserTurn !== process.userTurnVersion
+    ) {
+      state.stoppedAtUserTurn = undefined;
+      state.errorNotified = false;
+    }
+    return state;
   }
 
   private async sendSessionHalted(input: {
@@ -307,6 +355,9 @@ export class PushNotifier {
    * Clean up EventBus subscription.
    */
   dispose(): void {
+    this.disposed = true;
+    this.sessionsWithNotification.clear();
+    this.processStates = new WeakMap();
     if (this.unsubscribe) {
       this.unsubscribe();
       this.unsubscribe = null;

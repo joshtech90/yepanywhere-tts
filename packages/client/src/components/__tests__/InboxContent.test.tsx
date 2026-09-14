@@ -116,7 +116,8 @@ vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({ version: versionState.version }),
 }));
 
-vi.mock("../../lib/clientSummaryStore", () => ({
+vi.mock("../../lib/clientSummaryStore", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/clientSummaryStore")>()),
   useDraftSessionIds: () => draftSessionIds,
   useProjectQueuedSessionIds: (projectIds: string[]) => {
     mockUseProjectQueuedSessionIds(projectIds);

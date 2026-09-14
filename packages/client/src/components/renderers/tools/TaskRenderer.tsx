@@ -1,3 +1,5 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useCallback, useContext, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { useRemoteBasePath } from "../../../hooks/useRemoteBasePath";
@@ -13,11 +15,11 @@ import {
 } from "../../../contexts/SessionMetadataContext";
 import { classifyToolError } from "../../../lib/classifyToolError";
 import { validateToolResult } from "../../../lib/validateToolResult";
-import type { ToolCallItem } from "../../../types/renderItems";
+import type { ToolCallItem } from "@yep-anywhere/shared/transcript/items";
 import { SchemaWarning } from "../../SchemaWarning";
 import { ContentBlockRenderer } from "../ContentBlockRenderer";
-import { TaskNestedContent } from "./TaskNestedContent";
-import type { TaskInput, TaskResult, ToolRenderer } from "./types";
+import { Spinner, TaskNestedContent } from "./TaskNestedContent";
+import type { TaskInput, TaskResult } from "./types";
 
 const MAX_PROMPT_LENGTH = 200;
 const MAX_ERROR_SUMMARY_LENGTH = 80;
@@ -39,7 +41,7 @@ function extractErrorMessage(
   } else if (typeof result === "object" && result !== null) {
     // Check for content field (tool_result format)
     if ("content" in result) {
-      const content = (result as { content: unknown }).content;
+      const content = result.content;
       if (typeof content === "string") {
         rawMessage = content;
       } else if (Array.isArray(content)) {
@@ -123,8 +125,6 @@ function TaskToolUse({ input }: { input: TaskInput }) {
     </div>
   );
 }
-
-export { TaskNestedContent } from "./TaskNestedContent";
 
 /**
  * Task inline renderer - shows complete Task UI with nested content
@@ -482,33 +482,6 @@ function TaskInline({
   );
 }
 
-export function Spinner() {
-  return (
-    <svg
-      className="spinner"
-      viewBox="0 0 16 16"
-      width="12"
-      height="12"
-      aria-hidden="true"
-    >
-      <circle
-        cx="8"
-        cy="8"
-        r="6"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeDasharray="24"
-        strokeDashoffset="8"
-      />
-    </svg>
-  );
-}
-
-/**
- * Task tool result - shows agent response with nested content
- * (Legacy - used when expanded in standard tool row)
- */
 function TaskToolResult({
   result,
   isError,
@@ -582,24 +555,24 @@ function TaskToolResult({
   );
 }
 
-export const taskRenderer: ToolRenderer<TaskInput, TaskResult> = {
+export const taskRenderer = defineTool(toolDisplayContracts.Task, {
   tool: "Task",
 
   renderToolUse(input, _context) {
-    return <TaskToolUse input={input as TaskInput} />;
+    return <TaskToolUse input={input} />;
   },
 
   renderToolResult(result, isError, _context) {
-    return <TaskToolResult result={result as TaskResult} isError={isError} />;
+    return <TaskToolResult result={result} isError={isError} />;
   },
 
   getUseSummary(input) {
-    return (input as TaskInput).description;
+    return input.description ?? "Agent";
   },
 
   getResultSummary(result, isError) {
     if (isError) return "Error";
-    const r = result as TaskResult;
+    const r = result;
     return r?.status
       ? `${r.status} (${r.totalToolUseCount} tools)`
       : "Complete";
@@ -610,12 +583,12 @@ export const taskRenderer: ToolRenderer<TaskInput, TaskResult> = {
   renderInline(input, result, isError, status, context) {
     return (
       <TaskInline
-        input={input as TaskInput}
-        result={result as TaskResult | undefined}
+        input={input}
+        result={result}
         isError={isError}
         status={status}
         toolUseId={context.toolUseId}
       />
     );
   },
-};
+});

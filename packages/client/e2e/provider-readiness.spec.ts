@@ -124,10 +124,14 @@ test.describe("New Session provider readiness", () => {
     ).toBeVisible();
 
     await page.setViewportSize({ width: 1000, height: 600 });
-    await codexSettings.scrollIntoViewIfNeeded();
+    await expect(async () => {
+      await codexSettings.scrollIntoViewIfNeeded();
+    }).toPass();
     await capture(page, "desktop-provider-readiness-1000x600.png");
     await page.setViewportSize({ width: 375, height: 812 });
-    await codexSettings.scrollIntoViewIfNeeded();
+    await expect(async () => {
+      await codexSettings.scrollIntoViewIfNeeded();
+    }).toPass();
     await capture(page, "desktop-provider-readiness-375x812.png");
 
     await page.goto(`${baseURL}/new-session?provider=codex&detached=1`);

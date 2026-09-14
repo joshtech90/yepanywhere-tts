@@ -349,6 +349,47 @@ Sources: [remote internals](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4
 [activity payload](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70/packages/shared/src/agentAwareness.ts),
 [activity relay](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70/apps/server/src/relay/AgentAwarenessRelay.ts).
 
+### Hosted login and admission authority
+
+Follow-up checked on 2026-09-13 against the same source snapshot. T3 Connect
+uses one Clerk application across web, desktop and mobile. Its public
+[Clerk environment configuration](https://clerk.t3.codes/v1/environment)
+enabled Google, GitHub, Apple and Microsoft login when checked; those are
+deployment settings, not providers hard-coded in the repository. CLI login
+uses an OAuth public client with PKCE. Login alone does not expose a machine:
+`t3 connect link` separately enables the managed connection.
+[Connect setup](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70/docs/internals/t3-connect.md).
+
+The hosted service participates in authorization, beyond discovery:
+
+1. Authorized local setup installs the linked cloud user ID, relay issuer and
+   cloud mint public key in the environment. The HTTP configuration operation
+   requires `relay:write`.
+2. A client authenticates to the relay with Clerk. The relay looks up an active
+   environment link for that user, then signs a two-minute connection request
+   bound to the environment and the client's proof-of-possession key.
+3. The environment verifies the installed key, issuer, audience, linked user,
+   lifetime, scope and replay guards. It locally issues a two-minute pairing
+   credential bound to that client key. The client exchanges it for an
+   environment session with DPoP proof of possession.
+4. The environment grants its fixed standard client scopes, including terminal
+   and orchestration operation; the cloud request cannot choose arbitrary
+   administrative scopes through this endpoint.
+
+Sources: [relay connection broker](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70/infra/relay/src/environments/EnvironmentConnector.ts),
+[environment enrollment and mint handlers](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70/apps/server/src/cloud/http.ts),
+[relay identity verification](https://github.com/pingdotgg/t3code/blob/d7cf8aaa8d4fbcbdd523b4f4bc86fda5c47b4a70/infra/relay/src/http/Api.ts).
+
+**Trust implication:** the environment issues the final credential, but trusts
+the cloud to authorize new client keys for its linked user. An operator with
+the cloud signing authority could request access for a key it controls. DPoP
+prevents reuse of a stolen credential without its bound key; it does not remove
+that issuer authority. Standard scopes are narrower than the administrative
+API but include broad terminal access, not a project sandbox. This is close
+prior art for YA's proposed opt-in hosted issuer. It does not establish
+multiplayer invitations or project/session read-only sharing: the reviewed
+managed flow binds the environment to its account owner.
+
 ### Telemetry
 
 T3's opt-out PostHog telemetry records provider/model/mode, outcomes,

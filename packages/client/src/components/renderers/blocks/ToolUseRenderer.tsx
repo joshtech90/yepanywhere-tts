@@ -43,7 +43,10 @@ export const toolUseRenderer: ContentRenderer<ToolUseBlock> = {
   },
   getSummary(block) {
     const toolBlock = block as ToolUseBlock;
-    const renderer = toolRegistry.get(toolBlock.name);
-    return renderer.getUseSummary?.(toolBlock.input) || toolBlock.name;
+    return (
+      toolRegistry
+        .prepare(toolBlock.name, { input: toolBlock.input, status: "pending" })
+        .getUseSummary() || toolBlock.name
+    );
   },
 };

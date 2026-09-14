@@ -9,6 +9,7 @@ import type {
   SlashCommand,
 } from "@yep-anywhere/shared";
 import type { AgentMessageQueue } from "../messageQueue.js";
+import type { ClaudeGoalSnapshot } from "./claude-goal.js";
 import type {
   PrepareSessionSandboxOptions,
   SessionSandboxRuntime,
@@ -193,6 +194,12 @@ export function inactiveProviderSessionOptionsResult(
  * Options for starting a new agent session.
  */
 export interface StartSessionOptions {
+  /** Local session-owned grant; never serialized into a remote provider host. */
+  computerControl?: import("../../computer-control/contract.js").ComputerSession;
+  /** Operator opt-in, preserved across provider-host process boundaries. */
+  agentSelf?: boolean;
+  /** Trusted owner-supplied child environment; never a client request field. */
+  agentEnvironment?: Record<string, string>;
   /** Working directory for the session */
   cwd: string;
   /** Initial message to send (optional - session can wait for message) */
@@ -213,6 +220,12 @@ export interface StartSessionOptions {
   clientName?: string;
   /** Permission mode for tool approvals */
   permissionMode?: PermissionMode;
+  /**
+   * Last YA-observed goal for a resumed session. Providers that keep goal
+   * state outside their own protocol (Claude) restore what only YA knows: a
+   * paused goal, whose Stop hook YA removed and intends to reinstall.
+   */
+  restoredGoal?: ClaudeGoalSnapshot | null;
   /** Model to use (e.g., "sonnet", "opus", "haiku") */
   model?: string;
   /** Provider-visible service tier. undefined means provider/default behavior. */
@@ -270,6 +283,12 @@ export interface StartSessionOptions {
  * This is the common interface all providers must return.
  */
 export interface AgentSession {
+  /** Active turn retained by an existing provider owner during controller reload. */
+  initialTurnState?: "idle" | "in-turn";
+  /** Publish selected/pending settings to the optional owning-session projection. */
+  publishAgentSelfSelection?: (
+    selection: import("../../agent-tools/protocol.js").AgentSelfSelection,
+  ) => void | Promise<void>;
   /** Async iterator yielding SDK messages */
   iterator: AsyncIterableIterator<SDKMessage>;
   /** Message queue for sending messages to the agent */
@@ -437,6 +456,13 @@ export interface AgentProvider {
    */
   readonly supportsLaunchCompactPercentOverride?: boolean;
   /**
+   * Whether the provider starts its session only once the first message is
+   * delivered, so its init event — and with it the canonical session id —
+   * cannot arrive while YA holds input back. Optional; absent means the
+   * provider reports init on its own after startup.
+   */
+  readonly initializesOnFirstMessage?: boolean;
+  /**
    * Prompt-cache keepalive capability. Absence means YA must not show or
    * schedule keepalive for this provider.
    */
@@ -538,7 +564,11 @@ export interface AgentProvider {
     title?: string;
     /** Project-private provider state and process confinement inherited by the fork. */
     sessionSandbox?: SessionSandboxRuntime;
-  }) => Promise<{ sessionId: string }>;
+  }) => Promise<{
+    sessionId: string;
+    /** Provider-owned durable file; internal hint for immediate discovery. */
+    filePath?: string;
+  }>;
 }
 
 /**

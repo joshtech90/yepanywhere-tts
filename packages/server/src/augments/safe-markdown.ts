@@ -1,7 +1,11 @@
 import { statSync } from "node:fs";
 import { isAbsolute, normalize, posix, win32 } from "node:path";
 import { katex as markdownItKatex } from "@mdit/plugin-katex";
-import { parseLineColumn } from "@yep-anywhere/shared";
+import {
+  containsLinkifiableUrl,
+  parseLineColumn,
+  splitUrlSegments,
+} from "@yep-anywhere/shared";
 import MarkdownIt, {
   type Env,
   type Renderer,
@@ -1044,9 +1048,43 @@ function renderLinkClose(
   return suffixes?.pop() ?? "";
 }
 
+/**
+ * Escape code text, turning bare `http(s)` URLs into anchors.
+ *
+ * Prose autolinks already, so a URL that lands in a fenced block or inline
+ * code was the one thing on screen that had to be selected and copied. The
+ * text still reads exactly as written; only the anchor is added, and only for
+ * a URL the shared linkifier accepts.
+ */
+function escapeCodeWithLinks(text: string): string {
+  if (!containsLinkifiableUrl(text)) return escapeHtml(text);
+  return splitUrlSegments(text)
+    .map((segment) =>
+      segment.type === "url" && segment.href
+        ? `<a href="${escapeHtml(segment.href)}">${escapeHtml(segment.text)}</a>`
+        : escapeHtml(segment.text),
+    )
+    .join("");
+}
+
 function renderCodeInline(tokens: Token[], index: number): string {
   const text = tokens[index]?.content ?? "";
-  return renderProjectFileCodeLink(text) ?? `<code>${escapeHtml(text)}</code>`;
+  return (
+    renderProjectFileCodeLink(text) ??
+    `<code>${escapeCodeWithLinks(text)}</code>`
+  );
+}
+
+/** Fenced and indented blocks, linkified the same way inline code is. */
+function renderCodeBlock(tokens: Token[], index: number): string {
+  const token = tokens[index];
+  if (!token) return "";
+  const info = token.info ? token.info.trim().split(/\s+/)[0] : "";
+  const language = info && /^[\w.+-]+$/.test(info) ? info : "";
+  const open = language
+    ? `<pre><code class="language-${escapeHtml(language)}">`
+    : "<pre><code>";
+  return `${open}${escapeCodeWithLinks(token.content)}</code></pre>\n`;
 }
 
 function renderImage(
@@ -1313,6 +1351,8 @@ markdownRenderer.core.ruler.after(
 markdownRenderer.renderer.rules.link_open = renderLinkOpen;
 markdownRenderer.renderer.rules.link_close = renderLinkClose;
 markdownRenderer.renderer.rules.code_inline = renderCodeInline;
+markdownRenderer.renderer.rules.fence = renderCodeBlock;
+markdownRenderer.renderer.rules.code_block = renderCodeBlock;
 markdownRenderer.renderer.rules.image = renderImage;
 markdownRenderer.renderer.rules.quarto_include = renderQuartoInclude;
 markdownRenderer.renderer.rules.th_open = renderTableCellOpen;

@@ -6,9 +6,12 @@
 
 Topic: agent-command-runtime
 
-Status: direction proposal, 2026-08-31. Nothing is implemented. The first
-specified consumer is private agent input; session access and yacron are
-existing proposed consumers with their own API and product contracts.
+Status: broader direction proposal, updated 2026-09-08. The first milestone,
+read-only `ya-agent self`, is implemented as an opt-in feature; its authoritative
+contract is [Agent Own-Session Inspection](agent-self.md). The details below
+remain design context where they go beyond that contract.
+Private input, broader session access, yacron integration, and
+automatic command advertisement are deferred beyond that milestone.
 
 Related:
 [new-session agent tooling](new-session-agent-tooling.md),
@@ -24,18 +27,25 @@ Related:
 
 ## Decision summary
 
+- Start with `ya-agent self` and `ya-agent self --json`. Ship only the command
+  and connection machinery needed to inspect the caller's owning session.
+  Initial instruction discovery is operator-managed through harness-global
+  instruction files; YA-generated capability fragments and their UI are later
+  work. This ordering is local to this proposal, not a change to the product
+  roadmap's publishing priority.
 - YA ships one internal `ya-agent` command implementation with its server
   artifacts. It is not a second user-installed product CLI.
 - One active YA provider-runtime owner creates one private, temporary command
   directory. It does not create a copy of the implementation for every
   session.
-- Each YA session stores its requested agent-command capabilities. A global
-  new-session default may seed that choice, but it does not grant commands to
-  an existing session or replace the explicit session value.
+- The later per-session UI stores requested agent-command capabilities. A
+  global new-session default may seed that choice, but it does not grant
+  commands to an existing session or replace the explicit session value.
 - On every provider-process launch, YA intersects the session request with the
   provider, executor, sandbox, and server capabilities that can actually
   deliver it. Only a launch with at least one effective grant receives the
-  command directory, endpoint, credential, and matching instructions.
+  command directory, endpoint, and credential. Automatic matching instructions
+  are deferred for the self-inspection milestone.
 - Each launched session receives separate, short-lived API authority; the
   shared launcher itself contains no credential or session identity. YA
   authenticates that authority with an unguessable capability, not by walking
@@ -43,12 +53,105 @@ Related:
 - Each feature keeps one authoritative service API. `ya-agent`, a product-
   specific alias such as `yacron`, the YA UI, and a later MCP adapter are
   clients of that API, never parallel implementations of its policy.
-- Command availability and agent advertisement derive from the same effective
-  grant. Requesting one feature grants only that feature's command scope and
-  contributes only its exact, previewable `[Client capabilities]` fragment.
-- The initial per-session **Allow private input requests** option is durable,
+- When automatic advertisement is added, command availability and its fragment
+  derive from the same effective grant. Requesting one feature grants only
+  that feature's command scope and contributes only its exact, previewable
+  `[Client capabilities]` fragment.
+- The deferred per-session **Allow private input requests** option is durable,
   default-off, and takes effect when YA next launches an eligible provider
   process. There is no ambient secure-input authority on a vanilla launch.
+
+## First milestone: inspect the owning session
+
+`ya-agent self` answers which YA session owns the command and what YA can
+verify about its model and effort. Default output is a compact human-readable
+report; `--json` returns a versioned machine-readable object. The operation is
+read-only: it does not submit a turn, resume or launch a provider, change model
+settings, register an agentctl entry, or claim a worker.
+
+The command uses the launch-provided connection and capability, with
+`AGENTCTL_SESSION_ID` as the canonical session-id cross-check. The server binds
+the request to its credential's session and launch generation; the command
+does not accept an arbitrary target session. Return these separate facts:
+
+| Fact | Meaning |
+|---|---|
+| Ownership | Canonical YA session id, owning runtime/launch generation, harness, provider route, and explicitly known backend. |
+| Launch settings | Original requested model and effort, matching the `AGENT_LAUNCH_*` history. |
+| Selected settings | YA's current configured model and effort, including provider-default selections. |
+| Provider evidence | Provider-reported model id and provider-accepted effort, each with its source and observation time or turn id when available. |
+| Pending changes | Selections awaiting application and whether they target the active turn or a subsequent turn. |
+
+Unknown, provider default, and pending are distinct states. A successful owned
+session lookup can contain unknown model or effort fields; it must not invent
+an exact value to make the report complete. Keep requested aliases separate
+from provider-reported ids, and do not claim a gateway's ultimate model
+revision unless the backend supplies that evidence. Provider acceptance of a
+setting is not proof that every in-flight request already uses it. Include
+the observation scope so an earlier turn or a next-turn setting cannot be
+presented as the exact model generating the current response.
+
+The credential identifies the supervised session/process tree. A provider-native
+child agent may inherit it while using another model or effort. `self` must
+label the result as the owning YA session's state, not attest to the calling
+child model's identity without a separate provider-backed child mapping.
+
+### Existing evidence and missing API contract
+
+As checked on 2026-09-08, `GET /api/sessions/:sessionId/process` returns
+`Process.getInfo()` or `{ "process": null }`. Its `model` uses `resolvedModel`,
+which can fall back to the launch model; `requestedModel` retains the requested
+selection. Its `effort` getter includes queued next-turn choices, while
+`appliedEffort` exists internally but is not exposed in that response. See
+`packages/server/src/routes/sessions.ts`,
+`packages/server/src/supervisor/Process.ts`, and
+[provider runtime status](provider-runtime-status.md).
+
+The first milestone needs a narrow, versioned self-inspection service
+projection from the live owner, with explicit evidence and pending/applied
+semantics. Wrapping the existing process response and labeling every field
+"current" is insufficient. Reuse the session/provider state owners; do not
+create a second model-settings store. The existing Linux provider-host
+discovery protocol is useful infrastructure, but it is not a portable
+per-session self-inspection capability or a complete current-settings response.
+
+### Initial availability and manual instructions
+
+Defer automatic `[Client capabilities]` injection, Settings previews, onboarding,
+and per-session command-advertisement UI. An operator can initially advertise
+the command in Codex's user-global `~/.codex/AGENTS.md` and Claude Code's
+user-global `~/.claude/CLAUDE.md` (or their managed source files). A generic
+home-directory `AGENTS.md` is not the shared entry point for both harnesses.
+YA does not edit these files or install the graehl/agents corpus.
+
+Suggested operator-managed instruction, to install once the command ships:
+
+> When asked about your model, effort, or YA session ownership, check whether
+> `ya-agent` is available and run `ya-agent self --json`. Report the owning
+> session, evidence source, and any pending or unknown values. Do not equate
+> launch or selected settings with verified active-turn settings, or the owning
+> session with a differently configured child agent. If unavailable, say so;
+> present any `AGENT_LAUNCH_*` values only as launch history. Query again for a
+> later current-settings question rather than reusing an earlier observation.
+
+Manual instructions replace only advertisement. The first milestone still
+needs an explicitly enabled, default-off self-inspection grant, a discoverable
+command path, and a launch-bound connection to the correct YA instance. An
+operator-configured opt-in can precede a New Session UI; its exact configuration
+name and lifecycle must be settled before implementation. Keep the proposed
+`AGENT_YA_API_URL` / `AGENT_YA_API_TOKEN` channel from
+[new-session agent tooling](new-session-agent-tooling.md), restricted initially
+to reading the owning session. Do not guess ports/profiles, use a wake token
+for another API, or fall back to provider-native resume. Instruction text and
+the presence of an executable confer no service authority.
+
+The command makes one bounded lookup without ongoing polling. Specify stable
+exit codes and JSON error categories for unavailable launch context, refused
+or expired authority, unreachable owner, unsupported protocol, and an owner
+that no longer has that live session. None implies that no historical session
+exists. A stale retained setting must never masquerade as a fresh live reply.
+Local Claude and Codex are the initial provider targets; test macOS, Linux,
+and Windows, and explicitly reject unsupported sandbox/remote placements.
 
 ## One implementation, one runtime command directory
 
@@ -97,8 +200,10 @@ token state. Desktop's bundled server remains the ordinary local owner.
 
 ## Per-session request and effective launch grant
 
-Agent-command access is durable requested session state, like executor and
-sandbox selection. The New Session form owns the explicit choice. A saved
+The per-session UI below is deferred beyond self-inspection's initial
+operator-configured opt-in. Agent-command access is durable requested session
+state, like executor and sandbox selection. The New Session form owns the
+explicit choice. A saved
 new-session default may initialize that form, remains default-off, and is no
 more authoritative than YA's other new-session defaults: changing it does not
 rewrite existing sessions.
@@ -201,6 +306,7 @@ boundary. Changing the existing loopback trust model is separate scope.
 `ya-agent` is a multi-command transport adapter. Candidate consumers include:
 
 ```text
+ya-agent self [--json]
 ya-agent private-input --prompt <text> [--timeout <duration>]
 ya-agent sessions ...
 ya-agent transcript ...
@@ -208,6 +314,9 @@ ya-agent search ...
 ya-agent send ...
 ya-agent new ...
 ```
+
+Only `self` belongs to the first milestone. All other commands listed remain
+deferred designs and do not expand its read-only capability.
 
 The exact session-access subcommands remain owned by
 [agent session access](agent-session-access.md). A stable product command may
@@ -224,7 +333,7 @@ An MCP server can later expose the same operations for providers with a
 reliable custom-tool channel, but it remains another adapter rather than the
 first provider-neutral delivery mechanism.
 
-## Private agent input
+## Deferred: private agent input
 
 Private input is an accidental-context-disclosure guard for PINs, short-lived
 tokens, passphrases, and similar values. It is not a hostile-agent isolation
@@ -319,9 +428,9 @@ that placement, transport, permission, and cleanup contract. Unsupported
 launches omit the fragment and command scope rather than exposing a command
 that will return an unusable path.
 
-## Session control and exact agent context
+## Deferred: session control and exact agent context
 
-The first control belongs in the New Session form's **Agent access** area:
+The private-input control belongs in the New Session form's **Agent access** area:
 
 **Allow private input requests** — off by default. Selecting it records the
 session request; an eligible launch grants the secure-input command scope and
@@ -406,19 +515,40 @@ distribution.
 
 ## Implementation checkpoints
 
+### First milestone: self-inspection
+
+1. **Define the self-inspection response.** Project owner identity, launch,
+   selected, provider-evidenced, and pending settings from existing state.
+   Specify schema version, evidence scope, unknown/default distinctions,
+   bounded lookup, and stable failure semantics.
+2. **Deliver the read-only command and connection.** Package `ya-agent self`
+   and `--json` with YA, provide the command path and session-bound service
+   channel for explicitly opted-in local Claude/Codex launches, and enforce
+   the own-session read scope. Preserve that binding across canonical-id
+   publication and safe reload; reject stale or foreign launch credentials.
+3. **Verify ownership and reporting.** Cover aliases, omitted defaults,
+   model switches, pending next-turn effort, provider acknowledgement,
+   inherited child environments, multiple servers/profiles, resume/remap,
+   owner loss, and unauthorized target changes. Verify command delivery on
+   macOS, Linux, and Windows, including npm and packaged desktop where
+   supported; unsupported sandbox/remote launches fail explicitly.
+4. **Document the manual instruction recipe.** Exercise the same command from
+   Claude and Codex using operator-managed global instructions. Automatic
+   advertisement and its UI are not completion gates for this milestone.
+
+### Later milestones, deferred
+
 1. **Persist the per-session capability request.** Add the default-off New
    Session control, optional future-session default, metadata/resume behavior,
    explicit non-inheritance for new identities, and requested-versus-effective
    status with ineligibility reasons.
-2. **Package and project the command runtime.** Include the immutable helper
-   in npm and desktop server artifacts; create one private server-instance bin;
-   inject it only into effectively granted local provider launches; verify
-   macOS, Linux, Windows, npm, and packaged desktop behavior.
-3. **Mint capability-scoped launch authority.** Bind tokens to a provider
-   session and launch generation, canonical remap, exact operation scopes,
-   revocation, and bounded expiry; filter control-plane credentials and prove
-   that unrelated sessions and API routes fail closed. Process ancestry is not
-   an authentication input.
+2. **Extend command projection.** Reuse the packaged self-inspection runtime
+   and private command directory for newly enabled commands; verify the
+   expanded grant handling on supported platforms and distributions.
+3. **Extend launch authority.** Reuse session/launch binding, revocation, and
+   expiry for each new operation scope. Prove that self-inspection credentials
+   cannot acquire the added scopes and that unrelated sessions and API routes
+   still fail closed. Process ancestry is not an authentication input.
 4. **Add private-input service and UI.** Implement create/wait/cancel, the
    authenticated dialog, location-correct owner-only files, redaction, expiry,
    and disconnect/process cleanup without per-session polling.

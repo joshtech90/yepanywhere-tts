@@ -53,6 +53,19 @@ describe("BlockDetector", () => {
       });
     });
 
+    it("normalizes code block language", () => {
+      const detector = new BlockDetector();
+      const blocks = detector.feed(
+        "```  JavaScript title\nconst x = 1;\n```\n",
+      );
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({
+        type: "code",
+        lang: "javascript",
+      });
+    });
+
     it("detects a code block without language hint", () => {
       const detector = new BlockDetector();
       const blocks = detector.feed("```\nplain code\n```\n");
@@ -946,6 +959,19 @@ code
       expect(streaming).toMatchObject({
         content: "```js\nconst x = 1;\nconst y = 2;",
         lang: "js",
+        startOffset: 0,
+      });
+    });
+
+    it("normalizes streaming code block language", () => {
+      const detector = new BlockDetector();
+      detector.feed("```  JAVASCRIPT title\nconst x = 1;");
+
+      const streaming = detector.getStreamingCodeBlock();
+      expect(streaming).not.toBeNull();
+      expect(streaming).toMatchObject({
+        content: "```  JAVASCRIPT title\nconst x = 1;",
+        lang: "javascript",
         startOffset: 0,
       });
     });

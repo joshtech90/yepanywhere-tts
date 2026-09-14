@@ -17,6 +17,14 @@ export interface LogEntry {
   level: string;
   prefix: string;
   message: string;
+  /**
+   * Which browser tab wrote this entry. Every tab of one origin shares the
+   * IndexedDB queue below, so a collected batch interleaves tabs and any tab
+   * may post another's entries. Without this, two windows on one session and
+   * one window flapping between rendered and empty look identical in the
+   * collected log, which is the distinction a lock investigation turns on.
+   */
+  tabId?: string;
 }
 
 const DB_NAME = "yep-anywhere-client-logs";
@@ -29,6 +37,7 @@ const TELEMETRY_INTERVAL_MS = 15_000;
 
 const PREFIX_REGEX = /^\[([A-Za-z]+)\]/;
 const DEVICE_ID_KEY = "yep-anywhere-device-id";
+const TAB_ID_KEY = "yep-anywhere-tab-id";
 
 function getDeviceId(): string | undefined {
   try {
@@ -43,6 +52,24 @@ function getDeviceId(): string | undefined {
   }
 }
 
+/**
+ * Session storage is per tab and survives that tab's reloads, which is exactly
+ * the identity a growth curve needs: one series per window, continuous across
+ * a reload the reader performed.
+ */
+function getTabId(): string | undefined {
+  try {
+    let id = sessionStorage.getItem(TAB_ID_KEY);
+    if (!id) {
+      id = generateUUID();
+      sessionStorage.setItem(TAB_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return undefined;
+  }
+}
+
 export class ClientLogCollector {
   private _db: IDBDatabase | null = null;
   private _memoryBuffer: LogEntry[] = [];
@@ -50,6 +77,7 @@ export class ClientLogCollector {
   private _started = false;
   private _flushing = false;
   private _deviceId: string | undefined;
+  private _tabId: string | undefined;
 
   private _origLog: typeof console.log | null = null;
   private _origWarn: typeof console.warn | null = null;
@@ -65,6 +93,7 @@ export class ClientLogCollector {
     if (this._started) return;
     this._started = true;
     this._deviceId = getDeviceId();
+    this._tabId = getTabId();
 
     try {
       const db = await openDatabase(DB_NAME, DB_VERSION, (db) => {
@@ -195,6 +224,7 @@ export class ClientLogCollector {
       level,
       prefix,
       message,
+      tabId: this._tabId,
     };
 
     if (this._useMemoryFallback || !this._db) {

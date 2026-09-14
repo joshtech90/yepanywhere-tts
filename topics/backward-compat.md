@@ -7,6 +7,14 @@ Topic: backward-compat
 
 ## Decisions
 
+2026-09-07 Codex `/clone` — keep the existing route and response fields while
+using native provider forks. `messageCount` remains a conservative inherited
+prefix offset for older `/btw` clients, using `Number.MAX_SAFE_INTEGER` until
+their prompt marker establishes the real boundary. This prevents inherited
+answer leakage without scanning history for a count. Quick question cards use
+their own marker and ignore the offset. See
+[aside contracts](provider-agnostic-btw-asides.md).
+
 2026-08-17 agent launch markers — renamed `YEP_AGENT_HARNESS`,
 `YEP_AGENT_INITIAL_MODEL`, and `YEP_AGENT_INITIAL_EFFORT` to
 `AGENT_LAUNCH_HARNESS`, `AGENT_LAUNCH_MODEL`, and `AGENT_LAUNCH_EFFORT`, and
@@ -284,3 +292,9 @@ For older clients and legacy metadata, a missing firewall value defaults on
 only when `sandboxLevel` is `project-write`; explicit false stays authoritative,
 and true without project-write is rejected. Audited stable releases `v0.7.0`
 and `v0.6.2` lack the complete sandbox and firewall contracts.
+
+2026-09-09 `YEP_SQLITE` unset default — initialize built-in SQLite automatically;
+the maintainer requires it as normal server storage infrastructure now that
+supported runtimes include it. Preserve explicit `off` as a development/recovery
+escape hatch, with dependent capabilities unavailable. Learning and other
+feature opt-ins remain independent; browsers carry no SQLite opt-in to migrate.

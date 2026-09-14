@@ -1,3 +1,4 @@
+import { SessionIssuesLink } from "../components/SessionIssuesLink";
 import type {
   BangCommandTranscriptDisplayObject,
   EffortLevel,
@@ -24,6 +25,7 @@ import {
   SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
   getCanonicalInvocationToken,
   isClaudeProviderName,
+  readInventoryGoalDetails,
   serverHasCapability,
   startsWithSlashCommand,
   thinkingOptionToConfig,
@@ -43,6 +45,7 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
+import { createSessionApi } from "../api/sessionClient";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
 import {
   SessionViewerProvider,
@@ -102,6 +105,7 @@ import { useDeveloperMode } from "../hooks/useDeveloperMode";
 import { useAutoReadAloud } from "../hooks/useAutoReadAloud";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import type { DraftControls } from "../hooks/useDraftPersistence";
+import { AsyncQuestionsProvider } from "../contexts/AsyncQuestionsContext";
 import { useEngagementTracking } from "../hooks/useEngagementTracking";
 import { useBtwAsides } from "../hooks/useBtwAsides";
 import { useGeneratedTitleEnabled } from "../hooks/useGeneratedTitleEnabled";
@@ -117,6 +121,7 @@ import { useProject, useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { recordSessionVisit } from "../hooks/useRecentSessions";
+import { recordSessionInteraction } from "../lib/sessionInteractionOrder";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionLoadingProgress } from "../hooks/useSessionLoadingProgress";
@@ -124,11 +129,13 @@ import type { SessionLoadProgress } from "../hooks/useSessionMessages";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useVersion } from "../hooks/useVersion";
+import { useSessionSpeechVocabulary } from "../hooks/useSessionSpeechVocabulary";
 import type { DraftTextChangeMetadata } from "../lib/commentAnchors";
 import {
   deleteDraftAttachmentRef,
   validateDraftAttachmentRefs,
 } from "../lib/draftAttachmentStaging";
+import { draftTextIsAccountedFor } from "../lib/draftSendReconcile";
 import {
   hasAttachmentNavigationRisk,
   useAttachmentNavigationGuard,
@@ -146,6 +153,7 @@ import {
   useActiveProjectSessionIds,
   useClientSummarySourceKey,
   useProviderRuntimeStatusForSession,
+  useSessionCollectionRecord,
 } from "../lib/clientSummaryStore";
 import { activityBus } from "../lib/activityBus";
 import {
@@ -172,6 +180,8 @@ import {
   thinkingOptionFromSelection,
 } from "../lib/liveThinkingConfig";
 import { getPersistentEditApprovalResponse } from "../lib/permissionModes";
+import { buildConversationHandoffPrefill } from "../lib/sessionDetail/conversationHandoff";
+import { getSessionConnectionBarStatus } from "../lib/sessionConnectionBar";
 import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection";
 import { createPendingElsewhereDismissKey } from "../lib/sessionUiStorageKeys";
 import { parseCodexConfigAck } from "../lib/sessionCodexConfigAck";
@@ -200,7 +210,7 @@ import {
   type PreparedComposerSubmission,
   uploadComposerAttachmentFile,
 } from "../lib/sessionComposerSubmission";
-import { isLegacyCodexSetupText } from "../lib/codexLegacySetup";
+import { isLegacyCodexSetupText } from "@yep-anywhere/shared/transcript/codexLegacySetup";
 import { resolveSessionProviderCapabilities } from "../lib/providerCapabilities";
 import {
   serverSupportsProjectQueue,
@@ -650,6 +660,7 @@ function SessionPageContent({
     sessionLoadProgress,
     error,
     sessionUpdatesConnected,
+    sessionUpdatesResubscribing,
     lastStreamActivityAt,
     setStatus,
     setProcessState,
@@ -686,8 +697,7 @@ function SessionPageContent({
   );
   const providerRuntimeStatus =
     useProviderRuntimeStatusForSession(actualSessionId);
-  const goalDetails = slashCommands.find((command) => command.name === "goal")
-    ?.providerDetails?.codex;
+  const goalDetails = readInventoryGoalDetails(slashCommands);
   const currentGoal = goalDetails?.goalObjective;
   const sessionLoadingProgressText =
     sessionLoadingProgressEnabled && sessionLoadingProgressDetailsVisible
@@ -717,6 +727,14 @@ function SessionPageContent({
   // Composer `!!` routing is always-on where the server supports it
   // (vanilla-defaults.md § Known Exceptions); no setting gates execution.
   const bangCommandsSupported = serverSupportsBangCommands(versionInfo);
+  const speechVocabulary = useSessionSpeechVocabulary(
+    `${projectId}/${actualSessionId}`,
+    messages,
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.speechVocabularySessionTerms.name,
+    ),
+  );
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareGlobalStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
@@ -784,18 +802,13 @@ function SessionPageContent({
   // developer mode for connected/idle states; a disconnected state is
   // always shown so users can see when the live pipe is broken (e.g. dropped
   // SSH tunnel, relay issue, etc.).
-  const rawSessionConnectionStatus = !hasSessionUpdateStream
-    ? "idle"
-    : sessionUpdatesConnected
-      ? "connected"
-      : connectionState === "reconnecting"
-        ? "connecting"
-        : "disconnected";
-
-  const sessionConnectionStatus =
-    showConnectionBars || rawSessionConnectionStatus === "disconnected"
-      ? rawSessionConnectionStatus
-      : "idle";
+  const sessionConnectionStatus = getSessionConnectionBarStatus({
+    hasSessionUpdateStream,
+    sessionUpdatesConnected,
+    sessionUpdatesResubscribing,
+    showConnectionBars,
+    transportReconnecting: connectionState === "reconnecting",
+  });
 
   // Effective provider/model for immediate display before session data loads
   const effectiveProvider = session?.provider ?? initialProvider;
@@ -924,10 +937,18 @@ function SessionPageContent({
     originalText: string;
   } | null>(null);
   const { questionAsidesEnabled } = useQuestionAsideSetting();
+  const questionSourceApi = useMemo(
+    () =>
+      createSessionApi((path, options) =>
+        sourceRuntime.transport.fetch(path, options),
+      ),
+    [sourceRuntime],
+  );
   const questionAside = useQuestionAside({
     projectId,
     sessionId: actualSessionId,
-    sourceApi,
+    sourceKey: sourceRuntime.sourceKey,
+    sourceApi: questionSourceApi,
     provider: effectiveProvider,
     model: effectiveModelConfig?.model ?? session?.model,
     executor: session?.executor,
@@ -938,6 +959,13 @@ function SessionPageContent({
     showToast,
     onSaved: () => {
       void fetchNewMessages();
+    },
+    sendToMain: (text) =>
+      handleSendRef.current(text, undefined, { preserveComposer: true }),
+    onContinueAsBtw: (childId) => {
+      const params = new URLSearchParams(location.search);
+      params.set("btw", childId);
+      navigate({ search: params.toString() });
     },
   });
   const [forkSummaryDraft, setForkSummaryDraft] = useState<{
@@ -1669,6 +1697,43 @@ function SessionPageContent({
     () => getCachedWebTranscriptProjection(messages),
     [messages],
   );
+  const handoffFromUserMessage = useCallback(
+    (messageId: string, options: { newTab: boolean }) => {
+      if (!effectiveProvider || !actualSessionId) return;
+      const prefill = buildConversationHandoffPrefill({
+        items: activityRenderItems,
+        fromUserTurnId: messageId,
+        provider: effectiveProvider,
+        sessionId: actualSessionId,
+        goal: currentGoal,
+        projectPath: project?.path,
+      });
+      if (!prefill) return;
+      startNewSessionWithPrefill(projectId, prefill, {
+        caret: "start",
+        executor: session?.executor,
+        model: effectiveModelConfig?.model ?? effectiveModel,
+        newTab: options.newTab,
+        permissionMode,
+        provider: effectiveProvider,
+        thinking: getImplicitComposerThinking(),
+      });
+    },
+    [
+      activityRenderItems,
+      actualSessionId,
+      currentGoal,
+      effectiveModel,
+      effectiveModelConfig?.model,
+      effectiveProvider,
+      getImplicitComposerThinking,
+      permissionMode,
+      project?.path,
+      projectId,
+      session?.executor,
+      startNewSessionWithPrefill,
+    ],
+  );
   const sessionActivityUi = useMemo(
     () =>
       getSessionActivityUiState({
@@ -1804,9 +1869,7 @@ function SessionPageContent({
   const [localPromptSuggestionMode, setLocalPromptSuggestionMode] = useState<
     PromptSuggestionMode | undefined
   >(undefined);
-  const [localHasUnread, setLocalHasUnread] = useState<boolean | undefined>(
-    undefined,
-  );
+  const sessionCollectionRecord = useSessionCollectionRecord(sessionId);
 
   useEffect(() => {
     generatedRetitleRef.current = generatedRetitle;
@@ -1823,7 +1886,6 @@ function SessionPageContent({
     setLocalHeartbeatTurnText(undefined);
     setLocalHeartbeatForceAfterMinutes(undefined);
     setLocalPromptSuggestionMode(undefined);
-    setLocalHasUnread(undefined);
   }, [sessionId]);
 
   const projectReclassifyOptions = useMemo(
@@ -1930,8 +1992,16 @@ function SessionPageContent({
 
   // Record session visit for recents tracking
   useEffect(() => {
+    if (isDomLingerParked) return;
     recordSessionVisit(sessionId, projectId);
-  }, [sessionId, projectId]);
+    recordSessionInteraction(sourceRuntime.sourceKey, actualSessionId);
+  }, [
+    sessionId,
+    projectId,
+    actualSessionId,
+    sourceRuntime.sourceKey,
+    isDomLingerParked,
+  ]);
 
   // Navigate to new session ID when temp ID is replaced with real SDK session ID
   // This ensures the URL stays in sync with the actual session
@@ -2311,11 +2381,16 @@ function SessionPageContent({
   const handleSend = async (
     text: string,
     metadata?: MessageSubmissionMetadata,
-    options: { preserveComposer?: boolean; localControl?: boolean } = {},
+    options: {
+      preserveComposer?: boolean;
+      preserveScroll?: boolean;
+      localControl?: boolean;
+    } = {},
   ): Promise<boolean> => {
-    const prepared: PreparedComposerSubmission | null = options.localControl
-      ? { outgoingText: text }
-      : prepareComposerSubmission(text);
+    const prepared: PreparedComposerSubmission | null =
+      options.localControl || options.preserveComposer
+        ? { outgoingText: text }
+        : prepareComposerSubmission(text);
     if (!prepared) {
       return false;
     }
@@ -2357,6 +2432,12 @@ function SessionPageContent({
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
     const clientTimestampIso = new Date(clientTimestamp).toISOString();
 
+    recordSessionInteraction(
+      sourceRuntime.sourceKey,
+      actualSessionId,
+      actionAtMs,
+    );
+
     // Add to pending queue and get tempId to pass to server
     const { tempId } = addPendingMessage(
       outgoingText,
@@ -2365,7 +2446,7 @@ function SessionPageContent({
     );
     if (!localControl) {
       setProcessState("in-turn"); // Optimistic: show processing indicator immediately
-      setScrollTrigger((prev) => prev + 1); // Force scroll to bottom
+      if (!options.preserveScroll) setScrollTrigger((prev) => prev + 1);
     }
     logSessionUiTrace("composer-send-start", {
       sessionId,
@@ -2875,6 +2956,12 @@ function SessionPageContent({
     const showThinking = getShowThinkingSetting();
     const actionAtMs = Date.now();
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
+
+    recordSessionInteraction(
+      sourceRuntime.sourceKey,
+      actualSessionId,
+      actionAtMs,
+    );
 
     // The queue path is not optimistic: no "Sending..." pending chip. The
     // composer disables for the round-trip and the queued chip renders from the
@@ -3937,11 +4024,30 @@ function SessionPageContent({
     ],
   );
 
+  // A submit clears the composer optimistically and keeps the text as a
+  // recovery copy, so a sibling tab or a reload can still see a send that
+  // never landed. Once this session proves the same text is durable — a real
+  // user turn, or a message the server holds queued — that copy is noise, and
+  // its tab may be gone before its own confirm ever runs.
+  const reconcilePendingSendDraftRef = useRef<() => void>(() => {});
+  const reconcilePendingSendDraft = useCallback(() => {
+    draftControlsRef.current?.discardPendingSendDraft((draftText) =>
+      draftTextIsAccountedFor({ draftText, messages, deferredMessages }),
+    );
+  }, [deferredMessages, messages]);
+  reconcilePendingSendDraftRef.current = reconcilePendingSendDraft;
+
+  useEffect(() => {
+    reconcilePendingSendDraft();
+  }, [reconcilePendingSendDraft]);
+
   const handleDraftControlsReady = useCallback(
     (controls: DraftControls) => {
       draftControlsRef.current = controls;
       flushPendingMotherComposerTransfer(controls);
       void hydrateDraftAttachments(controls);
+      // History may already have loaded before the composer mounted.
+      reconcilePendingSendDraftRef.current();
     },
     [flushPendingMotherComposerTransfer, hydrateDraftAttachments],
   );
@@ -4744,11 +4850,11 @@ function SessionPageContent({
     }
   };
 
-  const hasUnread = localHasUnread ?? session?.hasUnread ?? false;
+  const hasUnread =
+    sessionCollectionRecord?.hasUnread ?? session?.hasUnread ?? false;
 
   const handleToggleRead = async () => {
     const newHasUnread = !hasUnread;
-    setLocalHasUnread(newHasUnread);
     try {
       if (newHasUnread) {
         await api.markSessionUnread(sessionId);
@@ -4761,7 +4867,6 @@ function SessionPageContent({
       );
     } catch (err) {
       console.error("Failed to update read status:", err);
-      setLocalHasUnread(undefined); // Revert on error
       showToast(t("sessionReadFailed"), "error");
     }
   };
@@ -4952,7 +5057,7 @@ function SessionPageContent({
       }
     : thinkingOptionToConfig(getThinkingSetting());
 
-  return (
+  const content = (
     <MainContent isWideScreen={isWideScreen}>
       <header className="session-header">
         <div className="session-header-inner">
@@ -5475,6 +5580,13 @@ function SessionPageContent({
                 }
               />
             )}
+            {!loading && actualSessionId && (
+              <SessionIssuesLink
+                sessionId={actualSessionId}
+                projectId={projectId}
+                messageCount={messages.length}
+              />
+            )}
             {!loading && effectiveProvider && (
               <button
                 type="button"
@@ -5778,6 +5890,7 @@ function SessionPageContent({
                     forkAfterUserMessageDisabled={forkAfterDisabled}
                     forkUnavailableMessage={forkUnavailableMessage}
                     onCopyUserMessage={copyUserMessage}
+                    onHandoffFromUserMessage={handoffFromUserMessage}
                     markdownAugments={markdownAugments}
                     activeToolApproval={activeToolApproval}
                     hasOlderMessages={pagination?.hasOlderMessages}
@@ -5953,6 +6066,12 @@ function SessionPageContent({
                   void questionAside.save();
                 }}
                 onDiscard={questionAside.discard}
+                onSteer={() => {
+                  void questionAside.steer();
+                }}
+                onContinueAsBtw={() => {
+                  void questionAside.continueAsBtw();
+                }}
               />
             )}
 
@@ -5989,6 +6108,7 @@ function SessionPageContent({
                     : undefined
                 }
                 completionRenderItems={activityRenderItems}
+                speechVocabulary={speechVocabulary}
                 onSend={
                   mainComposerForAside
                     ? (text) => handleFocusedBtwSend(text, "main")
@@ -6173,5 +6293,36 @@ function SessionPageContent({
         </footer>
       </div>
     </MainContent>
+  );
+  return (
+    <AsyncQuestionsProvider
+      key={`${clientSummarySourceKey}:${sessionId}`}
+      storageKey={`yep-async-questions:${clientSummarySourceKey}:${sessionId}`}
+      target={
+        navState.asyncQuestion
+          ? { ...navState.asyncQuestion, token: location.key ?? "keyless" }
+          : undefined
+      }
+      draftSignal={composerDraftSignal}
+      send={(text) =>
+        handleSendRef.current(
+          text,
+          {
+            composition: {},
+            deliveryIntent:
+              processState === "in-turn" || processState === "waiting-input"
+                ? "steer"
+                : "direct",
+          },
+          { preserveComposer: true, preserveScroll: true },
+        )
+      }
+      quote={insertQuotedSelection}
+      focusComposer={() =>
+        draftControlsRef.current?.focus?.({ preventScroll: true })
+      }
+    >
+      {content}
+    </AsyncQuestionsProvider>
   );
 }

@@ -50,7 +50,7 @@ async function createSpeechApp(
 }
 
 class StreamingTestBackend implements StreamingSpeechBackend {
-  readonly id = "ya-streaming-test";
+  constructor(readonly id = "ya-streaming-test") {}
   readonly label = "Streaming test";
   readonly capabilities = { streaming: true, smartTurn: true } as const;
   readonly chunks: Buffer[] = [];
@@ -408,7 +408,10 @@ describe("speech routes", () => {
     const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-speech-"));
     tempDirs.push(dataDir);
     const registry = new SpeechBackendRegistry();
-    const backend = new StreamingTestBackend();
+    const backend = new StreamingTestBackend("ya-grok");
+    registry.setVocabularySource(
+      async (context) => context?.sessionTerms ?? [],
+    );
     await registry.register(backend);
     const { app, wss } = await createSpeechApp(dataDir, registry);
     let serverPort = 0;
@@ -437,6 +440,7 @@ describe("speech routes", () => {
           streaming: true,
           sampleRate: 16000,
           encoding: "pcm",
+          context: { sessionTerms: ["compiler"] },
           smartTurn: {
             enabled: true,
             threshold: 0.7,
@@ -446,6 +450,10 @@ describe("speech routes", () => {
       );
       ws.send(Buffer.from("pcm"));
       ws.send(JSON.stringify({ type: "stop" }));
+
+      await vi.waitFor(() =>
+        expect(backend.options?.keyterms).toEqual(["compiler"]),
+      );
 
       expect(await ws.nextJson()).toEqual({
         type: "interim",

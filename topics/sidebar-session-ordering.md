@@ -1,147 +1,101 @@
 # Sidebar Session Ordering
 
-> The sidebar session list must not reshuffle while the user is looking at it.
-> Active sessions are pinned above idle ones in a stable order that does not
-> reorder as their `updatedAt` churns; idle sessions sort by recency and may be
-> deduped. Defines the two ordering regimes, why active rows must skip the
-> recency sort and the duplicate-title grouping, where the stable order comes
-> from, and the regression that this contract closes.
+> Sidebar rows follow the user's visits and submissions. Background output
+> and agent activity changes update row content without changing chronology.
 
 Topic: sidebar-session-ordering
 
-See also: [ui-architecture](ui-architecture.md) (share the order at the data/render
-boundary, don't re-sort per view), [session-liveness](session-liveness.md)
-(what "active" means: `activity` = `in-turn` / `waiting-input`),
-[session-list-hidden-duplicates](session-list-hidden-duplicates.md) (when a
-duplicate-title row may be hidden at all),
-[scrollback-view-stability](scrollback-view-stability.md) (the same
-"don't move what the user is reading" principle, applied to the transcript).
+See also: [ui-architecture](ui-architecture.md),
+[session-list-hidden-duplicates](session-list-hidden-duplicates.md),
+[session-liveness](session-liveness.md), and
+[scrollback-view-stability](scrollback-view-stability.md).
 
-## The behavior we want
+## User chronology
 
-The sidebar (`packages/client/src/components/Sidebar.tsx`) shows three session
-groups: **Starred**, **Last 24 Hours**, and **Older**. Active sessions can live
-in **Starred** or **Last 24 Hours**, and both sections must use the same
-active-row stability rule.
+The sidebar's **Starred**, **Last 24 Hours**, and **Older** sections order loaded
+sessions by the most recent explicit session visit or composer submission in
+this browser. Direct sends and deferred queue submissions count, including a
+submission whose delivery fails. Passive assistant output, tools, heartbeat
+turns, metadata refreshes, and active/idle transitions do not count.
 
-What the user wants, stated as the target:
+Opening a session records a visit. A parked session page does not record visits
+while another route is foreground. Sending to or queueing text for a session
+records the interaction before delivery, so upload or provider delays cannot
+change its relative time. New sessions enter through normal navigation.
 
-1. **Active sessions are stable.** While one or more sessions are mid-turn, the
-   sidebar must hold their order still. With several sessions active at once the
-   list previously reshuffled every few seconds; that is the bug.
-2. **Active sessions sit above idle ones.** A session the agent is working on is
-   the thing the supervisor cares about, so the active group is pinned to the
-   top of the Last 24 Hours section.
-3. **Active sessions have no meaningful internal ordering — and that's fine.**
-   The user explicitly does *not* want active rows sorted by any churning key.
-   Existing active rows keep their relative order. When an idle row becomes
-   active, it moves only far enough to join the end of the active block; it
-   must not jump ahead of already-active rows. "Stable" beats "ranked."
-4. **Idle sessions sort by recency and may be deduped where that section
-   supports deduping.** Below the active group, idle sessions are ordered
-   most-recent-first. Last 24 Hours and Older idle rows run through the
-   duplicate-title grouping (the `(N hidden)` expander). They don't churn, so a
-   recency sort over idle rows is safe.
+For sessions without recorded interaction, creation time supplies a stable
+initial order. Missing creation times sort last; session ID breaks ties.
+General `updatedAt` is never used as evidence of user activity. Last 24 Hours
+and Older use the same user/creation timestamp, so background work cannot move
+a session between them. Active and queued sessions keep their badges and
+duplicate-hiding protection without being pinned above other rows.
 
-## Why active rows must skip the recency sort
+## Interaction hold
 
-An active session bumps its `updatedAt` every few seconds for the whole turn.
-Any comparator keyed on `updatedAt` therefore reorders the active rows on every
-refetch — with N concurrent active sessions you get an N-way shuffle. The only
-way to keep the active group stable is to **not sort it by a value that
-changes**. So the active group is rendered in a *preserved* order, never sorted.
+Entering the sidebar with a pointer, focusing a control inside it, or starting
+a touch captures the displayed session identities, order, and section
+membership. Status, title, unread, draft, and queue decorations remain live.
+New arrivals, duplicate regrouping, and user-driven reorderings wait until the
+interaction finishes. Rows no longer present in the loaded data are removed;
+the hold never retains a stale navigation destination after removal.
 
-The stable order used to come from `useGlobalSessions`
-(`packages/client/src/hooks/useGlobalSessions.ts`), which preserves order across
-refetches: on a non-initial fetch it updates each session **in place** in its
-existing position and only prepends genuinely-new session ids:
+The hold covers the whole sidebar, including the navigation area above the
+session list, so approaching a row does not require hitting its exact bounds.
+Pointer exit releases its interest; focus leaving the sidebar releases keyboard
+interest. Touch keeps its target through the click, releasing after that click
+or cancellation. Reordering resumes only when no interaction remains. Closing
+or collapsing the sidebar, or switching connected sources, clears the hold.
 
-```js
-const updated = prev.map((existing) => newDataMap.get(existing.id) ?? existing);
-const filtered = updated.filter((s) => newDataMap.has(s.id));
-const newSessions = data.sessions.filter((s) => !existingIds.has(s.id));
-return [...newSessions, ...filtered];
-```
+## Storage and ownership
 
-After the sidebar moved to the session collection store, the same rule is owned
-by `selectRecentSessionRecords` and `selectStarredSessionRecords`
-(`packages/client/src/lib/clientSummaryState.ts`). The selectors record
-when a row enters active state (`activeStartedAt`) and sort active rows by that
-stable timestamp ascending, while idle rows sort by `updatedAt`. A newly
-active row therefore joins after already-active rows instead of becoming the
-top row. An already-active session must not move merely because its `updatedAt`
-advances.
+`sessionInteractionOrder.ts` keeps up to 1,000 latest distinct session
+interactions per connected source in browser-local storage. Same-tab consumers
+share the existing local-storage store; other tabs receive storage events.
+Invalid persisted entries are ignored. If persistence is unavailable, the
+existing storage helper retains coherent in-memory state. Clearing browser
+storage or eviction of an old entry restores that row's creation-time fallback.
 
-## Why active rows must skip the duplicate-title grouping
+This is browser-local chronology over the server's loaded collection, not a
+whole-history user-message index. Another device, provider-native terminal, or
+agent-mediated session message does not update it. Existing server query
+coverage and pagination still determine which sessions are available. No new
+endpoint, capability, schema field, polling loop, or project-directory writer
+is introduced.
 
-The idle path groups sessions by `(provider, projectId, normalized-title)` and
-hides all-but-the-best of each cluster behind a `(N hidden)` expander, keeping
-the one with the highest `messageCount`. Run over active sessions, that could
-**hide a live, in-progress session** merely because another session shares its
-title — a supervisor must never lose sight of running work. Active sessions are
-also few, so there is no decluttering benefit. They are therefore split out
-*before* `groupDuplicateSessions` is called and rendered in full.
+`useSidebarSessionOrder` owns sidebar ordering and date classification above
+the collection records. Shared collection selectors retain their existing
+semantics for other consumers. Duplicate grouping preserves the resulting
+order; it protects active, queued, current, owned, and lineage-related rows
+under the existing duplicate-hiding contract. `useHeldSidebarLists` holds layout
+identities independently of fresh row data.
 
-## Implementation
+A minimized desktop sidebar or closed mobile sidebar still releases its feed
+interest under the existing sidebar-feed contract. Interaction tracking adds
+no server demand.
 
-`isActiveSession(session)` (module-level in `Sidebar.tsx`) is the single
-predicate: `activity === "in-turn" || activity === "waiting-input"`.
+## Design decisions
 
-The collection selectors use the equivalent predicate and return active rows
-first:
+- **User activity owns chronology** (vs. active-first partitioning or general
+  update recency): even a stable order within an active block jumps when a turn
+  finishes. Activity is a badge, not a ranking signal.
+- **Browser-local visits and submissions with creation-time fallback** (vs.
+  inferring human activity from transcript timestamps): this uses known user
+  actions without a new server contract. Cross-device history is deliberately
+  outside this implementation.
+- **Hold identities while refreshing data** (vs. freezing whole row objects):
+  click targets stay stable while status and title changes remain visible.
 
-```js
-const active = records
-  .filter((record) => isActiveActivity(record.activity))
-  .sort(byActiveStartedAtAsc);
-const idle = records
-  .filter((record) => !isActiveActivity(record.activity))
-  .sort(byUpdatedAtDesc);
-return [...active, ...idle];
-```
+## Verification
 
-The Last 24 Hours render path then splits active rows out before deduping:
+The summary-store Sidebar regression reproduces a row jumping when one active
+session finishes while another produces output. It now preserves order and
+updates the title. Component and hook coverage checks interaction holds,
+arrivals, duplicate protection, persistence, source isolation, malformed
+storage, and bounded retention. The browser test drives actual navigation and
+composer submission, injects activity through the WebSocket boundary, checks
+the target's position and navigation, and captures desktop and phone layouts.
 
-```js
-const recentActive = recentDaySessions.filter(isActiveSession); // pinned, stable, never deduped
-const idle = recentDaySessions.filter((s) => !isActiveSession(s));
-const { visible, hidden } = groupDuplicateSessions(idle);       // recency sort + (N hidden) on idle only
-```
-
-Render order within Last 24 Hours: `recentActive` → `visible` → the `(N hidden)`
-expander. The section and the empty-state guard both account for
-`recentActive.length` so an active-only list is neither hidden nor mislabeled
-"no sessions".
-
-Starred rows are not deduped, but they still use the same selector-level
-active-first ordering.
-
-The **Older** section needs no active handling: an active session has a fresh
-`updatedAt` and so is never older than 24h by construction.
-
-## Contracts / invariants
-
-- An active session's row position must not change due to its own `updatedAt`
-  advancing. Only a real set change (a session entering/leaving the active
-  group, or a brand-new session) may move active rows.
-- A session entering active state joins the end of the active block. It must not
-  jump above rows that were already active.
-- Active sessions are never hidden behind the duplicate-title `(N hidden)`
-  expander, regardless of shared titles or `messageCount`.
-- Active sessions render above idle sessions in Starred and Last 24 Hours.
-- The stable order is owned by the collection selectors. Views consume that
-  order; they must not re-sort active rows by a churning key. Recency sorting
-  is confined to idle rows.
-- Idle rows may be deduped and sorted by `updatedAt` — they don't churn, so this
-  is safe and is the desired recency behavior, subject to the stricter
-  representative-safety rules in
-  [session-list-hidden-duplicates](session-list-hidden-duplicates.md).
-- Sidebar visibility owns its feed interest. A minimized desktop sidebar or a
-  closed mobile sidebar releases both global/starred query owners and their
-  activity callbacks; cached collection rows may remain, but hidden chrome must
-  not keep polling, revalidating, or animating session state.
-
-## Regression history
+## Historical active-first ordering (superseded)
 
 Before commit `7fc9d17c` ("Client: hide duplicate-title sessions behind
 (N hidden) expanders"), the sidebar rendered `recentDaySessions.map(...)`
@@ -162,3 +116,9 @@ The next refinement closed a more subtle jump: sorting active rows by
 `activeStartedAt` descending made every idle-to-active transition become the top
 row in its section. The stable contract is active-first partitioning, not
 "newest active wins", so active rows now sort by `activeStartedAt` ascending.
+
+
+The user subsequently clarified that only their activity should move rows.
+The current user-chronology contract above replaces these active-first rules;
+the historical fixes explain why sorting on provider updates was repeatedly
+insufficient.

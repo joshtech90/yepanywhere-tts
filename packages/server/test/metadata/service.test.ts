@@ -87,7 +87,7 @@ describe("SessionMetadataService", () => {
       await service.observeCommandInventory("session", [goal]);
       const restored = new SessionMetadataService({ dataDir: testDir });
       await restored.initialize();
-      expect(restored.getMetadata("session").codexGoalCommand).toEqual(goal);
+      expect(restored.getMetadata("session").goalCommand).toEqual(goal);
     });
 
     it("waits for overlapping goal observations and skips durable duplicates", async () => {
@@ -145,7 +145,7 @@ describe("SessionMetadataService", () => {
         expect(writes).toHaveBeenCalledTimes(count);
         expect(
           JSON.parse(await readFile(service.getFilePath(), "utf8")).sessions
-            .session.codexGoalCommand,
+            .session.goalCommand,
         ).toEqual(goal);
         expect(
           JSON.parse(await readFile(service.getFilePath(), "utf8")).sessions
@@ -154,6 +154,39 @@ describe("SessionMetadataService", () => {
       } finally {
         release();
         await Promise.allSettled([first, second, receiptSave]);
+        writes.mockRestore();
+      }
+    });
+
+    it("waits for an overlapping helper archive to reach disk", async () => {
+      await service.initialize();
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const write = fs.writeFile;
+      const writes = vi
+        .spyOn(fs, "writeFile")
+        .mockImplementationOnce(async (...args) => {
+          await gate;
+          return write(...args);
+        });
+      const first = service.setTitle("source", "Work");
+      let archived = false;
+      const archive = service.setArchived("helper", true).then(() => {
+        archived = true;
+      });
+      try {
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(archived).toBe(false);
+        release();
+        await archive;
+        const restarted = new SessionMetadataService({ dataDir: testDir });
+        await restarted.initialize();
+        expect(restarted.getMetadata("helper")?.isArchived).toBe(true);
+      } finally {
+        release();
+        await Promise.allSettled([first, archive]);
         writes.mockRestore();
       }
     });
@@ -173,9 +206,7 @@ describe("SessionMetadataService", () => {
       await service.setTitle("session-1", "Work");
       const restarted = new SessionMetadataService({ dataDir: testDir });
       await restarted.initialize();
-      expect(restarted.getMetadata("session-1")?.codexGoalCommand).toEqual(
-        goal,
-      );
+      expect(restarted.getMetadata("session-1")?.goalCommand).toEqual(goal);
       const cleared = {
         ...goal,
         providerDetails: { codex: { goalObjective: null } },
@@ -184,9 +215,7 @@ describe("SessionMetadataService", () => {
       await restarted.observeCommandInventory("session-1", [cleared]);
       const afterClear = new SessionMetadataService({ dataDir: testDir });
       await afterClear.initialize();
-      expect(afterClear.getMetadata("session-1")?.codexGoalCommand).toEqual(
-        cleared,
-      );
+      expect(afterClear.getMetadata("session-1")?.goalCommand).toEqual(cleared);
     });
 
     it("preserves goal receipts and their positions across restart and unrelated edits", async () => {
@@ -332,26 +361,49 @@ describe("SessionMetadataService", () => {
       expect(persisted.version).toBe(3);
     });
 
-    it("handles corrupted JSON gracefully", async () => {
+    it("preserves corrupted metadata and refuses to initialize", async () => {
       await writeFile(
         join(testDir, "session-metadata.json"),
         "not valid json{{{",
       );
-      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+      await expect(service.initialize()).rejects.toThrow();
+      expect(await readFile(service.getFilePath(), "utf8")).toBe(
+        "not valid json{{{",
+      );
+    });
 
-      // Should not throw
+    it("keeps archived helpers durable when a replacement write is interrupted", async () => {
+      await service.initialize();
+      await service.updateMetadata("helper", {
+        title: "Recap generator",
+        archived: true,
+        forkedFromSessionId: "source",
+      });
+      const previous = await readFile(service.getFilePath(), "utf8");
+      const write = fs.writeFile;
+      const writes = vi
+        .spyOn(fs, "writeFile")
+        .mockImplementationOnce(async (file) => {
+          await write(file, '{"sessions":{"helper":');
+          throw new Error("Interrupted write");
+        });
+      const diagnostic = vi
+        .spyOn(console, "error")
+        .mockImplementation(() => {});
       try {
-        await service.initialize();
-        expect(warnSpy).toHaveBeenCalledWith(
-          "[SessionMetadataService] Failed to load state, starting fresh:",
-          expect.any(SyntaxError),
+        await expect(service.setTitle("source", "New title")).rejects.toThrow(
+          "Interrupted write",
         );
+        expect(diagnostic).toHaveBeenCalledOnce();
+        expect(await readFile(service.getFilePath(), "utf8")).toBe(previous);
+        const restarted = new SessionMetadataService({ dataDir: testDir });
+        await restarted.initialize();
+        expect(restarted.getMetadata("helper")?.isArchived).toBe(true);
+        expect(await fs.readdir(testDir)).toEqual(["session-metadata.json"]);
       } finally {
-        warnSpy.mockRestore();
+        writes.mockRestore();
+        diagnostic.mockRestore();
       }
-
-      // Should start fresh
-      expect(service.getAllMetadata()).toEqual({});
     });
   });
 

@@ -384,13 +384,21 @@ export interface GrokSlashCommandDetails {
   path?: string;
 }
 
+/**
+ * Goal state carried on the `goal` command's inventory entry. Codex reports it
+ * from its own thread goal; Claude has no goal query, so YA reconstructs it
+ * from the session transcript and its own pause bookkeeping.
+ */
+export interface SlashCommandGoalDetails {
+  goalObjective?: string | null;
+  /** Provider-observed status; omission keeps older inventories read-only. */
+  goalStatus?: string | null;
+}
+
 export interface SlashCommandProviderDetails {
   grok?: GrokSlashCommandDetails;
-  codex?: {
-    goalObjective?: string | null;
-    /** Provider-observed status; omission keeps older inventories read-only. */
-    goalStatus?: string | null;
-  };
+  codex?: SlashCommandGoalDetails;
+  claude?: SlashCommandGoalDetails;
   [provider: string]: unknown;
 }
 

@@ -13,6 +13,7 @@ import type {
   ProviderRuntimeStatus,
   PromptSuggestionMode,
   SafeRestartChangedEvent,
+  SessionCatalogUpdatedEvent,
   TranscriptDisplayObject,
   UrlProjectId,
   WorkstreamsChangedEvent,
@@ -251,6 +252,7 @@ export interface SessionUpdatedEvent {
   model?: string;
   /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
+  asyncQuestions?: SessionSummary["asyncQuestions"];
   timestamp: string;
 }
 
@@ -303,6 +305,7 @@ export interface CacheMissBillingEvent {
 
 /** Union of all event types that can be emitted through the bus */
 export type BusEvent =
+  | SessionCatalogUpdatedEvent
   | FileChangeEvent
   | SessionStatusEvent
   | SessionCreatedEvent

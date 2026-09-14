@@ -30,6 +30,7 @@ interface RemoteImageResult {
 export function useRemoteImage(
   apiPath: string | null,
   enabled = true,
+  fetchBlob?: (apiPath: string) => Promise<Blob>,
 ): RemoteImageResult {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -38,7 +39,7 @@ export function useRemoteImage(
   // Use ref to track blob URL for cleanup without triggering re-renders
   const blobUrlRef = useRef<string | null>(null);
   const transport = useCurrentSourceRuntime().transport;
-  const sameOriginUrls = transport.capabilities.sameOriginUrls;
+  const sameOriginUrls = !fetchBlob && transport.capabilities.sameOriginUrls;
 
   // Fetch image through the transport when same-origin URLs cannot reach it.
   useEffect(() => {
@@ -71,8 +72,10 @@ export function useRemoteImage(
     revokeCurrentBlobUrl();
     setBlobUrl(null);
 
-    transport
-      .fetchBlob(toSourceTransportApiPath(apiPath))
+    const request = fetchBlob
+      ? fetchBlob(apiPath)
+      : transport.fetchBlob(toSourceTransportApiPath(apiPath));
+    request
       .then((blob) => {
         if (cancelled) return;
         const url = URL.createObjectURL(blob);
@@ -91,7 +94,7 @@ export function useRemoteImage(
       cancelled = true;
       revokeCurrentBlobUrl();
     };
-  }, [apiPath, sameOriginUrls, enabled, transport]);
+  }, [apiPath, sameOriginUrls, enabled, transport, fetchBlob]);
 
   // If same-origin URLs reach this source, the browser can use the path.
   if (!apiPath) {

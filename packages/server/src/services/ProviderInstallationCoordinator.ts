@@ -197,7 +197,15 @@ export class ProviderInstallationCoordinator {
     if (!this.ownStartId) {
       this.ownStartId = this.ownerProbe
         .startId(process.pid)
-        .catch(() => null)
+        .catch((error) => {
+          if (this.ownerStartIdRequired) {
+            throw new Error(
+              "Cannot coordinate provider installation without Windows process start identity",
+              { cause: error },
+            );
+          }
+          return null;
+        })
         .then((startId) => {
           if (this.ownerStartIdRequired && !startId) {
             throw new Error(

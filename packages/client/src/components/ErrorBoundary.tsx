@@ -1,5 +1,6 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import enMessages from "../i18n/en.json";
+import { activityBus } from "../lib/activityBus";
 import { writeClipboardText } from "../lib/clipboard";
 import { UI_KEYS } from "../lib/storageKeys";
 
@@ -21,6 +22,14 @@ interface CrashContext {
   capturedAt: string;
   url: string;
   userAgent: string;
+  /**
+   * Whether the tab was on screen when it crashed. A hidden tab runs on
+   * throttled timers and wakes with its backlog, which is a different story
+   * from the same crash in front of the reader.
+   */
+  visibility: string;
+  /** Newest first, each as "<event type> <age>s". See the activity bus. */
+  recentActivityEvents: string[];
   dom: {
     nodes: number;
     messageRows: number;
@@ -69,10 +78,21 @@ export function redactClientCrashUrl(href: string): string {
 }
 
 function captureCrashContext(): CrashContext {
+  const capturedAtMs = Date.now();
   return {
-    capturedAt: new Date().toISOString(),
+    capturedAt: new Date(capturedAtMs).toISOString(),
     url: redactClientCrashUrl(window.location.href),
     userAgent: navigator.userAgent,
+    visibility: document.visibilityState,
+    recentActivityEvents: activityBus
+      .getRecentEvents()
+      .map(
+        (event) =>
+          `${event.type}${event.origin === "local" ? " (local)" : ""} ${(
+            (capturedAtMs - event.atMs) / 1000
+          ).toFixed(1)}s`,
+      )
+      .reverse(),
     dom: {
       nodes: document.getElementsByTagName("*").length,
       messageRows: document.querySelectorAll(".message-render-row").length,
@@ -107,8 +127,14 @@ export function formatClientCrashDiagnostic(
     `Client version: ${getClientVersion()}`,
     `Server version: ${serverVersion ?? "unknown"}`,
     `User agent: ${context?.userAgent ?? "unknown"}`,
+    `Tab: ${context?.visibility ?? "unknown"}`,
     `DOM: ${JSON.stringify(context?.dom ?? null)}`,
     `Preferences: ${JSON.stringify(context?.preferences ?? null)}`,
+    `Activity events before the crash (newest first): ${
+      context?.recentActivityEvents?.length
+        ? context.recentActivityEvents.join(", ")
+        : "none"
+    }`,
     "",
     `Error: ${error?.message ?? "Unknown error"}`,
   ];
@@ -223,18 +249,23 @@ export class ErrorBoundary extends Component<Props, State> {
     this.setState({ copyStatus: copied ? "copied" : "failed" });
   };
 
-  // Check if the error looks like a property access error (common in version mismatches)
+  /**
+   * Whether the frontend and server are actually running different versions.
+   *
+   * This used to guess from the error message: any "cannot read properties of
+   * undefined" or "is not a function" was reported as a probable version
+   * mismatch. Those are the two most ordinary JavaScript faults there are, so
+   * the notice fired on plain bugs and sent the reader to update an
+   * installation that was already current. Both versions are known here — the
+   * client's is compiled in and the server's was just fetched — so compare
+   * them and say nothing when they agree. A server that did not answer leaves
+   * `serverVersion` null, which the diagnostic below already reports as
+   * unknown; an unanswered request is not evidence of a mismatch.
+   */
   isLikelyVersionMismatch(): boolean {
-    const { error } = this.state;
-    if (!error) return false;
-
-    const msg = error.message.toLowerCase();
-    return (
-      msg.includes("cannot read properties of undefined") ||
-      msg.includes("cannot read property") ||
-      msg.includes("is not a function") ||
-      msg.includes("is undefined")
-    );
+    const { serverVersion } = this.state;
+    if (!serverVersion) return false;
+    return serverVersion !== getClientVersion();
   }
 
   render() {
@@ -255,6 +286,12 @@ export class ErrorBoundary extends Component<Props, State> {
         serverVersion,
       );
       const issueUrl = buildClientCrashIssueUrl(error, diagnostic);
+      const copyLabel =
+        copyStatus === "copied"
+          ? enMessages.errorBoundaryDiagnosticsCopied
+          : copyStatus === "failed"
+            ? enMessages.errorBoundaryDiagnosticsCopyFailed
+            : enMessages.errorBoundaryCopyDiagnostics;
 
       return (
         <div style={styles.container}>
@@ -293,12 +330,42 @@ export class ErrorBoundary extends Component<Props, State> {
               )}
             </div>
 
-            <details style={styles.diagnosticDetails}>
-              <summary style={styles.diagnosticSummary}>
-                {enMessages.errorBoundaryDiagnosticDetails}
-              </summary>
-              <pre style={styles.diagnosticText}>{diagnostic}</pre>
-            </details>
+            <div style={styles.diagnosticSection}>
+              <details style={styles.diagnosticDetails}>
+                <summary style={styles.diagnosticSummary}>
+                  {enMessages.errorBoundaryDiagnosticDetails}
+                </summary>
+                <pre style={styles.diagnosticText}>{diagnostic}</pre>
+              </details>
+              <button
+                type="button"
+                onClick={this.handleCopyDiagnostics}
+                style={styles.diagnosticCopyButton}
+                aria-label={copyLabel}
+                title={copyLabel}
+              >
+                <svg
+                  width="18"
+                  height="18"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  {copyStatus === "copied" ? (
+                    <path d="m5 12 4 4L19 6" />
+                  ) : (
+                    <>
+                      <rect x="9" y="9" width="13" height="13" rx="2" />
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+                    </>
+                  )}
+                </svg>
+              </button>
+            </div>
 
             <div style={styles.actions}>
               <button
@@ -313,11 +380,7 @@ export class ErrorBoundary extends Component<Props, State> {
                 onClick={this.handleCopyDiagnostics}
                 style={styles.secondaryButton}
               >
-                {copyStatus === "copied"
-                  ? enMessages.errorBoundaryDiagnosticsCopied
-                  : copyStatus === "failed"
-                    ? enMessages.errorBoundaryDiagnosticsCopyFailed
-                    : enMessages.errorBoundaryCopyDiagnostics}
+                {copyLabel}
               </button>
               <a
                 href={issueUrl}
@@ -415,16 +478,37 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: "13px",
     color: "#a1a1aa",
   },
-  diagnosticDetails: {
+  diagnosticSection: {
+    position: "relative",
     marginBottom: "24px",
+  },
+  diagnosticDetails: {
     padding: "12px 16px",
     backgroundColor: "#27272a",
     borderRadius: "6px",
   },
   diagnosticSummary: {
+    paddingRight: "44px",
+    lineHeight: "44px",
     cursor: "pointer",
     fontSize: "14px",
     color: "#d4d4d8",
+  },
+  diagnosticCopyButton: {
+    position: "absolute",
+    top: "12px",
+    right: "16px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    width: "44px",
+    height: "44px",
+    padding: 0,
+    color: "#d4d4d8",
+    backgroundColor: "transparent",
+    border: "1px solid #52525b",
+    borderRadius: "6px",
+    cursor: "pointer",
   },
   diagnosticText: {
     maxHeight: "240px",

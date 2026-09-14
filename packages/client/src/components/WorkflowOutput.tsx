@@ -1,27 +1,53 @@
-import { Fragment, type ReactNode } from "react";
+import { Fragment, type ReactNode, useId, useState } from "react";
 import { useI18n } from "../i18n";
 import type {
   WorkflowAnnotation,
   WorkflowMarker,
-} from "../lib/transcriptProjection/workflowTags";
+} from "@yep-anywhere/shared/transcript/workflowTags";
 import styles from "./WorkflowOutput.module.css";
+import { TimelineDisclosure } from "./TimelineDisclosure";
+import { ToolOutputText } from "./ToolOutputText";
+import { SessionFilePathLink } from "./SessionFilePathLink";
+import { workflowSchemaReference } from "@yep-anywhere/shared/transcript/workflowTags";
 
-function Boundary({ marker }: { marker: WorkflowMarker }) {
+function SchemaLabel({ marker }: { marker: WorkflowMarker }) {
   const { t } = useI18n();
+  const label =
+    marker.kind === "unresolved"
+      ? t("workflowSchemaUnresolved")
+      : t("workflowSchemaActivated", { title: marker.title });
+  const reference = marker.schemaRef
+    ? workflowSchemaReference(marker.schemaRef)
+    : undefined;
+  return reference ? (
+    <SessionFilePathLink
+      displayPath={label}
+      filePath={reference.path}
+      showCopyButton={false}
+      showVersionControlLinks={false}
+    />
+  ) : (
+    label
+  );
+}
+
+export function WorkflowBoundary({ marker }: { marker: WorkflowMarker }) {
   return (
     <span
       className={styles.boundary}
       data-workflow-boundary={marker.kind}
       data-workflow-path={marker.path}
     >
-      <mark className={styles.tag}>{marker.prefix}</mark>
+      {marker.kind !== "activation" && marker.kind !== "unresolved" && (
+        <mark className={styles.tag}>{marker.prefix}</mark>
+      )}
       {marker.kind !== "activation" || marker.title ? (
         <span className={styles.title}>
-          {marker.kind === "unresolved"
-            ? t("workflowSchemaUnresolved")
-            : marker.kind === "activation"
-              ? t("workflowSchemaActivated", { title: marker.title })
-              : marker.title}
+          {marker.kind === "unresolved" || marker.kind === "activation" ? (
+            <SchemaLabel marker={marker} />
+          ) : (
+            marker.title
+          )}
         </span>
       ) : null}
     </span>
@@ -33,7 +59,6 @@ export function WorkflowContext({
 }: {
   workflow: WorkflowAnnotation;
 }) {
-  const { t } = useI18n();
   return (
     <>
       {workflow.parent ? (
@@ -57,9 +82,7 @@ export function WorkflowContext({
             title={marker.prefix}
             data-workflow-schema={marker.kind}
           >
-            {marker.kind === "unresolved"
-              ? t("workflowSchemaUnresolved")
-              : t("workflowSchemaActivated", { title: marker.title })}
+            <SchemaLabel marker={marker} />
           </div>
         ))}
     </>
@@ -70,13 +93,34 @@ export function WorkflowOutput({
   text,
   workflow,
   original,
+  preview,
 }: {
   text: string;
   workflow: WorkflowAnnotation;
   original?: ReactNode;
+  preview?: ReactNode;
 }) {
   const { t } = useI18n();
+  const [originalExpanded, setOriginalExpanded] = useState(false);
+  const originalId = useId();
   const content: ReactNode[] = [];
+  const output = (start: number, end: number) => {
+    const boundaries = [
+      start,
+      ...(workflow.outputBoundaries ?? []).filter(
+        (offset) => offset > start && offset < end,
+      ),
+      end,
+    ];
+    return boundaries
+      .slice(0, -1)
+      .map((offset, index) => (
+        <ToolOutputText
+          key={offset}
+          text={text.slice(offset, boundaries[index + 1])}
+        />
+      ));
+  };
   let markerIndex = 0;
   for (const range of workflow.visibleRanges ?? [
     { start: 0, end: text.length },
@@ -89,21 +133,38 @@ export function WorkflowOutput({
       if (marker.start < range.start) continue;
       content.push(
         <Fragment key={marker.start}>
-          {text.slice(offset, marker.start)}
-          <Boundary marker={marker} />
+          {output(offset, marker.start)}
+          <WorkflowBoundary marker={marker} />
         </Fragment>,
       );
       offset = marker.end;
     }
-    content.push(text.slice(offset, range.end));
+    content.push(
+      <Fragment key={`tail-${range.start}`}>
+        {output(offset, range.end)}
+      </Fragment>,
+    );
   }
   return (
-    <div className={styles.root} data-workflow-output="true">
-      <pre className={styles.content}>{content}</pre>
-      <details className={styles.original}>
-        <summary>{t("workflowOriginalOutput")}</summary>
-        {original ?? <pre className={styles.content}>{text}</pre>}
-      </details>
+    <div className={`${styles.root} timeline-item`} data-workflow-output="true">
+      <TimelineDisclosure
+        expanded={originalExpanded}
+        label={t(
+          originalExpanded ? "workflowHideOriginal" : "workflowShowOriginal",
+        )}
+        controls={originalId}
+        onClick={() => setOriginalExpanded((value) => !value)}
+      />
+      {preview ?? <pre className={styles.content}>{content}</pre>}
+      {originalExpanded && (
+        <div
+          className={styles.original}
+          id={originalId}
+          data-workflow-original="true"
+        >
+          {original ?? <pre className={styles.content}>{text}</pre>}
+        </div>
+      )}
     </div>
   );
 }

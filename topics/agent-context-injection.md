@@ -40,6 +40,25 @@ carry-forward, bounded provider reinjection, lossy conversation summary, and a
 later action-triggered reread. “The model probably remembers it” names none of
 these mechanisms.
 
+## Contributor instruction files in this repository
+
+[AGENTS.md](../AGENTS.md) directs agents to the contributor guide and relevant
+topics. If `AGENTS.local.md` exists, agents must read it before acting; its
+machine-local instructions take precedence over AGENTS.
+
+[DEVELOPMENT.md](../DEVELOPMENT.md) owns the common contributor rules and
+explicit task-reading triggers. [Development guides](../docs/development/README.md)
+own contributor procedures and operational reference; existing topics retain
+their product and technical contracts. Agents must read the root guide before
+implementation planning or repository changes, including documentation and
+configuration edits, and read
+every applicable guide/topic named by the root task table before choosing an
+approach. Recheck the table when scope expands; reading the entire development
+directory is not required. General discussion and read-only orientation do not
+require the full development workflow; applicable topic
+triggers still apply. This is an instruction to read the guide, not a guarantee
+that a harness automatically injects or preserves its contents.
+
 ## Current YA placement
 
 `buildEffectiveAgentContext` in `packages/shared/src/agent-context.ts` composes

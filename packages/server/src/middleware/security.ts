@@ -1,10 +1,6 @@
 import type { MiddlewareHandler } from "hono";
 import { cors } from "hono/cors";
-import {
-  allowAllHosts,
-  isAllowedHost,
-  isAllowedOrigin,
-} from "./allowed-hosts.js";
+import { isAllowedHost, isAllowedOrigin } from "./allowed-hosts.js";
 
 /**
  * Host header validation middleware.
@@ -12,10 +8,6 @@ import {
  * matches an allowed hostname. Skipped when ALLOWED_HOSTS=*.
  */
 export const hostCheckMiddleware: MiddlewareHandler = async (c, next) => {
-  if (allowAllHosts()) {
-    await next();
-    return;
-  }
   const host = c.req.header("host");
   if (!isAllowedHost(host)) {
     console.warn(`[Security] Rejected request with Host: ${host}`);

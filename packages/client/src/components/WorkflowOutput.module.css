@@ -22,6 +22,12 @@
   white-space: normal;
 }
 
+.content > .boundary:first-child {
+  margin-block-start: 0;
+  padding-block-start: 0;
+  border-block-start: none;
+}
+
 .tag {
   background: var(--bg-tertiary);
   color: var(--text-primary);
@@ -35,7 +41,7 @@
 
 .title {
   color: var(--text-secondary);
-  font-size: 0.85em;
+  font-size: calc(0.85em + 1pt);
 }
 
 .context {
@@ -47,12 +53,4 @@
 
 .original {
   margin-block-start: 0.5rem;
-}
-
-.original > summary {
-  color: var(--text-secondary);
-  cursor: pointer;
-  font-size: 0.8em;
-  min-block-size: 28px;
-  padding-block: 0.3rem;
 }

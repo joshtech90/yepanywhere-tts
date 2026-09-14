@@ -10,17 +10,69 @@ export interface CodexRolloutDiscoveryIdentity {
   representation: CodexRolloutRepresentation;
 }
 
+export interface CodexRolloutFileIdentity {
+  /** Stable logical thread id, encoded before an optional `_rollout-id`. */
+  threadId: string;
+  /** Physical immutable rollout id, encoded after `_` when it differs. */
+  rolloutId: string;
+  /** Canonical filename timestamp, when the provider supplied one. */
+  timestamp?: string;
+}
+
+const CODEX_UUID_PATTERN =
+  "[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}";
+const CODEX_ROLLOUT_IDS_PATTERN = new RegExp(
+  `(${CODEX_UUID_PATTERN})(?:_(${CODEX_UUID_PATTERN}))?$`,
+  "i",
+);
+const CODEX_ROLLOUT_TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}$/;
+
 export function isCodexRolloutFileName(name: string): boolean {
   return name.endsWith(".jsonl") || name.endsWith(".jsonl.zst");
 }
 
-export function getCodexRolloutSessionId(nameOrPath: string): string | null {
+export function getCodexRolloutFileIdentity(
+  nameOrPath: string,
+): CodexRolloutFileIdentity | null {
   const fileName = path.posix.basename(nameOrPath.replace(/\\/g, "/"));
   if (!fileName.startsWith("rollout-")) return null;
-  const match = fileName.match(
-    /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl(?:\.zst)?$/i,
-  );
-  return match?.[1] ?? null;
+  const plainFileName = fileName.endsWith(".jsonl.zst")
+    ? fileName.slice(0, -".jsonl.zst".length)
+    : fileName.endsWith(".jsonl")
+      ? fileName.slice(0, -".jsonl".length)
+      : null;
+  if (!plainFileName) return null;
+
+  const core = plainFileName.slice("rollout-".length);
+  const match = CODEX_ROLLOUT_IDS_PATTERN.exec(core);
+  if (!match || (match.index > 0 && core[match.index - 1] !== "-")) {
+    return null;
+  }
+
+  const threadId = match[1];
+  if (!threadId) return null;
+  const rolloutId = match[2] ?? threadId;
+  const timestampCandidate =
+    match.index > 0 ? core.slice(0, match.index - 1) : undefined;
+  const timestamp =
+    timestampCandidate &&
+    CODEX_ROLLOUT_TIMESTAMP_PATTERN.test(timestampCandidate)
+      ? timestampCandidate
+      : undefined;
+
+  return {
+    threadId,
+    rolloutId,
+    ...(timestamp ? { timestamp } : {}),
+  };
+}
+
+export function getCodexRolloutSessionId(nameOrPath: string): string | null {
+  return getCodexRolloutFileIdentity(nameOrPath)?.threadId ?? null;
+}
+
+export function getCodexRolloutId(nameOrPath: string): string | null {
+  return getCodexRolloutFileIdentity(nameOrPath)?.rolloutId ?? null;
 }
 
 export function isCompressedCodexRolloutPath(filePath: string): boolean {

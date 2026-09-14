@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
-import { expect, test } from "./fixtures.js";
+import { e2ePaths, expect, test } from "./fixtures.js";
 import {
   startYaServerProcess,
   stopYaServerProcess,
@@ -121,7 +121,7 @@ test.describe("Recovered queue stream snapshots", () => {
       env: {
         USE_MOCK_SDK: "true",
         SERVE_FRONTEND: "true",
-        CLIENT_DIST_PATH: join(process.cwd(), "dist"),
+        CLIENT_DIST_PATH: e2ePaths.clientDist,
       },
     });
 

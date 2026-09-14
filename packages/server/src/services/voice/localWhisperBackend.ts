@@ -3,7 +3,10 @@ import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { getLogger } from "../../logging/logger.js";
-import type { SpeechBackend, TranscribeOptions } from "./SpeechBackend.js";
+import type {
+  PrewarmableSpeechBackend,
+  TranscribeOptions,
+} from "./SpeechBackend.js";
 import {
   ensureLocalSttRuntime,
   PIXI_COMMAND,
@@ -21,7 +24,7 @@ const WORKER_SCRIPT = join(
 /** Milliseconds to wait for model load before giving up. */
 const MODEL_LOAD_TIMEOUT_MS = 120_000;
 
-export class LocalWhisperBackend implements SpeechBackend {
+export class LocalWhisperBackend implements PrewarmableSpeechBackend {
   readonly id = "ya-whisper";
   readonly label = "Local Whisper (pixi stt)";
 
@@ -31,6 +34,7 @@ export class LocalWhisperBackend implements SpeechBackend {
 
   private proc: ChildProcess | null = null;
   private warmPromise: Promise<void> | null = null;
+  private workerModel: string | null = null;
   private pendingResolve: ((text: string) => void) | null = null;
   private pendingReject: ((err: Error) => void) | null = null;
   // Serializes transcriptions onto one queue (single worker), so a request
@@ -40,7 +44,7 @@ export class LocalWhisperBackend implements SpeechBackend {
   constructor(
     opts: { model?: string; device?: string; computeType?: string } = {},
   ) {
-    this.model = opts.model ?? "distil-large-v3";
+    this.model = opts.model ?? "distil-large-v3.5";
     this.device = opts.device ?? "cpu";
     this.computeType = opts.computeType ?? "int8";
   }
@@ -48,17 +52,34 @@ export class LocalWhisperBackend implements SpeechBackend {
   async validate(): Promise<{ ok: true } | { ok: false; reason: string }> {
     return ensureLocalSttRuntime({
       backendLabel: "local STT",
-      checkPython: "from faster_whisper import WhisperModel",
+      checkPython:
+        "from faster_whisper import WhisperModel; from faster_whisper.utils import available_models; assert 'distil-large-v3.5' in available_models(), 'faster-whisper 1.2.1 or newer is required'",
       bootstrapTask: "stt-bootstrap",
     });
   }
 
-  private startWorker(): Promise<void> {
+  private async startWorker(model: string): Promise<void> {
+    if (this.proc && this.workerModel !== model) {
+      const previous = this.proc;
+      // This runs inside the queue, after the preceding transcription settles.
+      // Reclaim the old model before allocating another one.
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error("Whisper worker did not stop")),
+          5000,
+        );
+        previous.once("exit", () => {
+          clearTimeout(timeout);
+          resolve();
+        });
+        previous.kill();
+      });
+    }
     if (this.warmPromise) return this.warmPromise;
 
     this.warmPromise = new Promise<void>((resolve, reject) => {
       logger.info(
-        `Starting whisper worker via pixi env "${PIXI_STT_ENV}" (model=${this.model} device=${this.device} compute_type=${this.computeType})`,
+        `Starting whisper worker via pixi env "${PIXI_STT_ENV}" (model=${model} device=${this.device} compute_type=${this.computeType})`,
       );
 
       const proc = spawn(
@@ -66,13 +87,14 @@ export class LocalWhisperBackend implements SpeechBackend {
         [
           ...PIXI_PYTHON_ARGS,
           WORKER_SCRIPT,
-          this.model,
+          model,
           this.device,
           this.computeType,
         ],
         { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
       );
       this.proc = proc;
+      this.workerModel = model;
 
       let ready = false;
       let loadTimeout: NodeJS.Timeout | null = null;
@@ -82,16 +104,27 @@ export class LocalWhisperBackend implements SpeechBackend {
       });
 
       proc.on("error", (error) => {
+        if (this.proc !== proc) return;
         if (!ready) {
           if (loadTimeout) clearTimeout(loadTimeout);
+          this.proc = null;
+          this.warmPromise = null;
+          this.workerModel = null;
           reject(error);
         }
       });
 
       proc.on("exit", (code) => {
-        logger.warn(`Whisper worker exited (code=${code})`);
+        if (loadTimeout) clearTimeout(loadTimeout);
+        if (!ready)
+          reject(
+            new Error(`Whisper worker exited before loading (code=${code})`),
+          );
+        if (this.proc !== proc) return;
+        logger.debug(`Whisper worker exited (code=${code})`);
         this.proc = null;
         this.warmPromise = null;
+        this.workerModel = null;
         if (this.pendingReject) {
           this.pendingReject(new Error("Whisper worker exited unexpectedly"));
           this.pendingResolve = null;
@@ -109,6 +142,7 @@ export class LocalWhisperBackend implements SpeechBackend {
       }, MODEL_LOAD_TIMEOUT_MS);
 
       rl.on("line", (line: string) => {
+        if (this.proc !== proc) return;
         try {
           const msg = JSON.parse(line) as {
             status?: string;
@@ -123,6 +157,7 @@ export class LocalWhisperBackend implements SpeechBackend {
               resolve();
             } else {
               reject(new Error(msg.error ?? "Worker failed to start"));
+              proc.kill();
             }
             return;
           }
@@ -142,7 +177,19 @@ export class LocalWhisperBackend implements SpeechBackend {
       });
     });
 
-    return this.warmPromise;
+    try {
+      await this.warmPromise;
+    } catch (error) {
+      this.warmPromise = null;
+      this.workerModel = null;
+      throw error;
+    }
+  }
+
+  async prewarm(options: TranscribeOptions = {}): Promise<void> {
+    return this.queue.run(() =>
+      this.startWorker(options.model?.trim() || this.model),
+    );
   }
 
   async transcribe(
@@ -152,7 +199,7 @@ export class LocalWhisperBackend implements SpeechBackend {
     // Queue behind any in-flight load/transcribe: record audio, block on the
     // load, then transcribe — instead of rejecting as "busy".
     return this.queue.run(async () => {
-      await this.startWorker();
+      await this.startWorker(options.model?.trim() || this.model);
 
       if (!this.proc?.stdin) {
         throw new Error("Whisper worker is not running");

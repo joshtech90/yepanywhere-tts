@@ -4,6 +4,10 @@ import {
   fetchPlainJSON,
   fetchPlainResponse,
 } from "./plainFetch";
+import {
+  API_REQUEST_DEADLINE_MS,
+  isRequestDeadlineError,
+} from "./requestDeadline";
 
 describe("fetchPlainJSON", () => {
   afterEach(() => {
@@ -126,5 +130,63 @@ describe("fetchPlainJSON", () => {
     expect(
       new Headers(fetchImpl.mock.calls[0]?.[1]?.headers).get("if-none-match"),
     ).toBe(etag);
+  });
+
+  it("gives a request without its own signal the shared deadline", async () => {
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+
+    await fetchPlainJSON("/projects", undefined, { fetchImpl });
+
+    const signal = fetchImpl.mock.calls[0]?.[1]?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it("leaves cancellation to a caller that brought its own signal", async () => {
+    const controller = new AbortController();
+    const fetchImpl = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(JSON.stringify({ ok: true }), { status: 200 }),
+      );
+
+    await fetchPlainJSON(
+      "/projects/p/file-completions",
+      { signal: controller.signal },
+      { fetchImpl },
+    );
+
+    // A caller with its own signal has taken over the request's lifetime —
+    // a long upload, or a read it abandons when the reader navigates — so it
+    // must not be shortened to the shared deadline.
+    expect(fetchImpl.mock.calls[0]?.[1]?.signal).toBe(controller.signal);
+  });
+
+  it("abandons a request the server never answers", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<typeof fetch>((_url, init) => {
+        return new Promise((_resolve, reject) => {
+          init?.signal?.addEventListener("abort", () => {
+            reject((init.signal as AbortSignal).reason);
+          });
+        });
+      });
+
+      const pending = fetchPlainJSON("/projects", undefined, { fetchImpl });
+      const settled = vi.fn();
+      void pending.catch(settled);
+
+      await vi.advanceTimersByTimeAsync(API_REQUEST_DEADLINE_MS + 1);
+
+      expect(settled).toHaveBeenCalledTimes(1);
+      expect(isRequestDeadlineError(settled.mock.calls[0]?.[0])).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

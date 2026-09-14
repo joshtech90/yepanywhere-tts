@@ -1,3 +1,5 @@
+import { acquireSharedSpeechMicWarmLease } from "./speechProviders/sharedMicCapture";
+
 export interface SpeechFollowUpSnapshot {
   active: boolean;
   deadlineMs: number | null;
@@ -18,6 +20,7 @@ const subscribers = new Set<() => void>();
 let snapshot = EMPTY_SNAPSHOT;
 let expiryTimer: ReturnType<typeof setTimeout> | null = null;
 let onEnd: (() => void) | null = null;
+let releaseWarmMic: (() => void) | null = null;
 
 function emit(): void {
   for (const subscriber of subscribers) subscriber();
@@ -35,9 +38,12 @@ function endFollowUp(): void {
   clearExpiryTimer();
   const cleanup = onEnd;
   onEnd = null;
+  const release = releaseWarmMic;
+  releaseWarmMic = null;
   snapshot = EMPTY_SNAPSHOT;
   emit();
   cleanup?.();
+  release?.();
 }
 
 function expireFollowUp(): void {
@@ -70,6 +76,7 @@ export function armSpeechFollowUp(
     return;
   }
   clearExpiryTimer();
+  releaseWarmMic ??= acquireSharedSpeechMicWarmLease();
   const deadlineMs = Date.now() + durationMs;
   snapshot = {
     active: true,

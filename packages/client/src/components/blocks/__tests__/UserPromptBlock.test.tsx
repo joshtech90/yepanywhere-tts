@@ -305,14 +305,18 @@ describe("UserPromptBlock", () => {
     );
 
     await waitFor(() => {
-      expect(useRemoteImage).toHaveBeenCalledWith(remotePath, false);
+      expect(useRemoteImage).toHaveBeenCalledWith(remotePath, false, undefined);
     });
-    expect(useRemoteImage).not.toHaveBeenCalledWith(remotePath, true);
+    expect(useRemoteImage).not.toHaveBeenCalledWith(
+      remotePath,
+      true,
+      undefined,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /photo\.jpg/i }));
 
     await waitFor(() => {
-      expect(useRemoteImage).toHaveBeenCalledWith(remotePath, true);
+      expect(useRemoteImage).toHaveBeenCalledWith(remotePath, true, undefined);
     });
   });
 
@@ -348,13 +352,21 @@ describe("UserPromptBlock", () => {
       );
 
       await waitFor(() => {
-        expect(useRemoteImage).toHaveBeenCalledWith(remotePath, false);
+        expect(useRemoteImage).toHaveBeenCalledWith(
+          remotePath,
+          false,
+          undefined,
+        );
       });
 
       fireEvent.click(screen.getByRole("button", { name: /photo\.jpg/i }));
 
       await waitFor(() => {
-        expect(useRemoteImage).toHaveBeenCalledWith(remotePath, true);
+        expect(useRemoteImage).toHaveBeenCalledWith(
+          remotePath,
+          true,
+          undefined,
+        );
       });
     },
   );

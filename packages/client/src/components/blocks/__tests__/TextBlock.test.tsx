@@ -81,6 +81,36 @@ describe("TextBlock", () => {
     expect(container.querySelector(".katex")).toBeTruthy();
   });
 
+  it("marks text the provider cut off to take a steering message", () => {
+    const { container } = render(
+      <I18nProvider>
+        <TextBlock text="I will add the flag, have it override the" />
+      </I18nProvider>,
+    );
+
+    expect(
+      container.querySelector(".text-block-aborted-mid-stream"),
+    ).toBeNull();
+
+    cleanup();
+    const cut = render(
+      <I18nProvider>
+        <TextBlock
+          text="I will add the flag, have it override the"
+          abortedMidStream={true}
+        />
+      </I18nProvider>,
+    );
+
+    const marker = cut.container.querySelector(
+      ".text-block-aborted-mid-stream",
+    );
+    expect(marker?.textContent).toContain("interrupted by your message");
+    expect(marker?.getAttribute("title")).toContain(
+      "read the message you sent",
+    );
+  });
+
   it("does not show render toggle for server HTML that matches plain text", () => {
     const { container } = render(
       <I18nProvider>
@@ -503,6 +533,10 @@ describe("TextBlock", () => {
         cache: "no-cache",
         credentials: "include",
         headers: expect.any(Headers),
+        // Every API request carries the shared deadline, so a server that
+        // accepts the connection and then stops answering still ends this
+        // request. See api/requestDeadline.ts.
+        signal: expect.any(AbortSignal),
       },
     );
     expect(screen.getByRole("dialog").textContent).toContain("probe.json");

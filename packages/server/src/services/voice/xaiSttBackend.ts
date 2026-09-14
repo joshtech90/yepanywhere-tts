@@ -109,6 +109,8 @@ export class XaiSttBackend implements SpeechBackend {
     );
     url.searchParams.set("endpointing", String(options.endpointingMs ?? 250));
     url.searchParams.set("language", options.language ?? "en");
+    for (const term of options.keyterms ?? [])
+      url.searchParams.append("keyterm", term);
     if (options.smartTurnThreshold !== undefined) {
       url.searchParams.set("smart_turn", String(options.smartTurnThreshold));
     }

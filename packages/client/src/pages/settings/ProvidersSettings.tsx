@@ -13,6 +13,7 @@ import {
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_REASONING_SUMMARIES,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
@@ -28,10 +29,12 @@ import {
   MAX_CLAUDE_ADDITIONAL_MODEL_ID_LENGTH,
   isCodexReasoningSummary,
   isCodexPlanToolMode,
+  isCodexCyberAccessProgram,
   isValidClaudeAdditionalModelId,
   isValidClaudeAdditionalModelLabel,
   normalizeIdleReapHours,
   type ClaudeAdditionalModelSelection,
+  type CodexCyberAccessProgram,
   type CodexPlanToolMode,
   type CodexReasoningSummary,
   type HelperTargetConfig,
@@ -53,6 +56,7 @@ import {
   YaCompactContextEarlyControl,
 } from "./compactSettingsControls";
 import { SettingsItem } from "./SettingsItem";
+import styles from "./ProvidersSettings.module.css";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
@@ -932,6 +936,55 @@ function CodexPlanToolSetting({
   );
 }
 
+type CodexCyberAccessSelection = CodexCyberAccessProgram | "inherit";
+
+function CodexCyberAccessProgramSetting({
+  value,
+  updateSetting,
+}: {
+  value: CodexCyberAccessProgram | undefined;
+  updateSetting: UpdateServerSetting;
+}) {
+  const { t } = useI18n();
+  const selection: CodexCyberAccessSelection = value ?? "inherit";
+  const labels: Record<CodexCyberAccessSelection, string> = {
+    inherit: t("providersCodexCyberAccessInherit"),
+    "provider-default": t("providersCodexCyberAccessProviderDefault"),
+    standard: t("providersCodexCyberAccessStandard"),
+    "daybreak-blue": t("providersCodexCyberAccessDaybreakBlue"),
+    "daybreak-red": t("providersCodexCyberAccessDaybreakRed"),
+  };
+
+  return (
+    <SettingsItem
+      id="provider-codex-cyber-access"
+      label={t("providersCodexCyberAccessTitle")}
+      description={t("providersCodexCyberAccessDescription")}
+      keywords={["daybreak", "cyber", "security", "access", "program"]}
+      valueText={labels[selection]}
+    >
+      <select
+        className="settings-select"
+        aria-label={t("providersCodexCyberAccessAria")}
+        value={selection}
+        onChange={(event) => {
+          if (event.target.value === "inherit") {
+            void updateSetting("codexCyberAccessProgram", null);
+          } else if (isCodexCyberAccessProgram(event.target.value)) {
+            void updateSetting("codexCyberAccessProgram", event.target.value);
+          }
+        }}
+      >
+        {(Object.keys(labels) as CodexCyberAccessSelection[]).map((program) => (
+          <option key={program} value={program}>
+            {labels[program]}
+          </option>
+        ))}
+      </select>
+    </SettingsItem>
+  );
+}
+
 function OllamaSettings() {
   const { settings } = useServerSettings();
   const useFullPrompt = settings?.ollamaUseFullSystemPrompt ?? false;
@@ -1424,6 +1477,10 @@ export function ProvidersSettings() {
     version,
     CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   );
+  const supportsCodexCyberAccessProgram = serverHasCapability(
+    version,
+    CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
+  );
   const supportsClaudeGateway = serverHasCapability(
     version,
     CLAUDE_GATEWAY_CAPABILITY,
@@ -1529,7 +1586,7 @@ export function ProvidersSettings() {
                     })
             }
           >
-            <div>
+            <div className={styles.limitControls}>
               <CommittedRangeNumberInput
                 id="providers-subagent-max-depth-control"
                 min={PROVIDER_DEFAULT_SUBAGENT_MAX_DEPTH}
@@ -1577,7 +1634,7 @@ export function ProvidersSettings() {
                   })
             }
           >
-            <div>
+            <div className={styles.limitControls}>
               <CommittedRangeNumberInput
                 id="providers-idle-reap-hours-control"
                 min={NEVER_IDLE_REAP_HOURS}
@@ -1785,6 +1842,12 @@ export function ProvidersSettings() {
             {provider.id === "codex" && supportsCodexPlanToolSetting && (
               <CodexPlanToolSetting
                 value={settings?.codexPlanToolMode ?? undefined}
+                updateSetting={updateSetting}
+              />
+            )}
+            {provider.id === "codex" && supportsCodexCyberAccessProgram && (
+              <CodexCyberAccessProgramSetting
+                value={settings?.codexCyberAccessProgram ?? undefined}
                 updateSetting={updateSetting}
               />
             )}

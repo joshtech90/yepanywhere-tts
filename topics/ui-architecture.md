@@ -70,6 +70,20 @@ first 75% of its lifetime and fades only near removal, so nominal lifetime and
 readable lifetime do not diverge. One duration resolver owns both the removal
 timer and CSS animation value.
 
+## Mobile Viewport Ownership
+
+The shared navigation shell stays anchored to the mobile viewport on Inbox,
+session, and other authenticated routes. Safe-area spacing must not make the
+document scroll, move the header above the viewport, or leave a second gap below
+the composer. Browser-bar and keyboard viewport resizes preserve that anchoring;
+only the page's designated content regions scroll.
+
+A provider-host degraded notice reserves space inside this same shell above
+the app frame. Showing it must keep navigation and composer controls reachable,
+without changing which container owns the viewport. The frame retains its
+keyboard and safe-area insets; the outer body does not add a second inset to the
+mobile shell's geometry.
+
 ## Desktop Sidebar Display Modes
 
 The desktop sidebar has three browser-persisted display modes. Expanded mode
@@ -85,6 +99,12 @@ restores the collapsed rail rather than expanding it. Mobile overlay behavior
 is unchanged. The normal default remains the expanded sidebar, so the new
 control appears only after the user has already selected or reached collapsed
 desktop mode.
+
+A fresh Settings window or reload starts with an expanded preference reduced
+to the collapsed icon rail. This initial route choice does not write browser
+preferences or change another open window. A saved minimized mode stays
+minimized, and an explicit `?sidebar=expanded` takes precedence. The reader
+can expand the rail normally; same-window navigation retains its current mode.
 
 ## Public Share Example
 
@@ -155,6 +175,11 @@ stacks, route, client/server versions, timestamp, user agent, bounded DOM
 counts, and the browser-local Conversation View/thinking settings relevant to
 session rendering. It never includes transcript or draft text.
 
+The copy icon beside Diagnostic details copies that same complete diagnostic
+without opening or closing the disclosure. It shares success/failure feedback
+with the Copy Diagnostics button and remains usable without the app's styles
+or hook-based providers.
+
 The Report Issue action targets the canonical repository and pre-fills the
 same diagnostic plus a prompt for the immediately preceding action. Optional
 remote client-log collection receives the diagnostic as one formatted error
@@ -191,6 +216,16 @@ that may need every pane because results are operable instances of the same
 controls. It loads those panes progressively only after search starts, reports
 incomplete loading/failure honestly, and keeps already found results stable.
 
+Cold Settings entry starts its app, navigation-layout, and Settings module
+downloads together in both local and remote clients. Settings navigation,
+search, and available category controls do not wait for sidebar session data.
+An inactive category's module is acquired only when selected or searched.
+Each search pane has its own loading/error boundary, so a delayed or failed
+pane cannot hide other results or disable their controls and jump links.
+Search remains marked busy while panes are incomplete, and does not claim
+there are no matches until all panes have loaded. A failed module exposes the
+existing diagnostic and Reload Page recovery within that pane.
+
 Dynamic route assets remain part of one deployed entrypoint generation. Old
 loaded entrypoints must be able to acquire chunks they name after a deployment,
 or recover once through a state-preserving fresh entry. The delivery contract
@@ -204,8 +239,10 @@ remote entry also defers its connection gates and redirects, preloads only the
 current initial route, and shares cached loader promises with `React.lazy`.
 Session transcript/composer suspension is caught inside their owned slots. The
 boundary preserves the session DOM-linger owner outside `SessionPage` and
-routes load failures through the existing fatal error boundary. The
-per-Settings-pane split remains open in tactical 096.
+routes load failures through the existing fatal error boundary. Settings
+categories also have independent module boundaries. Local and remote builds
+keep the shared KaTeX math renderer in its own library chunk so pane splitting
+cannot fold it into an oversized shared application chunk.
 
 ## Settings Pane Conventions
 

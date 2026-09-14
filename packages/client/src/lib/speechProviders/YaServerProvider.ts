@@ -509,6 +509,7 @@ export class YaServerProvider implements SpeechProvider {
   private pendingStreamingFinalPartials: PendingStreamingFinalPartial[] = [];
   private pendingSmartTurnCommand: PendingSmartTurnCommand | null = null;
   private smartTurnGraceTimer: ReturnType<typeof setTimeout> | null = null;
+  private micHandoffTimer: ReturnType<typeof setTimeout> | null = null;
   private audioFlowWatchdog: ReturnType<typeof setTimeout> | null = null;
   private audioProcessorActive = false;
   private startToken = 0;
@@ -611,7 +612,7 @@ export class YaServerProvider implements SpeechProvider {
   }
 
   prewarm(): void {
-    if (!this.shouldKeepMicWarm() || !this.isSupported) return;
+    if (this.options.keepMicWarm !== true || !this.isSupported) return;
     if (
       this.state.isListening ||
       this.state.status === "starting" ||
@@ -650,7 +651,9 @@ export class YaServerProvider implements SpeechProvider {
     const model =
       this.backendId === "ya-parakeet" || this.backendId === "ya-nemo"
         ? this.options.parakeetModel
-        : undefined;
+        : this.backendId === "ya-whisper"
+          ? this.options.whisperModel
+          : undefined;
     const key = `${this.backendId}:${model ?? ""}`;
     if (this.prewarmedBackendKey === key) return;
     this.prewarmedBackendKey = key;
@@ -697,6 +700,7 @@ export class YaServerProvider implements SpeechProvider {
   }
 
   private async doStartBatch(token: number): Promise<void> {
+    const context = this.options.getTranscriptionContext?.();
     const stream = await this.getActiveMicStream();
     if (this.disposed || token !== this.startToken) {
       if (!isSharedSpeechMicStream(stream)) {
@@ -716,7 +720,7 @@ export class YaServerProvider implements SpeechProvider {
     const recording: BatchRecording = {
       token,
       chunks: [],
-      context: this.options.getTranscriptionContext?.(),
+      context,
       mimeType,
       stream,
       submitOnStop: true,
@@ -976,30 +980,20 @@ export class YaServerProvider implements SpeechProvider {
         !this.disposed &&
         token === this.startToken &&
         !this.streamingFinalReceived &&
-        (this.state.status === "receiving" ||
-          this.state.status === "finalizing")
+        this.state.status !== "idle" &&
+        this.state.status !== "error"
       ) {
         // A close during the command grace window ends the turn as a plain
         // salvage, never as the held automatic send.
         this.clearSmartTurnGrace();
         this.pendingSmartTurnCommand = null;
-        const message = "Speech streaming connection closed before final text";
-        const salvaged = this.commitStreamingTranscript(
-          this.getUncommittedStreamingPreviewText(
-            this.streamingCurrentPreviewTranscript,
-          ),
+        this.handleStreamingMessage(
+          JSON.stringify({
+            type: "error",
+            message: "Speech streaming connection closed before final text",
+          }),
+          token,
         );
-        this.setState({
-          status:
-            salvaged || this.streamingCommittedTranscript ? "idle" : "error",
-          isListening: false,
-          interimTranscript: "",
-          error: salvaged || this.streamingCommittedTranscript ? null : message,
-        });
-        if (!salvaged && !this.streamingCommittedTranscript) {
-          this.options.onError?.(message);
-        }
-        this.options.onEnd?.();
       }
     };
 
@@ -1112,7 +1106,7 @@ export class YaServerProvider implements SpeechProvider {
 
     if (message.type === "final") {
       this.streamingFinalReceived = true;
-      this.cleanupStreamingMedia();
+      this.cleanupStreamingMedia(false);
       const pendingSmartTurn = this.pendingSmartTurnCommand ?? undefined;
       const smartTurnCommand = pendingSmartTurn?.command;
       const pendingFinalPartials = this.pendingStreamingFinalPartials;
@@ -1201,6 +1195,8 @@ export class YaServerProvider implements SpeechProvider {
       if (!metadataApplied && resultMetadata) {
         this.options.onResult?.("", resultMetadata);
       }
+      // Result delivery can synchronously arm the next turn's warm ownership.
+      this.releaseActiveStream();
       this.setState({
         status: "idle",
         isListening: false,
@@ -1300,7 +1296,24 @@ export class YaServerProvider implements SpeechProvider {
 
   private finishSmartTurnStop(): void {
     this.streamingStopRequested = true;
-    this.cleanupStreamingMedia();
+    const handoff =
+      this.pendingSmartTurnCommand?.command === "send" &&
+      this.options.temporarilyKeepMicWarm?.() === true;
+    this.cleanupStreamingMedia(!handoff);
+    if (handoff) {
+      // Bound device retention even if the final transcript never arrives.
+      const token = this.startToken;
+      this.micHandoffTimer = setTimeout(() => {
+        this.pendingSmartTurnCommand = null;
+        this.handleStreamingMessage(
+          JSON.stringify({
+            type: "error",
+            message: "Speech finalization timed out",
+          }),
+          token,
+        );
+      }, 5000);
+    }
     this.setState({ status: "finalizing", isListening: false, error: null });
     if (this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type: "stop" }));
@@ -1609,6 +1622,7 @@ export class YaServerProvider implements SpeechProvider {
     const audio = new Blob(recording.chunks, { type: recording.mimeType });
     recording.chunks = [];
     releaseSpeechStream(recording.stream);
+    const { textBeforeCursor, ...context } = recording.context ?? {};
 
     let settlementStatus: SpeechTranscriptionSettlementStatus = "cancelled";
     try {
@@ -1623,9 +1637,15 @@ export class YaServerProvider implements SpeechProvider {
                   this.backendId === "ya-parakeet" ||
                   this.backendId === "ya-nemo"
                     ? this.options.parakeetModel
-                    : undefined,
+                    : this.backendId === "ya-whisper"
+                      ? this.options.whisperModel
+                      : undefined,
                 audioBase64: await blobToBase64(audio),
-                context: recording.context,
+                context,
+                prompt:
+                  this.backendId === "ya-whisper"
+                    ? textBeforeCursor?.slice(-8000)
+                    : undefined,
               }),
             })
           : { text: "" };
@@ -1733,7 +1753,11 @@ export class YaServerProvider implements SpeechProvider {
       this.options.onEnd?.();
       return;
     }
-    if (!this.state.isListening) return;
+    if (!this.state.isListening) {
+      this.pendingSmartTurnCommand = null;
+      this.releaseActiveStream();
+      return;
+    }
     if (this.options.serverStreaming) {
       this.setState({ status: "finalizing", isListening: false, error: null });
       this.streamingStopRequested = true;
@@ -1814,12 +1838,16 @@ export class YaServerProvider implements SpeechProvider {
   }
 
   private releaseActiveStream(): void {
+    if (this.micHandoffTimer !== null) {
+      clearTimeout(this.micHandoffTimer);
+      this.micHandoffTimer = null;
+    }
     releaseSpeechStream(this.stream);
     this.stream = null;
     this.releaseSharedMicActive();
   }
 
-  private cleanupStreamingMedia(): void {
+  private cleanupStreamingMedia(releaseMic = true): void {
     this.stopWaveformMonitor?.();
     this.stopWaveformMonitor = null;
     this.clearSmartTurnGrace();
@@ -1833,7 +1861,7 @@ export class YaServerProvider implements SpeechProvider {
     this.pcmChunker = null;
     void this.audioContext?.close();
     this.audioContext = null;
-    this.releaseActiveStream();
+    if (releaseMic) this.releaseActiveStream();
   }
 
   private cleanupMedia(submitOnStop: boolean): void {

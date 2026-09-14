@@ -10,11 +10,12 @@ Request line:  {"audio_b64":"<base64>","mime_type":"audio/webm;codecs=opus","pro
 Response line: {"text":"..."} or {"error":"..."}
 Startup line:  {"status":"ready"} (written once after model loads)
 """
-import sys
-import json
+
 import base64
-import tempfile
+import json
 import os
+import sys
+import tempfile
 
 
 def suffix_for_mime(mime: str) -> str:
@@ -30,7 +31,7 @@ def suffix_for_mime(mime: str) -> str:
 
 
 def main() -> None:
-    model_name = sys.argv[1] if len(sys.argv) > 1 else "distil-large-v3"
+    model_name = sys.argv[1] if len(sys.argv) > 1 else "distil-large-v3.5"
     device = sys.argv[2] if len(sys.argv) > 2 else "cpu"
     compute_type = sys.argv[3] if len(sys.argv) > 3 else "int8"
 
@@ -41,8 +42,9 @@ def main() -> None:
 
     try:
         from faster_whisper import WhisperModel  # type: ignore[import]
+
         model = WhisperModel(model_name, device=device, compute_type=compute_type)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - Worker startup errors use the JSON protocol.
         sys.stdout.write(json.dumps({"error": f"Model load failed: {exc}"}) + "\n")
         sys.stdout.flush()
         sys.exit(1)
@@ -84,7 +86,7 @@ def main() -> None:
             finally:
                 os.unlink(tmpfile)
 
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - Keep the worker alive after a failed request.
             sys.stdout.write(json.dumps({"error": str(exc)}) + "\n")
 
         sys.stdout.flush()

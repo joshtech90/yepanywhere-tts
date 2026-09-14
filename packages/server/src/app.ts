@@ -1,4 +1,30 @@
+import { ConversationSubscriptions } from "./experimental/conversation-subscriptions.js";
+import { ComputerControlService } from "./computer-control/service.js";
+import { createComputerControlRoutes } from "./routes/computer-control.js";
+import { createComputerControlReleaseRoutes } from "./routes/computer-control-releases.js";
+import { createConversationSource } from "./experimental/conversation-source.js";
+import { createExperimentalConversationRoutes } from "./routes/experimental-conversation.js";
+import { IssueStore } from "./services/issues/IssueStore.js";
+import {
+  IssueIndexer,
+  DEFAULT_ISSUE_SETTINGS,
+} from "./services/issues/IssueIndexer.js";
+import { createIssueRoutes } from "./routes/issues.js";
+import { IssueCredentials } from "./services/issues/credentials.js";
+import { IssueConfirmer } from "./services/issues/confirm.js";
+import { getSessionSources } from "./sessions/provider-resolution.js";
 import type { HttpBindings } from "@hono/node-server";
+import { artifactViewerAgentEnvironment } from "./artifacts/agentEnvironment.js";
+import { ArtifactServer } from "./artifacts/ArtifactServer.js";
+import {
+  validateArtifactConfig,
+  type ArtifactConfig,
+} from "./artifacts/config.js";
+import { createArtifactRoutes } from "./routes/artifacts.js";
+import {
+  isArtifactHost,
+  isArtifactOrigin,
+} from "./middleware/allowed-hosts.js";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
   AppContentBlock,
@@ -113,10 +139,21 @@ import { createGitProjectionRoutes } from "./routes/git-projections.js";
 import { createGitStatusRoutes } from "./routes/git-status.js";
 import { createGitWorkingTreeFilesRoutes } from "./routes/git-working-tree-files.js";
 import { createProjectFileCompletionRoutes } from "./routes/project-file-completion.js";
+import { createToolCommentaryRoutes } from "./routes/tool-commentary.js";
 import { ProjectFileCompletion } from "./services/projectFileCompletion.js";
 import { createConversationContextRoutes } from "./routes/conversation-context.js";
 import { createGlossaryArtifactRoutes } from "./routes/glossary-artifacts.js";
 import { createGlobalSessionsRoutes } from "./routes/global-sessions.js";
+import {
+  getActiveSessionIndexOptions,
+  isSessionAutoArchived,
+} from "./routes/session-list-options.js";
+import { RetainedSessionCollections } from "./services/RetainedSessionCollections.js";
+import { collectionCatalogAdapters } from "./sessions/catalog-adapters/collection-catalog-adapters.js";
+import {
+  providerCatalogFamily,
+  type ProviderCatalogFamily,
+} from "./sessions/provider-catalog-family.js";
 import { createReviewCommentsRoutes } from "./routes/review-comments.js";
 import { createReviewInboxRoutes } from "./routes/review-inbox.js";
 import { createReviewSubmissionsRoutes } from "./routes/review-submissions.js";
@@ -174,6 +211,10 @@ import { createSpeechRoutes } from "./routes/speech.js";
 import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
 import { createSecurityClientRoutes } from "./routes/security-clients.js";
+import {
+  DiscoverySqliteService,
+  type SqliteMode,
+} from "./storage/discovery-sqlite.js";
 import { createVersionRoutes } from "./routes/version.js";
 import { createProviderHostRoutes } from "./routes/provider-host.js";
 import { createWorkstreamRoutes } from "./routes/workstreams.js";
@@ -183,7 +224,10 @@ import {
   getProvider,
   isProviderRuntimeHostAvailable,
 } from "./sdk/providers/index.js";
-import type { CodexPlanToolMode } from "@yep-anywhere/shared";
+import type {
+  CodexCyberAccessProgram,
+  CodexPlanToolMode,
+} from "@yep-anywhere/shared";
 import type { AgentProvider } from "./sdk/providers/types.js";
 import type {
   ClaudeSDK,
@@ -228,6 +272,11 @@ import type {
 import { SafeRestartService } from "./services/SafeRestartService.js";
 import type { SharingService } from "./services/SharingService.js";
 import type { SpeechBackendRegistry } from "./services/voice/registry.js";
+import { VocabularyStore } from "./services/voice/VocabularyStore.js";
+import { VocabularyLearning } from "./services/voice/VocabularyLearning.js";
+import { VocabularyKeyterms } from "./services/voice/VocabularyKeyterms.js";
+import { vocabularySessions } from "./services/voice/vocabulary-sessions.js";
+import { createSpeechVocabularyRoutes } from "./routes/speech-vocabulary.js";
 import { CodexSessionReader } from "./sessions/codex-reader.js";
 import { createCodexSessionDiscoveryIndex } from "./sessions/codex-discovery.js";
 import { GeminiSessionReader } from "./sessions/gemini-reader.js";
@@ -257,10 +306,11 @@ import {
   type HeartbeatTurnCandidate,
 } from "./supervisor/Supervisor.js";
 import type { Message, Project } from "./supervisor/types.js";
-import type { EventBus } from "./watcher/index.js";
+import { FocusedSessionWatchManager, type EventBus } from "./watcher/index.js";
 import { LifecycleWebhookService } from "./webhooks/LifecycleWebhookService.js";
 
 export interface AppOptions {
+  artifacts?: ArtifactConfig;
   /** Explicit provider override; null suppresses ambient provider discovery. */
   provider?: AgentProvider | null;
   /** Legacy SDK interface for mock SDK (for testing) */
@@ -354,8 +404,10 @@ export interface AppOptions {
   serverPort?: number;
   /** Unique installation identifier (for server-info endpoint) */
   installId?: string;
+  getCatalogFamilies?: () => readonly ProviderCatalogFamily[];
   /** Data directory for persistent state (for onboarding state) */
   dataDir?: string;
+  sqliteMode?: SqliteMode;
   /** NetworkBindingService for runtime binding configuration */
   networkBindingService?: NetworkBindingService;
   /**
@@ -415,6 +467,8 @@ export interface AppOptions {
   codexCliPath?: string;
   /** Thread-scope Codex plan-tool override; provider default when omitted. */
   codexPlanToolMode?: CodexPlanToolMode;
+  /** Cyber access program requested per Codex turn; omitted when unset. */
+  codexCyberAccessProgram?: CodexCyberAccessProgram;
   /** Whether voice input is enabled. Default: true */
   voiceInputEnabled?: boolean;
   /** Validated server-routed speech backends for capability advertisement. */
@@ -430,6 +484,9 @@ export interface AppOptions {
 }
 
 export interface AppResult {
+  focusedSessionWatchManager: FocusedSessionWatchManager;
+  conversationSubscriptions: ConversationSubscriptions;
+  artifactServer: ArtifactServer;
   app: Hono<{ Bindings: HttpBindings }>;
   /** Supervisor instance for debug API access */
   supervisor: Supervisor;
@@ -439,6 +496,8 @@ export interface AppResult {
   readerFactory: (project: Project) => ISessionReader;
   /** Close cached session readers and their owned parser workers. */
   disposeSessionReaders: () => Promise<void>;
+  /** Stop session/inactivity push generation before provider shutdown. */
+  stopNotifications: () => void;
   /** Shared resolver used by the artifact route and glossary subscriptions. */
   glossaryIndexService: GlossaryIndexService;
   /** Global external-session observer and its bounded background diagnostics. */
@@ -499,6 +558,7 @@ function getPreservedRestartWork(
 }
 
 export function createApp(options: AppOptions): AppResult {
+  let artifactServer: ArtifactServer;
   let supervisor!: Supervisor;
   const isSessionSandboxAuthEnforced = (): boolean =>
     options.authDisabled !== true &&
@@ -533,6 +593,9 @@ export function createApp(options: AppOptions): AppResult {
       codexPlanToolMode:
         options.serverSettingsService?.getSetting("codexPlanToolMode") ??
         options.codexPlanToolMode,
+      codexCyberAccessProgram:
+        options.serverSettingsService?.getSetting("codexCyberAccessProgram") ??
+        options.codexCyberAccessProgram,
       codexReasoningSummary: options.serverSettingsService?.getSetting(
         "codexReasoningSummary",
       ),
@@ -569,6 +632,14 @@ export function createApp(options: AppOptions): AppResult {
   const piSessionsDir = options.piSessionsDir ?? PI_SESSIONS_DIR;
 
   const app = new Hono<{ Bindings: HttpBindings }>();
+  app.use("*", async (c, next) => {
+    const host = c.req.header("Host") ?? new URL(c.req.url).host;
+    if (artifactServer?.matchesHost(host))
+      return artifactServer.app.fetch(c.req.raw);
+    if (isArtifactHost(host) || isArtifactOrigin(c.req.header("Origin")))
+      return c.json({ error: "Artifact documents cannot access YA" }, 403);
+    await next();
+  });
   if (options.desktopBootstrapService) {
     app.route(
       "/desktop-bootstrap",
@@ -582,6 +653,22 @@ export function createApp(options: AppOptions): AppResult {
   const effectiveDataDir =
     options.dataDir ??
     join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".yep-anywhere");
+  const computerControl = options.serverSettingsService
+    ? new ComputerControlService(
+        options.serverSettingsService,
+        effectiveDataDir,
+      )
+    : undefined;
+  if (computerControl) {
+    app.route("/api", createComputerControlRoutes(computerControl));
+    app.route("/api", createComputerControlReleaseRoutes(computerControl));
+  }
+  const discoverySqlite = new DiscoverySqliteService({
+    dataDir: effectiveDataDir,
+    mode: options.sqliteMode ?? "auto",
+    onError: (error) =>
+      console.warn("[DiscoverySqlite] Storage failed:", error),
+  });
   const projectStoragePolicy =
     options.projectStoragePolicy ??
     new ProjectStoragePolicy({
@@ -717,6 +804,33 @@ export function createApp(options: AppOptions): AppResult {
     scanner,
     includeProjects: shouldIncludeProjects,
   });
+  const artifactConfig = options.artifacts ??
+    options.serverSettingsService?.getSetting("artifactViewer") ?? {
+      port: 4402,
+    };
+  artifactServer = new ArtifactServer(
+    // The mechanism borrows by default; YA's own product default is to let a
+    // link clean up the directory it was created for.
+    validateArtifactConfig(artifactConfig, undefined, true),
+    localResourcePathPolicy,
+    {
+      stateDir: options.dataDir
+        ? join(options.dataDir, "artifacts")
+        : undefined,
+      // An owning grant may never delete YA's own state or the checkout it
+      // runs from, however the request was phrased.
+      protectedPaths: [options.dataDir, process.cwd()],
+    },
+  );
+  app.route(
+    "/api",
+    createArtifactRoutes({
+      server: artifactServer,
+      scanner,
+      settings: options.serverSettingsService,
+      locked: options.artifacts !== undefined,
+    }),
+  );
   const toolResultMediaStore = new ToolResultMediaStore({
     dataDir: options.dataDir,
     storagePolicy: projectStoragePolicy,
@@ -758,7 +872,34 @@ export function createApp(options: AppOptions): AppResult {
       console.warn(`[App] Failed to close session reader ${key}:`, error);
     }
   };
+  const focusedSessionWatchManager = new FocusedSessionWatchManager({
+    scanner,
+    codexScanner,
+    geminiScanner,
+  });
+  let conversationSubscriptions: ConversationSubscriptions | undefined;
+  let retainedCollections: RetainedSessionCollections | undefined;
+  let issueIndexer: IssueIndexer | undefined;
+  let issueConfirmer: IssueConfirmer | undefined;
+  const issueDisposers: Array<() => void> = [];
+  let vocabularyLearning: VocabularyLearning | undefined;
+  let vocabularyKeyterms: VocabularyKeyterms | undefined;
+  let unsubscribeVocabulary: (() => void) | undefined;
   const disposeSessionReaders = async (): Promise<void> => {
+    await computerControl?.close();
+    conversationSubscriptions?.close();
+    focusedSessionWatchManager.dispose();
+    for (const dispose of issueDisposers) dispose();
+    await issueIndexer?.close();
+    await issueConfirmer?.close();
+    unsubscribeVocabulary?.();
+    options.speechBackendRegistry?.setVocabularySource(undefined);
+    await vocabularyKeyterms?.close();
+    await vocabularyLearning?.close();
+    discoverySqlite.close();
+    await retainedCollections?.dispose();
+    await projectQueueScheduler?.dispose();
+    await artifactServer.close();
     await projectFileCompletion.dispose();
     await bangCommandService?.dispose();
     const entries = Array.from(readerCache.entries());
@@ -1220,7 +1361,16 @@ export function createApp(options: AppOptions): AppResult {
       : (getProvider(providerName) ?? undefined);
   };
 
+  let pushNotifier: PushNotifier | undefined;
+  let inactivityPushNotifier: InactivityPushNotifier | undefined;
+  const stopNotifications = () => {
+    pushNotifier?.dispose();
+    inactivityPushNotifier?.dispose();
+  };
+
   supervisor = new Supervisor({
+    onSessionStopRequested: (sessionId) =>
+      pushNotifier?.suppressSession(sessionId),
     sdk: options.sdk,
     realSdk: options.realSdk,
     provider:
@@ -1255,7 +1405,10 @@ export function createApp(options: AppOptions): AppResult {
             const wakeBaseUrl = options.getSessionWakeBaseUrl?.(executor);
             const browserDebugConnection =
               options.getBrowserDebugConnection?.(executor);
+            const serverUrl = browserDebugConnection?.baseUrl ?? wakeBaseUrl;
             return {
+              ...(serverUrl ? { AGENT_SERVER_URL: serverUrl } : {}),
+              ...artifactViewerAgentEnvironment(artifactServer, serverUrl),
               ...(browserDebugConnection
                 ? browserDebugService.getAgentEnvironment(
                     browserDebugConnection.baseUrl,
@@ -1354,6 +1507,7 @@ export function createApp(options: AppOptions): AppResult {
     getClaudeSteerBackgroundBashSettings: () =>
       options.serverSettingsService?.getSetting("claudeSteerBackgroundBash"),
   });
+  supervisor.computerControl = computerControl;
   if (sessionWakeService) {
     app.use("/session-wake/*", hostCheckMiddleware);
     app.route("/session-wake", createSessionWakeRoutes(sessionWakeService));
@@ -1433,6 +1587,10 @@ export function createApp(options: AppOptions): AppResult {
         (clampProjectQueueQuietSeconds(
           options.serverSettingsService?.getSetting("projectQueueQuietSeconds"),
         ) ?? DEFAULT_PROJECT_QUEUE_QUIET_SECONDS) * 1000,
+      getReadinessCommand: () =>
+        options.serverSettingsService?.getSetting(
+          "projectQueueReadinessCheck",
+        ) ?? null,
       getEffectiveProcessProjectId: (process) =>
         options.sessionMetadataService?.getMetadata(process.sessionId)
           ?.workingProjectId ?? process.projectId,
@@ -1529,7 +1687,7 @@ export function createApp(options: AppOptions): AppResult {
   // Create PushNotifier if push notifications are enabled
   // This sends push notifications when sessions need user input
   if (options.eventBus && options.pushService) {
-    new PushNotifier({
+    pushNotifier = new PushNotifier({
       eventBus: options.eventBus,
       pushService: options.pushService,
       supervisor,
@@ -1537,7 +1695,7 @@ export function createApp(options: AppOptions): AppResult {
   }
 
   if (options.eventBus && options.pushService && options.projectQueueService) {
-    new InactivityPushNotifier({
+    inactivityPushNotifier = new InactivityPushNotifier({
       eventBus: options.eventBus,
       pushService: options.pushService,
       supervisor,
@@ -1563,6 +1721,17 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/version",
     createVersionRoutes({
+      getExperimentalConversationAvailable: () =>
+        Boolean(conversationSubscriptions),
+      getSqliteStatus: () => discoverySqlite.getStatus(),
+      getIssueAssociationsAvailable: () => Boolean(issueIndexer),
+      getArtifactViewerStatus: () => ({
+        ...artifactServer.config,
+        available: artifactServer.available,
+        locked:
+          options.artifacts !== undefined || !options.serverSettingsService,
+        defaultLocalOrigin: `http://artifacts.localhost:${options.serverPort ?? 3400}`,
+      }),
       browserSettingsBackupAvailable: !!options.browserSettingsBackupService,
       securityClientAuditAvailable: !!options.securityClientService,
       getDeviceBridgeState: () => {
@@ -1814,6 +1983,8 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api",
     createSessionsRoutes({
+      onIssueWindow: (source, messages) =>
+        issueIndexer?.observe(source, messages),
       supervisor,
       scanner,
       readerFactory,
@@ -1939,9 +2110,234 @@ export function createApp(options: AppOptions): AppResult {
   }
 
   // Inbox routes (cross-project session aggregation)
+  retainedCollections = new RetainedSessionCollections({
+    dataDir: effectiveDataDir,
+    eventBus: options.eventBus,
+    shouldReadQuestions: (row) =>
+      !(
+        options.sessionMetadataService?.getMetadata(row.sessionId)
+          ?.isArchived ??
+        isSessionAutoArchived(
+          row,
+          getActiveSessionIndexOptions(options.sessionAutoArchiveDays)
+            ?.activeAfterMs,
+        )
+      ),
+    adapters: (rows, signal, changedPaths) =>
+      collectionCatalogAdapters(
+        {
+          scanner,
+          readerFactory,
+          codexScanner,
+          codexSessionsDir,
+          codexReaderFactory,
+          geminiScanner,
+          geminiSessionsDir,
+          geminiReaderFactory,
+          grokSessionsDir,
+          grokReaderFactory,
+          piSessionsDir,
+          piReaderFactory,
+          sessionIndexService: options.sessionIndexService,
+          getCatalogFamilies:
+            options.getCatalogFamilies ??
+            (() =>
+              (
+                options.sessionMetadataService?.getRecordedProviders() ?? []
+              ).map(providerCatalogFamily)),
+        },
+        rows,
+        signal,
+        changedPaths,
+      ),
+  });
+  const conversationCatalog = retainedCollections;
+  conversationSubscriptions = new ConversationSubscriptions(
+    createConversationSource({
+      resolve: async (sessionId) => {
+        const { rows } = await conversationCatalog.read();
+        const candidates = rows.filter((row) => row.sessionId === sessionId);
+        return candidates.length === 1 ? candidates[0] : undefined;
+      },
+      getProcess: (sessionId) => supervisor.getProcessForSession(sessionId),
+      watch: (row, invalidate) =>
+        focusedSessionWatchManager.subscribe(
+          {
+            sessionId: row.sessionId,
+            projectId: row.projectId,
+            providerHint: row.provider ?? row.catalogFamily,
+          },
+          invalidate,
+        ),
+      eventBus: options.eventBus,
+    }),
+  );
+  app.route(
+    "/api/experimental/conversation",
+    createExperimentalConversationRoutes(conversationSubscriptions),
+  );
+  const issueDatabase = discoverySqlite.getDatabase();
+  if (issueDatabase && options.serverSettingsService) {
+    const catalog = retainedCollections;
+    const settings = options.serverSettingsService;
+    const readerFor = async (
+      projectId: string,
+      provider?: import("@yep-anywhere/shared").ProviderName,
+    ) => {
+      const project = await scanner.getProject(projectId);
+      if (!project) return null;
+      const sources = getSessionSources(
+        project,
+        heartbeatProviderResolutionDeps(),
+        provider,
+      );
+      return (
+        sources.find((source) => source.provider === provider)?.reader ??
+        sources[0]?.reader ??
+        null
+      );
+    };
+    const issueCredentials = new IssueCredentials({
+      dataDir: effectiveDataDir,
+    });
+    const issueSettings = () =>
+      settings.getSetting("issueAssociations") ?? DEFAULT_ISSUE_SETTINGS;
+    const issueStore = new IssueStore(issueDatabase, issueSettings);
+    const confirmer = new IssueConfirmer(issueStore, {
+      settings: issueSettings,
+      credentials: issueCredentials,
+    });
+    issueConfirmer = confirmer;
+    const indexer = new IssueIndexer(issueStore, {
+      settings: issueSettings,
+      confirm: () => confirmer.schedule(),
+      candidates: async function* () {
+        yield* (await catalog.read()).rows;
+      },
+      projectForSession: (id) =>
+        options.sessionMetadataService?.getMetadata(id)?.workingProjectId,
+      read: async (row, readOptions) => {
+        const reader = await readerFor(row.projectId, row.provider);
+        return reader?.readIssueTextBatch?.(row.sessionId, readOptions) ?? null;
+      },
+    });
+    issueIndexer = indexer;
+    issueDisposers.push(
+      settings.onSettingsChanged((next, previous) => {
+        if (next.issueAssociations !== previous.issueAssociations)
+          indexer.configure();
+      }),
+    );
+    const unmap = supervisor.observeSessionIdRemaps?.((oldId, newId) =>
+      indexer.remap(oldId, newId),
+    );
+    if (unmap) issueDisposers.push(unmap);
+    const unsubscribe = options.eventBus?.subscribe((event) => {
+      if (event.type === "session-catalog-updated" && !event.catalog.refreshing)
+        indexer.refresh(event.catalog);
+      if (event.type === "session-metadata-changed" && event.projectId)
+        indexer.store.updateProject(event.sessionId, event.projectId);
+      if (
+        indexer.settings().enabled &&
+        indexer.settings().scope === "recent" &&
+        (event.type === "session-updated" ||
+          (event.type === "process-state-changed" &&
+            event.activity !== "in-turn"))
+      )
+        catalog.invalidate();
+    });
+    if (unsubscribe) issueDisposers.push(unsubscribe);
+    app.route(
+      "/api",
+      createIssueRoutes(
+        indexer,
+        settings,
+        async (projectId, sessionId) => {
+          const process = supervisor.getProcessForSession(sessionId);
+          const canonical = process?.sessionId ?? sessionId;
+          if (canonical !== sessionId) return { available: false };
+          const metadata =
+            options.sessionMetadataService?.getMetadata(sessionId);
+          if (
+            metadata?.workingProjectId &&
+            metadata.workingProjectId !== projectId
+          )
+            return { available: false };
+          const physicalProject = metadata?.transcriptProjectId ?? projectId;
+          const reader = await readerFor(physicalProject, metadata?.provider);
+          const summary = await reader?.getSessionSummary(
+            sessionId,
+            physicalProject as import("@yep-anywhere/shared").UrlProjectId,
+            { readMode: "head" },
+          );
+          return {
+            available: Boolean(summary),
+            title: metadata?.customTitle ?? summary?.title ?? undefined,
+            initialPrompt: summary?.initialPrompt ?? summary?.fullTitle,
+            lastAgentText: summary?.lastAgentText,
+            model: summary?.model,
+            ownership: process
+              ? { owner: "self" as const, processId: process.id }
+              : summary?.ownership,
+            activity: process?.getInfo().state,
+            provider: summary?.provider,
+            createdAt: summary?.createdAt,
+          };
+        },
+        issueCredentials,
+        confirmer,
+        async () => (await catalog.read()).rows,
+      ),
+    );
+    indexer.configure();
+  }
+  const vocabularyDatabase = discoverySqlite.getDatabase();
+  if (vocabularyDatabase) {
+    const catalog = retainedCollections;
+    const store = new VocabularyStore(effectiveDataDir);
+    const keyterms = new VocabularyKeyterms(store, effectiveDataDir);
+    const learning = new VocabularyLearning(
+      store,
+      (cutoff) =>
+        vocabularySessions(
+          catalog,
+          scanner,
+          heartbeatProviderResolutionDeps(),
+          cutoff,
+        ),
+      { reference: () => keyterms.reference() },
+    );
+    vocabularyLearning = learning;
+    vocabularyKeyterms = keyterms;
+    // Parsing the English baseline costs about 60 ms and the result is now kept
+    // for the process lifetime, so pay it here rather than on whichever
+    // dictation or scan asks first. Only for an owner who turned the feature
+    // on; a server that never uses it should not read the list at all.
+    if (store.settings().enabled || store.settings().biasing)
+      void keyterms.reference().catch(() => {
+        // Already logged and retried on demand by the keyterm path.
+      });
+    options.speechBackendRegistry?.setVocabularySource((context) =>
+      keyterms.get(context?.sessionTerms, context?.sessionId),
+    );
+    unsubscribeVocabulary = options.eventBus?.subscribe((event) => {
+      if (event.type === "session-catalog-updated" && !event.catalog.refreshing)
+        learning.scan(false);
+      if (
+        learning.store.settings().enabled &&
+        (event.type === "session-updated" ||
+          (event.type === "process-state-changed" &&
+            event.activity !== "in-turn"))
+      )
+        catalog.invalidate();
+    });
+    app.route("/api/speech", createSpeechVocabularyRoutes(learning));
+    learning.scan(false);
+  }
   app.route(
     "/api/inbox",
     createInboxRoutes({
+      retainedCollections,
       scanner,
       readerFactory,
       supervisor,
@@ -1968,6 +2364,7 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/sessions",
     createGlobalSessionsRoutes({
+      retainedCollections,
       scanner,
       readerFactory,
       supervisor,
@@ -2022,6 +2419,13 @@ export function createApp(options: AppOptions): AppResult {
   );
   app.route("/api/projects", createGitFileRevisionRoutes({ scanner }));
   app.route("/api/projects", createConversationContextRoutes({ supervisor }));
+  app.route(
+    "/api/projects",
+    createToolCommentaryRoutes({
+      scanner,
+      resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
+    }),
+  );
 
   // Current-content inventory and last-fetched incoming history.
   app.route(
@@ -2233,6 +2637,9 @@ export function createApp(options: AppOptions): AppResult {
         },
         onHeartbeatSettingsChanged: () => {
           supervisor.notifyHeartbeatScheduleChanged();
+        },
+        onProjectQueueReadinessChanged: () => {
+          projectQueueScheduler?.readinessSettingsChanged();
         },
         onOllamaSystemPromptChanged: (prompt) => {
           ClaudeOllamaProvider.setSystemPrompt(prompt);
@@ -2701,10 +3108,14 @@ export function createApp(options: AppOptions): AppResult {
 
   return {
     app,
+    conversationSubscriptions,
+    focusedSessionWatchManager,
+    artifactServer,
     supervisor,
     scanner,
     readerFactory,
     disposeSessionReaders,
+    stopNotifications,
     glossaryIndexService,
     externalTracker,
     resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,

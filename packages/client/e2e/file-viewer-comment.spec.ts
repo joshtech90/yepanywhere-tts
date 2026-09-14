@@ -152,7 +152,7 @@ for (const viewport of [
     await expect(quoteButton).toBeVisible();
     await quoteButton.click();
     await expect(composer).toHaveValue(
-      "> Viewer context remains available while reviewing this file.\n",
+      `re: ${join(fileBrowserProjectPath, "README.md")}:5\n> Viewer context remains available while reviewing this file.\n`,
     );
     await expect(composer).toBeFocused();
     await expect(page.locator(".file-viewer-modal")).toBeVisible();

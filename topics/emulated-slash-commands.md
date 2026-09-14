@@ -227,15 +227,73 @@ stable releases and all stable releases within 14 days. Both lack the status
 field; no route, command meaning, or existing capability changes. The maintainer
 approved completing this plan on 2026-09-06.
 
+## Claude goal commands
+
+Claude Code owns `/goal` natively as a session-scoped Stop hook, and its
+command surface is only `/goal <condition>` and `/goal clear` (Claude also
+accepts `stop`, `off`, `reset`, `none`, and `cancel` as clears). Setting a
+second condition replaces the first: Claude removes the installed hook before
+adding the new one, so YA never stacks goals. Claude reinstalls an active
+goal's hook when the session resumes, so an auto-restarted provider keeps
+working toward it.
+
+Claude offers no goal query. YA reads goal state from the `goal_status`
+attachment rows Claude writes into its own session transcript: the set
+sentinel, each not-yet-met iteration, the satisfied row, the impossible row,
+and the explicit clear. Every flag change therefore follows a provider
+observation — a `/goal` that Claude refuses (untrusted workspace, hooks
+restricted by policy) leaves the flag alone, and a goal Claude judged met or
+impossible clears the flag without any YA action. State is read incrementally
+at turn boundaries and on a short interval while a dispatched goal command is
+unconfirmed; the first read of a resumed transcript looks back a bounded
+distance for the last goal row.
+
+Pause and resume have no Claude equivalent, so YA emulates them: pause clears
+the Stop hook and remembers the objective, and resume reissues
+`/goal <objective>`. The paused objective exists only in YA, so it is saved in
+session metadata and restored when the session is resumed or the server
+restarts; an active goal is not restored that way because Claude reports it
+itself. Clearing a paused goal needs no provider text. Reissuing the live
+objective reads it rather than spending a turn re-acknowledging it.
+
+A `/goal` that is a session's first message — a new session, or the first
+message after its process was reaped — is delivered as that prompt instead of
+being dispatched out of band, because Claude has no session yet to command
+(`session-context-actions.md`). Claude installs the hook itself and the
+transcript row raises the flag as usual.
+
+YA sends this goal text on Claude's most urgent command-queue lane. The lower
+lanes wait for a delivery boundary a goal loop never reaches on its own:
+releasing the Stop hook is what ends the turn, and that release is the message
+being delivered. A receipt reports the state the transcript confirms, or says
+the transition is not confirmed yet rather than claiming success.
+
+The inventory publishes `providerDetails.claude.goalObjective` and
+`goalStatus` (`active`, `paused`, or null for no goal) on the native `goal`
+entry, plus completions for the current objective, `clear`, and whichever of
+`pause`/`resume` applies. The header flag, its tooltip, its toggle, and the
+right-click objective fill are the same controls as the Codex goal flag. When
+Claude is old enough to lack a native `/goal`, YA's `/loop wish` alias stays in
+place, carries no goal state, and offers no controls.
+
+Compatibility: Claude goal state uses the same optional inventory fields as
+Codex, so a server that omits them leaves the client with no flag and no
+pause/resume request. The optional-feature review covered `v0.8.1`
+(2026-09-05) and `v0.8.0` (2026-08-31), the latest two stable releases and all
+stable releases within 14 days. Neither reports Claude goal state; no route,
+command meaning, or existing capability changes. The maintainer approved this
+gate and fallback on 2026-09-09.
+
 ## Default Skill Vocabulary
 
 These are the default user-facing fallback commands YA should prefer when a
 provider has no native equivalent:
 
-- `/wish <goal>`: pursue a goal until it is verifiably done. On Codex, native
-  `/goal` is preferred because the runtime preserves the goal across context
-  limits. On Claude, YA may expose `/goal <goal>` as an alias that sends
-  `/loop wish <goal>` when Claude reports `/loop` but not `/goal`.
+- `/wish <goal>`: pursue a goal until it is verifiably done. On Codex and
+  current Claude builds, the native `/goal` is preferred; see § Codex goal
+  commands and § Claude goal commands. YA exposes `/goal <goal>` as an alias
+  that sends `/loop wish <goal>` only when Claude reports `/loop` but not
+  `/goal`.
 - `/rep ...`: repeat or self-pace a prompt across wakeups. This is ordinary
   command behavior, not a side-session helper.
 - `/doubt ...`: run an independent re-check before comparing with the prior
@@ -292,6 +350,13 @@ recap/goal implementation.
 - Stopped Codex sessions preserve the `/goal` objective hint and control
   completions, and every advertised goal control dispatches without a model
   turn.
+- A Claude transcript whose last goal row is the set sentinel reports an active
+  goal; a met, impossible, or cleared row reports none, except when the clear
+  is the one YA requested for a pause.
+- Claude `/goal pause` sends a clear and reports `paused` only once the
+  transcript confirms it; `/goal resume` reissues the remembered objective.
+- A Claude build advertising no native `/goal` keeps the `/loop wish` alias and
+  publishes no goal state.
 - Supported `/archive` projects `/archive`; an archive-incapable but done-capable
   server projects `/done` without receiving an archive request. `/title` is
   handled locally and never reaches a provider or focused aside.

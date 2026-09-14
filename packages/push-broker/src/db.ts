@@ -1,37 +1,40 @@
 import { chmodSync, closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
-import Database from "better-sqlite3";
+import {
+  openSqliteOrThrow,
+  type SqliteDatabase,
+} from "@yep-anywhere/shared/sqlite";
 
 const SCHEMA_VERSION = 1;
 
-export function createDatabase(dataDir: string): Database.Database {
+export function createDatabase(dataDir: string): SqliteDatabase {
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const databasePath = join(dataDir, "push-broker.db");
   const databaseFile = openSync(databasePath, "a", 0o600);
   closeSync(databaseFile);
   chmodSync(databasePath, 0o600);
-  const db = new Database(databasePath);
+  const db = openSqliteOrThrow(databasePath);
   initializeDatabase(db, true);
   return db;
 }
 
-export function createTestDatabase(
-  databasePath = ":memory:",
-): Database.Database {
-  const db = new Database(databasePath);
+export function createTestDatabase(databasePath = ":memory:"): SqliteDatabase {
+  const db = openSqliteOrThrow(databasePath);
   initializeDatabase(db, databasePath !== ":memory:");
   return db;
 }
 
-function initializeDatabase(db: Database.Database, persistent: boolean): void {
-  db.pragma("foreign_keys = ON");
-  db.pragma("busy_timeout = 5000");
+function initializeDatabase(db: SqliteDatabase, persistent: boolean): void {
+  db.exec("PRAGMA foreign_keys = ON");
+  db.exec("PRAGMA busy_timeout = 5000");
   if (persistent) {
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
+    db.exec("PRAGMA journal_mode = WAL");
+    db.exec("PRAGMA synchronous = NORMAL");
   }
 
-  const version = db.pragma("user_version", { simple: true }) as number;
+  const version =
+    db.prepare("PRAGMA user_version").get<{ user_version: number }>()
+      ?.user_version ?? 0;
   if (version > SCHEMA_VERSION) {
     db.close();
     throw new Error(
@@ -67,6 +70,6 @@ function initializeDatabase(db: Database.Database, persistent: boolean): void {
 
         PRAGMA user_version = 1;
       `);
-    })();
+    });
   }
 }

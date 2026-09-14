@@ -82,6 +82,30 @@ describe("hermetic config env setup", () => {
   });
 });
 
+describe("optional SQLite configuration", () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("defaults to built-in SQLite and honors explicit startup mode", async () => {
+    const { loadConfig } = await import("../src/config.js");
+    expect(loadConfig().sqliteMode).toBe("auto");
+    vi.stubEnv("YEP_SQLITE", "auto");
+    expect(loadConfig().sqliteMode).toBe("auto");
+    vi.stubEnv("YEP_SQLITE", "on");
+    expect(loadConfig().sqliteMode).toBe("on");
+    vi.stubEnv("YEP_SQLITE", "off");
+    vi.stubEnv("YEP_DESKTOP", "1");
+    expect(loadConfig().sqliteMode).toBe("off");
+  });
+
+  it("rejects misspelled modes instead of silently enabling storage", async () => {
+    vi.stubEnv("YEP_SQLITE", "yes");
+    const { loadConfig } = await import("../src/config.js");
+    expect(() => loadConfig()).toThrow(
+      "YEP_SQLITE must be one of: off, auto, on",
+    );
+  });
+});
+
 describe("loadConfig codex paths", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
@@ -162,6 +186,33 @@ describe("loadConfig codex paths", () => {
 
     expect(() => loadConfig()).toThrow(
       "YEP_CODEX_UPDATE_PLAN must be one of: provider-default, disabled, enabled",
+    );
+  });
+
+  it("defaults the Codex cyber access program to provider behavior", async () => {
+    const { loadConfig } = await import("../src/config.js");
+
+    expect(loadConfig().codexCyberAccessProgram).toBe("provider-default");
+  });
+
+  it.each([
+    "provider-default",
+    "standard",
+    "daybreak-blue",
+    "daybreak-red",
+  ] as const)("parses the %s Codex cyber access override", async (program) => {
+    vi.stubEnv("YEP_CODEX_CYBER_ACCESS_PROGRAM", program);
+    const { loadConfig } = await import("../src/config.js");
+
+    expect(loadConfig().codexCyberAccessProgram).toBe(program);
+  });
+
+  it("rejects an invalid Codex cyber access override", async () => {
+    vi.stubEnv("YEP_CODEX_CYBER_ACCESS_PROGRAM", "daybreak-purple");
+    const { loadConfig } = await import("../src/config.js");
+
+    expect(() => loadConfig()).toThrow(
+      "YEP_CODEX_CYBER_ACCESS_PROGRAM must be one of: provider-default, standard, daybreak-blue, daybreak-red",
     );
   });
 

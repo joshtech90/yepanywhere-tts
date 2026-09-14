@@ -155,6 +155,16 @@ export function ParagraphQuoteRail({
                 (entry) => entry.target === surface,
               );
               if (surfaceEntry && !surfaceEntry.isIntersecting) {
+                // Parking is a transition, not a state to reassert. Observing
+                // a target queues an initial observation for it, so the
+                // disconnect/observe pair below hands this same callback
+                // another non-intersecting surface entry on the next frame.
+                // Without this guard that entry parks the rail again, and a
+                // rail whose surface sits outside the scrollport schedules a
+                // measurement every frame for as long as the page is open —
+                // once per off-screen text block, so a long transcript pays it
+                // many times over.
+                if (!observingBlocks) return;
                 observingBlocks = false;
                 visibleIndexes.clear();
                 intersectionObserver?.disconnect();

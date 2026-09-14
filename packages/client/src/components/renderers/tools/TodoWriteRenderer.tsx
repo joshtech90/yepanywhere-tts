@@ -1,14 +1,11 @@
+import { toolDisplayContracts } from "./toolDisplayContracts";
+import { defineTool } from "./defineTool";
 import { useEffect, useState } from "react";
 import type { ZodError } from "zod";
 import { useSchemaValidationContext } from "../../../contexts/SchemaValidationContext";
 import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
-import type {
-  Todo,
-  TodoWriteInput,
-  TodoWriteResult,
-  ToolRenderer,
-} from "./types";
+import type { Todo, TodoWriteInput, TodoWriteResult } from "./types";
 
 /**
  * Get status icon for a todo item
@@ -102,7 +99,10 @@ function TodoWriteToolResult({
     enabled && validationErrors && !isToolIgnored("TodoWrite");
 
   if (isError) {
-    const errorResult = result as unknown as { content?: unknown } | undefined;
+    const errorResult =
+      result && typeof result === "object" && "content" in result
+        ? result
+        : undefined;
     return (
       <div className="todo-error">
         {showValidationWarning && validationErrors && (
@@ -140,32 +140,26 @@ function TodoWriteToolResult({
   );
 }
 
-export const todoWriteRenderer: ToolRenderer<TodoWriteInput, TodoWriteResult> =
-  {
-    tool: "TodoWrite",
-    displayName: "Update Todos",
+export const todoWriteRenderer = defineTool(toolDisplayContracts.TodoWrite, {
+  tool: "TodoWrite",
+  displayName: "Update Todos",
 
-    renderToolUse(input, _context) {
-      return <TodoWriteToolUse input={input as TodoWriteInput} />;
-    },
+  renderToolUse(input, _context) {
+    return <TodoWriteToolUse input={input} />;
+  },
 
-    renderToolResult(result, isError, _context) {
-      return (
-        <TodoWriteToolResult
-          result={result as TodoWriteResult}
-          isError={isError}
-        />
-      );
-    },
+  renderToolResult(result, isError, _context) {
+    return <TodoWriteToolResult result={result} isError={isError} />;
+  },
 
-    getUseSummary(input) {
-      const todos = (input as TodoWriteInput).todos;
-      return todos ? `${todos.length} items` : "Todos";
-    },
+  getUseSummary(input) {
+    const todos = input.todos;
+    return todos ? `${todos.length} items` : "Todos";
+  },
 
-    getResultSummary(result, isError) {
-      if (isError) return "Error";
-      const r = result as TodoWriteResult;
-      return r?.newTodos ? `${r.newTodos.length} items` : "Todos";
-    },
-  };
+  getResultSummary(result, isError) {
+    if (isError) return "Error";
+    const r = result;
+    return r?.newTodos ? `${r.newTodos.length} items` : "Todos";
+  },
+});

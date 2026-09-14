@@ -19,12 +19,13 @@ import {
   createHighlighter,
   type Highlighter,
 } from "shiki";
-import { createCssVariablesTheme } from "shiki/core";
+import { addClassToHast, createCssVariablesTheme } from "shiki/core";
 import type {
   CompletedBlock,
   StreamingCodeBlock,
   StreamingList,
 } from "./block-detector.js";
+import { normalizeCodeBlockLanguage } from "./code-language.js";
 import {
   getLocalPathExtension,
   isLocalFilePath,
@@ -50,7 +51,7 @@ export interface Augment {
 }
 
 export interface AugmentGeneratorConfig {
-  languages: string[]; // Languages to pre-load for sync highlighting
+  languages: string[]; // Languages to load when finalized code first needs highlighting
 }
 
 export interface AugmentGenerator {
@@ -72,7 +73,7 @@ export interface AugmentGenerator {
 }
 
 /**
- * Creates an AugmentGenerator instance with pre-loaded syntax highlighting.
+ * Creates an AugmentGenerator. Syntax highlighting initializes on finalized code.
  *
  * @param config - Configuration for languages and theme
  * @returns Promise that resolves to an AugmentGenerator
@@ -85,12 +86,20 @@ export async function createAugmentGenerator(
     (lang) => lang in bundledLanguages,
   ) as BundledLanguage[];
 
-  // Create highlighter with CSS variables theme for light/dark mode support
-  const highlighter = await createHighlighter({
-    themes: [cssVarsTheme],
-    langs:
-      validLanguages.length > 0 ? validLanguages : ["javascript", "typescript"],
-  });
+  // Prose, lists and pending code do not need Shiki. Share initialization
+  // between concurrent finalized blocks without charging ordinary Markdown
+  // its cold grammar/WASM cost.
+  let highlighterPromise: Promise<Highlighter> | undefined;
+  const getHighlighter = (): Promise<Highlighter> => {
+    highlighterPromise ??= createHighlighter({
+      themes: [cssVarsTheme],
+      langs:
+        validLanguages.length > 0
+          ? validLanguages
+          : ["javascript", "typescript"],
+    });
+    return highlighterPromise;
+  };
 
   // Track loaded languages for sync checking
   const loadedLanguages = new Set<string>(validLanguages);
@@ -102,7 +111,11 @@ export async function createAugmentGenerator(
       safeMarkdownOptions?: SafeMarkdownRenderOptions,
     ): Promise<Augment> {
       if (block.type === "code") {
-        const html = await renderCodeBlock(block, highlighter, loadedLanguages);
+        const html = await renderCodeBlock(
+          block,
+          await getHighlighter(),
+          loadedLanguages,
+        );
         return { blockIndex, html, type: block.type };
       }
 
@@ -119,7 +132,7 @@ export async function createAugmentGenerator(
       blockIndex: number,
     ): Promise<Augment> {
       const code = extractStreamingCodeContent(block.content);
-      const lang = block.lang ?? "";
+      const lang = normalizeCodeBlockLanguage(block.lang) ?? "";
 
       // Avoid running Shiki over the whole growing code block on every token.
       // Completed code blocks still get full syntax highlighting through
@@ -176,25 +189,27 @@ function extractStreamingCodeContent(content: string): string {
 }
 
 /**
- * Render code with syntax highlighting (shared by completed and streaming code blocks).
+ * Render code with syntax highlighting. `lang` must already have been put
+ * through `normalizeCodeBlockLanguage`, so every comparison below sees the
+ * same lowercase single-token form the emitted `language-*` class carries.
  */
 async function renderCodeWithHighlighter(
   code: string,
-  lang: string,
+  normalizedLang: string,
   highlighter: Highlighter,
   loadedLanguages: Set<string>,
 ): Promise<string> {
   // Route colored terminal output through the ANSI renderer when the
   // fence is tagged `ansi` or contains raw CSI bytes; otherwise shiki
   // would render the escapes literally.
-  if (lang === "ansi" || hasAnsiEscapes(code)) {
+  if (normalizedLang === "ansi" || hasAnsiEscapes(code)) {
     return renderAnsiBlock(code);
   }
 
   // TOON flat tables (acli's opt-in tabular format) render as real tables
   // via the existing markdown pipeline; a failed strict parse falls through
   // to ordinary highlighting.
-  if (lang === "toon" || (!lang && looksLikeToon(code))) {
+  if (normalizedLang === "toon" || (!normalizedLang && looksLikeToon(code))) {
     const tables = parseToonDocument(code);
     if (tables) {
       return renderSafeMarkdown(toonDocumentToMarkdown(tables));
@@ -202,34 +217,45 @@ async function renderCodeWithHighlighter(
   }
 
   // Check if language is loaded and valid
-  const isValidLang = lang && lang in bundledLanguages;
+  const isValidLang = normalizedLang && normalizedLang in bundledLanguages;
 
-  if (isValidLang && !loadedLanguages.has(lang)) {
+  if (isValidLang && !loadedLanguages.has(normalizedLang)) {
     // Load the language dynamically
     try {
-      await highlighter.loadLanguage(lang as BundledLanguage);
-      loadedLanguages.add(lang);
+      await highlighter.loadLanguage(normalizedLang as BundledLanguage);
+      loadedLanguages.add(normalizedLang);
     } catch {
       // Language loading failed, fall back to plain text
-      return renderPlainCodeBlock(code, lang);
+      return renderPlainCodeBlock(code, normalizedLang);
     }
   }
 
-  if (isValidLang && loadedLanguages.has(lang)) {
+  if (isValidLang && loadedLanguages.has(normalizedLang)) {
     try {
       const html = highlighter.codeToHtml(code, {
-        lang: lang as BundledLanguage,
+        lang: normalizedLang as BundledLanguage,
         theme: "css-variables",
+        // Shiki carries the language only in its token colors, so stamp the
+        // same `language-*` class the plain fallback emits. That single class
+        // is what lets the client label a block and pick a per-language
+        // renderer without re-reading the original fence.
+        transformers: [
+          {
+            code(node) {
+              addClassToHast(node, `language-${normalizedLang}`);
+            },
+          },
+        ],
       });
       return html;
     } catch {
       // Highlighting failed, fall back to plain text
-      return renderPlainCodeBlock(code, lang);
+      return renderPlainCodeBlock(code, normalizedLang);
     }
   }
 
   // Unknown or empty language - render as plain code block
-  return renderPlainCodeBlock(code, lang);
+  return renderPlainCodeBlock(code, normalizedLang);
 }
 
 /**
@@ -241,7 +267,7 @@ async function renderCodeBlock(
   loadedLanguages: Set<string>,
 ): Promise<string> {
   const code = extractCodeContent(block.content);
-  const lang = block.lang ?? "";
+  const lang = normalizeCodeBlockLanguage(block.lang) ?? "";
   return renderCodeWithHighlighter(code, lang, highlighter, loadedLanguages);
 }
 

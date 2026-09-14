@@ -12,6 +12,15 @@ export interface DraftEnvelopeV1 {
   version: typeof DRAFT_ENVELOPE_VERSION;
   text: string;
   attachments?: DraftAttachmentState;
+  /**
+   * The composer cleared this text optimistically on submit and kept it only
+   * as a recovery copy. It stays visible like any other draft — a send that
+   * never landed must remain recoverable from a reload or a second tab — but
+   * it is the only kind of draft eligible for automatic discard once the same
+   * text is proven sent (see `lib/draftSendReconcile.ts`). A draft the user
+   * typed or recalled carries no marker and is never discarded automatically.
+   */
+  pendingSend?: true;
 }
 
 export interface DraftEnvelopeReadResult {
@@ -105,6 +114,7 @@ function normalizeEnvelope(value: unknown): DraftEnvelopeV1 | null {
     version: DRAFT_ENVELOPE_VERSION,
     text: value.text,
     ...(attachments ? { attachments } : {}),
+    ...(value.pendingSend === true ? { pendingSend: true as const } : {}),
   };
 }
 
@@ -165,6 +175,13 @@ export function readDraftAttachmentStateValue(
   return readDraftEnvelopeValue(raw).envelope?.attachments ?? null;
 }
 
+/** True when the stored draft is an unconfirmed post-submit recovery copy. */
+export function readDraftPendingSendValue(
+  raw: string | null | undefined,
+): boolean {
+  return readDraftEnvelopeValue(raw).envelope?.pendingSend === true;
+}
+
 export function serializeDraftEnvelope(
   envelope: DraftEnvelopeV1,
 ): string | null {
@@ -174,6 +191,7 @@ export function serializeDraftEnvelope(
   return JSON.stringify(envelope);
 }
 
+/** Any text write is deliberate composer content, so it drops `pendingSend`. */
 export function draftStorageValueForText(
   text: string,
   existingRaw?: string | null,
@@ -184,6 +202,22 @@ export function draftStorageValueForText(
     text,
     ...(existing?.attachments ? { attachments: existing.attachments } : {}),
   });
+}
+
+/**
+ * Mark the stored text as a post-submit recovery copy without changing it.
+ * Returns null when there is no text to mark; callers fall back to the
+ * previous raw value so an empty composer's storage is left untouched rather
+ * than deleted.
+ */
+export function draftStorageValueForPendingSend(
+  existingRaw?: string | null,
+): string | null {
+  const existing = readDraftEnvelopeValue(existingRaw).envelope;
+  if (!existing?.text.trim()) {
+    return null;
+  }
+  return serializeDraftEnvelope({ ...existing, pendingSend: true });
 }
 
 export function draftStorageValueForAttachments(
@@ -197,5 +231,8 @@ export function draftStorageValueForAttachments(
     version: DRAFT_ENVELOPE_VERSION,
     text: existing?.text ?? "",
     ...(nextAttachments ? { attachments: nextAttachments } : {}),
+    // Attachment bookkeeping runs after an optimistic submit clear; it must not
+    // strip the recovery marker off text it did not touch.
+    ...(existing?.pendingSend ? { pendingSend: true as const } : {}),
   });
 }

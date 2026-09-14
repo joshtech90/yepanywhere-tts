@@ -46,6 +46,17 @@ startup normalization boundary:
 `packages/server/src/startupEnv.ts` implements this normalization before the
 rest of the server module graph is evaluated.
 
+## Optional discovery storage
+
+`YEP_SQLITE=off|auto|on` controls optional discovery storage at server startup.
+Servers default to `auto`; an explicit `off` disables storage. `auto` refuses to
+open the database when the data directory is on a network filesystem, and `on`
+opens it there anyway for an operator who has measured their own share. The
+desktop launcher preserves that same default and explicit choices. Invalid values
+fail configuration parsing.
+There is no legacy alias. See [optional SQLite storage](optional-sqlite.md) for
+runtime support, database location, and nonfatal initialization failures.
+
 ## Compatibility renames
 
 | Legacy input | Canonical runtime name |
@@ -108,6 +119,44 @@ set legacy value supplies it, and every listed legacy key is deleted.
 
 ## Child launch markers
 
+`AGENT_SERVER_URL` is the supervising YA server's child-reachable HTTP(S) base
+URL, published as non-secret information. It uses the existing browser-debug
+connection base (or session-wake base when that is the available connection),
+including explicit remote-executor configuration; an unknown reachable base
+leaves it absent. Hosted workers replace stale outer-launcher values, propagate
+the current value to remote environments, and refresh it through the session
+Bash bridge on binding or reattachment. Ordinary child filtering preserves it.
+It conveys neither authentication nor permission to create an artifact grant.
+
+The artifact capture CLI uses it for local HTML when `--ya-url` is absent.
+Explicit `--ya-url` takes precedence; `--local-only` makes no YA requests.
+Existing HTTP(S) input uses its own URL and ignores the informational default.
+Capability, configuration, and authentication checks remain in force. No YA
+control-plane credential is published to make automatic URL discovery work.
+
+`AGENT_ARTIFACT_VIEWER_ORIGIN` is the isolated artifact origin a session may
+request a grant on, published only when the viewer is available with a local
+origin configured *and* `AGENT_SERVER_URL` is a loopback base. Whether
+interactive delivery is configured belongs to the user's YA server, not to the
+sandbox an agent runs in, so publishing the origin saves the capture tool a
+capability query it would otherwise need to discover the same fact. Absence is
+not a denial: it means ask the server, which is what a
+remote executor does, since the local origin resolves only on the YA host. The
+marker conveys no authentication and no permission to create a grant. A stale
+value costs the interactive link and never the captures, because a rejected or
+unreachable origin degrades to an images-only result carrying its reason.
+
+Its value is the same for every session on a server, so it travels with
+`AGENT_SERVER_URL` and the browser-debug pair through
+`pickStaticAgentEnvironment`, the narrowing the provider runtime host applies
+before handing a computed child environment to a worker that has no other
+source for it. Session-scoped values such as the minted wake token stay out of
+that set. Omitting a name there is silent: the server still computes the marker
+and every session started through the host loses it, which reads downstream as
+"this server has no artifact viewer" rather than as a plumbing fault. Observed
+2026-09-11, when a capture presented the throwaway server's own page URL as its
+interactive link because delivery had nothing configured to offer.
+
 Canonical launch/session outputs are addressed to the agent, so they carry no
 product prefix: `filterEnvForChildProcess` drops inherited `YEP_*` on the way
 into a provider child, and an unprefixed `AGENT_*` value needs no allowlist
@@ -129,9 +178,18 @@ values at the worker boundary — including the pre-2026-08-17 `YEP_AGENT_HARNES
 running inside an older YA's session cannot pass the outer session's stale
 values down — and applies the same launch facts to remote-provider
 environments. These are trusted child-session outputs, not operator inputs.
-`AGENTCTL_SESSION_ID` remains the canonical YA session-id marker: a resume may
-have it at launch, while a new session receives it later through the session
-environment bridge.
+With `YEP_AGENT_SELF=1` (or `true`), eligible local Claude/Codex launches also
+receive `AGENT_YA_API_URL`, `AGENT_YA_API_TOKEN`, and a private `ya-agent`
+launcher on PATH. These grant only live own-session inspection, expire after
+24 hours, and are revoked at provider teardown. Default is off. See
+[Agent Own-Session Inspection](agent-self.md) for eligibility and provenance.
+
+`AGENTCTL_SESSION_ID` remains the canonical YA session-id marker for every
+hosted provider. A resume may have it at launch in the provider process
+environment. A new session receives it through the host `BASH_ENV` bridge
+once the provider reports its canonical id, before the first user-turn
+tool shells. YA-launched sessions must not require transcript search to
+learn this value.
 
 `YEP_SESSION_WAKE_URL` and `YEP_SESSION_WAKE_TOKEN` are current compatibility
 outputs for canonical `AGENT_SESSION_WAKE_URL` and
@@ -177,11 +235,11 @@ value, because the child has no other way to express one.
 ### Ports & instance
 | Var | Meaning |
 |-----|---------|
-| `PORT` | Base port (default 3400). Main = PORT+0, maintenance = PORT+1, vite = PORT+2. |
-| `MAINTENANCE_PORT` | Override maintenance port (0 disables). |
+| `PORT` | Base port (default 3400). Main = PORT+0, vite = PORT+2; PORT+1 is the usual maintenance port but is not derived automatically. |
+| `MAINTENANCE_PORT` | Port for the out-of-band maintenance server. Unset or 0 means it never starts, so a launch that may need to diagnose a wedged server must name it. |
 | `VITE_PORT` | Override vite dev port. |
 | `YEP_PROFILE` | Profile suffix → `~/.yep-anywhere-<profile>/`. |
-| `YEP_DATA_DIR` | Full data-dir path override. |
+| `YEP_DATA_DIR` | Full data-dir path override. Either variable is an explicit placement choice; see [optional SQLite](optional-sqlite.md#when-ya-may-choose-the-directory-for-the-user). |
 | `CLAUDE_CONFIG_DIR` | Claude Code config dir (sessions scanned from `<dir>/projects/`). |
 
 ### Development & UI testing

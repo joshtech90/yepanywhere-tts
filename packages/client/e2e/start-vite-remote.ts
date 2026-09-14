@@ -9,7 +9,7 @@
 import { writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createServer } from "vite";
+import { createTestViteServer as createServer } from "./support/vite-server";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);

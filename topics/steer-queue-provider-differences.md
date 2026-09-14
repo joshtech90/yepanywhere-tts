@@ -129,6 +129,46 @@ a message enters the pipe (its own queues) and *which lane* it takes
 (`priority` on the SDKUserMessage). The transcript JSONL is observation
 only; a message visible there has left every queue.
 
+#### A steer that cuts the turn
+
+Because `now` aborts the in-flight API request rather than waiting for a
+boundary, the assistant text that had already streamed is persisted as written
+— stopping mid-word or just after a comma. Claude Code records that as a
+separate entry kind: the assistant record carries `isAbortedMidStream: true`
+alongside `stop_reason: null` and a `message_start`-era usage count of a few
+output tokens. In one probed session (2026-09-11) every one of the 14 such
+records was preceded by the steering message at the same millisecond, and none
+of the turns that ended normally carried the flag. Across that user's whole
+local Claude corpus the flag appeared 61 times in 28 files, always with a
+single text block.
+
+The flag is the signal; `stop_reason: null` is not. Null `stop_reason` appeared
+on 555 assistant records in the same corpus, so it also covers partial records
+that no steer interrupted.
+
+Every one of those 61 records is immediately followed by user input — 45 by a
+queue-operation delivering a queued message, 16 by a plain user prompt — which
+is what licenses naming the user's message in the marker. A hard interrupt
+(`query.interrupt()` behind the stop control) has never been observed producing
+the flag here. If it turns out to, the marker's wording has to widen to cover
+both, since a stopped turn was not cut by a message.
+
+**Contract.** The transcript view marks the last text of an
+`isAbortedMidStream` assistant record with a muted "interrupted by your
+message" line, flush with the prose column, so a sentence that stops mid-word
+reads as a cut rather than as the agent's chosen ending. The marker is derived
+from the provider's own flag, never from punctuation, and it never appears on a
+turn still streaming. Nothing else about the text changes: the partial content
+is displayed verbatim as before. Claude Code's own terminal UI writes a
+`[Request interrupted by user]` entry for the same event, and YA already shows
+Codex's `turn_aborted` as a system row, so this is provider parity rather than
+new vocabulary. Owned by `TextBlock` (`abortedMidStream`) and set in
+`transcriptProjection/messageProjection.ts`.
+
+A turn that stops mid-sentence while reporting `stop_reason: "end_turn"` is a
+different thing and is not marked; see
+[gaps/unflagged-mid-sentence-turn-endings](../gaps/unflagged-mid-sentence-turn-endings.md).
+
 ## Levels of "soon" (urgency ladder, short of hard interrupt)
 
 Every lane available for delivering new user input, most to least urgent,

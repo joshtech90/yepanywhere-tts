@@ -263,6 +263,10 @@ test("left and right click open the same share manager", async ({
     .filter({ hasText: "Previous message" })
     .first();
   await expect(sessionRow).toBeVisible();
+  // Session menus close on ancestor scroll. Finish bringing a lower list
+  // row into view before opening it, rather than letting click auto-scroll
+  // race the newly installed menu scroll listener.
+  await sessionRow.scrollIntoViewIfNeeded();
   await sessionRow.getByLabel("Session options").click();
   await page.getByRole("button", { name: "Share", exact: true }).click();
   await expect(dialog.getByText("Manage Public Shares")).toBeVisible();

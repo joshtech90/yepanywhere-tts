@@ -9,6 +9,7 @@ import {
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
@@ -38,6 +39,9 @@ import {
 import { getServerCapabilities } from "../../src/routes/version.js";
 
 describe("Version Routes", () => {
+  it("advertises recent local speech model selection", () => {
+    expect(getServerCapabilities()).toContain("local-speech-model-selection");
+  });
   it("advertises compiled glossary artifacts", () => {
     expect(getServerCapabilities()).toContain(GLOSSARY_TOOLTIPS_CAPABILITY);
   });
@@ -114,6 +118,12 @@ describe("Version Routes", () => {
   it("advertises the Codex plan-tool setting", () => {
     expect(getServerCapabilities()).toContain(
       CODEX_PLAN_TOOL_SETTING_CAPABILITY,
+    );
+  });
+
+  it("advertises the Codex cyber access program setting", () => {
+    expect(getServerCapabilities()).toContain(
+      CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
     );
   });
 

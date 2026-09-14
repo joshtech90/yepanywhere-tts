@@ -29,16 +29,21 @@ function saveStoredMode(mode: SidebarDisplayMode): void {
  * Hook to manage the sidebar display-mode preference.
  * Persists to localStorage.
  */
-export function useSidebarPreference(forceExpanded = false): {
+export function useSidebarPreference(
+  forceExpanded = false,
+  initiallyCollapsed = false,
+): {
   isExpanded: boolean;
   isMinimized: boolean;
   toggleExpanded: () => void;
   minimizeToFloatingToggle: () => void;
   restoreCollapsedSidebar: () => void;
 } {
-  const [mode, setModeState] = useState<SidebarDisplayMode>(() =>
-    forceExpanded ? "expanded" : loadStoredMode(),
-  );
+  const [mode, setModeState] = useState<SidebarDisplayMode>(() => {
+    if (forceExpanded) return "expanded";
+    const stored = loadStoredMode();
+    return initiallyCollapsed && stored === "expanded" ? "collapsed" : stored;
+  });
 
   const setMode = useCallback((next: SidebarDisplayMode) => {
     setModeState(next);

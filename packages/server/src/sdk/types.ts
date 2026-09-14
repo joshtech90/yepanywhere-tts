@@ -14,6 +14,7 @@ import type {
   UserMessageMetadata,
 } from "@yep-anywhere/shared";
 import type { SessionSandboxRuntime } from "../session-sandbox.js";
+import type { ClaudeGoalSnapshot } from "./providers/claude-goal.js";
 import type {
   ProviderSessionOptions,
   ProviderSessionOptionsUpdateResult,
@@ -234,11 +235,29 @@ export interface StartSessionOptions {
   onProviderRetentionChange?: () => void;
   /** Prepared YA host sandbox applied to every provider child for this session. */
   sessionSandbox?: SessionSandboxRuntime;
+  /**
+   * Last YA-observed goal for this session. Providers that keep goal state
+   * outside their own protocol (Claude) restore what only YA knows — a paused
+   * goal, whose Stop hook YA removed and intends to reinstall.
+   */
+  restoredGoal?: ClaudeGoalSnapshot | null;
 }
 
 export interface StartSessionResult {
+  publishAgentSelfSelection?: (
+    selection: import("../agent-tools/protocol.js").AgentSelfSelection,
+  ) => void | Promise<void>;
   iterator: AsyncIterableIterator<SDKMessage>;
   queue: AgentMessageQueue;
+  /**
+   * Dispatch a provider-native slash command out-of-band. Returns
+   * `{ handled: false }` when the command should reach the provider as
+   * ordinary turn text instead.
+   */
+  runProviderCommand?: (
+    command: string,
+    argument?: string,
+  ) => Promise<ProviderCommandResult>;
   abort: () => void | Promise<void>;
   /** Release only this server's client while a reload-safe provider survives. */
   detachForServerReload?: () => void | Promise<void>;

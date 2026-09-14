@@ -431,7 +431,7 @@ export class PiProvider implements AgentProvider {
     upToMessageId?: string;
     boundary?: ProviderForkBoundary;
     title?: string;
-  }): Promise<{ sessionId: string }> {
+  }): Promise<{ sessionId: string; filePath: string }> {
     if (options.boundary && options.boundary.kind !== "entry") {
       throw new Error("Pi fork requires an entry boundary");
     }
@@ -451,7 +451,7 @@ export class PiProvider implements AgentProvider {
           ? options.boundary.entryId
           : options.upToMessageId,
     });
-    return { sessionId: fork.sessionId };
+    return fork;
   }
 
   /**

@@ -1,6 +1,6 @@
 import { type Server, createServer } from "node:http";
 import { getRequestListener } from "@hono/node-server";
-import type Database from "better-sqlite3";
+import type { SqliteDatabase } from "@yep-anywhere/shared/sqlite";
 import pino, { type Logger } from "pino";
 import { type BrokerRateLimitOptions, createBrokerApp } from "./app.js";
 import type { TrustedProxy } from "./client-ip.js";
@@ -14,7 +14,7 @@ export interface PushBrokerServerOptions {
   port?: number;
   dataDir?: string;
   inMemoryDb?: boolean;
-  database?: Database.Database;
+  database?: SqliteDatabase;
   logger?: Logger;
   trustedProxies?: TrustedProxy[];
   rateLimits?: Partial<BrokerRateLimitOptions>;
@@ -26,7 +26,7 @@ export interface PushBrokerServerOptions {
 export interface PushBrokerServer {
   server: Server;
   port: number;
-  db: Database.Database;
+  db: SqliteDatabase;
   repository: PushRepository;
   provider: PushProvider;
   close(): Promise<void>;

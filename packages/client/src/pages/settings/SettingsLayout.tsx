@@ -1,4 +1,5 @@
 import {
+  SERVER_CAPABILITIES,
   DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
@@ -7,6 +8,7 @@ import {
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import {
+  lazy,
   useCallback,
   useDeferredValue,
   useEffect,
@@ -25,25 +27,9 @@ import {
   getSettingsCategories,
 } from "../../i18n-settings";
 import { MainContent, useNavigationLayout } from "../../layouts";
-import { AboutSettings } from "./AboutSettings";
-import { AgentContextSettings } from "./AgentContextSettings";
-import { AppearanceSettings } from "./AppearanceSettings";
-import { CacheMissBillingSettings } from "./CacheMissBillingSettings";
-import { DevelopmentSettings } from "./DevelopmentSettings";
-import { DevicesSettings } from "./DevicesSettings";
-import { EmulatorSettings } from "./EmulatorSettings";
-import { EnvironmentSettings } from "./EnvironmentSettings";
-import { LifecycleWebhooksSettings } from "./LifecycleWebhooksSettings";
-import { LocalAccessSettings } from "./LocalAccessSettings";
-import { MessageDeliverySettings } from "./MessageDeliverySettings";
-import { ModelSettings } from "./ModelSettings";
-import { NotificationsSettings } from "./NotificationsSettings";
-import { PerformanceSettings } from "./PerformanceSettings";
-import { ProvidersSettings } from "./ProvidersSettings";
-import { RemoteAccessSettings } from "./RemoteAccessSettings";
-import { RemoteExecutorsSettings } from "./RemoteExecutorsSettings";
 import { SettingsBackupActions } from "./SettingsBackupActions";
 import { SettingsCategoryItem } from "./SettingsCategoryItem";
+import { SettingsPane } from "./SettingsPane";
 import {
   SettingsSearchBar,
   useSettingsSearchMatchValues,
@@ -59,35 +45,109 @@ import {
   useSettingsUndoRegistration,
 } from "./SettingsUndoContext";
 import { SettingsUndoButton } from "./SettingsUndoButton";
-import { SpeechSettings } from "./SpeechSettings";
-import { SourceControlSettings } from "./SourceControlSettings";
-import { StorageSettings } from "./StorageSettings";
-import { ToolbarSettings } from "./ToolbarSettings";
 import type { SettingsCategory } from "./types";
 
 // Map category IDs to their components
 const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
-  appearance: AppearanceSettings,
-  performance: PerformanceSettings,
-  toolbar: ToolbarSettings,
-  model: ModelSettings,
-  "cache-miss-billing": CacheMissBillingSettings,
-  "message-delivery": MessageDeliverySettings,
-  "source-control": SourceControlSettings,
-  storage: StorageSettings,
-  "agent-context": AgentContextSettings,
-  notifications: NotificationsSettings,
-  webhooks: LifecycleWebhooksSettings,
-  devices: DevicesSettings,
-  "local-access": LocalAccessSettings,
-  remote: RemoteAccessSettings,
-  providers: ProvidersSettings,
-  speech: SpeechSettings,
-  "remote-executors": RemoteExecutorsSettings,
-  emulator: EmulatorSettings,
-  environment: EnvironmentSettings,
-  about: AboutSettings,
-  development: DevelopmentSettings,
+  appearance: lazy(() =>
+    import("./AppearanceSettings").then((m) => ({
+      default: m.AppearanceSettings,
+    })),
+  ),
+  performance: lazy(() =>
+    import("./PerformanceSettings").then((m) => ({
+      default: m.PerformanceSettings,
+    })),
+  ),
+  toolbar: lazy(() =>
+    import("./ToolbarSettings").then((m) => ({ default: m.ToolbarSettings })),
+  ),
+  model: lazy(() =>
+    import("./ModelSettings").then((m) => ({ default: m.ModelSettings })),
+  ),
+  "cache-miss-billing": lazy(() =>
+    import("./CacheMissBillingSettings").then((m) => ({
+      default: m.CacheMissBillingSettings,
+    })),
+  ),
+  "message-delivery": lazy(() =>
+    import("./MessageDeliverySettings").then((m) => ({
+      default: m.MessageDeliverySettings,
+    })),
+  ),
+  "source-control": lazy(() =>
+    import("./SourceControlSettings").then((m) => ({
+      default: m.SourceControlSettings,
+    })),
+  ),
+  issues: lazy(() =>
+    import("./IssueSettings").then((m) => ({ default: m.IssueSettings })),
+  ),
+  "computer-control": lazy(() =>
+    import("./ComputerControlSettings").then((m) => ({
+      default: m.ComputerControlSettings,
+    })),
+  ),
+  storage: lazy(() =>
+    import("./StorageSettings").then((m) => ({ default: m.StorageSettings })),
+  ),
+  "agent-context": lazy(() =>
+    import("./AgentContextSettings").then((m) => ({
+      default: m.AgentContextSettings,
+    })),
+  ),
+  notifications: lazy(() =>
+    import("./NotificationsSettings").then((m) => ({
+      default: m.NotificationsSettings,
+    })),
+  ),
+  webhooks: lazy(() =>
+    import("./LifecycleWebhooksSettings").then((m) => ({
+      default: m.LifecycleWebhooksSettings,
+    })),
+  ),
+  devices: lazy(() =>
+    import("./DevicesSettings").then((m) => ({ default: m.DevicesSettings })),
+  ),
+  "local-access": lazy(() =>
+    import("./LocalAccessSettings").then((m) => ({
+      default: m.LocalAccessSettings,
+    })),
+  ),
+  remote: lazy(() =>
+    import("./RemoteAccessSettings").then((m) => ({
+      default: m.RemoteAccessSettings,
+    })),
+  ),
+  providers: lazy(() =>
+    import("./ProvidersSettings").then((m) => ({
+      default: m.ProvidersSettings,
+    })),
+  ),
+  speech: lazy(() =>
+    import("./SpeechSettings").then((m) => ({ default: m.SpeechSettings })),
+  ),
+  "remote-executors": lazy(() =>
+    import("./RemoteExecutorsSettings").then((m) => ({
+      default: m.RemoteExecutorsSettings,
+    })),
+  ),
+  emulator: lazy(() =>
+    import("./EmulatorSettings").then((m) => ({ default: m.EmulatorSettings })),
+  ),
+  environment: lazy(() =>
+    import("./EnvironmentSettings").then((m) => ({
+      default: m.EnvironmentSettings,
+    })),
+  ),
+  about: lazy(() =>
+    import("./AboutSettings").then((m) => ({ default: m.AboutSettings })),
+  ),
+  development: lazy(() =>
+    import("./DevelopmentSettings").then((m) => ({
+      default: m.DevelopmentSettings,
+    })),
+  ),
 };
 
 // 700px leaves 685px after the stable scrollbar gutter: 32px shell padding,
@@ -219,6 +279,14 @@ export function SettingsLayout() {
     ...getSettingsCategories((key) => t(key as never)),
   ];
   if (
+    !serverHasCapability(versionInfo, SERVER_CAPABILITIES.computerControl.name)
+  ) {
+    const index = categories.findIndex(
+      (item) => item.id === "computer-control",
+    );
+    if (index >= 0) categories.splice(index, 1);
+  }
+  if (
     !serverHasCapability(versionInfo, GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY)
   ) {
     const sourceControlIndex = categories.findIndex(
@@ -237,6 +305,15 @@ export function SettingsLayout() {
       0,
       getEmulatorCategory((key) => t(key as never)),
     );
+  }
+  if (
+    !serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.issueSessionAssociations.name,
+    )
+  ) {
+    const index = categories.findIndex((item) => item.id === "issues");
+    if (index >= 0) categories.splice(index, 1);
   }
   // Two-column settings can fit before the persistent app sidebar can.
   const effectiveCategory =
@@ -437,7 +514,9 @@ export function SettingsLayout() {
             <SettingsJumpTargetProvider value={jumpTargetValue}>
               <SettingsPaneTitleProvider value={setPaneTitle}>
                 <SettingsUndoProvider value={setUndoRegistration}>
-                  {CategoryComponent && <CategoryComponent />}
+                  <SettingsPane key={effectiveCategory}>
+                    {CategoryComponent && <CategoryComponent />}
+                  </SettingsPane>
                 </SettingsUndoProvider>
               </SettingsPaneTitleProvider>
             </SettingsJumpTargetProvider>
@@ -483,7 +562,9 @@ export function SettingsLayout() {
               <SettingsJumpTargetProvider value={jumpTargetValue}>
                 <SettingsPaneTitleProvider value={setPaneTitle}>
                   <SettingsUndoProvider value={setUndoRegistration}>
-                    {CategoryComponent && <CategoryComponent />}
+                    <SettingsPane key={effectiveCategory}>
+                      {CategoryComponent && <CategoryComponent />}
+                    </SettingsPane>
                   </SettingsUndoProvider>
                 </SettingsPaneTitleProvider>
               </SettingsJumpTargetProvider>

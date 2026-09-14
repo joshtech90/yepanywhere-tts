@@ -339,9 +339,9 @@ describe("ToolbarSettings", () => {
   it("shows a presence slider for every control row", () => {
     render(<ToolbarSettings />);
 
-    // 15 control-presence sliders plus Conversation View history and waveform
-    // button-background opacity.
-    expect(screen.getAllByRole("slider")).toHaveLength(17);
+    // 15 control-presence sliders plus Conversation View history, waveform
+    // button-background opacity, and question reminder duration.
+    expect(screen.getAllByRole("slider")).toHaveLength(18);
     // Overflow-supported controls get the full notch scale...
     expect(
       screen

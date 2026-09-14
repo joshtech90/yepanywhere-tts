@@ -66,6 +66,7 @@ export interface CachedSessionSummary {
   forkedFromSessionId?: string;
   /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
+  asyncQuestions?: SessionSummary["asyncQuestions"];
 }
 
 export interface SessionIndexState {
@@ -825,6 +826,7 @@ export class SessionIndexService implements ISessionIndexService {
       parentSessionKind: cached.parentSessionKind,
       forkedFromSessionId: cached.forkedFromSessionId,
       lastAgentText: cached.lastAgentText,
+      asyncQuestions: cached.asyncQuestions,
     };
   }
 
@@ -848,6 +850,7 @@ export class SessionIndexService implements ISessionIndexService {
       parentSessionKind: summary.parentSessionKind,
       forkedFromSessionId: summary.forkedFromSessionId,
       lastAgentText: summary.lastAgentText,
+      asyncQuestions: summary.asyncQuestions,
     };
   }
 
@@ -2056,6 +2059,7 @@ export class SessionIndexService implements ISessionIndexService {
         contextUsage: cached.contextUsage,
         model: cached.model,
         lastAgentText: cached.lastAgentText,
+        asyncQuestions: cached.asyncQuestions,
         timestamp,
       });
     }
@@ -2247,6 +2251,7 @@ export class SessionIndexService implements ISessionIndexService {
     projectId: UrlProjectId,
     sessionId: string,
     reader: ISessionReader,
+    options?: { acceptAppendedFile?: boolean },
   ): Promise<SessionSummary | null> {
     const scopeKey = this.getScopeKey(sessionDir, reader);
     const index = await this.loadIndex(sessionDir, projectId, reader);
@@ -2271,10 +2276,17 @@ export class SessionIndexService implements ISessionIndexService {
       return null;
     }
 
-    if (
-      cached.fileMtime !== stats.mtimeMs ||
-      cached.indexedBytes !== stats.size
-    ) {
+    const unchanged =
+      cached.fileMtime === stats.mtimeMs && cached.indexedBytes === stats.size;
+    // An append-only transcript that has grown still has an accurate indexed
+    // prefix. A shrunken file, or one whose size held while its mtime moved,
+    // was rewritten rather than appended to, so the index describes different
+    // bytes and cannot be trusted at all.
+    const appendedOnly =
+      options?.acceptAppendedFile === true &&
+      stats.size > cached.indexedBytes &&
+      stats.mtimeMs >= cached.fileMtime;
+    if (!unchanged && !appendedOnly) {
       return null;
     }
 

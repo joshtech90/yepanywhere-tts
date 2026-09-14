@@ -8,12 +8,17 @@
 Topic: portable-transcript-compiler
 
 Status: Architecture direction approved; the internal web-only foundation is
-complete. A native Conversation-view renderer is now the selected second
-consumer, but its bounded input, projection ABI, runtime boundary, and
-compatibility policy still require a separately approved implementation plan.
+complete. The 2026-09-12 consumer sequence starts with a minimal multi-server web
+demo of a server-owned Simple Client API, followed closely by Android Compose.
+The offline TypeScript/Kotlin schema and bounded server Conversation producer
+are implemented. The semantic core now lives in the shared package; live
+consumers and compatibility review remain open. iOS is deferred. The
+internal web output is not a published native contract.
 
 See also:
 
+- [simple-client-api](simple-client-api.md) — current web/Android API direction,
+  message-based limits, and server-owned Conversation views;
 - [provider-output-contract](provider-output-contract.md) — the current
   provider-normalized message contract;
 - [session-detail-data-layer](session-detail-data-layer.md) — the canonical
@@ -65,7 +70,43 @@ No later migration step is authorized by this checkpoint. A human must first
 identify a real second consumer and choose the bounded input, minimum projection
 contract, package/runtime target, and compatibility policy.
 
-## Native Consumer Direction (2026-08-02)
+## Current Consumer Sequence (2026-09-12)
+
+The [Simple Client API](simple-client-api.md) is the selected next application
+of this boundary. A minimal web demo provides fast iteration on real multi-YA
+server summaries, Conversation detail, and machine/project/issue sidebar
+grouping. Kotlin/Compose follows closely as a consumer of the same generated
+schema and fixture corpus, before web behavior stabilizes. iOS follows later
+with separately scoped transport and schema work.
+Clients intentionally use a new small state machine rather than adopting the
+existing web session-detail logic.
+
+These clients consume finished server projections. A client-bundled portable
+compiler remains a possible broader architecture, not a prerequisite for this
+experiment. Public limits use logical user/agent message counts, not turns;
+history and reconnect bookkeeping belong below the simple screen-facing API.
+The [implementation plan](../docs/tactical/130-simple-client-api-and-three-client-demo.md)
+owns the exact schema, history-scope, transport, and compatibility decisions.
+This sequencing supersedes the native-first prototype order recorded below.
+
+## Shared Server Consumer Checkpoint (2026-09-12)
+
+The compiler stages, normalized structural Message type, semantic row types and
+small parsers have moved to `packages/shared/src/transcript`. Existing web
+callers import their owning shared modules; web caching, previous-row identity
+stabilization, browser diagnostics, DOM annotations and renderers remain local.
+The extraction creates one compiler owner, with no forwarding facade or second
+web pipeline. These package interfaces remain internal and do not promote
+`RenderItem[]` into a native wire contract.
+
+The server's experimental Conversation producer uses that core and the existing
+two-compaction selector, then groups logical messages and selects bounded
+windows. The [Simple Client API checkpoint](simple-client-api.md#implemented-projection-checkpoint-2026-09-12)
+owns its observable behavior and evidence limits. This completes the package
+seam and pure projection portion of plan 130's second step; acquisition,
+subscription lifecycle, compatibility approval and live clients remain ahead.
+
+## Original Native Consumer Direction (2026-08-02)
 
 The real second consumer is now identified: an Android Compose companion whose
 default session detail is the compact Conversation view, followed later by a

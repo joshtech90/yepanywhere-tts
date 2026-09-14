@@ -8,9 +8,14 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  buildPublicShareRawFileApiPath,
+  usePublicShareContext,
+} from "../contexts/PublicShareContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useI18n } from "../i18n";
 import { useRemoteImage } from "../hooks/useRemoteImage";
+import { fetchPublicShareBlobViaRelay } from "../lib/publicShareRelay";
 import { loadCachedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import {
   type AttachmentHoverBox,
@@ -162,10 +167,28 @@ function useCachedAttachmentImage(
   const [remoteEnabled, setRemoteEnabled] = useState(false);
   const previewUrlRef = useRef<string | null>(null);
   const fullUrlRef = useRef<string | null>(null);
+  const publicShare = usePublicShareContext();
 
   const remotePath = useMemo(
-    () => getPersistedAttachmentUploadUrl(path, projectId),
-    [path, projectId],
+    () =>
+      publicShare
+        ? path
+          ? buildPublicShareRawFileApiPath(publicShare, path)
+          : null
+        : getPersistedAttachmentUploadUrl(path, projectId),
+    [path, projectId, publicShare],
+  );
+  const fetchSharedBlob = useMemo(
+    () =>
+      publicShare
+        ? (apiPath: string) =>
+            fetchPublicShareBlobViaRelay({
+              path: apiPath,
+              relayUrl: publicShare.relayUrl,
+              relayUsername: publicShare.relayUsername,
+            })
+        : undefined,
+    [publicShare],
   );
 
   useEffect(() => {
@@ -175,6 +198,12 @@ function useCachedAttachmentImage(
     setCacheFullUrl(null);
     setCachePreviewWidth(null);
     setCachePreviewHeight(null);
+
+    if (publicShare) {
+      setLoading(false);
+      setRemoteEnabled(true);
+      return;
+    }
 
     if (previewUrl) {
       setLoading(false);
@@ -254,11 +283,12 @@ function useCachedAttachmentImage(
         fullUrlRef.current = null;
       }
     };
-  }, [attachmentId, path, previewUrl, remotePath]);
+  }, [attachmentId, path, previewUrl, remotePath, publicShare]);
 
   const remote = useRemoteImage(
     remotePath,
     remotePreviewEnabled && remoteEnabled && !previewUrl,
+    fetchSharedBlob,
   );
 
   return {

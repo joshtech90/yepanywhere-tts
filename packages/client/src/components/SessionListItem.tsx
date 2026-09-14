@@ -8,6 +8,7 @@ import {
 } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
+import { SessionAsyncQuestionsButton } from "./SessionAsyncQuestionsButton";
 import type { AgentActivity } from "../hooks/useFileActivity";
 import { useHoverCardSettings } from "../hooks/useHoverCardAppearance";
 import { useSessionHoverCardController } from "../hooks/useSessionHoverCardController";
@@ -89,6 +90,8 @@ interface SessionListItemProps {
   mode: "card" | "compact";
   showProjectName?: boolean;
   showTimestamp?: boolean;
+  /** Hide session management when the enclosing surface owns its actions. */
+  showMenu?: boolean;
   showContextUsage?: boolean;
   showStatusBadge?: boolean;
   showActivityIndicator?: boolean;
@@ -192,6 +195,7 @@ export function SessionListItem({
   mode,
   showProjectName = false,
   showTimestamp = true,
+  showMenu = true,
   showContextUsage = true,
   showStatusBadge = true,
   showActivityIndicator = false,
@@ -300,11 +304,7 @@ export function SessionListItem({
     }
   }, [isEditing]);
 
-  // Local state for optimistic unread toggle
-  const [localHasUnread, setLocalHasUnread] = useState<boolean | undefined>(
-    undefined,
-  );
-  const hasUnread = localHasUnread ?? hasUnreadProp;
+  const hasUnread = hasUnreadProp;
 
   // Handlers for menu actions
   const handleToggleStar = async () => {
@@ -345,7 +345,6 @@ export function SessionListItem({
 
   const handleToggleRead = async () => {
     const newHasUnread = !hasUnread;
-    setLocalHasUnread(newHasUnread);
     try {
       if (newHasUnread) {
         await api.markSessionUnread(sessionId);
@@ -355,7 +354,6 @@ export function SessionListItem({
       onToggleRead?.();
     } catch (err) {
       console.error("Failed to update read status:", err);
-      setLocalHasUnread(undefined); // Revert on error
     }
   };
 
@@ -448,6 +446,24 @@ export function SessionListItem({
 
     return null;
   };
+
+  // Project name and status letter close a compact row. They sit outside the
+  // title area so the hover ... overlay covers only title text, and they stay
+  // their own navigation target rather than disappearing under that overlay.
+  const compactActivityIndicator =
+    mode === "compact" ? getCompactActivityIndicator() : null;
+  const compactTrailing =
+    mode === "compact" &&
+    ((showProjectName && projectName) || compactActivityIndicator) ? (
+      <>
+        {showProjectName && projectName && (
+          <span className="session-list-item__project-compact">
+            {projectName}
+          </span>
+        )}
+        {compactActivityIndicator}
+      </>
+    ) : null;
 
   // Format relative time for card mode
   const formatRelativeTime = (timestamp: string): string => {
@@ -576,6 +592,7 @@ export function SessionListItem({
     isBtwAside && "btw-aside-session",
     isSelected && "selected",
     isArchived && "archived",
+    mode === "compact" && styles.compactRow,
     mode === "compact" &&
       providerChildren.length > 0 &&
       styles.compactWithProviderChildren,
@@ -766,172 +783,37 @@ export function SessionListItem({
         </button>
       )}
 
-      {isEditing ? (
-        <input
-          ref={renameInputRef}
-          type="text"
-          className="session-rename-input"
-          value={renameValue}
-          onChange={(e) => setRenameValue(e.target.value)}
-          onBlur={handleRenameBlur}
-          onKeyDown={handleRenameKeyDown}
-          disabled={isSaving}
-        />
-      ) : (
-        <Link
-          to={sessionHref}
-          onClick={handleSessionClick}
-          onMouseDown={handleSessionMouseDown}
-          onAuxClick={handleSessionAuxClick}
-          className={`session-list-item__link ${
-            mode === "compact" ? styles.compactLink : ""
-          }`}
-        >
-          {mode === "card" ? (
-            // Card mode: title on one line, meta on second line
-            <>
-              <strong
-                className="session-list-item__title"
-                {...titleTooltipAttributes}
-              >
-                {isStarred && <StarIcon filled size={12} />}
-                {showCardThinkingIndicator && <ThinkingIndicator />}
-                {isBtwAside && (
-                  // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
-                  <span
-                    className="session-badge session-badge-btw"
-                    title={
-                      parentHref
-                        ? "Open parent session with this /btw aside visible"
-                        : "/btw aside session"
-                    }
-                    role={parentHref ? "link" : undefined}
-                    tabIndex={parentHref ? 0 : undefined}
-                    onClick={handleBtwBadgeClick}
-                    onKeyDown={handleBtwBadgeKeyDown}
-                  >
-                    /btw
-                  </span>
-                )}
-                <span>{visibleTitle}</span>
-                {hasDraft && <span className="session-draft-badge">Draft</span>}
-                {hasProjectQueue && (
-                  <span
-                    className="session-project-queue-badge"
-                    title={t("projectQueueSidebarBadge")}
-                  >
-                    Q
-                  </span>
-                )}
-                {isArchived && (
-                  <span className="session-archived-badge">Archived</span>
-                )}
-              </strong>
-              <span className="session-list-item__meta">
-                {provider && (
-                  <ProviderBadge
-                    provider={provider}
-                    model={model}
-                    className="session-list-item__provider-badge"
-                  />
-                )}
-                {showProjectName && projectName && (
-                  <span className="session-list-item__project">
-                    {projectName}
-                  </span>
-                )}
-                {showTimestamp && updatedAt && formatRelativeTime(updatedAt)}
-                {briefAge && (
-                  <span
-                    className="session-list-item__age"
-                    title={t("sessionListAgeTitle")}
-                  >
-                    Created {briefAge} ago
-                  </span>
-                )}
-                {(userTurnCount != null || systemTurnCount != null) && (
-                  <span
-                    className="session-list-item__turns"
-                    title="User / system (assistant) turns (cached)"
-                  >
-                    U:{userTurnCount ?? 0} S:{systemTurnCount ?? 0}
-                  </span>
-                )}
-                {executor && (
-                  <span
-                    className="session-badge session-badge-executor"
-                    title={`Running on ${executor}`}
-                  >
-                    {executor}
-                  </span>
-                )}
-                {showContextUsage && (
-                  <ContextUsageIndicator usage={contextUsage} size={14} />
-                )}
-                {customBadge && (
-                  <span className={`inbox-item-badge ${customBadge.className}`}>
-                    {customBadge.label}
-                  </span>
-                )}
-                {showStatusBadge && status && (
-                  <SessionStatusBadge
-                    status={status}
-                    pendingInputType={pendingInputType}
-                    hasUnread={hasUnread}
-                    activity={activity}
-                  />
-                )}
-              </span>
-              {providerChildren.length > 0 && (
-                <span
-                  className="session-list-item__provider-children"
-                  role="list"
-                  aria-label={providerChildrenLabel}
-                >
-                  {providerChildren.map((child) => (
-                    <span key={child.id} role="listitem">
-                      <ProviderChildNavTarget
-                        className={`session-list-item__provider-child ${styles.providerChildLink}`}
-                        href={providerChildSessionHref(
-                          basePath,
-                          projectId,
-                          sessionId,
-                          child.id,
-                        )}
-                      >
-                        <span aria-hidden>↳</span>
-                        <span className="session-list-item__provider-child-title">
-                          {providerChildTitle(
-                            child,
-                            t("providerChildFallback"),
-                          )}
-                        </span>
-                        {child.agentType &&
-                          child.agentType !==
-                            providerChildTitle(
-                              child,
-                              t("providerChildFallback"),
-                            ) && (
-                            <span className="session-list-item__provider-child-type">
-                              {child.agentType}
-                            </span>
-                          )}
-                      </ProviderChildNavTarget>
-                    </span>
-                  ))}
-                </span>
-              )}
-            </>
-          ) : (
-            // Compact mode: single line with badges
-            <>
-              <span className="session-list-item__title-row">
-                {isStarred && <StarIcon filled />}
-                <span
-                  className="session-list-item__title-text"
+      <div className={styles.body}>
+        {isEditing ? (
+          <input
+            ref={renameInputRef}
+            type="text"
+            className="session-rename-input"
+            value={renameValue}
+            onChange={(e) => setRenameValue(e.target.value)}
+            onBlur={handleRenameBlur}
+            onKeyDown={handleRenameKeyDown}
+            disabled={isSaving}
+          />
+        ) : (
+          <Link
+            to={sessionHref}
+            onClick={handleSessionClick}
+            onMouseDown={handleSessionMouseDown}
+            onAuxClick={handleSessionAuxClick}
+            className={`session-list-item__link ${
+              mode === "compact" ? styles.compactLink : ""
+            }`}
+          >
+            {mode === "card" ? (
+              // Card mode: title on one line, meta on second line
+              <>
+                <strong
+                  className="session-list-item__title"
                   {...titleTooltipAttributes}
                 >
-                  {isNewSession && <ThinkingIndicator />}
+                  {isStarred && <StarIcon filled size={12} />}
+                  {showCardThinkingIndicator && <ThinkingIndicator />}
                   {isBtwAside && (
                     // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                     <span
@@ -950,68 +832,224 @@ export function SessionListItem({
                     </span>
                   )}
                   <span>{visibleTitle}</span>
+                  {hasDraft && (
+                    <span className="session-draft-badge">Draft</span>
+                  )}
+                  {hasProjectQueue && (
+                    <span
+                      className="session-project-queue-badge"
+                      title={t("projectQueueSidebarBadge")}
+                    >
+                      Q
+                    </span>
+                  )}
+                  {isArchived && (
+                    <span className="session-archived-badge">Archived</span>
+                  )}
+                </strong>
+                <span className="session-list-item__meta">
+                  {provider && (
+                    <ProviderBadge
+                      provider={provider}
+                      model={model}
+                      className="session-list-item__provider-badge"
+                    />
+                  )}
+                  {showProjectName && projectName && (
+                    <span className="session-list-item__project">
+                      {projectName}
+                    </span>
+                  )}
+                  {showTimestamp && updatedAt && formatRelativeTime(updatedAt)}
+                  {briefAge && (
+                    <span
+                      className="session-list-item__age"
+                      title={t("sessionListAgeTitle")}
+                    >
+                      Created {briefAge} ago
+                    </span>
+                  )}
+                  {(userTurnCount != null || systemTurnCount != null) && (
+                    <span
+                      className="session-list-item__turns"
+                      title="User / system (assistant) turns (cached)"
+                    >
+                      U:{userTurnCount ?? 0} S:{systemTurnCount ?? 0}
+                    </span>
+                  )}
+                  {executor && (
+                    <span
+                      className="session-badge session-badge-executor"
+                      title={`Running on ${executor}`}
+                    >
+                      {executor}
+                    </span>
+                  )}
+                  {showContextUsage && (
+                    <ContextUsageIndicator usage={contextUsage} size={14} />
+                  )}
+                  {customBadge && (
+                    <span
+                      className={`inbox-item-badge ${customBadge.className}`}
+                    >
+                      {customBadge.label}
+                    </span>
+                  )}
+                  {showStatusBadge && status && (
+                    <SessionStatusBadge
+                      status={status}
+                      pendingInputType={pendingInputType}
+                      hasUnread={hasUnread}
+                      activity={activity}
+                    />
+                  )}
                 </span>
-                {hasDraft && <span className="session-draft-badge">Draft</span>}
-                {hasProjectQueue && (
-                  <span
-                    className="session-project-queue-badge"
-                    title={t("projectQueueSidebarBadge")}
-                  >
-                    Q
-                  </span>
-                )}
                 {providerChildren.length > 0 && (
                   <span
-                    className={`${styles.providerChildrenBadge} ${
-                      hasUnread ? styles.providerChildrenBadgeUnread : ""
-                    }`}
-                    role="img"
-                    title={providerChildrenTooltip}
+                    className="session-list-item__provider-children"
+                    role="list"
                     aria-label={providerChildrenLabel}
                   >
-                    {providerChildren.length}
+                    {providerChildren.map((child) => (
+                      <span key={child.id} role="listitem">
+                        <ProviderChildNavTarget
+                          className={`session-list-item__provider-child ${styles.providerChildLink}`}
+                          href={providerChildSessionHref(
+                            basePath,
+                            projectId,
+                            sessionId,
+                            child.id,
+                          )}
+                        >
+                          <span aria-hidden>↳</span>
+                          <span className="session-list-item__provider-child-title">
+                            {providerChildTitle(
+                              child,
+                              t("providerChildFallback"),
+                            )}
+                          </span>
+                          {child.agentType &&
+                            child.agentType !==
+                              providerChildTitle(
+                                child,
+                                t("providerChildFallback"),
+                              ) && (
+                              <span className="session-list-item__provider-child-type">
+                                {child.agentType}
+                              </span>
+                            )}
+                        </ProviderChildNavTarget>
+                      </span>
+                    ))}
                   </span>
                 )}
-              </span>
-              {showProjectName && projectName && (
-                <span className="session-list-item__project-compact">
-                  {projectName}
+              </>
+            ) : (
+              // Compact mode: single line with badges
+              <>
+                <span className="session-list-item__title-row">
+                  {isStarred && <StarIcon filled />}
+                  <span
+                    className="session-list-item__title-text"
+                    {...titleTooltipAttributes}
+                  >
+                    {isNewSession && <ThinkingIndicator />}
+                    {isBtwAside && (
+                      // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
+                      <span
+                        className="session-badge session-badge-btw"
+                        title={
+                          parentHref
+                            ? "Open parent session with this /btw aside visible"
+                            : "/btw aside session"
+                        }
+                        role={parentHref ? "link" : undefined}
+                        tabIndex={parentHref ? 0 : undefined}
+                        onClick={handleBtwBadgeClick}
+                        onKeyDown={handleBtwBadgeKeyDown}
+                      >
+                        /btw
+                      </span>
+                    )}
+                    <span>{visibleTitle}</span>
+                  </span>
+                  {hasDraft && (
+                    <span className="session-draft-badge">Draft</span>
+                  )}
+                  {hasProjectQueue && (
+                    <span
+                      className="session-project-queue-badge"
+                      title={t("projectQueueSidebarBadge")}
+                    >
+                      Q
+                    </span>
+                  )}
+                  {providerChildren.length > 0 && (
+                    <span
+                      className={`${styles.providerChildrenBadge} ${
+                        hasUnread ? styles.providerChildrenBadgeUnread : ""
+                      }`}
+                      role="img"
+                      title={providerChildrenTooltip}
+                      aria-label={providerChildrenLabel}
+                    >
+                      {providerChildren.length}
+                    </span>
+                  )}
                 </span>
-              )}
-              {getCompactActivityIndicator()}
-            </>
-          )}
+              </>
+            )}
+          </Link>
+        )}
+
+        {/* Only show menu when provider is available (required for clone) */}
+        {provider && showMenu && (
+          <SessionMenu
+            sessionId={sessionId}
+            projectId={projectId}
+            isStarred={isStarred ?? false}
+            isArchived={isArchived ?? false}
+            hasUnread={hasUnread ?? false}
+            provider={provider}
+            onToggleStar={handleToggleStar}
+            onToggleArchive={handleToggleArchive}
+            onToggleRead={handleToggleRead}
+            onRename={() => {
+              setRenameValue(displayTitle);
+              setIsEditing(true);
+            }}
+            onCopyPrompt={copyPromptText ? handleCopyPrompt : undefined}
+            onOpenNewTab={handleOpenNewTab}
+            onShare={
+              publicShareMenuVisible ? () => setShowShareModal(true) : undefined
+            }
+            useEllipsisIcon
+            overlayTrigger
+            useFixedPositioning
+            onOpenChange={handleMenuOpenChange}
+            className="session-list-item__menu"
+          />
+        )}
+      </div>
+      {compactTrailing && (
+        <Link
+          to={sessionHref}
+          tabIndex={-1}
+          className={styles.compactTrailing}
+          onClick={handleSessionClick}
+          onMouseDown={handleSessionMouseDown}
+          onAuxClick={handleSessionAuxClick}
+        >
+          {compactTrailing}
         </Link>
       )}
-
-      {/* Only show menu when provider is available (required for clone) */}
-      {provider && (
-        <SessionMenu
+      <span className={styles.questions}>
+        <SessionAsyncQuestionsButton
           sessionId={sessionId}
-          projectId={projectId}
-          isStarred={isStarred ?? false}
-          isArchived={isArchived ?? false}
-          hasUnread={hasUnread ?? false}
-          provider={provider}
-          onToggleStar={handleToggleStar}
-          onToggleArchive={handleToggleArchive}
-          onToggleRead={handleToggleRead}
-          onRename={() => {
-            setRenameValue(displayTitle);
-            setIsEditing(true);
-          }}
-          onCopyPrompt={copyPromptText ? handleCopyPrompt : undefined}
-          onOpenNewTab={handleOpenNewTab}
-          onShare={
-            publicShareMenuVisible ? () => setShowShareModal(true) : undefined
-          }
-          useEllipsisIcon
-          overlayTrigger
-          useFixedPositioning
-          onOpenChange={handleMenuOpenChange}
-          className="session-list-item__menu"
+          basePath={basePath}
+          onNavigate={onNavigate}
         />
-      )}
+      </span>
 
       {mode === "compact" &&
         providerChildren.length > 0 &&

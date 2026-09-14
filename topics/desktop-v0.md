@@ -284,6 +284,75 @@ checks remain silent when no update is available or when the check fails.
 The v0 recovery path is a manual reinstall of a signed release. Automatic
 downgrade and unattended background update installation are not claimed.
 
+## Stable and nightly Latest channels
+
+The same installed application offers **Stable** and **Latest (nightly)** in
+its trusted **Check for Updates** window. Stable is the default; choosing
+Latest is explicit. Channel selection is persisted in the desktop data root,
+survives updates and relaunch, and never changes app identity, server data,
+provider configuration, or paired-machine compatibility. Missing or invalid
+channel settings fall back to Stable. The remote dashboard cannot select an
+update endpoint or invoke native installation.
+
+YA adopts the shared [desktop update channels v1 contract](https://github.com/kzahel/desktop-release-kit/blob/main/contract/desktop-update-channels-v1.md).
+The native updater discovers `/desktop/channels` before an explicit channel
+request. Stable alone may fall back to its existing endpoint when discovery
+returns 404. Latest fails clearly when discovery is unavailable or does not
+advertise Latest; it never silently uses Stable. Explicit version responses
+must confirm `X-Update-Channel`, and updater candidates must confirm the same
+`channel`. Requests without a channel retain Stable semantics.
+
+Changing channel immediately discards the old update candidate. Responses
+from earlier checks cannot become installable after a channel change or
+window dismissal. Selection and installation cannot overlap. Only an explicit
+**Update and restart** action downloads, verifies, installs, and relaunches.
+Automatic checks retain the existing startup and daily schedule; they never
+install. Manual checks expose failures and provide retry and channel selection.
+
+Returning to Stable persists immediately and never downgrades. An installed
+Latest newer than Stable reports that it is waiting for Stable to catch up.
+A newer Stable is then offered normally. Immediate rollback is a manual signed
+reinstall; users should back up desktop data first, because backward data
+compatibility is not guaranteed. Reinstall does not imply deleting provider
+sessions or desktop data.
+
+### Nightly publication
+
+Nightly Desktop runs at 02:37 UTC, subject to GitHub scheduling delays. A manual
+run is available; its explicit force option permits rebuilding unchanged
+verified source for recovery or upgrade QA. Scheduled runs skip when no
+packaged desktop inputs differ from the last successfully published Latest.
+Client, server, shared, desktop, bundled helper and build/dependency changes
+qualify; documentation, marketing and test-only changes do not.
+
+The selector chooses the newest eligible `main` commit whose general CI run
+passed and pins that exact SHA throughout the existing desktop packaging
+workflow. Failed or pending newer commits are not packaged merely because they
+are branch HEAD. A missing verified candidate fails rather than publishing
+unverified source. Signing and native checks cover Apple Silicon macOS, Intel
+macOS and Windows x64/ARM64-compatible NSIS. Linux continues through server/web.
+
+For source Stable `M.m.p`, nightly versions are `M.(m+1).S`, where
+`S = Nightly Desktop run number * 100 + attempt`. Attempts are 1–99; major and
+minor are at most 255 and S at most 65535. Exhaustion fails before packaging
+and requires a fresh workflow sequence/release train. For example,
+`0.2.0 < 0.3.101 < 0.3.201 < 0.4.0`. A subsequent deliberate Stable release
+must use a higher numeric version to catch up. CI applies the version to the
+package, Tauri config, Cargo manifest/lock, and bundled runtime manifest without
+committing daily version bumps; the source SHA remains a separate build ID.
+
+Nightlies use immutable `desktop-latest-v<version>` GitHub prereleases; Stable
+keeps `desktop-v<version>` releases and its existing route/key. Publication is
+serialized without cancelling an active signer. Each matrix leg uploads into a
+private draft, with serialized metadata writers. Finalization requires both
+macOS installers, the Windows installer, all updater targets, matching
+signatures cryptographically verified against YA's updater key, and URLs scoped
+to that exact release. Only then does the draft become public. Incomplete runs
+leave the previous successful build available on every platform; published
+releases are never overwritten. GitHub prereleases do not replace its Stable
+“latest release” link. Each release page identifies its version, source commit
+and platform downloads; workflow state distinguishes pending/failed publication.
+
 ## Compatibility Corpus
 
 The bootstrap migration was reviewed on 2026-07-30 against the core 60-day

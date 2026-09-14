@@ -338,3 +338,125 @@ today's Codex heuristic) is **not yet implemented**; the exitCode fix above is
 the point fix. Track that work under bash-result-contract, and require a
 stream+persisted parity fixture whenever a provider gains a new structured
 field.
+
+## Native ingestion through tool display
+
+`server/test/utils/native-tool-display-corpus.ts` feeds deterministic native
+messages into production adapters before the existing parity harness. Server
+checks compare compiled records and data-only prepared values/classification;
+`client/.../tools/__tests__/displayNative.test.tsx` runs the same pairs and mounts
+both outputs with semantic content expectations. A safe raw fallback is a test
+failure for a declared rich/partial specimen. No CLI, credentials, or paid
+provider session is required. The persisted harness includes the production
+TaskList snapshot pass before rich augments.
+
+Coverage ownership (invented values; evidence classes distinguished below):
+
+| Provider seam | Paired tool variants |
+| --- | --- |
+| Claude SDK `convertMessage` / actual JSONL reader and normalization | Read text/dedup/image/PDF/text-only; Write file/ack/rejection; Edit replacement/text-only; Bash; Glob; Grep files/content/count/text-only; TodoWrite; Task complete/async/text-only; search/fetch; questions; plan exit; background shell/task output; kill; task create/update events |
+| Codex app-server raw-response notifications / rollout response items | goals, plan, stdin, image, spawn; multi-call Exec; custom apply_patch; code-mode Web; shell-recognized Read/Grep/heredoc Write/Bash |
+| Codex commandExecution notifications / durable shell calls | Read, Grep and heredoc Write; structured bodies, status and checked values agree |
+| Gemini CLI native events / session JSON | read_file, replace, write_file (including rejection), glob, search_file_content, run_shell_command |
+| OpenCode SSE parts / stored message parts | read, edit, write, glob, grep, bash, todowrite, task, webfetch, websearch, question, apply_patch |
+| Pi AgentSession events / native message-node reader | read, write, edit replacements, bash, grep; both sides use pi-tools normalization |
+| Grok ACP updates / updates-JSONL reader | Write/SearchReplace, ReadFile, and Bash results; both sides use the shared Grok normalizer |
+| Codex OSS command_execution / rollout execution records | Bash and shell-recognized Read, including file actions |
+
+The matrix deliberately does not claim every provider emits every renderer
+variant. Additional Grok tool conversions, non-shell Codex OSS events, Pi custom
+extensions, and Gemini ACP's input-less call notifications retain their owning
+provider adapter tests and universal display fallback; no new rich variant is
+claimed for those paths here. Gemini ACP cannot supply a complete Write input
+from its current notification adapter. Unknown/provider-defined tools retain
+raw inspection without a schema registration. Existing provider tests remain
+responsible for transport wiring and variants not declared above.
+
+Write highlighting, Edit structured-patch-only/changes/target-only records and
+TaskList snapshots have explicit synthetic controls: these are YA augmentation
+or incomplete compatibility shapes rather than fabricated native histories.
+Native file pairs also exercise production highlighting. Registry controls check
+all declared alternate shapes, and browser coverage includes nested rejected
+Write, partial text, pending-to-complete, disclosure, and corrected input.
+
+Two bounded native comparison exceptions are asserted before comparison:
+Grok's reader retains final ACP `status` as extra input metadata while live
+emission keeps it on execution state; Codex commandExecution labels empty output
+`(no output)` while rollout output is empty. Neither changes checked result
+facts, execution status, identity, or rendered content. The corpus does not
+invent durable parent links for independently retained child transcripts;
+compiled ownership is compared as supplied, with nested mounting checked by the
+Task/ToolCallRow suites and browser fixture.
+
+A bounded local census on 2026-09-10 inspected at most 20 recent inactive files
+per provider and 8 MB per file: 3,522 Claude rows (2.1.201–2.1.258) and 8,607
+Codex rows (0.145.0–0.153.2). Only aggregate tool/field/version counts were kept
+locally. Committed fixtures contain invented values, not transcript excerpts.
+Codex adapter source was checked against the declared rust-v0.154.0 reference.
+
+### Evidence added after the display-contract review
+
+The original display-derived native envelopes remain adapter/containment
+controls. They do not establish observed-provider coverage. Independent controls
+in `observed-tool-display-specimens.ts` retain field presence and nesting from
+inactive Claude Code 2.1.223 JSONL: mixed WebSearch link groups/commentary, Read
+text, Read image dimensions, and Edit replacement results. All values are
+invented replacements. The exact source version and evidence class accompany
+each control; live SDK envelopes are reconstructed, not captured.
+
+The independent PDF and partially specified image-dimension controls follow
+installed Agent SDK 0.3.258 declarations; no local specimen for those shapes was
+found in the bounded scan. That scan examined 30 inactive files below 8 MB each
+per provider, excluding files modified in the preceding hour. Claude versions
+were 2.1.201, 2.1.220, 2.1.223, 2.1.238, and 2.1.258; Codex versions were
+0.147.0, 0.149.1, 0.152.1, and 0.153.2. Private source locators and raw observations
+remain in ignored local storage. Tests have no dependency on that storage.
+
+The Claude pairs now pass through `ClaudeSessionReader.getSession`, including
+JSONL parsing and DAG selection. Multi-record prefixes cover a rejected Write
+and a corrected neighboring call, preserving order, identity, error text,
+classification and mounted output. A live unfinished call with active-work
+knowledge is pending; the same frozen JSONL tail without that knowledge is
+incomplete. Terminal prefixes must converge exactly. Separate child JSONL and
+metadata-sidecar controls verify child call order, exclusion from the parent
+history, and the sidecar's launch-tool-to-agent mapping against live SDK parent
+ids. They do not fabricate parent ids inside current child history.
+
+The expanded tests still do not prove every distinct provider conversion or
+observed specimen promised by tactical 124. Remaining coverage is recorded in
+`gaps/tool-display-native-provider-coverage.md`; transport wiring and paid live
+sessions are not exercised by these deterministic conversion/reader controls.
+
+## Captured provider replay baseline — 2026-09-12
+
+[The captured corpus](../packages/server/test/fixtures/captured/README.md) adds
+two real sessions independent of renderer fixtures: Claude Haiku through Agent
+SDK 0.3.258 and Codex Luna through app-server 0.154.0. Each retains the full
+selected native transcript and ordered per-session raw logger messages before
+provider conversion. Explicit string redactions remove capture-machine context
+while preserving JSON structure and call/result relationships.
+
+`packages/server/test/captured-provider.test.ts` uses production native readers,
+provider conversion methods and the existing normalization/augmentation/compiler
+harness. Assertions cover two user inputs in durable history, ordered tool
+calls/results, main-session ownership, completion text, rich/partial preparation,
+failure status, and an observed unfinished Claude live prefix. Missing-file,
+broken-result-reference, and rich-to-raw negative controls must fail their gates.
+Normal root tests discover this corpus and root typechecking includes its code.
+
+These are adapter/reader replays, not full RPC/session-loop recordings or UI
+tests. User submissions are verified from native history, not invented in the
+provider output. No browser subscriber was attached during capture; browser
+micro-deltas, media, compaction, subagents, cold provider resume, and transport
+authentication are outside this slice. Expected facts must be stated from the
+scenario and raw evidence rather than copied from current compiler output.
+
+The corpus exposed and now guards a repaired native Codex failure-status loss.
+A uniquely associated native `CommandExecution` supplies status/exit code for
+the outer code-mode Bash row; both paths must mark the captured exit-code-7
+command failed. Synthetic mutations verify missing/wrong/ambiguous evidence
+does not cause guessed attribution, and native success overrides misleading
+printed JSON. See [the association contract](codex-code-mode-render-convergence.md#2026-09-12-native-code-mode-command-status).
+All positive assertions are ordinary passing tests. Refresh captures in new
+versioned directories; retain old evidence unless retirement is deliberate and
+documented.

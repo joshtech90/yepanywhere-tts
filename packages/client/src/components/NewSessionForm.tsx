@@ -1,3 +1,4 @@
+import { ComputerSessionSelection } from "./ComputerSessionSelection";
 import {
   DEFAULT_PROVIDER,
   SERVER_CAPABILITIES,
@@ -151,8 +152,8 @@ import {
   resizeComposerTextarea,
 } from "../lib/composerTextarea";
 import {
-  clearNewSessionPrefill,
-  getNewSessionPrefill,
+  consumeNewSessionPrefill,
+  consumeNewSessionPrefillToken,
 } from "../lib/newSessionPrefill";
 import { makeAttachmentFileNamesUnique } from "../lib/attachmentFileNames";
 import {
@@ -406,6 +407,7 @@ export function NewSessionForm({
     useState<EffortLevel>("high");
   const [selectedRecapMode, setSelectedRecapMode] = useState<RecapMode>("off");
   const [sandboxLevel, setSandboxLevel] = useState<SessionSandboxLevel>("none");
+  const [computerSelected, setComputerSelected] = useState(false);
   const [sandboxNetworkFirewall, setSandboxNetworkFirewall] = useState(true);
   const [recapAfterSeconds, setRecapAfterSeconds] = useState(
     DEFAULT_RECAP_AFTER_SECONDS,
@@ -1819,16 +1821,27 @@ export function NewSessionForm({
 
   // Check for opt-in new-session prefill on mount.
   useEffect(() => {
-    const prefill = getNewSessionPrefill(clientSummarySourceKey);
-    if (prefill) {
-      setMessage(prefill);
-      clearNewSessionPrefill(clientSummarySourceKey);
-      // Focus and move cursor to end
-      if (textareaRef.current) {
-        textareaRef.current.focus();
-        textareaRef.current.setSelectionRange(prefill.length, prefill.length);
-      }
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("prefillToken");
+    const record = token
+      ? consumeNewSessionPrefillToken(token, clientSummarySourceKey)
+      : consumeNewSessionPrefill(clientSummarySourceKey);
+    if (!record) return;
+    if (token) {
+      params.delete("prefillToken");
+      const search = params.toString();
+      const next = `${window.location.pathname}${search ? `?${search}` : ""}${window.location.hash}`;
+      window.history.replaceState(window.history.state, "", next);
     }
+    pendingTextareaSelectionRef.current = {
+      value: record.text,
+      restore: (textarea) => {
+        const position = record.caret === "start" ? 0 : record.text.length;
+        textarea.focus();
+        textarea.setSelectionRange(position, position);
+      },
+    };
+    setMessage(record.text);
   }, [clientSummarySourceKey, setMessage]);
 
   const handleProjectInputKeyDown = useCallback(
@@ -2186,6 +2199,16 @@ export function NewSessionForm({
         // server requests provider summaries independently.
         const showThinking = getShowThinkingSetting();
         const sessionOptions = {
+          ...(computerSelected &&
+          selectedProvider === "codex" &&
+          !effectiveExecutor &&
+          effectiveSandboxLevel === "none" &&
+          serverHasCapability(
+            versionInfo,
+            SERVER_CAPABILITIES.computerControl.name,
+          )
+            ? { computerControl: true }
+            : {}),
           mode: sessionMode,
           model: selectedModel ?? undefined,
           thinking,
@@ -2452,6 +2475,7 @@ export function NewSessionForm({
     [
       basePath,
       draftControls,
+      computerSelected,
       effectiveEffortLevel,
       effectiveExecutor,
       effectivePermissionMode,
@@ -3151,6 +3175,7 @@ export function NewSessionForm({
 
   const getTranscriptionContext =
     useCallback((): SpeechTranscriptionContext => {
+      const draft = draftControls.getDraft();
       if (!speechTurnIdRef.current) {
         speechTurnIdRef.current = createClientSpeechTurnId();
       }
@@ -3159,8 +3184,14 @@ export function NewSessionForm({
         draftKey: newSessionDraftKey,
         clientTurnId: speechTurnIdRef.current,
         speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
+        textBeforeCursor: draft.slice(
+          0,
+          speechInsertionRangeRef.current?.end ??
+            textareaRef.current?.selectionStart ??
+            draft.length,
+        ),
       };
-    }, [projectId, newSessionDraftKey]);
+    }, [draftControls, projectId, newSessionDraftKey]);
   // Shared input area with toolbar (textarea + attach/voice on left, send on right)
   const inputArea = (
     <>
@@ -4014,6 +4045,16 @@ export function NewSessionForm({
           {helperSideModelSection}
           {promptSuggestionSection}
           {sandboxSection}
+          <ComputerSessionSelection
+            eligible={
+              selectedProvider === "codex" &&
+              !effectiveExecutor &&
+              effectiveSandboxLevel === "none" &&
+              !launch
+            }
+            selected={computerSelected}
+            onChange={setComputerSelected}
+          />
         </div>
       </div>
 
