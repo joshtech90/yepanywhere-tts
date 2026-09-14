@@ -18,10 +18,15 @@ TLS_KEY="$DATA_DIR/tls/cert.key"
 # auf diesem Mac global installierte CLIs (unter anderem Codex/codex-auth).
 export PATH="/opt/homebrew/bin:$HOME/.npm-global/bin:$PATH"
 
-# Node 20 (aendert das normale Node nicht)
-if [ -d /opt/homebrew/opt/node@20/bin ]; then
-  export PATH="/opt/homebrew/opt/node@20/bin:$PATH"
-fi
+# Node fuer den Server festlegen (aendert das normale Node nicht).
+# YA verlangt seit upstream ^22.16 || ^23.11 || >=24.10; node@20 startet nicht
+# mehr. node@24 ist die konservativste erlaubte Version auf diesem Mac.
+for NODE_KELLER in /opt/homebrew/opt/node@24/bin /opt/homebrew/opt/node@26/bin; do
+  if [ -x "$NODE_KELLER/node" ]; then
+    export PATH="$NODE_KELLER:$PATH"
+    break
+  fi
+done
 NODE_BIN="$(command -v node)"
 
 # Google-Stimmen-Datei sicherstellen (fuer Algenib-Vorlesen)
