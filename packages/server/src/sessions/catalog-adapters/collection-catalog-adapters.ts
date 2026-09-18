@@ -75,6 +75,25 @@ async function readFileRow(
       file.sessionId,
       source.reader,
     );
+    // Creation time never changes, so the last one read of it stays true.
+    // The cached summary is unavailable exactly while a transcript is being
+    // appended to, and dropping the field there left every session that an
+    // agent was working in without one, which is where the sidebar needs it.
+    // A session first catalogued while it is being written has no earlier row
+    // to carry one forward from, so ask the index once more for the one fact
+    // an appended-to prefix still states exactly: when the session began.
+    const createdAt =
+      cached?.createdAt ??
+      old?.createdAt ??
+      (
+        await deps.sessionIndexService?.getCachedSessionSummary(
+          source.sessionDir,
+          project.id,
+          file.sessionId,
+          source.reader,
+          { acceptAppendedFile: true },
+        )
+      )?.createdAt;
     const summary = cached
       ? toSessionListSummary(cached)
       : await source.reader.getSessionListSummary?.(
@@ -129,7 +148,7 @@ async function readFileRow(
       projectName: project.name,
       provider: summary?.provider ?? source.provider,
       updatedAt: contentUpdatedAt ?? storageUpdatedAt(),
-      ...(cached ? { createdAt: cached.createdAt } : {}),
+      ...(createdAt ? { createdAt } : {}),
       ...(title !== undefined ? { title: title?.slice(0, 1024) } : {}),
       fidelity: summary || title ? "head" : "identity",
       sourceVersion,

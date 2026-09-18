@@ -106,6 +106,60 @@ describe("sidebar user chronology", () => {
     ]);
   });
 
+  it("places a session whose feed carries only provider write time", () => {
+    // What the retained sidebar collection actually sends for a session an
+    // agent is writing in: no creation time, no reported human turn, and a
+    // browser that has never opened it. Without the write-time fallback both
+    // rows sorted as the epoch and a day of headless work read as missing.
+    setCurrentClientSummarySourceKey(
+      createClientSummaryHostSourceKey("write-time-only"),
+    );
+    const rows: SessionCollectionRecord[] = [
+      {
+        id: "worked-in-today",
+        updatedAt: new Date(Date.now() - 3600000).toISOString(),
+        observedAt: 0,
+      },
+      {
+        id: "quiet-since-last-week",
+        updatedAt: new Date(Date.now() - 7 * 86400000).toISOString(),
+        observedAt: 0,
+      },
+    ];
+    const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
+    expect(result.current.recent.map((row) => row.id)).toEqual([
+      "worked-in-today",
+    ]);
+    expect(result.current.older.map((row) => row.id)).toEqual([
+      "quiet-since-last-week",
+    ]);
+  });
+
+  it("does not let provider write time outrank the reader's own place", () => {
+    const source = createClientSummaryHostSourceKey("reader-wins");
+    setCurrentClientSummarySourceKey(source);
+    const rows: SessionCollectionRecord[] = [
+      {
+        id: "agent-busy",
+        createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        observedAt: 0,
+      },
+      {
+        id: "read-yesterday",
+        createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
+        updatedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
+        observedAt: 0,
+      },
+    ];
+    const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
+    act(() => recordSessionInteraction(source, "read-yesterday"));
+    expect(result.current.recent.map((row) => row.id)).toEqual([
+      "read-yesterday",
+    ]);
+    expect(result.current.older.map((row) => row.id)).toEqual(["agent-busy"]);
+  });
+
   it("ignores malformed stored history and bounds retained interactions", () => {
     const source = "bounded-order";
     localStorage.setItem(`yep-sidebar-interactions:${source}`, '{"bad":true}');

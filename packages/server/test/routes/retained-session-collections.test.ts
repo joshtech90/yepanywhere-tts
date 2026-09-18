@@ -18,6 +18,7 @@ import { collectionCatalogAdapters } from "../../src/sessions/catalog-adapters/c
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import { catalogProjectIdentity } from "../../src/sessions/catalog-adapters/row.js";
 import type { Project } from "../../src/supervisor/types.js";
+import type { ISessionIndexService } from "../../src/indexes/types.js";
 import {
   readClaudeCatalogRecency,
   readClaudeCatalogTitle,
@@ -463,4 +464,207 @@ it("keeps the last accepted rows on failure and stops publication after disposal
   unblock();
   await Promise.all([work, disposal]);
   expect(emitted).not.toHaveBeenCalled();
+});
+
+it("keeps a session's creation time while an agent is appending to it", async () => {
+  // The index cache answers nothing for a transcript that has grown since it
+  // was indexed, which is every session an agent is working in. Dropping the
+  // creation time there left those rows with no timestamp the sidebar orders
+  // by, so a day of headless runs sorted as the epoch and read as missing.
+  dataDir = await mkdtemp(join(tmpdir(), "retained-created-"));
+  const projectPath = join(dataDir, "project");
+  const project: Project = {
+    id: catalogProjectIdentity(projectPath).projectId,
+    path: projectPath,
+    name: "Project",
+    provider: "codex",
+    sessionDir: dataDir,
+    sessionCount: 1,
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: null,
+  };
+  const sessionId = "33333333-3333-4333-8333-333333333333";
+  const createdAt = "2026-09-08T00:00:00.000Z";
+  const file = join(dataDir, `rollout-2026-09-08T00-00-00-${sessionId}.jsonl`);
+  await writeFile(
+    file,
+    `${[
+      {
+        type: "session_meta",
+        payload: { id: sessionId, cwd: projectPath, timestamp: createdAt },
+      },
+      {
+        type: "event_msg",
+        payload: { type: "user_message", message: "Work" },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  const scanner = new ProjectScanner({ projectsDir: join(dataDir, "unused") });
+  vi.spyOn(scanner, "listProjects").mockResolvedValue([project]);
+  const reader = new CodexSessionReader({ sessionsDir: dataDir, projectPath });
+  // Two independent answers, because the adapter asks twice for different
+  // reasons: strictly, for a summary it may quote, and leniently, for the one
+  // fact an appended-to prefix still states exactly.
+  let strictCache = true;
+  const appendedCache = false;
+  const indexedSummary = {
+    id: sessionId,
+    projectId: project.id,
+    title: "Work",
+    fullTitle: "Work",
+    createdAt,
+    updatedAt: createdAt,
+    provider: "codex",
+  };
+  const sessionIndexService = {
+    getCachedSessionSummary: async (
+      _sessionDir: string,
+      _projectId: string,
+      _sessionId: string,
+      _reader: unknown,
+      options?: { acceptAppendedFile?: boolean },
+    ) =>
+      (options?.acceptAppendedFile ? appendedCache : strictCache)
+        ? indexedSummary
+        : null,
+  } as unknown as ISessionIndexService;
+  const bus = new EventBus();
+  collections = new RetainedSessionCollections({
+    dataDir,
+    eventBus: bus,
+    adapters: (rows, signal, paths) =>
+      collectionCatalogAdapters(
+        {
+          scanner,
+          sessionIndexService,
+          readerFactory: () => {
+            throw new Error("Unexpected Claude reader");
+          },
+          codexSessionsDir: dataDir,
+          codexReaderFactory: () => reader,
+          geminiScanner: {
+            getHashToCwd: async () => {
+              throw new Error("Unexpected Gemini lookup");
+            },
+          },
+          getCatalogFamilies: () => ["codex"],
+        },
+        rows,
+        signal,
+        paths,
+      ),
+  });
+  await collections.refresh();
+  expect((await collections.read()).rows[0]?.createdAt).toBe(createdAt);
+
+  strictCache = false;
+  await appendFile(
+    file,
+    `${JSON.stringify({
+      type: "event_msg",
+      payload: { type: "user_message", message: "More work" },
+    })}\n`,
+  );
+  bus.emit({
+    type: "file-change",
+    provider: "codex",
+    path: file,
+    relativePath: `rollout-2026-09-08T00-00-00-${sessionId}.jsonl`,
+    fileType: "session",
+    changeType: "modify",
+    timestamp: new Date().toISOString(),
+  });
+  await collections.refresh();
+  expect((await collections.read()).rows[0]?.createdAt).toBe(createdAt);
+});
+
+it("takes a creation time from the index for a session first seen mid-run", async () => {
+  // The first catalog pass over a session an agent is already writing in has
+  // no earlier row to carry a creation time forward from, and the strict cache
+  // read refuses a grown transcript. The indexed prefix still states exactly
+  // when the session began.
+  dataDir = await mkdtemp(join(tmpdir(), "retained-created-first-"));
+  const projectPath = join(dataDir, "project");
+  const project: Project = {
+    id: catalogProjectIdentity(projectPath).projectId,
+    path: projectPath,
+    name: "Project",
+    provider: "codex",
+    sessionDir: dataDir,
+    sessionCount: 1,
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: null,
+  };
+  const sessionId = "44444444-4444-4444-8444-444444444444";
+  const createdAt = "2026-09-08T00:00:00.000Z";
+  const file = join(dataDir, `rollout-2026-09-08T00-00-00-${sessionId}.jsonl`);
+  await writeFile(
+    file,
+    `${[
+      {
+        type: "session_meta",
+        payload: { id: sessionId, cwd: projectPath, timestamp: createdAt },
+      },
+      {
+        type: "event_msg",
+        payload: { type: "user_message", message: "Work" },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  const scanner = new ProjectScanner({ projectsDir: join(dataDir, "unused") });
+  vi.spyOn(scanner, "listProjects").mockResolvedValue([project]);
+  const reader = new CodexSessionReader({ sessionsDir: dataDir, projectPath });
+  const sessionIndexService = {
+    getCachedSessionSummary: async (
+      _sessionDir: string,
+      _projectId: string,
+      _sessionId: string,
+      _reader: unknown,
+      options?: { acceptAppendedFile?: boolean },
+    ) =>
+      options?.acceptAppendedFile
+        ? {
+            id: sessionId,
+            projectId: project.id,
+            title: "Work",
+            fullTitle: "Work",
+            createdAt,
+            updatedAt: createdAt,
+            provider: "codex",
+          }
+        : null,
+  } as unknown as ISessionIndexService;
+  collections = new RetainedSessionCollections({
+    dataDir,
+    eventBus: new EventBus(),
+    adapters: (rows, signal, paths) =>
+      collectionCatalogAdapters(
+        {
+          scanner,
+          sessionIndexService,
+          readerFactory: () => {
+            throw new Error("Unexpected Claude reader");
+          },
+          codexSessionsDir: dataDir,
+          codexReaderFactory: () => reader,
+          geminiScanner: {
+            getHashToCwd: async () => {
+              throw new Error("Unexpected Gemini lookup");
+            },
+          },
+          getCatalogFamilies: () => ["codex"],
+        },
+        rows,
+        signal,
+        paths,
+      ),
+  });
+  await collections.refresh();
+  expect((await collections.read()).rows[0]?.createdAt).toBe(createdAt);
 });
