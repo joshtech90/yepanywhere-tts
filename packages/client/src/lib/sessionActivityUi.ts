@@ -175,11 +175,16 @@ export function getSessionActivityUiState({
   const ownsTurn = owner === "self";
   const providerRetained =
     sessionLiveness?.derivedStatus === "verified-waiting-provider";
+  const providerVerifiedIdle =
+    processState === "idle" &&
+    sessionLiveness?.state === "idle" &&
+    sessionLiveness.derivedStatus === "verified-idle";
   const staleStreamMayHideCurrentTurn =
     hasSessionUpdateStream && !sessionUpdatesConnected;
   const processStateIsActive =
     providerRetained || (!latestTurnCompleted && processState !== "idle");
   const latestTurnFallbackActive =
+    !providerVerifiedIdle &&
     !latestTurnCompleted &&
     !latestTurnSettled &&
     (hasPendingToolCallsInLatestTurn || staleStreamMayHideCurrentTurn);
@@ -190,7 +195,7 @@ export function getSessionActivityUiState({
     (providerRetained ||
       (!latestTurnCompleted &&
         (processState === "in-turn" ||
-          (!latestTurnSettled && hasPendingToolCallsInLatestTurn))));
+          (latestTurnFallbackActive && hasPendingToolCallsInLatestTurn))));
 
   return {
     hasPendingToolCalls,

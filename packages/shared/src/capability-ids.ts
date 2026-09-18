@@ -384,6 +384,36 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "session-async-questions",
     introducedIn: "0.8.2",
   },
+  nonHumanUserTurn: {
+    id: 72,
+    direction: "server",
+    name: "non-human-user-turn",
+    introducedIn: "0.8.2",
+  },
+  sessionContentSearch: {
+    id: 73,
+    direction: "server",
+    name: "session-content-search",
+    introducedIn: "0.8.2",
+  },
+  speechBackendSetup: {
+    id: 74,
+    direction: "server",
+    name: "speech-backend-setup",
+    introducedIn: "0.8.2",
+  },
+  vhostAppControl: {
+    id: 75,
+    direction: "server",
+    name: "vhost-app-control",
+    introducedIn: "0.8.2",
+  },
+  vhostBearerAccess: {
+    id: 76,
+    direction: "server",
+    name: "vhost-bearer-access",
+    introducedIn: "0.8.2",
+  },
   projectQueueReadinessCheck: {
     id: 61,
     direction: "server",
@@ -448,6 +478,12 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     id: 67,
     direction: "server",
     name: "codex-cyber-access-program-setting",
+    introducedIn: "0.8.2",
+  },
+  claudeGatewayServices: {
+    id: 72,
+    direction: "server",
+    name: "claude-gateway-services",
     introducedIn: "0.8.2",
   },
 } as const satisfies Record<string, CapabilityIdAllocation>;

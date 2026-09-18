@@ -1,0 +1,40 @@
+.actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 2px;
+}
+.actions > a,
+.actions > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  text-decoration: none;
+  cursor: pointer;
+  box-sizing: border-box;
+}
+.actions > a:hover,
+.actions > button:hover {
+  background: var(--bg-hover);
+}
+.actions > .destructive {
+  color: var(--error-color, #e05252);
+}
+.actions svg {
+  display: block;
+  flex: none;
+  margin: 0;
+}
+@media (pointer: coarse) {
+  .actions > a,
+  .actions > button {
+    min-height: 32px;
+  }
+}

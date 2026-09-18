@@ -1914,6 +1914,8 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
           YEP_BROWSER_DEBUG_AGENT_URL: "http://127.0.0.1/browser-debug/v1",
           YEP_BROWSER_DEBUG_CALLER_TOKEN: "second-boot-token",
           UNRELATED_SECRET: "must-not-pass",
+          PLANNOTATOR_PORT: "19432",
+          AGENT_VHOST_ENV_NAMES: '["PLANNOTATOR_PORT"]',
         }),
       },
       {},
@@ -1932,6 +1934,10 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
         YEP_BROWSER_DEBUG_CALLER_TOKEN: "second-boot-token",
       },
     });
+    expect(environmentEvent.value).toHaveProperty(
+      "browserDebugEnvironment.PLANNOTATOR_PORT",
+      "19432",
+    );
     expect(environmentEvent.value).not.toHaveProperty(
       "browserDebugEnvironment.UNRELATED_SECRET",
     );

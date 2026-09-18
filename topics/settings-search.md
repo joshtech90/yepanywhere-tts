@@ -48,6 +48,18 @@ principle this design follows).
   that leaves search, opens the category pane, scrolls the row into view
   centered, and flashes it briefly (`prefers-reduced-motion` suppresses
   the animation).
+  Clicking non-control row text or background performs the same jump. Nested
+  controls, links, editable content, selected text and caller-handled clicks
+  retain their own behavior. A label row remains a checkbox target; its jump
+  button follows the labeled control so it cannot steal native label activation.
+- **Explicit confirmation.** A setting that deliberately requires Save keeps
+  that action in its matched row or complete matched form section. Single-line
+  fields submit with Enter; multiline editors retain normal newline entry and
+  their visible Save action. Shared `SettingsSection` submission and
+  `SettingsItem` form rows supply native form semantics without changing the
+  owner's validation, disabled state or persistence callback. Immediate controls
+  continue to apply in place. The destination flashes even when no scroll
+  movement is possible.
 - **Section and category matches.** A section-title match surfaces the
   whole section operable (its rows stop filtering individually). A
   category-label match lists the category itself under a "Categories"
@@ -121,18 +133,6 @@ observer recounts results when an asynchronous pane loads dynamic rows. This
 surface is typing-rate, not streaming-rate; no further coalescing is required.
 
 ## Known limitations / candidate refinements
-
-- **Explicit confirmation and larger jump targets are pending.** A setting
-  that deliberately requires confirmation (for example, provider or remote-
-  access connection data) must expose that confirmation inside its search-
-  result block: Enter submits the edit, and a visible Save action is reachable
-  there. Separately, clicking a result row's non-control background should
-  perform the existing jump-to-setting behavior without stealing clicks from
-  the live control or interfering with text selection. The destination setting
-  remains centered when space permits and always receives the temporary
-  outline flash, including when no scroll movement is possible. This pending
-  work is tracked by
-  [`settings-search-confirmation-and-row-navigation`](../gaps/settings-search-confirmation-and-row-navigation.md).
 
 - Rows using a custom `info` body match on their declared strings but do
   not highlight inside the custom markup.

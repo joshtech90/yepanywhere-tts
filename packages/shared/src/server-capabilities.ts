@@ -12,6 +12,16 @@ import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 export type ServerCapabilityKind = "permanent" | "transitional";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  vhostBearerAccess: {
+    name: "vhost-bearer-access",
+    index: CAPABILITY_ID_ALLOCATIONS.vhostBearerAccess.id,
+    introducedIn: "0.8.2",
+  },
+  vhostAppControl: {
+    name: "vhost-app-control",
+    index: CAPABILITY_ID_ALLOCATIONS.vhostAppControl.id,
+    introducedIn: "0.8.2",
+  },
   computerControlReleases: {
     name: "computer-control-releases",
     index: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
@@ -189,6 +199,70 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  speechBackendSetup: {
+    id: CAPABILITY_ID_ALLOCATIONS.speechBackendSetup.id,
+    name: "speech-backend-setup",
+    kind: "permanent",
+    area: "speech",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Persist local STT backends in server settings, install pixi runtimes and model weights, and request a safe YA restart.",
+    clientFallback:
+      "Hide the Speech backends enable/install table and make no setup, install, or speech-restart requests.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "GET /api/speech/backends",
+        "POST /api/speech/backends/:id/install",
+        "POST /api/speech/backends/restart",
+      ],
+      // Both route modules are shared with older capabilities, not wholly owned.
+      requestFields: ["speechVoiceBackends"],
+      responseFields: ["settings.speechVoiceBackends"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers only enable local STT from YEP_VOICE_BACKENDS and have no install or settings-union routes.",
+    },
+  },
+  sessionContentSearch: {
+    id: CAPABILITY_ID_ALLOCATIONS.sessionContentSearch.id,
+    name: "session-content-search",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description: "Bounded, progressive search of visible session turn text.",
+    clientFallback:
+      "Keep title-only search; disable turn fields with upgrade guidance and send no content-search requests.",
+    serverContract: {
+      routes: ["POST /api/sessions/content-search"],
+      routeModules: ["packages/server/src/routes/session-content-search.ts"],
+      requestFields: [
+        "sessionId",
+        "query",
+        "roles",
+        "after",
+        "before",
+        "cursor",
+      ],
+      responseFields: [
+        "matches",
+        "cursor",
+        "done",
+        "partial",
+        "unavailable",
+        "bytesRead",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers have no bounded transcript-search endpoint.",
+    },
+  },
   computerControlReleases: {
     id: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
     name: "computer-control-releases",
@@ -414,6 +488,33 @@ export const SERVER_CAPABILITIES = {
       reason: "Older servers lack the commentary rendering endpoint.",
     },
   },
+  nonHumanUserTurn: {
+    id: CAPABILITY_ID_ALLOCATIONS.nonHumanUserTurn.id,
+    name: "non-human-user-turn",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Durable cross-session user-turn attention and exact-turn acknowledgement.",
+    clientFallback:
+      "Hide delivery flags and make no delivery acknowledgement request.",
+    serverContract: {
+      requestFields: [
+        "messageMetadata.sourceSessionId",
+        "nonHumanUserTurnMessageId",
+      ],
+      responseFields: [
+        "session.nonHumanUserTurn",
+        "inboxItem.nonHumanUserTurn",
+      ],
+      events: ["session-metadata-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers do not retain cross-session delivery provenance.",
+    },
+  },
   sessionAsyncQuestions: {
     id: CAPABILITY_ID_ALLOCATIONS.sessionAsyncQuestions.id,
     name: "session-async-questions",
@@ -462,6 +563,59 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Artifact listener availability depends on explicit operator configuration.",
+    },
+  },
+  vhostBearerAccess: {
+    id: CAPABILITY_ID_ALLOCATIONS.vhostBearerAccess.id,
+    name: "vhost-bearer-access",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.vhostBearerAccess.id,
+    },
+    description:
+      "Durable app-scoped bearer access with explicit public visibility and revocation.",
+    clientFallback:
+      "Show protection unavailable; omit public/revoke controls and make no app-link management request.",
+    serverContract: {
+      routes: [
+        "GET /api/artifacts/vhosts/links",
+        "POST /api/artifacts/vhosts/:name/revoke",
+      ],
+      routeModules: ["packages/server/src/routes/vhostAccess.ts"],
+      responseFields: ["version.artifactViewer.vhosts[].public"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Bearer enforcement and management must roll out together.",
+    },
+  },
+  vhostAppControl: {
+    id: CAPABILITY_ID_ALLOCATIONS.vhostAppControl.id,
+    name: "vhost-app-control",
+    kind: "permanent",
+    area: "remoteAccess",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.vhostAppControl.id,
+    },
+    description:
+      "Identify and stop a configured local app listener on supported hosts.",
+    clientFallback:
+      "Hide Kill; keep viewer dismissal and links; make no listener or stop requests.",
+    serverContract: {
+      routes: [
+        "GET /api/artifacts/vhosts/:name/listener",
+        "POST /api/artifacts/vhosts/:name/stop",
+      ],
+      routeModules: ["packages/server/src/routes/vhostApps.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Local listener identification varies by host support.",
     },
   },
   publicShareSessionChunks: {
@@ -1696,6 +1850,40 @@ export const SERVER_CAPABILITIES = {
         "No maintained client still branches on claude-gateway.",
     },
   },
+  claudeGatewayServices: {
+    id: CAPABILITY_ID_ALLOCATIONS.claudeGatewayServices.id,
+    name: "claude-gateway-services",
+    kind: "transitional",
+    area: "providers",
+    introducedIn: "0.8.2",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.claudeGatewayServices.id,
+    },
+    description:
+      "Server stores a list of model-serving endpoints with per-entry lifecycle commands, declared context and output sizes, harness-narrowing overrides, and CodexOSS opt-in, and mirrors its default entry through the older single-gateway settings.",
+    clientFallback:
+      "Show the single Claude Gateway URL and start-command form, writing only the older claudeGateway* settings.",
+    serverContract: {
+      routes: ["GET /api/settings", "PUT /api/settings", "GET /api/providers"],
+      requestFields: [
+        "settings.gatewayServices",
+        "settings.defaultGatewayServiceId",
+      ],
+      responseFields: [
+        "settings.gatewayServices",
+        "settings.defaultGatewayServiceId",
+      ],
+    },
+    lifecycle: {
+      kind: "transitional",
+      reviewAfter: "2027-03-16",
+      removeClientGateWhen:
+        "The hosted-client compatibility floor excludes servers older than the gateway services list.",
+      removeServerAdvertisementWhen:
+        "No maintained client still branches on claude-gateway-services.",
+    },
+  },
   claudeGatewayAutostart: {
     id: CAPABILITY_ID_ALLOCATIONS.claudeGatewayAutostart.id,
     name: "claude-gateway-autostart",
@@ -2625,6 +2813,10 @@ export const RETAINED_SESSION_COLLECTIONS_CAPABILITY =
   SERVER_CAPABILITIES.retainedSessionCollections.name;
 export const SESSION_ASYNC_QUESTIONS_CAPABILITY =
   SERVER_CAPABILITIES.sessionAsyncQuestions.name;
+export const NON_HUMAN_USER_TURN_CAPABILITY =
+  SERVER_CAPABILITIES.nonHumanUserTurn.name;
+export const SESSION_CONTENT_SEARCH_CAPABILITY =
+  SERVER_CAPABILITIES.sessionContentSearch.name;
 export const ACLI_COMMENTARY_RENDERING_CAPABILITY =
   SERVER_CAPABILITIES.acliCommentaryRendering.name;
 export const PROJECT_QUEUE_CAPABILITY = SERVER_CAPABILITIES.projectQueue.name;
@@ -2704,6 +2896,8 @@ export const CLAUDE_ADDITIONAL_MODELS_CAPABILITY =
   SERVER_CAPABILITIES.claudeAdditionalModels.name;
 
 export const CLAUDE_GATEWAY_CAPABILITY = SERVER_CAPABILITIES.claudeGateway.name;
+export const CLAUDE_GATEWAY_SERVICES_CAPABILITY =
+  SERVER_CAPABILITIES.claudeGatewayServices.name;
 
 export const CLAUDE_GATEWAY_AUTOSTART_CAPABILITY =
   SERVER_CAPABILITIES.claudeGatewayAutostart.name;
@@ -2752,6 +2946,8 @@ export const SESSION_FORK_TURN_INTENTS_CAPABILITY =
   SERVER_CAPABILITIES.sessionForkTurnIntents.name;
 
 export const VOICE_INPUT_CAPABILITY = SERVER_CAPABILITIES.voiceInput.name;
+export const SPEECH_BACKEND_SETUP_CAPABILITY =
+  SERVER_CAPABILITIES.speechBackendSetup.name;
 
 export const DEVICE_BRIDGE_AVAILABLE_CAPABILITY =
   SERVER_CAPABILITIES.deviceBridgeAvailable.name;

@@ -42,6 +42,8 @@ export interface CompactClaudeSummaryNode {
   awaySummaryExcerpt?: string;
   assistantExcerpt?: string;
   assistantToolName?: string;
+  /** A user entry carrying prose: someone wrote into the session here. */
+  humanTurn?: boolean;
 }
 
 interface ParseMetrics {
@@ -209,6 +211,60 @@ export async function readClaudeCatalogTitle(
   }
 }
 
+/**
+ * The tail counterpart of `readClaudeCatalogTitle`: the latest conversation
+ * timestamp a collection row can claim without a full parse.
+ *
+ * Catalog rows are built for sessions the summary index cannot answer for —
+ * every session is dirty for a beat after any append — so their only other
+ * freshness source is file mtime. Claude writes non-conversation rows at
+ * shutdown (an idle reap's `last-prompt`), and an mtime taken from one of
+ * those makes a read session unread and falsely recent. See
+ * `docs/project/2026-07-06-claude-idle-reap-mtime-unread.md`.
+ *
+ * Like `getLastAgentExcerpt`, this scans raw lines from the end rather than
+ * building the DAG, so it approximates the active branch: a dead post-rewind
+ * branch at the tail could win. That is acceptable for a bounded projection
+ * the exact indexed summary replaces as soon as it is warm, and it is strictly
+ * closer than storage time either way. Returns undefined when no conversation
+ * row carries a usable timestamp inside the window, leaving the caller's
+ * storage-time fallback in place.
+ */
+export async function readClaudeCatalogRecency(
+  filePath: string,
+): Promise<string | undefined> {
+  const file = await open(filePath, "r");
+  try {
+    const { size } = await file.stat();
+    const windowBytes = Math.min(size, 256 * 1024);
+    const position = size - windowBytes;
+    const buffer = Buffer.alloc(windowBytes);
+    const { bytesRead } = await file.read(buffer, 0, windowBytes, position);
+    const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
+    // A window that starts mid-file opens mid-line; that fragment is not JSON.
+    if (position > 0) lines.shift();
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      let entry: ClaudeSessionEntry;
+      try {
+        entry = JSON.parse(line) as ClaudeSessionEntry;
+      } catch {
+        continue;
+      }
+      if (!entry || typeof entry !== "object") continue;
+      if (!CONVERSATION_TYPES.has(entry.type)) continue;
+      const timestampMs = Date.parse(getTimestamp(entry));
+      if (Number.isFinite(timestampMs)) {
+        return new Date(timestampMs).toISOString();
+      }
+    }
+    return undefined;
+  } finally {
+    await file.close();
+  }
+}
+
 function getAssistantUsage(entry: ClaudeSessionEntry): UsageFields | undefined {
   if (entry.type !== "assistant") return undefined;
   const usage = (entry as { message?: { usage?: UsageFields } }).message?.usage;
@@ -323,6 +379,9 @@ export function addEntryToState(
     ...(assistantParts?.toolName
       ? { assistantToolName: assistantParts.toolName }
       : {}),
+    // The same text test that picks a session's title, reused so one rule
+    // decides what counts as someone writing into the session.
+    ...(getFirstUserTitleCandidate(entry) ? { humanTurn: true } : {}),
   };
 
   state.nodeMap.set(uuid, node);
@@ -584,6 +643,30 @@ function findLastAgentExcerpt(
   return trailingTool ? `⚙ ${trailingTool}` : undefined;
 }
 
+/**
+ * When someone last wrote into this session, as opposed to when the agent last
+ * produced something. Sidebar chronology is stated in the reader's own turns,
+ * so it needs a time that agent work never advances.
+ *
+ * A message another session delivered here reads exactly like a typed one and
+ * counts as one; separating them would need provenance the transcript does not
+ * carry. Tool results do not count: they arrive as user entries, but carry
+ * blocks rather than prose, so the same text test that picks a session's title
+ * rejects them.
+ */
+function findLastHumanTurnAt(
+  activeBranch: CompactClaudeSummaryNode[],
+): string | undefined {
+  for (let i = activeBranch.length - 1; i >= 0; i -= 1) {
+    const node = activeBranch[i];
+    if (!node?.humanTurn) continue;
+    const timestampMs = Date.parse(node.timestamp);
+    if (Number.isFinite(timestampMs))
+      return new Date(timestampMs).toISOString();
+  }
+  return undefined;
+}
+
 function findContentUpdatedAt(
   activeBranch: CompactClaudeSummaryNode[],
   fallback: Date,
@@ -631,7 +714,6 @@ export function buildSummaryFromState(
   const messageCount = activeBranch.filter((node) =>
     CONVERSATION_TYPES.has(node.type),
   ).length;
-  if (messageCount === 0) return null;
 
   const firstUserMessage = state.firstUserTitleContent;
   const fullTitle = firstUserMessage?.trim() || null;
@@ -649,6 +731,7 @@ export function buildSummaryFromState(
     (options.stats.birthtimeMs > 0
       ? options.stats.birthtime.toISOString()
       : options.stats.mtime.toISOString());
+  const lastHumanTurnAt = findLastHumanTurnAt(activeBranch);
 
   return {
     id: options.sessionId,
@@ -669,6 +752,7 @@ export function buildSummaryFromState(
     provider,
     model,
     lastAgentText: findLastAgentExcerpt(activeBranch),
+    ...(lastHumanTurnAt ? { lastHumanTurnAt } : {}),
   };
 }
 

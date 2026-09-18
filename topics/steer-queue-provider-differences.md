@@ -167,7 +167,7 @@ new vocabulary. Owned by `TextBlock` (`abortedMidStream`) and set in
 
 A turn that stops mid-sentence while reporting `stop_reason: "end_turn"` is a
 different thing and is not marked; see
-[gaps/unflagged-mid-sentence-turn-endings](../gaps/unflagged-mid-sentence-turn-endings.md).
+[gaps/unflagged-mid-sentence-turn-endings](../gaps/sketches/unflagged-mid-sentence-turn-endings.md).
 
 ## Levels of "soon" (urgency ladder, short of hard interrupt)
 

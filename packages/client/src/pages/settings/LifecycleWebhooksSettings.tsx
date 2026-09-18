@@ -111,6 +111,10 @@ export function LifecycleWebhooksSettings() {
   return (
     <SettingsSection
       description={t("lifecycleWebhooksDescription")}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (hasChanges && !isSaving) void handleSave();
+      }}
       keywords={[
         t("lifecycleWebhooksEnableTitle"),
         t("lifecycleWebhooksEnableDescription"),
@@ -232,10 +236,9 @@ export function LifecycleWebhooksSettings() {
           style={{ justifyContent: "flex-end", gap: "var(--space-2)" }}
         >
           <button
-            type="button"
+            type="submit"
             className="settings-button"
             disabled={!hasChanges || isSaving}
-            onClick={handleSave}
           >
             {isSaving ? t("providersSaving") : t("providersSave")}
           </button>

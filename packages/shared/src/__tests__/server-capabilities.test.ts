@@ -58,6 +58,16 @@ describe("server capability advertisements", () => {
     }
     expect(serverHasCapability({ current: "0.8.2" }, name)).toBe(true);
   });
+
+  it("gates speech backend setup without changing older voice support", () => {
+    const name = CAPABILITY_ID_ALLOCATIONS.speechBackendSetup.name;
+    expect(CAPABILITY_ID_ALLOCATIONS.speechBackendSetup.id).toBe(74);
+    for (const current of ["0.8.0", "0.8.1"]) {
+      expect(serverHasCapability({ current }, name)).toBe(false);
+    }
+    expect(serverHasCapability({ current: "0.8.2" }, name)).toBe(true);
+  });
+
   it("gates turn effort with permanent ID 58 and release 0.8.2", () => {
     const name = CAPABILITY_ID_ALLOCATIONS.turnEffortModifiers.name;
     expect(CAPABILITY_ID_ALLOCATIONS.turnEffortModifiers.id).toBe(58);

@@ -1,4 +1,4 @@
-export const DEFAULT_IDLE_REAP_HOURS = 24;
+export const DEFAULT_IDLE_REAP_HOURS = 1;
 export const NEVER_IDLE_REAP_HOURS = -1;
 export const MAX_IDLE_REAP_HOURS = 72;
 

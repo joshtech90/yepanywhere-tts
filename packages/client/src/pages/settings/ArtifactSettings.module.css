@@ -20,6 +20,7 @@
   align-items: center;
 }
 
+.vhostRow input:not([type="checkbox"]),
 .fields > label > input:not([type="checkbox"]) {
   width: 100%;
   box-sizing: border-box;
@@ -54,4 +55,58 @@
   background: var(--bg-secondary);
   font: inherit;
   cursor: pointer;
+}
+
+.vhosts {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.vhostHeading {
+  font-weight: 600;
+}
+
+.vhostRow {
+  display: grid;
+  grid-template-columns: minmax(6rem, 1fr) minmax(5rem, 6.5rem) minmax(
+      8rem,
+      1.2fr
+    ) auto;
+  gap: 8px;
+  align-items: end;
+  min-width: 0;
+}
+
+.vhostRow label {
+  min-width: 0;
+}
+.access {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.vhostRow button {
+  align-self: end;
+}
+
+@media (max-width: 640px) {
+  .fields button,
+  .fields .toggle {
+    min-height: 44px;
+  }
+
+  .vhostRow {
+    grid-template-columns: 1fr;
+  }
+
+  .vhostRow button {
+    align-self: flex-start;
+  }
 }

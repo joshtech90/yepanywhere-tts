@@ -66,6 +66,7 @@ import {
 import { SrpClientSession } from "./srp-client";
 import {
   type Connection,
+  ConnectionReconnectingError,
   type ConnectionSpeechSocket,
   RelayReconnectRequiredError,
   type SessionSubscriptionOptions,
@@ -1688,7 +1689,7 @@ export class SecureConnection implements Connection {
     }
     this.resetSequenceState();
 
-    const reconnectError = new Error("Connection reconnecting");
+    const reconnectError = new ConnectionReconnectingError();
     this.protocol.rejectAllPending(reconnectError);
     // Force all stream handlers (activity/session) to transition closed so
     // higher-level consumers can re-subscribe after authentication resumes.

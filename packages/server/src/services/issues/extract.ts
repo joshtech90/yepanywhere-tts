@@ -179,6 +179,7 @@ export function extractIssueReferences(
 
 export interface IssueText {
   id: string;
+  role?: "user" | "assistant";
   sourceId?: string;
   text: string;
   timestamp?: string;
@@ -224,7 +225,12 @@ export function visibleIssueText(message: {
     )
   )
     return null;
-  return { id, text, timestamp: message.timestamp };
+  return {
+    id,
+    text,
+    timestamp: message.timestamp,
+    role: message.type as "user" | "assistant",
+  };
 }
 
 /** Evidence never retains URL credentials, query tokens or fragment payloads. */

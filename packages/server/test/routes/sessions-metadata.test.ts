@@ -26,6 +26,7 @@ import {
 import type { UserMessage } from "../../src/sdk/types.js";
 import type { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import type { GrokSessionReader } from "../../src/sessions/grok-reader.js";
+import { SessionReader } from "../../src/sessions/reader.js";
 import { tagCodexEntrySourceByteOffset } from "../../src/sessions/normalization.js";
 import type {
   ISessionReader,
@@ -217,6 +218,44 @@ async function createGrokRedirectFixture(): Promise<{
 }
 
 describe("Sessions metadata route", () => {
+  it("opens an unowned setup-only Claude session through metadata and detail", async () => {
+    const sessionDir = await mkdtemp(join(tmpdir(), "empty-claude-route-"));
+    try {
+      const sessionId = "setup-only";
+      await writeFile(
+        join(sessionDir, `${sessionId}.jsonl`),
+        JSON.stringify({
+          type: "mode",
+          mode: "normal",
+          sessionId,
+        }),
+      );
+      const project = { ...createProject(), sessionDir };
+      const reader = new SessionReader({ sessionDir });
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: () => null,
+          wasEverOwned: () => false,
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getOrCreateProject: async () => project,
+        } as unknown as SessionsDeps["scanner"],
+        readerFactory: () => reader,
+      });
+      for (const suffix of ["/metadata", ""]) {
+        const response = await routes.request(
+          `/projects/${project.id}/sessions/${sessionId}${suffix}`,
+        );
+        expect(response.status).toBe(200);
+        const body = await response.json();
+        expect(body.session).toMatchObject({ id: sessionId, title: null });
+        if (!suffix) expect(body.messages).toEqual([]);
+      }
+    } finally {
+      await rm(sessionDir, { recursive: true, force: true });
+    }
+  });
+
   it.each(["", "/metadata"])(
     "uses provider content recency for read state at %s",
     async (suffix) => {

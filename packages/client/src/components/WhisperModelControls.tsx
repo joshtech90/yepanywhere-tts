@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useI18n } from "../i18n";
 import { prewarmYaServerSpeechBackend } from "../lib/speechProviders/YaServerProvider";
+import { englishModelWer } from "../lib/speechProviders/englishModelWer";
 import styles from "./WhisperModelControls.module.css";
 
 const PRESETS = [
-  ["distil-large-v3.5", "Distil large v3.5 English"],
+  ["distil-large-v3.5", "Distil large v3.5 English · 756M parameters"],
   ["large-v3", "Large v3 multilingual"],
   ["turbo", "Large v3 turbo multilingual"],
   ["distil-large-v3", "Distil large v3 English"],
@@ -56,7 +57,7 @@ export function WhisperModelControls({
         <option value="">{t("speechSettingsModelServerDefault")}</option>
         {PRESETS.map(([value, label]) => (
           <option key={value} value={value}>
-            {label}
+            {label} · {englishModelWer(value)}
           </option>
         ))}
         <option value="custom">{t("speechSettingsParakeetCustomModel")}</option>

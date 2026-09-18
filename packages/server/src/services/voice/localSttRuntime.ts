@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { statfsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -16,7 +16,18 @@ export const PIXI_PYTHON_ARGS = [
   PIXI_STT_ENV,
   "python",
 ];
-const LOCAL_STT_BOOTSTRAP_TIMEOUT_MS = 20 * 60_000;
+export const LOCAL_STT_BOOTSTRAP_TIMEOUT_MS = 20 * 60_000;
+
+export function localSttEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  // Pixi/Python packages own runtime libraries; host overrides can mix CUDA ABIs.
+  delete env.LD_LIBRARY_PATH;
+  delete env.LD_PRELOAD;
+  // Workers import a shared helper module from the checkout; byte-code caches
+  // for it would otherwise appear as stray files inside the served tree.
+  env.PYTHONDONTWRITEBYTECODE = "1";
+  return env;
+}
 
 export function localSttReadyHint(
   task: string,
@@ -68,6 +79,7 @@ export async function ensureLocalSttRuntime(opts: {
       ["run", "--frozen", "-e", environment, "python", "-c", opts.checkPython],
       {
         cwd: process.cwd(),
+        env: localSttEnv(),
         timeout: 30_000,
       },
     );
@@ -80,7 +92,11 @@ export async function ensureLocalSttRuntime(opts: {
       await execFileAsync(
         PIXI_COMMAND,
         ["run", "-e", environment, opts.bootstrapTask],
-        { cwd: process.cwd(), timeout: LOCAL_STT_BOOTSTRAP_TIMEOUT_MS },
+        {
+          cwd: process.cwd(),
+          env: localSttEnv(),
+          timeout: LOCAL_STT_BOOTSTRAP_TIMEOUT_MS,
+        },
       );
       await check();
       return { ok: true };
@@ -91,6 +107,62 @@ export async function ensureLocalSttRuntime(opts: {
       };
     }
   }
+}
+
+export function runPixiLogged(
+  args: string[],
+  options: {
+    environment: string;
+    onLine: (line: string) => void;
+    timeoutMs: number;
+    frozen?: boolean;
+  },
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  return new Promise((resolve) => {
+    const proc = spawn(
+      PIXI_COMMAND,
+      [
+        "run",
+        ...(options.frozen === false ? [] : ["--frozen"]),
+        "-e",
+        options.environment,
+        ...args,
+      ],
+      {
+        cwd: process.cwd(),
+        env: localSttEnv(),
+        stdio: ["ignore", "pipe", "pipe"],
+      },
+    );
+    let settled = false;
+    const finish = (result: { ok: true } | { ok: false; reason: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      proc.kill();
+      finish({
+        ok: false,
+        reason: `pixi ${args.join(" ")} timed out after ${options.timeoutMs}ms`,
+      });
+    }, options.timeoutMs);
+    const emit = (chunk: Buffer) => {
+      for (const line of chunk.toString().split(/\r?\n/)) {
+        if (line.trim()) options.onLine(line);
+      }
+    };
+    proc.stdout?.on("data", emit);
+    proc.stderr?.on("data", emit);
+    proc.on("error", (error) => {
+      finish({ ok: false, reason: summarizeChildError(error) });
+    });
+    proc.on("close", (code) => {
+      if (code === 0) finish({ ok: true });
+      else finish({ ok: false, reason: `pixi exited ${code ?? "null"}` });
+    });
+  });
 }
 
 export function summarizeChildError(error: unknown): string {

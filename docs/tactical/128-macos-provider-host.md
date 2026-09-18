@@ -54,7 +54,7 @@ The task/gap search found no existing macOS host-port plan. Relevant work:
   ordinary unit/browser suites run on Linux. A green existing CI run does not
   establish Mac host lifecycle coverage. Add a focused native job for this work;
   do not silently expand the entire CI matrix or close the broader gap.
-- [Full-stack degradation injection](../../gaps/full-stack-degradation-injection.md)
+- [Full-stack degradation injection](../../gaps/sketches/full-stack-degradation-injection.md)
   identifies the existing performance harness as the owner for performance
   fault experiments. Reuse its fixtures where useful; this port does not require
   completing a general fault-injection framework or another benchmark system.

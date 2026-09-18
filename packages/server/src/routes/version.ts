@@ -63,6 +63,8 @@ import {
   PROJECT_FILE_COMPLETION_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
   SESSION_ASYNC_QUESTIONS_CAPABILITY,
+  NON_HUMAN_USER_TURN_CAPABILITY,
+  SESSION_CONTENT_SEARCH_CAPABILITY,
   PROJECT_QUEUE_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
@@ -375,10 +377,13 @@ export const RESUME_PROTOCOL_VERSION = 3;
 export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
+  SERVER_CAPABILITIES.speechBackendSetup.name,
   SERVER_CAPABILITIES.localSpeechModelSelection.name,
   ACLI_COMMENTARY_RENDERING_CAPABILITY,
   SESSION_ASYNC_QUESTIONS_CAPABILITY,
+  NON_HUMAN_USER_TURN_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
+  SESSION_CONTENT_SEARCH_CAPABILITY,
   PROJECT_FILE_COMPLETION_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
   CACHE_MISS_BILLING_EXPECTED_EXPIRY_CAPABILITY,
@@ -454,6 +459,7 @@ export interface DeviceBridgeStatus {
 }
 
 export interface VersionRouteOptions {
+  vhostAppControlAvailable?: boolean;
   getExperimentalConversationAvailable?: () => boolean;
   /** Read retained startup state; never probe storage in the version route. */
   getSqliteStatus?: () => SqliteStatus;
@@ -542,8 +548,12 @@ function getCapabilitiesForDeviceBridgeState(
 
 export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   const capabilities: string[] = [...BASE_CAPABILITIES];
+  capabilities.push(SERVER_CAPABILITIES.vhostBearerAccess.name);
+  if (options?.vhostAppControlAvailable)
+    capabilities.push(SERVER_CAPABILITIES.vhostAppControl.name);
   capabilities.push(SERVER_CAPABILITIES.computerControl.name);
   capabilities.push(SERVER_CAPABILITIES.computerControlReleases.name);
+  capabilities.push(SERVER_CAPABILITIES.claudeGatewayServices.name);
   if (options?.getExperimentalConversationAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.experimentalConversation.name);
   if (options?.getSqliteStatus?.().state === "ready") {

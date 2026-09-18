@@ -2,6 +2,7 @@ import { orderByParentChain } from "@yep-anywhere/shared";
 import type { Message } from "../types";
 
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
+import { parseTimestampMs } from "./messageAge";
 
 export function findMessageIndexById(
   messages: readonly Message[],
@@ -153,12 +154,75 @@ export function mergeMessage(
     return existing;
   }
 
-  // Both are SDK - use the newer one (incoming)
-  return { ...incoming, _source: "sdk" };
+  // Both are SDK - use the newer one (incoming). Keep the optimistic
+  // self-send markers when the provider re-echo omits them: Grok's
+  // adapter yields the queued user uuid without tempId, and losing those
+  // fields makes reconcileSelfSendUserEchoes treat the row as a second
+  // confirmed turn next to Grok's own jsonl id.
+  const merged: Message = { ...incoming, _source: "sdk" };
+  if (merged.tempId === undefined && existing.tempId !== undefined) {
+    merged.tempId = existing.tempId;
+  }
+  if (
+    merged.messageMetadata === undefined &&
+    existing.messageMetadata !== undefined
+  ) {
+    merged.messageMetadata = existing.messageMetadata;
+  }
+  return merged;
 }
 
 export interface MergeJSONLResult {
   messages: Message[];
+}
+
+function orderLinearCatchup(
+  existing: Message[],
+  incoming: Message[],
+): Message[] {
+  if (incoming.length === 0) return existing;
+  const incomingPositions = new Map(
+    incoming.map((message, index) => [getMessageId(message), index]),
+  );
+  let lastSharedPosition = -1;
+  let insertionIndex = existing.length;
+  const incomingTimestamp = parseTimestampMs(incoming[0]?.timestamp);
+  for (let index = 0; index < existing.length; index += 1) {
+    const message = existing[index]!;
+    lastSharedPosition = Math.max(
+      lastSharedPosition,
+      incomingPositions.get(getMessageId(message)) ?? -1,
+    );
+    const timestamp = parseTimestampMs(message.timestamp);
+    if (
+      insertionIndex === existing.length &&
+      incomingTimestamp !== null &&
+      timestamp !== null &&
+      timestamp > incomingTimestamp
+    )
+      insertionIndex = index;
+  }
+
+  const ordered: Message[] = [];
+  let nextIncoming = 0;
+  for (let index = 0; index <= existing.length; index += 1) {
+    // Without a shared ID, timestamps can place a batch but never merge rows.
+    if (lastSharedPosition < 0 && index === insertionIndex) {
+      ordered.push(...incoming);
+      nextIncoming = incoming.length;
+    }
+    const message = existing[index];
+    if (!message) break;
+    const position = incomingPositions.get(getMessageId(message));
+    if (position === undefined) {
+      ordered.push(message);
+      continue;
+    }
+    const end =
+      position === lastSharedPosition ? incoming.length : position + 1;
+    while (nextIncoming < end) ordered.push(incoming[nextIncoming++]!);
+  }
+  return ordered;
 }
 
 /**
@@ -175,7 +239,7 @@ export interface MergeJSONLResult {
 export function mergeJSONLMessages(
   existing: Message[],
   incoming: Message[],
-  options?: { skipDagOrdering?: boolean },
+  options?: { skipDagOrdering?: boolean; preserveIncomingOrder?: boolean },
 ): MergeJSONLResult {
   // Create a map of existing messages for efficient lookup
   // Use getMessageId for canonical identifier (uuid preferred over id)
@@ -192,21 +256,14 @@ export function mergeJSONLMessages(
   const result: Message[] = [];
   const seen = new Set<string>();
 
-  // First add existing messages (in order)
-  for (const msg of existing) {
+  const ordered = options?.preserveIncomingOrder
+    ? orderLinearCatchup(existing, incoming)
+    : [...existing, ...incoming];
+  for (const msg of ordered) {
     const msgId = getMessageId(msg);
     if (!seen.has(msgId)) {
       result.push(messageMap.get(msgId) ?? msg);
       seen.add(msgId);
-    }
-  }
-
-  // Then add any truly new messages
-  for (const incomingMsg of incoming) {
-    const incomingId = getMessageId(incomingMsg);
-    if (!seen.has(incomingId)) {
-      result.push(messageMap.get(incomingId) ?? incomingMsg);
-      seen.add(incomingId);
     }
   }
 

@@ -34,6 +34,8 @@ const COMPACT_SPEECH_METHOD_LABELS: Record<string, string> = {
   "ya-whisper": "Whsp",
   "ya-parakeet": "Para",
   "ya-nemo": "NeMo",
+  "ya-granite": "Gran",
+  "ya-qwen": "Qwen",
   "ya-dummy": "Test",
 };
 
@@ -61,9 +63,19 @@ const SERVER_BACKEND_LABELS: Record<
     label: "NeMo Parakeet STT",
     description: "Local NeMo Parakeet speech-to-text through YA.",
   },
+  "ya-granite": {
+    label: "Granite Speech STT",
+    description:
+      "Local IBM Granite Speech through YA: more accurate than Parakeet, slower per utterance.",
+  },
   "ya-dummy": {
     label: "Dummy STT",
     description: "Test speech backend through YA.",
+  },
+  "ya-qwen": {
+    label: "Qwen3 ASR STT",
+    description:
+      "Local Qwen3 ASR through YA; batch recognition with automatic GPU selection.",
   },
 };
 

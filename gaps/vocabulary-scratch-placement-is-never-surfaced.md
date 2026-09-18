@@ -38,7 +38,7 @@ differs. A user with a network home directory would otherwise be told two things
 at once and given two instructions for one action.
 
 That matters because the banner is the entry point for offering to move the data
-directory ([the migration gap](network-filesystem-banner-offers-no-migration.md)),
+directory ([the migration gap](sketches/network-filesystem-banner-offers-no-migration.md)),
 and a move must happen with no live handles into the directory, or the flow has
 to close and reopen them. The two conditions do not arrive equal on that point:
 
@@ -80,7 +80,7 @@ Verify that fallback before relying on this description.
 Accepting the bloom file on a share means that whenever learning is enabled, a
 live handle sits in the data directory. So in that state the banner can warn but
 cannot offer a working move, and
-[the migration gap](network-filesystem-banner-offers-no-migration.md) only has a
+[the migration gap](sketches/network-filesystem-banner-offers-no-migration.md) only has a
 usable button when nothing holds the directory open. Making the offer work while
 learning is on requires a real close-and-reopen sequence around the copy, which
 is separate machinery and should not be assumed.

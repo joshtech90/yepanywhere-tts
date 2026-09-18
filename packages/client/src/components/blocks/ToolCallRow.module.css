@@ -4,3 +4,45 @@
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+.disclosureAnchor {
+  display: inline-block;
+  position: relative;
+  width: 0;
+  height: 1cap;
+  vertical-align: baseline;
+}
+
+.waitingRow {
+  --timeline-dot-default: var(--timeline-dot-warning);
+}
+
+.waitingSummary {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--timeline-dot-warning);
+  font: var(--font-size-base) / 1.5 var(--font-mono);
+}
+
+.waitingHeader:global(.tool-row-header) {
+  cursor: default;
+}
+
+.waitingHeader:global(.tool-row-header):hover {
+  background: transparent;
+}
+
+:global(.ran-tool-row) .disclosureAnchor {
+  margin-inline-start: -1px;
+  margin-inline-end: 1px;
+}
+
+:global(.tool-row):has(.disclosureAnchor button)::before {
+  display: none;
+}
+
+:global(.tool-row):has(.disclosureAnchor button)::after {
+  top: 24px;
+  opacity: 0.45;
+}

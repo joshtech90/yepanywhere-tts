@@ -401,6 +401,40 @@ Display rules (client, `getCommandResultMeta`/`formatCommandDuration` in
   a long-lived command and the current wait are visible as distinct activity
   rather than two apparently equivalent running commands.
 
+### Compact shell poll results
+
+A completed `WriteStdin` poll with no submitted input and one short output
+line (at most 500 characters) displays that line directly beside **Shell**,
+without an expansion control or a repeated result body. Failures use the same
+presentation and retain their nonzero `rc=N`; an error without a reported
+exit code retains **Error**. Output uses fixed-width text and can scroll
+horizontally on a narrow screen without expanding the row.
+
+One known wait outcome is informational: `rc=1` with the complete line
+`timeout waiting for <target> to reach not-running; current status=running`
+means the observation window ended while the target remained active. Its
+single line reads `Waiting <target> · running`, with yellow
+text and a yellow timeline dot, no `rc=1`, and no error label. This exact
+recognizer does not reinterpret other exit-code-1 failures or other timeout
+messages as harmless waiting. The original result remains intact in provider
+data; only this display is simplified.
+
+The timeout sentence comes from `agentctl`, rather than from Codex itself.
+Recognition follows envelope decoding and applies to normalized Bash commands
+and WriteStdin polls alike. Other provider envelopes can feed this same
+interpretation without introducing provider-specific message types.
+
+File-backed reads, submitted input, multiple output blocks, multiline output,
+and longer lines keep their existing detailed presentation. Recognized
+code-mode execution envelopes use the shared output decoder; their command
+exit code survives removal of envelope boilerplate.
+
+This is a presentation of the existing normalized `tool_use` / `tool_result`
+pair, not a new normalized message or content-block type. IDs, source records,
+failure status, and complete result data are unchanged. Keeping this decision
+in the client allows an updated hosted client to display existing server
+results without a new protocol capability.
+
 ## Web browsing results (Codex `web.run`)
 
 Codex's namespaced browsing tool (`web.run`; `web__run` when flattened into

@@ -33,7 +33,7 @@ files across real harness startup and its native sandbox. Relative bootstrap
 symlinks already retain their source-parent meaning, including when the
 configured harness home itself is a symlink; their read/write behavior is
 covered through the production Bubblewrap wrapper. See also
-[the virgin-session gap](virgin-new-session-option.md), which concerns choosing
+[the virgin-session gap](sketches/virgin-new-session-option.md), which concerns choosing
 whether inherited harness instructions should be present at all.
 
 With broad host reads retained as standard, fix private-home construction and

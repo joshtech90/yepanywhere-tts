@@ -20,6 +20,13 @@
   color: var(--timeline-dot-tool);
 }
 
+.inline {
+  inset-block-start: auto;
+  inset-inline-start: -24px;
+  top: calc(0.5cap - 12px);
+  font: inherit;
+}
+
 .toggle[data-status="error"] {
   color: var(--timeline-dot-error);
 }

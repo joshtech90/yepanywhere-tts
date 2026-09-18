@@ -2003,6 +2003,45 @@ describe("compileTranscriptProjection", () => {
     }
   });
 
+  it.each(["info", "notice", "suggestion", "warning"])(
+    "renders informational system messages with %s severity without conversation turns",
+    (level) => {
+      const message: Message = {
+        id: "provider-notice",
+        type: "system",
+        subtype: "informational",
+        content: "Remote Control disconnected — login expired",
+        level,
+        timestamp: "2026-09-13T15:57:25.295Z",
+      };
+      expect(compileTranscriptProjection([message])).toMatchObject([
+        {
+          type: "system",
+          id: message.id,
+          subtype: level === "warning" ? "warning" : "informational",
+          content: message.content,
+          sourceMessages: [message],
+        },
+      ]);
+    },
+  );
+
+  it.each([undefined, "", "  "])(
+    "omits informational records without text (%s)",
+    (content) => {
+      expect(
+        compileTranscriptProjection([
+          {
+            id: "empty-notice",
+            type: "system",
+            subtype: "informational",
+            content,
+          },
+        ]),
+      ).toEqual([]);
+    },
+  );
+
   it("renders turn_aborted system messages", () => {
     const messages: Message[] = [
       {

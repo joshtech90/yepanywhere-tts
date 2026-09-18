@@ -219,7 +219,11 @@ implementation serves the endpoint and is not an operator setting.
 `AGENT_LAUNCH_BACKEND=copilot-api` fact. YA injects it only after the configured
 gateway's `/v1/models` response explicitly advertises `X-Copilot-API: 1`, and
 clears the learned identity when the Gateway URL changes. Model names, ports,
-vendors, and generic endpoint compatibility never imply it.
+vendors, and generic endpoint compatibility never imply it. Gateway launches now
+publish the canonical `AGENT_LAUNCH_BACKEND` alongside it, and carry
+`AGENT_LAUNCH_BACKEND=vllm` for a service whose catalog names itself `vllm` in
+`owned_by`. A backend value is always observed from the catalog response, never
+configured; see [gateway-services](gateway-services.md).
 
 Gateway launches also inject `CLAUDE_CODE_*` narrowings that are not YA
 variables but are decided by YA per launch (`gatewayEnvironment()` in
@@ -254,7 +258,7 @@ value, because the child has no other way to express one.
 | `ENABLED_PROVIDERS` | Comma list of exposed providers (empty = all). |
 | `VOICE_INPUT` | `false` disables the mic button server-side. |
 | `PI_EXECUTABLE` | Full path to the pi CLI executable for the pi provider. `PI_PATH` is accepted as a legacy alias when `PI_EXECUTABLE` is unset. |
-| `YEP_VOICE_BACKENDS` | Explicit local/test speech backends (`ya-whisper`, `ya-parakeet`, `ya-nemo`, `ya-dummy`). Cloud backends auto-enable on key presence instead. |
+| `YEP_VOICE_BACKENDS` | Explicit local/test speech backends (`ya-whisper`, `ya-parakeet`, `ya-nemo`, `ya-granite`, `ya-dummy`). Unioned with Speech settings `speechVoiceBackends`; the env list is copied into that setting on startup and never removes a saved backend. Cloud backends auto-enable on key presence instead. |
 | `YEP_DEFERRED_JOIN_WINDOW_S` | Max seconds between consecutive compose times for queued-while-busy turns to join into one `--------`-joined provider turn at a delivery boundary. Default 0: never join — one verbatim turn per boundary. Server setting `deferredJoinWindowSeconds` overrides ([compose-time-context-anchors](compose-time-context-anchors.md)). |
 | `YEP_COMPOSE_ANCHORS` | `1` prepends `(Ns ago)` / `(Ms later)` staleness anchors to delivered queued turns; the first anchor quotes the assistant output the composer had last seen (`had seen: "…"`). Default off: queued text reaches the provider verbatim. Server setting `composeAnchorsEnabled` overrides. |
 | `YEP_TURN_TIMESTAMPS` | `before` or `after` adds an absolute `[sent <ISO-8601>]` compose-time marker to provider-bound user turns, in the provider session-jsonl timestamp format; the client hides it in presentation. Experimental, default off. Server setting `turnTimestamps` (Message Delivery pane) overrides ([compose-time-context-anchors](compose-time-context-anchors.md)). |
@@ -270,6 +274,8 @@ value, because the child has no other way to express one.
 | `WHISPER_MODEL` / `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | Local Whisper tuning. `ya-whisper` runs through the committed pixi `stt` environment; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap` if the import probe fails. |
 | `PARAKEET_MODEL` / `PARAKEET_DEVICE` | Local NVIDIA Parakeet fallback model and device policy. `ya-parakeet` uses the same pixi `stt` environment with the Transformers Parakeet requirements; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-parakeet` if the import probe fails, then loads the fallback model before advertising the backend. Authenticated browser UI may send a per-request Parakeet model id. Defaults: `nvidia/parakeet-tdt-0.6b-v3`, `auto`. |
 | `NEMO_MODEL` / `NEMO_DEVICE` | Local NeMo Parakeet fallback model and device policy. `ya-nemo` uses the same pixi `stt` environment plus the heavier NeMo add-on; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-nemo` if the import probe fails, then loads the fallback model before advertising the backend. The same browser Parakeet model selector may send a per-request model id. Defaults: `nvidia/parakeet-tdt-0.6b-v3`, `auto`. |
+| `GRANITE_MODEL` / `GRANITE_DEVICE` | Local IBM Granite Speech model and device policy. `ya-granite` uses the same pixi `stt` environment plus torchaudio and PEFT; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-granite` if the import probe fails. The browser sends no per-request model id for this backend, so these settings are authoritative. Defaults: `ibm-granite/granite-speech-4.1-2b`, `auto`. |
+| `GRANITE_KEYWORD_BIAS` | Constant logit boost on Granite keyword-prefix tokens after the learned `Keywords:` prompt. Default `1.0`. `0` disables the processor and keeps prompt biasing only. |
 
 See [pluggable-speech-recognition.md](pluggable-speech-recognition.md) for
 backend semantics and [cost-efficiency.md](cost-efficiency.md) for the

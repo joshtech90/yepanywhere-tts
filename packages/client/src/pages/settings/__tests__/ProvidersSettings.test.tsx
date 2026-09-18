@@ -13,6 +13,7 @@ import {
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
+  CLAUDE_GATEWAY_SERVICES_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
@@ -662,6 +663,220 @@ describe("ProvidersSettings additional models", () => {
     expect(mockUpdateSetting).not.toHaveBeenCalled();
   });
 
+  it("edits and saves the services list when the server supports it", async () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_SERVICES_CAPABILITY,
+    ];
+    hookState.settings = {
+      serviceWorkerEnabled: true,
+      persistRemoteSessionsToDisk: false,
+      gatewayServices: [
+        {
+          id: "vllm",
+          label: "",
+          shortName: "",
+          url: "http://127.0.0.1:8001",
+          enabled: true,
+          autoStop: false,
+          autoStopAfterSeconds: 300,
+          codexEnabled: false,
+          codexWireApi: "responses",
+        },
+      ],
+      defaultGatewayServiceId: "vllm",
+    };
+    render(<ProvidersSettings />);
+
+    // The single-URL form belongs to older servers only.
+    expect(
+      screen.queryByRole("textbox", {
+        name: "providersClaudeGatewayUrlAria",
+      }),
+    ).toBeNull();
+
+    fireEvent.change(
+      screen.getByRole("spinbutton", {
+        name: "providersGatewayServiceContextAria",
+      }),
+      { target: { value: "252000" } },
+    );
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: /providersGatewayServiceCodex/u }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        gatewayServices: [
+          expect.objectContaining({
+            id: "vllm",
+            contextWindowTokens: 252000,
+            codexEnabled: true,
+          }),
+        ],
+        defaultGatewayServiceId: "vllm",
+      });
+      expect(mockReloadProviders).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("saves a reordered services list, which is the order pickers show", () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_SERVICES_CAPABILITY,
+    ];
+    const entry = (id: string, url: string) => ({
+      id,
+      label: "",
+      shortName: "",
+      url,
+      enabled: true,
+      autoStop: false,
+      autoStopAfterSeconds: 0,
+      codexEnabled: true,
+      codexWireApi: "responses" as const,
+    });
+    hookState.settings = {
+      serviceWorkerEnabled: true,
+      persistRemoteSessionsToDisk: false,
+      gatewayServices: [
+        entry("copilot", "http://127.0.0.1:4141"),
+        entry("vllm", "http://127.0.0.1:8001"),
+      ],
+      // The default entry is deliberately not the first one: marking a service
+      // default says which one is used when nothing names one, and must not be
+      // what decides where its models sit in the list.
+      defaultGatewayServiceId: "copilot",
+    };
+    render(<ProvidersSettings />);
+
+    const moveUp = screen.getAllByRole("button", {
+      name: "providersGatewayServiceMoveUp",
+    });
+    // Two entries, so the first entry's control is disabled and the second's
+    // is the one that can act.
+    expect(moveUp[0]).toHaveProperty("disabled", true);
+    fireEvent.click(moveUp[1]!);
+    fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
+
+    expect(mockUpdateSettings).toHaveBeenCalledWith({
+      gatewayServices: [
+        expect.objectContaining({ id: "vllm" }),
+        expect.objectContaining({ id: "copilot" }),
+      ],
+      defaultGatewayServiceId: "copilot",
+    });
+  });
+
+  it("states the terminal command for each service once export is on", () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_SERVICES_CAPABILITY,
+    ];
+    hookState.settings = {
+      serviceWorkerEnabled: true,
+      persistRemoteSessionsToDisk: false,
+      gatewayServiceExportEnabled: true,
+      gatewayServiceExportPaths: {
+        codexHome: "/home/dev/.codex",
+        claudeHome: "/home/dev/.claude",
+      },
+      gatewayServices: [
+        {
+          id: "vllm",
+          label: "",
+          shortName: "",
+          url: "http://127.0.0.1:8001",
+          enabled: true,
+          autoStop: false,
+          autoStopAfterSeconds: 300,
+          codexEnabled: true,
+          codexWireApi: "responses",
+        },
+      ],
+      defaultGatewayServiceId: "vllm",
+    };
+    render(<ProvidersSettings />);
+
+    expect(
+      screen.getByText(
+        "claude --settings /home/dev/.claude/ya-vllm.settings.json",
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText("codex -p ya-vllm")).toBeTruthy();
+  });
+
+  it("hides the terminal commands until the export is enabled", () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_SERVICES_CAPABILITY,
+    ];
+    hookState.settings = {
+      serviceWorkerEnabled: true,
+      persistRemoteSessionsToDisk: false,
+      gatewayServiceExportPaths: {
+        codexHome: "/home/dev/.codex",
+        claudeHome: "/home/dev/.claude",
+      },
+      gatewayServices: [
+        {
+          id: "vllm",
+          label: "",
+          shortName: "",
+          url: "http://127.0.0.1:8001",
+          enabled: true,
+          autoStop: false,
+          autoStopAfterSeconds: 300,
+          codexEnabled: true,
+          codexWireApi: "responses",
+        },
+      ],
+    };
+    render(<ProvidersSettings />);
+
+    expect(screen.queryByText("codex -p ya-vllm")).toBeNull();
+
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /providersGatewayServiceExportTitle/u,
+      }),
+    );
+    expect(mockUpdateSetting).toHaveBeenCalledWith(
+      "gatewayServiceExportEnabled",
+      true,
+    );
+  });
+
+  it("adds a service entry with a slug derived from its endpoint", async () => {
+    versionState.capabilities = [
+      CLAUDE_GATEWAY_CAPABILITY,
+      CLAUDE_GATEWAY_SERVICES_CAPABILITY,
+    ];
+    render(<ProvidersSettings />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "providersGatewayServiceAdd" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        gatewayServices: [
+          expect.objectContaining({
+            id: "127-0-0-1-8001",
+            url: "http://127.0.0.1:8001",
+            enabled: true,
+            // A newly added endpoint defaults into CodexOSS use, so the
+            // provider is usable without a separate local server.
+            codexEnabled: true,
+          }),
+        ],
+        defaultGatewayServiceId: "127-0-0-1-8001",
+      });
+    });
+  });
+
   it("hides Gateway autostart from servers with only the base capability", () => {
     versionState.capabilities = [CLAUDE_GATEWAY_CAPABILITY];
     render(<ProvidersSettings />);
@@ -814,5 +1029,44 @@ describe("ProvidersSettings additional models", () => {
     expect(
       screen.queryByText("providersClaudeOllamaDeprecationNotice"),
     ).toBeNull();
+  });
+
+  it("hides post-compact continuation on older servers", () => {
+    render(<ProvidersSettings />);
+    expect(screen.queryByText("providersPostCompactReplayTitle")).toBeNull();
+  });
+
+  it("saves a post-compact provider checkbox and replay count", async () => {
+    hookState.settings = {
+      ...hookState.settings,
+      postCompactReplay: { providers: {}, replayTurnCount: 0 },
+    };
+
+    render(<ProvidersSettings />);
+
+    expect(screen.getByText("providersPostCompactReplayTitle")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: "Claude" }));
+
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith("postCompactReplay", {
+        providers: { claude: true },
+        replayTurnCount: 0,
+      });
+    });
+
+    const numberInput = screen
+      .getAllByLabelText("providersPostCompactReplayCountAria")
+      .find((element) => element.getAttribute("type") === "number");
+    expect(numberInput).toBeDefined();
+    fireEvent.change(numberInput!, { target: { value: "4" } });
+    fireEvent.blur(numberInput!);
+
+    await waitFor(() => {
+      expect(mockUpdateSetting).toHaveBeenCalledWith("postCompactReplay", {
+        providers: {},
+        replayTurnCount: 4,
+      });
+    });
   });
 });

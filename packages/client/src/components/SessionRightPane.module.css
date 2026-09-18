@@ -1,0 +1,109 @@
+.pane {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  box-sizing: border-box;
+  transform: none;
+  transition:
+    transform var(--panel-slide-duration, 0.2s) ease,
+    visibility 0s;
+  background: var(--bg-surface);
+  border-left: 1px solid var(--border-color);
+}
+.hidden {
+  transform: translateX(100%);
+  visibility: hidden;
+  transition:
+    transform var(--panel-slide-duration, 0.2s) ease,
+    visibility 0s var(--panel-slide-duration, 0.2s);
+}
+@starting-style {
+  .pane {
+    transform: translateX(100%);
+  }
+}
+.header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 6px;
+  border-bottom: 1px solid var(--border-color);
+}
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+.frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: white;
+}
+.fileContent {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.splitter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: col-resize;
+  touch-action: none;
+  z-index: 2;
+}
+.splitter:hover,
+.splitter:focus-visible {
+  background: var(--accent-color);
+  opacity: 0.6;
+}
+.dragShield {
+  position: absolute;
+  inset: 0;
+  cursor: col-resize;
+}
+.backdrop {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgb(0 0 0 / 35%);
+  z-index: 29;
+}
+.error {
+  padding: 16px;
+}
+.launcher {
+  flex-shrink: 0;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  text-decoration: none;
+}
+@media (min-width: 1100px) {
+  .pane {
+    padding-left: 8px;
+  }
+}
+@media (max-width: 1099px) {
+  .pane {
+    position: absolute;
+    inset: 0 0 0 24px;
+    z-index: 30;
+    box-shadow: -4px 0 16px rgb(0 0 0 / 25%);
+  }
+}

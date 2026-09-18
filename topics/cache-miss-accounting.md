@@ -15,7 +15,7 @@ legacy recent-activity meaning while gating the additive ignore-after field
 and expected-expiry evidence.
 The per-project boot baseline described under [Session boot](#session-boot) is
 not built; it is tracked in
-[`gaps/cache-miss-boot-baseline.md`](../gaps/cache-miss-boot-baseline.md).
+[`gaps/sketches/cache-miss-boot-baseline.md`](../gaps/sketches/cache-miss-boot-baseline.md).
 
 Related topics: [session usage accounting](session-usage-accounting.md) (the
 per-session ledger this shares provider facts with),
@@ -167,4 +167,4 @@ each time — is therefore invisible to this mechanism. Judging it needs a
 baseline per (project, provider, model, effort) built from recent comparable
 sessions, since revised instructions, a date rollover, or a changed tree
 commit legitimately raise it. Tracked in
-[`gaps/cache-miss-boot-baseline.md`](../gaps/cache-miss-boot-baseline.md).
+[`gaps/sketches/cache-miss-boot-baseline.md`](../gaps/sketches/cache-miss-boot-baseline.md).

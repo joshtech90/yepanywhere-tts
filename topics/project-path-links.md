@@ -363,9 +363,9 @@ Activating an anchor does not expand the row or open the Bash detail modal.
 The field is optional and field-presence-gated. Servers without it preserve the
 previous plain rendering and receive no new request. The compatibility review
 covered stable releases `v0.7.0` and `v0.6.2`; neither supplies the annotation.
-Public-share routes do not produce it, and public-share rendering ignores it if
-it is present in reused content, preserving the no-file-existence-oracle
-boundary.
+Public-share routes produce it too, restricted as
+[Public shares](#public-shares) describes; a share client that receives one
+targets the share's own file route rather than the authenticated project route.
 
 ## User turns
 
@@ -380,9 +380,41 @@ durable message arrives.
 User-turn decoration has an explicit nesting order: a confirmed complete path
 is one file-viewer anchor, a URL is one ordinary URL anchor, and glossary terms
 are annotated only in the remaining plain-text segments. Neither glossary
-matching nor URL matching enters or splits a file anchor. Missing annotations,
-older servers, and public shares retain plain text and make no follow-up file
-request.
+matching nor URL matching enters or splits a file anchor. Missing annotations
+and older servers retain plain text and make no follow-up file request.
+
+## Public shares
+
+A public share viewer sees the same project-file links the session owner does,
+pointing at the share's own file route. Nothing new is exposed by this: a share
+already serves the project files its session mentions, through
+`/public-api/shares/:secret/files`, authorized by that mention. The links make
+the reader's transcript match that existing capability instead of naming files
+they cannot open.
+
+What a share does *not* get is any path oracle beyond its own transcript:
+
+- No absolute-path resolver and no `knownAbsoluteFilePaths` is supplied to
+  share rendering, so only paths inside the share's project root — resolved
+  through the project path index or a `statSync` backstop — can become links.
+  A `/etc/...` or `~/...` mention stays plain text, as does a project-relative
+  path that resolves outside the root.
+- The share client refuses to mint a link it cannot serve. When
+  `buildPublicShareFileHref()` returns null for a target, the text stays plain
+  rather than falling back to the authenticated `/projects/:id/file` route.
+- `data-ya-private-project-file-link` keeps its meaning: a link minted for the
+  authenticated owner. Share rendering omits it (`publicShare` in
+  `ProjectFileLinkOptions`), and the share page still unwraps any anchor
+  carrying it back into plain code, so authenticated HTML reused in a share
+  degrades rather than leaking.
+
+Rendering runs per share response in `augmentPublicShareMessages()`, which
+claims the project path index for the share's project. The Markdown HTML cache
+key includes the share flag, so an authenticated render and a share render of
+the same body cannot be served for each other.
+
+The **Link Recent File Basenames** convenience remains owner-only; a share
+links only what the server confirmed for that body.
 
 ## Recent basename aliases
 
@@ -404,16 +436,16 @@ The table covers only the currently loaded semantic transcript window. An
 unloaded full-path link immediately above the older-page seam cannot seed a
 basename below it; `gaps/project-path-basename-alias-pagination-seam.md` records
 that low-priority edge. Only the basename is retained today. Matching longer
-path suffixes is separately deferred in `gaps/project-path-suffix-aliases.md`
+path suffixes is separately deferred in `gaps/sketches/project-path-suffix-aliases.md`
 until its replay and memory cost is measured. The initial browser
 implementation uses a simple basename map plus an additional token scan over
-loaded bodies; `gaps/project-path-basename-replay-scan.md` keeps the possible
+loaded bodies; `gaps/sketches/project-path-basename-replay-scan.md` keeps the possible
 versioned-index/trie replacement contingent on measured cost.
 
 Extensionless basenames deliberately remain eligible. This can link an
 ordinary word when it happens to equal a recently established filename even
 though the assistant did not mean the file. That accepted provisional cost is
-tracked in `gaps/project-path-basename-common-word-false-positives.md`; a common
+tracked in `gaps/sketches/project-path-basename-common-word-false-positives.md`; a common
 filename denylist needs user-frustration evidence before it narrows linking.
 
 ## Version-control affordances
@@ -566,7 +598,7 @@ are removed on the next completion request, with no dormant timer. These are
 per-project accounting limits, not a process-wide heap guarantee; aggregate
 retention grows with the projects actually used. Cache state need not survive
 a server restart. Optional disk persistence is deferred in
-`gaps/project-file-completion-persistence.md`.
+`gaps/sketches/project-file-completion-persistence.md`.
 
 At most two scans and eight distinct queries run simultaneously; identical
 in-flight queries share one computation. Git enumeration is streamed as NUL

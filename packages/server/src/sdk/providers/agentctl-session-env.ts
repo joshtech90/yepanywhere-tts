@@ -2,6 +2,7 @@ import { mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { quoteShellWord } from "../../utils/posixShell.js";
+import { VHOST_ENV_NAMES } from "../../artifacts/vhosts.js";
 
 const AGENTCTL_SESSION_ID_ENV = "AGENTCTL_SESSION_ID";
 const ORIGINAL_BASH_ENV_ENV = "YEP_ORIGINAL_BASH_ENV";
@@ -42,15 +43,42 @@ export interface AgentctlSessionEnvBridge {
   cleanup(): void;
 }
 
+const PER_SESSION_AGENT_ENV_NAMES = new Set([
+  "YEP_SESSION_WAKE_URL",
+  "YEP_SESSION_WAKE_TOKEN",
+]);
+
 export function pickStaticAgentEnvironment(
   environment: Record<string, string> | NodeJS.ProcessEnv | undefined,
 ): Record<string, string> {
-  return Object.fromEntries(
-    STATIC_AGENT_ENV_NAMES.flatMap((name) => {
-      const value = environment?.[name];
-      return typeof value === "string" && value ? [[name, value]] : [];
-    }),
-  );
+  const picked: Record<string, string> = {};
+  for (const name of STATIC_AGENT_ENV_NAMES) {
+    const value = environment?.[name];
+    if (typeof value === "string" && value) picked[name] = value;
+  }
+  const configuredNames = environment?.[VHOST_ENV_NAMES];
+  if (!configuredNames) return picked;
+  const names: unknown = JSON.parse(configuredNames);
+  if (
+    !Array.isArray(names) ||
+    names.some(
+      (name) => typeof name !== "string" || !/^[A-Z_][A-Z0-9_]*$/u.test(name),
+    )
+  ) {
+    throw new Error("Invalid configured vhost environment names");
+  }
+  const forwardedNames: string[] = [];
+  for (const name of names) {
+    const value = environment?.[name];
+    if (typeof value !== "string" || !value) continue;
+    if (PER_SESSION_AGENT_ENV_NAMES.has(name)) continue;
+    if (name in picked) continue;
+    picked[name] = value;
+    forwardedNames.push(name);
+  }
+  if (forwardedNames.length)
+    picked[VHOST_ENV_NAMES] = JSON.stringify(forwardedNames);
+  return picked;
 }
 
 export function createAgentctlSessionEnvBridge(

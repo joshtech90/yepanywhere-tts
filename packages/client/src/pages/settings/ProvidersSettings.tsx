@@ -13,6 +13,7 @@ import {
   CLAUDE_GATEWAY_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
+  CLAUDE_GATEWAY_SERVICES_CAPABILITY,
   CODEX_CYBER_ACCESS_PROGRAM_SETTING_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
   CODEX_REASONING_SUMMARIES,
@@ -22,6 +23,7 @@ import {
   DEFAULT_SUBAGENT_MAX_DEPTH,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
   MAX_IDLE_REAP_HOURS,
+  MAX_POST_COMPACT_REPLAY_TURNS,
   MAX_SUBAGENT_MAX_DEPTH,
   MIN_SUBAGENT_MAX_DEPTH,
   NEVER_IDLE_REAP_HOURS,
@@ -39,7 +41,9 @@ import {
   type CodexReasoningSummary,
   type HelperTargetConfig,
   type ModelInfo,
+  type PostCompactReplaySettings,
   type ProviderInfo,
+  type ProviderName,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import { api, type ServerSettings } from "../../api/client";
@@ -49,6 +53,7 @@ import { useToastContext } from "../../contexts/ToastContext";
 import { useCodexUpdateStatus } from "../../hooks/useCodexUpdateStatus";
 import { useProviders } from "../../hooks/useProviders";
 import { useServerSettings } from "../../hooks/useServerSettings";
+import { GatewayServicesSettings } from "./GatewayServicesSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import {
@@ -291,6 +296,13 @@ function HelperTargetsSettings({
   return (
     <SettingsItem
       label={t("helperTargetsTitle")}
+      as="form"
+      containerProps={{
+        onSubmit: (event) => {
+          event.preventDefault();
+          if (!isSaving) void saveTarget();
+        },
+      }}
       description={t("helperTargetsDescription")}
       className="helper-targets-settings"
       info={
@@ -424,9 +436,8 @@ function HelperTargetsSettings({
               </button>
             )}
             <button
-              type="button"
+              type="submit"
               className="settings-button"
-              onClick={() => void saveTarget()}
               disabled={isSaving}
             >
               {isSaving
@@ -473,7 +484,13 @@ function OllamaUrlInput() {
   }, [url, updateSetting]);
 
   return (
-    <div style={{ marginTop: "var(--space-2)", width: "100%" }}>
+    <form
+      style={{ marginTop: "var(--space-2)", width: "100%" }}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (hasChanges && !isSaving) void handleSave();
+      }}
+    >
       <div
         style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}
       >
@@ -489,16 +506,15 @@ function OllamaUrlInput() {
           style={{ flex: 1 }}
         />
         <button
-          type="button"
+          type="submit"
           className="settings-button"
           disabled={!hasChanges || isSaving}
-          onClick={handleSave}
         >
           {isSaving ? t("providersSaving") : t("providersSave")}
         </button>
       </div>
       <span className="settings-hint">{t("providersOllamaUrlHint")}</span>
-    </div>
+    </form>
   );
 }
 
@@ -1455,6 +1471,102 @@ function ClaudeAdditionalModelsSettings({
   );
 }
 
+function PostCompactReplayControl({
+  value,
+  providers,
+  updateSetting,
+}: {
+  value: PostCompactReplaySettings;
+  providers: readonly { id: string; displayName: string }[];
+  updateSetting: UpdateServerSetting;
+}) {
+  const { t } = useI18n();
+  const { showToast } = useToastContext();
+  const replayTurnCount = value.replayTurnCount ?? 0;
+
+  const save = useCallback(
+    async (next: PostCompactReplaySettings) => {
+      try {
+        await updateSetting("postCompactReplay", next);
+        showToast(t("providersPostCompactReplaySaved"), "success");
+      } catch (error) {
+        showToast(
+          error instanceof Error
+            ? error.message
+            : t("providersPostCompactReplaySaveError"),
+          "error",
+        );
+      }
+    },
+    [showToast, t, updateSetting],
+  );
+
+  return (
+    <SettingsItem
+      id="providers-post-compact-replay"
+      label={t("providersPostCompactReplayTitle")}
+      description={t("providersPostCompactReplayDescription")}
+      keywords={[
+        "compact",
+        "compaction",
+        "continue",
+        "replay",
+        "handoff",
+        "post-compact",
+      ]}
+      className="settings-item--wide-control"
+      valueText={
+        replayTurnCount === 0
+          ? t("providersPostCompactReplayNone")
+          : t("providersPostCompactReplayCountValue", {
+              count: String(replayTurnCount),
+            })
+      }
+    >
+      <div className={styles.limitControls}>
+        <CommittedRangeNumberInput
+          id="providers-post-compact-replay-count"
+          min={0}
+          max={MAX_POST_COMPACT_REPLAY_TURNS}
+          step={1}
+          value={replayTurnCount}
+          ariaLabel={t("providersPostCompactReplayCountAria")}
+          onCommit={(count) => {
+            void save({ ...value, replayTurnCount: count });
+          }}
+        />
+        <p className="settings-hint">
+          {t("providersPostCompactReplayCountHint")}
+        </p>
+        <div className={styles.providerToggles}>
+          {providers.map((provider) => {
+            const providerId = provider.id as ProviderName;
+            const enabled = value.providers?.[providerId] === true;
+            return (
+              <label key={provider.id} className={styles.providerToggle}>
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(event) => {
+                    const providersMap = { ...value.providers };
+                    if (event.target.checked) {
+                      providersMap[providerId] = true;
+                    } else {
+                      delete providersMap[providerId];
+                    }
+                    void save({ ...value, providers: providersMap });
+                  }}
+                />
+                <span>{provider.displayName}</span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    </SettingsItem>
+  );
+}
+
 export function ProvidersSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("providersSectionTitle"));
@@ -1488,6 +1600,10 @@ export function ProvidersSettings() {
   const supportsClaudeGatewayAutostart = serverHasCapability(
     version,
     CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
+  );
+  const supportsGatewayServices = serverHasCapability(
+    version,
+    CLAUDE_GATEWAY_SERVICES_CAPABILITY,
   );
   const supportsClaudeGatewayDisableAgent = serverHasCapability(
     version,
@@ -1668,6 +1784,13 @@ export function ProvidersSettings() {
             </div>
           </SettingsItem>
         )}
+        {settings?.postCompactReplay !== undefined && (
+          <PostCompactReplayControl
+            value={settings.postCompactReplay}
+            providers={providerDisplayList}
+            updateSetting={updateSetting}
+          />
+        )}
         {providerDisplayList.map((provider) => (
           <Fragment key={provider.id}>
             <SettingsItem
@@ -1686,22 +1809,31 @@ export function ProvidersSettings() {
                   : undefined
               }
               after={
-                provider.id === "claude-ollama" &&
-                showClaudeOllamaDeprecation ? (
-                  <div className="provider-deprecation-notice" role="status">
-                    <span>{t("providersClaudeOllamaDeprecationNotice")}</span>
-                    <button
-                      type="button"
-                      className="provider-deprecation-notice__dismiss"
-                      aria-label={t(
-                        "providersClaudeOllamaDeprecationDismissAria",
-                      )}
-                      onClick={dismissClaudeOllamaDeprecation}
-                    >
-                      ×
-                    </button>
-                  </div>
-                ) : undefined
+                <>
+                  {provider.id === "claude-gateway" &&
+                    supportsClaudeGateway &&
+                    supportsGatewayServices && (
+                      <GatewayServicesSettings
+                        reloadProviders={reloadProviders}
+                      />
+                    )}
+                  {provider.id === "claude-ollama" &&
+                  showClaudeOllamaDeprecation ? (
+                    <div className="provider-deprecation-notice" role="status">
+                      <span>{t("providersClaudeOllamaDeprecationNotice")}</span>
+                      <button
+                        type="button"
+                        className="provider-deprecation-notice__dismiss"
+                        aria-label={t(
+                          "providersClaudeOllamaDeprecationDismissAria",
+                        )}
+                        onClick={dismissClaudeOllamaDeprecation}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ) : undefined}
+                </>
               }
               info={
                 <>
@@ -1785,10 +1917,12 @@ export function ProvidersSettings() {
                   {provider.id === "claude-gateway" &&
                     supportsClaudeGateway && (
                       <>
-                        <ClaudeGatewaySettings
-                          reloadProviders={reloadProviders}
-                          supportsAutostart={supportsClaudeGatewayAutostart}
-                        />
+                        {!supportsGatewayServices && (
+                          <ClaudeGatewaySettings
+                            reloadProviders={reloadProviders}
+                            supportsAutostart={supportsClaudeGatewayAutostart}
+                          />
+                        )}
                         {supportsClaudeGatewayDisableAgent && (
                           <ClaudeGatewayToggleSetting
                             id="provider-claude-gateway-disable-agent"

@@ -135,7 +135,7 @@
 /* Fixed-height header - CRITICAL for no-jump during streaming */
 .tool-row-header {
   display: flex;
-  align-items: center;
+  align-items: baseline;
   gap: 8px;
   min-height: 20px;
   padding: 2px 4px;

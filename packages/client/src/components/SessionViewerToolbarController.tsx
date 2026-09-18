@@ -5,6 +5,7 @@ import type { useI18n } from "../i18n";
 import { writeClipboardText } from "../lib/clipboard";
 import type { SessionViewerControllerState } from "../lib/sessionViewerController";
 import styles from "./SessionViewerToolbarController.module.css";
+import { sessionViewerUsesRightPane } from "../lib/sessionViewerPlacement";
 
 type ToolbarTranslate = ReturnType<typeof useI18n>["t"];
 
@@ -130,6 +131,7 @@ export function SessionViewerToolbarController({
     controller.minimized,
   );
   const location = controller.label;
+  const destructive = controller.kind === "vhost" && !controller.artifactToken;
   const fullLocation =
     controller.kind === "file" ? controller.filePath : location;
   const briefLocation =
@@ -154,7 +156,7 @@ export function SessionViewerToolbarController({
       ref={floatingRef}
       className={`${styles.controller} ${
         controller.minimized ? styles.parked : ""
-      }${
+      }${sessionViewerUsesRightPane(controller) && !controller.minimized ? ` ${styles.paneOpen}` : ""}${
         waveformButtonBackgroundOpacityPercent === undefined
           ? ""
           : ` ${styles.waveformActive}`
@@ -208,21 +210,34 @@ export function SessionViewerToolbarController({
           )}
         </span>
       </button>
-      <button
-        type="button"
-        className={styles.close}
-        onClick={controller.close}
-        title={t(
-          controller.kind === "file" ? "fileViewerClose" : "sessionViewerClose",
-          { name: location },
-        )}
-        aria-label={t(
-          controller.kind === "file" ? "fileViewerClose" : "sessionViewerClose",
-          { name: location },
-        )}
-      >
-        <FileViewerCloseIcon />
-      </button>
+      {(controller.kind !== "vhost" || controller.kill) && (
+        <button
+          type="button"
+          className={`${styles.close} ${destructive ? styles.kill : ""}`}
+          disabled={controller.kind === "vhost" && controller.killing}
+          onClick={
+            controller.kind === "vhost" ? controller.kill : controller.close
+          }
+          title={t(
+            destructive
+              ? "sessionRightPaneKill"
+              : controller.kind === "file"
+                ? "fileViewerClose"
+                : "sessionViewerClose",
+            { name: location },
+          )}
+          aria-label={t(
+            destructive
+              ? "sessionRightPaneKill"
+              : controller.kind === "file"
+                ? "fileViewerClose"
+                : "sessionViewerClose",
+            { name: location },
+          )}
+        >
+          <FileViewerCloseIcon />
+        </button>
+      )}
     </div>
   );
 

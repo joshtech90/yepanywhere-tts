@@ -5,6 +5,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RelayProtocol, type RelayTransport } from "../RelayProtocol";
+import { ConnectionReconnectingError } from "../types";
 
 function testFile(name: string, body: string, type: string): File {
   const bytes = new TextEncoder().encode(body);
@@ -374,5 +375,52 @@ describe("RelayProtocol hooks", () => {
     });
 
     await expect(fetchPromise).resolves.toEqual({ messages: [] });
+  });
+  it("re-issues a read the transport rejected to replace its socket", async () => {
+    const sent: RemoteClientMessage[] = [];
+    const protocol = new RelayProtocol({
+      sendMessage: (message) => sent.push(message),
+      sendUploadChunk: vi.fn(),
+      ensureConnected: vi.fn(async () => undefined),
+      isConnected: () => true,
+    });
+
+    const pending = protocol.fetch<{ files: string[] }>(
+      "/projects/p/git/status",
+    );
+    await flushUntil(() => sent.length === 1);
+    protocol.rejectAllPending(new ConnectionReconnectingError());
+
+    await flushUntil(() => sent.length === 2);
+    const retried = sent[1] as RelayRequest;
+    expect(retried.path).toBe("/api/projects/p/git/status");
+    protocol.routeMessage({
+      type: "response",
+      id: retried.id,
+      status: 200,
+      body: { files: [] },
+    });
+
+    await expect(pending).resolves.toEqual({ files: [] });
+  });
+
+  it("does not replay a mutation across a transport reconnect", async () => {
+    const sent: RemoteClientMessage[] = [];
+    const protocol = new RelayProtocol({
+      sendMessage: (message) => sent.push(message),
+      sendUploadChunk: vi.fn(),
+      ensureConnected: vi.fn(async () => undefined),
+      isConnected: () => true,
+    });
+
+    const pending = protocol.fetch("/projects/p/git/commit", {
+      method: "POST",
+      body: JSON.stringify({ message: "landing" }),
+    });
+    await flushUntil(() => sent.length === 1);
+    protocol.rejectAllPending(new ConnectionReconnectingError());
+
+    await expect(pending).rejects.toBeInstanceOf(ConnectionReconnectingError);
+    expect(sent).toHaveLength(1);
   });
 });

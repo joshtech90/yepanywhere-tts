@@ -62,6 +62,8 @@ interface UseMessageListIsearchOptions {
   conversationViewEnabled: boolean;
   displayRenderItems: readonly RenderItem[];
   hasOlderMessages?: boolean;
+  loadedMessageCount: number;
+  totalMessageCount?: number;
   historySearchCursor?: string | null;
   historySearchContextKey?: string;
   hydratedHistoryCursor?: string | null;
@@ -83,7 +85,9 @@ interface UseMessageListIsearchResult {
   cancelSearchTargetPreparation: () => void;
   getNavigatorAnchors: () => UserTurnNavAnchor[];
   searchState: UserTurnNavSearchState | null;
-  searchPanel: ReactNode;
+  renderSearchPanel: (
+    activate: (id: string, targetId: string, close: boolean) => void,
+  ) => ReactNode;
   closeSearch: (restoreScroll: boolean) => void;
   getSelectedSearchAnchorId: () => string | null;
   getSelectedSearchTargetId: () => string | null;
@@ -111,6 +115,8 @@ interface OlderSearchState {
   loading: boolean;
   matches: OlderSearchMatch[];
   pagesScanned: number;
+  checkedMessageCount: number;
+  totalMessageCount: number;
 }
 
 interface PendingWorkerRequest {
@@ -132,6 +138,8 @@ function createOlderSearchState(
     loading: false,
     matches: [],
     pagesScanned: 0,
+    checkedMessageCount: 0,
+    totalMessageCount: 0,
   };
 }
 
@@ -140,6 +148,8 @@ export function useMessageListIsearch({
   conversationViewEnabled,
   displayRenderItems,
   hasOlderMessages = false,
+  loadedMessageCount,
+  totalMessageCount = 0,
   historySearchCursor = null,
   historySearchContextKey = "",
   hydratedHistoryCursor = null,
@@ -152,6 +162,10 @@ export function useMessageListIsearch({
   turnGroups,
 }: UseMessageListIsearchOptions): UseMessageListIsearchResult {
   const { t } = useI18n();
+  const [boundary, setBoundary] = useState<
+    "start" | "previous" | "next" | null
+  >(null);
+  const [boundaryPulse, setBoundaryPulse] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchRestoreFocusRef = useRef<HTMLElement | null>(null);
   const searchOriginalScrollTopRef = useRef<number | null>(null);
@@ -422,6 +436,10 @@ export function useMessageListIsearch({
       historySearchAttemptKeyRef.current = requestKey;
       state = {
         ...state,
+        checkedMessageCount:
+          state.pagesScanned === 0
+            ? loadedMessageCount
+            : state.checkedMessageCount,
         error: false,
         key: requestKey,
         loading: true,
@@ -495,6 +513,10 @@ export function useMessageListIsearch({
                 ? combined.slice(-HISTORY_SEARCH_RESULT_LIMIT)
                 : combined,
             pagesScanned: state.pagesScanned + 1,
+            checkedMessageCount:
+              state.checkedMessageCount + page.messages.length,
+            totalMessageCount:
+              page.pagination?.totalMessageCount ?? state.totalMessageCount,
           };
           olderSearchStateRef.current = state;
           setOlderSearchState(state);
@@ -531,6 +553,7 @@ export function useMessageListIsearch({
     [
       conversationViewEnabled,
       historySearchKey,
+      loadedMessageCount,
       onReadOlderSearchPage,
       provider,
       recentProjectPathLinksEnabled,
@@ -577,6 +600,24 @@ export function useMessageListIsearch({
     ],
   );
   const selectedSearchAnchor = userTurnSearchSelectionProjection.selectedAnchor;
+  useEffect(() => {
+    if (
+      searchReady &&
+      !effectiveOlderSearchState.hasOlder &&
+      !effectiveOlderSearchState.limitReached &&
+      selectedSearchAnchor?.id === userTurnSearchMatches[0]?.id &&
+      selectedSearchAnchor?.id
+    ) {
+      setBoundary("start");
+      setBoundaryPulse((pulse) => pulse + 1);
+    }
+  }, [
+    searchReady,
+    effectiveOlderSearchState.hasOlder,
+    effectiveOlderSearchState.limitReached,
+    selectedSearchAnchor?.id,
+    userTurnSearchMatches[0]?.id,
+  ]);
   selectedSearchAnchorIdRef.current = selectedSearchAnchor?.id ?? null;
   const selectedSearchTargetId =
     userTurnSearchSelectionProjection.selectedTargetId;
@@ -685,10 +726,22 @@ export function useMessageListIsearch({
         : -1;
       if (
         direction === "previous" &&
-        (userTurnSearchMatches.length === 0 || currentIndex === 0)
+        (userTurnSearchMatches.length === 0 || currentIndex === 0) &&
+        olderSearchStateRef.current.hasOlder
       ) {
+        setBoundary(null);
         void searchOlder(reverseSearchMaxPagesPerAttempt, true);
         return;
+      }
+      const atBoundary =
+        direction === "previous"
+          ? currentIndex === 0
+          : currentIndex === userTurnSearchMatches.length - 1;
+      if (atBoundary) {
+        setBoundary(direction);
+        setBoundaryPulse((pulse) => pulse + 1);
+      } else {
+        setBoundary(null);
       }
       setUserTurnSearch((previous) => {
         if (!previous.active || userTurnSearchMatches.length === 0) {
@@ -729,6 +782,8 @@ export function useMessageListIsearch({
     }
     searchArrowRepeatDirectionRef.current = null;
   }, []);
+  const moveSearchSelectionRef = useRef(moveSearchSelection);
+  moveSearchSelectionRef.current = moveSearchSelection;
   useEffect(
     () => () => {
       stopSearchArrowRepeat();
@@ -748,13 +803,13 @@ export function useMessageListIsearch({
       searchArrowRepeatDirectionRef.current = direction;
       searchArrowRepeatTimeoutRef.current = setTimeout(() => {
         searchArrowRepeatTimeoutRef.current = null;
-        moveSearchSelection(direction);
+        moveSearchSelectionRef.current(direction);
         searchArrowRepeatIntervalRef.current = setInterval(() => {
-          moveSearchSelection(direction);
+          moveSearchSelectionRef.current(direction);
         }, SEARCH_ARROW_REPEAT_INTERVAL_MS);
       }, SEARCH_ARROW_REPEAT_DELAY_MS);
     },
-    [moveSearchSelection, stopSearchArrowRepeat],
+    [stopSearchArrowRepeat],
   );
   const handleSearchArrowKey = useCallback(
     (direction: "previous" | "next", repeat: boolean) => {
@@ -850,6 +905,7 @@ export function useMessageListIsearch({
   );
   const closeSearch = useCallback(
     (restoreScroll: boolean) => {
+      setBoundary(null);
       const committedTargetId = committedSearchTargetIdRef.current;
       committedSearchTargetIdRef.current = null;
       const restoreOriginalPosition = restoreScroll && !committedTargetId;
@@ -899,6 +955,12 @@ export function useMessageListIsearch({
       if (!canSearch) {
         return;
       }
+      if (userTurnSearch.active) {
+        setBoundary(null);
+        setUserTurnSearch((previous) => ({ ...previous, scope }));
+        searchInputRef.current?.focus({ preventScroll: true });
+        return;
+      }
       const activeElement = document.activeElement;
       searchRestoreFocusRef.current =
         activeElement instanceof HTMLElement && activeElement !== document.body
@@ -925,9 +987,11 @@ export function useMessageListIsearch({
       displayRenderItems.length,
       hasOlderMessages,
       hasUserSearchableTurn,
+      userTurnSearch.active,
     ],
   );
   const handleQueryChange = useCallback((query: string) => {
+    setBoundary(null);
     committedSearchTargetIdRef.current = null;
     setUserTurnSearch((previous) => ({
       ...previous,
@@ -936,6 +1000,7 @@ export function useMessageListIsearch({
     }));
   }, []);
   const toggleCaseSensitive = useCallback(() => {
+    setBoundary(null);
     committedSearchTargetIdRef.current = null;
     setUserTurnSearch((previous) =>
       previous.active
@@ -1008,100 +1073,202 @@ export function useMessageListIsearch({
     userTurnSearch.active && typeof document !== "undefined"
       ? document.querySelector<HTMLElement>(".session-input-inner")
       : null;
-  const searchPanel = userTurnSearch.active ? (
-    <div className={styles.panel} role="search">
-      <div className={styles.main}>
-        <span className={styles.label}>{searchPanelProjection.scopeLabel}</span>
-        <input
-          ref={searchInputRef}
-          className={styles.input}
-          value={userTurnSearch.query}
-          onChange={(event) => handleQueryChange(event.target.value)}
-          placeholder="reverse search"
-          aria-label={searchPanelProjection.scopeAriaLabel}
-        />
-        <button
-          type="button"
-          className={[
-            styles.caseToggle,
-            userTurnSearch.caseSensitive ? styles.active : "",
-          ]
-            .filter(Boolean)
-            .join(" ")}
-          aria-label="Case-sensitive search"
-          aria-pressed={userTurnSearch.caseSensitive}
-          title={
-            userTurnSearch.caseSensitive
-              ? "Case-sensitive search on"
-              : "Case-sensitive search off"
-          }
-          onMouseDown={(event) => event.preventDefault()}
-          onClick={toggleCaseSensitive}
-        >
-          Aa
-        </button>
-        <span className={styles.count}>{searchPanelProjection.countLabel}</span>
-      </div>
-      {selectedOlderSearchMatch && (
-        <div className={styles.olderPreview} role="status">
-          <span className={styles.olderPreviewLabel}>
-            {hydratingSearchId === selectedOlderSearchMatch.id
-              ? t("sessionSearchLoadingResult")
-              : t("sessionSearchOlderResult")}
-          </span>
-          <span className={styles.olderPreviewText}>
-            {selectedOlderSearchMatch.preview}
-          </span>
-        </div>
-      )}
-      {searchReady && onReadOlderSearchPage && (
-        <div className={styles.olderControls}>
-          {effectiveOlderSearchState.hasOlder &&
-            !effectiveOlderSearchState.limitReached && (
-              <button
-                type="button"
-                className={styles.olderButton}
-                disabled={effectiveOlderSearchState.loading}
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => void searchOlder()}
-              >
-                {effectiveOlderSearchState.loading
-                  ? t("sessionSearchSearchingOlder")
-                  : effectiveOlderSearchState.pagesScanned > 0
-                    ? t("sessionSearchMoreOlder")
-                    : t("sessionSearchOlder")}
-              </button>
-            )}
-          {(effectiveOlderSearchState.error ||
-            effectiveOlderSearchState.pagesScanned > 0) && (
-            <span className={styles.olderStatus}>
-              {effectiveOlderSearchState.error
-                ? t("sessionSearchOlderError")
-                : effectiveOlderSearchState.limitReached
-                  ? t("sessionSearchOlderLimit")
-                  : !effectiveOlderSearchState.hasOlder
-                    ? t("sessionSearchStartReached")
-                    : t("sessionSearchOlderPages", {
-                        count: effectiveOlderSearchState.pagesScanned,
-                      })}
+  const checkedTotal = Math.max(
+    totalMessageCount,
+    effectiveOlderSearchState.totalMessageCount,
+  );
+  const checkedPercent =
+    !effectiveOlderSearchState.hasOlder &&
+    !effectiveOlderSearchState.limitReached
+      ? 100
+      : checkedTotal > 0
+        ? Math.min(
+            99,
+            Math.floor(
+              (100 *
+                Math.max(
+                  loadedMessageCount,
+                  effectiveOlderSearchState.checkedMessageCount,
+                )) /
+                checkedTotal,
+            ),
+          )
+        : null;
+  const renderSearchPanel = (
+    activate: (id: string, targetId: string, close: boolean) => void,
+  ) => {
+    const activateSelected = (close: boolean) => {
+      if (selectedSearchAnchor && selectedSearchTargetId) {
+        activate(selectedSearchAnchor.id, selectedSearchTargetId, close);
+      }
+    };
+    const searchPanel = userTurnSearch.active ? (
+      <div className={styles.panel} role="search">
+        <div className={styles.main}>
+          <div className={styles.queryRow}>
+            <span className={styles.label}>
+              {searchPanelProjection.scopeLabel}
             </span>
-          )}
+            <input
+              ref={searchInputRef}
+              className={styles.input}
+              value={userTurnSearch.query}
+              onChange={(event) => handleQueryChange(event.target.value)}
+              placeholder="reverse search"
+              aria-label={searchPanelProjection.scopeAriaLabel}
+            />
+          </div>
+          <button
+            type="button"
+            className={[
+              styles.caseToggle,
+              userTurnSearch.caseSensitive ? styles.active : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            aria-label="Case-sensitive search"
+            aria-pressed={userTurnSearch.caseSensitive}
+            title={
+              userTurnSearch.caseSensitive
+                ? "Case-sensitive search on"
+                : "Case-sensitive search off"
+            }
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={toggleCaseSensitive}
+          >
+            Aa
+          </button>
+          <span
+            className={styles.coverage}
+            role="status"
+            title={t("sessionSearchCoverage")}
+            aria-label={t("sessionSearchCoverage")}
+          >
+            {checkedPercent === null ? "—" : `${checkedPercent}%`}
+          </span>
+          <div className={styles.navigation}>
+            <button
+              type="button"
+              className={styles.previous}
+              aria-label={t("sessionSearchPrevious")}
+              disabled={
+                !searchReady ||
+                effectiveOlderSearchState.loading ||
+                (userTurnSearchMatches.length === 0 &&
+                  !effectiveOlderSearchState.hasOlder)
+              }
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => moveSearchSelection("previous")}
+            >
+              ↑
+            </button>
+            <button
+              type="button"
+              className={styles.next}
+              aria-label={t("sessionSearchNext")}
+              disabled={
+                userTurnSearchMatches.length === 0 ||
+                effectiveOlderSearchState.loading
+              }
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => moveSearchSelection("next")}
+            >
+              ↓
+            </button>
+            <button
+              type="button"
+              className={styles.go}
+              aria-label={t("sessionSearchGoLabel")}
+              disabled={!selectedSearchAnchor || hydratingSearchId !== null}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => activateSelected(true)}
+            >
+              {t("sessionSearchGo")}
+            </button>
+          </div>
+          <span className={styles.count}>
+            {searchPanelProjection.countLabel}
+          </span>
         </div>
-      )}
-      <div className={styles.help}>
-        <span>
-          {t("sessionSearchHelpNavigate", {
-            shortcutKeys: searchPanelProjection.shortcutKeys,
-          })}
-        </span>
-        <span>{t("sessionSearchHelpClose")}</span>
+        {boundary && (
+          <div key={boundaryPulse} className={styles.boundary} role="status">
+            {t(
+              boundary === "start"
+                ? "sessionSearchStartReached"
+                : boundary === "previous"
+                  ? "sessionSearchStartWrap"
+                  : "sessionSearchEndWrap",
+            )}
+          </div>
+        )}
+        {selectedOlderSearchMatch && (
+          <button
+            type="button"
+            className={styles.olderPreview}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => activateSelected(false)}
+          >
+            <span className={styles.olderPreviewLabel}>
+              {hydratingSearchId === selectedOlderSearchMatch.id
+                ? t("sessionSearchLoadingResult")
+                : t("sessionSearchOlderResult")}
+            </span>
+            <span className={styles.olderPreviewText}>
+              {selectedOlderSearchMatch.preview}
+            </span>
+          </button>
+        )}
+        {searchReady && onReadOlderSearchPage && (
+          <div className={styles.olderControls}>
+            {effectiveOlderSearchState.hasOlder &&
+              !effectiveOlderSearchState.limitReached && (
+                <button
+                  type="button"
+                  className={styles.olderButton}
+                  disabled={effectiveOlderSearchState.loading}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void searchOlder()}
+                >
+                  {effectiveOlderSearchState.loading
+                    ? t("sessionSearchSearchingOlder")
+                    : effectiveOlderSearchState.pagesScanned > 0
+                      ? t("sessionSearchMoreOlder")
+                      : t("sessionSearchOlder")}
+                </button>
+              )}
+            {(effectiveOlderSearchState.error ||
+              effectiveOlderSearchState.pagesScanned > 0) && (
+              <span className={styles.olderStatus}>
+                {effectiveOlderSearchState.error
+                  ? t("sessionSearchOlderError")
+                  : effectiveOlderSearchState.limitReached
+                    ? t("sessionSearchOlderLimit")
+                    : !effectiveOlderSearchState.hasOlder &&
+                        boundary !== "start"
+                      ? t("sessionSearchStartReached")
+                      : !effectiveOlderSearchState.hasOlder
+                        ? null
+                        : t("sessionSearchOlderPages", {
+                            count: effectiveOlderSearchState.pagesScanned,
+                          })}
+              </span>
+            )}
+          </div>
+        )}
+        <div className={styles.help}>
+          <span>
+            {t("sessionSearchHelpNavigate", {
+              shortcutKeys: searchPanelProjection.shortcutKeys,
+            })}
+          </span>
+          <span>{t("sessionSearchHelpClose")}</span>
+        </div>
       </div>
-    </div>
-  ) : null;
-  const portaledSearchPanel =
-    searchPanelTarget && searchPanel
+    ) : null;
+    return searchPanelTarget && searchPanel
       ? createPortal(searchPanel, searchPanelTarget)
       : searchPanel;
+  };
 
   return {
     active: userTurnSearch.active,
@@ -1110,7 +1277,7 @@ export function useMessageListIsearch({
     cancelSearchTargetPreparation,
     getNavigatorAnchors,
     searchState,
-    searchPanel: portaledSearchPanel,
+    renderSearchPanel,
     closeSearch,
     getSelectedSearchAnchorId,
     getSelectedSearchTargetId,

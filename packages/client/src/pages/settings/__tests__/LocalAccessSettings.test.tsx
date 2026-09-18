@@ -4,11 +4,13 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  render as renderWithoutRouter,
   screen,
   waitFor,
 } from "@testing-library/react";
 import { APPROVAL_AUDIT_LOG_CAPABILITY } from "@yep-anywhere/shared";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   FileAccessInfo,
@@ -128,6 +130,10 @@ const baseSettings: ServerSettings = {
   persistRemoteSessionsToDisk: false,
   fileAccess: baseFileAccess,
 };
+
+function render(ui: ReactElement) {
+  return renderWithoutRouter(<MemoryRouter>{ui}</MemoryRouter>);
+}
 
 function checkboxFor(labelKey: string): HTMLInputElement {
   return screen.getByRole("checkbox", {

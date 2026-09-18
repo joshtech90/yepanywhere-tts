@@ -154,7 +154,7 @@ synthesis was written; the related gaps and plans below were inspected.
 
 | Work | Evidence / status as reviewed 2026-09-13 | What it contributes |
 | --- | --- | --- |
-| [Released Remote Executors](../docs/project/remote-executors.md) | Claude-family SSH/rsync implementation; [provider-neutral gap](../gaps/provider-neutral-remote-executors.md) remains | SSH configuration and process transport experience; historical resume contract |
+| [Released Remote Executors](../docs/project/remote-executors.md) | Claude-family SSH/rsync implementation; [provider-neutral gap](../gaps/sketches/provider-neutral-remote-executors.md) remains | SSH configuration and process transport experience; historical resume contract |
 | [Reload-safe provider runtimes](reload-safe-provider-runtimes.md) and [host API](provider-host-api.md) | Implemented Linux/macOS Node source-checkout scope; distribution/runtime restrictions remain | Complete provider owner survives Hono replacement; local control, event sequencing and recovery |
 | [Core service API](core-service-api.md) | Headless/embeddable service remains a proposal | Candidate boundary for sharing session services without requiring the full UI |
 | [Managed remote executors](managed-remote-executors.md), [tactical 119](../docs/tactical/119-managed-ssh-executor-baseline.md) | Gates A–C and Gate D isolated-transcript proof accepted 2026-08-26; operator-only | Injected provider-neutral runner, manual SSH, exact-commit workspace round trip, Codex auth projection and transcript mirror |
@@ -166,7 +166,7 @@ synthesis was written; the related gaps and plans below were inspected.
 | [Relay mux](relay-client-mux.md) | Optional compatibility-gated multiplexing contract | Several separately authenticated circuits over one socket; no implicit membership or peer trust |
 | [Optional Computer Control](optional-computer-control.md), [tactical 131](../docs/tactical/131-optional-windows-computer-control.md) | Windows Node/local Codex preview accepted 2026-09-12; release delivery pending | Direct Machine Control IPC, session-selected grants and shared native implementation without a remote worker |
 | [Agent self](agent-self.md), [session access](agent-session-access.md), [ask-session](ask-session.md) | Self-inspection implemented; broader coordination/ask proposals retain their own gates | Agent-facing identity, scoped controls and bounded results |
-| [Workstreams](workstreams.md) and [yacron](yacron.md) | Proposed lanes; [general scheduler gap](../gaps/yacron-scheduler.md) remains | Workspace parallelism and durable dispatch are adjacent decisions, not consequences of multi-host connectivity |
+| [Workstreams](workstreams.md) and [yacron](yacron.md) | Proposed lanes; [general scheduler gap](../gaps/sketches/yacron-scheduler.md) remains | Workspace parallelism and durable dispatch are adjacent decisions, not consequences of multi-host connectivity |
 
 Older high-level proposals can lag completed spikes. In particular, the managed
 runner targets topic still contains early missing-protocol language; use
@@ -361,7 +361,11 @@ to submit their text or control the provider.
 
 Project-wide read/write sharing and live pointer/caret sharing remain open
 extensions; the existing sketch specifies synchronized composer text, not
-those broader contracts. “Write” must distinguish sending agent input from
+those broader contracts. Zed's Delta is the nearest external prior art for a
+live multi-person agent thread; the
+[DeltaDB review](../docs/competitive/deltadb.md) compares it and motivates
+[named participant seats](../gaps/sketches/named-participant-seats.md) as the
+display-identity step that precedes any principal design. “Write” must distinguish sending agent input from
 editing files, approving tools, managing sessions or publishing changes.
 Today's [public bearer-link shares](relay-origin-and-share-gating.md#public-share-authorization)
 remain read-only and must not silently acquire these rights.

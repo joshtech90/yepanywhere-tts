@@ -577,6 +577,14 @@ already covers whole-paragraph quoting on those platforms.
 
 ## Decisions
 
+- 2026-09-15 — **Quote-reply is the delivery format chosen for the model,
+  not a UI limitation.** The receiving model gets an ordinary turn with a
+  `>` block naming exactly what is discussed, the form it reads most
+  efficiently, rather than an anchored annotation it must be instructed to
+  find. Where a comment *lives* for human readers is a separate decision
+  (review sites stay at their line; margin notes stay at their passage);
+  what the model *receives* stays a quoted turn.
+
 - 2026-08-15 — **Selection behavior has three lifecycle owners behind one
   composition hook** (vs. one hook owning anchors, global capture, and React
   presentation): each owner can be exercised independently while callers keep

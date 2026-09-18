@@ -7,6 +7,8 @@ export type {
 } from "./types";
 export {
   WebSocketCloseError,
+  ConnectionReconnectingError,
+  isConnectionReconnectingError,
   RelayReconnectRequiredError,
   SubscriptionError,
   isNonRetryableError,

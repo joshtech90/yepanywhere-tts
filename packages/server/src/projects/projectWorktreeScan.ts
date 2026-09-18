@@ -11,6 +11,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { readGitDiffFileChanges } from "../git/fileChanges.js";
 import { GIT_DECODE_PATHS_ARGS, runGit } from "../git/gitExec.js";
+import { listLocallyExcludedPaths } from "../git/locallyExcluded.js";
 import { getLogger } from "../logging/logger.js";
 import { getGitStatus } from "../routes/git-status.js";
 import { compareWorktreePaths } from "./projectWorktreeCoverage.js";
@@ -281,11 +282,7 @@ export async function scanGitWorktree(
       ? listGitPaths(projectPath, ["--others", "--exclude-standard"])
       : [],
     coverage.ignored
-      ? listGitPaths(projectPath, [
-          "--others",
-          "--ignored",
-          "--exclude-standard",
-        ])
+      ? listLocallyExcludedPaths(projectPath, { maxBuffer: MAX_BUFFER })
       : [],
   ]);
   const baseSha = headSha ? await resolveCommit(projectPath, "HEAD^1") : null;

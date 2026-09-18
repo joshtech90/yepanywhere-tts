@@ -29,7 +29,7 @@ import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
-import { ArtifactSettings } from "./ArtifactSettings";
+import { AppsSettingsLink } from "./AppsSettings";
 
 const DEFAULT_PUBLIC_SHARE_VIEWER_BASE_URL = buildYaClientPublicShareBaseUrl(
   DEFAULT_YA_CLIENT_BASE_URL,
@@ -623,7 +623,7 @@ export function RemoteAccessSettings() {
 
     return (
       <SettingsSection description={t("remoteAccessConnectedDescription")}>
-        <ArtifactSettings />
+        <AppsSettingsLink />
         {hostAwakeConfig}
         {publicShareConfig}
         {yaClientInfo}
@@ -670,7 +670,7 @@ export function RemoteAccessSettings() {
   // Server-side: show relay configuration
   return (
     <SettingsSection>
-      <ArtifactSettings />
+      <AppsSettingsLink />
       {hostIdentityItem && (
         <div className="settings-group">{hostIdentityItem}</div>
       )}

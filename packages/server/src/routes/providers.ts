@@ -3,6 +3,7 @@ import type {
   ProviderName,
   ProviderSubscriptionUsage,
 } from "@yep-anywhere/shared";
+import { providerSupportsBoundedTurnSearch } from "@yep-anywhere/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { detectDesktopProviderApplication } from "../desktop/providerDetection.js";
@@ -165,6 +166,9 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
           provider.supportsLaunchCompactPercentOverride,
         promptCacheKeepalive: provider.promptCacheKeepalive,
         supportsForkSession: typeof provider.forkSession === "function",
+        supportsBoundedTurnSearch: providerSupportsBoundedTurnSearch(
+          provider.name,
+        ),
       } satisfies ProviderInfo,
     };
   };

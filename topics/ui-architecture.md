@@ -93,6 +93,21 @@ fixed over the page at 2px from the top-left viewport edge. The floating toggle
 is an overlay: page headers and content do not add padding or otherwise reflow
 around it.
 
+Every desktop mode carries its own toggle: expanded mode puts it at the right
+edge of the sidebar header opposite the brand, collapsed mode centers it in the
+rail, and minimized mode is the floating restore control. Page headers show a
+sidebar control only when the sidebar is an overlay rather than a persistent
+column — the narrow-viewport case and the content-frame routes. A page header
+with no leading control widens its left inset, since the missing button's own
+padding no longer supplies it.
+
+The sidebar header's controls align on the brand glyph, not on a line of text.
+That holds because the brand anchor is a flex container: as a block it would
+build a line box reserving the font's descender space below the glyph, and
+centering that bottom-padded box would leave every other control in the row
+sitting visibly low. Buttons in the row also absorb their own padding at the
+sidebar edge so their icon ink matches the wordmark's inset.
+
 Minimize is available only from the collapsed desktop rail. Its small
 bottom-line control removes the entire rail, and the floating standard toggle
 restores the collapsed rail rather than expanding it. Mobile overlay behavior

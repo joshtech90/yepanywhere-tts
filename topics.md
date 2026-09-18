@@ -13,6 +13,8 @@
   done/archive/terminate session boundaries.
 - pluggable-speech-recognition - YA server-routed speech backends and browser-native fallback.
 - cost-efficiency - Preferring subscription/local over metered APIs; billing footgun masking.
+- gateway-services - Configured model-serving endpoints: lifecycle, union
+  catalogs, declared sizes, thinking-effort levels, and CodexOSS use.
 - ya-env-vars - Catalog of YA env vars and the canonical YEP_/YEP_MODULE_
   naming conventions.
 - subprocess-environment - Runtime child-environment, shell-startup, and
@@ -51,6 +53,7 @@
 - claude - Claude provider control, restart/resume safety, interviews, and YA-owned process bridges.
 - edit-turn - Inline editing proposal for queued/sent user turns with a visible Esc/cancel escape hatch.
 - resume-compaction - Compact-before-resume choice for old or context-heavy provider sessions.
+- post-compact-replay - Default-off per-provider hidden continuation after compaction, with optional last-N prose replay.
 - steer-queue-provider-differences - Claude now/next/later lanes, Codex steer vs app-held queueing, and turn-end signals behind YA send modes.
 - vanilla-defaults - Overarching UX theory: first-party-familiar out of the box; YA-novel user-visible behavior is configurable default-off.
 - streaming-speech-capture - Client PCM capture contracts, warm-mic latency, and AudioWorklet follow-up.
@@ -301,6 +304,8 @@
   job-completion client (design topic; implementation series to follow).
 - parked-file-viewer - Preserve document reading state while a persistent
   composer controller or session-list drawer uncovers the live session.
+- session-right-pane - Opt-in session column for vhost apps (later files):
+  drawer on narrow viewports, resizable split on wide, sidebar collapse.
 - settings-ui-placement - Reviewed settings copy, placement, defaults, and
   externally visible behavior that the UI can state with confidence.
 - cache-aware-session-bootstrap - Current cold-start context placement and the
@@ -308,8 +313,8 @@
 - agent-context-injection - Provider-specific placement and compaction
   durability for YA, harness, and project instructions; candidate boot and
   protected-capsule mechanisms live in its sketches companion.
-- all-session-content-search - Current catalog/in-session search boundary and
-  explicit absence of a cross-session transcript-content index.
+- all-session-content-search - Incremental catalog and bounded turn search,
+  selection intersections, compatibility, and the remaining disk-index gap.
 - source-review-followups - Optional clarification, discussion,
   source-comment, and gap annotations for a future review-sweep workflow.
 - user-authorization-attestation - Current absence of signed gate-specific

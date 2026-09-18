@@ -1,3 +1,11 @@
+import {
+  parseVhostPublicRoot,
+  parseVhosts,
+  type ArtifactVhost,
+} from "./vhosts.js";
+
+export type { ArtifactVhost };
+
 export interface ArtifactConfig {
   port: number;
   localOrigin?: string;
@@ -8,6 +16,10 @@ export interface ArtifactConfig {
   expiryHours?: number;
   /** Default ownership for a grant that does not state one. */
   deleteOnExpiry?: boolean;
+  /** Static loopback Host maps; empty means none. */
+  vhosts?: ArtifactVhost[];
+  /** Optional apex such as graehl.org; unset means name.localhost only. */
+  vhostPublicRoot?: string;
 }
 
 /** A week is long enough to open a link again, short enough to forget. */
@@ -20,6 +32,7 @@ export function validateArtifactConfig(
   value: unknown,
   defaultExpiryDays = DEFAULT_ARTIFACT_EXPIRY_DAYS,
   defaultDeleteOnExpiry = false,
+  previous?: Pick<ArtifactConfig, "vhosts" | "vhostPublicRoot">,
 ): ArtifactConfig {
   if (!value || typeof value !== "object")
     throw new Error("Artifact configuration must be an object");
@@ -73,11 +86,20 @@ export function validateArtifactConfig(
   };
   const config = readArtifactConfig(env);
   if (!config) throw new Error("Artifact port must be from 1 to 65535");
+  const vhosts = parseVhosts(input.vhosts, previous?.vhosts);
+  if (vhosts.some((vhost) => vhost.port === config.port))
+    throw new Error("Vhost port cannot be the artifact listener port");
+  const vhostPublicRoot = parseVhostPublicRoot(
+    input.vhostPublicRoot,
+    previous?.vhostPublicRoot,
+  );
   return {
     ...config,
     expiryDays,
     expiryHours: expiryDays * 24,
     deleteOnExpiry,
+    vhosts,
+    ...(vhostPublicRoot ? { vhostPublicRoot } : {}),
   };
 }
 

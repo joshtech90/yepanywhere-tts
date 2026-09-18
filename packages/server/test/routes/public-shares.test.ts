@@ -234,6 +234,68 @@ describe("public share public routes", () => {
     );
   });
 
+  it("links project files a live share already serves, and nothing outside", async () => {
+    const projectRoot = path.join(testDir, "project");
+    await fs.mkdir(path.join(projectRoot, "gaps"), { recursive: true });
+    await fs.writeFile(
+      path.join(projectRoot, "gaps", "thresholds.md"),
+      "gap\n",
+    );
+    const outsideDir = path.join(testDir, "outside");
+    await fs.mkdir(outsideDir);
+    await fs.writeFile(path.join(outsideDir, "secret.md"), "secret\n");
+
+    const commandMessage = makeAssistantMessage("ignored");
+    (commandMessage.message as unknown as { content: unknown[] }).content = [
+      {
+        type: "tool_use",
+        id: "tool-1",
+        name: "Bash",
+        input: { command: "cat gaps/thresholds.md" },
+      },
+    ];
+    const session = makeSession({
+      messages: [
+        makeAssistantMessage(
+          `I filed \`gaps/thresholds.md\` for that, not \`${path.join(outsideDir, "secret.md")}\`.`,
+        ),
+        commandMessage,
+      ],
+    });
+    const { secret } = await service.createShare({
+      mode: "live",
+      title: "Live links",
+      source: { projectId, sessionId: "session-1" },
+    });
+    const app = createPublicSharePublicRoutes({
+      publicShareService: service,
+      loadSession: vi.fn(async () => session),
+      getPublicSharesEnabled: () => true,
+    });
+
+    const response = await app.request(`/${secret}`);
+    const body = (await response.json()) as PublicSessionShareResponse;
+    const textBlock = (body.session.messages[0] as AppAssistantMessage).message
+      .content[0] as { _html?: string };
+
+    expect(response.status).toBe(200);
+    expect(textBlock._html).toContain(
+      `href="/projects/${projectId}/file?path=gaps%2Fthresholds.md"`,
+    );
+    // The share client unwraps this marker back into plain code, so a link the
+    // share can actually serve must not carry it.
+    expect(textBlock._html).not.toContain("data-ya-private-project-file-link");
+    expect(textBlock._html).not.toContain("secret.md</code></a>");
+
+    const commandInput = (body.session.messages[1] as AppAssistantMessage)
+      .message.content[0] as {
+      input?: { _projectPathLinks?: Array<{ filePath: string; text: string }> };
+    };
+    expect(commandInput.input?._projectPathLinks).toEqual([
+      { filePath: "gaps/thresholds.md", text: "gaps/thresholds.md" },
+    ]);
+  });
+
   it("streams one frozen revision through the compact wire format", async () => {
     const snapshot = makeSession({ title: "Streamed snapshot" });
     const { secret } = await service.createShare({

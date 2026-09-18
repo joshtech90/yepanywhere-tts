@@ -7,8 +7,10 @@
 
 Companion to: [all-session-content-search](all-session-content-search.md)
 
-Status: **proposal only**. No index, route, capability, or client surface is
-approved for implementation.
+Status: **index proposal only**. The production UI and bounded scan route were
+approved on 2026-09-14; their current contract is in the main topic. The index,
+background maintenance, display normalization and indexing measurements below
+remain candidates. The UI uses independent Title / Ass. / User checkboxes.
 
 Related topics: [session-catalog-observation](session-catalog-observation.md),
 [session-detail-data-layer](session-detail-data-layer.md),
@@ -33,7 +35,7 @@ provider, timestamp, turn role, a bounded highlighted excerpt, and a stable
 deep link to the matched turn. Existing All Sessions metadata filters remain
 composable with content search.
 
-The role selector is **User / Assistant / Both**:
+The index covers the independently selectable user and assistant scopes:
 
 - **User** indexes text the user actually submitted, before any YA/provider
   context injection.
@@ -68,6 +70,11 @@ candidate.
 
 ## Indexed prefix plus asynchronous completion
 
+Further UI candidates include restoring field choices, explicit selection and
+scroll position when returning from a session; showing displayed versus total
+distinct-turn counts when coverage is known; and making neighboring context
+independently linkable. These are separate from the shipped initial controls.
+
 One query can combine two evidence sources:
 
 1. A durable combined index covers transcript items through explicit
@@ -89,13 +96,39 @@ invalidate the affected shard instead of certifying stale text.
 
 ## Index shape
 
-The contract is an all-substrings index; the data structure is deliberately
-open. A plain trie indexes prefixes and is not sufficient. Inserting every
+The current scan contract permits arbitrary substrings; the index structure
+is deliberately open. A plain trie indexes prefixes and is not sufficient. Inserting every
 suffix into a trie would create unacceptable amplification on long transcripts.
 Likely candidates include a normalized trigram inverted index, a suffix
 automaton/tree with measured storage behavior, or a hybrid whose postings
 identify candidate turns and whose final comparison verifies the exact
 substring.
+
+### Word-boundary alternative and scan reuse
+
+The maintainer prefers indexing over overlapping repeated sweeps. A restriction
+that queries start at a word boundary remains a candidate: `select` can match
+`selection`, but not `preselection`. Multiword queries still need exact phrase
+verification. Define boundaries for identifiers, paths, punctuation and
+non-Latin text before adopting that product change.
+
+For N character positions and B allowed starts, a plain suffix-offset array
+stores N versus B entries. N/B is the mean spacing between starts; it is not a
+general multiplier for total index size or query latency. Shared text, metadata,
+compression and update structures change that accounting. Compare token-prefix
+and trigram candidates, with an explicit one- and two-character query policy,
+before restricting matching. See the [SQLite FTS5 trigram documentation](https://www.sqlite.org/fts5.html#the_trigram_tokenizer).
+
+For uncovered tails, the user proposed retaining scan A while strict refinements
+filter its arrivals and a narrower scan B starts. When a third scan C is needed,
+cancel B if it has not filled the screen with distinct session results;
+otherwise cancel A. A completed B is authoritative even if empty. Reuse needs
+the same source/scope generation and a proven query-subset relation; backspace,
+role and time changes cannot reuse old negatives. Bound buffers, parallelism,
+and cancellation waste. This two-scan scheduler remains a candidate, not the
+initial implementation. Benchmark whether it merits the complexity before
+adding it; a bounded worker or off-node acquisition may better protect the
+server's main thread.
 
 Partition the durable index into bounded project/provider shards so one cold
 project can be rebuilt or evicted without loading the global corpus into RAM.

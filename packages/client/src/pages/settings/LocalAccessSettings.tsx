@@ -23,7 +23,7 @@ import { HideInSettingsSearch } from "./SettingsSearchContext";
 import { SettingsSection } from "./SettingsSection";
 import { useSettingsUndo } from "./SettingsUndoContext";
 import styles from "./LocalAccessSettings.module.css";
-import { ArtifactSettings } from "./ArtifactSettings";
+import { AppsSettingsLink } from "./AppsSettings";
 
 /** File-access form state — `custom` is edited as newline-separated text. */
 interface FileAccessForm {
@@ -733,7 +733,6 @@ export function LocalAccessSettings() {
 
     return (
       <SettingsSection description={t("localAccessDescription")}>
-        <ArtifactSettings />
         {/* Current status */}
         <HideInSettingsSearch>
           <div className="settings-group">
@@ -1106,6 +1105,7 @@ export function LocalAccessSettings() {
             </SettingsItem>
           </div>
         )}
+        <AppsSettingsLink />
       </SettingsSection>
     );
   }
@@ -1116,7 +1116,6 @@ export function LocalAccessSettings() {
 
     return (
       <SettingsSection description={t("localAccessRemoteDescription")}>
-        <ArtifactSettings />
         {remoteFileAccessReady ? (
           <div className="settings-group">{renderFileAccessSettings()}</div>
         ) : (
@@ -1149,6 +1148,7 @@ export function LocalAccessSettings() {
             </button>
           </SettingsItem>
         </div>
+        <AppsSettingsLink />
       </SettingsSection>
     );
   }

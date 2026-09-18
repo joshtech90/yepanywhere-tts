@@ -17,23 +17,31 @@ import os
 import sys
 import tempfile
 
-
-def suffix_for_mime(mime: str) -> str:
-    if "ogg" in mime:
-        return ".ogg"
-    if "mp4" in mime or "m4a" in mime:
-        return ".mp4"
-    if "wav" in mime:
-        return ".wav"
-    if "mp3" in mime:
-        return ".mp3"
-    return ".webm"
+from stt_worker_common import suffix_for_mime, unlink_if_present
 
 
 def main() -> None:
     model_name = sys.argv[1] if len(sys.argv) > 1 else "distil-large-v3.5"
     device = sys.argv[2] if len(sys.argv) > 2 else "cpu"
     compute_type = sys.argv[3] if len(sys.argv) > 3 else "int8"
+
+    # The dynamic loader reads its search path at process start. Re-exec once
+    # with only this isolated environment's CUDA libraries, before native imports.
+    if device != "cpu" and sys.platform == "linux" and not os.environ.get("YA_WHISPER_CUDA_READY"):
+        try:
+            import nvidia.cublas.lib
+            import nvidia.cudnn.lib
+
+            env = dict(os.environ)
+            env["LD_LIBRARY_PATH"] = ":".join(
+                str(next(iter(module.__path__)))
+                for module in (nvidia.cublas.lib, nvidia.cudnn.lib)
+            )
+            env["YA_WHISPER_CUDA_READY"] = "1"
+            os.execve(sys.executable, [sys.executable, *sys.argv], env)
+        except Exception as exc:
+            print(json.dumps({"error": f"Whisper CUDA setup failed: {exc}"}), flush=True)
+            sys.exit(1)
 
     sys.stderr.write(
         f"[whisper_worker] Loading {model_name} on {device}/{compute_type}...\n"
@@ -84,7 +92,7 @@ def main() -> None:
                 text = " ".join(s.text.strip() for s in segments).strip()
                 sys.stdout.write(json.dumps({"text": text}) + "\n")
             finally:
-                os.unlink(tmpfile)
+                unlink_if_present(tmpfile)
 
         except Exception as exc:  # noqa: BLE001 - Keep the worker alive after a failed request.
             sys.stdout.write(json.dumps({"error": str(exc)}) + "\n")

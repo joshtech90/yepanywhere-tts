@@ -473,6 +473,12 @@ test("groups semantic file sections and keeps current-content browsing distinct"
   page,
   baseURL,
 }) => {
+  // Three page loads, two viewport switches, a dialog round trip, and a commit
+  // range load take about six seconds on an idle host, so a busy one has run
+  // the default fifteen out at the final viewport switch with every assertion
+  // already satisfied. Take the tripled budget rather than raise it for tests
+  // that do a fraction of this work.
+  test.slow();
   liveWorktreeMonitoringActive = true;
   await setLiveWorktreeMonitoring(baseURL, true);
   prepareBrowsingFixture();

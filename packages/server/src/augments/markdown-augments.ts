@@ -113,6 +113,7 @@ function markdownCacheKey(
     projectLinks?.projectId ?? null,
     projectLinks?.projectPath ?? null,
     projectLinks?.pathDiscovery ?? "resolve",
+    projectLinks?.publicShare ?? false,
     fileExistsIdentity(projectLinks?.fileExists),
     fileExistsIdentity(projectLinks?.knownAbsoluteFilePaths),
     fileExistsIdentity(projectLinks?.resolveAbsoluteFilePaths),

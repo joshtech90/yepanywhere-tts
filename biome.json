@@ -113,7 +113,8 @@
       },
       "style": {
         "noDescendingSpecificity": "off",
-        "noNonNullAssertion": "off"
+        "noNonNullAssertion": "off",
+        "useTemplate": "off"
       },
       "a11y": {
         "noLabelWithoutControl": "warn",

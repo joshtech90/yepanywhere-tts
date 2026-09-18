@@ -79,6 +79,13 @@ export function concatUserMessages(
     ...(first.metadata ? { metadata: first.metadata } : {}),
     ...(first.mode ? { mode: first.mode } : {}),
   };
+  const sourceSessionId = [...messages]
+    .reverse()
+    .find((message) => message.metadata?.sourceSessionId)
+    ?.metadata?.sourceSessionId;
+  if (sourceSessionId) {
+    combined.metadata = { ...combined.metadata, sourceSessionId };
+  }
   // Record every chunk's temp id so the delivered-turn echo can clear all of
   // the queued chips by identity (the merged text is time-marked and would not
   // match the originally-typed chunk text).

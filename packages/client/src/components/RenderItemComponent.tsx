@@ -47,8 +47,10 @@ import {
 import {
   CONVERSATION_CONTEXT_RESERVE_LINES,
   CONVERSATION_PROSE_LINE_HEIGHT_RATIO,
+  cardsShareFlexLine,
   conversationRowHeightCeilingPx,
   stackedThinkingBudgetPx,
+  stabilizePublishedPx,
 } from "../lib/sessionDetail/thinkingPreviewBudget";
 import { ThinkingText } from "./ThinkingText";
 import { MessageAge } from "./MessageAge";
@@ -68,6 +70,7 @@ import { LinkifiedText } from "./ui/LinkifiedText";
 import styles from "./RenderItemComponent.module.css";
 import { WorkflowContext } from "./WorkflowOutput";
 import { WorkflowAssistantOutput } from "./WorkflowAssistantOutput";
+import { SessionAppLinks } from "./SessionAppLinks";
 
 interface Props {
   item: RenderItem;
@@ -232,6 +235,15 @@ function systemDetailToText(detail: string | ContentBlock[]): string {
 const COMPACT_EMPTY_DETAIL =
   "No provider summary was retained for this compaction.";
 
+/**
+ * The local-command marker is itself a slash, so a row whose text already
+ * starts with the command's own slash would read as a stray "/ /command".
+ * Drop the marker there; the command name carries it.
+ */
+function systemIconForText(icon: string, text: string): string {
+  return icon === "/" && text.trimStart().startsWith("/") ? "" : icon;
+}
+
 function CollapsibleSystemMessage({
   item,
   icon,
@@ -253,6 +265,8 @@ function CollapsibleSystemMessage({
   const summaryClass = isCompactBoundary
     ? "system-message-summary system-message-compact-summary"
     : "system-message-summary system-message-local-command-summary";
+  const text = label ?? item.content;
+  const resolvedIcon = systemIconForText(icon, text);
 
   // All compact boundaries stay outline-expandable so users can inspect what
   // was kept/summarized; local-command rows still collapse to a flat chip when
@@ -260,9 +274,11 @@ function CollapsibleSystemMessage({
   if (!isCompactBoundary && details.length === 0) {
     return (
       <div className={`system-message ${variantClass}`}>
-        <span className="system-message-icon">{icon}</span>
+        {resolvedIcon && (
+          <span className="system-message-icon">{resolvedIcon}</span>
+        )}
         <span className="system-message-text">
-          <LinkifiedText text={label ?? item.content} />
+          <LinkifiedText text={text} />
         </span>
       </div>
     );
@@ -280,9 +296,11 @@ function CollapsibleSystemMessage({
         <span className="collapsible__icon" aria-hidden="true">
           ▸
         </span>
-        <span className="system-message-icon">{icon}</span>
+        {resolvedIcon && (
+          <span className="system-message-icon">{resolvedIcon}</span>
+        )}
         <span className="system-message-text">
-          <LinkifiedText text={label ?? item.content} />
+          <LinkifiedText text={text} />
         </span>
       </summary>
       <div
@@ -322,8 +340,7 @@ const STACKED_THINKING_BUDGET_VAR = "--conversation-previous-thinking-budget";
  * while the two cards share a flex line and the ordinary cap suffices.
  */
 const PREVIOUS_THINKING_STATE_ATTR = "previousThinking";
-/** Rounding slack when deciding whether two cards share a flex line. */
-const SHARED_FLEX_LINE_TOLERANCE_PX = 1;
+const THINKING_HEIGHT_VAR = "--conversation-thinking-height";
 
 /**
  * The scrolling ancestor the row has to fit inside — `.session-messages` in an
@@ -447,9 +464,16 @@ function syncStackedThinkingBudget(
 
   const latestRect = latestCard.getBoundingClientRect();
   const previousRect = previousCard.getBoundingClientRect();
-  if (previousRect.top - latestRect.top <= SHARED_FLEX_LINE_TOLERANCE_PX) {
+  if (
+    cardsShareFlexLine(
+      previousRect.top - latestRect.top,
+      row.dataset[PREVIOUS_THINKING_STATE_ATTR] === undefined,
+    )
+  ) {
     // Side by side: the previous card fits inside the height the current card
     // already claims, so its ordinary current-height cap is the whole contract.
+    // The 1px/4px deadband (cardsShareFlexLine) stops a 2px baseline wobble
+    // from flapping this vs stacked.
     clearStackedThinkingBudget(row);
     return rowCeilingPx;
   }
@@ -649,7 +673,7 @@ function ConversationActivitySummary({
       // No current/latest preview: nothing to cap to (the previous preview
       // cannot exist and the activity list is gated off), so leave the CSS
       // fallback in place.
-      row.style.removeProperty("--conversation-thinking-height");
+      row.style.removeProperty(THINKING_HEIGHT_VAR);
       return;
     }
     const content = latestCard.querySelector<HTMLElement>(
@@ -660,14 +684,19 @@ function ConversationActivitySummary({
       // previous preview and activity list clip to that header-only height too,
       // rather than falling back to the full viewport cap and rendering taller
       // than the current card — height(previous) ≤ height(current) always.
-      row.style.setProperty("--conversation-thinking-height", "0px");
+      row.style.setProperty(THINKING_HEIGHT_VAR, "0px");
       return;
     }
+    let publishedPx: number | null = null;
     const publishHeight = () => {
-      row.style.setProperty(
-        "--conversation-thinking-height",
-        `${content.offsetHeight}px`,
-      );
+      const nextPx = stabilizePublishedPx(publishedPx, content.offsetHeight);
+      publishedPx = nextPx;
+      const value = `${nextPx}px`;
+      // Same-value writes still restyle in some engines and re-enter the
+      // observer; skip them so a 2px shrink cannot chase itself.
+      if (row.style.getPropertyValue(THINKING_HEIGHT_VAR) !== value) {
+        row.style.setProperty(THINKING_HEIGHT_VAR, value);
+      }
       // The cap change alters the list's clientHeight; re-evaluate its bottom
       // fade in the same layout pass.
       syncActivityClip();
@@ -1074,6 +1103,11 @@ function ConversationThinkingPreview({
       ? widthState.targetWidthPx
       : THINKING_PREVIEW_DEFAULT_WIDTH_PX;
 
+  // Accurate max-content width once per block. Streaming tokens grow the
+  // estimate in the effect below; mutating live `display`/`width` on every
+  // thinking delta forced layout and could leak a 2px temporary height into
+  // the row's published cap.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: one measure per block identity; thinking text is the fallback only when that measure is 0
   useLayoutEffect(() => {
     if (collapsed) return;
     const thinkingText =
@@ -1101,6 +1135,17 @@ function ConversationThinkingPreview({
         : estimateThinkingPreviewWidth(preview.thinking);
     setWidthState((previous) =>
       updateThinkingPreviewWidth(previous, preview.id, requiredWidth),
+    );
+  }, [collapsed, preview.id]);
+
+  useLayoutEffect(() => {
+    if (collapsed) return;
+    setWidthState((previous) =>
+      updateThinkingPreviewWidth(
+        previous,
+        preview.id,
+        estimateThinkingPreviewWidth(preview.thinking),
+      ),
     );
   }, [collapsed, preview.id, preview.thinking]);
 
@@ -1404,6 +1449,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           item.subtype === "status" && item.status === "compacting";
         const isError = item.subtype === "error";
         const isWarning = item.subtype === "warning";
+        const isInformational = item.subtype === "informational";
         const isConfigAck = item.subtype === "config_ack";
         const isLocalCommand = item.subtype === "local_command";
         const isToolOutput = item.subtype === "tool_output";
@@ -1415,19 +1461,21 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         const icon =
           isError || isWarning
             ? "!"
-            : isConfigAck
-              ? "✓"
-              : isLocalCommand
-                ? "/"
-                : isToolOutput
-                  ? "<"
-                  : isSubagentActivity
-                    ? "↳"
-                    : isNoModelTurn
-                      ? "∅"
-                      : isHistorySearchGap
-                        ? "⋯"
-                        : "⟳";
+            : isInformational
+              ? "i"
+              : isConfigAck
+                ? "✓"
+                : isLocalCommand
+                  ? "/"
+                  : isToolOutput
+                    ? "<"
+                    : isSubagentActivity
+                      ? "↳"
+                      : isNoModelTurn
+                        ? "∅"
+                        : isHistorySearchGap
+                          ? "⋯"
+                          : "⟳";
         if (
           item.subtype === "compact_boundary" ||
           isLocalCommand ||
@@ -1451,11 +1499,13 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           <div
             className={`system-message ${isCompacting ? "system-message-compacting" : ""} ${isError ? "system-message-error" : ""} ${isWarning ? "system-message-warning" : ""} ${isHighlightedConfigAck ? "system-message-config-ack" : ""} ${isLocalCommand ? "system-message-local-command" : ""}`}
           >
-            <span
-              className={`system-message-icon ${isCompacting ? "spinning" : ""}`}
-            >
-              {icon}
-            </span>
+            {systemIconForText(icon, item.content) && (
+              <span
+                className={`system-message-icon ${isCompacting ? "spinning" : ""}`}
+              >
+                {systemIconForText(icon, item.content)}
+              </span>
+            )}
             <span className="system-message-text">
               <LinkifiedText text={item.content} />
             </span>
@@ -1508,6 +1558,10 @@ export const RenderItemComponent = memo(function RenderItemComponent({
           />
         ) : (
           renderContent()
+        )}
+        {(item.type === "tool_call" ||
+          item.type === "conversation_activity") && (
+          <SessionAppLinks messages={item.sourceMessages} />
         )}
       </div>
       <MessageAge timestampMs={timestampMs} nowMs={ageNowMs ?? Date.now()} />

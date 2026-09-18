@@ -9,6 +9,8 @@ import type {
   SlashCommand,
   UploadedFile,
   UserMessageMetadata,
+  SessionContentSearchRequest,
+  SessionContentSearchBatch,
 } from "@yep-anywhere/shared";
 import type {
   InputRequest,
@@ -26,6 +28,33 @@ import type { fetchJSON as FetchJson } from "./sourceApiFetch";
 
 export function createSessionApi(fetchJSON: typeof FetchJson) {
   return {
+    markSessionSeen: (
+      sessionId: string,
+      timestamp?: string,
+      messageId?: string,
+      nonHumanUserTurnMessageId?: string,
+    ) =>
+      fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
+        method: "POST",
+        body: JSON.stringify({
+          timestamp,
+          messageId,
+          nonHumanUserTurnMessageId,
+        }),
+      }),
+    markSessionUnread: (sessionId: string) =>
+      fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
+        method: "DELETE",
+      }),
+    searchSessionContent: (
+      request: SessionContentSearchRequest,
+      signal?: AbortSignal,
+    ) =>
+      fetchJSON<SessionContentSearchBatch>("/sessions/content-search", {
+        method: "POST",
+        body: JSON.stringify(request),
+        signal,
+      }),
     getSession: (
       projectId: string,
       sessionId: string,

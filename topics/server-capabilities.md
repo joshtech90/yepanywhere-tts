@@ -10,6 +10,33 @@ Topic: server-capabilities
 
 ## Source Of Truth
 
+`speech-backend-setup` (permanent ID 74, version-implied from 0.8.2) owns
+the Speech settings local-backend table: `speechVoiceBackends` on
+`GET`/`PUT /api/settings`, `GET /api/speech/backends`,
+`POST /api/speech/backends/:id/install`, and
+`POST /api/speech/backends/restart`. The ordinary optional-feature corpus is
+v0.8.0 (2026-08-31) and v0.8.1 (2026-09-05); both lack these routes and the
+settings field. Without the capability, clients hide the table and make no
+setup, install, or speech-restart request. Existing capability meanings are
+unchanged. See [pluggable speech recognition](pluggable-speech-recognition.md).
+
+`session-content-search` (permanent ID 73, version-implied from 0.8.2) owns
+`POST /api/sessions/content-search` and its bounded match batches and coverage
+fields. The maintainer approved the optional compatibility plan on 2026-09-14:
+v0.8.0 (2026-08-31) and v0.8.1 (2026-09-05) keep title-only search, disable
+Ass./User with upgrade guidance, and receive no new-route requests. Existing
+capabilities retain their meanings. See
+[All Sessions search](all-session-content-search.md).
+
+`non-human-user-turn` (permanent ID 72, version-implied from 0.8.2) owns
+`messageMetadata.sourceSessionId`, the pending `nonHumanUserTurn` summary and
+metadata-event projection, and exact-turn acknowledgement through mark-seen's
+`nonHumanUserTurnMessageId`. The maintainer approved this optional contract on
+2026-09-14 after checking v0.8.0 (2026-08-31) and v0.8.1 (2026-09-05); both
+lack it. Clients connected to either horizon hide delivery flags and send no
+new acknowledgement fields. Existing capability meanings remain unchanged.
+See [Inbox delivery attention](inbox.md#cross-session-delivery-attention).
+
 `session-async-questions` (permanent ID 60, version-implied from 0.8.2)
 owns the optional bounded `asyncQuestions` projection on session lists, Inbox,
 and session-updated events. The approved optional-feature corpus is v0.8.0

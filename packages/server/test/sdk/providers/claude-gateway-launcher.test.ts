@@ -4,6 +4,7 @@ import { createServer } from "node:net";
 import { describe, expect, it, vi } from "vitest";
 import {
   ClaudeGatewayLauncher,
+  interpretServiceCommand,
   isClaudeGatewayLoopbackUrl,
   resolveClaudeGatewayEndpoint,
 } from "../../../src/sdk/providers/claude-gateway-launcher.js";
@@ -37,6 +38,48 @@ function fakeChild(pid = 1234): ChildProcess {
   });
   return child;
 }
+
+/**
+ * A command that answers `status` immediately, like a service script. Without
+ * this the launcher waits out its status probe before every launch, which is
+ * exactly the behavior the probe timeout exists to bound.
+ */
+function serviceScriptSpawn(
+  onLaunch: (command: string) => ChildProcess,
+  statusExitCode = 3,
+): (command: string) => ChildProcess {
+  return (command: string) => {
+    if (command.endsWith(" status")) {
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", statusExitCode, null));
+      return child;
+    }
+    return onLaunch(command);
+  };
+}
+
+describe("interpretServiceCommand", () => {
+  it("reads a trailing start verb as a declaration that verbs are supported", () => {
+    expect(interpretServiceCommand("~/vllm/service-model start")).toEqual({
+      command: "~/vllm/service-model",
+      style: "verbs",
+    });
+  });
+
+  it("leaves a plain command to be probed", () => {
+    expect(interpretServiceCommand("  copilot-api --port 4141  ")).toEqual({
+      command: "copilot-api --port 4141",
+      style: "unknown",
+    });
+  });
+
+  it("treats an empty command as absent", () => {
+    expect(interpretServiceCommand("   ")).toEqual({
+      command: undefined,
+      style: "unknown",
+    });
+  });
+});
 
 describe("ClaudeGatewayLauncher", () => {
   it.each([
@@ -149,10 +192,14 @@ describe("ClaudeGatewayLauncher", () => {
     let listening: string | null = null;
     const child = fakeChild();
     const probe = vi.fn(async () => listening);
-    const spawnCommand = vi.fn(() => {
-      listening = "http://127.0.0.1:4141";
-      return child;
-    });
+    const launches: string[] = [];
+    const spawnCommand = vi.fn(
+      serviceScriptSpawn((command) => {
+        launches.push(command);
+        listening = "http://127.0.0.1:4141";
+        return child;
+      }),
+    );
     const signalChild = vi.fn((target: ChildProcess) => {
       target.emit("close", 0, null);
     });
@@ -169,7 +216,7 @@ describe("ClaudeGatewayLauncher", () => {
     await expect(
       Promise.all([launcher.ensureReady(config), launcher.ensureReady(config)]),
     ).resolves.toEqual(["http://127.0.0.1:4141", "http://127.0.0.1:4141"]);
-    expect(spawnCommand).toHaveBeenCalledTimes(1);
+    expect(launches).toEqual(["gateway start"]);
 
     await launcher.shutdown();
     expect(signalChild).toHaveBeenCalledWith(child, "SIGTERM");
@@ -183,7 +230,7 @@ describe("ClaudeGatewayLauncher", () => {
     });
     const launcher = new ClaudeGatewayLauncher({
       probe: vi.fn(async () => null),
-      spawnCommand: vi.fn(() => child),
+      spawnCommand: vi.fn(serviceScriptSpawn(() => child, 0)),
       signalChild,
       now: () => now,
       delay: async (milliseconds) => {
@@ -202,6 +249,137 @@ describe("ClaudeGatewayLauncher", () => {
     expect(signalChild).toHaveBeenCalledWith(child, "SIGTERM");
   });
 
+  it("launches the bare command when status keeps running", async () => {
+    // A command that ignores `status` and keeps serving is the server itself.
+    let listening: string | null = null;
+    const statusChild = fakeChild(4242);
+    const serverChild = fakeChild(4343);
+    const commands: string[] = [];
+    const launcher = new ClaudeGatewayLauncher({
+      probe: vi.fn(async () => listening),
+      spawnCommand: vi.fn((command: string) => {
+        commands.push(command);
+        if (command.endsWith(" status")) return statusChild;
+        listening = "http://127.0.0.1:4141";
+        return serverChild;
+      }),
+      signalChild: vi.fn((target: ChildProcess) => {
+        target.emit("close", null, "SIGTERM");
+      }),
+      statusProbeTimeoutMs: 10,
+    });
+
+    await expect(
+      launcher.ensureReady({
+        url: "http://127.0.0.1:4141",
+        startCommand: "serve-model",
+      }),
+    ).resolves.toBe("http://127.0.0.1:4141");
+    expect(commands).toEqual(["serve-model status", "serve-model"]);
+  });
+
+  it("uses only the start verb when status answers cleanly", async () => {
+    let listening: string | null = null;
+    const commands: string[] = [];
+    const launcher = new ClaudeGatewayLauncher({
+      probe: vi.fn(async () => listening),
+      spawnCommand: vi.fn((command: string) => {
+        commands.push(command);
+        const child = fakeChild();
+        if (command.endsWith(" status")) {
+          queueMicrotask(() => child.emit("close", 0, null));
+          return child;
+        }
+        listening = "http://127.0.0.1:8001";
+        queueMicrotask(() => child.emit("close", 0, null));
+        return child;
+      }),
+      statusProbeTimeoutMs: 10,
+    });
+
+    await expect(
+      launcher.ensureReady({
+        url: "http://127.0.0.1:8001",
+        startCommand: "service-model",
+      }),
+    ).resolves.toBe("http://127.0.0.1:8001");
+    expect(commands).toEqual(["service-model status", "service-model start"]);
+  });
+
+  it("asks the command to stop and leaves a freed port alone", async () => {
+    let listening: string | null = "http://127.0.0.1:8001";
+    const commands: string[] = [];
+    const stopListener = vi.fn(async () => true);
+    const launcher = new ClaudeGatewayLauncher({
+      probe: vi.fn(async () => listening),
+      spawnCommand: vi.fn((command: string) => {
+        commands.push(command);
+        const child = fakeChild();
+        queueMicrotask(() => {
+          if (command.endsWith(" stop")) listening = null;
+          child.emit("close", 0, null);
+        });
+        return child;
+      }),
+      stopListener,
+      stopVerifyDelayMs: 1,
+      statusProbeTimeoutMs: 10,
+    });
+
+    await launcher.configure({
+      url: "http://127.0.0.1:8001",
+      startCommand: "service-model",
+    });
+    await launcher.stopService();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(commands).toEqual(["service-model stop"]);
+    expect(stopListener).not.toHaveBeenCalled();
+  });
+
+  it("signals the listener when a stop request leaves the port open", async () => {
+    const stopListener = vi.fn(async () => true);
+    const launcher = new ClaudeGatewayLauncher({
+      probe: vi.fn(async () => "http://127.0.0.1:8001"),
+      spawnCommand: vi.fn(() => {
+        const child = fakeChild();
+        // An unrecognized `stop` argument: usage, nonzero, port untouched.
+        queueMicrotask(() => child.emit("close", 2, null));
+        return child;
+      }),
+      stopListener,
+      stopVerifyDelayMs: 1,
+      statusProbeTimeoutMs: 10,
+    });
+
+    await launcher.configure({
+      url: "http://127.0.0.1:8001",
+      startCommand: "serve-model",
+    });
+    await launcher.stopService();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(stopListener).toHaveBeenCalledWith(8001);
+  });
+
+  it("never stops a service it was not asked to manage", async () => {
+    const stopListener = vi.fn(async () => true);
+    const spawnCommand = vi.fn(() => fakeChild());
+    const launcher = new ClaudeGatewayLauncher({
+      probe: vi.fn(async () => "http://127.0.0.1:8001"),
+      spawnCommand,
+      stopListener,
+      stopVerifyDelayMs: 1,
+    });
+
+    await launcher.configure({ url: "http://127.0.0.1:8001" });
+    await launcher.stopService();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(spawnCommand).not.toHaveBeenCalled();
+    expect(stopListener).not.toHaveBeenCalled();
+  });
+
   it("terminates an owned child when configuration changes", async () => {
     let listening: string | null = null;
     const child = fakeChild();
@@ -210,10 +388,12 @@ describe("ClaudeGatewayLauncher", () => {
     });
     const launcher = new ClaudeGatewayLauncher({
       probe: vi.fn(async () => listening),
-      spawnCommand: vi.fn(() => {
-        listening = "http://127.0.0.1:4141";
-        return child;
-      }),
+      spawnCommand: vi.fn(
+        serviceScriptSpawn(() => {
+          listening = "http://127.0.0.1:4141";
+          return child;
+        }),
+      ),
       signalChild,
     });
 

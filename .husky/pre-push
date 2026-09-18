@@ -1,0 +1,31 @@
+#!/usr/bin/env sh
+# Clone-durable push guard: no commit may credit an agent as an author.
+#
+# `package.json`'s prepare script runs husky, which points core.hooksPath here,
+# so this is active in any clone after an install. The check itself is
+# scripts/check-no-agent-attribution.mjs; see AGENTS.md § Agent Attribution.
+#
+# Git supplies the destination on argv and the refs on stdin. Both are passed
+# through, because what counts as outgoing depends on which remote is being
+# pushed to — the whole point is to fail before a violation reaches the first
+# destination that accepts it.
+set -e
+
+guard="$(dirname "$0")/../scripts/check-no-agent-attribution.mjs"
+if [ ! -f "$guard" ]; then
+	echo "pre-push: $guard is missing; cannot verify commit authorship." >&2
+	echo "pre-push: restore it, or push with --no-verify to skip the check." >&2
+	exit 1
+fi
+
+# Tee stdin so a machine-local guard can read the same ref lines.
+refs=$(cat)
+
+printf '%s\n' "$refs" | node "$guard" "$@"
+
+# A machine-local guard may enforce more than this repository requires; run it
+# too when present. Absence is normal and not a failure.
+local_guard="$HOME/agents/scripts/pre-push-no-attrib"
+if [ -x "$local_guard" ]; then
+	printf '%s\n' "$refs" | "$local_guard" "$@"
+fi

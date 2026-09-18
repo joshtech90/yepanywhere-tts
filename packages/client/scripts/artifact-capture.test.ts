@@ -379,7 +379,18 @@ describe("portable artifact capture", () => {
     );
     const result = await captureArtifact(files);
     expect(result.warnings).toEqual(["Example warning"]);
-    expect(result.markdown).toContain("Browser warnings: Example warning");
+    expect(result.markdown).toContain("> **Browser warnings**");
+    expect(result.markdown).toContain("> - Example warning");
+  });
+
+  it("leaves the artifact host's own sandbox notice out of the report", async () => {
+    const files = await fixture(
+      // The wording Chromium logs for the CSP the artifact origin serves.
+      '<h1>Ready</h1><script>console.warn("An iframe which has both allow-scripts and allow-same-origin for its sandbox attribute can escape its sandboxing.")</script>',
+    );
+    const result = await captureArtifact(files);
+    expect(result.warnings).toEqual([]);
+    expect(result.markdown).not.toContain("Browser warnings");
   });
 
   it("rejects console errors instead of presenting successful captures", async () => {

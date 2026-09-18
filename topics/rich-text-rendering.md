@@ -73,6 +73,13 @@ Provider formats observed so far:
 
 These run unconditionally and are not user-configurable:
 
+- **Wrapped lines stay separated** — Appearance line spacing may tighten prose,
+  but rendered markdown must never overlap its own wrapped lines. Body prose in
+  assistant text, streaming blocks, thinking blocks, and document previews keeps
+  a floor of `1.1em` at the tightest setting. Headings resolve line height
+  against their own font size rather than inheriting the container's body-sized
+  em length, with their own floor, so a heading that wraps stays legible at
+  every setting.
 - **ANSI escape stripping** — applied before all rendering so raw escape codes
   never appear as literal characters. (`stripAnsiEscapes` inside `renderFixedFontRichContent`)
 - **Shiki syntax highlighting** — server-side, keyed on file extension, stored as
@@ -90,7 +97,10 @@ These run unconditionally and are not user-configurable:
   unsafe URLs, active embeds, and disallowed elements remain blocked. Assistant
   Markdown, tool-result Markdown, file previews, and persisted reloads use the
   same boundary.
-- **Explicit rendered Markdown file links** — project file links open the
+- **Explicit rendered Markdown file links** — document previews show link color
+  and an underline before hover, including links whose labels use inline code.
+  Ordinary unlinked code keeps its surrounding text color and code background.
+  Project file links open the
   standalone file viewer on browser link gestures, and `.md` / `.markdown`
   local-file links can request a content-only rendered document. That document
   includes a raw link and expands local image links directly. Public-share file
@@ -321,10 +331,15 @@ pending/interrupted colors. The marker occupies the timeline dot's position;
 there is no second boxed toggle or trailing disclosure chevron. Keyboard and
 pointer activation update the visible marker and `aria-expanded` together.
 The connector is centered on the glyph, uses lower contrast than the status
-color, and leaves three pixels clear above and below its visible strokes.
+color, and leaves at least three pixels clear above and below its visible strokes.
 The one-pixel strokes form symmetric nine-pixel glyphs aligned with the
 ordinary timeline connector, avoiding half-pixel stems at native scale.
 Hover brightens the same control without adding a box.
+
+Tool labels and their summaries share a text baseline even when the summary
+uses a larger prose face. Tool-row plus/minus controls align with the visible
+capital height of the label, rather than a fixed offset from the row's top;
+wrapping command text and the Ran border do not move the marker off its label.
 
 Long one-line summaries keep the row tail visible by reserving result/count
 columns and applying normal end-ellipsis only to the variable expression. Grep
@@ -421,7 +436,7 @@ formulas as literal text, matching the experience in their editor.
   chunks with renderer-provided or coarse source-line alignment, then place range
   markers against that rendered output. The broader `.qmd`, caption,
   cross-reference, figure-layout, and optional delayed-render work is tracked in
-  [`gaps/quarto-aware-document-view.md`](../gaps/quarto-aware-document-view.md).
+  [`gaps/sketches/quarto-aware-document-view.md`](../gaps/sketches/quarto-aware-document-view.md).
   The currently supported `.qmd` recognition and inert include-link behavior
   are specified in
   [`topics/quarto-markdown.md`](../topics/quarto-markdown.md).

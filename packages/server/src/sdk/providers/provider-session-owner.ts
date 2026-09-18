@@ -89,6 +89,7 @@ export interface ProviderSessionReadyMetadata {
     refreshPromptCache: boolean;
     publishAgentctlSessionId: boolean;
     steer: boolean;
+    steerUsesMessageQueue?: boolean;
     appendConversationContext?: boolean;
     setMaxThinkingTokens: boolean;
     setEffort: boolean;
@@ -258,6 +259,7 @@ export class ProviderSessionOwner {
           session.publishAgentctlSessionId || this.agentctlSessionEnvBridge,
         ),
         steer: Boolean(session.steer),
+        steerUsesMessageQueue: session.steerUsesMessageQueue,
         appendConversationContext: Boolean(session.appendConversationContext),
         setMaxThinkingTokens: Boolean(session.setMaxThinkingTokens),
         setEffort: Boolean(session.setEffort),

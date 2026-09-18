@@ -122,7 +122,7 @@ describe("SpeechControlMenu", () => {
     const view = renderSpeechControlMenu(props);
     await openSpeechMenu();
     expect(
-      screen.queryByRole("option", { name: "Unified 0.6B English" }),
+      screen.queryByRole("option", { name: /Unified 0.6B English/ }),
     ).toBeNull();
     versionState.capabilities = ["local-speech-model-selection"];
     view.rerender(
@@ -342,7 +342,9 @@ describe("SpeechControlMenu", () => {
 
       await openSpeechMenu();
       const preset = screen.getByLabelText("Parakeet model preset");
-      expect(screen.getByText("CTC 1.1B English lowercase")).toBeDefined();
+      expect(
+        screen.getByText("CTC 1.1B English lowercase · EN WER 5.92%"),
+      ).toBeDefined();
       fireEvent.change(preset, {
         target: { value: "nvidia/parakeet-ctc-1.1b" },
       });
@@ -379,8 +381,10 @@ describe("SpeechControlMenu", () => {
 
     await openSpeechMenu();
 
-    expect(screen.getByText("CTC 1.1B English lowercase")).toBeDefined();
-    expect(screen.queryByText("RNNT 1.1B English lowercase")).toBeNull();
+    expect(
+      screen.getByText("CTC 1.1B English lowercase · EN WER 5.92%"),
+    ).toBeDefined();
+    expect(screen.queryByText(/RNNT 1\.1B English lowercase/)).toBeNull();
   });
 
   it("lists only the selected backend's own models, keeping backends separate", async () => {
@@ -401,9 +405,13 @@ describe("SpeechControlMenu", () => {
 
     // ya-parakeet runs TDT + CTC but not the NeMo-only RNNT, even though
     // ya-nemo is enabled — no cross-backend auto-switch from this dropdown.
-    expect(screen.getByText("TDT 0.6B v3 multilingual")).toBeDefined();
-    expect(screen.getByText("CTC 1.1B English lowercase")).toBeDefined();
-    expect(screen.queryByText("RNNT 1.1B English lowercase")).toBeNull();
+    expect(
+      screen.getByText("TDT 0.6B v3 multilingual · EN WER 4.86%"),
+    ).toBeDefined();
+    expect(
+      screen.getByText("CTC 1.1B English lowercase · EN WER 5.92%"),
+    ).toBeDefined();
+    expect(screen.queryByText(/RNNT 1\.1B English lowercase/)).toBeNull();
   });
 
   it("lists all three models for the ya-nemo backend", async () => {
@@ -422,9 +430,15 @@ describe("SpeechControlMenu", () => {
 
     await openSpeechMenu();
 
-    expect(screen.getByText("TDT 0.6B v3 multilingual")).toBeDefined();
-    expect(screen.getByText("CTC 1.1B English lowercase")).toBeDefined();
-    expect(screen.getByText("RNNT 1.1B English lowercase")).toBeDefined();
+    expect(
+      screen.getByText("TDT 0.6B v3 multilingual · EN WER 4.86%"),
+    ).toBeDefined();
+    expect(
+      screen.getByText("CTC 1.1B English lowercase · EN WER 5.92%"),
+    ).toBeDefined();
+    expect(
+      screen.getByText("RNNT 1.1B English lowercase · EN WER 5.76%"),
+    ).toBeDefined();
   });
 
   it("prewarms a custom Parakeet model on free-text commit", async () => {
@@ -474,6 +488,7 @@ describe("SpeechControlMenu", () => {
   });
 
   it("normalizes an incompatible preset when switching to a Parakeet backend", async () => {
+    versionState.capabilities = ["local-speech-model-selection"];
     installMediaDevices([]);
     modelSettings.parakeetSpeechModel = "nvidia/parakeet-rnnt-1.1b";
     const onMethodChange = vi.fn();
@@ -494,11 +509,11 @@ describe("SpeechControlMenu", () => {
 
     expect(onMethodChange).toHaveBeenCalledWith(["ya-parakeet"]);
     expect(modelSettings.setParakeetSpeechModel).toHaveBeenCalledWith(
-      "nvidia/parakeet-tdt-0.6b-v3",
+      "ai-and-i-project/parakeet-tdt-0.6b-v2-hf",
     );
     expect(prewarmYaServerSpeechBackend).toHaveBeenCalledWith(
       "ya-parakeet",
-      "nvidia/parakeet-tdt-0.6b-v3",
+      "ai-and-i-project/parakeet-tdt-0.6b-v2-hf",
     );
   });
 });

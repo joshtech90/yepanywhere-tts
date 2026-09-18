@@ -378,8 +378,9 @@ These are **diagnostic**, not a performance-gate pass: capacity
 samples in the shared host profiler. Repeat on an eligible measurement host;
 representative acquisition costs and terminal-to-client latency remain open.
 
-The app-level test also exposed [scanner persistence after shutdown](../../gaps/project-scanner-shutdown-persistence.md),
-recorded separately from this API work. Validation here is macOS plus JVM;
+The app-level test also exposed scanner persistence after shutdown, now fixed
+under the [scanner disposal contract](../../topics/server-cache-publication.md).
+Validation of this API checkpoint is macOS plus JVM;
 Linux/Windows filesystem execution and real Android-device consumption remain
 unverified by this checkpoint.
 

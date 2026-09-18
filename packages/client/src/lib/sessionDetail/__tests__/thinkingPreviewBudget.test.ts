@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  cardsShareFlexLine,
   conversationRowHeightCeilingPx,
   stackedThinkingBudgetPx,
+  stabilizePublishedPx,
 } from "../thinkingPreviewBudget";
 
 const tabletish = {
@@ -65,5 +67,42 @@ describe("conversationRowHeightCeilingPx", () => {
 
   it("never reports a negative ceiling for a viewport shorter than the reserve", () => {
     expect(conversationRowHeightCeilingPx(20, 40)).toBe(0);
+  });
+});
+
+describe("stabilizePublishedPx", () => {
+  it("takes the first measurement and grows at once", () => {
+    expect(stabilizePublishedPx(null, 240)).toBe(240);
+    expect(stabilizePublishedPx(240, 260)).toBe(260);
+  });
+
+  it("ignores a 2px shrink so a wrap/subpixel flap cannot publish", () => {
+    expect(stabilizePublishedPx(242, 240)).toBe(242);
+    expect(stabilizePublishedPx(242, 241)).toBe(242);
+  });
+
+  it("still publishes a real shrink past the deadband", () => {
+    expect(stabilizePublishedPx(240, 200)).toBe(200);
+  });
+});
+
+describe("cardsShareFlexLine", () => {
+  it("treats a 2px wobble as still sharing a line when it already did", () => {
+    expect(cardsShareFlexLine(0, true)).toBe(true);
+    expect(cardsShareFlexLine(2, true)).toBe(true);
+  });
+
+  it("does not enter stacked from a 2px wobble on the first measure", () => {
+    // First measure starts from "shared" (no data-previous-thinking yet).
+    expect(cardsShareFlexLine(2, true)).toBe(true);
+  });
+
+  it("does not leave stacked for a 2px leftover once a real wrap happened", () => {
+    expect(cardsShareFlexLine(2, false)).toBe(false);
+  });
+
+  it("classifies a real wrap and a true same-line immediately", () => {
+    expect(cardsShareFlexLine(320, true)).toBe(false);
+    expect(cardsShareFlexLine(0, false)).toBe(true);
   });
 });

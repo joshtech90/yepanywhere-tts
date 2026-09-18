@@ -13,35 +13,19 @@ Startup line:  {"status":"ready"} (written once after model loads)
 
 import base64
 import json
-import os
-import subprocess
 import sys
 import tempfile
 import traceback
-from typing import Any
+from typing import Any, Optional
+
+from stt_worker_common import (
+    decode_mono_16k,
+    suffix_for_mime,
+    summarize_model_load_error,
+    unlink_if_present,
+)
 
 DEFAULT_NEMO_MODEL = "nvidia/parakeet-unified-en-0.6b"
-
-
-def suffix_for_mime(mime: str) -> str:
-    if "ogg" in mime:
-        return ".ogg"
-    if "mp4" in mime or "m4a" in mime:
-        return ".mp4"
-    if "wav" in mime:
-        return ".wav"
-    if "mp3" in mime:
-        return ".mp3"
-    if "flac" in mime:
-        return ".flac"
-    return ".webm"
-
-
-def unlink_if_present(path: str) -> None:
-    try:
-        os.unlink(path)
-    except OSError:
-        pass
 
 
 def resolve_device(device_arg: str, torch: Any) -> str:
@@ -75,72 +59,16 @@ def transcript_text(output: Any) -> str:
     return str(output or "").strip()
 
 
-def audio_for_nemo(input_path: str) -> Any:
-    import numpy as np
-
-    try:
-        result = subprocess.run(
-            [
-                "ffmpeg",
-                "-nostdin",
-                "-loglevel",
-                "error",
-                "-i",
-                input_path,
-                "-ac",
-                "1",
-                "-ar",
-                "16000",
-                "-f",
-                "f32le",
-                "pipe:1",
-            ],
-            check=True,
-            capture_output=True,
-        )
-    except subprocess.CalledProcessError as exc:
-        stderr = exc.stderr.decode("utf-8", errors="replace").strip()
-        if len(stderr) > 500:
-            stderr = stderr[:500].rstrip() + "..."
-        raise RuntimeError(f"ffmpeg audio conversion failed: {stderr}") from exc
-
-    return np.frombuffer(result.stdout, dtype="<f4").copy()
-
-
-def summarize_model_load_error(model_name: str, exc: Exception) -> str:
-    message = str(exc)
-    lower = message.lower()
-    if "no space left on device" in lower or "os error 28" in lower:
-        return (
-            f"Model load failed for {model_name}: no space left on device while "
-            "downloading or reconstructing Hugging Face model files. Free the "
-            "cache/tmp filesystem used by the server, or set HF_HUB_CACHE, "
-            "HF_XET_CACHE, and TMPDIR to a filesystem with enough space before "
-            "starting YA."
-        )
-    if "att_chunk_context_size" in message:
-        return (
-            f"Model load failed for {model_name}: this model needs a newer "
-            "NeMo encoder. Run `pixi run -e stt-nemo nemo-bootstrap` to "
-            "install YA's isolated NeMo 3 runtime."
-        )
-    if (
-        "gated repo" in lower
-        or "gated model" in lower
-        or "401" in lower
-        or "403" in lower
-        or "access to model" in lower
-    ):
-        return (
-            f"Model load failed for {model_name}: Hugging Face authentication "
-            "or model access is required. Run `pixi run --frozen -e stt-nemo hf auth "
-            "login`, accept the model terms on Hugging Face if prompted, then "
-            "restart YA."
-        )
-    compact = " ".join(message.split())
-    if len(compact) > 700:
-        compact = compact[:700].rstrip() + "..."
-    return f"Model load failed for {model_name}: {compact}"
+def stale_nemo_encoder_hint(
+    model_name: str, message: str, _lower: str
+) -> Optional[str]:
+    if "att_chunk_context_size" not in message:
+        return None
+    return (
+        f"Model load failed for {model_name}: this model needs a newer "
+        "NeMo encoder. Run `pixi run -e stt-nemo nemo-bootstrap` to "
+        "install YA's isolated NeMo 3 runtime."
+    )
 
 
 def main() -> None:
@@ -161,7 +89,17 @@ def main() -> None:
         model.eval()
     except Exception as exc:  # noqa: BLE001 - Worker startup errors use the JSON protocol.
         sys.stdout.write(
-            json.dumps({"error": summarize_model_load_error(model_name, exc)}) + "\n"
+            json.dumps(
+                {
+                    "error": summarize_model_load_error(
+                        model_name,
+                        exc,
+                        pixi_env="stt-nemo",
+                        extra_rules=(stale_nemo_encoder_hint,),
+                    )
+                }
+            )
+            + "\n"
         )
         sys.stdout.flush()
         sys.exit(1)
@@ -193,7 +131,7 @@ def main() -> None:
             try:
                 # Array input avoids NeMo's dependency on training-only validation_ds.
                 output = model.transcribe(
-                    [audio_for_nemo(tmpfile)], batch_size=1, verbose=False
+                    [decode_mono_16k(tmpfile)], batch_size=1, verbose=False
                 )
                 sys.stdout.write(json.dumps({"text": transcript_text(output)}) + "\n")
             finally:

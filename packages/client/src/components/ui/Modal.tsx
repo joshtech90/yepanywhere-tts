@@ -204,6 +204,12 @@ function getHistoryState(): Record<string, unknown> {
  * effect replay can cancel it during the immediate re-setup. A real unmount
  * still removes the entry, while a browser Back that already popped it only
  * closes the modal.
+ *
+ * Ownership is the pushed entry's id *and* the address it was pushed at. A
+ * navigation away while the modal is open pushes a new entry that can inherit
+ * the previous entry's state object, id included; without the address check
+ * the unmounting modal would read that new entry as its own and send the
+ * browser Back off the page the navigation just opened.
  */
 export function useModalBackGesture(
   onClose: () => void,
@@ -214,6 +220,7 @@ export function useModalBackGesture(
   const ownsHistoryEntryRef = useRef(false);
   const cleanupGenerationRef = useRef(0);
   const historyEntryIdRef = useRef<string | null>(null);
+  const historyEntryHrefRef = useRef<string | null>(null);
   onCloseRef.current = onClose;
   if (historyEntryIdRef.current === null) {
     modalHistoryEntrySequence += 1;
@@ -230,11 +237,16 @@ export function useModalBackGesture(
         { ...getHistoryState(), [stateKey]: historyEntryId },
         "",
       );
+      historyEntryHrefRef.current = window.location.href;
       ownsHistoryEntryRef.current = true;
     }
 
+    const ownsCurrentEntry = () =>
+      window.history.state?.[stateKey] === historyEntryId &&
+      window.location.href === historyEntryHrefRef.current;
+
     const onPopState = () => {
-      if (window.history.state?.[stateKey] === historyEntryId) {
+      if (ownsCurrentEntry()) {
         return;
       }
       ownsHistoryEntryRef.current = false;
@@ -253,7 +265,7 @@ export function useModalBackGesture(
           return;
         }
         ownsHistoryEntryRef.current = false;
-        if (window.history.state?.[stateKey] === historyEntryId) {
+        if (ownsCurrentEntry()) {
           window.history.back();
         }
       });

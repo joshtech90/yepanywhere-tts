@@ -1,243 +1,33 @@
-import { type ChildProcess, spawn } from "node:child_process";
-import { createInterface } from "node:readline";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
-import { getLogger } from "../../logging/logger.js";
-import type {
-  PrewarmableSpeechBackend,
-  TranscribeOptions,
-} from "./SpeechBackend.js";
-import {
-  ensureLocalSttRuntime,
-  PIXI_COMMAND,
-  PIXI_NEMO_ENV,
-  cacheFreeSpaceSummary,
-  defaultHuggingFaceHubCache,
-  summarizeChildError,
-} from "./localSttRuntime.js";
-import { SerialQueue } from "./serialQueue.js";
-
-const logger = getLogger();
-
-const WORKER_SCRIPT = join(
-  dirname(fileURLToPath(import.meta.url)),
-  "nemo_worker.py",
-);
+import { PIXI_NEMO_ENV } from "./localSttRuntime.js";
+import { WarmPixiSttBackend, workerScriptPath } from "./warmPixiSttBackend.js";
 
 export const DEFAULT_NEMO_PARAKEET_MODEL = "nvidia/parakeet-unified-en-0.6b";
-
-/** Milliseconds to wait for model load before giving up. */
-const MODEL_LOAD_TIMEOUT_MS = 240_000;
 
 const NEMO_IMPORT_CHECK = "from nemo.collections.asr.models import ASRModel";
 
 const NEMO_REPAIR_HINT =
   "Run `pixi run -e stt-nemo nemo-bootstrap` from the YA checkout for the isolated NeMo runtime. If Hugging Face auth or a gated model is the problem, run `pixi run --frozen -e stt-nemo hf auth login` and accept the model terms on Hugging Face. If the error is ENOSPC, free the cache/tmp filesystem or set HF_HUB_CACHE, HF_XET_CACHE, and TMPDIR before starting YA.";
 
-export class LocalNemoBackend implements PrewarmableSpeechBackend {
-  readonly id = "ya-nemo";
-  readonly label = "Local NeMo Parakeet (pixi stt-nemo)";
-
-  private readonly model: string;
-  private readonly device: string;
-
-  private proc: ChildProcess | null = null;
-  private warmPromise: Promise<void> | null = null;
-  private workerReady = false;
-  private workerModel: string | null = null;
-  private workerDevice: string | null = null;
-  private pendingResolve: ((text: string) => void) | null = null;
-  private pendingReject: ((err: Error) => void) | null = null;
-  // Serializes loads + transcriptions onto one queue (single worker by design),
-  // so a request during a load waits instead of failing as "busy".
-  private readonly queue = new SerialQueue();
-
+export class LocalNemoBackend extends WarmPixiSttBackend {
   constructor(opts: { model?: string; device?: string } = {}) {
-    this.model = opts.model ?? DEFAULT_NEMO_PARAKEET_MODEL;
-    this.device = opts.device ?? "auto";
-  }
-
-  async validate(): Promise<{ ok: true } | { ok: false; reason: string }> {
-    // Availability check only — confirm the pixi env + NeMo import (and
-    // auto-bootstrap if missing). The model load is deferred to prewarm() /
-    // first transcribe() so a ~30-50s load never blocks registration: the
-    // backend is advertised immediately and stays selectable while its model is
-    // still loading; only sending audio to it waits on the load.
-    return ensureLocalSttRuntime({
-      backendLabel: "local NeMo Parakeet",
-      checkPython: NEMO_IMPORT_CHECK,
-      bootstrapTask: "nemo-bootstrap",
-      environment: PIXI_NEMO_ENV,
-    });
-  }
-
-  private stopWorker(): void {
-    const proc = this.proc;
-    this.proc = null;
-    this.warmPromise = null;
-    this.workerReady = false;
-    this.workerModel = null;
-    this.workerDevice = null;
-    proc?.kill();
-  }
-
-  private startWorker(model: string, device: string): Promise<void> {
-    if (this.warmPromise) {
-      if (this.workerModel === model && this.workerDevice === device) {
-        return this.warmPromise;
-      }
-      if (!this.workerReady || this.pendingResolve) {
-        throw new Error("NeMo backend is busy with another request");
-      }
-      this.stopWorker();
-    }
-
-    this.warmPromise = new Promise<void>((resolve, reject) => {
-      logger.info(
-        `Starting nemo worker via pixi env "${PIXI_NEMO_ENV}" (model=${model} device=${device})`,
-      );
-      this.workerReady = false;
-      this.workerModel = model;
-      this.workerDevice = device;
-
-      const proc = spawn(
-        PIXI_COMMAND,
-        [
-          "run",
-          "--frozen",
-          "-e",
-          PIXI_NEMO_ENV,
-          "python",
-          WORKER_SCRIPT,
-          model,
-          device,
-        ],
-        { cwd: process.cwd(), stdio: ["pipe", "pipe", "pipe"] },
-      );
-      this.proc = proc;
-
-      let ready = false;
-      let loadTimeout: NodeJS.Timeout | null = null;
-
-      proc.stderr?.on("data", (chunk: Buffer) => {
-        logger.debug(`[nemo] ${chunk.toString().trim()}`);
-      });
-
-      proc.on("error", (error) => {
-        if (this.proc !== proc) return;
-        if (!ready) {
-          if (loadTimeout) clearTimeout(loadTimeout);
-          reject(error);
-        }
-      });
-
-      proc.on("exit", (code) => {
-        logger.warn(`NeMo worker exited (code=${code})`);
-        const currentWorkerExited = this.proc === proc;
-        if (currentWorkerExited) {
-          this.proc = null;
-          this.warmPromise = null;
-          this.workerReady = false;
-          this.workerModel = null;
-          this.workerDevice = null;
-        }
-        if (currentWorkerExited && this.pendingReject) {
-          this.pendingReject(new Error("NeMo worker exited unexpectedly"));
-          this.pendingResolve = null;
-          this.pendingReject = null;
-        }
-      });
-
-      const rl = createInterface({ input: proc.stdout! });
-
-      loadTimeout = setTimeout(() => {
-        if (!ready) {
-          reject(new Error("NeMo model load timed out"));
-          proc.kill();
-        }
-      }, MODEL_LOAD_TIMEOUT_MS);
-
-      rl.on("line", (line: string) => {
-        if (this.proc !== proc) return;
-        try {
-          const msg = JSON.parse(line) as {
-            status?: string;
-            text?: string;
-            error?: string;
-          };
-
-          if (!ready) {
-            clearTimeout(loadTimeout);
-            if (msg.status === "ready") {
-              ready = true;
-              this.workerReady = true;
-              resolve();
-            } else {
-              reject(new Error(msg.error ?? "Worker failed to start"));
-            }
-            return;
-          }
-
-          if (this.pendingResolve && this.pendingReject) {
-            if (msg.error) {
-              this.pendingReject(new Error(msg.error));
-            } else {
-              this.pendingResolve(msg.text ?? "");
-            }
-            this.pendingResolve = null;
-            this.pendingReject = null;
-          }
-        } catch {
-          logger.debug(`[nemo] stdout: ${line}`);
-        }
-      });
-    });
-
-    return this.warmPromise;
-  }
-
-  async prewarm(options: TranscribeOptions = {}): Promise<void> {
-    const model = options.model?.trim() || this.model;
-    const cacheDir = defaultHuggingFaceHubCache();
-    logger.info(
-      `[Voice] ya-nemo preload: loading model "${model}" on device=${this.device} (cache=${cacheDir}; ${cacheFreeSpaceSummary(cacheDir)})`,
+    super(
+      {
+        id: "ya-nemo",
+        label: "Local NeMo Parakeet (pixi stt-nemo)",
+        logTag: "nemo",
+        displayName: "NeMo",
+        workerScript: workerScriptPath(import.meta.url, "nemo_worker.py"),
+        environment: PIXI_NEMO_ENV,
+        defaultModel: DEFAULT_NEMO_PARAKEET_MODEL,
+        modelLoadTimeoutMs: 240_000,
+        repairHint: NEMO_REPAIR_HINT,
+        runtime: {
+          backendLabel: "local NeMo Parakeet",
+          checkPython: NEMO_IMPORT_CHECK,
+          bootstrapTask: "nemo-bootstrap",
+        },
+      },
+      opts,
     );
-    try {
-      await this.queue.run(() => this.startWorker(model, this.device));
-    } catch (error) {
-      throw new Error(`${summarizeChildError(error)} ${NEMO_REPAIR_HINT}`);
-    }
-  }
-
-  async transcribe(
-    audio: Buffer,
-    options: TranscribeOptions = {},
-  ): Promise<string> {
-    const model = options.model?.trim() || this.model;
-    // Queue behind any in-flight load/transcribe: record audio, block on the
-    // load, then transcribe — instead of rejecting as "busy".
-    return this.queue.run(async () => {
-      try {
-        await this.startWorker(model, this.device);
-      } catch (error) {
-        throw new Error(`${summarizeChildError(error)} ${NEMO_REPAIR_HINT}`);
-      }
-
-      if (!this.proc?.stdin) {
-        throw new Error("NeMo worker is not running");
-      }
-
-      return new Promise<string>((resolve, reject) => {
-        this.pendingResolve = resolve;
-        this.pendingReject = reject;
-
-        const req = {
-          audio_b64: audio.toString("base64"),
-          mime_type: options.mimeType ?? "audio/webm;codecs=opus",
-        };
-
-        this.proc!.stdin!.write(`${JSON.stringify(req)}\n`);
-      });
-    });
   }
 }

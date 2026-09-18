@@ -8,6 +8,7 @@ import {
   pickStaticAgentEnvironment,
 } from "./agentctl-session-env.js";
 import { ClaudeGatewayProvider } from "./claude-gateway.js";
+import { codexOSSProvider } from "./codex-oss.js";
 import { ClaudeOllamaProvider } from "./claude-ollama.js";
 import { grokACPProvider } from "./grok-acp.js";
 import {
@@ -50,16 +51,6 @@ async function configureRuntime(
     isClaudeOllamaVisible: () => true,
     getProviderRuntimeSnapshot: () => config,
   });
-  ClaudeGatewayProvider.setGatewayUrl(config.claudeGatewayUrl);
-  ClaudeGatewayProvider.setGatewayStartCommand(
-    config.claudeGatewayStartCommand,
-  );
-  ClaudeGatewayProvider.setGatewayDisableAgent(
-    config.claudeGatewayDisableAgent ?? true,
-  );
-  ClaudeGatewayProvider.setGatewayDisablePlanMode(
-    config.claudeGatewayDisablePlanMode ?? true,
-  );
   ClaudeOllamaProvider.setOllamaUrl(config.ollamaUrl);
   ClaudeOllamaProvider.setSystemPrompt(config.ollamaSystemPrompt);
   ClaudeOllamaProvider.setUseFullSystemPrompt(
@@ -67,14 +58,15 @@ async function configureRuntime(
   );
   grokACPProvider.setAmbientXaiApiKey(config.ambientXaiApiKey);
   grokACPProvider.setUseAmbientXaiApiKey(config.grokBuildUseXaiApiKey ?? false);
-  if (config.claudeGatewayUrl) {
-    await ClaudeGatewayProvider.configureGateway({
-      url: config.claudeGatewayUrl,
-      startCommand: config.claudeGatewayStartCommand,
-      disableAgent: config.claudeGatewayDisableAgent ?? true,
-      disablePlanMode: config.claudeGatewayDisablePlanMode ?? true,
-    });
-  }
+  codexOSSProvider.setGatewayServices(config.gatewayServices ?? []);
+  await ClaudeGatewayProvider.configureGatewayServices({
+    services: config.gatewayServices ?? [],
+    ...(config.defaultGatewayServiceId
+      ? { defaultServiceId: config.defaultGatewayServiceId }
+      : {}),
+    disableAgent: config.claudeGatewayDisableAgent ?? true,
+    disablePlanMode: config.claudeGatewayDisablePlanMode ?? true,
+  });
 }
 
 async function main(): Promise<void> {

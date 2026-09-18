@@ -5,6 +5,14 @@ const RNNT = "nvidia/parakeet-rnnt-1.1b"; // NeMo-only
 const TDT = "nvidia/parakeet-tdt-0.6b-v3"; // both backends
 
 describe("reconcileParakeetBackendForModel", () => {
+  it("preserves each backend's server default when no model is selected", () => {
+    expect(
+      reconcileParakeetBackendForModel("ya-nemo", "", [
+        "ya-parakeet",
+        "ya-nemo",
+      ]),
+    ).toBe("ya-nemo");
+  });
   it("reroutes a NeMo-only model off ya-parakeet to ya-nemo when available", () => {
     expect(
       reconcileParakeetBackendForModel("ya-parakeet", RNNT, [

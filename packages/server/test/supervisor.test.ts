@@ -1,4 +1,8 @@
-import { DEFAULT_RECAP_AFTER_SECONDS } from "@yep-anywhere/shared";
+import {
+  DEFAULT_RECAP_AFTER_SECONDS,
+  POST_COMPACT_REPLAY_CONTINUE,
+  POST_COMPACT_REPLAY_PREAMBLE,
+} from "@yep-anywhere/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageQueue } from "../src/sdk/messageQueue.js";
 import type {
@@ -1272,6 +1276,206 @@ describe("Supervisor", () => {
         expect.any(String),
         { contextUsageMode: "manual-compaction" },
       );
+      await supervisorWithProvider.abortProcess(started.id);
+    });
+
+    it("injects a hidden post-compact continuation when enabled", async () => {
+      const delivered: string[] = [];
+      let compactEmitted = false;
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "post-compact-session",
+            };
+            for await (const sdkMessage of queue) {
+              if (aborted) return;
+              const content = sdkMessage.message.content;
+              const text =
+                typeof content === "string"
+                  ? content
+                  : ((content[0] as { text?: string } | undefined)?.text ?? "");
+              delivered.push(text);
+              yield {
+                type: "assistant" as const,
+                message: { content: `reply to ${text}` },
+              };
+              if (!compactEmitted) {
+                compactEmitted = true;
+                yield {
+                  type: "system" as const,
+                  subtype: "compact_boundary" as const,
+                  session_id: options.resumeSessionId ?? "post-compact-session",
+                };
+              }
+              yield {
+                type: "result" as const,
+                session_id: options.resumeSessionId ?? "post-compact-session",
+              };
+            }
+          }
+
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      const supervisorWithProvider = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+        getPostCompactReplaySettings: () => ({
+          providers: { claude: true },
+          replayTurnCount: 2,
+        }),
+      });
+
+      const started = await supervisorWithProvider.resumeSession(
+        "post-compact-session",
+        "/tmp/test",
+        { text: "fix the parser" },
+      );
+      if (!("id" in started)) {
+        throw new Error("expected process");
+      }
+
+      await vi.waitFor(() => {
+        expect(delivered[0]).toBe("fix the parser");
+        const replay = delivered.find((text) =>
+          text.startsWith(POST_COMPACT_REPLAY_PREAMBLE),
+        );
+        expect(replay).toBeDefined();
+        expect(delivered).toHaveLength(2);
+        expect(replay).toContain("> user: fix the parser");
+        expect(replay).toContain("> assistant: reply to fix the parser");
+        expect(replay).toContain(
+          "quotation records before-compaction activity, not a new request",
+        );
+        expect(replay?.trim().endsWith(POST_COMPACT_REPLAY_CONTINUE)).toBe(
+          true,
+        );
+      });
+
+      await supervisorWithProvider.abortProcess(started.id);
+    });
+
+    it("skips post-compact continuation when the provider is not enabled", async () => {
+      const delivered: string[] = [];
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          let aborted = false;
+
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "post-compact-off",
+            };
+            for await (const sdkMessage of queue) {
+              if (aborted) return;
+              const content = sdkMessage.message.content;
+              const text =
+                typeof content === "string"
+                  ? content
+                  : ((content[0] as { text?: string } | undefined)?.text ?? "");
+              delivered.push(text);
+              yield {
+                type: "assistant" as const,
+                message: { content: `reply to ${text}` },
+              };
+              yield {
+                type: "system" as const,
+                subtype: "compact_boundary" as const,
+                session_id: options.resumeSessionId ?? "post-compact-off",
+              };
+              yield {
+                type: "result" as const,
+                session_id: options.resumeSessionId ?? "post-compact-off",
+              };
+            }
+          }
+
+          return {
+            iterator: iterator(),
+            queue,
+            abort: () => {
+              aborted = true;
+              queue.push({ text: "__abort__" });
+            },
+          };
+        },
+      );
+      const provider: AgentProvider = {
+        name: "claude",
+        displayName: "Claude",
+        supportsPermissionMode: true,
+        supportsThinkingToggle: true,
+        supportsSlashCommands: true,
+        supportsSteering: true,
+        isInstalled: async () => true,
+        isAuthenticated: async () => true,
+        getAuthStatus: async () => ({
+          installed: true,
+          authenticated: true,
+          enabled: true,
+        }),
+        getAvailableModels: async () => [],
+        startSession,
+      };
+      const supervisorWithProvider = new Supervisor({
+        provider,
+        idleTimeoutMs: 100,
+        getPostCompactReplaySettings: () => ({
+          providers: { codex: true },
+          replayTurnCount: 4,
+        }),
+      });
+
+      const started = await supervisorWithProvider.resumeSession(
+        "post-compact-off",
+        "/tmp/test",
+        { text: "hello" },
+      );
+      if (!("id" in started)) {
+        throw new Error("expected process");
+      }
+
+      await vi.waitFor(() => {
+        expect(delivered).toEqual(["hello"]);
+        expect(started.state.type).toBe("idle");
+      });
+      await new Promise((resolve) => setTimeout(resolve, 30));
+      expect(
+        delivered.some((text) => text.startsWith(POST_COMPACT_REPLAY_PREAMBLE)),
+      ).toBe(false);
+
       await supervisorWithProvider.abortProcess(started.id);
     });
 
@@ -6687,6 +6891,11 @@ describe("Supervisor", () => {
       expect(created).toBeDefined();
       expect(created?.session.title).toBe("Optimistic title from request");
       expect(created?.session.messageCount).toBe(1);
+      expect(created?.session.activity).toBeDefined();
+      expect(created?.session.provider).toBe("claude");
+      expect(created?.session.projectName).toBe("test");
+      expect(created?.session.createdAt).toEqual(expect.any(String));
+      expect(created?.session.updatedAt).toEqual(expect.any(String));
       expect(events.some((event) => event.type === "session-id-remapped")).toBe(
         false,
       );

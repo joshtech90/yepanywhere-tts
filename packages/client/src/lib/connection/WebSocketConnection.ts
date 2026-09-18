@@ -28,7 +28,7 @@ import type {
   Subscription,
   UploadOptions,
 } from "./types";
-import { WebSocketCloseError } from "./types";
+import { ConnectionReconnectingError, WebSocketCloseError } from "./types";
 
 export interface WebSocketConnectionSocket {
   readyState: number;
@@ -363,7 +363,7 @@ export class WebSocketConnection implements Connection {
    * re-establishes it. Used by ConnectionManager's reconnectFn.
    */
   async reconnect(): Promise<void> {
-    const reconnectError = new Error("Connection reconnecting");
+    const reconnectError = new ConnectionReconnectingError();
     this.protocol.rejectAllPending(reconnectError);
     // Force all stream handlers (activity/session) to transition closed so
     // higher-level consumers can re-subscribe on the new socket.

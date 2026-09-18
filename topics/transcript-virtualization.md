@@ -292,6 +292,27 @@ excerpt set. Before explicit continuation, ordinary transcript use and
 loaded-window search perform no history request, worker construction, or
 historical-page compilation.
 
+Search navigation cycles through the matches in chronological order. At the
+oldest retained match, previous waits for on-demand older-page scanning before
+advancing to the nearest newly found match; it does not wrap past unchecked
+history. If a page contributes k earlier matches, that new selection is k of
+n+k. Once the beginning is covered, reaching the first match flashes a visible
+start-of-session status, and further navigation wraps with feedback. Result
+and per-attempt scan limits still stop continuation rather than claiming full
+coverage. Up/down buttons expose the same navigation on desktop and phone;
+Go spans both arrow rows on their right and commits the selected result like
+Enter. Phone layouts omit the keyboard-help caption; desktop retains it.
+
+The prominent percentage after Aa reports checked source messages divided by
+the pagination total, including the initial loaded window and older scanned
+pages. It is independent of match count. Ordinary overlapping pagination does
+not add the same loaded tail twice. Unknown totals show a dash until the scan
+reaches the beginning; incomplete or capped scans never display 100%.
+Ctrl+R and Ctrl+Alt+R remain duplicate user-turn shortcuts, with only the Alt
+form advertised in that scope's caption. Ctrl+S searches all turns and
+Ctrl+Alt+S includes full-session content. Switching scope preserves the query
+and case setting.
+
 An unhydrated historical result is deliberately preview-only. It has no turn
 rail marker and no estimated transcript coordinate: a page-local height would
 misrepresent its position across omitted history. Committing the selected
@@ -302,6 +323,15 @@ omission. The result's stable render id then enters the measured-height render
 window; after the React commit, the normal reveal and settled real-row geometry
 own centering. Closing isearch preserves that row while nonmatching rows expand
 around it, so the selected anchor does not move under the reader.
+
+Both an older-page preview click and a loaded-result click activate that
+result while keeping search open. Enter and Go activate it and close search.
+The resolved row receives a visible outline/tint, and the matching visible
+text receives a contrasting highlight where the browser supports CSS custom
+highlights. Scrolling aligns the matching text itself inside the viewport,
+including when its row is taller than the viewport. The cue survives closing
+search; another search navigation replaces it and Follow clears it. The
+highlight does not alter React-owned text nodes or the user's text selection.
 
 Only one historical page is mounted. It is outside the canonical active
 session store, and trim, fork, and store-backed copy actions are unavailable on

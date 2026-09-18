@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 
-import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
+import {
+  type ProjectPathLinkTarget,
+  toUrlProjectId,
+} from "@yep-anywhere/shared";
 import { describe, expect, it } from "vitest";
 import type { Message } from "../types";
 import type {
@@ -239,6 +242,49 @@ describe("annotateProjectPathLinksHtml", () => {
     expect(anchor?.getAttribute("href")).toBe(
       "/projects/project-1/file?path=src%2Fsettings.json",
     );
+  });
+
+  it("links through the share's own file route for a public share viewer", () => {
+    const projectId = toUrlProjectId("/home/me/project");
+    const result = annotateProjectPathLinksHtml(
+      "<p>Open <code>settings.json</code>.</p>",
+      [{ text: "settings.json", filePath: "src/settings.json" }],
+      projectId,
+      {
+        projectId,
+        relayUrl: "wss://relay.example/ws",
+        relayUsername: "me",
+        secret: "share-secret",
+      },
+    );
+    const template = document.createElement("template");
+    template.innerHTML = result.html;
+    const anchor = template.content.querySelector("a");
+
+    expect(result.changed).toBe(true);
+    expect(anchor?.getAttribute("href")).toContain("/share/share-secret/file");
+    expect(anchor?.getAttribute("href")).toContain("path=src%2Fsettings.json");
+    // The share page unwraps this marker back into plain code.
+    expect(anchor?.getAttribute("data-ya-private-project-file-link")).toBe(
+      null,
+    );
+  });
+
+  it("leaves a path outside the share's project unlinked", () => {
+    const result = annotateProjectPathLinksHtml(
+      "<p>Open <code>secret.json</code>.</p>",
+      [{ text: "secret.json", filePath: "/elsewhere/secret.json" }],
+      toUrlProjectId("/home/me/project"),
+      {
+        projectId: toUrlProjectId("/home/me/project"),
+        relayUrl: "wss://relay.example/ws",
+        relayUsername: "me",
+        secret: "share-secret",
+      },
+    );
+
+    expect(result.changed).toBe(false);
+    expect(result.html).not.toContain("<a");
   });
 
   it("retargets an exact bare-path anchor to the prefix-causal alias", () => {

@@ -185,7 +185,7 @@ field when the capability is absent; existing capability meanings and queue
 routes stay unchanged. The capability is version-implied from v0.8.2.
 
 Per-project replacement/None choices and a future blocking-until-clear check
-are deferred in [the readiness override gap](../gaps/project-queue-readiness-overrides.md).
+are deferred in [the readiness override gap](../gaps/sketches/project-queue-readiness-overrides.md).
 
 ## Project Idle Predicate
 

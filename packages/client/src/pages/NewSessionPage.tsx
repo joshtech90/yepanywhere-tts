@@ -67,8 +67,7 @@ export function NewSessionPage() {
   const preferredExecutor = searchParams.get("executor") ?? undefined;
   const requestedDetached =
     !projectId && searchParams.get(DETACHED_PROJECT_PARAM) === "1";
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
-    useNavigationLayout();
+  const { openSidebar, isWideScreen } = useNavigationLayout();
 
   useIncomingShareFiles(setIncomingShareFiles, {
     onError: () => showToast(t("incomingShareAttachmentUnavailable"), "error"),
@@ -173,9 +172,7 @@ export function NewSessionPage() {
         <PageHeader
           title={t("newSessionTitle")}
           onOpenSidebar={openSidebar}
-          onToggleSidebar={toggleSidebar}
           isWideScreen={isWideScreen}
-          isSidebarCollapsed={isSidebarCollapsed}
         />
         <main className="page-scroll-container">
           <div className="page-content-inner">
@@ -197,9 +194,7 @@ export function NewSessionPage() {
       <PageHeader
         title={t("newSessionTitle")}
         onOpenSidebar={openSidebar}
-        onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
-        isSidebarCollapsed={isSidebarCollapsed}
       />
 
       <main className="page-scroll-container">

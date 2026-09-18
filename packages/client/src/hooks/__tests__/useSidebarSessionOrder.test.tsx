@@ -58,6 +58,54 @@ describe("sidebar user chronology", () => {
     ]);
   });
 
+  it("places a session the reader answered on another device", () => {
+    // Nothing stored here: this browser has never opened either session, the
+    // position a second device would otherwise have kept to itself.
+    setCurrentClientSummarySourceKey(
+      createClientSummaryHostSourceKey("fresh-browser"),
+    );
+    const old = new Date(Date.now() - 3 * 86400000).toISOString();
+    const rows: SessionCollectionRecord[] = [
+      {
+        id: "answered-elsewhere",
+        createdAt: old,
+        lastHumanTurnAt: new Date(Date.now() - 60000).toISOString(),
+        updatedAt: new Date().toISOString(),
+        observedAt: 0,
+      },
+      { id: "untouched", createdAt: old, observedAt: 0 },
+    ];
+    const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
+    expect(result.current.recent.map((row) => row.id)).toEqual([
+      "answered-elsewhere",
+    ]);
+    expect(result.current.older.map((row) => row.id)).toEqual(["untouched"]);
+  });
+
+  it("keeps a local visit ahead of an older turn from elsewhere", () => {
+    const source = createClientSummaryHostSourceKey("local-visit");
+    setCurrentClientSummarySourceKey(source);
+    const rows: SessionCollectionRecord[] = [
+      {
+        id: "answered-elsewhere",
+        createdAt: new Date(Date.now() - 86400000).toISOString(),
+        lastHumanTurnAt: new Date(Date.now() - 60000).toISOString(),
+        observedAt: 0,
+      },
+      {
+        id: "opened-here",
+        createdAt: new Date(Date.now() - 86400000).toISOString(),
+        observedAt: 0,
+      },
+    ];
+    const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
+    act(() => recordSessionInteraction(source, "opened-here"));
+    expect(result.current.recent.map((row) => row.id)).toEqual([
+      "opened-here",
+      "answered-elsewhere",
+    ]);
+  });
+
   it("ignores malformed stored history and bounds retained interactions", () => {
     const source = "bounded-order";
     localStorage.setItem(`yep-sidebar-interactions:${source}`, '{"bad":true}');

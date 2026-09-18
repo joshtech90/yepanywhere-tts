@@ -1,4 +1,4 @@
-import { appendFile, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toUrlProjectId } from "@yep-anywhere/shared";
@@ -18,7 +18,10 @@ import { collectionCatalogAdapters } from "../../src/sessions/catalog-adapters/c
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import { catalogProjectIdentity } from "../../src/sessions/catalog-adapters/row.js";
 import type { Project } from "../../src/supervisor/types.js";
-import { readClaudeCatalogTitle } from "../../src/sessions/claude-summary.js";
+import {
+  readClaudeCatalogRecency,
+  readClaudeCatalogTitle,
+} from "../../src/sessions/claude-summary.js";
 
 let dataDir: string;
 let collections: RetainedSessionCollections | undefined;
@@ -265,6 +268,134 @@ it("bounds Claude title discovery and uses the canonical command title", async (
     `${JSON.stringify({ type: "system", content: "x".repeat(300 * 1024) })}\n${user}\n`,
   );
   expect(await readClaudeCatalogTitle(file)).toBeUndefined();
+});
+
+it("bounds Claude recency discovery to the latest conversation row", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-claude-recency-"));
+  const file = join(dataDir, "session.jsonl");
+  const assistant = JSON.stringify({
+    type: "assistant",
+    uuid: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    timestamp: "2026-09-08T00:00:00.000Z",
+    message: { content: [{ type: "text", text: "done" }] },
+  });
+  await writeFile(file, `null\nmalformed\n${assistant}\n`);
+  expect(await readClaudeCatalogRecency(file)).toBe("2026-09-08T00:00:00.000Z");
+
+  // Shutdown metadata rows carry no conversation timestamp of their own.
+  await appendFile(
+    file,
+    `${JSON.stringify({ type: "last-prompt", sessionId: "s", lastPrompt: "hi" })}\n`,
+  );
+  expect(await readClaudeCatalogRecency(file)).toBe("2026-09-08T00:00:00.000Z");
+
+  // Past the tail window there is nothing to claim, so the caller's storage
+  // fallback stays in charge rather than a wrong content time being invented.
+  await writeFile(
+    file,
+    `${assistant}\n${JSON.stringify({ type: "system", content: "x".repeat(300 * 1024) })}\n`,
+  );
+  expect(await readClaudeCatalogRecency(file)).toBeUndefined();
+});
+
+it("keeps a reaped Claude session at its content time, not its shutdown mtime", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-claude-reap-"));
+  const projectPath = join(dataDir, "project");
+  const sessionDir = join(dataDir, "sessions");
+  await mkdir(sessionDir, { recursive: true });
+  const project: Project = {
+    id: catalogProjectIdentity(projectPath).projectId,
+    path: projectPath,
+    name: "Project",
+    provider: "claude",
+    sessionDir,
+    sessionCount: 1,
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: null,
+  };
+  const sessionId = "33333333-3333-4333-8333-333333333333";
+  const file = join(sessionDir, `${sessionId}.jsonl`);
+  const contentAt = "2026-09-08T00:00:00.000Z";
+  await writeFile(
+    file,
+    `${[
+      {
+        type: "user",
+        uuid: "11111111-1111-4111-8111-111111111111",
+        parentUuid: null,
+        timestamp: "2026-09-07T23:59:00.000Z",
+        message: { content: "Do the work" },
+      },
+      {
+        type: "assistant",
+        uuid: "22222222-2222-4222-8222-222222222222",
+        parentUuid: "11111111-1111-4111-8111-111111111111",
+        timestamp: contentAt,
+        message: { content: [{ type: "text", text: "Done" }] },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  const scanner = new ProjectScanner({ projectsDir: join(dataDir, "unused") });
+  vi.spyOn(scanner, "listProjects").mockResolvedValue([project]);
+  const reader = new ClaudeSessionReader({ sessionDir });
+  const bus = new EventBus();
+  collections = new RetainedSessionCollections({
+    dataDir,
+    eventBus: bus,
+    adapters: (rows, signal, paths) =>
+      collectionCatalogAdapters(
+        {
+          scanner,
+          readerFactory: () => reader,
+          codexSessionsDir: join(dataDir, "unused-codex"),
+          codexReaderFactory: () => {
+            throw new Error("Unexpected Codex reader");
+          },
+          geminiScanner: {
+            getHashToCwd: async () => {
+              throw new Error("Unexpected Gemini lookup");
+            },
+          },
+          getCatalogFamilies: () => ["claude"],
+        },
+        rows,
+        signal,
+        paths,
+      ),
+  });
+  await collections.refresh();
+  expect(
+    (await collections.read()).rows.find((row) => row.sessionId === sessionId)
+      ?.updatedAt,
+  ).toBe(contentAt);
+
+  // What an idle reap writes: the file moves without the conversation moving.
+  await appendFile(
+    file,
+    `${JSON.stringify({
+      type: "last-prompt",
+      sessionId,
+      lastPrompt: "Do the work",
+      leafUuid: "22222222-2222-4222-8222-222222222222",
+    })}\n`,
+  );
+  bus.emit({
+    type: "file-change",
+    provider: "claude",
+    path: file,
+    relativePath: `${sessionId}.jsonl`,
+    fileType: "session",
+    changeType: "modify",
+    timestamp: new Date().toISOString(),
+  });
+  await collections.refresh();
+  expect(
+    (await collections.read()).rows.find((row) => row.sessionId === sessionId)
+      ?.updatedAt,
+  ).toBe(contentAt);
 });
 
 it("keeps the last accepted rows on failure and stops publication after disposal", async () => {

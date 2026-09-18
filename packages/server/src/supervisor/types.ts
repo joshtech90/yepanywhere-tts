@@ -1,5 +1,6 @@
 import type {
   AppSessionSummary,
+  NonHumanUserTurn,
   AgentActivity,
   CodexAsyncUserInputQuestion,
   ContextUsage,
@@ -125,6 +126,9 @@ export interface SessionSummary {
   provider: ProviderName;
   /** Model used for this session (extracted from JSONL, e.g. "claude-opus-4-5-20251101") */
   model?: string;
+  /** Current activity and executor, supplied with owned-session creation events. */
+  activity?: AgentActivity;
+  executor?: string;
   /**
    * Excerpt of the most recent visible regular agent turn or provider recap,
    * capped to the last few lines. Shown in the row hover card so a glance
@@ -134,6 +138,13 @@ export interface SessionSummary {
    * topics/session-hovercard-recent-activity.md.
    */
   lastAgentText?: string;
+  /**
+   * When someone last wrote into this session, which agent work never
+   * advances. The sidebar orders by the reader's own turns, so that ordering
+   * has to come from here rather than from what one browser remembers about
+   * its own visits. Undefined when the provider's reader does not report it.
+   */
+  lastHumanTurnAt?: string;
   asyncQuestions?: AppSessionSummary["asyncQuestions"];
   /** Launcher identifier from session metadata (e.g. "Codex Desktop", "yep-anywhere") */
   originator?: string;
@@ -298,6 +309,7 @@ export interface ProcessAbortResult {
 
 // Process events for subscribers
 export type ProcessEvent =
+  | { type: "non-human-user-turn"; turn: NonHumanUserTurn }
   | { type: "message"; message: SDKMessage }
   | { type: "user-turn-accepted"; startedAtMs: number }
   | {

@@ -14,7 +14,8 @@ mkdirSync(targetDir, { recursive: true });
 
 let copied = 0;
 for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
-  if (!entry.isFile() || !entry.name.endsWith("_worker.py")) {
+  // Workers plus the helper module they import by name from this directory.
+  if (!entry.isFile() || !entry.name.endsWith(".py")) {
     continue;
   }
   const source = join(sourceDir, entry.name);
@@ -33,6 +34,9 @@ for (const expected of [
   "whisper_worker.py",
   "parakeet_worker.py",
   "nemo_worker.py",
+  "granite_worker.py",
+  "qwen_worker.py",
+  "stt_worker_common.py",
 ]) {
   if (!existsSync(join(targetDir, expected))) {
     throw new Error(`Expected ${expected} in server dist assets`);

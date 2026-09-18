@@ -39,6 +39,47 @@ describe("MessageQueue", () => {
 
 describe("Process", () => {
   describe("message queue", () => {
+    it("raises delivery attention only when external input reaches the provider", async () => {
+      const controlled = createControllableIterator();
+      const queue = new MessageQueue();
+      const process = new Process(controlled.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "receiver",
+        provider: "claude",
+        queue,
+      });
+      const deliveries = vi.fn();
+      process.subscribe((event) => {
+        if (event.type === "non-human-user-turn") deliveries(event.turn);
+      });
+      try {
+        process.deferMessage({
+          text: "cancel this",
+          tempId: "cancelled",
+          metadata: { sourceSessionId: "sender" },
+        });
+        expect(process.cancelDeferredMessage("cancelled")).toBe(true);
+        expect(deliveries).not.toHaveBeenCalled();
+        process.queueMessage({ text: "human" });
+        process.queueMessage({
+          text: "external",
+          metadata: { sourceSessionId: "sender" },
+        });
+        expect(deliveries).not.toHaveBeenCalled();
+        const delivered = await queue[Symbol.asyncIterator]().next();
+        expect(deliveries).toHaveBeenCalledWith(
+          expect.objectContaining({
+            messageId: delivered.value?.uuid,
+            sourceSessionId: "sender",
+          }),
+        );
+      } finally {
+        controlled.finish();
+        await process.abort();
+      }
+    });
+
     it("reports when a human turn is yielded to provider input", async () => {
       let resolveIterator!: (result: IteratorResult<SDKMessage>) => void;
       const iterator: AsyncIterator<SDKMessage> = {
@@ -269,12 +310,18 @@ describe("Process", () => {
         idleTimeoutMs: 100,
         queue,
         steerFn,
+        steerUsesMessageQueue: true,
+      });
+
+      const deliveries = vi.fn();
+      process.subscribe((event) => {
+        if (event.type === "non-human-user-turn") deliveries(event.turn);
       });
 
       process.queueMessage({
         text: "cancel me",
         tempId: "temp-steer",
-        metadata: { deliveryIntent: "steer" },
+        metadata: { deliveryIntent: "steer", sourceSessionId: "sender" },
       });
 
       expect(process.queueDepth).toBe(1);
@@ -285,6 +332,8 @@ describe("Process", () => {
       expect(process.queueDepth).toBe(0);
       expect(process.getMessageHistory()).toEqual([]);
       expect(process.cancelUnconfirmedSteerMessage("temp-steer")).toBe(false);
+      await Promise.resolve();
+      expect(deliveries).not.toHaveBeenCalled();
 
       resolveIterator?.();
       await process.abort();

@@ -459,7 +459,7 @@ provider placement table in [agent context injection](agent-context-injection.md
 Implementation must either normalize the existing provider differences or use
 provider-specific Settings copy; it must not repeat the current inaccurate
 blanket claim tracked in
-[`gaps/confusing-settings.md`](../gaps/confusing-settings.md).
+[`gaps/sketches/confusing-settings.md`](../gaps/sketches/confusing-settings.md).
 
 This reuses the LaTeX setting's exact-preview convention, but not its
 context-only ownership. Private input grants a narrow executable capability,

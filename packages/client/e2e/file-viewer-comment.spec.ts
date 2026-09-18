@@ -1,7 +1,7 @@
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
@@ -80,18 +80,12 @@ async function quoteButtonForBlock(buttons: Locator, block: Locator) {
 }
 
 async function capture(page: Page, name: string) {
-  const artifactDir = process.env.YEP_UI_CAPTURE_DIR;
-  if (!artifactDir) return;
-  mkdirSync(artifactDir, { recursive: true });
   await page.mouse.move(1, 1);
-  await page.waitForTimeout(300);
-  await page.screenshot({
-    animations: "disabled",
-    path: join(artifactDir, `${name}.png`),
-  });
+  await recordUiCapture(page, name);
 }
 
 for (const viewport of [
+  { name: "wide", width: 1200, height: 600 },
   { name: "desktop", width: 1000, height: 600 },
   { name: "mobile", width: 375, height: 812 },
 ] as const) {
@@ -114,20 +108,22 @@ for (const viewport of [
     const keyboardScrollStart = await viewerBody.evaluate(
       (element) => element.scrollTop,
     );
+    const keyboardScrollEnd = viewerBody.evaluate(
+      (element) =>
+        new Promise<void>((resolve) => {
+          element.addEventListener("scrollend", () => resolve(), {
+            once: true,
+          });
+        }),
+    );
     await page.keyboard.press("PageDown");
+    await keyboardScrollEnd;
     await expect
       .poll(() => viewerBody.evaluate((element) => element.scrollTop))
       .toBeGreaterThan(keyboardScrollStart);
+    // Scroll back upward: PageDown may already have reached the bottom.
     const wheelScrollStart = await viewerBody.evaluate(
       (element) => element.scrollTop,
-    );
-    const wheelScrollTarget = await viewerBody.evaluate(
-      (element, delta) =>
-        Math.min(
-          element.scrollHeight - element.clientHeight,
-          element.scrollTop + delta,
-        ),
-      300,
     );
     const viewerBox = await viewerBody.boundingBox();
     if (!viewerBox) throw new Error("Expected file viewer scroll owner");
@@ -135,11 +131,10 @@ for (const viewport of [
       viewerBox.x + viewerBox.width / 2,
       viewerBox.y + viewerBox.height / 2,
     );
-    await page.mouse.wheel(0, 300);
+    await page.mouse.wheel(0, -300);
     await expect
       .poll(() => viewerBody.evaluate((element) => element.scrollTop))
-      .toBeGreaterThanOrEqual(wheelScrollTarget - 1);
-    expect(wheelScrollTarget).toBeGreaterThan(wheelScrollStart);
+      .toBeLessThan(wheelScrollStart);
     await viewerBody.evaluate((element) => {
       element.scrollTop = 0;
     });
@@ -260,7 +255,7 @@ test("opens the viewer toolbar link with a native middle click", async ({
   await openRenderedMarkdown(page);
   const openLink = page
     .locator(".file-viewer-modal")
-    .getByRole("link", { name: "Open in new tab" });
+    .getByRole("button", { name: "Copy viewer link" });
   await expect(openLink).toHaveAttribute("target", "_blank");
 
   const [openedPage] = await Promise.all([

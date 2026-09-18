@@ -8,17 +8,19 @@ export function TimelineDisclosure({
   onClick,
   controls,
   status,
+  inline = false,
 }: {
   expanded: boolean;
   label: string;
   onClick: MouseEventHandler<HTMLButtonElement>;
   controls?: string;
   status?: ToolCallItem["status"];
+  inline?: boolean;
 }) {
   return (
     <button
       type="button"
-      className={styles.toggle}
+      className={`${styles.toggle} ${inline ? styles.inline : ""}`}
       onClick={onClick}
       aria-label={label}
       aria-expanded={expanded}

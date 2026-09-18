@@ -32,6 +32,7 @@ describe("resource sampling", () => {
       const stop = startResourceSampling({
         dataDir: tmpdir(),
         intervalMs: 10,
+        recordStalls: false,
         onSample: (sample) => {
           samples.push(sample);
           if (samples.length === 1) {

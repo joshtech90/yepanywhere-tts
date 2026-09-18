@@ -58,6 +58,13 @@ vi.mock("../../i18n", async (importOriginal) => ({
         sessionSearchOlderError: "Older history unavailable; retry",
         sessionSearchOlderLimit: "Result limit reached; refine the query",
         sessionSearchStartReached: "Start of session reached",
+        sessionSearchStartWrap: "Start of session · wrapped",
+        sessionSearchEndWrap: "Last match · wrapped",
+        sessionSearchCoverage: "Percentage of session messages checked",
+        sessionSearchPrevious: "Previous match",
+        sessionSearchNext: "Next match",
+        sessionSearchGo: "Go",
+        sessionSearchGoLabel: "Go to selected match",
         sessionSearchHistoryGap:
           "Unloaded history omitted · recent transcript continues below",
         sessionQuoteSelection: "Quote reply",

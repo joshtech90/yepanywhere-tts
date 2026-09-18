@@ -1,5 +1,6 @@
 import type { ReactNode, RefObject } from "react";
 import { useSyncExternalStore } from "react";
+import { sessionViewerUsesRightPane } from "./sessionViewerPlacement";
 
 interface SessionViewerBase {
   id: string;
@@ -21,6 +22,7 @@ interface FileViewerBase extends SessionViewerBase {
   kind: "file";
   filePath: string;
   lineSuffix: string;
+  supportsRightPane?: boolean;
 }
 
 export type FileViewerRegistration = FileViewerBase &
@@ -28,12 +30,20 @@ export type FileViewerRegistration = FileViewerBase &
     | { onClose: () => void; renderContent?: never }
     | {
         onClose?: () => void;
-        renderContent: (inactive: boolean) => ReactNode;
+        renderContent: (inactive: boolean, rightPane?: boolean) => ReactNode;
       }
   );
 
 export type SessionViewerRegistration =
   | PanelViewerRegistration
+  | (SessionViewerBase & {
+      kind: "vhost";
+      url: string;
+      onClose?: never;
+      kill?: () => void;
+      killing?: boolean;
+      artifactToken?: string;
+    })
   | (SessionViewerBase & { kind: "artifact"; url: string; onClose?: never })
   | FileViewerRegistration;
 
@@ -55,7 +65,9 @@ function emit(): void {
 function openSessionId(
   state: SessionViewerControllerState | null,
 ): string | null {
-  return state && !state.minimized ? state.sessionId : null;
+  return state && !sessionViewerUsesRightPane(state) && !state.minimized
+    ? state.sessionId
+    : null;
 }
 
 function replaceCurrent(next: SessionViewerControllerState | null): void {
@@ -68,7 +80,7 @@ function replaceCurrent(next: SessionViewerControllerState | null): void {
   emit();
 }
 
-function closeViewer(id: string): void {
+export function closeSessionViewer(id: string): void {
   if (current?.id !== id) return;
   const onClose = current.onClose;
   replaceCurrent(null);
@@ -95,7 +107,7 @@ function toController(
   const { id } = registration;
   return {
     ...registration,
-    close: () => closeViewer(id),
+    close: () => closeSessionViewer(id),
     minimize: () => setMinimized(id, true),
     minimized,
     restore: () => setMinimized(id, false),
@@ -120,6 +132,16 @@ export function presentSessionViewer(
 export function clearSessionViewer(id: string): void {
   if (current?.id !== id) return;
   replaceCurrent(null);
+}
+
+export function setSessionViewerKillAction(
+  id: string,
+  kill: (() => void) | undefined,
+  killing: boolean,
+): void {
+  if (current?.id !== id || current.kind !== "vhost") return;
+  if (current.kill === kill && current.killing === killing) return;
+  replaceCurrent({ ...current, kill, killing });
 }
 
 export function clearCurrentSessionViewer(): void {

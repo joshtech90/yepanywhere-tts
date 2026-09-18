@@ -1,4 +1,5 @@
 import type { PreparedToolDisplay } from "../renderers/tools/defineTool";
+import { decodeCodeModeOutput } from "@yep-anywhere/shared";
 import { RawToolDisplay, ToolDisplayBoundary } from "./ToolDisplayBoundary";
 import {
   type CSSProperties,
@@ -615,7 +616,55 @@ function PreparedToolCallRow(props: Props & { originalOutput?: unknown }) {
   }
   if (prepared.kind === "raw" && metadata.registered)
     return <RawToolDisplay {...props} toolResult={output} />;
+  const waitingTarget = getWaitingTarget(metadata.tool, props, output);
+  if (waitingTarget) {
+    return (
+      <div className={`tool-row timeline-item ${styles.waitingRow}`}>
+        <div className={`tool-row-header ${styles.waitingHeader}`}>
+          <span className="tool-name">Waiting</span>
+          <span className={styles.waitingSummary}>
+            {waitingTarget} · running
+          </span>
+        </div>
+      </div>
+    );
+  }
   return <ToolCallRowContent {...props} prepared={prepared} />;
+}
+
+function getWaitingTarget(
+  tool: string,
+  props: Props,
+  result: unknown,
+): string | undefined {
+  if (
+    (tool !== "Bash" && tool !== "WriteStdin") ||
+    (props.status !== "complete" && props.status !== "error") ||
+    props.workflow ||
+    (isRecord(props.toolInput) &&
+      (props.toolInput.chars || props.toolInput.linked_file_path))
+  )
+    return undefined;
+  const decoded = decodeCodeModeOutput(result);
+  const parts = decoded?.parts.filter((part) => part.kind !== "script-status");
+  if (parts && parts.length !== 1) return undefined;
+  const part = parts?.[0];
+  const output = getBashResultOutputForRichPreview(
+    part?.text ?? result,
+    true,
+  ).trim();
+  const exitCode =
+    (part?.kind === "command-output" ? part.exitCode : undefined) ??
+    getBashExitCode(
+      part?.text ?? result,
+      props.toolResult?.content,
+      props.status === "error",
+    );
+  if (exitCode !== 1 || output.length > 500) return undefined;
+  // agentctl's observation window expired while the target remained running.
+  return /^timeout waiting for ([^\r\n]+) to reach not-running; current status=running$/.exec(
+    output,
+  )?.[1];
 }
 
 const ToolCallRowContent = memo(function ToolCallRowContent({
@@ -766,7 +815,9 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
     ],
   );
   const canRenderInteractiveSummary =
-    status === "complete" || (status === "pending" && isEditTool);
+    status === "complete" ||
+    (status === "error" && rendererToolName === "WriteStdin") ||
+    (status === "pending" && isEditTool);
   const mayHaveInteractiveSummary =
     canRenderInteractiveSummary && toolRegistry.hasInteractiveSummary(toolName);
   const deferredPreviewHeightPx = useMemo(
@@ -1079,6 +1130,42 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
     ],
   );
 
+  // A described command shows the description in the header, so the command
+  // itself is only reachable by hover: always offer it (with elapsed), rather
+  // than only when the visible text overflows.
+  const handleDescribedCommandPointerEnter = useCallback(
+    (event: React.PointerEvent<HTMLElement>) => {
+      if (!headerCommand) {
+        setElementTextTooltip(event.currentTarget, null, tooltipMode);
+        return;
+      }
+      const elapsed = computeCommandElapsed({
+        toolInput,
+        structuredResult,
+        status,
+        startTimestampMs,
+        resultTimestampMs,
+        nowMs: Date.now(),
+      });
+      setElementTextTooltip(
+        event.currentTarget,
+        elapsed
+          ? `[${formatCommandDuration(elapsed.seconds)}] ${headerCommand}`
+          : headerCommand,
+        tooltipMode,
+      );
+    },
+    [
+      headerCommand,
+      toolInput,
+      structuredResult,
+      status,
+      startTimestampMs,
+      resultTimestampMs,
+      tooltipMode,
+    ],
+  );
+
   // The visible preview is the first N output lines; hovering it shows the
   // tail in the tooltip — "[Ns] ..." followed by the last N lines.
   const handleOutputPreviewPointerEnter = useCallback(
@@ -1208,14 +1295,6 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
       onFocus={hydrateNow}
       className={`tool-row timeline-item ${expanded ? "expanded" : "collapsed"} status-${status} ${isNonExpandable ? "interactive" : ""} ${shouldHydrateRichContent ? "" : "rich-deferred"} ${isBashTool ? "ran-tool-row" : ""}`}
     >
-      {showDotBtn && (
-        <TimelineDisclosure
-          onClick={handleDotClick}
-          label={dotAriaLabel}
-          expanded={disclosureExpanded}
-          status={status}
-        />
-      )}
       {/* biome-ignore lint/a11y/noStaticElementInteractions: interactive header has role, tabIndex, and keyboard handlers when enabled */}
       <div
         className={[
@@ -1316,6 +1395,17 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
         )}
 
         <span className="tool-name" onPointerEnter={handleToolNamePointerEnter}>
+          <span className={styles.disclosureAnchor}>
+            {showDotBtn && (
+              <TimelineDisclosure
+                inline
+                onClick={handleDotClick}
+                label={dotAriaLabel}
+                expanded={disclosureExpanded}
+                status={status}
+              />
+            )}
+          </span>
           {prepared.getDisplayName()}
         </span>
 
@@ -1398,7 +1488,17 @@ const ToolCallRowContent = memo(function ToolCallRowContent({
             </span>
           </span>
         ) : (
-          <span className="tool-summary">
+          <span
+            className="tool-summary"
+            {...(hasBashDescription && headerCommand
+              ? getTextTooltipAttributes(headerCommand, tooltipMode)
+              : {})}
+            onPointerEnter={
+              hasBashDescription && headerCommand
+                ? handleDescribedCommandPointerEnter
+                : undefined
+            }
+          >
             {summary}
             {status === "aborted" && (
               <span className="tool-aborted-label"> (interrupted)</span>

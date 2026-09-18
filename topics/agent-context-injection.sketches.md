@@ -95,7 +95,7 @@ YA's optimistic live echo shows the original user text and normally discards
 the adapter echo as a duplicate. That is a presentation effect, not a durable
 transcript-stripping contract. The placement discrepancy and the Settings-copy
 decision remain tracked in
-[`gaps/confusing-settings.md`](../gaps/confusing-settings.md).
+[`gaps/sketches/confusing-settings.md`](../gaps/sketches/confusing-settings.md).
 
 The current LaTeX capability fragment prefers `\( ... \)` for inline math and
 `\[ ... \]` for display math. The renderer continues to accept dollar

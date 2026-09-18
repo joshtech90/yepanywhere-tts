@@ -300,7 +300,8 @@ rewrite JavaScript, emulate an application backend, or run a project's dev serve
 
 ### Configuration and delivery
 
-Settings → Local Access and Remote Access expose the same artifact settings.
+Settings → Apps owns artifact and static-vhost settings. Local Access and
+Remote Access link to that category.
 Serving defaults off. Enabling local access pre-fills
 `http://artifacts.localhost:<YA port>`; the complete address remains editable.
 A blank public address disables hosted artifact access. With both addresses
@@ -309,7 +310,22 @@ absent, no grants are available and no artifact listener runs.
 The main YA listener dispatches the configured artifact Host to the isolated
 handler before application routes, authentication, or the development proxy.
 Consequently, `localhost:3400` and `artifacts.localhost:3400` can use the same
-SSH forward while retaining different browser hosts. The operator must arrange
+SSH forward while retaining different browser hosts.
+
+A static vhost table on the Apps form maps a DNS label to a
+loopback port. `name.localhost` on YA's port reverse-proxies to
+`127.0.0.1:<port>` even when the public vhost root is empty. A public root
+such as `example.com` also matches `name.example.com` on the artifact listener.
+The operator intends to public-tunnel `*.example.com` to the configured
+app-service port, preserving Host and terminating HTTPS. The field has no
+default domain and does not create DNS or tunnel configuration.
+Optional env names on a row are exported
+to new local provider sessions as that port. The computed child environment
+names these exports explicitly in `AGENT_VHOST_ENV_NAMES`; the provider-host
+boundary carries only those configured names and YA's fixed static markers.
+Unrelated environment variables and per-session wake credentials are excluded.
+Dynamic `ya-vhost` PATH helpers
+remain unimplemented. The operator must arrange
 client-side resolution if their browser/OS does not resolve `*.localhost`.
 The local address's port is the browser's forwarded port, which can differ
 from YA's actual listening port.
@@ -335,6 +351,52 @@ encrypted relay connections. Artifact documents and assets themselves travel
 directly to the selected artifact origin. They are outside YA's encrypted relay
 protocol: a TLS-terminating proxy can read them. No session, relay-resume, or
 public-share credentials are attached to artifact requests by YA.
+
+### Private app links
+
+Vhosts require an app-scoped bearer by default, including existing rows that
+omit `public`. Hostname-only visitors receive 401 before any upstream request.
+An explicit saved **Public — no link required** setting bypasses this visitor
+gate. **URL = access**: anybody holding a valid URL may use or share it without
+a YA login. This does not grant YA API access.
+
+Authenticated YA clients obtain tokens from `GET /api/artifacts/vhosts/links`.
+Pane, transcript, copy-link and move-out URLs include `ya_access`. An accepted
+URL establishes a host-only HttpOnly, Secure, SameSite=None cookie so ordinary
+app assets and requests work without rewriting the app. Requests are checked
+again; cookie-only mutations require the same app Origin. The proxy removes
+its access query/cookie, YA session cookies, Authorization, desktop token and
+Referer before forwarding. Responses prohibit caching and referrer disclosure.
+Applications can see their own shared URL; it is intentionally transferable.
+
+**Copy app link** and **Revoke existing links** live beside each saved vhost.
+Revocation durably increments that app's generation and rejects old URLs and
+cookies on subsequent requests. It does not stop the app or erase already
+received content. App links have no automatic expiry in this version.
+Browsers that prohibit embedded cookies may require opening the signed link
+in a new tab; broader browser verification remains tracked in the access gap.
+Vhost WebSocket proxying remains unsupported (501 after authorization; 401
+without it), rather than bypassing the gate.
+
+The 32-byte random signing key is created once under
+`{dataDir}/artifacts/app-access.key`; generations live in `app-access.json`.
+Restart preserves them. Tokens are purpose-, name-, port-, and generation-
+scoped HMAC-SHA256 values. Corrupt key/generation state fails closed. A new
+installation/data directory creates a new key. Public-share hashes and artifact
+bearers keep their existing persisted formats and remain valid; their common
+durability contract does not require migrating them to this signing format.
+App-process survival and app-dataset deletion are separate concerns.
+
+The separate `vhost-bearer-access` capability gates all new client requests and
+the Public field. The approved v0.8.0/v0.8.1 fallback shows protection as
+unavailable and sends none of these requests; older capability meanings stay
+unchanged. New servers preserve a row's visibility when an old client omits it.
+
+`e2e/app-access.spec.ts` checks hostname denial, assets in top-level and iframe
+views, explicit Public access, and full process restart preserving app,
+artifact and public-share credentials and their revocations. Existing artifact
+tests cover expiry while stopped. The fixture keeps the upstream app alive:
+authorization durability does not restart an exited Plannotator process.
 
 ### Preview and authority
 
@@ -433,6 +495,15 @@ directory created mode 700. That file holds live bearer tokens, so its
 protection is the directory's: anyone who can read it holds every unexpired
 artifact URL. It never holds artifact content, and artifact files keep the
 permissions their producer gave them.
+
+Several artifact servers may share one state directory — every server built
+from the same data directory does, and one process can hold more than one. A
+write must therefore stage under a name unique to that write, not merely to
+the process: a shared staging name lets one rename take the file another is
+about to rename, failing the loser with `ENOENT` and leaving a live-token file
+behind. The same rule governs the app-access generations file. A write that
+cannot complete removes its staging file, is reported, and does not stop the
+server from serving what it already holds.
 
 Restoring drops grants that expired while the server was down, and applies the
 same limits and validation as a fresh grant. Address or listener-port changes

@@ -247,7 +247,7 @@ The appended marker arrived later: 1,025.1 ms median and 1,262.3 ms p95 from
 the original click. That is an explicit catch-up clock, not the retained first
 paint. A separate gap now covers the unmeasured cross-product of sustained
 updates and rapid switching:
-[`cached-sidebar-high-cadence-catch-up.md`](../../gaps/cached-sidebar-high-cadence-catch-up.md).
+[`cached-sidebar-high-cadence-catch-up.md`](../../gaps/sketches/cached-sidebar-high-cadence-catch-up.md).
 
 The smaller routine scenario uses two 120-turn sessions and no injected
 activity. On the final source revision, its first cold destination load took

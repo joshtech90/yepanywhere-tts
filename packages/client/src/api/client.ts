@@ -47,6 +47,7 @@ import type {
   WorkstreamCheckoutPreviewResponse,
   PromptSuggestionMode,
   PromptCacheKeepaliveSettings,
+  PostCompactReplaySettings,
   ProviderInfo,
   ProviderChildSessionSummary,
   ProviderName,
@@ -65,6 +66,9 @@ import type {
   TranscriptDisplayObject,
   UpdateProjectQueueItemRequest,
   UpdateProjectSessionDefaultsRequest,
+  EffortLevel,
+  GatewayService,
+  GatewayServiceExportPaths,
   UploadedFile,
   UrlProjectId,
   UserQuestionAnswers,
@@ -109,6 +113,7 @@ export interface PaginationInfo {
  * An item in the inbox representing a session that may need attention.
  */
 export interface InboxItem {
+  nonHumanUserTurn?: AppSessionSummary["nonHumanUserTurn"];
   asyncQuestions?: AppSessionSummary["asyncQuestions"];
   sessionId: string;
   projectId: string;
@@ -139,6 +144,7 @@ export interface InboxResponse {
  * An item in the global sessions list.
  */
 export interface GlobalSessionItem {
+  nonHumanUserTurn?: AppSessionSummary["nonHumanUserTurn"];
   asyncQuestions?: AppSessionSummary["asyncQuestions"];
   id: string;
   title?: string | null;
@@ -171,6 +177,12 @@ export interface GlobalSessionItem {
   executor?: string;
   /** Capped excerpt of the most recent regular agent turn (hover card). */
   lastAgentText?: string;
+  /**
+   * When someone last wrote into this session. Sidebar chronology is stated in
+   * the reader's own turns, and taking it from the server means a browser that
+   * has never opened the session still places it where the others do.
+   */
+  lastHumanTurnAt?: string;
   /** Provider-launched child work nested under this parent. Absent on older servers. */
   providerChildren?: ProviderChildSessionSummary[];
 }
@@ -1278,21 +1290,6 @@ export const api = {
       body: JSON.stringify({ mode }),
     }),
 
-  markSessionSeen: (
-    sessionId: string,
-    timestamp?: string,
-    messageId?: string,
-  ) =>
-    fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
-      method: "POST",
-      body: JSON.stringify({ timestamp, messageId }),
-    }),
-
-  markSessionUnread: (sessionId: string) =>
-    fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
-      method: "DELETE",
-    }),
-
   markSessionDone: (sessionId: string) =>
     fetchJSON<{
       message: DurableSyntheticDoneMessage;
@@ -1414,6 +1411,21 @@ export const api = {
         String(limit),
       )}${includeExpectedExpiry ? "&includeExpectedExpiry=1" : ""}`,
     ),
+
+  /** Ask one model-serving endpoint which thinking efforts it accepts. */
+  detectGatewayServiceEffort: (url: string) =>
+    fetchJSON<
+      | {
+          detected: true;
+          modelId: string;
+          levels: EffortLevel[];
+          noThinking: boolean;
+        }
+      | { detected: false; reason: "unreachable" | "no-models" | "undescribed" }
+    >("/settings/gateway-services/effort", {
+      method: "POST",
+      body: JSON.stringify({ url }),
+    }),
 
   discoverHelperTargetModels: (baseUrl: string) =>
     fetchJSON<{ baseUrl: string; models: ModelInfo[] }>(
@@ -1723,6 +1735,22 @@ export interface ServerSettings {
   heartbeatTurnsAfterMinutes?: number;
   /** Default text queued as the synthetic heartbeat user turn */
   heartbeatTurnText?: string;
+  /**
+   * Configured model-serving endpoints. The default entry is mirrored by the
+   * single-gateway settings below, which older clients still read and write.
+   */
+  gatewayServices?: GatewayService[];
+  /** Which entry Claude Gateway treats as its default service. */
+  defaultGatewayServiceId?: string;
+  /** Whether the configured services are also published for the provider CLIs. */
+  gatewayServiceExportEnabled?: boolean;
+  /**
+   * Whether YA asks each endpoint which thinking efforts it accepts and offers
+   * what it answers. Default on; ticked levels still win.
+   */
+  gatewayServiceEffortDetection?: boolean;
+  /** Server-reported export locations; read-only, used to show exact commands. */
+  gatewayServiceExportPaths?: GatewayServiceExportPaths;
   /** Anthropic-compatible endpoint for the isolated Claude Gateway provider */
   claudeGatewayUrl?: string;
   /** Optional shell line that starts a loopback Claude Gateway on demand */
@@ -1756,6 +1784,11 @@ export interface ServerSettings {
   newSessionDefaults?: NewSessionDefaults;
   /** Provider-scoped prompt-cache keepalive settings */
   promptCacheKeepalive?: PromptCacheKeepaliveSettings;
+  /**
+   * After compaction, optionally inject a hidden continuation turn.
+   * Absent on older servers; default off.
+   */
+  postCompactReplay?: PostCompactReplaySettings;
   /** Usage-accounting monitor for suspected prompt-cache billing misses */
   cacheMissBilling?: CacheMissBillingSettings;
   /** Browser-client defaults used when local storage has no explicit value */
@@ -1766,6 +1799,8 @@ export interface ServerSettings {
     maxAgeDays: number;
     maxBytes: number;
   };
+  /** Local STT backends enabled from Speech settings; unioned with env. */
+  speechVoiceBackends?: string[];
   /** OpenAI-compatible helper endpoints for side-session helper work */
   helperTargets?: HelperTargetConfig[];
   /** Whether lifecycle webhook delivery is enabled */

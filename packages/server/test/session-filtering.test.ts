@@ -33,9 +33,9 @@ function createMessage(
  * as user-facing sessions:
  * - agent-*.jsonl: Subagent sidechain sessions (Task tool warmups)
  * - Empty files: Placeholder files with no content
- * - Metadata-only files: Files with only internal message types
  *
- * See docs/research/session-filtering.md for details.
+ * Metadata-only transcripts remain real sessions with zero conversation messages.
+ * See topics/session-summary-fidelity.md for the reader contract.
  */
 describe("Session Filtering", () => {
   let mockSdk: MockClaudeSDK;
@@ -144,7 +144,7 @@ describe("Session Filtering", () => {
       expect(json.sessions[0].id).toBe("valid-session");
     });
 
-    it("excludes metadata-only files from session list", async () => {
+    it("includes metadata-only transcripts as sessions without conversation messages", async () => {
       // Create a valid session
       await writeFile(
         join(projectDir, "valid-session.jsonl"),
@@ -183,8 +183,12 @@ describe("Session Filtering", () => {
       const json = await res.json();
 
       expect(res.status).toBe(200);
-      expect(json.sessions).toHaveLength(1);
-      expect(json.sessions[0].id).toBe("valid-session");
+      expect(json.sessions).toHaveLength(3);
+      for (const id of ["metadata-only", "queue-only"]) {
+        expect(
+          json.sessions.find((session: { id: string }) => session.id === id),
+        ).toMatchObject({ id, title: null, messageCount: 0 });
+      }
     });
 
     it("counts only user/assistant messages in messageCount", async () => {

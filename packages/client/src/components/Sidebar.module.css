@@ -8,3 +8,26 @@
   flex: 1;
   min-width: 0;
 }
+
+/*
+ * The expanded header's collapse toggle sits opposite the wordmark, which has
+ * no padding of its own. Absorb the button's padding so both read as the same
+ * 1rem inset from the sidebar's left and right edges.
+ */
+.headerToggle {
+  margin-right: calc(-1 * var(--space-1));
+}
+
+/*
+ * The brand anchor wraps an inline-flex logo. Left as a block, it builds a line
+ * box that reserves the font's descender space below the glyph, making the
+ * anchor taller than the glyph with all the slack underneath. The header then
+ * centers that padded box, so the glyph's center sits above the row's center
+ * and every other control in the row reads as hanging low. A flex container has
+ * no line box, so the anchor is exactly the logo's height and the header's
+ * `align-items: center` aligns its controls on the glyph.
+ */
+.brandLink {
+  display: flex;
+  align-items: center;
+}

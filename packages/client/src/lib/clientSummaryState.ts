@@ -170,10 +170,12 @@ const REMAP_MERGE_GROUPS = {
     "model",
     "initialPrompt",
     "lastAgentText",
+    "lastHumanTurnAt",
     "asyncQuestions",
     "providerChildren",
   ],
   metadataObservedAt: [
+    "nonHumanUserTurn",
     "customTitle",
     "isArchived",
     "isStarred",
@@ -1054,6 +1056,7 @@ function upsertInboxItemRecord(
     record,
     {
       customTitle: item.customTitle,
+      nonHumanUserTurn: item.nonHumanUserTurn,
       isStarred: item.isStarred,
     },
     observation,
@@ -1167,6 +1170,7 @@ function withContentFields(
     model?: string;
     initialPrompt?: string;
     lastAgentText?: string;
+    lastHumanTurnAt?: string;
     asyncQuestions?: GlobalSessionItem["asyncQuestions"];
     providerChildren?: ProviderChildSessionSummary[];
   },
@@ -1215,6 +1219,13 @@ function withContentFields(
       ? { lastAgentText: fields.lastAgentText }
       : {}),
     ...(canApplyObservedField(
+      record.lastHumanTurnAt,
+      fields.lastHumanTurnAt,
+      isFresh,
+    )
+      ? { lastHumanTurnAt: fields.lastHumanTurnAt }
+      : {}),
+    ...(canApplyObservedField(
       record.providerChildren,
       fields.providerChildren,
       isFresh,
@@ -1237,6 +1248,7 @@ function withMetadataFields(
   record: SessionCollectionRecord,
   fields: {
     customTitle?: string;
+    nonHumanUserTurn?: GlobalSessionItem["nonHumanUserTurn"];
     isArchived?: boolean;
     isStarred?: boolean;
     autoResumeDisabled?: boolean;
@@ -1256,6 +1268,13 @@ function withMetadataFields(
     ...record,
     ...(canApplyObservedField(record.customTitle, fields.customTitle, isFresh)
       ? { customTitle: fields.customTitle }
+      : {}),
+    ...(canApplyObservedField(
+      record.nonHumanUserTurn,
+      fields.nonHumanUserTurn,
+      isFresh,
+    )
+      ? { nonHumanUserTurn: fields.nonHumanUserTurn }
       : {}),
     ...(canApplyObservedField(record.isArchived, fields.isArchived, isFresh)
       ? { isArchived: fields.isArchived }
@@ -1471,6 +1490,7 @@ function upsertSnapshotRecord(
       model: row.model,
       initialPrompt: row.initialPrompt,
       lastAgentText: row.lastAgentText,
+      lastHumanTurnAt: row.lastHumanTurnAt,
       asyncQuestions: row.asyncQuestions,
       providerChildren: row.providerChildren,
     },
@@ -1481,6 +1501,7 @@ function upsertSnapshotRecord(
     record,
     {
       customTitle: row.customTitle,
+      nonHumanUserTurn: row.nonHumanUserTurn,
       isArchived: row.isArchived,
       isStarred: row.isStarred,
       autoResumeDisabled: row.autoResumeDisabled,
@@ -1661,7 +1682,10 @@ export function applySessionCollectionTitleSnapshot(
   );
   record = withMetadataFields(
     record,
-    { customTitle: session.customTitle },
+    {
+      customTitle: session.customTitle,
+      nonHumanUserTurn: session.nonHumanUserTurn,
+    },
     observation,
   );
   record = withProjectFields(
@@ -2013,6 +2037,7 @@ export function applySessionCollectionCreated(
       model: session.model,
       initialPrompt: session.initialPrompt,
       lastAgentText: session.lastAgentText,
+      lastHumanTurnAt: session.lastHumanTurnAt,
       asyncQuestions: session.asyncQuestions,
       providerChildren: session.providerChildren,
     },
@@ -2023,6 +2048,7 @@ export function applySessionCollectionCreated(
     record,
     {
       customTitle: session.customTitle,
+      nonHumanUserTurn: session.nonHumanUserTurn,
       isArchived: session.isArchived,
       isStarred: session.isStarred,
       parentSessionId: session.parentSessionId,
@@ -2099,6 +2125,7 @@ export function applySessionCollectionMetadataChanged(
     getRecord(state, event.sessionId),
     {
       customTitle: event.title,
+      nonHumanUserTurn: event.nonHumanUserTurn,
       isArchived: event.archived,
       isStarred: event.starred,
       parentSessionId: event.parentSessionId,

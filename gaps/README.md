@@ -1,5 +1,13 @@
 # gaps/ — captured adjacent defects
 
+See [triage](triage.md) for impact, scope, evidence and closure judgments.
+Concrete unresolved defects stay here even when they need diagnosis.
+[sketches/](sketches/) holds aspirational or insufficiently bounded work;
+moving an entry preserves its prior direction and constraints. Close an entry
+when current evidence shows its complaint is fixed, retaining any unresolved
+remainder as a narrower gap. Triage is a dated review, not a replacement for
+the product roadmap or verification against current code.
+
 A gap is a code-quality defect noticed *next to* other work but deliberately
 not fixed then — a failing or flaky test, lint debt, a small structural wart,
 a UI glitch — captured here so it doesn't evaporate into a chat message that

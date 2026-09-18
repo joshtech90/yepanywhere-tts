@@ -47,7 +47,7 @@ Quarto's include behavior and block placement rules are documented in
 
 Front matter, cross-references, footnotes, figure layout, captions, and the
 explicit **Render with Quarto** action remain tracked in
-[`gaps/quarto-aware-document-view.md`](../gaps/quarto-aware-document-view.md).
+[`gaps/sketches/quarto-aware-document-view.md`](../gaps/sketches/quarto-aware-document-view.md).
 That gap also owns the execution boundary, source-revision binding, capability
 fallback, performance measurements, and project-storage constraints for a
 future Quarto process.

@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MessageQueue,
   Process,
+  createControllableIterator,
   createMockIterator,
 } from "./process.test-support.js";
 import type { SDKMessage, UrlProjectId } from "./process.test-support.js";
@@ -89,6 +90,53 @@ describe("Process", () => {
       // Message should still be emitted for live stream subscribers
       const userEmits = emittedMessages.filter((m) => m.type === "user");
       expect(userEmits).toHaveLength(1);
+    });
+
+    it("does not re-emit a provider user echo that already has the queue uuid", async () => {
+      const controller = createControllableIterator();
+      const queue = new MessageQueue();
+
+      const process = new Process(controller.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "sess-1",
+        provider: "grok",
+        idleTimeoutMs: 100,
+        queue,
+      });
+
+      const emittedMessages: SDKMessage[] = [];
+      process.subscribe((event) => {
+        if (event.type === "message") {
+          emittedMessages.push(event.message);
+        }
+      });
+
+      const queuedResult = process.queueMessage({
+        text: "hello grok",
+        tempId: "temp-send",
+      });
+      expect(queuedResult.success).toBe(true);
+      const optimistic = emittedMessages.find((m) => m.type === "user");
+      expect(optimistic?.uuid).toBeTypeOf("string");
+      expect(optimistic?.tempId).toBe("temp-send");
+
+      controller.push({
+        type: "user",
+        uuid: optimistic?.uuid,
+        message: { role: "user", content: "hello grok" },
+      });
+      controller.push({ type: "result", session_id: "sess-1" });
+
+      await vi.waitFor(() => {
+        expect(
+          emittedMessages.filter((m) => m.type === "result"),
+        ).not.toHaveLength(0);
+      });
+
+      expect(emittedMessages.filter((m) => m.type === "user")).toHaveLength(1);
+      controller.finish();
+      await process.abort();
     });
 
     it("should include attachment info in user message content", async () => {

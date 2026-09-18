@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  LOCAL_SPEECH_BACKEND_SPECS,
   MAX_SPEECH_SESSION_TERMS,
+  isLocalSpeechBackendId,
   speechVocabularyTokens,
+  unionSpeechVoiceBackends,
+  type SpeechBackendSetupStatus,
 } from "@yep-anywhere/shared";
 import type { Context } from "hono";
 import { Hono } from "hono";
@@ -16,6 +20,10 @@ import {
   type SpeechAudioRetentionResult,
   type SpeechTranscriptionContext,
 } from "../services/voice/audioRetention.js";
+import type { SafeRestartService } from "../services/SafeRestartService.js";
+import type { SpeechBackendInstallService } from "../services/voice/speechBackendInstall.js";
+import { graniteModelFilesPresent } from "../services/voice/graniteModelCache.js";
+import { LocalWhisperBackend } from "../services/voice/localWhisperBackend.js";
 import type { SpeechBackendRegistry } from "../services/voice/registry.js";
 import {
   supportsStreaming,
@@ -42,6 +50,9 @@ export interface SpeechSessionDeps {
   serverSettingsService?: ServerSettingsService;
   xaiSttApiKey?: string;
   shareXaiSttApiKeyWithClients?: boolean;
+  envVoiceBackends?: string[];
+  speechBackendInstallService?: SpeechBackendInstallService;
+  safeRestartService?: SafeRestartService;
 }
 
 export interface SpeechRouteDeps extends SpeechSessionDeps {
@@ -926,8 +937,142 @@ export function createSpeechWebSocketSession(
   };
 }
 
+async function speechBackendSetupStatus(
+  deps: SpeechRouteDeps,
+): Promise<SpeechBackendSetupStatus> {
+  const envBackends = unionSpeechVoiceBackends(deps.envVoiceBackends);
+  const settingsBackends = unionSpeechVoiceBackends(
+    deps.serverSettingsService?.getSetting("speechVoiceBackends"),
+  );
+  const advertisedBackends = deps.speechBackendRegistry.enabledIds();
+  const advertisedLocal = new Set(
+    advertisedBackends.filter((id) => isLocalSpeechBackendId(id)),
+  );
+  const enabledLocal = new Set(
+    unionSpeechVoiceBackends(envBackends, settingsBackends),
+  );
+  const needsRestart = LOCAL_SPEECH_BACKEND_SPECS.some(
+    (spec) => !enabledLocal.has(spec.id) && advertisedLocal.has(spec.id),
+  );
+  const whisper = deps.speechBackendRegistry.getBackend("ya-whisper");
+  return {
+    envBackends,
+    settingsBackends,
+    advertisedBackends,
+    restartAvailable: Boolean(deps.safeRestartService),
+    needsRestart,
+    liveEnablement: true,
+    workingDirectory: process.cwd(),
+    whisperGpu: deps.serverSettingsService
+      ? (deps.serverSettingsService.getSetting("speechWhisperGpu") ??
+        (whisper instanceof LocalWhisperBackend &&
+          whisper.getDevice() !== "cpu"))
+      : undefined,
+    install: deps.speechBackendInstallService?.status() ?? {
+      running: false,
+      lines: [],
+    },
+    catalog: await Promise.all(
+      LOCAL_SPEECH_BACKEND_SPECS.map(async (spec) => ({
+        id: spec.id,
+        enabled: enabledLocal.has(spec.id),
+        enabledByEnv: envBackends.includes(spec.id),
+        enabledBySettings: settingsBackends.includes(spec.id),
+        advertised: advertisedLocal.has(spec.id),
+        validationStatus: deps.speechBackendRegistry
+          .allInfo()
+          .find((entry) => entry.id === spec.id)?.validationStatus,
+        disabledReason: deps.speechBackendRegistry
+          .allInfo()
+          .find((entry) => entry.id === spec.id)?.disabledReason,
+        pixiEnvironment: spec.pixiEnvironment,
+        bootstrapTask: spec.bootstrapTask,
+        defaultModel: spec.defaultModel,
+        modelFilesPresent:
+          spec.id === "ya-granite"
+            ? await graniteModelFilesPresent(spec.defaultModel)
+            : undefined,
+        hfGated: spec.hfGated,
+      })),
+    ),
+  };
+}
+
 export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
   const routes = new Hono();
+
+  routes.get("/backends", async (c) =>
+    c.json(await speechBackendSetupStatus(deps)),
+  );
+
+  routes.post("/backends/ya-whisper/gpu", async (c) => {
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.enabled !== "boolean") {
+      return c.json({ error: "enabled must be a boolean" }, 400);
+    }
+    if (!deps.serverSettingsService) {
+      return c.json({ error: "Server settings are unavailable" }, 503);
+    }
+    const backend =
+      deps.speechBackendRegistry.getConfiguredBackend("ya-whisper");
+    if (!(backend instanceof LocalWhisperBackend)) {
+      return c.json(
+        { error: "Enable Whisper before changing its device" },
+        409,
+      );
+    }
+    await deps.serverSettingsService.updateSettings({
+      speechWhisperGpu: body.enabled,
+    });
+    try {
+      await backend.setGpuEnabled(body.enabled);
+      deps.speechBackendRegistry.revalidate("ya-whisper");
+      await deps.speechBackendRegistry.waitForValidation();
+      return c.json(await speechBackendSetupStatus(deps));
+    } catch (error) {
+      return c.json(
+        {
+          error: `Whisper device setting saved, but reload failed: ${error instanceof Error ? error.message : String(error)}`,
+        },
+        500,
+      );
+    }
+  });
+
+  routes.post("/backends/restart", async (c) => {
+    if (deps.speechBackendInstallService?.status().running) {
+      return c.json(
+        {
+          error:
+            "Wait for the speech model install to finish before restarting YA.",
+        },
+        409,
+      );
+    }
+    if (!deps.safeRestartService) {
+      return c.json(
+        {
+          error:
+            "Safe restart is unavailable in this YA process. Restart the server from the host after enabling backends.",
+        },
+        409,
+      );
+    }
+    const state = await deps.safeRestartService.schedule();
+    return c.json(state);
+  });
+
+  routes.post("/backends/:id/install", (c) => {
+    const service = deps.speechBackendInstallService;
+    if (!service) {
+      return c.json({ error: "Speech backend install is unavailable" }, 404);
+    }
+    const started = service.start(c.req.param("id"));
+    if (!started.ok) {
+      return c.json({ error: started.reason }, 409);
+    }
+    return c.json(service.status());
+  });
 
   const rejectCredentialGet = (c: Context) => {
     c.header("Allow", "POST");

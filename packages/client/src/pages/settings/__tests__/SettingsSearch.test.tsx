@@ -139,6 +139,65 @@ describe("SettingsItem under search scope", () => {
     expect(screen.getByLabelText("Theme")).toBeTruthy();
   });
 
+  it("jumps from row text but preserves controls and selected text", () => {
+    const jumpToItem = vi.fn();
+    render(
+      <SettingsSearchScopeProvider
+        value={makeScope({ query: "theme", jumpToItem })}
+      >
+        <SettingsItem label="Theme" description="Color scheme">
+          <label>
+            Dark mode <input type="checkbox" />
+          </label>
+          <button type="button">Save</button>
+        </SettingsItem>
+      </SettingsSearchScopeProvider>,
+    );
+    fireEvent.click(screen.getByText("Color scheme"));
+    expect(jumpToItem).toHaveBeenCalledTimes(1);
+    expect(jumpToItem).toHaveBeenLastCalledWith("theme");
+    fireEvent.click(screen.getByText("Dark mode"));
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(
+      true,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(jumpToItem).toHaveBeenCalledTimes(1);
+
+    const selection = window.getSelection();
+    const range = document.createRange();
+    range.selectNodeContents(screen.getByText("Color scheme"));
+    selection?.addRange(range);
+    try {
+      fireEvent.click(screen.getByText("Color scheme"));
+      expect(jumpToItem).toHaveBeenCalledTimes(1);
+    } finally {
+      selection?.removeAllRanges();
+    }
+  });
+
+  it("keeps label rows as controls and caller-owned clicks authoritative", () => {
+    const jumpToItem = vi.fn();
+    render(
+      <SettingsSearchScopeProvider
+        value={makeScope({ query: "theme", jumpToItem })}
+      >
+        <SettingsItem as="label" label="Theme toggle">
+          <input type="checkbox" />
+        </SettingsItem>
+        <SettingsItem
+          label="Theme custom"
+          containerProps={{ onClick: (event) => event.preventDefault() }}
+        />
+      </SettingsSearchScopeProvider>,
+    );
+    fireEvent.click(screen.getByText("toggle", { exact: false }));
+    expect((screen.getByRole("checkbox") as HTMLInputElement).checked).toBe(
+      true,
+    );
+    fireEvent.click(screen.getByText("custom", { exact: false }));
+    expect(jumpToItem).not.toHaveBeenCalled();
+  });
+
   it("matches keywords that are never rendered", () => {
     render(
       <SettingsSearchScopeProvider value={makeScope({ query: "color" })}>

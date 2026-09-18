@@ -26,7 +26,8 @@ places each session in the first matching tier.
 The tier order is:
 
 1. `needsAttention`: sessions with pending tool approval or a provider question
-   waiting for user input.
+   waiting for user input, or an unacknowledged user turn delivered from another
+   session.
 2. `active`: sessions currently in turn, idle sessions retaining provider
    background work, or existing sessions targeted by queued or dispatching
    Project Queue work.
@@ -61,10 +62,54 @@ not update the complete-summary index or clear its dirty state; complete
 consumers must still receive exact message count and tail-derived metadata.
 
 `pendingInputType` is live process state, not durable session-summary state.
-Inbox may place a session in `needsAttention` only when the owned process is
+Inbox uses pending input as an attention reason only when the owned process is
 currently in `waiting-input` with an actionable request. A stale provider
 approval callback left behind by a stop/interrupt must be resolved or ignored;
 it must not keep an active or idle session in the approval tier.
+
+## Cross-Session Delivery Attention
+
+The `non-human-user-turn` capability owns a durable attention receipt for the
+latest explicitly sourced cross-session user turn. A sender uses the ordinary
+messages API with `messageMetadata.sourceSessionId`. This is caller-declared
+provenance, never authentication or permission to access another session.
+Unmarked API calls remain indistinguishable from typing. Tool results, forks,
+`/btw` context imports, and wake automation do not implicitly set this flag;
+a sender naming the receiving session itself does not set it either.
+
+YA records `{messageId, timestamp, sourceSessionId}` when provider input consumes
+the message, or when a provider accepts a direct steer. Claude steering still
+uses its input queue: its acceptance alone does not count as delivery. Local
+and SSH provider adapters preserve this distinction and the queued message's
+identity. Cancelling an undelivered queue entry leaves no receipt. Combined
+queue input links to the first message's UUID, the delivered combined turn's
+identity. YA does not infer provenance from transcript text.
+
+`SessionMetadataService` persists one latest receipt per session and keeps its
+acknowledgement tombstone to prevent replay from raising the same flag again.
+Session collections, detail, and Inbox expose pending `nonHumanUserTurn` or
+explicit `null`; an omitted field means unknown and does not erase known state.
+Inbox reads the receipt during tiering, including retained collection reads,
+so an otherwise old/read session can need attention without a live process.
+Archival filtering and the existing tier cap still apply.
+
+The session flag and its Inbox row link to `?nonHumanTurn=<messageId>`. The
+client loads older history when needed, scrolls to the rendered turn, then
+acknowledges that exact ID with `nonHumanUserTurnMessageId` on the existing
+mark-seen request. Both attention surfaces disappear together. A normal
+mark-seen request does not acknowledge a delivery; an old-turn acknowledgement
+cannot erase a newer delivery. A missing/unrenderable turn or failed
+acknowledgement keeps the receipt and reports an error. There is no permanent
+quiet flag after acknowledgement and no separate entry for every delivery.
+
+Without the capability, clients show no delivery flag and send no delivery
+acknowledgement field. The server must be updated for delivery tracking;
+surviving provider workers retain their original adapter code until replaced.
+Exact links also depend on stable live-to-saved user-message identity. Claude
+UUIDs and Codex `clientUserMessageId` provide it; Pi's native saved node IDs do
+not currently map to its live echo UUID. That known limitation, which leaves
+the receipt pending when lookup fails, is tracked in
+[provider user-turn identity](../gaps/provider-user-turn-durable-identity.md).
 
 ## Startup Snapshot And Progressive Reconciliation
 
@@ -164,10 +209,25 @@ session was already present in an active or recent tier. An already-unread row
 may patch additive content fields locally because the event cannot make it
 more unread; `session-seen` remains the authority that clears that state.
 
-Known caveat: for Claude JSONL sessions, `session.updatedAt` currently comes
-from file mtime. YA's one-hour idle reap can abort the Claude SDK stream and
-cause a mtime-only transcript touch, which may flip a previously read session
-back to unread without a new visible provider message. See
+Unread compares last-seen against provider-content freshness, not storage
+freshness. Claude summaries derive `updatedAt` from the latest meaningful
+`user`/`assistant` row on the active branch, so an mtime-only transcript touch
+— such as the one an idle reap's SDK abort can cause — neither creates unread
+attention nor false recent activity. Codex still derives `updatedAt` from
+rollout mtime (`getCodexRolloutActivityTimeMs`), so that provider remains
+exposed to the same class of false unread if a future teardown path touches the
+file without appending a row.
+
+That rule binds the durable session catalog too, not only the summary index.
+A retained collection read compares last-seen against the catalog row's
+`updatedAt`, and catalog rows are built for exactly the sessions the index
+cannot answer for — any append leaves a session dirty for a beat. A file-backed
+catalog family therefore needs a content-derived timestamp of its own for that
+window: Codex uses its rollout activity time, and Claude uses a bounded tail
+read for the latest `user`/`assistant` row. Storage time is the last resort,
+not the default, because Claude writes a `last-prompt` metadata row at
+shutdown and an idle reap would otherwise publish that moment as content
+recency. See
 [`2026-07-06-claude-idle-reap-mtime-unread.md`](../docs/project/2026-07-06-claude-idle-reap-mtime-unread.md).
 
 ## Project Queue Visibility

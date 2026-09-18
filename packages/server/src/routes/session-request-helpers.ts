@@ -257,6 +257,13 @@ export function buildUserMessageMetadata(
     ? body.messageMetadata
     : {};
   if (
+    rawMetadata.sourceSessionId !== undefined &&
+    (typeof rawMetadata.sourceSessionId !== "string" ||
+      !/^[\w-]{1,128}$/.test(rawMetadata.sourceSessionId))
+  ) {
+    throw new HTTPException(400, { message: "Invalid source session id" });
+  }
+  if (
     rawMetadata.turnEffort !== undefined &&
     !isTurnEffort(rawMetadata.turnEffort)
   ) {
@@ -309,6 +316,9 @@ export function buildUserMessageMetadata(
 
   return {
     deliveryIntent,
+    ...(typeof rawMetadata.sourceSessionId === "string"
+      ? { sourceSessionId: rawMetadata.sourceSessionId }
+      : {}),
     ...(isTurnEffort(rawMetadata.turnEffort)
       ? { turnEffort: rawMetadata.turnEffort }
       : {}),

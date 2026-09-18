@@ -13,6 +13,7 @@
 
 import { getSessionDisplayTitle } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
 import type { RetainedSessionCollectionState } from "@yep-anywhere/shared";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
 import { readRetainedSessionItems } from "./retained-session-collections.js";
@@ -67,6 +68,7 @@ export interface InboxDeps {
 }
 
 export interface InboxItem {
+  nonHumanUserTurn?: import("@yep-anywhere/shared").NonHumanUserTurn | null;
   asyncQuestions?: SessionListSummary["asyncQuestions"];
   sessionId: string;
   projectId: string;
@@ -342,6 +344,10 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
 
     // Helper to convert to InboxItem
     const toInboxItem = (item: EnrichedInboxSession): InboxItem => ({
+      nonHumanUserTurn:
+        pendingNonHumanUserTurn(
+          deps.sessionMetadataService?.getMetadata(item.session.id),
+        ) ?? null,
       sessionId: item.session.id,
       projectId: item.session.projectId,
       projectName: item.projectName,
@@ -363,7 +369,12 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
 
     // Tier 1: needsAttention - sessions with pending input
     for (const item of allSessions) {
-      if (item.pendingInputType) {
+      if (
+        item.pendingInputType ||
+        pendingNonHumanUserTurn(
+          deps.sessionMetadataService?.getMetadata(item.session.id),
+        )
+      ) {
         needsAttention.push(toInboxItem(item));
         assignedSessionIds.add(item.session.id);
       }

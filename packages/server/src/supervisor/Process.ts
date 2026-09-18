@@ -30,9 +30,14 @@ import {
   clampPatientPatienceSeconds,
   hasInvocationCandidate,
   isClaudeProviderName,
+  isInjectedContinuationPrompt,
   isLocalCommandEchoTurn,
+  isPostCompactReplayText,
+  MAX_POST_COMPACT_REPLAY_TURNS,
+  MAX_POST_COMPACT_REPLAY_TURN_CHARS,
   normalizeRecapAfterSeconds,
   stripPatientQueuePrefix,
+  type PostCompactReplayTurn,
 } from "@yep-anywhere/shared";
 import {
   extractIdFromAssistant,
@@ -126,6 +131,7 @@ type RecentAssistantRecapEntry = {
   completedAtMs: number;
   text: string;
 };
+type RecentProseTurn = PostCompactReplayTurn;
 type NativeRecapRecord = {
   receivedAtMs: number;
   text: string;
@@ -915,6 +921,7 @@ export interface ProcessConstructorOptions extends ProcessOptions {
    * Returns false when steering is unavailable and caller should enqueue.
    */
   steerFn?: (message: UserMessage) => Promise<boolean>;
+  steerUsesMessageQueue?: boolean;
   appendConversationContextFn?: (
     turns: ConversationContextTurn[],
   ) => Promise<boolean>;
@@ -1044,6 +1051,7 @@ export class Process {
    * buffer is bounded; older entries are dropped as new ones arrive.
    */
   private recentAssistantRecapEntries: RecentAssistantRecapEntry[] = [];
+  private recentProseTurns: RecentProseTurn[] = [];
   private static readonly RECENT_TEXT_MAX_ENTRIES = 15;
   private static readonly RECENT_TEXT_MAX_CHARS_PER_ENTRY = 1500;
   /**
@@ -1104,6 +1112,7 @@ export class Process {
   private interruptFn: (() => Promise<undefined | boolean>) | null;
   /** Function to steer an active turn (provider-specific, currently Codex app-server) */
   private steerFn: ((message: UserMessage) => Promise<boolean>) | null;
+  private readonly steerUsesMessageQueue: boolean;
   private appendConversationContextFn: ProcessConstructorOptions["appendConversationContextFn"];
 
   /** Function to get supported models (SDK 0.2.7+) */
@@ -1268,6 +1277,7 @@ export class Process {
     this.effortUpdatesActiveTurn = options.effortUpdatesActiveTurn === true;
     this.interruptFn = options.interruptFn ?? null;
     this.steerFn = options.steerFn ?? null;
+    this.steerUsesMessageQueue = options.steerUsesMessageQueue ?? false;
     this.appendConversationContextFn = options.appendConversationContextFn;
     this.supportedModelsFn = options.supportedModelsFn ?? null;
     this.supportedCommandsFn = options.supportedCommandsFn ?? null;
@@ -1337,6 +1347,17 @@ export class Process {
 
     this.unsubscribeMessageQueueYielded = this.messageQueue?.subscribeYielded?.(
       (messages) => {
+        const external = [...messages]
+          .reverse()
+          .find(
+            (message) =>
+              Boolean(message.metadata?.sourceSessionId) &&
+              message.metadata?.sourceSessionId !== this._sessionId &&
+              !isHiddenInjectedMessage(message),
+          );
+        if (external && messages[0]?.uuid) {
+          this.emitNonHumanUserTurn(external, messages[0].uuid);
+        }
         const turnKind = messages.some(
           (message) =>
             !isHiddenInjectedMessage(message) &&
@@ -2951,6 +2972,36 @@ export class Process {
   }
 
   /**
+   * Bounded user/assistant prose window for post-compact replay.
+   * Tool, thinking, hidden, and injected continuation rows are omitted.
+   */
+  getRecentProseTurns(): PostCompactReplayTurn[] {
+    return this.recentProseTurns.map((turn) => ({ ...turn }));
+  }
+
+  private pushRecentProseTurn(
+    role: PostCompactReplayTurn["role"],
+    text: string,
+  ): void {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    if (isPostCompactReplayText(trimmed)) return;
+    if (role === "user" && trimmed.startsWith("/")) return;
+    const capped =
+      trimmed.length > MAX_POST_COMPACT_REPLAY_TURN_CHARS
+        ? `${trimmed.slice(0, MAX_POST_COMPACT_REPLAY_TURN_CHARS)} …[truncated]`
+        : trimmed;
+    const last = this.recentProseTurns[this.recentProseTurns.length - 1];
+    if (last && last.role === role && last.text === capped) {
+      return;
+    }
+    this.recentProseTurns.push({ role, text: capped });
+    while (this.recentProseTurns.length > MAX_POST_COMPACT_REPLAY_TURNS) {
+      this.recentProseTurns.shift();
+    }
+  }
+
+  /**
    * Needle of the latest assistant output a watching client had seen:
    * the in-flight streaming text when a turn is underway, else the tail
    * of the last completed assistant turn. Visible text only — providers
@@ -3334,6 +3385,30 @@ export class Process {
 
     this.currentBucket.push(sdkMessage);
     this.emit({ type: "message", message: sdkMessage });
+    if (
+      !isHiddenInjectedMessage(message) &&
+      message.automaticSource === undefined
+    ) {
+      this.pushRecentProseTurn("user", message.text);
+    }
+  }
+
+  private emitNonHumanUserTurn(message: UserMessage, uuid: string): void {
+    const sourceSessionId = message.metadata?.sourceSessionId;
+    if (
+      !sourceSessionId ||
+      sourceSessionId === this._sessionId ||
+      isHiddenInjectedMessage(message)
+    )
+      return;
+    this.emit({
+      type: "non-human-user-turn",
+      turn: {
+        messageId: uuid,
+        sourceSessionId,
+        timestamp: new Date().toISOString(),
+      },
+    });
   }
 
   /**
@@ -3387,7 +3462,15 @@ export class Process {
     options?: { interrupted?: boolean; preamble?: string },
   ): UserMessage {
     return concatUserMessages(
-      messages,
+      messages.map((message) =>
+        message.metadata?.sourceSessionId === this._sessionId ||
+        isHiddenInjectedMessage(message)
+          ? {
+              ...message,
+              metadata: { ...message.metadata, sourceSessionId: undefined },
+            }
+          : message,
+      ),
       options?.preamble ??
         (options?.interrupted ? INTERRUPT_PREAMBLE : undefined),
     );
@@ -3553,6 +3636,9 @@ export class Process {
     // YA-injected control messages (e.g. the `/compact` we queue for
     // compaction) carry no user echo — native auto-compaction shows none.
     const hidden = isHiddenInjectedMessage(providerMessage);
+    if (!hidden && providerMessage.automaticSource === undefined) {
+      this.pushRecentProseTurn("user", providerMessage.text);
+    }
 
     // Add to history for SSE replay to late-joining clients.
     // The client-side deduplication (mergeSSEMessage, mergeJSONLMessages) handles
@@ -3601,6 +3687,8 @@ export class Process {
           .then((steered) => {
             if (!steered) {
               this.messageQueue?.push(messageWithUuid);
+            } else if (!this.steerUsesMessageQueue) {
+              this.emitNonHumanUserTurn(messageWithUuid, uuid);
             }
           })
           .catch((error) => {
@@ -3631,6 +3719,7 @@ export class Process {
 
     // Legacy behavior for mock SDK
     this.legacyQueue.push(providerMessage);
+    this.emitNonHumanUserTurn(messageWithUuid, uuid);
     if (this._state.type === "idle") {
       this.processNextInQueue();
     }
@@ -4835,17 +4924,15 @@ export class Process {
         // Exclude stream_event messages - they're transient streaming deltas that
         // are redundant once the final assistant message arrives. Replaying them
         // causes flickering as the last message appears to stream in again.
+        // Same-uuid user rows are the provider re-yielding a turn Process
+        // already echoed at queue time.
+        const isDuplicateUserEcho =
+          message.type === "user" &&
+          Boolean(message.uuid) &&
+          (this.currentBucket.some((m) => m.uuid === message.uuid) ||
+            this.previousBucket.some((m) => m.uuid === message.uuid));
         if (shouldEmitMessage(message) && message.type !== "stream_event") {
-          // Check for duplicates before adding to history
-          // This handles the case where queueMessage added the optimistic message
-          // and now the provider is echoing it back with the same UUID
-          const isDuplicate =
-            message.type === "user" &&
-            message.uuid &&
-            (this.currentBucket.some((m) => m.uuid === message.uuid) ||
-              this.previousBucket.some((m) => m.uuid === message.uuid));
-
-          if (!isDuplicate) {
+          if (!isDuplicateUserEcho) {
             this.currentBucket.push(message);
           }
         }
@@ -4861,6 +4948,16 @@ export class Process {
           const text = extractMessageText(message);
           if (text) {
             this.pushRecentAssistantText(text, receivedAt.getTime());
+            this.pushRecentProseTurn("assistant", text);
+          }
+        } else if (message.type === "user") {
+          const text = extractMessageText(message);
+          if (
+            text &&
+            message.isCompactSummary !== true &&
+            !isInjectedContinuationPrompt(message)
+          ) {
+            this.pushRecentProseTurn("user", text);
           }
         }
 
@@ -4919,8 +5016,12 @@ export class Process {
         this.promoteIdleForProviderWork(message, receivedAt);
 
         // Emit to SSE subscribers
-        // See shouldEmitMessage() for why we never filter messages
-        if (shouldEmitMessage(message)) {
+        // See shouldEmitMessage() for why we never filter provider-stream
+        // messages by content. Skip only a same-uuid user re-yield: sending
+        // that copy again lets the client replace the optimistic echo and
+        // drop tempId, after which Grok's differently-id'd jsonl user row
+        // cannot confirm it and both bubbles stay.
+        if (shouldEmitMessage(message) && !isDuplicateUserEcho) {
           // Accumulate streaming text ONCE here (before fan-out) so the shared
           // catch-up buffer stays correct for multi-client sessions.
           this.accumulateStreamingFromMessage(message);

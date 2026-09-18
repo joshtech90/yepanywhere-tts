@@ -145,6 +145,14 @@ Related topic: [reload-safe provider runtimes](reload-safe-provider-runtimes.md)
   `transcriptSnapshotUpdatedAt`, the client must catch up from durable
   transcript state. Empty or unversioned reads do not advance that watermark,
   so later heartbeats keep retrying while the gap remains.
+- A session heartbeat repeats the authoritative process/liveness snapshot
+  every 30 seconds. When current process state is idle and that snapshot says
+  `verified-idle`, unfinished transcript tool rows cannot keep the processing
+  animation, Stop action, or deferred-send mode active. Missing completion
+  messages remain recoverable through transcript catch-up. A newly active
+  process state supersedes an earlier idle snapshot; provider-retained work
+  still counts as active. Stream silence triggers the existing 75-second
+  subscription watchdog, rather than implying provider progress.
 - A viewer opening a session cancels that process's pending idle teardown.
   When the final viewer of that session leaves, its eligible idle process
   receives a fresh full grace. Other session views, provider traffic, and

@@ -29,6 +29,27 @@ function createTestStorage(): Storage {
 // Do not probe window.localStorage first: Node 25's webstorage getter warns
 // unless --localstorage-file has a valid path.
 if (typeof window !== "undefined") {
+  // jsdom has no media-query evaluator. Tests can override matches/events
+  // when exercising responsive behavior or reduced-motion preferences.
+  Object.defineProperty(window, "matchMedia", {
+    configurable: true,
+    writable: true,
+    value: (media: string) => {
+      const events = new EventTarget();
+      return {
+        media,
+        matches: false,
+        onchange: null,
+        addEventListener: events.addEventListener.bind(events),
+        removeEventListener: events.removeEventListener.bind(events),
+        dispatchEvent: events.dispatchEvent.bind(events),
+        addListener: (listener: EventListener) =>
+          events.addEventListener("change", listener),
+        removeListener: (listener: EventListener) =>
+          events.removeEventListener("change", listener),
+      };
+    },
+  });
   const storage = createTestStorage();
 
   Object.defineProperty(window, "localStorage", {

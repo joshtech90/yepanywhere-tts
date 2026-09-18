@@ -7,6 +7,7 @@ import type {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { GIT_DECODE_PATHS_ARGS, runGit } from "../git/gitExec.js";
+import { listLocallyExcludedPaths } from "../git/locallyExcluded.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { DirtyFileEditorService } from "../services/DirtyFileEditorService.js";
 import { GitUntrackedCacheService } from "../services/GitUntrackedCacheService.js";
@@ -26,7 +27,9 @@ export interface GitWorkingTreeFilesDeps {
 /**
  * Read-only current-content inventory for the Working Tree browser. The three
  * Git queries keep work proportional to repository size rather than status-row
- * count, and Git remains the owner of ignore/exclude semantics.
+ * count, and Git remains the owner of ignore/exclude semantics. The ignored
+ * dimension covers only this clone's `.git/info/exclude` paths — see
+ * {@link listLocallyExcludedPaths}.
  */
 export function createGitWorkingTreeFilesRoutes(
   deps: GitWorkingTreeFilesDeps,
@@ -104,7 +107,9 @@ export async function listWorkingTreeFiles(
       ? (cachedUntracked ?? listPaths(cwd, ["--others", "--exclude-standard"]))
       : Promise.resolve([]),
     coverage.ignored
-      ? listPaths(cwd, ["--others", "--ignored", "--exclude-standard"])
+      ? listLocallyExcludedPaths(cwd, {
+          maxBuffer: WORKING_TREE_FILE_MAX_BUFFER,
+        })
       : Promise.resolve([]),
   ]);
   const deletedPaths = new Set(deleted);

@@ -227,12 +227,17 @@ describe("agentctl session env bridge", () => {
       pickStaticAgentEnvironment({
         AGENT_SERVER_URL: "http://127.0.0.1:3400/",
         AGENT_ARTIFACT_VIEWER_ORIGIN: "http://artifacts.localhost:3400",
+        PLANNOTATOR_PORT: "19432",
+        AGENT_VHOST_ENV_NAMES: '["PLANNOTATOR_PORT"]',
+        UNRELATED_SECRET: "must-not-pass",
         YEP_SESSION_WAKE_URL: "http://127.0.0.1:3400/wake",
         YEP_SESSION_WAKE_TOKEN: "per-session-secret",
       }),
     ).toEqual({
       AGENT_SERVER_URL: "http://127.0.0.1:3400/",
       AGENT_ARTIFACT_VIEWER_ORIGIN: "http://artifacts.localhost:3400",
+      PLANNOTATOR_PORT: "19432",
+      AGENT_VHOST_ENV_NAMES: '["PLANNOTATOR_PORT"]',
     });
   });
   bashIt("publishes the artifact origin to tool subprocesses", () => {

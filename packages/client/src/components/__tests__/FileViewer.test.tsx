@@ -1173,7 +1173,7 @@ describe("FileViewer", () => {
     ).toBe("false");
   });
 
-  it("opens image previews as raw image tabs", async () => {
+  it("keeps raw image links and moves the viewer through its stable URL", async () => {
     const fileResponse: FileContentResponse = {
       metadata: {
         path: "screenshots/result.png",
@@ -1238,10 +1238,11 @@ describe("FileViewer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss image menu" }));
 
     const openLink = container.querySelector<HTMLAnchorElement>(
-      '.file-viewer-actions .file-viewer-action[title="Open image in new tab"]',
+      '.file-viewer-actions a[aria-label="Move viewer to new tab"]',
     );
-    expect(openLink?.getAttribute("href")).toBe(
-      "/api/projects/project-id/files/raw?path=screenshots%2Fresult.png",
+    expect(new URL(openLink!.href).pathname).toBe("/projects/project-id/file");
+    expect(new URL(openLink!.href).searchParams.get("path")).toBe(
+      "screenshots/result.png",
     );
     expect(openLink?.getAttribute("target")).toBe("_blank");
     expect(openLink?.getAttribute("rel")).toBe("noopener noreferrer");

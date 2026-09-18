@@ -6,8 +6,21 @@ import { createNodeWebSocket } from "@hono/node-ws";
 import { Hono } from "hono";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
+vi.mock("../../src/services/voice/localSttRuntime.js", async () => ({
+  ...(await vi.importActual<
+    typeof import("../../src/services/voice/localSttRuntime.js")
+  >("../../src/services/voice/localSttRuntime.js")),
+  ensureLocalSttRuntime: vi.fn(async () => ({ ok: true })),
+}));
 import { attachUnifiedUpgradeHandler } from "../../src/frontend/index.js";
-import { createSpeechRoutes } from "../../src/routes/speech.js";
+import {
+  createSpeechRoutes,
+  type SpeechSessionDeps,
+} from "../../src/routes/speech.js";
+import { SafeRestartService } from "../../src/services/SafeRestartService.js";
+import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
+import { LocalWhisperBackend } from "../../src/services/voice/localWhisperBackend.js";
+import { EventBus } from "../../src/watcher/EventBus.js";
 import { DUMMY_TRANSCRIPT } from "../../src/services/voice/dummyBackend.js";
 import { initSpeechBackendRegistry } from "../../src/services/voice/registry.js";
 import { SpeechBackendRegistry } from "../../src/services/voice/registry.js";
@@ -23,10 +36,7 @@ import type {
 async function createSpeechApp(
   dataDir?: string,
   speechBackendRegistry?: SpeechBackendRegistry,
-  options?: {
-    xaiSttApiKey?: string;
-    shareXaiSttApiKeyWithClients?: boolean;
-  },
+  options?: Partial<SpeechSessionDeps>,
 ) {
   const app = new Hono();
   const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
@@ -39,6 +49,7 @@ async function createSpeechApp(
   app.route(
     "/api/speech",
     createSpeechRoutes({
+      ...options,
       speechBackendRegistry: registry,
       upgradeWebSocket,
       dataDir,
@@ -263,6 +274,107 @@ describe("speech routes", () => {
       text: DUMMY_TRANSCRIPT,
       transcriptionId: expect.any(String),
     });
+  });
+
+  it("lists local backend setup catalog from env and settings", async () => {
+    const registry = new SpeechBackendRegistry();
+    const { app } = await createSpeechApp(undefined, registry);
+    const res = await app.request("/api/speech/backends");
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.catalog.map((row: { id: string }) => row.id)).toEqual([
+      "ya-whisper",
+      "ya-parakeet",
+      "ya-nemo",
+      "ya-granite",
+      "ya-qwen",
+    ]);
+    expect(body.restartAvailable).toBe(false);
+    expect(body.workingDirectory).toBe(process.cwd());
+    expect(
+      typeof body.catalog.find((row: { id: string }) => row.id === "ya-granite")
+        .modelFilesPresent,
+    ).toBe("boolean");
+  });
+
+  it("persists Whisper GPU selection and applies it without a server restart", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-whisper-gpu-"));
+    tempDirs.push(dataDir);
+    const settings = new ServerSettingsService({ dataDir });
+    await settings.initialize();
+    const backend = new LocalWhisperBackend();
+    vi.spyOn(backend, "validate").mockResolvedValue({ ok: true });
+    const registry = new SpeechBackendRegistry();
+    registry.register(backend);
+    await registry.waitForValidation();
+    const { app } = await createSpeechApp(dataDir, registry, {
+      serverSettingsService: settings,
+    });
+    for (const enabled of [true, false]) {
+      const response = await app.request(
+        "/api/speech/backends/ya-whisper/gpu",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ enabled }),
+        },
+      );
+      expect(response.status).toBe(200);
+      expect((await response.json()).whisperGpu).toBe(enabled);
+      expect(backend.getDevice()).toBe(enabled ? "cuda" : "cpu");
+      const reloaded = new ServerSettingsService({ dataDir });
+      await reloaded.initialize();
+      expect(reloaded.getSetting("speechWhisperGpu")).toBe(enabled);
+    }
+    vi.mocked(backend.validate).mockResolvedValue({
+      ok: false,
+      reason: "CUDA unavailable",
+    });
+    registry.register(backend);
+    await registry.waitForValidation();
+    expect(registry.getBackend("ya-whisper")).toBeNull();
+    vi.mocked(backend.validate).mockResolvedValue({ ok: true });
+    const recovery = await app.request("/api/speech/backends/ya-whisper/gpu", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(recovery.status).toBe(200);
+    expect(registry.getBackend("ya-whisper")).toBe(backend);
+    const invalid = await app.request("/api/speech/backends/ya-whisper/gpu", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: "false" }),
+    });
+    expect(invalid.status).toBe(400);
+  });
+
+  it("exposes and schedules the supplied safe restart service", async () => {
+    const restart = vi.fn();
+    const service = new SafeRestartService({
+      eventBus: new EventBus(),
+      getWorkerActivity: () => ({
+        activeWorkers: 1,
+        queueLength: 0,
+        hasActiveWork: true,
+      }),
+      restart,
+    });
+    try {
+      const { app } = await createSpeechApp(undefined, undefined, {
+        safeRestartService: service,
+      });
+      const catalog = await (await app.request("/api/speech/backends")).json();
+      expect(catalog.restartAvailable).toBe(true);
+      const response = await app.request("/api/speech/backends/restart", {
+        method: "POST",
+      });
+      expect(response.status).toBe(200);
+      expect((await response.json()).status).toBe("scheduled");
+      expect(restart).not.toHaveBeenCalled();
+    } finally {
+      service.dispose();
+    }
   });
 
   it("passes a requested local model to the selected batch backend", async () => {

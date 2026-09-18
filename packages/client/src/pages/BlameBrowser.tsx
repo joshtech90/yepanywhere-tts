@@ -45,10 +45,15 @@ import { FileSearchIndex } from "../lib/fileSearchIndex";
 import styles from "./BlameBrowser.module.css";
 import { BlameView } from "./BlameView";
 
+// The ignored dimension carries only this clone's `.git/info/exclude` paths —
+// authored material the user keeps out of commits (private notes, reviews,
+// task state) and still wants to read. `.gitignore` content (build output,
+// dependencies) is never listed, so this section stays small enough to show
+// without asking.
 const DEFAULT_WORKTREE_COVERAGE: GitWorktreeCoverage = {
   tracked: true,
   untracked: true,
-  ignored: false,
+  ignored: true,
 };
 
 /**

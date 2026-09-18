@@ -42,6 +42,17 @@ authority does not imply approvals, interrupt/restart, session settings, file
 access, source control, attachment upload, share management, or creation of
 other sessions.
 
+**Username prefixes wherever sends bypass the driver.** Joining a
+multiplayer share requires entering a username; the driver never does. Every
+guest send, steer, or queue that reaches the provider without the driver
+applying it is delivered with that username as a visible prefix on the turn
+text, so the agent and every later transcript reader can tell who said it.
+The driver's own sends stay unprefixed: an unprefixed turn is the driver.
+The prefix is provider-neutral turn content, not hidden metadata. Send-
+disabled guests still enter a username on joining, but their proposals need
+no prefix for delivery because the driver applies them; the UI labels
+proposals by that name.
+
 The synchronized state needs server sequencing rather than peer-to-peer
 browser convention. At minimum it carries the current guest draft, submitted
 proposal identity and revision, whether it has been consumed, and the
@@ -122,9 +133,13 @@ exposes the Multiplayer share type. A multiplayer share selects a maximum from
 two through the configured limit, capped at four in the first release. The
 driver occupies one seat; the first `maximum - 1` visitors to join the link
 claim the remaining composer seats, and later visitors remain read-only until
-a seat is released. The product does not collect or display usernames;
-server-generated seat identities exist only to sequence drafts, actions,
-reconnects, and revocation.
+a seat is released. Server-generated seat identities sequence drafts,
+actions, reconnects, and revocation. Every joiner enters a username on
+joining, which the username-prefix rule above attaches to send-enabled
+deliveries; the driver has no username and sends unprefixed. Broader display
+identity beyond shares is the
+[named participant seats](../gaps/sketches/named-participant-seats.md)
+sketch.
 
 At up to four active composers, a wide viewport may use a 2×2 grid with the
 driver composer fixed at bottom-left. Narrow viewports stack the composers
@@ -139,6 +154,69 @@ is not a vertical stack, the driver's composer receives twice the width of a
 guest composer. Transcript state remains singular and synchronized across all
 participants, while drafts, proposals, speech authority, and action results
 remain seat-scoped.
+
+### Margin notes: comments for human readers
+
+Maintainer direction, 2026-09-15. A participatory share carries **margin
+notes**: comments anchored to a transcript passage that are visible to human
+viewers but invoke no user turn; nothing is delivered to the provider. Text in
+a session is often intended for human readers (a plan, a summary, an
+explanation, a question to the team), and the natural place to discuss it is
+beside it, without spending a provider turn or steering the agent. A note
+becomes agent input only by a deliberate manual step: copy it, paste it, or
+quote-reply it into a composer, which then follows the ordinary send, steer,
+queue, and username-prefix rules.
+
+- **Anchoring and layout** follow the
+  [transcript margin notes](../gaps/sketches/transcript-margin-notes.md)
+  sketch: wide layouts place a note beside its passage, narrow layouts above
+  or below it, and streaming must not displace a reader. A note is visible
+  inline without any expansion step; the first presentation to try is an
+  inline pill that reflows with the passage text. The only toggle is
+  presentation, showing a wider margin column versus collapsing notes back
+  to pills, never hiding a note behind a click.
+- **Attribution.** Every note carries its author's seat or username and time;
+  the driver's notes carry the driver. Notes are seat-scoped state in the
+  same synchronized share record as drafts and proposals, so all
+  participants see them converge and reconnect does not duplicate or lose
+  one.
+- **Authority.** Writing a note requires only a seat, never send authority;
+  a read-only visitor beyond the composer seats may still be allowed to
+  annotate if the share permits it. Notes never reach the provider by
+  themselves.
+- **Single-player parity.** The same UI exists in an ordinary session with
+  one participant, as private notes to self or to a later reader of the
+  session. The share adds synchronization and authorship, not the feature.
+- **Navigation aid for long sessions.** In both the share viewer and the
+  session view, notes are a navigable index: a drawer listing every note in
+  transcript order, and a keyboard path that reuses the existing message-list
+  isearch (Ctrl+S / Ctrl+R / Ctrl+Alt+S, `useMessageListIsearch`) with a
+  notes scope, so incremental search matches note text and jumps to the
+  anchored passage. While that search is active the scrollbar turn rail
+  (`UserTurnNavigator`) shows a notch per matching note with the note text as
+  its preview, the same way it previews search matches today. Ctrl+N is not
+  a candidate: it is the browser's new-tab key. A visible toggle opens the
+  drawer for pointer and touch users; today isearch starts only from the
+  keyboard, recorded in
+  [isearch has no touch entry](../gaps/isearch-has-no-touch-entry.md).
+- **Persistence** is YA app-data beside the session, keyed by canonical
+  session id and turn anchor, and survives compaction and forking with the
+  transcript position it was anchored to; frozen public shares may include
+  notes only at the creator's choice.
+
+The open interaction question is the click target. Clicking a passage to
+comment competes with the links and per-block controls the transcript
+already owns, and the quote-comment gesture inventory in
+[selection comment UI](selection-comment-ui.md) already reserves
+type-over-selection, the selection action cluster, the selected-text context
+menu, and the per-paragraph quote circle. Options: steal the plain click on
+non-link text so a click anywhere in a passage opens a note; require a
+deconflicting modifier (for example Alt-click on desktop, long-press on
+touch) so ordinary clicks and links keep their meaning; or add a note action
+beside the existing per-block quote circle and inside the selected-text
+context menu, which needs no new gesture. The last two compose; the first is
+the fastest for a reader and the most disruptive to link and control
+targets. Decide with captures at desktop and phone widths before building.
 
 ### Open decisions
 

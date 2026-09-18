@@ -1,8 +1,10 @@
 import { getLogger } from "../../logging/logger.js";
 import { DeepgramBackend } from "./deepgramBackend.js";
 import { DummyBackend } from "./dummyBackend.js";
+import { LocalGraniteBackend } from "./localGraniteBackend.js";
 import { LocalNemoBackend } from "./localNemoBackend.js";
 import { LocalParakeetBackend } from "./localParakeetBackend.js";
+import { LocalQwenBackend } from "./localQwenBackend.js";
 import { LocalWhisperBackend } from "./localWhisperBackend.js";
 import type {
   SpeechBackend,
@@ -52,7 +54,9 @@ export class SpeechBackendRegistry {
     requested: string[] = [],
     context?: SpeechVocabularyContext,
   ): Promise<string[]> {
-    if (backendId !== "ya-grok") return requested;
+    if (backendId !== "ya-grok" && backendId !== "ya-granite") {
+      return requested;
+    }
     return [
       ...new Set([
         ...requested,
@@ -112,11 +116,24 @@ export class SpeechBackendRegistry {
     return this.entries.get(id)?.info.enabled ?? false;
   }
 
+  /** Administrative access also permits recovery from a failed validation. */
+  getConfiguredBackend(id: string): SpeechBackend | null {
+    return this.entries.get(id)?.backend ?? null;
+  }
+
   /** Return an enabled backend by id, or null if unknown/disabled. */
   getBackend(id: string): SpeechBackend | null {
     const entry = this.entries.get(id);
     if (!entry?.info.enabled) return null;
     return entry.backend;
+  }
+
+  /** Retry a failed import probe after an explicit install, reusing its worker. */
+  revalidate(id: string): void {
+    const entry = this.entries.get(id);
+    if (entry && entry.info.validationStatus === "disabled") {
+      this.register(entry.backend);
+    }
   }
 
   register(backend: SpeechBackend): void {
@@ -191,7 +208,7 @@ export interface SpeechRegistryInitOptions {
   whisperDevice?: string;
   /** Whisper compute type (default: int8). */
   whisperComputeType?: string;
-  /** Parakeet fallback model name (default: nvidia/parakeet-tdt-0.6b-v3). */
+  /** Parakeet fallback model (default: ai-and-i-project/parakeet-tdt-0.6b-v2-hf). */
   parakeetModel?: string;
   /** Parakeet device (default: auto). */
   parakeetDevice?: string;
@@ -199,6 +216,13 @@ export interface SpeechRegistryInitOptions {
   nemoModel?: string;
   /** NeMo Parakeet device (default: auto). */
   nemoDevice?: string;
+  /** Granite Speech model name (default: ibm-granite/granite-speech-4.1-2b). */
+  graniteModel?: string;
+  /** Granite Speech device (default: auto). */
+  graniteDevice?: string;
+  /** Qwen3 ASR model and device; defaults to 1.7B-hf and automatic CUDA. */
+  qwenModel?: string;
+  qwenDevice?: string;
 }
 
 export async function initSpeechBackendRegistry(
@@ -236,6 +260,7 @@ export async function registerSpeechBackends(
   options: SpeechRegistryInitOptions = {},
 ): Promise<void> {
   for (const backendId of getRequestedSpeechBackendIds(options)) {
+    if (registry.knownIds().includes(backendId)) continue;
     switch (backendId) {
       case "ya-dummy":
         registry.register(new DummyBackend());
@@ -289,6 +314,24 @@ export async function registerSpeechBackends(
           new LocalNemoBackend({
             model: options.nemoModel,
             device: options.nemoDevice,
+          }),
+        );
+        break;
+
+      case "ya-granite":
+        registry.register(
+          new LocalGraniteBackend({
+            model: options.graniteModel,
+            device: options.graniteDevice,
+          }),
+        );
+        break;
+
+      case "ya-qwen":
+        registry.register(
+          new LocalQwenBackend({
+            model: options.qwenModel,
+            device: options.qwenDevice,
           }),
         );
         break;

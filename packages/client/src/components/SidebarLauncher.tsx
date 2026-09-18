@@ -6,6 +6,8 @@ interface SidebarLauncherProps {
   label: string;
   newSessionLabel: string;
   onActivate: () => void;
+  /** Extra class for callers that need to place the control in their own row */
+  className?: string;
 }
 
 export function SidebarToggleIcon() {
@@ -31,6 +33,7 @@ export function SidebarLauncher({
   label,
   newSessionLabel,
   onActivate,
+  className,
 }: SidebarLauncherProps) {
   const basePath = useRemoteBasePath();
   const newSessionHref = toBrowserAppHref(
@@ -61,7 +64,7 @@ export function SidebarLauncher({
 
   return (
     <a
-      className="sidebar-toggle"
+      className={className ? `sidebar-toggle ${className}` : "sidebar-toggle"}
       href={newSessionHref}
       target="_blank"
       rel="noopener"

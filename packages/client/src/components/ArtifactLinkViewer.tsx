@@ -8,6 +8,7 @@ import {
   useModalLayer,
 } from "./ui/Modal";
 import styles from "./ArtifactLinkViewer.module.css";
+import { ViewerWindowActions } from "./ViewerWindowActions";
 
 export function ArtifactLinkViewer({
   controller,
@@ -55,21 +56,12 @@ export function ArtifactLinkViewer({
     >
       <header className={styles.header}>
         <span className={styles.title}>{controller.label}</span>
-        <button
-          type="button"
-          onClick={controller.minimize}
-          aria-label={t("modalMinimize")}
-        >
-          −
-        </button>
-        <button
-          ref={closeRef}
-          type="button"
-          onClick={controller.close}
-          aria-label={t("modalClose")}
-        >
-          ×
-        </button>
+        <ViewerWindowActions
+          url={controller.url}
+          onMinimize={controller.minimize}
+          onClose={controller.close}
+          closeRef={closeRef}
+        />
       </header>
       {blocked ? (
         <p role="alert" className={styles.notice}>

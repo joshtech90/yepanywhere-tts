@@ -83,6 +83,21 @@ export interface CapturePreviewOptions {
   commentary?: boolean;
 }
 
+/**
+ * A browser notice about the headers YA serves artifacts with, rather than
+ * anything the captured document did.
+ *
+ * The artifact origin sends `sandbox allow-scripts allow-same-origin`, and
+ * Chromium warns about that pair on every load. Reporting it as a warning of
+ * the artifact would tell the author to fix a page that is already correct,
+ * once per capture. Keeping the match to the host's own policy leaves every
+ * warning the document earns — deprecations, failed preloads, its own console
+ * output — where the author can see it.
+ */
+function isHostPolicyNotice(text: string): boolean {
+  return text.includes("can escape its sandboxing");
+}
+
 function httpUrl(value: string): URL {
   const url = new URL(value);
   if (
@@ -327,7 +342,11 @@ export async function captureArtifact(options: CaptureOptions) {
             );
         });
         page.on("console", (message) => {
-          if (message.type() === "warning") warnings.add(message.text());
+          if (
+            message.type() === "warning" &&
+            !isHostPolicyNotice(message.text())
+          )
+            warnings.add(message.text());
           if (message.type() === "error") problems.add(message.text());
         });
         await page.goto(url, {
@@ -419,7 +438,13 @@ export async function writeCapturePreview(options: CapturePreviewOptions) {
         ]
       : [`Interactive: unavailable — ${delivery.reason}`]),
     `Captures: ${screenshots.map((item) => markdownLink(`${item.name} ${item.width}×${item.height}`, item.path)).join(" · ")}`,
-    ...(warnings.length ? [`Browser warnings: ${warnings.join("; ")}`] : []),
+    // A blockquote so the reader sees a warning as one, rather than as another
+    // line of the capture's ordinary report.
+    ...(warnings.length
+      ? [
+          `> **Browser warnings**\n>\n${warnings.map((warning) => `> - ${warning}`).join("\n")}`,
+        ]
+      : []),
   ];
   const result = {
     kind: "artifact-capture",

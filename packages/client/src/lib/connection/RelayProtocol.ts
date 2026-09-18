@@ -33,7 +33,7 @@ import type {
   Subscription,
   UploadOptions,
 } from "./types";
-import { SubscriptionError } from "./types";
+import { isConnectionReconnectingError, SubscriptionError } from "./types";
 
 export type BeginCriticalOperation = (label?: string) => () => void;
 
@@ -162,6 +162,34 @@ function getRedirectedRequestInit(
 /** Default chunk size for file uploads (64KB) */
 const DEFAULT_CHUNK_SIZE = 64 * 1024;
 
+/**
+ * The rejection an aborted relay request produces, matching what `fetch` gives
+ * a caller whose signal fired.
+ *
+ * Callers distinguish abandonment from failure by the error, not by re-reading
+ * their signal: `isRequestDeadlineError` keys on the `TimeoutError` name that
+ * `AbortSignal.timeout` supplies as its reason. Passing the reason through
+ * unchanged is what lets a caller tell "I navigated away" from "the server
+ * never answered" over the relay as well as over direct fetch.
+ */
+function relayAbortError(signal: AbortSignal): Error {
+  const reason: unknown = signal.reason;
+  if (reason instanceof Error) return reason;
+  if (reason !== undefined && reason !== null) {
+    // A DOMException is not reliably `instanceof Error` across our runtimes,
+    // so preserve its name rather than stringifying it into an anonymous one.
+    const error = new Error(
+      String((reason as { message?: unknown }).message ?? reason),
+    );
+    const name = (reason as { name?: unknown }).name;
+    if (typeof name === "string") error.name = name;
+    return error;
+  }
+  const error = new Error("Relay request aborted");
+  error.name = "AbortError";
+  return error;
+}
+
 interface PendingRequest {
   resolve: (response: RelayResponse) => void;
   reject: (error: Error) => void;
@@ -210,6 +238,17 @@ export class RelayProtocol {
   >();
   /** Recently-closed subscription IDs — suppresses warnings for in-flight events */
   private recentlyClosed = new Set<string>();
+  /**
+   * Request IDs whose caller aborted — suppresses warnings for the reply that
+   * is still coming.
+   *
+   * The relay protocol has no cancel frame, so the server finishes an
+   * abandoned request and answers normally. That reply is expected and
+   * discardable, not the unknown-request anomaly the warning is for; without
+   * this a content search that supersedes its query logs one warning per
+   * abandoned batch.
+   */
+  private abandonedRequests = new Set<string>();
   /** Registered handlers for emulator signaling messages */
   private emulatorHandlers = new Set<EmulatorMessageHandler>();
   /** Registered handlers for relayed speech stream messages */
@@ -480,10 +519,12 @@ export class RelayProtocol {
 
     const pending = this.pendingRequests.get(response.id);
     if (!pending) {
-      console.warn(
-        `${this.logPrefix} Received response for unknown request:`,
-        response.id,
-      );
+      if (!this.abandonedRequests.delete(response.id)) {
+        console.warn(
+          `${this.logPrefix} Received response for unknown request:`,
+          response.id,
+        );
+      }
       return;
     }
 
@@ -545,10 +586,40 @@ export class RelayProtocol {
   }
 
   /**
+   * Re-issue a read that the transport rejected because it was replacing its
+   * own socket. The request never reached the server, and `ensureConnected`
+   * joins the reconnect already in progress, so the retry rides the new
+   * socket rather than surfacing transport churn as a request failure. Only
+   * the idempotent methods retry; a mutation must not be replayed blind.
+   */
+  private async fetchThroughReconnect(
+    path: string,
+    init: RequestInit | undefined,
+  ): Promise<RelayResponse> {
+    try {
+      return await this.fetchWithRedirects(path, init, 0);
+    } catch (error) {
+      const method = (init?.method ?? "GET").toUpperCase();
+      if (
+        !isConnectionReconnectingError(error) ||
+        (method !== "GET" && method !== "HEAD")
+      ) {
+        throw error;
+      }
+      // A caller that abandoned the read during the reconnect does not want it
+      // re-issued on the new socket; retrying would spend the round trip the
+      // abort was meant to save.
+      if (init?.signal?.aborted) throw relayAbortError(init.signal);
+      await this.transport.ensureConnected();
+      return this.fetchWithRedirects(path, init, 0);
+    }
+  }
+
+  /**
    * Make a JSON API request over the relay transport.
    */
   async fetch<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await this.fetchWithRedirects(path, init, 0);
+    const response = await this.fetchThroughReconnect(path, init);
     if (response.status === 304)
       throw new Error("Unsupported relay response status: 304");
     return response.body as T;
@@ -556,7 +627,7 @@ export class RelayProtocol {
 
   /** Reconstruct a Response from the relay's existing body representation. */
   async fetchResponse(path: string, init?: RequestInit): Promise<Response> {
-    const response = await this.fetchWithRedirects(path, init, 0);
+    const response = await this.fetchThroughReconnect(path, init);
     const headers = new Headers(response.headers);
     let body: BodyInit | null = null;
     if (![204, 205, 304].includes(response.status)) {
@@ -633,7 +704,34 @@ export class RelayProtocol {
       console.log(`[Relay] \u2192 ${method} ${request.path}`);
     }
 
-    return new Promise<RelayResponse>((resolve, reject) => {
+    return new Promise<RelayResponse>((resolveRequest, rejectRequest) => {
+      // An abandoned request must free its pending slot rather than wait out
+      // the deadline: the caller is gone, and the reply it would deliver has
+      // nowhere to go. There is no cancel frame in the relay protocol, so the
+      // server still finishes the work; this releases the client half only.
+      const signal = init?.signal ?? undefined;
+      if (signal?.aborted) {
+        rejectRequest(relayAbortError(signal));
+        return;
+      }
+
+      let onAbort: (() => void) | undefined;
+      const releaseAbort = () => {
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+        onAbort = undefined;
+      };
+      // A signal outlives any one request on it — a scan reuses its controller
+      // across every batch — so each request drops its listener when it
+      // settles instead of accumulating one per call on the same signal.
+      const resolve = (response: RelayResponse) => {
+        releaseAbort();
+        resolveRequest(response);
+      };
+      const reject = (error: Error) => {
+        releaseAbort();
+        rejectRequest(error);
+      };
+
       const timeout = setTimeout(() => {
         if (this.debugEnabled) {
           const duration = Date.now() - startTime;
@@ -694,20 +792,47 @@ export class RelayProtocol {
         path: request.path,
       });
 
+      if (signal) {
+        onAbort = () => {
+          clearTimeout(timeout);
+          this.pendingRequests.delete(id);
+          // Expect the reply anyway, and stop expecting it once the client
+          // would have given up waiting regardless.
+          this.abandonedRequests.add(id);
+          setTimeout(
+            () => this.abandonedRequests.delete(id),
+            API_REQUEST_DEADLINE_MS,
+          );
+          rejectRequest(relayAbortError(signal));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
       try {
         this.transport.sendMessage(request);
       } catch (err) {
         clearTimeout(timeout);
         this.pendingRequests.delete(id);
-        reject(err);
+        reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
   }
 
   /**
-   * Fetch binary data and return as Blob.
+   * Fetch binary data and return as Blob. A blob read is idempotent, so it
+   * retries once through a transport reconnect like the JSON reads above.
    */
   async fetchBlob(path: string): Promise<Blob> {
+    try {
+      return await this.fetchBlobOnce(path);
+    } catch (error) {
+      if (!isConnectionReconnectingError(error)) throw error;
+      await this.transport.ensureConnected();
+      return this.fetchBlobOnce(path);
+    }
+  }
+
+  private async fetchBlobOnce(path: string): Promise<Blob> {
     await this.transport.ensureConnected();
 
     const id = generateId();
@@ -1151,5 +1276,7 @@ export class RelayProtocol {
       pending.reject(closeError);
     }
     this.pendingUploads.clear();
+    // No reply can arrive on a closed connection, so nothing is left to excuse.
+    this.abandonedRequests.clear();
   }
 }

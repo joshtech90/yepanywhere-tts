@@ -117,6 +117,26 @@ describe("mergeMessage", () => {
     expect(result.content).toBe("new sdk");
     expect(result._source).toBe("sdk");
   });
+
+  it("keeps optimistic self-send markers when a provider re-echo omits them", () => {
+    const existing: Message = {
+      uuid: "ya-1",
+      type: "user",
+      tempId: "temp-send",
+      messageMetadata: { deliveryIntent: "direct" },
+      _source: "sdk",
+      message: { role: "user", content: "hello" },
+    };
+    const incoming: Message = {
+      uuid: "ya-1",
+      type: "user",
+      message: { role: "user", content: "hello" },
+    };
+    const result = mergeMessage(existing, incoming, "sdk");
+    expect(result.tempId).toBe("temp-send");
+    expect(result.messageMetadata).toEqual({ deliveryIntent: "direct" });
+    expect(result._source).toBe("sdk");
+  });
 });
 
 describe("mergeJSONLMessages", () => {

@@ -1,0 +1,19 @@
+.summary {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font: var(--font-size-base) / 1.5 var(--font-mono);
+}
+
+.output {
+  min-width: 0;
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text-primary);
+}
+
+.failure {
+  flex: 0 0 auto;
+  color: var(--timeline-dot-error);
+  font-family: var(--font-sans);
+}

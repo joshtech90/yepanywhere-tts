@@ -24,11 +24,17 @@ import {
   isSubagentMaxDepth,
   isProjectQueueReadinessCommand,
   normalizeAutoSessionTitleSettings,
+  isLoopbackGatewayUrl,
+  isValidGatewayServiceId,
+  type GatewayService,
+  parseGatewayServices,
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
   normalizeIdleReapHours,
   parseClaudeAdditionalModelSelections,
   parseClaudeSteerBackgroundBashSettings,
+  parsePostCompactReplaySettings,
+  parseSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import {
@@ -38,6 +44,8 @@ import {
 import type { SessionMetadataService } from "../metadata/index.js";
 import type { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
 import { testSSHConnection } from "../sdk/remote-spawn.js";
+import { defaultGatewayServiceExportPaths } from "../sdk/providers/gatewayServiceExport.js";
+import { detectEndpointEffort } from "../services/GatewayEffortProbe.js";
 import type { PublicShareService } from "../services/PublicShareService.js";
 import type { HostAwakeService } from "../services/host-awake/HostAwakeService.js";
 import type {
@@ -92,8 +100,12 @@ export interface SettingsRoutesDeps {
   ) => Promise<void> | void;
   /** Callback to apply Claude Gateway transport settings at runtime. */
   onClaudeGatewaySettingsChanged?: (settings: {
-    url?: string;
-    startCommand?: string;
+    services: readonly GatewayService[];
+    /** Whether the services are also published for the provider CLIs. */
+    exportToProviderClis?: boolean;
+    /** Whether endpoints are asked which thinking efforts they accept. */
+    effortDetection?: boolean;
+    defaultServiceId?: string;
     disableAgent: boolean;
     disablePlanMode: boolean;
   }) => Promise<void> | void;
@@ -160,6 +172,10 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       settings: {
         ...settings,
         ...(getIdleReapHours ? { idleReapHours: getIdleReapHours() } : {}),
+        // Where the provider-CLI export writes, so the client can state the
+        // exact command that reaches each service. Server-derived like
+        // idleReapHours above: reported, never accepted back.
+        gatewayServiceExportPaths: defaultGatewayServiceExportPaths(),
       },
     });
   });
@@ -675,6 +691,69 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         }
         updates.claudeGatewayStartCommand = startCommand;
       }
+      if ("gatewayServices" in body) {
+        const services = parseGatewayServices(body.gatewayServices ?? []);
+        if (!services) {
+          return c.json(
+            {
+              error:
+                "gatewayServices must be a list of services with a slug id, an http(s) URL, and valid optional command, window, and toggle fields",
+            },
+            400,
+          );
+        }
+        const loopbackViolation = services.find(
+          (service) =>
+            service.serviceCommand && !isLoopbackGatewayUrl(service.url),
+        );
+        if (loopbackViolation) {
+          return c.json(
+            {
+              error: `gatewayServices entry "${loopbackViolation.id}" has a service command but a non-loopback URL; YA only starts and stops services on localhost`,
+            },
+            400,
+          );
+        }
+        updates.gatewayServices = services;
+      }
+      if ("defaultGatewayServiceId" in body) {
+        if (
+          body.defaultGatewayServiceId === undefined ||
+          body.defaultGatewayServiceId === null ||
+          body.defaultGatewayServiceId === ""
+        ) {
+          updates.defaultGatewayServiceId = undefined;
+        } else if (
+          typeof body.defaultGatewayServiceId !== "string" ||
+          !isValidGatewayServiceId(body.defaultGatewayServiceId)
+        ) {
+          return c.json(
+            { error: "defaultGatewayServiceId must be a service id" },
+            400,
+          );
+        } else {
+          updates.defaultGatewayServiceId = body.defaultGatewayServiceId;
+        }
+      }
+      if ("gatewayServiceExportEnabled" in body) {
+        if (typeof body.gatewayServiceExportEnabled !== "boolean") {
+          return c.json(
+            { error: "gatewayServiceExportEnabled must be a boolean" },
+            400,
+          );
+        }
+        updates.gatewayServiceExportEnabled = body.gatewayServiceExportEnabled;
+      }
+      if ("gatewayServiceEffortDetection" in body) {
+        if (typeof body.gatewayServiceEffortDetection !== "boolean") {
+          return c.json(
+            { error: "gatewayServiceEffortDetection must be a boolean" },
+            400,
+          );
+        }
+        updates.gatewayServiceEffortDetection =
+          body.gatewayServiceEffortDetection;
+      }
       if ("claudeGatewayDisableAgent" in body) {
         if (typeof body.claudeGatewayDisableAgent !== "boolean") {
           return c.json(
@@ -809,12 +888,44 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         updates.speechAudioRetention = parsedRetention;
       }
 
+      if ("speechVoiceBackends" in body) {
+        const parsedBackends = parseSpeechVoiceBackends(
+          body.speechVoiceBackends,
+        );
+        if (parsedBackends === null) {
+          return c.json(
+            {
+              error:
+                "speechVoiceBackends must be an array of local STT backend ids (ya-whisper, ya-parakeet, ya-nemo, ya-granite, ya-qwen)",
+            },
+            400,
+          );
+        }
+        updates.speechVoiceBackends = parsedBackends;
+      }
+
       if ("helperTargets" in body) {
         const parsedTargets = parseHelperTargets(body.helperTargets);
         if (parsedTargets === null) {
           return c.json({ error: "Invalid helperTargets setting" }, 400);
         }
         updates.helperTargets = parsedTargets;
+      }
+
+      if ("postCompactReplay" in body) {
+        const parsedReplay = parsePostCompactReplaySettings(
+          body.postCompactReplay,
+        );
+        if (parsedReplay === null) {
+          return c.json(
+            {
+              error:
+                "postCompactReplay must use known provider checkboxes and an integer replayTurnCount from 0 to 20",
+            },
+            400,
+          );
+        }
+        updates.postCompactReplay = parsedReplay;
       }
 
       if ("promptCacheKeepalive" in body) {
@@ -1075,12 +1186,22 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         ("claudeGatewayUrl" in updates ||
           "claudeGatewayStartCommand" in updates ||
           "claudeGatewayDisableAgent" in updates ||
-          "claudeGatewayDisablePlanMode" in updates) &&
+          "claudeGatewayDisablePlanMode" in updates ||
+          "gatewayServices" in updates ||
+          "defaultGatewayServiceId" in updates ||
+          "gatewayServiceExportEnabled" in updates ||
+          "gatewayServiceEffortDetection" in updates) &&
         onClaudeGatewaySettingsChanged
       ) {
+        // Persisted settings are already reconciled, so the list and the
+        // legacy keys agree by the time the runtime sees them.
         await onClaudeGatewaySettingsChanged({
-          url: settings.claudeGatewayUrl,
-          startCommand: settings.claudeGatewayStartCommand,
+          exportToProviderClis: settings.gatewayServiceExportEnabled ?? false,
+          effortDetection: settings.gatewayServiceEffortDetection ?? true,
+          services: settings.gatewayServices ?? [],
+          ...(settings.defaultGatewayServiceId
+            ? { defaultServiceId: settings.defaultGatewayServiceId }
+            : {}),
           disableAgent: settings.claudeGatewayDisableAgent,
           disablePlanMode: settings.claudeGatewayDisablePlanMode,
         });
@@ -1144,6 +1265,45 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
     }
 
     return c.json({ baseUrl, models });
+  });
+
+  /**
+   * POST /api/settings/gateway-services/effort
+   * Ask one model-serving endpoint which thinking efforts it accepts.
+   *
+   * The URL must be loopback or already configured. Unlike the model discovery
+   * above this sends a chat request, so it stays pointed at endpoints the
+   * server already talks to rather than at anywhere a client names.
+   */
+  app.post("/gateway-services/effort", async (c) => {
+    const body = await c.req.json<{ url?: unknown }>();
+    const url = typeof body.url === "string" ? body.url.trim() : "";
+    if (!url) {
+      return c.json({ error: "url must be an http(s) URL" }, 400);
+    }
+    const configured = (
+      serverSettingsService.getSettings().gatewayServices ?? []
+    ).some((service) => service.url === url);
+    if (!configured && !isLoopbackGatewayUrl(url)) {
+      return c.json(
+        {
+          error:
+            "url must be one of the configured model services, or a localhost address",
+        },
+        400,
+      );
+    }
+
+    const detection = await detectEndpointEffort(url);
+    if (!detection.ok) {
+      return c.json({ detected: false, reason: detection.reason });
+    }
+    return c.json({
+      detected: true,
+      modelId: detection.modelId,
+      levels: detection.probe.levels,
+      noThinking: detection.probe.noThinking,
+    });
   });
 
   /**

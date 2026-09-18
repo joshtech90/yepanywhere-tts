@@ -248,6 +248,7 @@ function sessionRecordToInboxItem(
     activityInferredFromInboxTier: record.activityInferredFromInboxTier,
     hasUnread: record.hasUnread,
     asyncQuestions: record.asyncQuestions,
+    nonHumanUserTurn: record.nonHumanUserTurn,
   };
 }
 

@@ -346,6 +346,8 @@ export interface AgentSession {
    * Returns true when steered immediately, false when caller should enqueue instead.
    */
   steer?: (message: UserMessage) => Promise<boolean>;
+  /** Successful steers still await consumption through this session's queue. */
+  steerUsesMessageQueue?: boolean;
   /** Append role-preserving history without a new turn; false means unavailable. */
   appendConversationContext?: (
     turns: ConversationContextTurn[],

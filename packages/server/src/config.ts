@@ -208,7 +208,7 @@ export interface Config {
   whisperDevice?: string;
   /** Whisper compute type for ya-whisper backend (default: int8). */
   whisperComputeType?: string;
-  /** Parakeet fallback model name for ya-parakeet backend (default: nvidia/parakeet-tdt-0.6b-v3). */
+  /** Parakeet fallback model for ya-parakeet (default: ai-and-i-project/parakeet-tdt-0.6b-v2-hf). */
   parakeetModel?: string;
   /** Parakeet device for ya-parakeet backend (default: auto). */
   parakeetDevice?: string;
@@ -216,6 +216,14 @@ export interface Config {
   nemoModel?: string;
   /** NeMo Parakeet device for ya-nemo backend (default: auto). */
   nemoDevice?: string;
+  /** Granite Speech model name for ya-granite backend (default: ibm-granite/granite-speech-4.1-2b). */
+  graniteModel?: string;
+  /** Granite Speech device for ya-granite backend (default: auto). */
+  graniteDevice?: string;
+  /** Qwen3 ASR model override (default: Qwen/Qwen3-ASR-1.7B-hf). */
+  qwenModel?: string;
+  /** Qwen3 ASR device override (default: auto). */
+  qwenDevice?: string;
   /** Allowed directory prefixes for serving local images (e.g., ["/tmp"]). Empty = disabled. */
   allowedImagePaths: string[];
   /** Managed uploads directory ({dataDir}/uploads); always part of the file-access set. */
@@ -477,6 +485,10 @@ export function loadConfig(): Config {
     parakeetDevice: process.env.PARAKEET_DEVICE || undefined,
     nemoModel: process.env.NEMO_MODEL || undefined,
     nemoDevice: process.env.NEMO_DEVICE || undefined,
+    graniteModel: process.env.GRANITE_MODEL || undefined,
+    graniteDevice: process.env.GRANITE_DEVICE || undefined,
+    qwenModel: process.env.QWEN_MODEL || undefined,
+    qwenDevice: process.env.QWEN_DEVICE || undefined,
     // Always allow yep-managed uploads. ALLOWED_IMAGE_PATHS adds external paths
     // like /tmp; an empty value disables only those extras.
     allowedImagePaths: Array.from(

@@ -406,18 +406,18 @@
   --fixed-inline-code-line-height: 1.15;
   --fixed-inline-code-baseline-shift: 0.04em;
   --thinking-prose-line-height-offset: 0px;
-  --thinking-prose-line-height: calc(
-    1.5em +
-    var(--thinking-prose-line-height-offset)
+  --thinking-prose-line-height: max(
+    1.1em,
+    calc(1.5em + var(--thinking-prose-line-height-offset))
   );
   --thinking-prose-font-variation-settings: var(
     --output-prose-font-variation-settings
   );
   --output-prose-vspace-offset: 0px;
   --output-prose-line-height-offset: 0px;
-  --output-prose-line-height: calc(
-    1.5em +
-    var(--output-prose-line-height-offset)
+  --output-prose-line-height: max(
+    1.1em,
+    calc(1.5em + var(--output-prose-line-height-offset))
   );
   --source-code-font-size: max(
     10px,
@@ -1644,7 +1644,7 @@ body.session-transcript-selection-active .reload-banner * {
   inset: 0;
   background: var(--bg-overlay);
   z-index: 100;
-  animation: fadeIn 0.15s ease-out;
+  animation: fadeIn var(--panel-fade-duration, 0.15s) ease-out;
 }
 
 @keyframes fadeIn {
@@ -1668,7 +1668,7 @@ body.session-transcript-selection-active .reload-banner * {
   z-index: 101;
   display: flex;
   flex-direction: column;
-  animation: slideIn 0.2s ease-out;
+  animation: slideIn var(--panel-slide-duration, 0.2s) ease-out;
   padding-top: env(safe-area-inset-top, 0px);
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -9036,7 +9036,7 @@ a.sidebar-nav-item {
 
 .settings-subsection h3 {
   margin: 0 0 var(--space-2);
-  font-size: var(--font-size-base);
+  font-size: 1em; /* Matches the row label it titles, not the hints below it. */
 }
 
 .settings-subsection-hint {
@@ -11954,7 +11954,7 @@ a.sidebar-nav-item {
     border-right: 1px solid var(--border-color);
     display: flex;
     flex-direction: column;
-    transition: width 0.2s ease;
+    transition: width var(--panel-slide-duration, 0.2s) ease;
     overflow: hidden;
     position: relative;
   }

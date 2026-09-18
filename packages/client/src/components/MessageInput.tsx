@@ -646,7 +646,9 @@ export function MessageInput({
     !disabled &&
     (invocationQuery !== null || matchingSlashArgumentCompletions.length > 0) &&
     !hasNonTextComposerContent &&
-    (!hasExactSlashCommand || matchingSlashArgumentCompletions.length > 0) &&
+    (!hasExactSlashCommand ||
+      matchingSlashCommands.length > 1 ||
+      matchingSlashArgumentCompletions.length > 0) &&
     dismissedSlashQuery !== slashQueryKey &&
     slashSuggestionCount > 0;
   const recognizedSkillTokens = useMemo(
@@ -2235,9 +2237,11 @@ export function MessageInput({
 
   // Handle slash command selection - run active client commands or insert text.
   const handleSlashCommand = useCallback(
-    (command: SlashCommand) => {
-      const canonicalToken = getCanonicalInvocationToken(command);
+    (command: SlashCommand, completionPrefix?: string) => {
+      const canonicalToken =
+        completionPrefix ?? getCanonicalInvocationToken(command);
       if (
+        completionPrefix === undefined &&
         command.invocation?.kind === "emulated" &&
         onCustomCommand?.(command.name)
       ) {
@@ -2250,7 +2254,11 @@ export function MessageInput({
       let nextText: string;
       let nextCursor: number;
       if (activeQuery) {
-        const suffix = /\s/.test(text[activeQuery.end] ?? "") ? "" : " ";
+        const suffix =
+          completionPrefix !== undefined ||
+          /\s/.test(text[activeQuery.end] ?? "")
+            ? ""
+            : " ";
         const replacement = `${canonicalToken}${suffix}`;
         editStart = activeQuery.start;
         editEnd = activeQuery.end;
@@ -2647,6 +2655,42 @@ export function MessageInput({
     }
 
     if (showSlashSuggestions) {
+      if (
+        e.key === " " &&
+        e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        matchingSlashCommands[0]
+      ) {
+        e.preventDefault();
+        handleSlashCommand(matchingSlashCommands[0]);
+        return;
+      }
+      if (
+        e.key === "Tab" &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        matchingSlashCommands.length > 1 &&
+        matchingSlashCommands.some(
+          (command) => command.invocation?.kind === "skill",
+        )
+      ) {
+        e.preventDefault();
+        const prefix = longestCommonPrefix(
+          matchingSlashCommands.map(getCanonicalInvocationToken),
+        );
+        if (
+          prefix &&
+          invocationQuery &&
+          prefix.length > invocationQuery.query.length + 1
+        ) {
+          handleSlashCommand(matchingSlashCommands[0]!, prefix);
+        }
+        return;
+      }
       if (e.key === "Escape") {
         e.preventDefault();
         setDismissedSlashQuery(slashQueryKey);
@@ -2663,7 +2707,11 @@ export function MessageInput({
         return;
       }
       if (
-        e.key === "Tab" ||
+        (e.key === "Tab" &&
+          !e.shiftKey &&
+          !e.ctrlKey &&
+          !e.metaKey &&
+          !e.altKey) ||
         (e.key === "Enter" &&
           !hasExactSlashCommand &&
           !e.ctrlKey &&

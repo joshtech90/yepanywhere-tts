@@ -4,6 +4,19 @@
   max-width: 100%;
   vertical-align: middle;
 }
+.paneViewer {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+.paneViewer > :global(.file-viewer) {
+  height: 100%;
+}
+.nestedPaneViewer {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+}
 
 .fileViewerModal {
   width: min(calc(100vw - 0.75rem), 1200px);

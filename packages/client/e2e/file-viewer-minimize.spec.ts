@@ -181,6 +181,20 @@ for (const viewport of [
 
     const viewer = page.locator(".file-viewer");
     await expect(viewer).toBeVisible();
+    // The header never trades the filename away for controls: they take their
+    // own header row instead of squeezing the path into a one-glyph column.
+    const [pathBox, actionsBox] = await Promise.all([
+      viewer.locator(".file-viewer-path").boundingBox(),
+      viewer.locator(".file-viewer-actions").boundingBox(),
+    ]);
+    if (!pathBox || !actionsBox) {
+      throw new Error("Expected file viewer header layout boxes");
+    }
+    expect(pathBox.width).toBeGreaterThanOrEqual(140);
+    expect(
+      actionsBox.x >= pathBox.x + pathBox.width - 1 ||
+        actionsBox.y >= pathBox.y + pathBox.height - 1,
+    ).toBe(true);
     if (viewport.width <= 800) {
       const [modalBox, composerBox] = await Promise.all([
         page.locator(".file-viewer-modal").boundingBox(),

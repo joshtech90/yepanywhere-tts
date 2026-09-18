@@ -1,23 +1,57 @@
 import {
   ALL_PROVIDERS,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
-  type ProviderName,
+  SESSION_CONTENT_SEARCH_CAPABILITY,
   serverHasCapability,
+  providerSupportsBoundedTurnSearch,
+  type ProviderName,
 } from "@yep-anywhere/shared";
-import { useCallback, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
-import { api } from "../api/client";
-import { BulkActionBar } from "../components/BulkActionBar";
 import {
-  FilterDropdown,
-  type FilterDropdownOption,
-  type FilterOption,
-} from "../components/FilterDropdown";
+  startTransition,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { createSessionApi } from "../api/sessionClient";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { FilterDropdown } from "../components/FilterDropdown";
 import { PageHeader } from "../components/PageHeader";
 import { SessionListItem } from "../components/SessionListItem";
+import {
+  SearchHeader,
+  SearchFilters,
+  SearchSelection,
+  SearchHelp,
+} from "../components/session-search/SearchControls";
+import {
+  SearchPreviews,
+  SearchZoomPreview,
+  SearchDiagnostics,
+  type SearchPreviewTarget,
+} from "../components/session-search/SearchPreviews";
+import {
+  durationMs,
+  inTimeRange,
+  matchesStatus,
+  statuses,
+  titleMatches,
+  toggleStatus,
+  type SearchField,
+  type SearchStatus,
+  type TimeBasis,
+} from "../components/session-search/model";
+import { useContentSearch } from "../components/session-search/useContentSearch";
+import { SearchTitle } from "../components/session-search/SearchTitle";
+import { SearchSessionMatches } from "../components/session-search/SearchSessionMatches";
+import styles from "../components/session-search/SessionSearch.module.css";
 import { useGlobalSessionsFeed } from "../hooks/useGlobalSessionsFeed";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProcesses } from "../hooks/useProcesses";
+import { useProviders } from "../hooks/useProviders";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
@@ -35,1176 +69,824 @@ import {
 } from "../lib/clientSummaryStore";
 import { getSessionDisplayTitle } from "../utils";
 
-// Long-press threshold for entering selection mode on mobile
-const LONG_PRESS_MS = 500;
+const EMPTY_PROJECTS: readonly string[] = [];
+const EMPTY_IDS: ReadonlySet<string> = new Set();
 
-const STATUS_FILTER_VALUES = ["unread", "starred", "archived"] as const;
-type StatusFilter = (typeof STATUS_FILTER_VALUES)[number];
-
-const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
-const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
-
-// Age filter options (days)
-type AgeFilter = "3" | "7" | "14" | "30";
-
-// Provider colors for filter dropdown (matching ProviderBadge)
-const PROVIDER_COLORS: Record<ProviderName, string> = {
-  claude: "var(--app-yep-green)",
-  "claude-gateway": "var(--app-yep-green)",
-  "claude-ollama": "var(--app-yep-green)", // Same as Claude
-  codex: "#10a37f",
-  "codex-oss": "#f97316",
-  gemini: "#4285f4",
-  "gemini-acp": "#4285f4", // Same as gemini
-  grok: "#111827",
-  opencode: "#9333ea", // Purple for OpenCode
-  pi: "#0d9488", // Teal for pi
-};
-
-function isStatusFilter(value: string): value is StatusFilter {
-  return (STATUS_FILTER_VALUES as readonly string[]).includes(value);
+interface SearchHistoryControls {
+  sourceKey: string;
+  fields: SearchField[];
+  basis: TimeBasis;
+  young: string;
+  old: string;
+  limit: string;
+  selected: string[];
 }
 
-function StatusFilterIcon({ status }: { status: StatusFilter }) {
-  const className = `status-filter-icon status-filter-icon--${status}`;
-  switch (status) {
-    case "unread":
-      return (
-        <svg
-          className={className}
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <rect x="3" y="5" width="18" height="14" rx="2" />
-          <path d="m3 7 9 6 9-6" />
-        </svg>
-      );
-    case "starred":
-      return (
-        <svg
-          className={className}
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="currentColor"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-        </svg>
-      );
-    case "archived":
-      return (
-        <svg
-          className={className}
-          width="15"
-          height="15"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
-        >
-          <rect x="3" y="4" width="18" height="4" rx="1" />
-          <path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8" />
-          <path d="M10 12h4" />
-        </svg>
-      );
-  }
-}
-
-/**
- * Global sessions page showing all sessions across all projects.
- * Supports filtering by project, status, provider, and search query.
- * Includes multi-select mode with bulk actions.
- */
 export function GlobalSessionsPage() {
+  const sourceKey = useClientSummarySourceKey();
+  return <SessionSearchPage key={sourceKey} />;
+}
+
+function SessionSearchPage() {
   const { t } = useI18n();
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
-    useNavigationLayout();
+  const runtime = useCurrentSourceRuntime();
+  const api = useMemo(
+    () => createSessionApi(runtime.transport.fetch.bind(runtime.transport)),
+    [runtime],
+  );
+  const { openSidebar, isWideScreen } = useNavigationLayout();
   const basePath = useRemoteBasePath();
   const navigate = useNavigate();
-  const clientSummarySourceKey = useClientSummarySourceKey();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { settings: serverSettings } = useServerSettings();
+  const sourceKey = useClientSummarySourceKey();
+  const [params, setParams] = useSearchParams();
+  const location = useLocation();
+  const [remembered] = useState(() => {
+    const state = window.history.state?.yaSessionSearch as
+      | SearchHistoryControls
+      | undefined;
+    return state?.sourceKey === sourceKey ? state : undefined;
+  });
+  const { settings } = useServerSettings();
   const { version } = useVersion();
-  const supportsProjectQueue = serverSupportsProjectQueue(version);
+  const { providers: providerInfo } = useProviders();
+  const turnSearchProviders = useMemo(
+    () =>
+      new Set(
+        ALL_PROVIDERS.filter((name) =>
+          providerSupportsBoundedTurnSearch(
+            name,
+            providerInfo.find((provider) => provider.name === name)
+              ?.supportsBoundedTurnSearch,
+          ),
+        ),
+      ),
+    [providerInfo],
+  );
+  const supported = serverHasCapability(
+    version,
+    SESSION_CONTENT_SEARCH_CAPABILITY,
+  );
   const publicShareManagementAvailable = serverHasCapability(
     version,
     PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   );
-  const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareStatus } = usePublicShareStatus({
-    poll: publicSharesEnabled,
+    poll: settings?.publicSharesEnabled ?? false,
   });
-  const publicShareCreationReady = publicShareStatus?.canCreate ?? false;
   const { processes, terminatedProcesses } = useProcesses();
-  const providerChildrenBySessionId = useMemo(
+  const children = useMemo(
     () =>
       new Map(
         [...processes, ...terminatedProcesses]
-          .filter((process) => process.providerChildren?.length)
-          .map((process) => [process.sessionId, process.providerChildren]),
+          .filter((p) => p.providerChildren?.length)
+          .map((p) => [p.sessionId, p.providerChildren]),
       ),
     [processes, terminatedProcesses],
   );
-
-  // Get filter params from URL
-  const searchQuery = searchParams.get("q") || "";
-  const projectFilter = searchParams.get("project") || undefined;
-
-  // Local state for search input (instant feedback)
-  const [searchInput, setSearchInput] = useState(searchQuery);
-
-  // Status and provider filters from URL
-  const statusFilters = useMemo(() => {
-    const param = searchParams.get("status");
-    if (!param) return [];
-    return param.split(",").filter(isStatusFilter);
-  }, [searchParams]);
-
-  const providerFilters = useMemo(() => {
-    const param = searchParams.get("provider");
-    if (!param) return [];
-    const knownProviders = Object.keys(PROVIDER_COLORS);
-    return param
-      .split(",")
-      .filter((p): p is ProviderName => knownProviders.includes(p));
-  }, [searchParams]);
-
-  const executorFilters = useMemo(() => {
-    const param = searchParams.get("executor");
-    if (!param) return [];
-    return param.split(",").filter(Boolean);
-  }, [searchParams]);
-
-  const ageFilter = useMemo(() => {
-    const param = searchParams.get("age");
-    if (param && ["3", "7", "14", "30"].includes(param))
-      return param as AgeFilter;
-    return undefined;
-  }, [searchParams]);
-
-  const setStatusFilters = useCallback(
-    (filters: StatusFilter[]) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        if (filters.length > 0) {
-          next.set("status", filters.join(","));
-        } else {
-          next.delete("status");
-        }
-        return next;
-      });
-    },
-    [setSearchParams],
-  );
-
-  const setProviderFilters = useCallback(
-    (filters: ProviderName[]) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        if (filters.length > 0) {
-          next.set("provider", filters.join(","));
-        } else {
-          next.delete("provider");
-        }
-        return next;
-      });
-    },
-    [setSearchParams],
-  );
-
-  const setExecutorFilters = useCallback(
-    (filters: string[]) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        if (filters.length > 0) {
-          next.set("executor", filters.join(","));
-        } else {
-          next.delete("executor");
-        }
-        return next;
-      });
-    },
-    [setSearchParams],
-  );
-
-  const setAgeFilter = useCallback(
-    (selected: AgeFilter[]) => {
-      setSearchParams((prev) => {
-        const next = new URLSearchParams(prev);
-        if (selected.length > 0 && selected[0]) {
-          next.set("age", selected[0]);
-        } else {
-          next.delete("age");
-        }
-        return next;
-      });
-    },
-    [setSearchParams],
-  );
-
-  // Include archived sessions when archived filter is selected
-  const includeArchived = statusFilters.includes("archived");
-
-  const feed = useGlobalSessionsFeed({
-    projectId: projectFilter,
-    searchQuery,
-    includeArchived,
-    includeStats: !projectFilter,
-  });
-  const sessionRecords = useSessionCollectionQueryRecords(feed.query);
-  const sessions = useMemo(
-    () => sessionCollectionRecordsToGlobalSessionItems(sessionRecords),
-    [sessionRecords],
-  );
-  const { stats, projects, loading, error, hasMore, loadMore } = feed;
-
-  // Filter sessions based on status and provider filters (client-side)
-  const filteredSessions = useMemo(() => {
-    return sessions.filter((session) => {
-      // Status filtering (empty = show all non-archived)
-      if (statusFilters.length === 0) {
-        // Default: show non-archived
-        if (session.isArchived) return false;
-      } else {
-        // Check if session matches any selected status filter
-        let matchesStatus = false;
-        for (const status of statusFilters) {
-          switch (status) {
-            case "unread":
-              if (session.hasUnread && !session.isArchived)
-                matchesStatus = true;
-              break;
-            case "starred":
-              if (session.isStarred) matchesStatus = true;
-              break;
-            case "archived":
-              if (session.isArchived) matchesStatus = true;
-              break;
-          }
-        }
-        if (!matchesStatus) return false;
-      }
-
-      // Provider filtering (empty = show all providers)
-      if (providerFilters.length > 0) {
-        if (!session.provider || !providerFilters.includes(session.provider)) {
-          return false;
-        }
-      }
-
-      // Executor filtering (empty = show all executors)
-      if (executorFilters.length > 0) {
-        const sessionExecutor = session.executor ?? "local";
-        if (!executorFilters.includes(sessionExecutor)) {
-          return false;
-        }
-      }
-
-      // Age filtering (only show sessions older than N days)
-      if (ageFilter) {
-        const days = Number(ageFilter);
-        const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
-        if (new Date(session.updatedAt).getTime() > cutoff) {
-          return false;
-        }
-      }
-
-      return true;
-    });
-  }, [sessions, statusFilters, providerFilters, executorFilters, ageFilter]);
-
-  const drafts = useDraftSessionIds();
-  const filteredProjectIds = useMemo(
-    () => [
-      ...new Set(
-        filteredSessions.map((session) => session.projectId).filter(Boolean),
-      ),
-    ],
-    [filteredSessions],
-  );
-  // Keep the queue feed mounted for the visible result projects. Badge
-  // rendering reads from the shared store selector below.
-  useProjectQueues(
-    supportsProjectQueue ? filteredProjectIds : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
-  );
-  const rawProjectQueuedSessionIds = useProjectQueuedSessionIds(
-    supportsProjectQueue ? filteredProjectIds : EMPTY_PROJECT_QUEUE_PROJECT_IDS,
-  );
-  const projectQueuedSessionIds = supportsProjectQueue
-    ? rawProjectQueuedSessionIds
-    : EMPTY_PROJECT_QUEUE_SESSION_IDS;
-
-  // Build status filter options with global counts from server
-  // When filtering by project, we don't have global stats, so omit counts
-  const statusOptions = useMemo((): FilterDropdownOption<StatusFilter>[] => {
-    // Only show counts when not filtering by project (global view)
-    const showCounts = !projectFilter;
-
-    return [
-      {
-        value: "unread",
-        label: t("globalSessionsStatusUnread"),
-        icon: <StatusFilterIcon status="unread" />,
-        count: showCounts ? stats.unreadCount : undefined,
-      },
-      {
-        value: "starred",
-        label: t("globalSessionsStatusStarred"),
-        icon: <StatusFilterIcon status="starred" />,
-        count: showCounts ? stats.starredCount : undefined,
-      },
-      {
-        value: "archived",
-        label: t("globalSessionsStatusArchived"),
-        icon: <StatusFilterIcon status="archived" />,
-        count: showCounts ? stats.archivedCount : undefined,
-      },
-      {
-        value: "all",
-        label: t("globalSessionsStatusAll"),
-        clearSelection: true,
-        dividerBefore: true,
-        count: showCounts ? stats.totalCount : undefined,
-      },
-    ];
-  }, [stats, projectFilter, t]);
-
-  const statusPlaceholder = (
-    <span className="status-filter-placeholder" aria-hidden="true">
-      {STATUS_FILTER_VALUES.map((status) => (
-        <StatusFilterIcon key={status} status={status} />
-      ))}
-    </span>
-  );
-
-  // Build provider filter options with global counts from server
-  // When filtering by project, we don't have global stats, so omit counts
-  const providerOptions = useMemo((): FilterDropdownOption<ProviderName>[] => {
-    const showCounts = !projectFilter;
-    const providerCounts = stats.providerCounts;
-
-    // Only show providers that have sessions
-    const options: FilterDropdownOption<ProviderName>[] = [];
-    for (const provider of ALL_PROVIDERS) {
-      const count = providerCounts[provider];
-      if (count && count > 0) {
-        options.push({
-          value: provider,
-          label: provider.charAt(0).toUpperCase() + provider.slice(1),
-          count: showCounts ? count : undefined,
-          color: PROVIDER_COLORS[provider],
-        });
-      }
-    }
-    options.push({
-      value: "all-providers",
-      label: t("globalSessionsProviderAll"),
-      clearSelection: true,
-      dividerBefore: true,
-      count: showCounts ? stats.totalCount : undefined,
-    });
-    return options;
-  }, [stats.providerCounts, stats.totalCount, projectFilter, t]);
-
-  // Age filter options
-  const ageOptions = useMemo((): FilterOption<AgeFilter>[] => {
-    return [
-      { value: "3", label: "Older than 3 days" },
-      { value: "3", label: t("globalSessionsAge3Days") },
-      { value: "7", label: t("globalSessionsAge7Days") },
-      { value: "14", label: t("globalSessionsAge14Days") },
-      { value: "30", label: t("globalSessionsAge30Days") },
-    ];
-  }, [t]);
-
-  // Build executor filter options with global counts from server
-  const executorOptions = useMemo((): FilterOption<string>[] => {
-    const showCounts = !projectFilter;
-    const executorCounts = stats.executorCounts;
-
-    // Only show executors that have sessions, sorted with "local" first
-    const entries = Object.entries(executorCounts).filter(
-      ([_, count]) => count > 0,
-    );
-    entries.sort((a, b) => {
-      // "local" always comes first
-      if (a[0] === "local") return -1;
-      if (b[0] === "local") return 1;
-      return a[0].localeCompare(b[0]);
-    });
-
-    return entries.map(([executor, count]) => ({
-      value: executor,
-      label: executor === "local" ? t("globalSessionsExecutorLocal") : executor,
-      count: showCounts ? count : undefined,
-    }));
-  }, [stats.executorCounts, projectFilter, t]);
-
-  // Selection state for multi-select mode
-  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [isSelectionMode, setIsSelectionMode] = useState(false);
-  const [isBulkActionPending, setIsBulkActionPending] = useState(false);
-  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const longPressSessionRef = useRef<string | null>(null);
-  const touchStartPosRef = useRef<{ x: number; y: number } | null>(null);
-
-  // Dup-title hiding for the heavier (card) list in GlobalSessionsPage (all sessions + per-project views).
-  // Cheap O(n) client-side grouping on the already-fetched + filtered page. Re-uses the same
-  // "prefer higher messageCount + recent activity" rule so we don't hide the substantive version of a dup title.
-  // Hidden dups are still reachable via the expander (and fully included for bulk selection).
-  const [showHiddenDups, setShowHiddenDups] = useState(false);
-
-  const { visibleSessions, hiddenDupSessions } = useMemo(() => {
-    if (isSelectionMode) {
-      // During multi-select, show everything so user can act on dups if desired.
-      return {
-        visibleSessions: filteredSessions,
-        hiddenDupSessions: [] as typeof filteredSessions,
-      };
-    }
-
-    const groups = new Map<string, typeof filteredSessions>();
-    for (const s of filteredSessions) {
-      const norm = (s.title || s.fullTitle || s.initialPrompt || "")
-        .trim()
-        .toLowerCase()
-        .slice(0, 120);
-      const key = `${s.provider || "unknown"}|${s.projectId}|${norm}`;
-      if (!groups.has(key)) groups.set(key, []);
-      groups.get(key)!.push(s);
-    }
-
-    const visible: typeof filteredSessions = [];
-    const hidden: typeof filteredSessions = [];
-    for (const arr of groups.values()) {
-      if (arr.length <= 1) {
-        visible.push(...arr);
-      } else {
-        // Prefer the one with most messages or most recent activity — do not hide the "real" one.
-        arr.sort((a, b) => {
-          const mc = (b.messageCount || 0) - (a.messageCount || 0);
-          if (mc !== 0) return mc;
-          return (
-            new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime()
-          );
-        });
-        visible.push(arr[0]!); // arr is guaranteed non-empty in this branch (length >= 2)
-        hidden.push(...arr.slice(1));
-      }
-    }
-    visible.sort(
-      (a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-    );
-    hidden.sort(
-      (a, b) =>
-        new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime(),
-    );
-    return { visibleSessions: visible, hiddenDupSessions: hidden };
-  }, [filteredSessions, isSelectionMode]);
-
-  // Selection handlers
-  const handleSelect = useCallback((sessionId: string, selected: boolean) => {
-    setSelectedIds((prev) => {
-      const next = new Set(prev);
-      if (selected) {
-        next.add(sessionId);
-      } else {
-        next.delete(sessionId);
-      }
-      // Exit selection mode when nothing is selected
-      if (next.size === 0) {
-        setIsSelectionMode(false);
-      }
-      return next;
-    });
-  }, []);
-
-  const handleSelectAll = useCallback(() => {
-    setSelectedIds(new Set(filteredSessions.map((s) => s.id)));
-    setIsSelectionMode(true);
-  }, [filteredSessions]);
-
-  const handleClearSelection = useCallback(() => {
-    setSelectedIds(new Set());
-    setIsSelectionMode(false);
-  }, []);
-
-  // Long-press handlers for mobile selection mode
-  const handleLongPressStart = useCallback(
-    (sessionId: string, e: React.TouchEvent | React.MouseEvent) => {
-      // Already in selection mode or on desktop - don't start long-press
-      if (isSelectionMode || isWideScreen) return;
-
-      // Record starting position to detect movement (scrolling)
-      if ("touches" in e) {
-        const touch = e.touches[0];
-        if (touch) {
-          touchStartPosRef.current = { x: touch.clientX, y: touch.clientY };
-        }
-      } else if ("clientX" in e) {
-        touchStartPosRef.current = { x: e.clientX, y: e.clientY };
-      }
-
-      longPressSessionRef.current = sessionId;
-      longPressTimerRef.current = setTimeout(() => {
-        // Enter selection mode and select this session
-        setIsSelectionMode(true);
-        setSelectedIds(new Set([sessionId]));
-        longPressSessionRef.current = null;
-        touchStartPosRef.current = null;
-      }, LONG_PRESS_MS);
-    },
-    [isSelectionMode, isWideScreen],
-  );
-
-  const handleLongPressEnd = useCallback(() => {
-    if (longPressTimerRef.current) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    longPressSessionRef.current = null;
-    touchStartPosRef.current = null;
-  }, []);
-
-  // Cancel long press if user moves finger (scrolling)
-  const handleTouchMove = useCallback((e: React.TouchEvent) => {
-    if (!touchStartPosRef.current || !longPressTimerRef.current) return;
-
-    const touch = e.touches[0];
-    if (!touch) return;
-
-    const dx = touch.clientX - touchStartPosRef.current.x;
-    const dy = touch.clientY - touchStartPosRef.current.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-
-    // Cancel if moved more than 10px (scrolling threshold)
-    if (distance > 10) {
-      clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-      longPressSessionRef.current = null;
-      touchStartPosRef.current = null;
-    }
-  }, []);
-
-  // Prevent native context menu during long press
-  const handleContextMenu = useCallback(
-    (e: React.MouseEvent) => {
-      // Suppress context menu if long press is active or in selection mode
-      if (longPressTimerRef.current || isSelectionMode) {
-        e.preventDefault();
-      }
-    },
-    [isSelectionMode],
-  );
-
-  // Bulk action handlers
-  const handleBulkArchive = useCallback(async () => {
-    if (isBulkActionPending) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        Array.from(selectedIds).map((id) =>
-          api.updateSessionMetadata(id, { archived: true }),
+  const query = params.get("q") ?? "";
+  const project = params.get("project") ?? "";
+  const providerParam = params.get("provider") ?? "";
+  const executorParam = params.get("executor") ?? "";
+  const statusParam = params.get("status") ?? "unarchived";
+  const providers = useMemo(
+    () =>
+      providerParam
+        .split(",")
+        .filter((p): p is ProviderName =>
+          ALL_PROVIDERS.includes(p as ProviderName),
         ),
-      );
-      handleClearSelection();
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [selectedIds, isBulkActionPending, handleClearSelection]);
-
-  const handleBulkUnarchive = useCallback(async () => {
-    if (isBulkActionPending) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        Array.from(selectedIds).map((id) =>
-          api.updateSessionMetadata(id, { archived: false }),
+    [providerParam],
+  );
+  const executors = useMemo(
+    () => executorParam.split(",").filter(Boolean),
+    [executorParam],
+  );
+  const filters = useMemo(
+    () =>
+      statusParam
+        .split(",")
+        .filter((s): s is SearchStatus =>
+          (statuses as readonly string[]).includes(s),
         ),
-      );
-      handleClearSelection();
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [selectedIds, isBulkActionPending, handleClearSelection]);
-
-  const handleBulkStar = useCallback(async () => {
-    if (isBulkActionPending) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        Array.from(selectedIds).map((id) =>
-          api.updateSessionMetadata(id, { starred: true }),
-        ),
-      );
-      handleClearSelection();
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [selectedIds, isBulkActionPending, handleClearSelection]);
-
-  const handleBulkUnstar = useCallback(async () => {
-    if (isBulkActionPending) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        Array.from(selectedIds).map((id) =>
-          api.updateSessionMetadata(id, { starred: false }),
-        ),
-      );
-      handleClearSelection();
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [selectedIds, isBulkActionPending, handleClearSelection]);
-
-  const handleBulkMarkRead = useCallback(async () => {
-    if (isBulkActionPending) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        Array.from(selectedIds).map((id) => api.markSessionSeen(id)),
-      );
-      handleClearSelection();
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [selectedIds, isBulkActionPending, handleClearSelection]);
-
-  const handleBulkMarkUnread = useCallback(async () => {
-    if (isBulkActionPending) return;
-    setIsBulkActionPending(true);
-    try {
-      await Promise.all(
-        Array.from(selectedIds).map((id) => api.markSessionUnread(id)),
-      );
-      handleClearSelection();
-    } finally {
-      setIsBulkActionPending(false);
-    }
-  }, [selectedIds, isBulkActionPending, handleClearSelection]);
-
-  // Compute which bulk actions are applicable based on selection
-  const bulkActionState = useMemo(() => {
-    const selectedSessions = sessions.filter((s) => selectedIds.has(s.id));
-    return {
-      canArchive: selectedSessions.some((s) => !s.isArchived),
-      canUnarchive: selectedSessions.some((s) => s.isArchived),
-      canStar: selectedSessions.some((s) => !s.isStarred),
-      canUnstar: selectedSessions.some((s) => s.isStarred),
-      canMarkRead: selectedSessions.some((s) => s.hasUnread),
-      canMarkUnread: selectedSessions.some((s) => !s.hasUnread),
+    [statusParam],
+  );
+  const [fields, setFields] = useState<SearchField[]>(
+    remembered?.fields ?? ["title"],
+  );
+  const effectiveFields = useMemo(
+    () => (supported ? fields : fields.filter((f) => f === "title")),
+    [fields, supported],
+  );
+  const [basis, setBasis] = useState<TimeBasis>(
+    remembered?.basis ?? (params.has("age") ? "activity" : "turns"),
+  );
+  const [young, setYoung] = useState(
+    remembered?.young ?? params.get("age") ?? "",
+  );
+  const [old, setOld] = useState(remembered?.old ?? "");
+  const [limit, setLimit] = useState(remembered?.limit ?? "");
+  const [selected, setSelected] = useState<Set<string>>(
+    () => new Set(remembered?.selected),
+  );
+  useLayoutEffect(() => {
+    if (window.history.state?.key !== location.key) return;
+    const controls: SearchHistoryControls = {
+      sourceKey,
+      fields,
+      basis,
+      young,
+      old,
+      limit,
+      selected: [...selected],
     };
-  }, [sessions, selectedIds]);
-
-  // Handle search form submit
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    const newParams = new URLSearchParams(searchParams);
-    if (searchInput.trim()) {
-      newParams.set("q", searchInput.trim());
-    } else {
-      newParams.delete("q");
-    }
-    setSearchParams(newParams);
-  };
-
-  // Handle project filter change
-  const handleProjectFilter = useCallback(
-    (selected: string[]) => {
-      const newParams = new URLSearchParams(searchParams);
-      if (selected.length > 0 && selected[0]) {
-        newParams.set("project", selected[0]);
-      } else {
-        newParams.delete("project");
-      }
-      setSearchParams(newParams);
-    },
-    [searchParams, setSearchParams],
+    window.history.replaceState(
+      { ...window.history.state, yaSessionSearch: controls },
+      "",
+    );
+  }, [location.key, sourceKey, fields, basis, young, old, limit, selected]);
+  const [manage, setManage] = useState(false);
+  const [zoomed, setZoomed] = useState<SearchPreviewTarget>();
+  const [expanded, setExpanded] = useState<SearchPreviewTarget["session"]>();
+  const [pending, setPending] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const changeParam = useCallback(
+    (key: string, value: string) =>
+      setParams(
+        (previous) => {
+          const next = new URLSearchParams(previous);
+          if (value || key === "status") next.set(key, value);
+          else next.delete(key);
+          return next;
+        },
+        { replace: true },
+      ),
+    [setParams],
+  );
+  const onQuery = useCallback(
+    (value: string) => changeParam("q", value),
+    [changeParam],
   );
 
-  // Build project filter options
-  const projectOptions = useMemo((): FilterOption<string>[] => {
-    return projects.map((project) => ({
-      value: project.id,
-      label: project.name,
-    }));
-  }, [projects]);
-
-  const activeProject = useMemo(
-    () => projects.find((project) => project.id === projectFilter) ?? null,
-    [projectFilter, projects],
+  // Keep the catalog independent of filters so hidden selections remain actionable.
+  const feed = useGlobalSessionsFeed({
+    includeArchived: true,
+    includeStats: true,
+    limit: 500,
+  });
+  const records = useSessionCollectionQueryRecords(feed.query);
+  const sessions = useMemo(
+    () => sessionCollectionRecordsToGlobalSessionItems(records),
+    [records],
   );
-
-  const projectScopedSearchText = searchQuery.trim();
-  const showProjectNewSessionCta = Boolean(projectFilter && activeProject);
-
-  const handleStartProjectSession = useCallback(() => {
-    if (!projectFilter) return;
-    if (projectScopedSearchText) {
-      setNewSessionPrefill(clientSummarySourceKey, projectScopedSearchText);
-    }
-    navigate(
-      `${basePath}/new-session?projectId=${encodeURIComponent(projectFilter)}`,
+  useEffect(() => {
+    if (feed.hasMore && !feed.loading && !feed.error) void feed.loadMore();
+  }, [feed.hasMore, feed.loading, feed.error, feed.loadMore]);
+  const min = durationMs(young, 0),
+    max = durationMs(old, Infinity);
+  const invalidRange = !Number.isFinite(min) || Number.isNaN(max) || min > max;
+  const invalidLimit = limit !== "" && !/^[1-9]\d*$/.test(limit);
+  const bounds = useMemo(() => {
+    const now = Date.now();
+    return {
+      after: Number.isFinite(max) ? now - max : undefined,
+      before: min > 0 ? now - min : undefined,
+    };
+  }, [min, max]);
+  const exclusions = useMemo(
+    () =>
+      new Map(
+        sessions.map((s) => {
+          const reasons: string[] = [];
+          if (selected.size && !selected.has(s.id))
+            reasons.push(t("sessionSearchOutsideSelection"));
+          if (project && s.projectId !== project)
+            reasons.push(t("sessionSearchOutsideProject"));
+          if (providers.length && !providers.includes(s.provider))
+            reasons.push(t("sessionSearchOutsideProvider"));
+          if (executors.length && !executors.includes(s.executor ?? "local"))
+            reasons.push(t("sessionSearchOutsideExecutor"));
+          for (const status of filters) {
+            if (!matchesStatus(s, status))
+              reasons.push(
+                t("sessionSearchOutsideStatus", {
+                  status: t(`sessionSearchStatus_${status}`),
+                }),
+              );
+          }
+          if (
+            basis !== "turns" &&
+            !inTimeRange(
+              basis === "created" ? s.createdAt : s.updatedAt,
+              bounds.after,
+              bounds.before,
+            )
+          )
+            reasons.push(t("sessionSearchOutsideTime"));
+          return [s.id, reasons];
+        }),
+      ),
+    [
+      sessions,
+      selected,
+      project,
+      providers,
+      executors,
+      filters,
+      basis,
+      bounds,
+      t,
+    ],
+  );
+  const candidates = useMemo(
+    () => sessions.filter((s) => !exclusions.get(s.id)?.length),
+    [sessions, exclusions],
+  );
+  const [viewportRows, setViewportRows] = useState(Infinity);
+  const [helpInline, setHelpInline] = useState(false);
+  const contentCandidates = useMemo(
+    () =>
+      candidates.filter((session) => turnSearchProviders.has(session.provider)),
+    [candidates, turnSearchProviders],
+  );
+  const resultList = useRef<HTMLUListElement>(null);
+  const scan = useContentSearch(
+    contentCandidates,
+    query,
+    effectiveFields,
+    supported && !invalidRange,
+    basis === "turns" ? bounds.after : undefined,
+    basis === "turns" ? bounds.before : undefined,
+    viewportRows,
+  );
+  const discoveryOrder = useRef(new Map<string, number>());
+  const results = useMemo(() => {
+    const found = invalidRange
+      ? []
+      : candidates.flatMap((session) => {
+          const turns = scan.matches.get(session.id) ?? [];
+          const titles = effectiveFields.includes("title")
+            ? titleMatches(
+                session,
+                query,
+                basis === "turns" ? bounds.after : undefined,
+                basis === "turns" ? bounds.before : undefined,
+              )
+            : [];
+          const matches = [...titles, ...turns];
+          return !query.trim() || matches.length ? [{ session, matches }] : [];
+        });
+    for (const result of found)
+      if (!discoveryOrder.current.has(result.session.id))
+        discoveryOrder.current.set(
+          result.session.id,
+          discoveryOrder.current.size,
+        );
+    return found.sort(
+      (a, b) =>
+        discoveryOrder.current.get(a.session.id)! -
+        discoveryOrder.current.get(b.session.id)!,
     );
   }, [
-    basePath,
-    clientSummarySourceKey,
-    navigate,
-    projectFilter,
-    projectScopedSearchText,
+    invalidRange,
+    candidates,
+    scan.matches,
+    effectiveFields,
+    query,
+    basis,
+    bounds,
   ]);
+  const shownIds = useMemo(
+    () => new Set(results.map(({ session }) => session.id)),
+    [results],
+  );
+  const drafts = useDraftSessionIds();
+  const projectIds = useMemo(
+    () => [...new Set(results.map(({ session }) => session.projectId))],
+    [results],
+  );
+  const queueSupported = serverSupportsProjectQueue(version);
+  useProjectQueues(queueSupported ? projectIds : EMPTY_PROJECTS);
+  const queuedIds = useProjectQueuedSessionIds(
+    queueSupported ? projectIds : EMPTY_PROJECTS,
+  );
+  const queues = queueSupported ? queuedIds : EMPTY_IDS;
 
-  // Clear all filters
-  const clearFilters = () => {
-    setSearchInput("");
-    setSearchParams(new URLSearchParams());
+  const select = useCallback(
+    (id: string, checked: boolean) =>
+      setSelected((previous) => {
+        const next = new Set(previous);
+        if (checked) next.add(id);
+        else next.delete(id);
+        return next;
+      }),
+    [],
+  );
+  const apply = async () => {
+    const action = filters.at(-1);
+    if (!action || pending || !selected.size) return;
+    setPending(true);
+    setActionError(undefined);
+    try {
+      const ids = [...selected];
+      for (let offset = 0; offset < ids.length; offset += 8) {
+        await Promise.all(
+          ids.slice(offset, offset + 8).map((id) => {
+            switch (action) {
+              case "archived":
+                return api.updateSessionMetadata(id, { archived: true });
+              case "unarchived":
+                return api.updateSessionMetadata(id, { archived: false });
+              case "starred":
+                return api.updateSessionMetadata(id, { starred: true });
+              case "unstarred":
+                return api.updateSessionMetadata(id, { starred: false });
+              case "read":
+                return api.markSessionSeen(id);
+              case "unread":
+                return api.markSessionUnread(id);
+              default:
+                throw new Error(`Unknown session status: ${action}`);
+            }
+          }),
+        );
+      }
+      await feed.refetch();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPending(false);
+    }
   };
-
-  const isEmpty = filteredSessions.length === 0;
-  const hasFilters =
-    searchQuery ||
-    projectFilter ||
-    statusFilters.length > 0 ||
-    providerFilters.length > 0 ||
-    executorFilters.length > 0 ||
-    ageFilter;
-
+  const activeProject = feed.projects.find((p) => p.id === project);
+  const startSession = () => {
+    if (!project) return;
+    if (query.trim()) setNewSessionPrefill(sourceKey, query.trim());
+    navigate(
+      `${basePath}/new-session?projectId=${encodeURIComponent(project)}`,
+    );
+  };
+  const progress = scan.running || feed.loading || feed.hasMore;
+  const limitNumber = !limit || invalidLimit ? Infinity : Number(limit);
+  const layoutKey = query;
+  const [compactedSearch, setCompactedSearch] = useState<string>();
+  const hasTurnFields = effectiveFields.some((field) => field !== "title");
+  const updateFields = useCallback(
+    (next: SearchField[]) => {
+      setFields(next);
+      if (!scan.running && scan.scanned > 0) setCompactedSearch(query);
+    },
+    [scan.running, scan.scanned, query],
+  );
+  const streamingLayout =
+    hasTurnFields && !!query.trim() && compactedSearch !== layoutKey;
+  const limitAnchor = useRef<{ element: HTMLElement; top: number } | undefined>(
+    undefined,
+  );
+  const adjustLimit = (delta: number, shown: number, element: HTMLElement) => {
+    limitAnchor.current = { element, top: element.getBoundingClientRect().top };
+    setLimit(
+      String(
+        Math.max(
+          1,
+          (Number.isFinite(limitNumber) ? limitNumber : shown) + delta,
+        ),
+      ),
+    );
+    setCompactedSearch(layoutKey);
+  };
+  useLayoutEffect(() => {
+    const anchor = limitAnchor.current;
+    limitAnchor.current = undefined;
+    const scroller = anchor?.element.closest(".page-scroll-container");
+    if (anchor && scroller)
+      scroller.scrollTop +=
+        anchor.element.getBoundingClientRect().top - anchor.top;
+  });
+  useEffect(
+    () =>
+      setCompactedSearch((previous) =>
+        previous === layoutKey ? undefined : previous,
+      ),
+    [layoutKey],
+  );
+  // Expansion out of the initial streaming shape waits for the scan to finish
+  // and for input to go quiet. Completion is re-checked when the quiet period
+  // elapses rather than gating entry to this effect: a needle refinement
+  // starts a scan, so gating on `scan.running` meant the effect bailed at the
+  // moment the needle changed, and the run that would have armed the timer
+  // afterwards never arrived. The rows then stayed clamped to one preview per
+  // role for good, however long the reader waited (fixed 2026-09-17; the
+  // "refines cached turns" browser checks cover it).
+  //
+  // The quiet period is also measured from completion, not from whenever the
+  // timer last happened to be armed. `scan.running` is a dependency again —
+  // without the early return that caused the clamp — so a scan finishing
+  // rearms a full 500ms. Otherwise a timer armed mid-scan could come due a few
+  // milliseconds after the last match arrived and reflow the row in the same
+  // breath, which is exactly the "completion alone does not immediately
+  // reflow" case the reserved streaming height exists to cover (fixed
+  // 2026-09-18; the "reserves arriving matches" browser checks cover it).
+  const scanRunning = useRef(scan.running);
+  scanRunning.current = scan.running;
+  useEffect(() => {
+    if (!hasTurnFields || compactedSearch === layoutKey) return;
+    let timer: ReturnType<typeof setTimeout>;
+    const settle = () => {
+      // Still acquiring: wait out another quiet period instead of expanding
+      // mid-scan, which is what the streaming shape exists to avoid.
+      if (scanRunning.current) {
+        idle();
+        return;
+      }
+      startTransition(() => setCompactedSearch(layoutKey));
+    };
+    const idle = () => {
+      clearTimeout(timer);
+      timer = setTimeout(settle, 500);
+    };
+    idle();
+    window.addEventListener("pointermove", idle);
+    window.addEventListener("keydown", idle);
+    window.addEventListener("wheel", idle);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointermove", idle);
+      window.removeEventListener("keydown", idle);
+      window.removeEventListener("wheel", idle);
+    };
+  }, [scan.running, layoutKey, compactedSearch, hasTurnFields]);
+  const [renderWindow, setRenderWindow] = useState({ query, count: 40 });
+  const renderedCount = renderWindow.query === query ? renderWindow.count : 40;
+  const more = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!results.length) return;
+    const list = resultList.current;
+    const row = list?.firstElementChild;
+    const main = list?.closest("main");
+    if (!list || !row || !main || !streamingLayout) return;
+    const measure = () => {
+      const height =
+        row.getBoundingClientRect().height +
+        Number.parseFloat(getComputedStyle(list).rowGap);
+      const space =
+        main.getBoundingClientRect().bottom - list.getBoundingClientRect().top;
+      if (height > 0) setViewportRows(Math.max(1, Math.ceil(space / height)));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(row);
+    observer.observe(main);
+    return () => observer.disconnect();
+  }, [streamingLayout, results.length]);
+  const showMore = useCallback(
+    () =>
+      startTransition(() =>
+        setRenderWindow((previous) => ({
+          query,
+          count: (previous.query === query ? previous.count : 40) + 40,
+        })),
+      ),
+    [query],
+  );
+  useEffect(() => {
+    if (results.length <= renderedCount) return;
+    const element = more.current;
+    if (!element) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry?.isIntersecting) showMore();
+      },
+      { root: element.closest("main"), rootMargin: "200px" },
+    );
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [showMore, renderedCount, results.length]);
   return (
     <MainContent isWideScreen={isWideScreen}>
       <PageHeader
         title={t("globalSessionsTitle")}
         onOpenSidebar={openSidebar}
-        onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
-        isSidebarCollapsed={isSidebarCollapsed}
+        titleElement={
+          <SearchHeader
+            query={query}
+            onQuery={onQuery}
+            fields={effectiveFields}
+            onFields={updateFields}
+            supported={supported}
+            sessionCount={
+              effectiveFields.includes("title")
+                ? candidates.length
+                : effectiveFields.length
+                  ? contentCandidates.length
+                  : 0
+            }
+            scanning={scan.running}
+            acquiring={scan.acquiring || feed.loading || feed.hasMore}
+            status={
+              scan.running
+                ? t("sessionSearchProgress", {
+                    count: scan.scanned,
+                    total: contentCandidates.length,
+                  })
+                : scan.limited
+                  ? t("sessionSearchCapped", { count: scan.limited })
+                  : feed.loading || feed.hasMore
+                    ? t("sessionSearchLoadingCatalog")
+                    : t("sessionSearchWatching")
+            }
+          />
+        }
       />
-
       <main className="page-scroll-container">
-        <div className="page-content-inner">
-          {/* Filter bar */}
-          <div className="filter-bar">
-            <form onSubmit={handleSearch} className="filter-search-form">
-              <input
-                type="text"
-                className="filter-search"
-                placeholder={t("globalSessionsSearchPlaceholder")}
-                value={searchInput}
-                onChange={(e) => setSearchInput(e.target.value)}
-              />
-              <button type="submit" className="filter-search-button">
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <circle cx="11" cy="11" r="8" />
-                  <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                </svg>
-              </button>
-            </form>
-            <div className="filter-dropdowns">
-              {projectOptions.length > 0 && (
-                <FilterDropdown
-                  label={t("inboxFilterProject")}
-                  options={projectOptions}
-                  selected={projectFilter ? [projectFilter] : []}
-                  onChange={handleProjectFilter}
-                  multiSelect={false}
-                  placeholder={t("globalSessionsFilterProjectPlaceholder")}
-                />
-              )}
+        <div className={styles.content}>
+          <SearchFilters
+            basis={basis}
+            onBasis={setBasis}
+            young={young}
+            old={old}
+            onYoung={setYoung}
+            onOld={setOld}
+            limit={limit}
+            onLimit={setLimit}
+            showLimit={effectiveFields.some((field) => field !== "title")}
+          >
+            <FilterDropdown
+              label={t("sessionSearchProjects")}
+              className={styles.dropdownContainer}
+              placeholder={t("sessionSearchProjects")}
+              triggerClassName={styles.dropdown}
+              options={feed.projects.map((p) => ({
+                value: p.id,
+                label: p.name,
+              }))}
+              selected={project ? [project] : []}
+              onChange={(value) => changeParam("project", value[0] ?? "")}
+              multiSelect={false}
+            />
+            <FilterDropdown
+              label={t("sessionSearchProviders")}
+              className={styles.dropdownContainer}
+              placeholder={t("sessionSearchProviders")}
+              triggerClassName={styles.dropdown}
+              options={ALL_PROVIDERS.filter((p) =>
+                sessions.some((s) => s.provider === p),
+              ).map((p) => ({
+                value: p,
+                label: p,
+                description: t(
+                  !supported
+                    ? "sessionSearchProviderUpgrade"
+                    : turnSearchProviders.has(p)
+                      ? "sessionSearchProviderBounded"
+                      : "sessionSearchProviderTitleOnly",
+                ),
+              }))}
+              selected={providers}
+              onChange={(value) => changeParam("provider", value.join(","))}
+            />
+            {Object.keys(feed.stats.executorCounts).length > 1 && (
               <FilterDropdown
-                label={t("globalSessionsFilterStatus")}
-                options={statusOptions}
-                selected={statusFilters}
-                onChange={setStatusFilters}
-                placeholder={t("globalSessionsStatusAll")}
-                placeholderContent={statusPlaceholder}
-                triggerClassName="filter-dropdown-trigger--status"
+                label={t("globalSessionsFilterExecutor")}
+                placeholder={t("globalSessionsFilterMachinePlaceholder")}
+                triggerClassName={styles.dropdown}
+                options={Object.keys(feed.stats.executorCounts).map(
+                  (value) => ({ value, label: value }),
+                )}
+                selected={executors}
+                onChange={(value) => changeParam("executor", value.join(","))}
               />
-              {providerOptions.length > 1 && (
-                <FilterDropdown
-                  label={t("globalSessionsFilterProvider")}
-                  options={providerOptions}
-                  selected={providerFilters}
-                  onChange={setProviderFilters}
-                  placeholder={t("globalSessionsProviderAll")}
-                  triggerClassName="filter-dropdown-trigger--provider"
-                />
-              )}
-              {executorOptions.length > 1 && (
-                <FilterDropdown
-                  label={t("globalSessionsFilterExecutor")}
-                  options={executorOptions}
-                  selected={executorFilters}
-                  onChange={setExecutorFilters}
-                  placeholder={t("globalSessionsFilterMachinePlaceholder")}
-                />
-              )}
-              <FilterDropdown
-                label={t("globalSessionsFilterAge")}
-                options={ageOptions}
-                selected={ageFilter ? [ageFilter] : []}
-                onChange={setAgeFilter}
-                multiSelect={false}
-                placeholder={t("globalSessionsFilterAgePlaceholder")}
-              />
-            </div>
-            {hasFilters && (
-              <button
-                type="button"
-                onClick={clearFilters}
-                className="filter-clear-button"
-              >
-                {t("globalSessionsClearFilters")}
-              </button>
             )}
-          </div>
-
-          {showProjectNewSessionCta && activeProject && (
-            <div className="global-sessions-project-cta">
-              <div className="global-sessions-project-cta__copy">
+          </SearchFilters>
+          <SearchSelection
+            helpInline={helpInline}
+            onHelpInline={setHelpInline}
+            count={selected.size}
+            shown={results.length}
+            filters={filters}
+            onToggle={(status) =>
+              changeParam("status", toggleStatus(filters, status).join(","))
+            }
+            onReplace={() => setSelected(new Set(shownIds))}
+            onClear={() => setSelected(new Set())}
+            onManage={() => setManage((value) => !value)}
+            onApply={() => void apply()}
+            pending={pending}
+          />
+          {activeProject && (
+            <div className={`global-sessions-project-cta ${styles.projectCta}`}>
+              <div>
                 <strong>
                   {t("sidebarNewSession")}{" "}
                   <code className="global-sessions-project-cta__token">
                     {activeProject.name}
                   </code>
                 </strong>
-                {projectScopedSearchText && (
-                  <span>
-                    {t("globalSessionsProjectCtaPromptLabel")}{" "}
-                    <code className="global-sessions-project-cta__token">
-                      {projectScopedSearchText}
-                    </code>
-                  </span>
-                )}
-                {!projectScopedSearchText && (
-                  <span>
-                    {t("globalSessionsProjectCtaHint")}{" "}
-                    <code className="global-sessions-project-cta__token">
-                      {activeProject.name}
-                    </code>
-                  </span>
-                )}
+                <span>
+                  {query.trim()
+                    ? t("globalSessionsProjectCtaPromptLabel")
+                    : t("globalSessionsProjectCtaHint")}{" "}
+                  <code className="global-sessions-project-cta__token">
+                    {query.trim() || activeProject.name}
+                  </code>
+                </span>
               </div>
-              <button
-                type="button"
-                className="inbox-refresh-button global-sessions-project-cta__button"
-                onClick={handleStartProjectSession}
-              >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
+              <button type="button" onClick={startSession}>
                 {t("sidebarNewSession")}
               </button>
             </div>
           )}
-
-          {loading && sessions.length === 0 && (
-            <p className="loading">{t("sidebarLoadingSessions")}</p>
-          )}
-
-          {error && (
-            <p className="error">
-              {t("projectsErrorPrefix")} {error.message}
+          {invalidRange && (
+            <p role="alert" className={styles.error}>
+              {t("sessionSearchInvalidRange")}
             </p>
           )}
-
-          {!loading && !error && isEmpty && (
-            <div className="inbox-empty">
-              <svg
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-              </svg>
-              <h3>{t("globalSessionsNoResultsTitle")}</h3>
-              <p>
-                {hasFilters
-                  ? t("globalSessionsNoResultsFiltered")
-                  : t("globalSessionsNoResultsEmpty")}
-              </p>
-            </div>
+          {!effectiveFields.length && query.trim() && (
+            <p role="status" className={styles.progress}>
+              {t("sessionSearchChooseField")}
+            </p>
           )}
-
-          {!error && !isEmpty && (
-            <>
-              {/* Select all header (desktop or when in selection mode) */}
-              {(isWideScreen || isSelectionMode) &&
-                filteredSessions.length > 0 && (
-                  <div className="session-list-header">
-                    <label className="session-list-header__select-all">
+          {invalidLimit && (
+            <p role="alert" className={styles.error}>
+              {t("sessionSearchInvalidLimit")}
+            </p>
+          )}
+          {(feed.error || scan.error || actionError) && (
+            <p role="alert" className={styles.error}>
+              {feed.error?.message ?? scan.error ?? actionError}
+            </p>
+          )}
+          {!progress && !feed.error && !scan.error && !results.length && (
+            <p className={styles.progress}>
+              {t("globalSessionsNoResultsTitle")}
+            </p>
+          )}
+          <ul ref={resultList} className={styles.results}>
+            {results.slice(0, renderedCount).map(({ session, matches }) => (
+              <SessionListItem
+                key={session.id}
+                sessionId={session.id}
+                projectId={session.projectId}
+                title={getSessionDisplayTitle(session)}
+                titleContent={
+                  <SearchTitle
+                    text={
+                      matches.find((match) => match.role === "title")
+                        ?.fullText ?? getSessionDisplayTitle(session)
+                    }
+                    query={effectiveFields.includes("title") ? query : ""}
+                  />
+                }
+                fullTitle={session.fullTitle ?? getSessionDisplayTitle(session)}
+                initialPrompt={session.initialPrompt}
+                hasCustomTitle={!!session.customTitle}
+                lastAgentText={session.lastAgentText}
+                updatedAt={session.updatedAt}
+                createdAt={session.createdAt}
+                hasUnread={session.hasUnread}
+                activity={session.activity}
+                pendingInputType={session.pendingInputType}
+                status={session.ownership}
+                provider={session.provider}
+                model={session.model}
+                parentSessionId={session.parentSessionId}
+                parentSessionKind={session.parentSessionKind}
+                providerChildren={
+                  children.get(session.id) ?? session.providerChildren
+                }
+                executor={session.executor}
+                isStarred={session.isStarred}
+                isArchived={session.isArchived}
+                mode="card"
+                showContextUsage={false}
+                isSelected={selected.has(session.id)}
+                onSelect={select}
+                showProjectName={!project}
+                projectName={session.projectName}
+                basePath={basePath}
+                messageCount={session.messageCount}
+                hasDraft={drafts.has(session.id)}
+                hasProjectQueue={queues.has(session.id)}
+                publicShareCreationReady={publicShareStatus?.canCreate ?? false}
+                publicShareManagementAvailable={publicShareManagementAvailable}
+                openMessageId={matches.find((m) => m.role !== "title")?.id}
+                searchPreviews={
+                  <SearchPreviews
+                    onExpand={() => setExpanded(session)}
+                    limit={limitNumber}
+                    onAdjustLimit={adjustLimit}
+                    session={session}
+                    matches={matches}
+                    streamingRows={
+                      streamingLayout &&
+                      turnSearchProviders.has(session.provider)
+                        ? Math.min(
+                            Number.isFinite(limitNumber) ? limitNumber : 1,
+                            effectiveFields.filter((field) => field !== "title")
+                              .length,
+                          )
+                        : 0
+                    }
+                    query={query}
+                    basePath={basePath}
+                    onZoom={setZoomed}
+                  />
+                }
+              />
+            ))}
+          </ul>
+          {results.length > renderedCount && (
+            <button
+              ref={more}
+              className={styles.more}
+              type="button"
+              onClick={showMore}
+            >
+              {t("sessionSearchMore")}
+            </button>
+          )}
+          {!helpInline && <SearchHelp />}
+          <div className={styles.footer}>
+            {manage && (
+              <section
+                className={styles.manager}
+                aria-label={t("sessionSearchManage")}
+              >
+                <strong>{t("sessionSearchManage")}</strong>
+                {sessions
+                  .filter((session) =>
+                    turnSearchProviders.has(session.provider),
+                  )
+                  .map((session) => (
+                    <label key={session.id}>
                       <input
                         type="checkbox"
-                        checked={
-                          selectedIds.size === filteredSessions.length &&
-                          filteredSessions.length > 0
-                        }
-                        onChange={(e) =>
-                          e.target.checked
-                            ? handleSelectAll()
-                            : handleClearSelection()
-                        }
+                        checked={selected.has(session.id)}
+                        onChange={(e) => select(session.id, e.target.checked)}
                       />
                       <span>
-                        {selectedIds.size > 0
-                          ? t("bulkSelectedCount", {
-                              count: selectedIds.size,
-                            })
-                          : t("globalSessionsSelectAll")}
+                        {getSessionDisplayTitle(session)}{" "}
+                        <small>· {session.provider}</small>{" "}
+                        {!shownIds.has(session.id) && (
+                          <small>
+                            {exclusions.get(session.id)?.join("; ") ||
+                              (invalidRange
+                                ? t("sessionSearchInvalidRange")
+                                : !effectiveFields.length
+                                  ? t("sessionSearchChooseField")
+                                  : (scan.partial.get(session.id) ??
+                                    scan.error ??
+                                    t(
+                                      scan.running
+                                        ? "sessionSearchNotFoundYet"
+                                        : "sessionSearchNoTextMatch",
+                                    )))}
+                          </small>
+                        )}
                       </span>
                     </label>
-                  </div>
-                )}
-
-              <ul
-                className={`session-list ${isSelectionMode ? "session-list--selection-mode" : ""}`}
-              >
-                {visibleSessions.map((session) => (
-                  // biome-ignore lint/a11y/noStaticElementInteractions: wrapper handles mobile long-press selection while the nested link remains the accessible control
-                  <div
-                    key={session.id}
-                    onTouchStart={(e) => handleLongPressStart(session.id, e)}
-                    onTouchMove={handleTouchMove}
-                    onTouchEnd={handleLongPressEnd}
-                    onTouchCancel={handleLongPressEnd}
-                    onMouseDown={(e) =>
-                      !isWideScreen && handleLongPressStart(session.id, e)
-                    }
-                    onMouseUp={handleLongPressEnd}
-                    onMouseLeave={handleLongPressEnd}
-                    onContextMenu={handleContextMenu}
-                  >
-                    <SessionListItem
-                      sessionId={session.id}
-                      projectId={session.projectId}
-                      title={getSessionDisplayTitle(session)}
-                      fullTitle={
-                        session.fullTitle ?? getSessionDisplayTitle(session)
-                      }
-                      initialPrompt={session.initialPrompt}
-                      hasCustomTitle={!!session.customTitle}
-                      lastAgentText={session.lastAgentText}
-                      updatedAt={session.updatedAt}
-                      createdAt={session.createdAt}
-                      hasUnread={session.hasUnread}
-                      activity={session.activity}
-                      pendingInputType={session.pendingInputType}
-                      status={session.ownership}
-                      provider={session.provider}
-                      model={session.model}
-                      parentSessionId={session.parentSessionId}
-                      parentSessionKind={session.parentSessionKind}
-                      providerChildren={
-                        providerChildrenBySessionId.get(session.id) ??
-                        session.providerChildren
-                      }
-                      executor={session.executor}
-                      isStarred={session.isStarred}
-                      isArchived={session.isArchived}
-                      mode="card"
-                      showContextUsage={false}
-                      isSelected={selectedIds.has(session.id)}
-                      isSelectionMode={isSelectionMode && !isWideScreen}
-                      onNavigate={() => {
-                        // In selection mode on mobile, tap toggles selection
-                        if (isSelectionMode && !isWideScreen) {
-                          handleSelect(
-                            session.id,
-                            !selectedIds.has(session.id),
-                          );
-                        }
-                      }}
-                      onSelect={
-                        isWideScreen || isSelectionMode
-                          ? handleSelect
-                          : undefined
-                      }
-                      showProjectName={!projectFilter}
-                      projectName={session.projectName}
-                      basePath={basePath}
-                      messageCount={session.messageCount}
-                      // userTurnCount / systemTurnCount will be populated when
-                      // the index summaries cache them (see SessionIndexService)
-                      hasDraft={drafts.has(session.id)}
-                      hasProjectQueue={projectQueuedSessionIds.has(session.id)}
-                      publicShareCreationReady={publicShareCreationReady}
-                      publicShareManagementAvailable={
-                        publicShareManagementAvailable
-                      }
-                    />
-                  </div>
-                ))}
-              </ul>
-
-              {/* Dup hidden expander for the heavier/thicker card list (all sessions or per-project).
-                    Cheap (runs on already-fetched filtered page). Matches the sidebar "(X hidden)" pattern
-                    but with thicker card items when expanded. */}
-              {hiddenDupSessions.length > 0 && (
-                <div className="global-sessions-hidden-dups">
-                  <button
-                    type="button"
-                    className="global-sessions-hidden-dups-toggle"
-                    onClick={() => setShowHiddenDups((v) => !v)}
-                    aria-expanded={showHiddenDups}
-                  >
-                    {showHiddenDups ? "−" : "+"}{" "}
-                    {t("globalSessionsHiddenDuplicates", {
-                      count: hiddenDupSessions.length,
-                    })}
-                  </button>
-                  {showHiddenDups && (
-                    <ul className="session-list global-sessions-hidden-sublist">
-                      {hiddenDupSessions.map((session) => (
-                        <div
-                          key={session.id}
-                          className="global-sessions-hidden-item"
-                        >
-                          <SessionListItem
-                            sessionId={session.id}
-                            projectId={session.projectId}
-                            title={getSessionDisplayTitle(session)}
-                            fullTitle={
-                              session.fullTitle ??
-                              getSessionDisplayTitle(session)
-                            }
-                            initialPrompt={session.initialPrompt}
-                            hasCustomTitle={!!session.customTitle}
-                            lastAgentText={session.lastAgentText}
-                            updatedAt={session.updatedAt}
-                            createdAt={session.createdAt}
-                            hasUnread={session.hasUnread}
-                            publicShareCreationReady={publicShareCreationReady}
-                            publicShareManagementAvailable={
-                              publicShareManagementAvailable
-                            }
-                            activity={session.activity}
-                            pendingInputType={session.pendingInputType}
-                            status={session.ownership}
-                            provider={session.provider}
-                            model={session.model}
-                            parentSessionId={session.parentSessionId}
-                            parentSessionKind={session.parentSessionKind}
-                            providerChildren={
-                              providerChildrenBySessionId.get(session.id) ??
-                              session.providerChildren
-                            }
-                            executor={session.executor}
-                            isStarred={session.isStarred}
-                            isArchived={session.isArchived}
-                            mode="card"
-                            showContextUsage={false}
-                            isSelected={selectedIds.has(session.id)}
-                            isSelectionMode={isSelectionMode && !isWideScreen}
-                            onNavigate={() => {
-                              if (isSelectionMode && !isWideScreen) {
-                                handleSelect(
-                                  session.id,
-                                  !selectedIds.has(session.id),
-                                );
-                              }
-                            }}
-                            onSelect={
-                              isWideScreen || isSelectionMode
-                                ? handleSelect
-                                : undefined
-                            }
-                            showProjectName={!projectFilter}
-                            projectName={session.projectName}
-                            basePath={basePath}
-                            messageCount={session.messageCount}
-                            hasDraft={drafts.has(session.id)}
-                            hasProjectQueue={projectQueuedSessionIds.has(
-                              session.id,
-                            )}
-                          />
-                        </div>
-                      ))}
-                    </ul>
-                  )}
-                </div>
-              )}
-
-              {hasMore && (
-                <div className="global-sessions-load-more">
-                  <button
-                    type="button"
-                    onClick={loadMore}
-                    className="global-sessions-load-more-button"
-                    disabled={loading}
-                  >
-                    {loading
-                      ? t("gitStatusLoading")
-                      : t("globalSessionsLoadMore")}
-                  </button>
-                </div>
-              )}
-            </>
+                  ))}
+              </section>
+            )}
+            <SearchDiagnostics
+              sessions={sessions}
+              partial={scan.partial}
+              diagnostics={scan.diagnostics}
+              basePath={basePath}
+            />
+          </div>
+          {!supported && (
+            <p className={styles.help}>{t("sessionSearchUpgrade")}</p>
           )}
-
-          {/* Bulk action bar */}
-          <BulkActionBar
-            selectedCount={selectedIds.size}
-            onArchive={handleBulkArchive}
-            onUnarchive={handleBulkUnarchive}
-            onStar={handleBulkStar}
-            onUnstar={handleBulkUnstar}
-            onMarkRead={handleBulkMarkRead}
-            onMarkUnread={handleBulkMarkUnread}
-            onClearSelection={handleClearSelection}
-            isPending={isBulkActionPending}
-            canArchive={bulkActionState.canArchive}
-            canUnarchive={bulkActionState.canUnarchive}
-            canStar={bulkActionState.canStar}
-            canUnstar={bulkActionState.canUnstar}
-            canMarkRead={bulkActionState.canMarkRead}
-            canMarkUnread={bulkActionState.canMarkUnread}
-            onSelectAllFiltered={hasFilters ? handleSelectAll : undefined}
-            filteredCount={filteredSessions.length}
-          />
         </div>
       </main>
+      {expanded && (
+        <SearchSessionMatches
+          session={
+            sessions.find((session) => session.id === expanded.id) ?? expanded
+          }
+          matches={
+            results.find(({ session }) => session.id === expanded.id)
+              ?.matches ?? []
+          }
+          query={query}
+          running={scan.running}
+          limited={scan.limitedSessions.has(expanded.id)}
+          partial={scan.partial}
+          diagnostics={scan.diagnostics}
+          basePath={basePath}
+          onZoom={setZoomed}
+          onClose={() => setExpanded(undefined)}
+        />
+      )}
+      {zoomed && (
+        <SearchZoomPreview
+          target={zoomed}
+          query={query}
+          basePath={basePath}
+          onClose={() => setZoomed(undefined)}
+        />
+      )}
     </MainContent>
   );
 }

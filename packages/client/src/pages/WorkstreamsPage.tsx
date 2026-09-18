@@ -80,8 +80,7 @@ export function WorkstreamsPage() {
     isLoading: settingsLoading,
     error: settingsError,
   } = useServerSettings();
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
-    useNavigationLayout();
+  const { openSidebar, isWideScreen } = useNavigationLayout();
   const [loadState, setLoadState] = useState<WorkstreamsLoadState>({
     status: "idle",
   });
@@ -301,9 +300,7 @@ export function WorkstreamsPage() {
       <PageHeader
         title={t("workstreamsTitle")}
         onOpenSidebar={openSidebar}
-        onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
-        isSidebarCollapsed={isSidebarCollapsed}
       />
 
       <main className="page-scroll-container">

@@ -224,7 +224,7 @@ Phase 3 scope note:
 
 ## Open seam inventory: later hub growth
 
-[`gaps/oversized-hub-modules.md`](../../gaps/oversized-hub-modules.md) records
+[`gaps/sketches/oversized-hub-modules.md`](../../gaps/sketches/oversized-hub-modules.md) records
 later feature growth in four files already governed by this worklog. Size alone
 does not authorize a split; use these cohesive seams when work next opens the
 owning behavior:

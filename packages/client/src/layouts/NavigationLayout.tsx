@@ -14,6 +14,7 @@ import { Sidebar, SidebarToggleIcon } from "../components/Sidebar";
 import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
 import { MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO } from "../lib/mobileKeyboardViewport";
 import { useSidebarPreference } from "../hooks/useSidebarPreference";
+import { usePanelSlideAnimations } from "../hooks/usePanelSlideAnimations";
 import {
   DESKTOP_BREAKPOINT,
   MIN_CONTENT_WIDTH,
@@ -38,6 +39,8 @@ export interface NavigationLayoutContext {
   isSidebarCollapsed: boolean;
   /** Desktop mode: callback to toggle sidebar expanded/collapsed state */
   toggleSidebar: () => void;
+  /** Temporary sidebar collapse owned by the visible route's right pane. */
+  setRightPaneExpanded?: (expanded: boolean) => void;
 }
 
 const NOOP = () => {};
@@ -159,6 +162,7 @@ export function NavigationLayout(props: NavigationLayoutProps) {
 
 function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
   const { t } = useI18n();
+  const { panelSlideDurationMs } = usePanelSlideAnimations();
 
   const location = useLocation();
   const sidebarSessionMatch = useMemo(
@@ -174,6 +178,25 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
     [location.pathname],
   );
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [rightPaneSidebar, setRightPaneSidebar] = useState<{
+    path: string;
+    collapse: boolean;
+  } | null>(null);
+  const setRightPaneExpanded = useCallback(
+    (expanded: boolean) => {
+      if (expanded) setSidebarOpen(false);
+      setRightPaneSidebar((previous) =>
+        expanded
+          ? { path: location.pathname, collapse: true }
+          : previous?.path === location.pathname
+            ? null
+            : previous,
+      );
+    },
+    [location.pathname],
+  );
+  const rightPaneCollapsesSidebar =
+    rightPaneSidebar?.path === location.pathname && rightPaneSidebar.collapse;
   const forceExpandedSidebar =
     new URLSearchParams(location.search).get("sidebar") === "expanded";
   const {
@@ -266,7 +289,8 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
   }, [isWideScreen]);
 
   // Auto-collapse if viewport too narrow for expanded sidebar, or if user prefers collapsed
-  const effectivelyCollapsed = !isExpanded || !canShowExpandedSidebar;
+  const effectivelyCollapsed =
+    !isExpanded || !canShowExpandedSidebar || rightPaneCollapsesSidebar;
 
   // Close mobile sidebar overlay when viewport becomes wide enough for expanded desktop sidebar
   // This prevents having both sidebars visible after window resize/device rotation
@@ -284,13 +308,24 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
 
   // Smart toggle: if viewport can support expanded, toggle preference; otherwise open overlay
   const handleToggleExpanded = useCallback(() => {
+    if (rightPaneCollapsesSidebar && canShowExpandedSidebar) {
+      setRightPaneSidebar({ path: location.pathname, collapse: false });
+      if (!isExpanded) toggleExpanded();
+      return;
+    }
     if (canShowExpandedSidebar) {
       toggleExpanded();
     } else {
       // Viewport too narrow for expanded sidebar - open mobile-style overlay instead
       setSidebarOpen(true);
     }
-  }, [canShowExpandedSidebar, toggleExpanded]);
+  }, [
+    canShowExpandedSidebar,
+    toggleExpanded,
+    rightPaneCollapsesSidebar,
+    location.pathname,
+    isExpanded,
+  ]);
 
   const openSidebar = useCallback(() => setSidebarOpen(true), []);
   const closeSidebar = useCallback(() => setSidebarOpen(false), []);
@@ -309,17 +344,25 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
       isWideScreen,
       isSidebarCollapsed: effectivelyCollapsed,
       toggleSidebar: handleToggleExpanded,
+      setRightPaneExpanded,
     }),
-    [effectivelyCollapsed, handleToggleExpanded, isWideScreen, openSidebar],
+    [
+      effectivelyCollapsed,
+      handleToggleExpanded,
+      isWideScreen,
+      openSidebar,
+      setRightPaneExpanded,
+    ],
   );
 
-  // CSS variable for sidebar width
   const containerStyle = useMemo(
     () =>
-      isWideScreen
-        ? ({ "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties)
-        : undefined,
-    [isWideScreen, sidebarWidth],
+      ({
+        "--sidebar-width": isWideScreen ? `${sidebarWidth}px` : undefined,
+        "--panel-slide-duration": `${panelSlideDurationMs}ms`,
+        "--panel-fade-duration": panelSlideDurationMs ? undefined : "0s",
+      }) as React.CSSProperties,
+    [isWideScreen, sidebarWidth, panelSlideDurationMs],
   );
   const desktopSidebarStyle = useMemo(
     () => ({ width: effectivelyCollapsed ? undefined : sidebarWidth }),

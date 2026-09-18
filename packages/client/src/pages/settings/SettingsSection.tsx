@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo } from "react";
+import { type FormEventHandler, type ReactNode, useMemo } from "react";
 import {
   renderSettingsSearchHighlight,
   SettingsSearchScopeProvider,
@@ -15,6 +15,8 @@ export interface SettingsSectionProps {
   keywords?: string[];
   /** Extra classes appended to `settings-section`. */
   className?: string;
+  /** One explicit-save group; native Enter submission keeps actions with fields. */
+  onSubmit?: FormEventHandler<HTMLElement>;
   children?: ReactNode;
 }
 
@@ -29,6 +31,7 @@ export function SettingsSection({
   description,
   keywords,
   className,
+  onSubmit,
   children,
 }: SettingsSectionProps) {
   const scope = useSettingsSearchScope();
@@ -61,8 +64,13 @@ export function SettingsSection({
     .filter(Boolean)
     .join(" ");
 
+  const SectionElement = onSubmit ? "form" : "section";
   const body = (
-    <section className={sectionClassName}>
+    <SectionElement
+      className={sectionClassName}
+      onSubmit={onSubmit}
+      noValidate={onSubmit ? true : undefined}
+    >
       {title && (
         <h2>
           {scope ? renderSettingsSearchHighlight(title, scope.query) : title}
@@ -76,7 +84,7 @@ export function SettingsSection({
         </p>
       )}
       {children}
-    </section>
+    </SectionElement>
   );
 
   if (!childScope) return body;

@@ -68,7 +68,8 @@ export interface SafeMarkdownRenderOptions {
   quartoMarkdown?: boolean;
   /**
    * Project context for turning assistant inline-code filename references into
-   * authenticated project-file viewer links. Omit for public shares.
+   * project-file viewer links. Public shares supply it too, with `publicShare`
+   * set and no absolute-path resolver.
    */
   projectFileLinks?: ProjectFileLinkOptions;
 }
@@ -102,6 +103,17 @@ export interface ProjectFileLinkOptions {
   knownAbsoluteFilePaths?: (paths: readonly string[]) => ReadonlySet<string>;
   /** Marks a synchronous filesystem fallback that cannot back retained HTML. */
   onUnversionedLookup?: () => void;
+  /**
+   * Render for a public share viewer rather than the authenticated owner.
+   *
+   * A share already serves the project files its session mentions, through its
+   * own share-scoped endpoint, so an in-project link is one the viewer can
+   * follow. The href keeps its `/projects/:id/file` form — the share client
+   * rewrites that to a share file URL — and drops the private marker that
+   * client unwraps back into plain code. Absolute-path resolution stays absent
+   * for shares, so nothing outside the project becomes a link.
+   */
+  publicShare?: boolean;
 }
 
 interface LocalPathReference {
@@ -768,7 +780,7 @@ function renderProjectFileCodeLink(text: string): string | null {
   }
   const open = renderProjectFileLinkOpen(options, target, {
     className: "fixed-font-file-link",
-    privateReference: true,
+    privateReference: !options.publicShare,
   });
   return `${open}<code>${escapeHtml(text)}</code></a>`;
 }

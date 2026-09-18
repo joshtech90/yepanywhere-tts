@@ -1,5 +1,6 @@
 import { decodeCodeModeOutput } from "@yep-anywhere/shared";
 import { CodeModeOutput } from "./CodeModeOutput";
+import styles from "./WriteStdinRenderer.module.css";
 import { toolDisplayContracts } from "./toolDisplayContracts";
 import { defineTool } from "./defineTool";
 import { type ReactNode, useState } from "react";
@@ -431,10 +432,6 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
   },
 
   getResultSummary(result, isError) {
-    if (isError) {
-      return "Error";
-    }
-
     const decoded = decodeCodeModeOutput(result);
     const failedCommands = decoded?.parts.flatMap((part) =>
       part.kind === "command-output" && part.exitCode
@@ -448,7 +445,9 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
         : "No output";
     }
     const text = getResultText(result);
-    const parsed = parseShellToolOutput(text);
+    const parsed = parseShellToolOutput(text, {
+      bareExitCodeIsEnvelope: isError,
+    });
     const meta = getCommandResultMeta(result);
     const exitCode = meta.exitCode ?? parsed.exitCode;
     const duration =
@@ -461,6 +460,8 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
     if (exitCode !== undefined && exitCode !== 0) {
       return duration ? `rc=${exitCode} in ${duration}` : `rc=${exitCode}`;
     }
+
+    if (isError) return "Error";
 
     const compactDuration = getCompactDuration(result, text);
     const withDuration = (summary: string) =>
@@ -477,18 +478,52 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
   },
 
   renderInteractiveSummary(input, result, isError, _context) {
+    const linkedToolName = getLinkedToolName(input);
+    const linkedFilePath = getLinkedFilePath(input);
+    // A poll's single output line is already its complete useful display.
+    const decoded = decodeCodeModeOutput(result);
+    const parts = decoded?.parts.filter(
+      (part) => part.kind !== "script-status",
+    );
+    const parsed = parseShellToolOutput(getResultText(result), {
+      bareExitCodeIsEnvelope: isError,
+    });
+    const output = parsed.output.trim();
+    if (
+      !getChars(input) &&
+      !linkedFilePath &&
+      (!linkedToolName || linkedToolName === "Bash") &&
+      (!parts || parts.length === 1) &&
+      output.length > 0 &&
+      output.length <= 500 &&
+      !/[\r\n]/.test(output)
+    ) {
+      const part = parts?.[0];
+      const exitCode =
+        getCommandResultMeta(result).exitCode ??
+        (part?.kind === "command-output" ? part.exitCode : undefined) ??
+        parsed.exitCode;
+      return (
+        <span className={styles.summary}>
+          <span className={styles.output}>
+            <AnsiText text={output} />
+          </span>
+          {exitCode !== undefined && exitCode !== 0 ? (
+            <span className={styles.failure}>rc={exitCode}</span>
+          ) : isError ? (
+            <span className={styles.failure}>Error</span>
+          ) : null}
+        </span>
+      );
+    }
     if (isError) {
       return null;
     }
 
-    const linkedToolName = getLinkedToolName(input);
-    const linkedFilePath = getLinkedFilePath(input);
     if (linkedToolName !== "Read" || !linkedFilePath) {
       return null;
     }
 
-    const text = getResultText(result);
-    const parsed = parseShellToolOutput(text);
     if (!parsed.output.trim()) {
       return null;
     }

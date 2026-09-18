@@ -1,0 +1,37 @@
+:global(.modal-overlay):has(.matches) {
+  padding: 12px;
+}
+:global(.modal):has(.matches) {
+  width: calc(100vw - 24px);
+  max-width: none;
+  height: calc(100dvh - 24px);
+  max-height: none;
+}
+.matches {
+  min-width: 0;
+}
+.summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  margin-bottom: 16px;
+  overflow-wrap: anywhere;
+}
+.turns {
+  margin-left: 44px;
+}
+.back,
+.more {
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  min-height: 30px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.more {
+  margin-top: 12px;
+}

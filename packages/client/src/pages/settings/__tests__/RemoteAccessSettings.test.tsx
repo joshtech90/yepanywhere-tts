@@ -3,15 +3,21 @@
 import {
   cleanup,
   fireEvent,
-  render,
+  render as renderWithoutRouter,
   screen,
   waitFor,
   within,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { HostAwakeStatus } from "@yep-anywhere/shared";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router-dom";
 import type { ServerSettings } from "../../../api/client";
 import { RemoteAccessSettings } from "../RemoteAccessSettings";
+
+function render(ui: ReactElement) {
+  return renderWithoutRouter(ui, { wrapper: MemoryRouter });
+}
 
 const {
   hostAwakeState,

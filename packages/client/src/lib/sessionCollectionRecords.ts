@@ -35,7 +35,9 @@ export function sessionCollectionRecordToGlobalSessionItem(
     initialPrompt: record.initialPrompt,
     executor: record.executor,
     lastAgentText: record.lastAgentText,
+    lastHumanTurnAt: record.lastHumanTurnAt,
     asyncQuestions: record.asyncQuestions,
+    nonHumanUserTurn: record.nonHumanUserTurn,
     providerChildren: record.providerChildren,
   };
 }

@@ -16,7 +16,7 @@ what YA injects into a session at launch. Packaging, desktop delivery, the
 shared `ya-agent` dispatcher, and private input live in
 [`agent-command-runtime.sketches.md`](agent-command-runtime.sketches.md). The one concrete missing
 feature — the virgin instruction-scope option — is tracked in
-[`gaps/virgin-new-session-option.md`](../gaps/virgin-new-session-option.md).
+[`gaps/sketches/virgin-new-session-option.md`](../gaps/sketches/virgin-new-session-option.md).
 
 The [command runtime's first milestone](agent-command-runtime.sketches.md#first-milestone-inspect-the-owning-session)
 is now read-only `ya-agent self` (2026-09-08). It retains command-path and scoped
@@ -120,7 +120,7 @@ per-provider mechanics differ:
 - **Codex**: no per-file switch exists; the mechanism is a redirected
   `CODEX_HOME` replica root that omits the user `AGENTS.md`. The
   concrete replica design, auth handling, session discovery, and route
-  threading are specified in `gaps/virgin-new-session-option.md`.
+  threading are specified in `gaps/sketches/virgin-new-session-option.md`.
 
 The option must persist in session metadata and be reapplied on resume
 and fork — like the sandbox `stateKey` — or a resumed session silently

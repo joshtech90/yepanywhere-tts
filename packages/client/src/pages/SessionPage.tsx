@@ -1,4 +1,6 @@
 import { SessionIssuesLink } from "../components/SessionIssuesLink";
+import { useNonHumanUserTurnNavigation } from "../hooks/useNonHumanUserTurnNavigation";
+import { useSessionMessageNavigation } from "../hooks/useSessionMessageNavigation";
 import type {
   BangCommandTranscriptDisplayObject,
   EffortLevel,
@@ -39,6 +41,7 @@ import {
   Suspense,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -51,11 +54,17 @@ import {
   SessionViewerProvider,
   SessionViewerTranscriptGate,
 } from "../components/SessionManagedViewer";
+import sessionHeaderStyles from "../components/SessionHeader.module.css";
 import styles from "./SessionPage.module.css";
 import { GoalFlag } from "../components/GoalNotice";
 import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
 import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
+import {
+  SessionRightPane,
+  SessionAppAction,
+} from "../components/SessionRightPane";
+import { useSessionRightPane } from "../hooks/useSessionRightPane";
 import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
@@ -472,7 +481,7 @@ function SessionPageContent({
 }) {
   const { t } = useI18n();
   const { showToast } = useToastContext();
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
+  const { openSidebar, isWideScreen, setRightPaneExpanded } =
     useNavigationLayout();
   const basePath = useRemoteBasePath();
   const startNewSessionWithPrefill = useStartNewSessionWithPrefillAction();
@@ -697,6 +706,21 @@ function SessionPageContent({
   );
   const providerRuntimeStatus =
     useProviderRuntimeStatusForSession(actualSessionId);
+  const [rightPaneTarget, setRightPaneTarget] = useState<HTMLDivElement | null>(
+    null,
+  );
+  const rightPane = useSessionRightPane(
+    `${basePath}/${projectId}/${sessionId}`,
+    messages,
+    versionInfo?.artifactViewer,
+    !isDomLingerParked && !loading,
+    sessionId,
+  );
+  useLayoutEffect(() => {
+    if (isDomLingerParked) return;
+    setRightPaneExpanded?.(rightPane.expanded);
+    return () => setRightPaneExpanded?.(false);
+  }, [rightPane.expanded, isDomLingerParked, setRightPaneExpanded]);
   const goalDetails = readInventoryGoalDetails(slashCommands);
   const currentGoal = goalDetails?.goalObjective;
   const sessionLoadingProgressText =
@@ -916,7 +940,7 @@ function SessionPageContent({
     locationSearch: location.search,
     sourceApi,
     effectiveProvider,
-    isWideScreen,
+    isWideScreen: isWideScreen && !rightPane.expanded,
     permissionMode,
     liveModel: effectiveModelConfig?.model,
     sessionModel: session?.model,
@@ -2841,16 +2865,53 @@ function SessionPageContent({
   const [scrollToTurnRequest, setScrollToTurnRequest] = useState<{
     id: string;
     token: number;
+    onResolved?: (found: boolean) => void;
   } | null>(null);
-  const handleGoToRecallTurn = useCallback((id: string) => {
-    if (!id) {
-      return;
-    }
-    setScrollToTurnRequest((previous) => ({
-      id,
-      token: (previous?.token ?? 0) + 1,
-    }));
-  }, []);
+  const handleGoToRecallTurn = useCallback(
+    (id: string, onResolved?: (found: boolean) => void) => {
+      if (!id) {
+        return;
+      }
+      setScrollToTurnRequest((previous) => ({
+        id,
+        token: (previous?.token ?? 0) + 1,
+        onResolved,
+      }));
+    },
+    [],
+  );
+  useSessionMessageNavigation({
+    sessionId,
+    target: new URLSearchParams(location.search).get("searchMatch"),
+    enabled: true,
+    messages,
+    loading: loading || isDomLingerParked,
+    loadingOlder,
+    hasOlder: pagination?.hasOlderMessages ?? false,
+    olderCursor: pagination?.truncatedBeforeMessageId,
+    loadOlder: loadOlderMessages,
+    jump: handleGoToRecallTurn,
+    onError: () => showToast(t("sessionSearchTurnUnavailable"), "error"),
+  });
+  useNonHumanUserTurnNavigation({
+    sessionId,
+    messages,
+    loading: loading || isDomLingerParked,
+    loadingOlder,
+    hasOlder: pagination?.hasOlderMessages ?? false,
+    olderCursor: pagination?.truncatedBeforeMessageId,
+    loadOlder: loadOlderMessages,
+    jump: handleGoToRecallTurn,
+    onError: (kind) =>
+      showToast(
+        t(
+          kind === "unavailable"
+            ? "nonHumanUserTurnUnavailable"
+            : "nonHumanUserTurnAcknowledgeFailed",
+        ),
+        "error",
+      ),
+  });
   const composerTurnRecall = useMemo(
     () => ({
       entries: composerTurnRecallEntries,
@@ -5058,159 +5119,199 @@ function SessionPageContent({
     : thinkingOptionToConfig(getThinkingSetting());
 
   const content = (
-    <MainContent isWideScreen={isWideScreen}>
-      <header className="session-header">
-        <div className="session-header-inner">
-          <div className="session-header-left">
-            {/* Sidebar toggle - on mobile: opens sidebar, on desktop: collapses/expands */}
-            {/* Hide on desktop when collapsed (sidebar has its own toggle) */}
-            {!(isWideScreen && isSidebarCollapsed) && (
-              <button
-                type="button"
-                className="sidebar-toggle"
-                onClick={isWideScreen ? toggleSidebar : openSidebar}
-                title={
-                  isWideScreen
-                    ? t("sessionToggleSidebar")
-                    : t("sessionOpenSidebar")
-                }
-                aria-label={
-                  isWideScreen
-                    ? t("sessionToggleSidebar")
-                    : t("sessionOpenSidebar")
-                }
-              >
-                <SidebarIcon />
-              </button>
-            )}
-            <HostIdentityMarker />
-            {/* Project breadcrumb */}
-            {project?.name && (
-              <div className="project-breadcrumb-wrapper">
-                <Link
-                  ref={projectBreadcrumbRef}
-                  to={`${basePath}/sessions?project=${projectId}`}
-                  className="project-breadcrumb"
-                  title={project.name}
-                  aria-label={project.name}
-                  onContextMenu={handleProjectBreadcrumbContextMenu}
+    <MainContent
+      isWideScreen={isWideScreen}
+      innerClassName={`${styles.workspace} ${rightPane.expanded ? styles.rightPane : ""}`}
+    >
+      <div className={styles.sessionColumn}>
+        <header className="session-header">
+          <div
+            className={`session-header-inner${isWideScreen ? ` ${sessionHeaderStyles.noLeadingControl}` : ""}`}
+          >
+            <div className="session-header-left">
+              {/* Sidebar opener for the overlay sidebar only. On desktop the
+                sidebar owns its own toggle, expanded or collapsed. */}
+              {!isWideScreen && (
+                <button
+                  type="button"
+                  className="sidebar-toggle"
+                  onClick={openSidebar}
+                  title={t("sessionOpenSidebar")}
+                  aria-label={t("sessionOpenSidebar")}
                 >
-                  {project.name.length > 12
-                    ? `${project.name.slice(0, 12)}...`
-                    : project.name}
-                </Link>
-                {showProjectReclassifyMenu && (
-                  <div
-                    ref={projectReclassifyMenuRef}
-                    className="project-reclassify-menu"
-                    role="menu"
-                    aria-label={t("sessionReclassifyProjectMenu")}
-                  >
-                    <div className="project-reclassify-title">
-                      {t("sessionReclassifyProjectMenu")}
-                    </div>
-                    <div className="project-reclassify-list">
-                      {projectReclassifyOptions.map((candidate) => (
-                        <button
-                          key={candidate.id}
-                          type="button"
-                          className="project-reclassify-option"
-                          role="menuitem"
-                          disabled={isReclassifyingProject}
-                          onClick={() =>
-                            void handleReclassifySessionProject(candidate)
-                          }
-                          title={candidate.path}
-                        >
-                          <span className="project-reclassify-name">
-                            {candidate.name}
-                          </span>
-                          <span className="project-reclassify-path">
-                            {candidate.path}
-                          </span>
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-            <div ref={titleRowRef} className="session-title-row">
-              {isStarred && (
-                <svg
-                  className="star-indicator-inline"
-                  width="12"
-                  height="12"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  role="img"
-                  aria-label={t("sessionStarredLabel")}
-                >
-                  <title>{t("sessionStarredLabel")}</title>
-                  <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-                </svg>
+                  <SidebarIcon />
+                </button>
               )}
-              {loading ? (
-                <span className="session-title-skeleton" />
-              ) : isEditingTitle ? (
-                <div ref={titleEditControlsRef} className="session-title-edit">
-                  <div
-                    className="session-title-edit-row"
-                    title={
-                      generatedRetitle?.deferredInsertion
-                        ? generatedRetitle.submittedTurnText
-                        : undefined
-                    }
+              <HostIdentityMarker />
+              <SessionAppAction pane={rightPane} />
+              {/* Project breadcrumb */}
+              {project?.name && (
+                <div className="project-breadcrumb-wrapper">
+                  <Link
+                    ref={projectBreadcrumbRef}
+                    to={`${basePath}/sessions?project=${projectId}`}
+                    className="project-breadcrumb"
+                    title={project.name}
+                    aria-label={project.name}
+                    onContextMenu={handleProjectBreadcrumbContextMenu}
                   >
-                    <input
-                      ref={renameInputRef}
-                      type="text"
-                      className="session-title-input"
-                      value={
-                        generatedRetitle?.deferredInsertion ? "" : renameValue
-                      }
-                      placeholder={
-                        generatedRetitle?.deferredInsertion
-                          ? t("sessionRetitleDeferred")
-                          : undefined
-                      }
-                      onChange={(e) => setRenameValue(e.target.value)}
-                      onKeyDown={handleTitleKeyDown}
-                      onBlur={handleTitleBlur}
-                      disabled={
-                        isRenaming || !!generatedRetitle?.deferredInsertion
-                      }
+                    {project.name.length > 12
+                      ? `${project.name.slice(0, 12)}...`
+                      : project.name}
+                  </Link>
+                  {showProjectReclassifyMenu && (
+                    <div
+                      ref={projectReclassifyMenuRef}
+                      className="project-reclassify-menu"
+                      role="menu"
+                      aria-label={t("sessionReclassifyProjectMenu")}
+                    >
+                      <div className="project-reclassify-title">
+                        {t("sessionReclassifyProjectMenu")}
+                      </div>
+                      <div className="project-reclassify-list">
+                        {projectReclassifyOptions.map((candidate) => (
+                          <button
+                            key={candidate.id}
+                            type="button"
+                            className="project-reclassify-option"
+                            role="menuitem"
+                            disabled={isReclassifyingProject}
+                            onClick={() =>
+                              void handleReclassifySessionProject(candidate)
+                            }
+                            title={candidate.path}
+                          >
+                            <span className="project-reclassify-name">
+                              {candidate.name}
+                            </span>
+                            <span className="project-reclassify-path">
+                              {candidate.path}
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+              <div ref={titleRowRef} className="session-title-row">
+                {isStarred && (
+                  <svg
+                    className="star-indicator-inline"
+                    width="12"
+                    height="12"
+                    viewBox="0 0 24 24"
+                    fill="currentColor"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    role="img"
+                    aria-label={t("sessionStarredLabel")}
+                  >
+                    <title>{t("sessionStarredLabel")}</title>
+                    <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
+                  </svg>
+                )}
+                {loading ? (
+                  <span className="session-title-skeleton" />
+                ) : isEditingTitle ? (
+                  <div
+                    ref={titleEditControlsRef}
+                    className="session-title-edit"
+                  >
+                    <div
+                      className="session-title-edit-row"
                       title={
                         generatedRetitle?.deferredInsertion
                           ? generatedRetitle.submittedTurnText
                           : undefined
                       }
-                    />
-                    {titleEditMode === "retitle" && (
-                      <button
-                        type="button"
-                        className={`session-title-edit-button session-title-retitle-accept${
-                          generatedRetitle?.deferredInsertion ? " is-armed" : ""
-                        }`}
-                        onMouseDown={(e) => e.preventDefault()}
-                        onClick={handleAcceptGeneratedRetitle}
+                    >
+                      <input
+                        ref={renameInputRef}
+                        type="text"
+                        className="session-title-input"
+                        value={
+                          generatedRetitle?.deferredInsertion ? "" : renameValue
+                        }
+                        placeholder={
+                          generatedRetitle?.deferredInsertion
+                            ? t("sessionRetitleDeferred")
+                            : undefined
+                        }
+                        onChange={(e) => setRenameValue(e.target.value)}
+                        onKeyDown={handleTitleKeyDown}
+                        onBlur={handleTitleBlur}
                         disabled={
-                          isRenaming ||
-                          !generatedRetitle ||
-                          !!generatedRetitle.deferredInsertion ||
-                          generatedRetitle.status === "error"
+                          isRenaming || !!generatedRetitle?.deferredInsertion
                         }
                         title={
-                          generatedRetitle?.status === "generating"
-                            ? t("sessionRetitleUseGeneratedWhenReady")
-                            : t("sessionRetitleUseGenerated")
+                          generatedRetitle?.deferredInsertion
+                            ? generatedRetitle.submittedTurnText
+                            : undefined
+                        }
+                      />
+                      {titleEditMode === "retitle" && (
+                        <button
+                          type="button"
+                          className={`session-title-edit-button session-title-retitle-accept${
+                            generatedRetitle?.deferredInsertion
+                              ? " is-armed"
+                              : ""
+                          }`}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={handleAcceptGeneratedRetitle}
+                          disabled={
+                            isRenaming ||
+                            !generatedRetitle ||
+                            !!generatedRetitle.deferredInsertion ||
+                            generatedRetitle.status === "error"
+                          }
+                          title={
+                            generatedRetitle?.status === "generating"
+                              ? t("sessionRetitleUseGeneratedWhenReady")
+                              : t("sessionRetitleUseGenerated")
+                          }
+                          aria-label={
+                            generatedRetitle?.status === "generating"
+                              ? t("sessionRetitleUseGeneratedWhenReady")
+                              : t("sessionRetitleUseGenerated")
+                          }
+                        >
+                          <svg
+                            width="15"
+                            height="15"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
+                            <path d="m11 8 4 4-4 4" />
+                            <path d="M8 12h7" />
+                          </svg>
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        className="session-title-edit-button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleSaveTitle}
+                        disabled={
+                          isRenaming || !!generatedRetitle?.deferredInsertion
+                        }
+                        title={
+                          titleEditMode === "retitle"
+                            ? t("sessionRetitleSaveAsTyped")
+                            : t("sessionTitleSave")
                         }
                         aria-label={
-                          generatedRetitle?.status === "generating"
-                            ? t("sessionRetitleUseGeneratedWhenReady")
-                            : t("sessionRetitleUseGenerated")
+                          titleEditMode === "retitle"
+                            ? t("sessionRetitleSaveAsTyped")
+                            : t("sessionTitleSave")
                         }
                       >
                         <svg
@@ -5224,1074 +5325,1069 @@ function SessionPageContent({
                           strokeLinejoin="round"
                           aria-hidden="true"
                         >
+                          <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                          <path d="M17 21v-8H7v8" />
+                          <path d="M7 3v5h8" />
+                        </svg>
+                      </button>
+                      <button
+                        type="button"
+                        className="session-title-edit-button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={handleCancelEditingTitle}
+                        disabled={isRenaming}
+                        title={t("sessionRetitleCancel")}
+                        aria-label={t("sessionRetitleCancel")}
+                      >
+                        <svg
+                          width="15"
+                          height="15"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="2"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
+                          <path d="M18 6 6 18" />
+                          <path d="m6 6 12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                    {titleEditMode === "retitle" &&
+                      generatedRetitle &&
+                      !generatedRetitle.deferredInsertion && (
+                        <div
+                          className={`session-title-retitle-status is-${generatedRetitle.status}`}
+                          title={
+                            generatedRetitle.status === "generating"
+                              ? generatedRetitle.submittedTurnText
+                              : undefined
+                          }
+                        >
+                          {generatedRetitle.status === "generating"
+                            ? t("sessionRetitleGenerating")
+                            : generatedRetitle.status === "ready" &&
+                                generatedRetitle.title
+                              ? `${t("sessionRetitleProposalLabel")} ${generatedRetitle.title}`
+                              : (generatedRetitle.error ??
+                                t("sessionRetitleFailed"))}
+                        </div>
+                      )}
+                  </div>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      className="session-title session-title-recent-trigger"
+                      onClick={() => setShowRecentSessions(!showRecentSessions)}
+                      title={titleTooltip}
+                      aria-haspopup="menu"
+                      aria-expanded={showRecentSessions}
+                    >
+                      <span className="session-title-text">{displayTitle}</span>
+                    </button>
+                    {currentGoal && (
+                      <GoalFlag
+                        objective={currentGoal}
+                        status={goalDetails?.goalStatus}
+                        onToggle={
+                          goalDetails?.goalStatus
+                            ? (action) =>
+                                handleSend(`/goal ${action}`, undefined, {
+                                  preserveComposer: true,
+                                  localControl: true,
+                                })
+                            : undefined
+                        }
+                        onEdit={() => {
+                          const controls = draftControlsRef.current;
+                          if (!controls || controls.getDraft().trim()) return;
+                          controls.setDraft(`/goal ${currentGoal}`);
+                          controls.focus?.();
+                        }}
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className={`session-title-chevron-trigger${
+                        showRecentSessions ? " is-open" : ""
+                      }`}
+                      onClick={() => setShowRecentSessions(!showRecentSessions)}
+                      title={
+                        showRecentSessions
+                          ? t("sessionCloseRecentSessions")
+                          : t("sessionRecentSessions")
+                      }
+                      aria-label={
+                        showRecentSessions
+                          ? t("sessionCloseRecentSessions")
+                          : t("sessionRecentSessions")
+                      }
+                      aria-expanded={showRecentSessions}
+                    >
+                      <svg
+                        className="session-title-chevron"
+                        width="12"
+                        height="12"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <polyline points="6 9 12 15 18 9" />
+                      </svg>
+                    </button>
+                    {supportsForkFromTurn && generatedTitleEnabled && (
+                      <button
+                        type="button"
+                        className="session-title-generate-trigger"
+                        onClick={handleGenerateAndApplyTitle}
+                        title={t("sessionGenerateNewTitle")}
+                        aria-label={t("sessionGenerateNewTitle")}
+                      >
+                        <svg
+                          className="session-title-generate-icon"
+                          width="15"
+                          height="15"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.75"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          aria-hidden="true"
+                        >
                           <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
                           <path d="m11 8 4 4-4 4" />
                           <path d="M8 12h7" />
                         </svg>
                       </button>
                     )}
-                    <button
-                      type="button"
-                      className="session-title-edit-button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleSaveTitle}
-                      disabled={
-                        isRenaming || !!generatedRetitle?.deferredInsertion
-                      }
-                      title={
-                        titleEditMode === "retitle"
-                          ? t("sessionRetitleSaveAsTyped")
-                          : t("sessionTitleSave")
-                      }
-                      aria-label={
-                        titleEditMode === "retitle"
-                          ? t("sessionRetitleSaveAsTyped")
-                          : t("sessionTitleSave")
-                      }
-                    >
-                      <svg
-                        width="15"
-                        height="15"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                        <path d="M17 21v-8H7v8" />
-                        <path d="M7 3v5h8" />
-                      </svg>
-                    </button>
-                    <button
-                      type="button"
-                      className="session-title-edit-button"
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={handleCancelEditingTitle}
-                      disabled={isRenaming}
-                      title={t("sessionRetitleCancel")}
-                      aria-label={t("sessionRetitleCancel")}
-                    >
-                      <svg
-                        width="15"
-                        height="15"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M18 6 6 18" />
-                        <path d="m6 6 12 12" />
-                      </svg>
-                    </button>
-                  </div>
-                  {titleEditMode === "retitle" &&
-                    generatedRetitle &&
-                    !generatedRetitle.deferredInsertion && (
-                      <div
-                        className={`session-title-retitle-status is-${generatedRetitle.status}`}
-                        title={
-                          generatedRetitle.status === "generating"
-                            ? generatedRetitle.submittedTurnText
-                            : undefined
-                        }
-                      >
-                        {generatedRetitle.status === "generating"
-                          ? t("sessionRetitleGenerating")
-                          : generatedRetitle.status === "ready" &&
-                              generatedRetitle.title
-                            ? `${t("sessionRetitleProposalLabel")} ${generatedRetitle.title}`
-                            : (generatedRetitle.error ??
-                              t("sessionRetitleFailed"))}
-                      </div>
-                    )}
-                </div>
-              ) : (
-                <>
-                  <button
-                    type="button"
-                    className="session-title session-title-recent-trigger"
-                    onClick={() => setShowRecentSessions(!showRecentSessions)}
-                    title={titleTooltip}
-                    aria-haspopup="menu"
-                    aria-expanded={showRecentSessions}
-                  >
-                    <span className="session-title-text">{displayTitle}</span>
-                  </button>
-                  {currentGoal && (
-                    <GoalFlag
-                      objective={currentGoal}
-                      status={goalDetails?.goalStatus}
-                      onToggle={
-                        goalDetails?.goalStatus
-                          ? (action) =>
-                              handleSend(`/goal ${action}`, undefined, {
-                                preserveComposer: true,
-                                localControl: true,
-                              })
-                          : undefined
-                      }
-                      onEdit={() => {
-                        const controls = draftControlsRef.current;
-                        if (!controls || controls.getDraft().trim()) return;
-                        controls.setDraft(`/goal ${currentGoal}`);
-                        controls.focus?.();
-                      }}
+                    <RecentSessionsDropdown
+                      currentSessionId={sessionId}
+                      isOpen={showRecentSessions}
+                      onClose={() => setShowRecentSessions(false)}
+                      onNavigate={() => setShowRecentSessions(false)}
+                      triggerRef={titleRowRef}
+                      basePath={basePath}
                     />
-                  )}
-                  <button
-                    type="button"
-                    className={`session-title-chevron-trigger${
-                      showRecentSessions ? " is-open" : ""
-                    }`}
-                    onClick={() => setShowRecentSessions(!showRecentSessions)}
-                    title={
-                      showRecentSessions
-                        ? t("sessionCloseRecentSessions")
-                        : t("sessionRecentSessions")
+                  </>
+                )}
+                {!loading && isArchived && (
+                  <span className="archived-badge">
+                    {t("sessionArchivedBadge")}
+                  </span>
+                )}
+                {!loading && (
+                  <SessionMenu
+                    sessionId={sessionId}
+                    projectId={projectId}
+                    isStarred={isStarred}
+                    isArchived={isArchived}
+                    hasUnread={hasUnread}
+                    provider={session?.provider}
+                    processId={
+                      status.owner === "self" ? status.processId : undefined
                     }
-                    aria-label={
-                      showRecentSessions
-                        ? t("sessionCloseRecentSessions")
-                        : t("sessionRecentSessions")
+                    onToggleStar={handleToggleStar}
+                    onToggleArchive={handleToggleArchive}
+                    onToggleRead={handleToggleRead}
+                    onRename={handleStartEditingTitle}
+                    onGenerateTitle={
+                      supportsForkFromTurn
+                        ? handleGenerateAndApplyTitle
+                        : undefined
                     }
-                    aria-expanded={showRecentSessions}
-                  >
-                    <svg
-                      className="session-title-chevron"
-                      width="12"
-                      height="12"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeWidth="2"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      aria-hidden="true"
-                    >
-                      <polyline points="6 9 12 15 18 9" />
-                    </svg>
-                  </button>
-                  {supportsForkFromTurn && generatedTitleEnabled && (
-                    <button
-                      type="button"
-                      className="session-title-generate-trigger"
-                      onClick={handleGenerateAndApplyTitle}
-                      title={t("sessionGenerateNewTitle")}
-                      aria-label={t("sessionGenerateNewTitle")}
-                    >
-                      <svg
-                        className="session-title-generate-icon"
-                        width="15"
-                        height="15"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.75"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5z" />
-                        <path d="m11 8 4 4-4 4" />
-                        <path d="M8 12h7" />
-                      </svg>
-                    </button>
-                  )}
-                  <RecentSessionsDropdown
-                    currentSessionId={sessionId}
-                    isOpen={showRecentSessions}
-                    onClose={() => setShowRecentSessions(false)}
-                    onNavigate={() => setShowRecentSessions(false)}
-                    triggerRef={titleRowRef}
-                    basePath={basePath}
+                    onClone={supportsForkFromTurn ? cloneSession : undefined}
+                    cloneUnavailableMessage={forkUnavailableMessage}
+                    cloneDisabled={forkAfterDisabled}
+                    onConfigureProjectSettings={
+                      supportsProjectSessionDefaults
+                        ? () => setShowProjectSettingsModal(true)
+                        : undefined
+                    }
+                    onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
+                    onConfigureRecaps={
+                      status.owner === "self"
+                        ? () => setShowRecapModal(true)
+                        : undefined
+                    }
+                    promptSuggestionMode={promptSuggestionMode}
+                    onTogglePromptSuggestions={
+                      currentProviderInfo?.supportsNativePromptSuggestions
+                        ? handleTogglePromptSuggestions
+                        : undefined
+                    }
+                    warningRestoreAvailable={
+                      hasPendingToolCalls && pendingElsewhereDismissed
+                    }
+                    onRestoreWarnings={handleRestorePendingElsewhereWarning}
+                    onHandoff={
+                      effectiveProvider
+                        ? () => setShowHandoffModal(true)
+                        : undefined
+                    }
+                    onClear={() => {
+                      const params = new URLSearchParams({ projectId });
+                      if (effectiveProvider) {
+                        params.set("provider", effectiveProvider);
+                      }
+                      if (liveBadgeModel) {
+                        params.set("model", liveBadgeModel);
+                      }
+                      navigate(`${basePath}/new-session?${params.toString()}`);
+                    }}
+                    onCompact={
+                      supportsManualCompact ? handleCompactSession : undefined
+                    }
+                    compactDisabled={manualCompactBlocked}
+                    onTerminate={handleTerminate}
+                    onRestartProvider={
+                      serverHasCapability(
+                        versionInfo,
+                        SIDEBAR_SESSION_RESUME_CAPABILITY,
+                      )
+                        ? handleRestartProvider
+                        : undefined
+                    }
+                    onReload={() => window.location.reload()}
+                    onShare={
+                      publicShareActionAvailable ? handleShare : undefined
+                    }
+                    useFixedPositioning
+                    useEllipsisIcon
+                    onOpenChange={(open) => {
+                      if (open) setShowRecentSessions(false);
+                    }}
                   />
-                </>
-              )}
-              {!loading && isArchived && (
-                <span className="archived-badge">
-                  {t("sessionArchivedBadge")}
-                </span>
-              )}
-              {!loading && (
-                <SessionMenu
-                  sessionId={sessionId}
-                  projectId={projectId}
-                  isStarred={isStarred}
-                  isArchived={isArchived}
-                  hasUnread={hasUnread}
-                  provider={session?.provider}
-                  processId={
-                    status.owner === "self" ? status.processId : undefined
-                  }
-                  onToggleStar={handleToggleStar}
-                  onToggleArchive={handleToggleArchive}
-                  onToggleRead={handleToggleRead}
-                  onRename={handleStartEditingTitle}
-                  onGenerateTitle={
-                    supportsForkFromTurn
-                      ? handleGenerateAndApplyTitle
-                      : undefined
-                  }
-                  onClone={supportsForkFromTurn ? cloneSession : undefined}
-                  cloneUnavailableMessage={forkUnavailableMessage}
-                  cloneDisabled={forkAfterDisabled}
-                  onConfigureProjectSettings={
-                    supportsProjectSessionDefaults
-                      ? () => setShowProjectSettingsModal(true)
-                      : undefined
-                  }
-                  onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
-                  onConfigureRecaps={
-                    status.owner === "self"
-                      ? () => setShowRecapModal(true)
-                      : undefined
-                  }
-                  promptSuggestionMode={promptSuggestionMode}
-                  onTogglePromptSuggestions={
-                    currentProviderInfo?.supportsNativePromptSuggestions
-                      ? handleTogglePromptSuggestions
-                      : undefined
-                  }
-                  warningRestoreAvailable={
-                    hasPendingToolCalls && pendingElsewhereDismissed
-                  }
-                  onRestoreWarnings={handleRestorePendingElsewhereWarning}
-                  onHandoff={
-                    effectiveProvider
-                      ? () => setShowHandoffModal(true)
-                      : undefined
-                  }
-                  onClear={() => {
-                    const params = new URLSearchParams({ projectId });
-                    if (effectiveProvider) {
-                      params.set("provider", effectiveProvider);
-                    }
-                    if (liveBadgeModel) {
-                      params.set("model", liveBadgeModel);
-                    }
-                    navigate(`${basePath}/new-session?${params.toString()}`);
-                  }}
-                  onCompact={
-                    supportsManualCompact ? handleCompactSession : undefined
-                  }
-                  compactDisabled={manualCompactBlocked}
-                  onTerminate={handleTerminate}
-                  onRestartProvider={
-                    serverHasCapability(
-                      versionInfo,
-                      SIDEBAR_SESSION_RESUME_CAPABILITY,
-                    )
-                      ? handleRestartProvider
-                      : undefined
-                  }
-                  onReload={() => window.location.reload()}
-                  onShare={publicShareActionAvailable ? handleShare : undefined}
-                  useFixedPositioning
-                  useEllipsisIcon
-                  onOpenChange={(open) => {
-                    if (open) setShowRecentSessions(false);
-                  }}
-                />
-              )}
+                )}
+              </div>
             </div>
-          </div>
-          <div className="session-header-right">
-            <button
-              type="button"
-              className={`auto-read-toggle ${autoReadEnabled ? "active" : ""}`}
-              onClick={toggleAutoRead}
-              title={
-                autoReadEnabled
-                  ? "Auto-Vorlesen an (antippen zum Ausschalten)"
-                  : "Auto-Vorlesen aus (antippen zum Einschalten)"
-              }
-              aria-label="Auto-Vorlesen umschalten"
-              aria-pressed={autoReadEnabled}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 16 16"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M2 6v4h2.5L8 13V3L4.5 6H2z" />
-                <path d="M11 5.5a3 3 0 0 1 0 5" />
-                <path d="M12.5 3.5a5.5 5.5 0 0 1 0 9" />
-              </svg>
-            </button>
-            <ProviderChildSessionControl
-              projectId={projectId}
-              sessionId={actualSessionId}
-              basePath={basePath}
-              childrenFromSession={session?.providerChildren}
-              processState={processState}
-            />
-            <ClientLogRecordingBadge inline />
-            <SessionPublicShareControls
-              enabled={publicSharesEnabled}
-              projectId={projectId}
-              sessionId={actualSessionId}
-              storageState={publicShareGlobalStatus?.storageState}
-              canCreateShares={canCreatePublicShares}
-              managementAvailable={publicShareManagementAvailable}
-              modalOpen={showShareModal}
-              modalAnchorRect={shareModalAnchor}
-              modalInitialView={shareModalView}
-              initialPrompt={publicShareInitialPrompt}
-              title={displayTitle}
-              onIndicatorClick={handleShareIndicatorClick}
-              onIndicatorContextMenu={
-                publicShareManagementAvailable
-                  ? handleShareIndicatorContextMenu
-                  : undefined
-              }
-              onCloseModal={() => {
-                setShowShareModal(false);
-                setShareModalAnchor(null);
-              }}
-              t={t}
-            />
-            {canStopOwnedProcess && (
-              <ThinkingIndicator
-                variant="icon"
-                className="session-header-thinking"
-                label={
-                  providerRuntimeStatus
-                    ? t("toolbarProviderRuntimeAria", {
-                        summary:
-                          providerRuntimeStatus.kind === "terminal"
-                            ? providerRuntimeStatus.scope === "provider_process"
-                              ? t("processInfoRuntimeProcessTerminal")
-                              : t("processInfoRuntimeTerminal")
-                            : t("processInfoRuntimeRetrying"),
-                      })
-                    : undefined
-                }
-              />
-            )}
-            {!loading && actualSessionId && (
-              <SessionIssuesLink
-                sessionId={actualSessionId}
-                projectId={projectId}
-                messageCount={messages.length}
-              />
-            )}
-            {!loading && effectiveProvider && (
+            <div className="session-header-right">
               <button
                 type="button"
-                className="provider-badge-button"
-                onClick={() => {
-                  setModelPanelInitialTab("model");
-                  setShowModelSwitchModal(true);
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  setModelPanelInitialTab("info");
-                  setShowModelSwitchModal(true);
-                }}
+                className={`auto-read-toggle ${autoReadEnabled ? "active" : ""}`}
+                onClick={toggleAutoRead}
                 title={
-                  status.owner === "self" && status.processId
-                    ? t("sessionConfigureModel")
-                    : t("sessionViewInfo")
+                  autoReadEnabled
+                    ? "Auto-Vorlesen an (antippen zum Ausschalten)"
+                    : "Auto-Vorlesen aus (antippen zum Einschalten)"
                 }
+                aria-label="Auto-Vorlesen umschalten"
+                aria-pressed={autoReadEnabled}
               >
-                <ProviderBadge
-                  provider={effectiveProvider}
-                  model={liveBadgeModel}
-                  thinking={effectiveModelConfig?.thinking}
-                  effort={effectiveModelConfig?.effort}
-                  isThinking={canStopOwnedProcess}
-                />
+                <svg
+                  width="16"
+                  height="16"
+                  viewBox="0 0 16 16"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M2 6v4h2.5L8 13V3L4.5 6H2z" />
+                  <path d="M11 5.5a3 3 0 0 1 0 5" />
+                  <path d="M12.5 3.5a5.5 5.5 0 0 1 0 9" />
+                </svg>
               </button>
-            )}
-          </div>
-        </div>
-      </header>
-
-      {showHeartbeatModal && (
-        <SessionHeartbeatModal
-          sessionId={actualSessionId}
-          enabled={heartbeatTurnsEnabled}
-          heartbeatTurnsAfterMinutes={heartbeatTurnsAfterMinutes}
-          heartbeatTurnText={heartbeatTurnText}
-          heartbeatForceAfterMinutes={heartbeatForceAfterMinutes}
-          onClose={() => setShowHeartbeatModal(false)}
-          onSaved={(next) => {
-            setLocalHeartbeatTurnsEnabled(next.enabled);
-            setLocalHeartbeatTurnsAfterMinutes(next.heartbeatTurnsAfterMinutes);
-            setLocalHeartbeatTurnText(next.heartbeatTurnText);
-            setLocalHeartbeatForceAfterMinutes(next.heartbeatForceAfterMinutes);
-            showToast(t("sessionHeartbeatSaved"), "success");
-          }}
-        />
-      )}
-
-      {showProjectSettingsModal && supportsProjectSessionDefaults && (
-        <ProjectSessionDefaultsModal
-          projectId={projectId}
-          projectName={project?.name}
-          onClose={() => setShowProjectSettingsModal(false)}
-        />
-      )}
-
-      {showRecapModal && status.owner === "self" && (
-        <SessionRecapModal
-          sessionId={actualSessionId}
-          processId={status.processId}
-          provider={effectiveProvider}
-          currentModel={liveBadgeModel}
-          onClose={() => setShowRecapModal(false)}
-          onSaved={(settings) => {
-            setStatus((prev) =>
-              prev.owner === "self" && prev.processId === status.processId
-                ? {
-                    ...prev,
-                    recapAfterSeconds: settings.recapAfterSeconds,
-                  }
-                : prev,
-            );
-            showToast(t("sessionRecapSaved"), "success");
-          }}
-        />
-      )}
-
-      {/* Model Switch Modal */}
-      {showModelSwitchModal && (
-        <ModelSwitchModal
-          processId={status.owner === "self" ? status.processId : undefined}
-          sessionId={actualSessionId}
-          currentModel={session?.model}
-          sessionProvider={effectiveProvider}
-          onModelChanged={handleModelChanged}
-          initialTab={modelPanelInitialTab}
-          infoPane={
-            session ? (
-              <ProcessInfoBody
+              <ProviderChildSessionControl
+                projectId={projectId}
                 sessionId={actualSessionId}
-                provider={session.provider}
-                model={session.model}
-                status={status}
+                basePath={basePath}
+                childrenFromSession={session?.providerChildren}
                 processState={processState}
-                sessionLiveness={sessionLiveness}
-                providerRuntimeStatus={providerRuntimeStatus}
-                contextUsage={session.contextUsage}
-                originator={session.originator}
-                cliVersion={session.cliVersion}
-                sessionSource={session.source}
-                approvalPolicy={session.approvalPolicy}
-                sandboxPolicy={session.sandboxPolicy}
-                createdAt={session.createdAt}
-                sessionStreamConnected={sessionUpdatesConnected}
-                lastSessionEventAt={lastStreamActivityAt}
               />
-            ) : null
-          }
-          onActivate={async () => {
-            const result = await api.reactivateSession(
-              projectId,
-              actualSessionId,
-            );
-            setStatus({
-              owner: "self",
-              processId: result.processId,
-              permissionMode: result.permissionMode,
-              appliedPermissionMode: result.appliedPermissionMode,
-              modeVersion: result.modeVersion,
-              recapAfterSeconds: result.recapAfterSeconds,
-            });
-          }}
-          onClose={() => setShowModelSwitchModal(false)}
-        />
-      )}
-
-      {showHandoffModal && effectiveProvider && (
-        <RestartSessionModal
-          projectId={projectId}
-          sessionId={actualSessionId}
-          provider={effectiveProvider}
-          providerDisplayName={currentProviderInfo?.displayName}
-          providers={providers}
-          models={currentProviderInfo?.models}
-          currentModel={liveBadgeModel}
-          mode={permissionMode}
-          thinking={getThinkingSetting()}
-          executor={session?.executor}
-          project={projects.find((candidate) => candidate.id === projectId)}
-          providerRuntimeStatus={providerRuntimeStatus}
-          onRestarted={(result, options) => {
-            setShowHandoffModal(false);
-            showToast(t("sessionHandoffStarted"), "success");
-            const handoffUrl = `${basePath}/projects/${projectId}/sessions/${result.sessionId}`;
-            const handoffHref = toBrowserAppHref(handoffUrl);
-            if (options?.targetWindow && !options.targetWindow.closed) {
-              options.targetWindow.location.href = handoffHref;
-              return;
-            }
-            if (options?.openInNewWindow) {
-              window.open(handoffHref, "_blank", "noopener");
-              return;
-            }
-            navigate(handoffUrl, {
-              state: createSessionNavigationState({
-                initialStatus: {
-                  owner: "self",
-                  processId: result.processId,
-                  permissionMode: result.permissionMode,
-                  appliedPermissionMode: result.appliedPermissionMode,
-                  modeVersion: result.modeVersion,
-                  recapAfterSeconds: result.recapAfterSeconds,
-                },
-                initialTitle: result.title,
-                initialModel: result.model ?? liveBadgeModel,
-                initialProvider: result.provider ?? effectiveProvider,
-              }),
-            });
-          }}
-          onClose={() => setShowHandoffModal(false)}
-        />
-      )}
-
-      <ExternalSessionWarning active={status.owner === "external"} />
-
-      {hasPendingToolCalls && pendingToolCall && !pendingElsewhereDismissed && (
-        <PendingToolWarning
-          toolName={pendingToolCall.toolName}
-          toolInput={pendingToolCall.toolInput}
-          pendingSinceMs={
-            sessionUpdatedAt ? Date.parse(sessionUpdatedAt) : null
-          }
-          onDismiss={handleDismissPendingElsewhereWarning}
-        />
-      )}
-
-      <div
-        className={`${styles.sessionSplit} session-split${
-          wantBtwSplitLayout ? " session-split-with-aside" : ""
-        }${
-          wantBtwSplitLayout && btwSidePaneCollapsed
-            ? " session-split-aside-collapsed"
-            : ""
-        }`}
-      >
-        <main className={`${styles.messages} session-messages`} tabIndex={-1}>
-          {loading ? (
-            <div className="loading">
-              <div>{t("sessionLoading")}</div>
-              {sessionLoadingProgressText && (
-                <div className="loading-detail">
-                  {sessionLoadingProgressText}
-                </div>
+              <ClientLogRecordingBadge inline />
+              <SessionPublicShareControls
+                enabled={publicSharesEnabled}
+                projectId={projectId}
+                sessionId={actualSessionId}
+                storageState={publicShareGlobalStatus?.storageState}
+                canCreateShares={canCreatePublicShares}
+                managementAvailable={publicShareManagementAvailable}
+                modalOpen={showShareModal}
+                modalAnchorRect={shareModalAnchor}
+                modalInitialView={shareModalView}
+                initialPrompt={publicShareInitialPrompt}
+                title={displayTitle}
+                onIndicatorClick={handleShareIndicatorClick}
+                onIndicatorContextMenu={
+                  publicShareManagementAvailable
+                    ? handleShareIndicatorContextMenu
+                    : undefined
+                }
+                onCloseModal={() => {
+                  setShowShareModal(false);
+                  setShareModalAnchor(null);
+                }}
+                t={t}
+              />
+              {canStopOwnedProcess && (
+                <ThinkingIndicator
+                  variant="icon"
+                  className="session-header-thinking"
+                  label={
+                    providerRuntimeStatus
+                      ? t("toolbarProviderRuntimeAria", {
+                          summary:
+                            providerRuntimeStatus.kind === "terminal"
+                              ? providerRuntimeStatus.scope ===
+                                "provider_process"
+                                ? t("processInfoRuntimeProcessTerminal")
+                                : t("processInfoRuntimeTerminal")
+                              : t("processInfoRuntimeRetrying"),
+                        })
+                      : undefined
+                  }
+                />
+              )}
+              {!loading && actualSessionId && (
+                <SessionIssuesLink
+                  sessionId={actualSessionId}
+                  projectId={projectId}
+                  messageCount={messages.length}
+                />
+              )}
+              {!loading && effectiveProvider && (
+                <button
+                  type="button"
+                  className="provider-badge-button"
+                  onClick={() => {
+                    setModelPanelInitialTab("model");
+                    setShowModelSwitchModal(true);
+                  }}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setModelPanelInitialTab("info");
+                    setShowModelSwitchModal(true);
+                  }}
+                  title={
+                    status.owner === "self" && status.processId
+                      ? t("sessionConfigureModel")
+                      : t("sessionViewInfo")
+                  }
+                >
+                  <ProviderBadge
+                    provider={effectiveProvider}
+                    model={liveBadgeModel}
+                    thinking={effectiveModelConfig?.thinking}
+                    effort={effectiveModelConfig?.effort}
+                    isThinking={canStopOwnedProcess}
+                  />
+                </button>
               )}
             </div>
-          ) : (
-            <SessionMetadataProvider
-              projectId={projectId}
-              projectPath={project?.path ?? null}
-              sessionId={sessionId}
-              sessionTitle={displayTitle}
-              provider={effectiveProvider}
-              model={effectiveModelConfig?.requestedModel ?? liveBadgeModel}
-              thinking={sourceReviewModelSettings.thinking}
-              effort={sourceReviewModelSettings.effort}
-            >
-              <AgentContentProvider
-                agentContent={agentContent}
-                mergeLoadedAgentContent={mergeLoadedAgentContent}
-                toolUseToAgent={toolUseToAgent}
-                projectId={projectId}
-                sessionId={sessionId}
-              >
-                <SessionViewerProvider
-                  sessionId={actualSessionId}
-                  inactive={isDomLingerParked}
-                  onSendComment={handleSessionViewerCommentSend}
-                >
-                  <MessageList
-                    messages={messages}
-                    transcriptDisplayObjects={session?.transcriptDisplayObjects}
-                    provider={effectiveProvider}
-                    isProcessing={sessionActivityUi.showProcessingIndicator}
-                    isCompacting={isCompacting}
-                    scrollTrigger={scrollTrigger}
-                    scrollToTurnRequest={scrollToTurnRequest}
-                    pendingMessages={pendingMessages}
-                    deferredMessages={deferredMessages}
-                    queuedEffortContext={(() => {
-                      const model = currentProviderInfo?.models?.find(
-                        (candidate) =>
-                          candidate.id ===
-                          (effectiveModelConfig?.requestedModel ??
-                            liveBadgeModel),
-                      );
-                      const normal = getImplicitComposerThinking();
-                      return model && normal
-                        ? { model, normal, provider: effectiveProvider }
-                        : undefined;
-                    })()}
-                    projectQueueMessages={inlineProjectQueueMessages}
-                    projectQueueDispatchPaused={
-                      projectQueues.dispatchState.status === "paused"
-                    }
-                    projectQueueDispatchMutating={
-                      projectQueues.mutatingDispatchState
-                    }
-                    btwAsides={historyBtwAsides}
-                    onFocusBtwAside={setFocusedBtwAsideId}
-                    onDoneBtwAside={handleDoneBtwAside}
-                    onStopBtwAside={handleStopBtwAsideFromTranscript}
-                    onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
-                    onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
-                    onQuoteSelection={insertQuotedSelection}
-                    onStartNewSessionFromSelection={
-                      startNewSessionFromSelection
-                    }
-                    composerDraftSignal={composerDraftSignal}
-                    composerEditAvailabilityStore={
-                      composerEditAvailabilityStore
-                    }
-                    quoteClearSignal={quoteClearSignal}
-                    onCancelDeferred={handleCancelDeferred}
-                    onEditDeferred={handleEditDeferred}
-                    onCancelUnconfirmedUserMessage={
-                      handleCancelUnconfirmedUserMessage
-                    }
-                    onSteerDeferred={handleSteerDeferred}
-                    onResumeRecoveredDeferred={handleResumeRecoveredDeferred}
-                    onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
-                    onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
-                    onCancelProjectQueueMessage={handleCancelProjectQueueItem}
-                    onEditProjectQueueMessage={handleEditProjectQueueItem}
-                    onSteerProjectQueueMessage={handleSteerProjectQueueItem}
-                    onResumeProjectQueueDispatch={
-                      handleResumeProjectQueueDispatch
-                    }
-                    onCorrectLatestUserMessage={handleCorrectLatestUserMessage}
-                    onTrimBeforeUserMessage={trimClientFromUserMessage}
-                    onForkBeforeUserMessage={
-                      supportsForkFromTurn ? forkBeforeUserMessage : undefined
-                    }
-                    onForkAfterUserMessage={
-                      supportsForkFromTurn ? forkAfterUserMessage : undefined
-                    }
-                    onForkAfterSummaryUserMessage={
-                      supportsForkFromTurn ? beginForkAfterSummary : undefined
-                    }
-                    forkAfterUserMessageDisabled={forkAfterDisabled}
-                    forkUnavailableMessage={forkUnavailableMessage}
-                    onCopyUserMessage={copyUserMessage}
-                    onHandoffFromUserMessage={handoffFromUserMessage}
-                    markdownAugments={markdownAugments}
-                    activeToolApproval={activeToolApproval}
-                    hasOlderMessages={pagination?.hasOlderMessages}
-                    olderMessagesCursor={
-                      pagination?.truncatedBeforeMessageId ?? null
-                    }
-                    activeWindowTrimRevision={activeWindowTrimRevision}
-                    loadingOlder={loadingOlder}
-                    olderLoadContinuationRequired={
-                      olderLoadContinuationRequired
-                    }
-                    onLoadOlderMessages={loadOlderMessages}
-                    onReadOlderSearchPage={readOlderSearchPage}
-                    clientTailActive={clientTailActive}
-                    progressiveRenderEnabled={sessionLoadingProgressEnabled}
-                    progressiveRenderStatusVisible={
-                      sessionLoadingProgressDetailsVisible
-                    }
-                    progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                    progressiveRenderPauseSignal={progressiveRenderPauseSignal}
-                    conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                    initialScrollSnapshot={initialScrollSnapshot}
-                    onScrollSnapshotChange={updateRouteScrollSnapshot}
-                    onFollowingBottomChange={updateActiveWindowFollowingBottom}
-                    onFollowCurrent={handleFollowCurrent}
-                    scrollBehaviorMode={sessionScrollBehaviorMode}
-                    getForkSummaryTargetHref={getForkSummaryTargetHref}
-                    onCancelForkSummary={handleCancelForkSummary}
-                    onToggleForkSummaryAutoOpen={
-                      handleToggleForkSummaryAutoOpen
-                    }
-                    onFollowForkSummary={followForkSummary}
-                    bangCommandHandlers={bangCommandHandlers}
-                    transcriptPositionStore={transcriptPositionStore}
-                    inert={isDomLingerParked}
-                  />
-                </SessionViewerProvider>
-              </AgentContentProvider>
-            </SessionMetadataProvider>
-          )}
-        </main>
-        <div className={styles.viewerLayer} data-session-viewer-layer />
-        {showBtwSidePane && focusedBtwAside && (
-          <BtwAsidePane
-            aside={focusedBtwAside}
-            draft={asideDraft}
-            composerRef={asideComposerRef}
-            onDraftChange={setAsideDraft}
-            onSendFollowup={(text) => handleFocusedBtwSend(text, "pane")}
-            onHide={() => setBtwSidePaneCollapsed(true)}
-            onDone={(argument) => handleCustomCommand("done", argument)}
-            onStop={() => void handleStopBtwAside(focusedBtwAside.id)}
-            onTransferToComposer={transferBtwTurnToMotherComposer}
+          </div>
+        </header>
+
+        {showHeartbeatModal && (
+          <SessionHeartbeatModal
+            sessionId={actualSessionId}
+            enabled={heartbeatTurnsEnabled}
+            heartbeatTurnsAfterMinutes={heartbeatTurnsAfterMinutes}
+            heartbeatTurnText={heartbeatTurnText}
+            heartbeatForceAfterMinutes={heartbeatForceAfterMinutes}
+            onClose={() => setShowHeartbeatModal(false)}
+            onSaved={(next) => {
+              setLocalHeartbeatTurnsEnabled(next.enabled);
+              setLocalHeartbeatTurnsAfterMinutes(
+                next.heartbeatTurnsAfterMinutes,
+              );
+              setLocalHeartbeatTurnText(next.heartbeatTurnText);
+              setLocalHeartbeatForceAfterMinutes(
+                next.heartbeatForceAfterMinutes,
+              );
+              showToast(t("sessionHeartbeatSaved"), "success");
+            }}
           />
-        )}
-        {wantBtwSplitLayout && btwSidePaneCollapsed && (
-          <button
-            type="button"
-            className="session-btw-pane-handle"
-            onClick={() => setBtwSidePaneCollapsed(false)}
-            title="Maximize /btw aside pane"
-            aria-label="Maximize /btw aside pane"
-          >
-            /btw
-          </button>
         )}
 
-        <footer className={`${styles.input} session-input`}>
-          <div
-            className={`session-connection-bar session-connection-${sessionConnectionStatus}`}
+        {showProjectSettingsModal && supportsProjectSessionDefaults && (
+          <ProjectSessionDefaultsModal
+            projectId={projectId}
+            projectName={project?.name}
+            onClose={() => setShowProjectSettingsModal(false)}
           />
-          <div data-selection-actions-mobile-slot />
-          <div className="session-input-inner">
-            <BtwAsideStickyCards
-              asides={composerStickyBtwAsides}
-              focusedAsideId={focusedBtwAsideId}
-              onFocusAside={setFocusedBtwAsideId}
-              onToggleAsideExpanded={toggleBtwAsideExpanded}
-              onDoneAside={hideBtwAside}
-              onHideAside={hideBtwAside}
-              onStopAside={(asideId) => void handleStopBtwAside(asideId)}
+        )}
+
+        {showRecapModal && status.owner === "self" && (
+          <SessionRecapModal
+            sessionId={actualSessionId}
+            processId={status.processId}
+            provider={effectiveProvider}
+            currentModel={liveBadgeModel}
+            onClose={() => setShowRecapModal(false)}
+            onSaved={(settings) => {
+              setStatus((prev) =>
+                prev.owner === "self" && prev.processId === status.processId
+                  ? {
+                      ...prev,
+                      recapAfterSeconds: settings.recapAfterSeconds,
+                    }
+                  : prev,
+              );
+              showToast(t("sessionRecapSaved"), "success");
+            }}
+          />
+        )}
+
+        {/* Model Switch Modal */}
+        {showModelSwitchModal && (
+          <ModelSwitchModal
+            processId={status.owner === "self" ? status.processId : undefined}
+            sessionId={actualSessionId}
+            currentModel={session?.model}
+            sessionProvider={effectiveProvider}
+            onModelChanged={handleModelChanged}
+            initialTab={modelPanelInitialTab}
+            infoPane={
+              session ? (
+                <ProcessInfoBody
+                  sessionId={actualSessionId}
+                  provider={session.provider}
+                  model={session.model}
+                  status={status}
+                  processState={processState}
+                  sessionLiveness={sessionLiveness}
+                  providerRuntimeStatus={providerRuntimeStatus}
+                  contextUsage={session.contextUsage}
+                  originator={session.originator}
+                  cliVersion={session.cliVersion}
+                  sessionSource={session.source}
+                  approvalPolicy={session.approvalPolicy}
+                  sandboxPolicy={session.sandboxPolicy}
+                  createdAt={session.createdAt}
+                  sessionStreamConnected={sessionUpdatesConnected}
+                  lastSessionEventAt={lastStreamActivityAt}
+                />
+              ) : null
+            }
+            onActivate={async () => {
+              const result = await api.reactivateSession(
+                projectId,
+                actualSessionId,
+              );
+              setStatus({
+                owner: "self",
+                processId: result.processId,
+                permissionMode: result.permissionMode,
+                appliedPermissionMode: result.appliedPermissionMode,
+                modeVersion: result.modeVersion,
+                recapAfterSeconds: result.recapAfterSeconds,
+              });
+            }}
+            onClose={() => setShowModelSwitchModal(false)}
+          />
+        )}
+
+        {showHandoffModal && effectiveProvider && (
+          <RestartSessionModal
+            projectId={projectId}
+            sessionId={actualSessionId}
+            provider={effectiveProvider}
+            providerDisplayName={currentProviderInfo?.displayName}
+            providers={providers}
+            models={currentProviderInfo?.models}
+            currentModel={liveBadgeModel}
+            mode={permissionMode}
+            thinking={getThinkingSetting()}
+            executor={session?.executor}
+            project={projects.find((candidate) => candidate.id === projectId)}
+            providerRuntimeStatus={providerRuntimeStatus}
+            onRestarted={(result, options) => {
+              setShowHandoffModal(false);
+              showToast(t("sessionHandoffStarted"), "success");
+              const handoffUrl = `${basePath}/projects/${projectId}/sessions/${result.sessionId}`;
+              const handoffHref = toBrowserAppHref(handoffUrl);
+              if (options?.targetWindow && !options.targetWindow.closed) {
+                options.targetWindow.location.href = handoffHref;
+                return;
+              }
+              if (options?.openInNewWindow) {
+                window.open(handoffHref, "_blank", "noopener");
+                return;
+              }
+              navigate(handoffUrl, {
+                state: createSessionNavigationState({
+                  initialStatus: {
+                    owner: "self",
+                    processId: result.processId,
+                    permissionMode: result.permissionMode,
+                    appliedPermissionMode: result.appliedPermissionMode,
+                    modeVersion: result.modeVersion,
+                    recapAfterSeconds: result.recapAfterSeconds,
+                  },
+                  initialTitle: result.title,
+                  initialModel: result.model ?? liveBadgeModel,
+                  initialProvider: result.provider ?? effectiveProvider,
+                }),
+              });
+            }}
+            onClose={() => setShowHandoffModal(false)}
+          />
+        )}
+
+        <ExternalSessionWarning active={status.owner === "external"} />
+
+        {hasPendingToolCalls &&
+          pendingToolCall &&
+          !pendingElsewhereDismissed && (
+            <PendingToolWarning
+              toolName={pendingToolCall.toolName}
+              toolInput={pendingToolCall.toolInput}
+              pendingSinceMs={
+                sessionUpdatedAt ? Date.parse(sessionUpdatedAt) : null
+              }
+              onDismiss={handleDismissPendingElsewhereWarning}
+            />
+          )}
+
+        <div
+          className={`${styles.sessionSplit} session-split${
+            wantBtwSplitLayout ? " session-split-with-aside" : ""
+          }${
+            wantBtwSplitLayout && btwSidePaneCollapsed
+              ? " session-split-aside-collapsed"
+              : ""
+          }`}
+        >
+          <main className={`${styles.messages} session-messages`} tabIndex={-1}>
+            {loading ? (
+              <div className="loading">
+                <div>{t("sessionLoading")}</div>
+                {sessionLoadingProgressText && (
+                  <div className="loading-detail">
+                    {sessionLoadingProgressText}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <SessionMetadataProvider
+                projectId={projectId}
+                projectPath={project?.path ?? null}
+                sessionId={sessionId}
+                sessionTitle={displayTitle}
+                provider={effectiveProvider}
+                model={effectiveModelConfig?.requestedModel ?? liveBadgeModel}
+                thinking={sourceReviewModelSettings.thinking}
+                effort={sourceReviewModelSettings.effort}
+              >
+                <AgentContentProvider
+                  agentContent={agentContent}
+                  mergeLoadedAgentContent={mergeLoadedAgentContent}
+                  toolUseToAgent={toolUseToAgent}
+                  projectId={projectId}
+                  sessionId={sessionId}
+                >
+                  <SessionViewerProvider
+                    sessionId={actualSessionId}
+                    inactive={isDomLingerParked}
+                    onSendComment={handleSessionViewerCommentSend}
+                    onOpenApp={rightPane.enabled ? rightPane.select : undefined}
+                    appConfig={rightPane.config}
+                    rightPaneTarget={rightPaneTarget}
+                  >
+                    <MessageList
+                      messages={messages}
+                      transcriptDisplayObjects={
+                        session?.transcriptDisplayObjects
+                      }
+                      provider={effectiveProvider}
+                      isProcessing={sessionActivityUi.showProcessingIndicator}
+                      isCompacting={isCompacting}
+                      scrollTrigger={scrollTrigger}
+                      scrollToTurnRequest={scrollToTurnRequest}
+                      pendingMessages={pendingMessages}
+                      deferredMessages={deferredMessages}
+                      queuedEffortContext={(() => {
+                        const model = currentProviderInfo?.models?.find(
+                          (candidate) =>
+                            candidate.id ===
+                            (effectiveModelConfig?.requestedModel ??
+                              liveBadgeModel),
+                        );
+                        const normal = getImplicitComposerThinking();
+                        return model && normal
+                          ? { model, normal, provider: effectiveProvider }
+                          : undefined;
+                      })()}
+                      projectQueueMessages={inlineProjectQueueMessages}
+                      projectQueueDispatchPaused={
+                        projectQueues.dispatchState.status === "paused"
+                      }
+                      projectQueueDispatchMutating={
+                        projectQueues.mutatingDispatchState
+                      }
+                      btwAsides={historyBtwAsides}
+                      onFocusBtwAside={setFocusedBtwAsideId}
+                      onDoneBtwAside={handleDoneBtwAside}
+                      onStopBtwAside={handleStopBtwAsideFromTranscript}
+                      onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
+                      onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
+                      onQuoteSelection={insertQuotedSelection}
+                      onStartNewSessionFromSelection={
+                        startNewSessionFromSelection
+                      }
+                      composerDraftSignal={composerDraftSignal}
+                      composerEditAvailabilityStore={
+                        composerEditAvailabilityStore
+                      }
+                      quoteClearSignal={quoteClearSignal}
+                      onCancelDeferred={handleCancelDeferred}
+                      onEditDeferred={handleEditDeferred}
+                      onCancelUnconfirmedUserMessage={
+                        handleCancelUnconfirmedUserMessage
+                      }
+                      onSteerDeferred={handleSteerDeferred}
+                      onResumeRecoveredDeferred={handleResumeRecoveredDeferred}
+                      onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
+                      onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
+                      onCancelProjectQueueMessage={handleCancelProjectQueueItem}
+                      onEditProjectQueueMessage={handleEditProjectQueueItem}
+                      onSteerProjectQueueMessage={handleSteerProjectQueueItem}
+                      onResumeProjectQueueDispatch={
+                        handleResumeProjectQueueDispatch
+                      }
+                      onCorrectLatestUserMessage={
+                        handleCorrectLatestUserMessage
+                      }
+                      onTrimBeforeUserMessage={trimClientFromUserMessage}
+                      onForkBeforeUserMessage={
+                        supportsForkFromTurn ? forkBeforeUserMessage : undefined
+                      }
+                      onForkAfterUserMessage={
+                        supportsForkFromTurn ? forkAfterUserMessage : undefined
+                      }
+                      onForkAfterSummaryUserMessage={
+                        supportsForkFromTurn ? beginForkAfterSummary : undefined
+                      }
+                      forkAfterUserMessageDisabled={forkAfterDisabled}
+                      forkUnavailableMessage={forkUnavailableMessage}
+                      onCopyUserMessage={copyUserMessage}
+                      onHandoffFromUserMessage={handoffFromUserMessage}
+                      markdownAugments={markdownAugments}
+                      activeToolApproval={activeToolApproval}
+                      hasOlderMessages={pagination?.hasOlderMessages}
+                      totalMessageCount={pagination?.totalMessageCount}
+                      olderMessagesCursor={
+                        pagination?.truncatedBeforeMessageId ?? null
+                      }
+                      activeWindowTrimRevision={activeWindowTrimRevision}
+                      loadingOlder={loadingOlder}
+                      olderLoadContinuationRequired={
+                        olderLoadContinuationRequired
+                      }
+                      onLoadOlderMessages={loadOlderMessages}
+                      onReadOlderSearchPage={readOlderSearchPage}
+                      clientTailActive={clientTailActive}
+                      progressiveRenderEnabled={sessionLoadingProgressEnabled}
+                      progressiveRenderStatusVisible={
+                        sessionLoadingProgressDetailsVisible
+                      }
+                      progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                      progressiveRenderPauseSignal={
+                        progressiveRenderPauseSignal
+                      }
+                      conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                      initialScrollSnapshot={initialScrollSnapshot}
+                      onScrollSnapshotChange={updateRouteScrollSnapshot}
+                      onFollowingBottomChange={
+                        updateActiveWindowFollowingBottom
+                      }
+                      onFollowCurrent={handleFollowCurrent}
+                      scrollBehaviorMode={sessionScrollBehaviorMode}
+                      getForkSummaryTargetHref={getForkSummaryTargetHref}
+                      onCancelForkSummary={handleCancelForkSummary}
+                      onToggleForkSummaryAutoOpen={
+                        handleToggleForkSummaryAutoOpen
+                      }
+                      onFollowForkSummary={followForkSummary}
+                      bangCommandHandlers={bangCommandHandlers}
+                      transcriptPositionStore={transcriptPositionStore}
+                      inert={isDomLingerParked}
+                    />
+                  </SessionViewerProvider>
+                </AgentContentProvider>
+              </SessionMetadataProvider>
+            )}
+          </main>
+          <div className={styles.viewerLayer} data-session-viewer-layer />
+          {showBtwSidePane && focusedBtwAside && (
+            <BtwAsidePane
+              aside={focusedBtwAside}
+              draft={asideDraft}
+              composerRef={asideComposerRef}
+              onDraftChange={setAsideDraft}
+              onSendFollowup={(text) => handleFocusedBtwSend(text, "pane")}
+              onHide={() => setBtwSidePaneCollapsed(true)}
+              onDone={(argument) => handleCustomCommand("done", argument)}
+              onStop={() => void handleStopBtwAside(focusedBtwAside.id)}
               onTransferToComposer={transferBtwTurnToMotherComposer}
             />
+          )}
+          {wantBtwSplitLayout && btwSidePaneCollapsed && (
+            <button
+              type="button"
+              className="session-btw-pane-handle"
+              onClick={() => setBtwSidePaneCollapsed(false)}
+              title="Maximize /btw aside pane"
+              aria-label="Maximize /btw aside pane"
+            >
+              /btw
+            </button>
+          )}
 
-            {/* User question panel */}
-            {pendingInputRequest &&
-              pendingInputRequest.sessionId === actualSessionId &&
-              isAskUserQuestion && (
-                <QuestionAnswerPanel
-                  request={pendingInputRequest}
-                  sessionId={actualSessionId}
-                  onSubmit={handleQuestionSubmit}
-                  onDeny={handleDeny}
+          <footer className={`${styles.input} session-input`}>
+            <div
+              className={`session-connection-bar session-connection-${sessionConnectionStatus}`}
+            />
+            <div data-selection-actions-mobile-slot />
+            <div className="session-input-inner">
+              <BtwAsideStickyCards
+                asides={composerStickyBtwAsides}
+                focusedAsideId={focusedBtwAsideId}
+                onFocusAside={setFocusedBtwAsideId}
+                onToggleAsideExpanded={toggleBtwAsideExpanded}
+                onDoneAside={hideBtwAside}
+                onHideAside={hideBtwAside}
+                onStopAside={(asideId) => void handleStopBtwAside(asideId)}
+                onTransferToComposer={transferBtwTurnToMotherComposer}
+              />
+
+              {/* User question panel */}
+              {pendingInputRequest &&
+                pendingInputRequest.sessionId === actualSessionId &&
+                isAskUserQuestion && (
+                  <QuestionAnswerPanel
+                    request={pendingInputRequest}
+                    sessionId={actualSessionId}
+                    onSubmit={handleQuestionSubmit}
+                    onDeny={handleDeny}
+                  />
+                )}
+
+              {/* Tool approval: show panel + always-visible toolbar */}
+              {pendingInputRequest &&
+                pendingInputRequest.sessionId === actualSessionId &&
+                !isAskUserQuestion && (
+                  <>
+                    <ToolApprovalPanel
+                      request={pendingInputRequest}
+                      sessionId={actualSessionId}
+                      onApprove={handleApprove}
+                      onDeny={handleDeny}
+                      onApproveAcceptEdits={handleApproveAcceptEdits}
+                      onDenyWithFeedback={handleDenyWithFeedback}
+                      collapsed={approvalCollapsed}
+                      onCollapsedChange={setApprovalCollapsed}
+                      projectPath={project?.path ?? null}
+                    />
+                    <MessageInputToolbar
+                      sessionId={actualSessionId}
+                      mode={permissionMode}
+                      onModeChange={setPermissionMode}
+                      modeChangesApplyNextTurn={
+                        effectiveProvider === "codex" && shouldDeferMessages
+                      }
+                      modeChangePending={codexPermissionModeChangePending}
+                      supportsPermissionMode={supportsPermissionMode}
+                      supportsThinkingToggle={supportsThinkingToggle}
+                      slashCommands={allSlashCommands}
+                      onSelectSlashCommand={handleToolbarSlashCommand}
+                      thinkingProvider={effectiveProvider}
+                      thinkingModel={liveBadgeModel}
+                      liveThinkingSelection={
+                        liveThinkingSelection
+                          ? {
+                              mode: liveThinkingSelection.mode,
+                              level: liveThinkingSelection.effortLevel,
+                              onSetMode: handleSetLiveThinkingMode,
+                              onSetEffort: handleSetLiveThinkingEffort,
+                            }
+                          : undefined
+                      }
+                      contextRequestedModel={
+                        effectiveModelConfig?.requestedModel
+                      }
+                      heartbeatEnabled={heartbeatTurnsEnabled}
+                      onToggleHeartbeat={handleToggleHeartbeat}
+                      onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
+                      contextUsage={session?.contextUsage}
+                      lastActivityAt={activityAt}
+                      positionTimestampStore={transcriptPositionStore}
+                      sessionLiveness={sessionLiveness}
+                      providerRuntimeStatus={providerRuntimeStatus}
+                      isRunning={status.owner === "self"}
+                      isThinking={canStopOwnedProcess}
+                      onStop={handleAbort}
+                      onDone={
+                        syntheticDoneEnabled || mainComposerForAside
+                          ? handleDoneAction
+                          : undefined
+                      }
+                      doneTitle={
+                        mainComposerForAside
+                          ? t("btwAsideDoneTitle")
+                          : undefined
+                      }
+                      pendingApproval={
+                        approvalCollapsed
+                          ? {
+                              type: "tool-approval",
+                              onExpand: () => setApprovalCollapsed(false),
+                            }
+                          : undefined
+                      }
+                    />
+                  </>
+                )}
+
+              {questionAside.aside && (
+                <QuestionAsideCard
+                  {...questionAside.aside}
+                  onSave={() => {
+                    void questionAside.save();
+                  }}
+                  onDiscard={questionAside.discard}
+                  onSteer={() => {
+                    void questionAside.steer();
+                  }}
+                  onContinueAsBtw={() => {
+                    void questionAside.continueAsBtw();
+                  }}
                 />
               )}
 
-            {/* Tool approval: show panel + always-visible toolbar */}
-            {pendingInputRequest &&
-              pendingInputRequest.sessionId === actualSessionId &&
-              !isAskUserQuestion && (
-                <>
-                  <ToolApprovalPanel
-                    request={pendingInputRequest}
-                    sessionId={actualSessionId}
-                    onApprove={handleApprove}
-                    onDeny={handleDeny}
-                    onApproveAcceptEdits={handleApproveAcceptEdits}
-                    onDenyWithFeedback={handleDenyWithFeedback}
-                    collapsed={approvalCollapsed}
-                    onCollapsedChange={setApprovalCollapsed}
-                    projectPath={project?.path ?? null}
-                  />
-                  <MessageInputToolbar
-                    sessionId={actualSessionId}
-                    mode={permissionMode}
-                    onModeChange={setPermissionMode}
-                    modeChangesApplyNextTurn={
-                      effectiveProvider === "codex" && shouldDeferMessages
-                    }
-                    modeChangePending={codexPermissionModeChangePending}
-                    supportsPermissionMode={supportsPermissionMode}
-                    supportsThinkingToggle={supportsThinkingToggle}
-                    slashCommands={allSlashCommands}
-                    onSelectSlashCommand={handleToolbarSlashCommand}
-                    thinkingProvider={effectiveProvider}
-                    thinkingModel={liveBadgeModel}
-                    liveThinkingSelection={
-                      liveThinkingSelection
-                        ? {
-                            mode: liveThinkingSelection.mode,
-                            level: liveThinkingSelection.effortLevel,
-                            onSetMode: handleSetLiveThinkingMode,
-                            onSetEffort: handleSetLiveThinkingEffort,
-                          }
-                        : undefined
-                    }
-                    contextRequestedModel={effectiveModelConfig?.requestedModel}
-                    heartbeatEnabled={heartbeatTurnsEnabled}
-                    onToggleHeartbeat={handleToggleHeartbeat}
-                    onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
-                    contextUsage={session?.contextUsage}
-                    lastActivityAt={activityAt}
-                    positionTimestampStore={transcriptPositionStore}
-                    sessionLiveness={sessionLiveness}
-                    providerRuntimeStatus={providerRuntimeStatus}
-                    isRunning={status.owner === "self"}
-                    isThinking={canStopOwnedProcess}
-                    onStop={handleAbort}
-                    onDone={
-                      syntheticDoneEnabled || mainComposerForAside
-                        ? handleDoneAction
-                        : undefined
-                    }
-                    doneTitle={
-                      mainComposerForAside ? t("btwAsideDoneTitle") : undefined
-                    }
-                    pendingApproval={
-                      approvalCollapsed
-                        ? {
-                            type: "tool-approval",
-                            onExpand: () => setApprovalCollapsed(false),
-                          }
-                        : undefined
-                    }
-                  />
-                </>
-              )}
-
-            {questionAside.aside && (
-              <QuestionAsideCard
-                {...questionAside.aside}
-                onSave={() => {
-                  void questionAside.save();
-                }}
-                onDiscard={questionAside.discard}
-                onSteer={() => {
-                  void questionAside.steer();
-                }}
-                onContinueAsBtw={() => {
-                  void questionAside.continueAsBtw();
-                }}
-              />
-            )}
-
-            {/* No pending approval: show full message input */}
-            {!(
-              pendingInputRequest &&
-              pendingInputRequest.sessionId === actualSessionId &&
-              !isAskUserQuestion
-            ) && (
-              <MessageInput
-                questionAside={
-                  !mainComposerForAside && !forkSummaryDraft
-                    ? {
-                        canAsk:
-                          questionAsidesEnabled &&
-                          supportsBtwAsides &&
-                          !questionAside.aside &&
-                          (processState === "in-turn" ||
-                            processState === "waiting-input"),
-                        onAsk: (rawText) =>
-                          (processState === "in-turn" ||
-                            processState === "waiting-input") &&
-                          questionAside.ask(rawText),
-                        onSave:
-                          questionAside.aside?.status === "complete"
-                            ? () => {
-                                void questionAside.save();
-                              }
+              {/* No pending approval: show full message input */}
+              {!(
+                pendingInputRequest &&
+                pendingInputRequest.sessionId === actualSessionId &&
+                !isAskUserQuestion
+              ) && (
+                <MessageInput
+                  questionAside={
+                    !mainComposerForAside && !forkSummaryDraft
+                      ? {
+                          canAsk:
+                            questionAsidesEnabled &&
+                            supportsBtwAsides &&
+                            !questionAside.aside &&
+                            (processState === "in-turn" ||
+                              processState === "waiting-input"),
+                          onAsk: (rawText) =>
+                            (processState === "in-turn" ||
+                              processState === "waiting-input") &&
+                            questionAside.ask(rawText),
+                          onSave:
+                            questionAside.aside?.status === "complete"
+                              ? () => {
+                                  void questionAside.save();
+                                }
+                              : undefined,
+                          onDismiss: questionAside.aside
+                            ? questionAside.discard
                             : undefined,
-                        onDismiss: questionAside.aside
-                          ? questionAside.discard
-                          : undefined,
-                      }
-                    : undefined
-                }
-                completionRenderItems={activityRenderItems}
-                speechVocabulary={speechVocabulary}
-                onSend={
-                  mainComposerForAside
-                    ? (text) => handleFocusedBtwSend(text, "main")
-                    : primaryComposerAction === "steer"
-                      ? handleSemanticComposerSend
-                      : shouldDeferMessages
-                        ? handleSemanticComposerDefer
-                        : handleSemanticComposerSend
-                }
-                onQueue={
-                  !mainComposerForAside && shouldDeferMessages
-                    ? handleSemanticComposerDefer
-                    : undefined
-                }
-                onProjectQueue={
-                  !mainComposerForAside && showProjectQueueAction
-                    ? handleProjectQueue
-                    : undefined
-                }
-                onProjectQueueNewSession={
-                  !mainComposerForAside && supportsProjectQueue
-                    ? handleProjectQueueNewSession
-                    : undefined
-                }
-                primaryActionKind={
-                  mainComposerForAside ? "send" : primaryComposerAction
-                }
-                placeholder={
-                  mainComposerForAside
-                    ? "/btw follow-up"
-                    : status.owner === "external"
-                      ? t("sessionPlaceholderExternal")
-                      : processState === "idle"
-                        ? shouldDeferMessages
-                          ? t("sessionPlaceholderQueue")
-                          : t("sessionPlaceholderResume")
-                        : t("sessionPlaceholderQueue")
-                }
-                mode={permissionMode}
-                onModeChange={setPermissionMode}
-                modeChangesApplyNextTurn={
-                  effectiveProvider === "codex" && shouldDeferMessages
-                }
-                modeChangePending={codexPermissionModeChangePending}
-                supportsPermissionMode={supportsPermissionMode}
-                supportsThinkingToggle={supportsThinkingToggle}
-                supportsSteering={generallySupportsSteering}
-                supportsSteerNow={supportsSteerNow}
-                isRunning={status.owner === "self"}
-                isThinking={canStopOwnedProcess}
-                onStop={handleAbort}
-                onDone={
-                  syntheticDoneEnabled || mainComposerForAside
-                    ? handleDoneAction
-                    : undefined
-                }
-                doneTitle={
-                  mainComposerForAside ? t("btwAsideDoneTitle") : undefined
-                }
-                draftKey={
-                  mainComposerForAside && focusedBtwAside
-                    ? `draft-btw-${focusedBtwAside.sessionId ?? focusedBtwAside.id}`
-                    : sessionDraftKey
-                }
-                draftIndex={
-                  mainComposerForAside && focusedBtwAside
-                    ? undefined
-                    : sessionDraftReference
-                }
-                onDraftControlsReady={handleDraftControlsReady}
-                onDraftTextChange={handleComposerDraftTextChange}
-                bangSupport={
-                  mainComposerForAside || !bangCommandsSupported
-                    ? undefined
-                    : composerBangSupport
-                }
-                turnRecall={composerTurnRecall}
-                correctionActive={
-                  !mainComposerForAside && correctionDraft !== null
-                }
-                onCancelCorrection={
-                  mainComposerForAside ? undefined : handleCancelCorrection
-                }
-                onRecallLastSubmission={handleRecallLastSubmission}
-                onCancelLatestDeferred={handleCancelLatestDeferred}
-                collapsed={
-                  !!(
-                    pendingInputRequest &&
-                    pendingInputRequest.sessionId === actualSessionId
-                  )
-                }
-                onFullPaneControlsReady={handleFullPaneControlsReady}
-                contextUsage={session?.contextUsage}
-                lastActivityAt={activityAt}
-                positionTimestampStore={transcriptPositionStore}
-                sessionLiveness={sessionLiveness}
-                providerRuntimeStatus={providerRuntimeStatus}
-                projectId={projectId}
-                sessionId={sessionId}
-                attachments={mainComposerForAside ? [] : attachments}
-                onAttach={mainComposerForAside ? undefined : handleAttach}
-                onRemoveAttachment={
-                  mainComposerForAside ? undefined : handleRemoveAttachment
-                }
-                uploadProgress={mainComposerForAside ? [] : uploadProgress}
-                slashCommands={allSlashCommands}
-                onCustomCommand={handleCustomCommand}
-                onBtwShortcut={
-                  childSessionParentHref || supportsBtwAsides
-                    ? handleBtwShortcut
-                    : undefined
-                }
-                btwActive={!!mainComposerForAside || !!childSessionParentHref}
-                btwHasAsides={
-                  stickyBtwAsides.length > 0 || !!childSessionParentHref
-                }
-                btwToolbarMode={btwToolbarMode}
-                thinkingProvider={effectiveProvider}
-                thinkingModel={liveBadgeModel}
-                liveThinkingSelection={
-                  liveThinkingSelection
-                    ? {
-                        mode: liveThinkingSelection.mode,
-                        level: liveThinkingSelection.effortLevel,
-                        onSetMode: handleSetLiveThinkingMode,
-                        onSetEffort: handleSetLiveThinkingEffort,
-                      }
-                    : undefined
-                }
-                contextRequestedModel={effectiveModelConfig?.requestedModel}
-                heartbeatEnabled={heartbeatTurnsEnabled}
-                onToggleHeartbeat={handleToggleHeartbeat}
-                onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
-                promptSuggestion={
-                  mainComposerForAside
-                    ? undefined
-                    : (promptSuggestion ?? undefined)
-                }
-                onDismissPromptSuggestion={
-                  mainComposerForAside ? undefined : dismissPromptSuggestion
-                }
-                forkSummaryMode={
-                  !mainComposerForAside && forkSummaryDraft
-                    ? {
-                        title: t("forkSummaryComposerTitle"),
-                        description: t("forkSummaryComposerDescription"),
-                        placeholder: t("forkSummaryComposerPlaceholder"),
-                        submitLabel: t("forkSummarySubmit"),
-                        tooltip: t("forkSummaryTooltip"),
-                        icon: "⑂",
-                        noSummarySubmitLabel: t("forkSummaryNoSummarySubmit"),
-                        noSummaryTooltip: t("forkSummaryNoSummaryTooltip"),
-                        noSummaryIcon: "↱",
-                        // The composer fork mode is dismissed the moment we
-                        // submit (generation backgrounds into the indicator),
-                        // so it never sits in a submitting state.
-                        submitting: false,
-                        onCancel: () => setForkSummaryDraft(null),
-                        onSubmit: (instructions) => {
-                          void submitForkAfterSummary(
-                            forkSummaryDraft.sourceMessageId,
-                            instructions,
-                          );
-                        },
-                        onSubmitWithoutSummary: (nextTurnText) => {
-                          void submitForkAfterWithoutSummary(
-                            forkSummaryDraft.sourceMessageId,
-                            nextTurnText,
-                          );
-                        },
-                      }
-                    : undefined
-                }
-                onForkSummaryShortcut={
-                  !mainComposerForAside && supportsForkFromTurn
-                    ? beginForkAfterInitialTurn
-                    : undefined
-                }
-              />
-            )}
-          </div>
-        </footer>
+                        }
+                      : undefined
+                  }
+                  completionRenderItems={activityRenderItems}
+                  speechVocabulary={speechVocabulary}
+                  onSend={
+                    mainComposerForAside
+                      ? (text) => handleFocusedBtwSend(text, "main")
+                      : primaryComposerAction === "steer"
+                        ? handleSemanticComposerSend
+                        : shouldDeferMessages
+                          ? handleSemanticComposerDefer
+                          : handleSemanticComposerSend
+                  }
+                  onQueue={
+                    !mainComposerForAside && shouldDeferMessages
+                      ? handleSemanticComposerDefer
+                      : undefined
+                  }
+                  onProjectQueue={
+                    !mainComposerForAside && showProjectQueueAction
+                      ? handleProjectQueue
+                      : undefined
+                  }
+                  onProjectQueueNewSession={
+                    !mainComposerForAside && supportsProjectQueue
+                      ? handleProjectQueueNewSession
+                      : undefined
+                  }
+                  primaryActionKind={
+                    mainComposerForAside ? "send" : primaryComposerAction
+                  }
+                  placeholder={
+                    mainComposerForAside
+                      ? "/btw follow-up"
+                      : status.owner === "external"
+                        ? t("sessionPlaceholderExternal")
+                        : processState === "idle"
+                          ? shouldDeferMessages
+                            ? t("sessionPlaceholderQueue")
+                            : t("sessionPlaceholderResume")
+                          : t("sessionPlaceholderQueue")
+                  }
+                  mode={permissionMode}
+                  onModeChange={setPermissionMode}
+                  modeChangesApplyNextTurn={
+                    effectiveProvider === "codex" && shouldDeferMessages
+                  }
+                  modeChangePending={codexPermissionModeChangePending}
+                  supportsPermissionMode={supportsPermissionMode}
+                  supportsThinkingToggle={supportsThinkingToggle}
+                  supportsSteering={generallySupportsSteering}
+                  supportsSteerNow={supportsSteerNow}
+                  isRunning={status.owner === "self"}
+                  isThinking={canStopOwnedProcess}
+                  onStop={handleAbort}
+                  onDone={
+                    syntheticDoneEnabled || mainComposerForAside
+                      ? handleDoneAction
+                      : undefined
+                  }
+                  doneTitle={
+                    mainComposerForAside ? t("btwAsideDoneTitle") : undefined
+                  }
+                  draftKey={
+                    mainComposerForAside && focusedBtwAside
+                      ? `draft-btw-${focusedBtwAside.sessionId ?? focusedBtwAside.id}`
+                      : sessionDraftKey
+                  }
+                  draftIndex={
+                    mainComposerForAside && focusedBtwAside
+                      ? undefined
+                      : sessionDraftReference
+                  }
+                  onDraftControlsReady={handleDraftControlsReady}
+                  onDraftTextChange={handleComposerDraftTextChange}
+                  bangSupport={
+                    mainComposerForAside || !bangCommandsSupported
+                      ? undefined
+                      : composerBangSupport
+                  }
+                  turnRecall={composerTurnRecall}
+                  correctionActive={
+                    !mainComposerForAside && correctionDraft !== null
+                  }
+                  onCancelCorrection={
+                    mainComposerForAside ? undefined : handleCancelCorrection
+                  }
+                  onRecallLastSubmission={handleRecallLastSubmission}
+                  onCancelLatestDeferred={handleCancelLatestDeferred}
+                  collapsed={
+                    !!(
+                      pendingInputRequest &&
+                      pendingInputRequest.sessionId === actualSessionId
+                    )
+                  }
+                  onFullPaneControlsReady={handleFullPaneControlsReady}
+                  contextUsage={session?.contextUsage}
+                  lastActivityAt={activityAt}
+                  positionTimestampStore={transcriptPositionStore}
+                  sessionLiveness={sessionLiveness}
+                  providerRuntimeStatus={providerRuntimeStatus}
+                  projectId={projectId}
+                  sessionId={sessionId}
+                  attachments={mainComposerForAside ? [] : attachments}
+                  onAttach={mainComposerForAside ? undefined : handleAttach}
+                  onRemoveAttachment={
+                    mainComposerForAside ? undefined : handleRemoveAttachment
+                  }
+                  uploadProgress={mainComposerForAside ? [] : uploadProgress}
+                  slashCommands={allSlashCommands}
+                  onCustomCommand={handleCustomCommand}
+                  onBtwShortcut={
+                    childSessionParentHref || supportsBtwAsides
+                      ? handleBtwShortcut
+                      : undefined
+                  }
+                  btwActive={!!mainComposerForAside || !!childSessionParentHref}
+                  btwHasAsides={
+                    stickyBtwAsides.length > 0 || !!childSessionParentHref
+                  }
+                  btwToolbarMode={btwToolbarMode}
+                  thinkingProvider={effectiveProvider}
+                  thinkingModel={liveBadgeModel}
+                  liveThinkingSelection={
+                    liveThinkingSelection
+                      ? {
+                          mode: liveThinkingSelection.mode,
+                          level: liveThinkingSelection.effortLevel,
+                          onSetMode: handleSetLiveThinkingMode,
+                          onSetEffort: handleSetLiveThinkingEffort,
+                        }
+                      : undefined
+                  }
+                  contextRequestedModel={effectiveModelConfig?.requestedModel}
+                  heartbeatEnabled={heartbeatTurnsEnabled}
+                  onToggleHeartbeat={handleToggleHeartbeat}
+                  onConfigureHeartbeat={() => setShowHeartbeatModal(true)}
+                  promptSuggestion={
+                    mainComposerForAside
+                      ? undefined
+                      : (promptSuggestion ?? undefined)
+                  }
+                  onDismissPromptSuggestion={
+                    mainComposerForAside ? undefined : dismissPromptSuggestion
+                  }
+                  forkSummaryMode={
+                    !mainComposerForAside && forkSummaryDraft
+                      ? {
+                          title: t("forkSummaryComposerTitle"),
+                          description: t("forkSummaryComposerDescription"),
+                          placeholder: t("forkSummaryComposerPlaceholder"),
+                          submitLabel: t("forkSummarySubmit"),
+                          tooltip: t("forkSummaryTooltip"),
+                          icon: "⑂",
+                          noSummarySubmitLabel: t("forkSummaryNoSummarySubmit"),
+                          noSummaryTooltip: t("forkSummaryNoSummaryTooltip"),
+                          noSummaryIcon: "↱",
+                          // The composer fork mode is dismissed the moment we
+                          // submit (generation backgrounds into the indicator),
+                          // so it never sits in a submitting state.
+                          submitting: false,
+                          onCancel: () => setForkSummaryDraft(null),
+                          onSubmit: (instructions) => {
+                            void submitForkAfterSummary(
+                              forkSummaryDraft.sourceMessageId,
+                              instructions,
+                            );
+                          },
+                          onSubmitWithoutSummary: (nextTurnText) => {
+                            void submitForkAfterWithoutSummary(
+                              forkSummaryDraft.sourceMessageId,
+                              nextTurnText,
+                            );
+                          },
+                        }
+                      : undefined
+                  }
+                  onForkSummaryShortcut={
+                    !mainComposerForAside && supportsForkFromTurn
+                      ? beginForkAfterInitialTurn
+                      : undefined
+                  }
+                />
+              )}
+            </div>
+          </footer>
+        </div>
       </div>
+      <SessionRightPane
+        pane={rightPane}
+        wide={isWideScreen}
+        fileContentRef={setRightPaneTarget}
+      />
     </MainContent>
   );
   return (

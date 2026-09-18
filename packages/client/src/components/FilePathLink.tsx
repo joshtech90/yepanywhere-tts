@@ -3,6 +3,7 @@ import {
   memo,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useId,
   useMemo,
   useRef,
@@ -15,6 +16,10 @@ import {
   usePublicShareContext,
 } from "../contexts/PublicShareContext";
 import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
+import {
+  QuoteReplyProvider,
+  useQuoteReply,
+} from "../contexts/QuoteReplyContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { toBrowserAppHref } from "../lib/appHref";
@@ -29,6 +34,7 @@ import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useFileViewerController } from "../lib/fileViewerController";
 import {
   clearSessionViewer,
+  closeSessionViewer,
   minimizeSessionViewer,
   presentSessionViewer,
 } from "../lib/sessionViewerController";
@@ -62,7 +68,10 @@ import {
   useModalBackspace,
   useModalLayer,
 } from "./ui/Modal";
-import { useSessionViewerSessionId } from "./SessionManagedViewer";
+import {
+  useSessionViewerSessionId,
+  useSessionFileViewerHost,
+} from "./SessionManagedViewer";
 import styles from "./FilePathLink.module.css";
 
 export { FileVersionControlLinks } from "./FileDiffViewLinks";
@@ -170,6 +179,7 @@ export const FilePathLink = memo(function FilePathLink({
 }: FilePathLinkProps) {
   const publicShareContext = usePublicShareContext();
   const sessionViewerSessionId = useSessionViewerSessionId();
+  const quoteReply = useQuoteReply();
   const basePath = useRemoteBasePath();
   const managedViewerId = useId();
   const [showModal, setShowModal] = useState(false);
@@ -241,11 +251,14 @@ export const FilePathLink = memo(function FilePathLink({
           briefLabel: getPathBasename(viewerFilePath),
           filePath: viewerFilePath,
           lineSuffix,
-          renderContent: (inactive) => (
+          supportsRightPane: true,
+          renderContent: (inactive, rightPane) => (
             <FileViewerModal
               key={managedViewerId}
               managedViewerId={managedViewerId}
               inactive={inactive}
+              rightPane={rightPane}
+              quoteReply={quoteReply}
               projectId={projectId}
               filePath={viewerFilePath}
               lineNumber={lineNumber}
@@ -271,6 +284,7 @@ export const FilePathLink = memo(function FilePathLink({
       publicShareContext,
       publicShareFileViewerSource,
       sessionViewerSessionId,
+      quoteReply,
       viewMode,
       viewerFilePath,
     ],
@@ -424,6 +438,8 @@ export const FilePathLink = memo(function FilePathLink({
  * Modal wrapper for FileViewer.
  */
 type FileViewerModalProps = {
+  nestedViewer?: boolean;
+  quoteReply?: ReturnType<typeof useQuoteReply>;
   projectId: string;
   filePath: string;
   lineNumber?: number;
@@ -436,11 +452,13 @@ type FileViewerModalProps = {
   | {
       managedViewerId: string;
       inactive?: boolean;
+      rightPane?: boolean;
       onClose?: never;
     }
   | {
       managedViewerId?: never;
       inactive?: never;
+      rightPane?: never;
       onClose: () => void;
     }
 );
@@ -452,44 +470,95 @@ export function FileViewerModal({
   lineEnd,
   viewMode = "full",
   initialPresentation,
-  source,
+  source: explicitSource,
   openInNewTabUrl,
   managedViewerId,
   inactive = false,
+  rightPane = false,
+  nestedViewer = false,
+  quoteReply: suppliedQuoteReply,
   onClose,
 }: FileViewerModalProps) {
   const publicShareContext = usePublicShareContext();
+  // A share viewer has no authenticated project file route, so every modal
+  // opened inside one reads through the share's own file endpoint.
+  const shareSource = useMemo(
+    () =>
+      publicShareContext
+        ? createPublicShareFileViewerSource(publicShareContext)
+        : undefined,
+    [publicShareContext],
+  );
+  const source = explicitSource ?? shareSource;
+  const inheritedQuoteReply = useQuoteReply();
+  const quoteReply = suppliedQuoteReply ?? inheritedQuoteReply;
+  const hostSessionId = useSessionViewerSessionId();
+  const parentHost = useSessionFileViewerHost();
+  const nested =
+    managedViewerId === undefined && (nestedViewer || parentHost !== null);
+  const inRightPane = rightPane || (nested && !!parentHost?.target);
+  const publishToHost =
+    managedViewerId === undefined &&
+    !nested &&
+    !!hostSessionId &&
+    publicShareContext === null;
   const sessionMetadata = useOptionalSessionMetadata();
   const generatedViewerId = useId();
   const minimizedViewerId = managedViewerId ?? generatedViewerId;
   const publishedViewer = useFileViewerController();
   const minimized = Boolean(
     inactive ||
+      (nested && parentHost?.inactive) ||
       (publishedViewer?.id === minimizedViewerId && publishedViewer.minimized),
   );
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
   const close = useCallback(() => {
+    if (managedViewerId !== undefined) {
+      closeSessionViewer(minimizedViewerId);
+      return;
+    }
     clearSessionViewer(minimizedViewerId);
     onCloseRef.current?.();
-  }, [minimizedViewerId]);
+  }, [minimizedViewerId, managedViewerId]);
   const minimize = useCallback(
     () => minimizeSessionViewer(minimizedViewerId),
     [minimizedViewerId],
   );
-  useEffect(() => {
-    if (managedViewerId !== undefined) return;
+  useLayoutEffect(() => {
+    if (managedViewerId !== undefined || nested) return;
     if (publicShareContext !== null) return;
     const lineSuffix = formatLineSuffix(lineNumber, lineEnd);
     presentSessionViewer({
       id: minimizedViewerId,
       kind: "file",
-      sessionId: sessionMetadata?.sessionId ?? "",
+      sessionId: hostSessionId ?? sessionMetadata?.sessionId ?? "",
       label: `${filePath}${lineSuffix}`,
       briefLabel: getPathBasename(filePath),
       onClose: close,
       filePath,
       lineSuffix,
+      ...(publishToHost
+        ? {
+            supportsRightPane: true,
+            renderContent: (inactive: boolean, rightPane?: boolean) => (
+              <FileViewerModal
+                managedViewerId={minimizedViewerId}
+                inactive={inactive}
+                rightPane={rightPane}
+                quoteReply={quoteReply}
+                projectId={projectId}
+                filePath={filePath}
+                lineNumber={lineNumber}
+                lineEnd={lineEnd}
+                viewMode={viewMode}
+                initialPresentation={initialPresentation}
+                source={source}
+                openInNewTabUrl={openInNewTabUrl}
+              />
+            ),
+          }
+        : {}),
     });
   }, [
     close,
@@ -497,23 +566,76 @@ export function FileViewerModal({
     lineEnd,
     lineNumber,
     managedViewerId,
+    nested,
     minimizedViewerId,
     publicShareContext,
     sessionMetadata?.sessionId,
+    hostSessionId,
+    publishToHost,
+    projectId,
+    viewMode,
+    initialPresentation,
+    source,
+    openInNewTabUrl,
+    quoteReply,
   ]);
   useEffect(() => {
-    if (managedViewerId !== undefined) return;
+    if (managedViewerId !== undefined || publishToHost || nested) return;
     return () => clearSessionViewer(minimizedViewerId);
-  }, [managedViewerId, minimizedViewerId]);
+  }, [managedViewerId, minimizedViewerId, publishToHost, nested]);
   const handleOverlayClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
       close();
     }
   };
 
-  useModalBackGesture(close, !minimized, "__fileViewerModal");
-  useModalBackspace(close, !minimized);
-  useModalLayer(close, !minimized);
+  const interactive =
+    !publishToHost &&
+    !minimized &&
+    (!inRightPane || nested || publishedViewer?.id === minimizedViewerId);
+  useModalBackGesture(close, interactive, "__fileViewerModal");
+  useModalBackspace(close, interactive);
+  useModalLayer(close, interactive);
+
+  if (publishToHost) return null;
+
+  const fileViewer = (
+    <FileViewer
+      projectId={projectId}
+      filePath={filePath}
+      lineNumber={lineNumber}
+      lineEnd={lineEnd}
+      viewMode={viewMode}
+      initialPresentation={initialPresentation}
+      source={source}
+      openInNewTabUrl={openInNewTabUrl}
+      onClose={close}
+      onMinimize={publicShareContext === null && !nested ? minimize : undefined}
+      parentViewerId={managedViewerId}
+    />
+  );
+  const viewer = quoteReply ? (
+    <QuoteReplyProvider onQuoteTextBlock={quoteReply}>
+      {fileViewer}
+    </QuoteReplyProvider>
+  ) : (
+    fileViewer
+  );
+  if (inRightPane) {
+    const paneContent = (
+      <GlossaryProjectBoundary projectId={projectId}>
+        <div
+          className={`${styles.paneViewer} ${nested ? styles.nestedPaneViewer : ""}`}
+          {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
+        >
+          {viewer}
+        </div>
+      </GlossaryProjectBoundary>
+    );
+    return nested && parentHost?.target
+      ? createPortal(paneContent, parentHost.target)
+      : paneContent;
+  }
 
   const sessionViewerLayer =
     publicShareContext === null
@@ -540,19 +662,7 @@ export function FileViewerModal({
         open
         onClick={(e) => e.stopPropagation()}
       >
-        <FileViewer
-          projectId={projectId}
-          filePath={filePath}
-          lineNumber={lineNumber}
-          lineEnd={lineEnd}
-          viewMode={viewMode}
-          initialPresentation={initialPresentation}
-          source={source}
-          openInNewTabUrl={openInNewTabUrl}
-          onClose={close}
-          onMinimize={publicShareContext === null ? minimize : undefined}
-          parentViewerId={managedViewerId}
-        />
+        {viewer}
       </dialog>
     </div>
   );

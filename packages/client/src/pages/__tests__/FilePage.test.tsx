@@ -8,8 +8,17 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../../components/FileViewer", () => ({
-  FileViewer: ({ filePath }: { filePath: string }) => (
-    <div data-testid="file-viewer">{filePath}</div>
+  FileViewer: ({
+    filePath,
+    headerLeading,
+  }: {
+    filePath: string;
+    headerLeading?: React.ReactNode;
+  }) => (
+    <div>
+      {headerLeading}
+      <div data-testid="file-viewer">{filePath}</div>
+    </div>
   ),
 }));
 

@@ -2,6 +2,7 @@ import {
   isInjectedContinuationPrompt,
   isSyntheticNoResponseTurn,
 } from "../claude-sdk-schema/guards.js";
+import { isPostCompactReplayText } from "../postCompactReplay.js";
 import type { ContentBlock, Message } from "./message.js";
 import type {
   RenderItem,
@@ -134,6 +135,22 @@ const CLAUDE_COMPACT_SUMMARY_PREAMBLE =
  * as a user bubble. Prefer the explicit flag; fall back to Claude's stable
  * preamble (and transcript-only marker) when live SDK stream omits the flag.
  */
+function isPostCompactReplayMessage(msg: Message): boolean {
+  const content = getPreprocessMessageContent(msg);
+  if (content === undefined) {
+    return false;
+  }
+  const text =
+    typeof content === "string" ? content : contentBlocksText(content);
+  if (!isPostCompactReplayText(text)) {
+    return false;
+  }
+  const role =
+    (msg.message as { role?: "user" | "assistant" } | undefined)?.role ??
+    msg.role;
+  return msg.type === "user" || role === "user";
+}
+
 function isCompactSummaryMessage(msg: Message): boolean {
   if (msg.isCompactSummary === true) {
     return true;
@@ -266,6 +283,9 @@ export function isUserPromptMessage(msg: Message): boolean {
   if (isCompactSummaryMessage(msg)) {
     return false;
   }
+  if (isPostCompactReplayMessage(msg)) {
+    return false;
+  }
   if (isSlashCommandSkillBodyMessage(msg)) {
     return false;
   }
@@ -322,6 +342,9 @@ function processMessage(
   if (isInjectedContinuationPrompt(msg)) {
     return;
   }
+  if (isPostCompactReplayMessage(msg)) {
+    return;
+  }
   if (isSyntheticNoResponseTurn(msg)) {
     items.push({
       type: "system",
@@ -354,6 +377,19 @@ function processMessage(
   // Handle system entries (compact_boundary, status, etc.)
   if (msg.type === "system") {
     const subtype = (msg as { subtype?: string }).subtype ?? "unknown";
+    if (subtype === "informational") {
+      if (typeof msg.content === "string" && msg.content.trim()) {
+        items.push({
+          type: "system",
+          id: msgId,
+          subtype: msg.level === "warning" ? "warning" : "informational",
+          content: msg.content,
+          sourceMessages: [msg],
+          isSubagent: msg.isSubagent,
+        });
+      }
+      return;
+    }
     if (subtype === "local_command") {
       const content = systemLocalCommandContent(msg.content);
       if (content !== null) {

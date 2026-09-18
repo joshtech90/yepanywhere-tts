@@ -7,6 +7,9 @@ use them as a current gap list.
 
 ## Newer source reviews
 
+- [Zed DeltaDB / Delta — 2026-09-15](deltadb.md#feature-comparison-with-yep-anywhere):
+  provenance, branching, and multiplayer comparison against a closed hosted
+  product, inferred from Zed's open CRDT crates and published claims.
 - [bb — 2026-09-13](bb.md#feature-comparison-with-yep-anywhere): current paired
   comparison, with source/release distinctions and provider-specific limits.
 - [T3 Code — 2026-09-04](t3code.md): source review covering web, desktop,

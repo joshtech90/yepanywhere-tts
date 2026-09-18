@@ -31,6 +31,7 @@ export function createArtifactRoutes(options: {
         await c.req.json(),
         options.server.config.expiryDays,
         options.server.config.deleteOnExpiry,
+        options.server.config,
       );
       const requestHost = new URL(
         `http://${c.req.header("Host") ?? new URL(c.req.url).host}`,
@@ -109,8 +110,8 @@ export function createArtifactRoutes(options: {
       ),
     );
   });
-  routes.delete("/artifacts/:id", (c) => {
-    options.server.revoke(c.req.param("id"));
+  routes.delete("/artifacts/:id", async (c) => {
+    await options.server.revoke(c.req.param("id"));
     return c.json({ success: true });
   });
   return routes;

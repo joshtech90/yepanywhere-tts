@@ -32,6 +32,6 @@ Related contracts: `topics/client-global-store.md`,
 `topics/session-summary-fidelity.md`, and `topics/remote-browser-diagnostics.md`.
 Existing restart and high-cadence investigations remain in
 `gaps/sidebar-slow-after-server-restart.md` and
-`gaps/cached-sidebar-high-cadence-catch-up.md`.
+`gaps/sketches/cached-sidebar-high-cadence-catch-up.md`.
 
 Found 2026-09-09 while fixing sidebar and composer flashing in the affected tab.

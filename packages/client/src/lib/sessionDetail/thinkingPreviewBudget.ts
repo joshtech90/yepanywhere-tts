@@ -88,3 +88,56 @@ export function conversationRowHeightCeilingPx(
 ): number {
   return Math.max(0, viewportHeightPx - reservedPx);
 }
+
+/**
+ * Ignore shrinks this small when publishing a measured CSS length. Two CSS
+ * pixels is one hairline on each side of a box, and it is also the observed
+ * amplitude of the conversation-activity row's follow-mode vertical squirm.
+ * Growth still publishes immediately so a wrapping line is not delayed.
+ */
+export const CONVERSATION_LAYOUT_HYSTERESIS_PX = 2;
+
+/**
+ * Same-line vs wrapped decision for the current and previous thinking cards.
+ *
+ * The previous comparison was a 1px ceiling with no deadband, so a 2px
+ * subpixel/baseline wobble classified the pair as stacked, the stacked cap
+ * moved a card, and the next measure classified them as sharing a line again.
+ * Enter "same line" at 1px (the original slack); leave it only once the
+ * previous card is more than 4px below — a real wrap, not measurement noise.
+ */
+export const SHARE_FLEX_LINE_AT_OR_BELOW_PX = 1;
+export const STACK_FLEX_LINE_ABOVE_PX = 4;
+
+/**
+ * Fold a new measurement into the last published CSS length: grow at once,
+ * ignore shrinks of {@link CONVERSATION_LAYOUT_HYSTERESIS_PX} or less.
+ */
+export function stabilizePublishedPx(
+  previousPx: number | null,
+  measuredPx: number,
+  hysteresisPx: number = CONVERSATION_LAYOUT_HYSTERESIS_PX,
+): number {
+  if (previousPx === null || measuredPx > previousPx) return measuredPx;
+  if (previousPx - measuredPx <= hysteresisPx) return previousPx;
+  return measuredPx;
+}
+
+/**
+ * Whether two thinking cards still share a flex line, with a deadband so a
+ * 2px top-delta cannot flap stacked vs side-by-side.
+ *
+ * `previousMinusLatestTopPx` is signed the same way the layout reads it:
+ * ~0 when they share a line, large and positive when the previous card wrapped
+ * below. Negative (previous above) still counts as sharing a line.
+ */
+export function cardsShareFlexLine(
+  previousMinusLatestTopPx: number,
+  previouslyShared: boolean,
+  shareAtOrBelowPx: number = SHARE_FLEX_LINE_AT_OR_BELOW_PX,
+  stackAbovePx: number = STACK_FLEX_LINE_ABOVE_PX,
+): boolean {
+  if (previousMinusLatestTopPx <= shareAtOrBelowPx) return true;
+  if (previousMinusLatestTopPx > stackAbovePx) return false;
+  return previouslyShared;
+}

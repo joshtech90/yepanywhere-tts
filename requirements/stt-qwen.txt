@@ -1,0 +1,2 @@
+# Qwen3-ASR-hf uses the same native Transformers runtime as Parakeet/Granite.
+-r stt-parakeet.txt

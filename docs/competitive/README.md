@@ -28,6 +28,15 @@ Official apps from AI providers:
 
 See also [Community Projects](community-projects.md) for smaller tools shared on Reddit/forums.
 
+## Adjacent: Version Control And Multiplayer Threads
+
+| Product | Type | Key Differentiator |
+|---------|------|-------------------|
+| [Zed DeltaDB / Delta](deltadb.md) | Hosted early access, closed source | Operation-level history with every edit linked to its agent message, delta-anchored comments, free mid-run branches, live multi-person threads |
+
+Not an agent supervisor, but it overlaps YA on code↔conversation provenance,
+forking, and shared sessions; the review names the YA sketches it motivates.
+
 ## The "Claw" Ecosystem (Adjacent Category)
 
 "Claw" is now a recognized category term (Karpathy coined it, Willison validated it, Feb 2026) for AI agents that run on personal hardware, communicate via messaging, and schedule autonomous tasks. These are **runtimes that wrap LLM APIs**, not agent supervisors like yepanywhere. But they overlap enough to track.
@@ -93,4 +102,5 @@ See **[Ecosystem](../ecosystem/)** for adjacent projects — agent-to-agent coor
 
 ## Last Updated
 
-2026-09-13 (bb added; other competitor snapshots retain their own dates)
+2026-09-15 (Zed DeltaDB/Delta added; other competitor snapshots retain their
+own dates)

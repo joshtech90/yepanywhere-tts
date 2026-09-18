@@ -44,6 +44,48 @@ function deferred<T>(): {
 }
 
 describe("Providers Routes", () => {
+  it("advertises native bounded turn search independently of provider authentication", async () => {
+    const routes = createProvidersRoutes({
+      providers: [
+        "claude",
+        "claude-gateway",
+        "claude-ollama",
+        "codex",
+        "codex-oss",
+        "grok",
+        "gemini",
+        "opencode",
+        "pi",
+      ].map((name) =>
+        createProvider({
+          name: name as AgentProvider["name"],
+          getAuthStatus: vi.fn(async () => ({
+            installed: false,
+            authenticated: false,
+            enabled: false,
+          })),
+        }),
+      ),
+    });
+    const response = await routes.request("/");
+    const { providers } = (await response.json()) as {
+      providers: ProviderInfo[];
+    };
+    expect(providers.map((p) => [p.name, p.supportsBoundedTurnSearch])).toEqual(
+      [
+        ["claude", true],
+        ["claude-gateway", true],
+        ["claude-ollama", true],
+        ["codex", true],
+        ["codex-oss", true],
+        ["grok", false],
+        ["gemini", false],
+        ["opencode", false],
+        ["pi", false],
+      ],
+    );
+  });
+
   it("adds a coarse application hint only for the desktop runtime", async () => {
     const provider = createProvider({
       getAuthStatus: vi.fn(async () => ({

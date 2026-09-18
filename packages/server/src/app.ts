@@ -21,9 +21,20 @@ import {
   type ArtifactConfig,
 } from "./artifacts/config.js";
 import { createArtifactRoutes } from "./routes/artifacts.js";
+import { createVhostAppRoutes } from "./routes/vhostApps.js";
+import { createVhostAccessRoutes } from "./routes/vhostAccess.js";
+import {
+  VhostAppControl,
+  vhostAppControlAvailable,
+} from "./artifacts/VhostAppControl.js";
+import { gatewayServiceUsage } from "./sdk/providers/gatewayServiceUsage.js";
+import { syncGatewayServiceExports } from "./sdk/providers/gatewayServiceExport.js";
+import { noteGatewayServiceUsage } from "./sdk/providers/claude-gateway.js";
 import {
   isArtifactHost,
   isArtifactOrigin,
+  isVhostHost,
+  isVhostOrigin,
 } from "./middleware/allowed-hosts.js";
 import { RESPONSE_ALREADY_SENT } from "@hono/node-server/utils/response";
 import type {
@@ -200,6 +211,7 @@ import { createSharingRoutes } from "./routes/sharing.js";
 import { createSupervisorQueueRoutes } from "./routes/supervisor-queue.js";
 import { createToolResultMediaRoutes } from "./routes/tool-result-media.js";
 import { ClaudeGatewayProvider } from "./sdk/providers/claude-gateway.js";
+import { gatewayEffortProbeCache } from "./services/GatewayEffortProbe.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 
@@ -210,6 +222,7 @@ import { type UploadDeps, createUploadRoutes } from "./routes/upload.js";
 import { createSpeechRoutes } from "./routes/speech.js";
 import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
+import type { SpeechBackendInstallService } from "./services/voice/speechBackendInstall.js";
 import { createSecurityClientRoutes } from "./routes/security-clients.js";
 import {
   DiscoverySqliteService,
@@ -473,6 +486,10 @@ export interface AppOptions {
   voiceInputEnabled?: boolean;
   /** Validated server-routed speech backends for capability advertisement. */
   speechBackendRegistry?: SpeechBackendRegistry;
+  /** Env-listed STT backends, used to union with persisted Speech settings. */
+  envVoiceBackends?: string[];
+  /** Installs pixi runtimes and Hugging Face weights for local STT backends. */
+  speechBackendInstallService?: SpeechBackendInstallService;
   /** xAI STT key used for ya-grok and to mint direct-browser client secrets. */
   xaiSttApiKey?: string;
   /** Whether authenticated clients may borrow the long-lived xAI STT key. */
@@ -484,6 +501,7 @@ export interface AppOptions {
 }
 
 export interface AppResult {
+  safeRestartService?: SafeRestartService;
   focusedSessionWatchManager: FocusedSessionWatchManager;
   conversationSubscriptions: ConversationSubscriptions;
   artifactServer: ArtifactServer;
@@ -613,6 +631,11 @@ export function createApp(options: AppOptions): AppResult {
       claudeGatewayDisablePlanMode: options.serverSettingsService?.getSetting(
         "claudeGatewayDisablePlanMode",
       ),
+      gatewayServices:
+        options.serverSettingsService?.getSetting("gatewayServices"),
+      defaultGatewayServiceId: options.serverSettingsService?.getSetting(
+        "defaultGatewayServiceId",
+      ),
       subagentMaxDepth: getConfiguredSubagentMaxDepth(),
       ollamaUrl: options.serverSettingsService?.getSetting("ollamaUrl"),
       ollamaSystemPrompt:
@@ -634,9 +657,16 @@ export function createApp(options: AppOptions): AppResult {
   const app = new Hono<{ Bindings: HttpBindings }>();
   app.use("*", async (c, next) => {
     const host = c.req.header("Host") ?? new URL(c.req.url).host;
-    if (artifactServer?.matchesHost(host))
-      return artifactServer.app.fetch(c.req.raw);
-    if (isArtifactHost(host) || isArtifactOrigin(c.req.header("Origin")))
+    const dispatched = artifactServer
+      ? await artifactServer.dispatchHost(c.req.raw)
+      : null;
+    if (dispatched) return dispatched;
+    if (
+      isArtifactHost(host) ||
+      isVhostHost(host) ||
+      isArtifactOrigin(c.req.header("Origin")) ||
+      isVhostOrigin(c.req.header("Origin"))
+    )
       return c.json({ error: "Artifact documents cannot access YA" }, 403);
     await next();
   });
@@ -814,12 +844,10 @@ export function createApp(options: AppOptions): AppResult {
     validateArtifactConfig(artifactConfig, undefined, true),
     localResourcePathPolicy,
     {
-      stateDir: options.dataDir
-        ? join(options.dataDir, "artifacts")
-        : undefined,
+      stateDir: join(effectiveDataDir, "artifacts"),
       // An owning grant may never delete YA's own state or the checkout it
       // runs from, however the request was phrased.
-      protectedPaths: [options.dataDir, process.cwd()],
+      protectedPaths: [effectiveDataDir, process.cwd()],
     },
   );
   app.route(
@@ -831,6 +859,11 @@ export function createApp(options: AppOptions): AppResult {
       locked: options.artifacts !== undefined,
     }),
   );
+  const vhostAppControl = new VhostAppControl(
+    () => artifactServer.config.vhosts ?? [],
+  );
+  app.route("/api", createVhostAppRoutes(vhostAppControl));
+  app.route("/api", createVhostAccessRoutes(artifactServer));
   const toolResultMediaStore = new ToolResultMediaStore({
     dataDir: options.dataDir,
     storagePolicy: projectStoragePolicy,
@@ -902,6 +935,7 @@ export function createApp(options: AppOptions): AppResult {
     await artifactServer.close();
     await projectFileCompletion.dispose();
     await bangCommandService?.dispose();
+    await scanner.dispose();
     const entries = Array.from(readerCache.entries());
     readerCache.clear();
     await Promise.all(entries.map(([key, reader]) => closeReader(key, reader)));
@@ -1371,6 +1405,11 @@ export function createApp(options: AppOptions): AppResult {
   supervisor = new Supervisor({
     onSessionStopRequested: (sessionId) =>
       pushNotifier?.suppressSession(sessionId),
+    onProcessInventoryChanged: () => {
+      // Gateway services that opted into auto-stop need to know when their
+      // last session goes away; the live process list is that answer.
+      noteGatewayServiceUsage(gatewayServiceUsage(supervisor));
+    },
     sdk: options.sdk,
     realSdk: options.realSdk,
     provider:
@@ -1399,31 +1438,25 @@ export function createApp(options: AppOptions): AppResult {
           Promise.resolve()
       : undefined,
     onSuccessfulProviderSession: options.onSuccessfulProviderSession,
-    getSessionChildEnv:
-      options.getSessionWakeBaseUrl || options.getBrowserDebugConnection
-        ? (sessionId, executor) => {
-            const wakeBaseUrl = options.getSessionWakeBaseUrl?.(executor);
-            const browserDebugConnection =
-              options.getBrowserDebugConnection?.(executor);
-            const serverUrl = browserDebugConnection?.baseUrl ?? wakeBaseUrl;
-            return {
-              ...(serverUrl ? { AGENT_SERVER_URL: serverUrl } : {}),
-              ...artifactViewerAgentEnvironment(artifactServer, serverUrl),
-              ...(browserDebugConnection
-                ? browserDebugService.getAgentEnvironment(
-                    browserDebugConnection.baseUrl,
-                    browserDebugConnection.caCertificate,
-                  )
-                : {}),
-              ...(wakeBaseUrl
-                ? sessionWakeService?.environmentForSession(
-                    sessionId,
-                    wakeBaseUrl,
-                  )
-                : {}),
-            };
-          }
-        : undefined,
+    getSessionChildEnv: (sessionId, executor) => {
+      const wakeBaseUrl = options.getSessionWakeBaseUrl?.(executor);
+      const browserDebugConnection =
+        options.getBrowserDebugConnection?.(executor);
+      const serverUrl = browserDebugConnection?.baseUrl ?? wakeBaseUrl;
+      return {
+        ...(serverUrl ? { AGENT_SERVER_URL: serverUrl } : {}),
+        ...artifactViewerAgentEnvironment(artifactServer, serverUrl, executor),
+        ...(browserDebugConnection
+          ? browserDebugService.getAgentEnvironment(
+              browserDebugConnection.baseUrl,
+              browserDebugConnection.caCertificate,
+            )
+          : {}),
+        ...(wakeBaseUrl
+          ? sessionWakeService?.environmentForSession(sessionId, wakeBaseUrl)
+          : {}),
+      };
+    },
     // Durably record a model's real context window the moment a process
     // observes it (in the result message), independent of any client fetch.
     onContextWindowObserved: options.modelInfoService
@@ -1502,6 +1535,8 @@ export function createApp(options: AppOptions): AppResult {
         inactivityMinutes,
       };
     },
+    getPostCompactReplaySettings: () =>
+      options.serverSettingsService?.getSetting("postCompactReplay"),
     getCacheMissBillingSettings: () =>
       options.serverSettingsService?.getSetting("cacheMissBilling"),
     getClaudeSteerBackgroundBashSettings: () =>
@@ -1725,6 +1760,7 @@ export function createApp(options: AppOptions): AppResult {
         Boolean(conversationSubscriptions),
       getSqliteStatus: () => discoverySqlite.getStatus(),
       getIssueAssociationsAvailable: () => Boolean(issueIndexer),
+      vhostAppControlAvailable,
       getArtifactViewerStatus: () => ({
         ...artifactServer.config,
         available: artifactServer.available,
@@ -2630,8 +2666,18 @@ export function createApp(options: AppOptions): AppResult {
           ? (enabled) =>
               options.remoteSessionService?.setDiskPersistenceEnabled(enabled)
           : undefined,
-        onClaudeGatewaySettingsChanged: (settings) =>
-          ClaudeGatewayProvider.configureGateway(settings),
+        onClaudeGatewaySettingsChanged: async (settings) => {
+          // Applied before the services are, so a read triggered by the
+          // reconfigure already sees the current answer about whether to ask.
+          gatewayEffortProbeCache.setEnabled(settings.effortDetection ?? true);
+          await ClaudeGatewayProvider.configureGatewayServices(settings);
+          // The export mirrors the configured list, so it re-syncs on every
+          // change rather than only when the export itself is toggled.
+          await syncGatewayServiceExports({
+            services: settings.services,
+            enabled: settings.exportToProviderClis ?? false,
+          });
+        },
         onOllamaUrlChanged: (url) => {
           ClaudeOllamaProvider.setOllamaUrl(url);
         },
@@ -3029,6 +3075,9 @@ export function createApp(options: AppOptions): AppResult {
         serverSettingsService: options.serverSettingsService,
         xaiSttApiKey: options.xaiSttApiKey,
         shareXaiSttApiKeyWithClients: options.shareXaiSttApiKeyWithClients,
+        envVoiceBackends: options.envVoiceBackends,
+        speechBackendInstallService: options.speechBackendInstallService,
+        safeRestartService,
       }),
     );
   }
@@ -3109,6 +3158,7 @@ export function createApp(options: AppOptions): AppResult {
   return {
     app,
     conversationSubscriptions,
+    safeRestartService,
     focusedSessionWatchManager,
     artifactServer,
     supervisor,

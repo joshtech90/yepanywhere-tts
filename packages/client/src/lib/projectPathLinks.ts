@@ -2,27 +2,47 @@ import {
   findProjectPathTokens,
   type ProjectPathLinkTarget,
 } from "@yep-anywhere/shared";
+import {
+  buildPublicShareFileHref,
+  type PublicShareContextValue,
+} from "../contexts/PublicShareContext";
 
 export interface AnnotatedProjectPathLinksHtml {
   changed: boolean;
   html: string;
 }
 
+/**
+ * Point one anchor at the file, through whichever route this viewer may use.
+ *
+ * Returns false when a public-share viewer cannot reach the file — outside the
+ * share's project — so the caller leaves the text alone rather than minting a
+ * link that only the owner could follow.
+ */
 function setProjectPathAnchorTarget(
   anchor: HTMLAnchorElement,
   projectId: string,
   filePath: string,
-): void {
-  const params = new URLSearchParams({ path: filePath });
-  anchor.setAttribute(
-    "href",
-    `/projects/${encodeURIComponent(projectId)}/file?${params}`,
-  );
+  publicShare: PublicShareContextValue | null | undefined,
+): boolean {
+  if (publicShare) {
+    const shareHref = buildPublicShareFileHref(publicShare, { filePath });
+    if (!shareHref) return false;
+    anchor.setAttribute("href", shareHref);
+    anchor.dataset.publicShareFileLink = "true";
+  } else {
+    const params = new URLSearchParams({ path: filePath });
+    anchor.setAttribute(
+      "href",
+      `/projects/${encodeURIComponent(projectId)}/file?${params}`,
+    );
+    anchor.dataset.yaPrivateProjectFileLink = "true";
+  }
   anchor.dataset.yaResource = "project-file";
   anchor.dataset.yaProjectId = projectId;
   anchor.dataset.yaPath = filePath;
-  anchor.dataset.yaPrivateProjectFileLink = "true";
   anchor.title = `${filePath}\nClick to view, or use a browser link gesture to open this file`;
+  return true;
 }
 
 /** Link basename occurrences inside one already-sanitized HTML fragment. */
@@ -30,6 +50,7 @@ export function annotateProjectPathLinksHtml(
   html: string,
   links: readonly ProjectPathLinkTarget[] | undefined,
   projectId: string | undefined,
+  publicShare?: PublicShareContextValue | null,
 ): AnnotatedProjectPathLinksHtml {
   if (
     !html ||
@@ -50,8 +71,9 @@ export function annotateProjectPathLinksHtml(
   )) {
     const filePath = targets.get(anchor.textContent?.trim() ?? "");
     if (!filePath) continue;
-    setProjectPathAnchorTarget(anchor, projectId, filePath);
-    changed = true;
+    if (setProjectPathAnchorTarget(anchor, projectId, filePath, publicShare)) {
+      changed = true;
+    }
   }
 
   const walker = document.createTreeWalker(
@@ -77,10 +99,19 @@ export function annotateProjectPathLinksHtml(
     for (let index = matches.length - 1; index >= 0; index -= 1) {
       const match = matches[index];
       if (!match) continue;
+      const anchor = document.createElement("a");
+      if (
+        !setProjectPathAnchorTarget(
+          anchor,
+          projectId,
+          targets.get(match.text)!,
+          publicShare,
+        )
+      ) {
+        continue;
+      }
       const suffix = textNode.splitText(match.end);
       const matched = textNode.splitText(match.start);
-      const anchor = document.createElement("a");
-      setProjectPathAnchorTarget(anchor, projectId, targets.get(match.text)!);
       matched.replaceWith(anchor);
       anchor.append(matched);
       void suffix;

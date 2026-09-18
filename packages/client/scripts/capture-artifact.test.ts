@@ -17,7 +17,14 @@ const loader = pathToFileURL(
 const script = fileURLToPath(new URL("./capture-artifact.ts", import.meta.url));
 
 describe("artifact capture command", () => {
-  beforeEach(() => vi.stubEnv("AGENT_SERVER_URL", undefined));
+  // Both variables are ordinarily set in an agent session, and the child
+  // process below inherits this one's environment. A developer's real artifact
+  // origin would otherwise decide delivery for tests that are about what the
+  // server announces.
+  beforeEach(() => {
+    vi.stubEnv("AGENT_SERVER_URL", undefined);
+    vi.stubEnv("AGENT_ARTIFACT_VIEWER_ORIGIN", undefined);
+  });
   afterEach(() => vi.unstubAllEnvs());
   it("uses the supervising server URL, with explicit override and local opt-out", () => {
     const env = { AGENT_SERVER_URL: "http://localhost:4010/" };

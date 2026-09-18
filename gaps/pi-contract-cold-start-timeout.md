@@ -25,3 +25,9 @@ stdout (`Unrecognized Pi version output:`), while an isolated contract rerun
 passed in 7.1 seconds. The empty output's cause was not established; the
 isolated pass does not make the full-suite result clean.
 Contributing-model: 6-Astra
+
+Observed again 2026-09-15 during shell-wait display verification: the full
+workspace run failed only this server test, with empty version stdout;
+5,283 other server tests passed. The isolated Pi contract passed in 10.7s.
+The full-suite failure remains unresolved.
+Contributing-model: 6-Astra

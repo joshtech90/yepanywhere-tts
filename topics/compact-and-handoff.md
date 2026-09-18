@@ -7,6 +7,8 @@ For the broader action/state contract used by composer controls (`direct`,
 `steer`, `deferred`), and for how compacting should drive the shared
 model-selector replacement text, see
 [`message-control-steer-queue-btw-later-interrupt.md`](./message-control-steer-queue-btw-later-interrupt.md).
+Same-session continuation after a compact boundary, when opted in, is
+[post-compact-replay](post-compact-replay.md).
 
 ## Scope and motivation
 

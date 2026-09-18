@@ -40,12 +40,6 @@ test("exports matching source states, a complete bundle, and a working direct YA
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(error.message));
   page.on("console", (message) => {
-    // Chromium lacks this permission name; YA deliberately denies it for other engines.
-    if (
-      message.text() ===
-      "Error with Permissions-Policy header: Unrecognized feature: 'bluetooth'."
-    )
-      return;
     if (["warning", "error"].includes(message.type()))
       problems.push(message.text());
   });

@@ -26,7 +26,7 @@ It is simply wired to the wrong source.
   message filter reject it.
 
 This retires the anchor I proposed in
-[the seen-filter entry](vocabulary-seen-filter-may-be-redundant.md). A stored
+[the seen-filter entry](sketches/vocabulary-seen-filter-may-be-redundant.md). A stored
 "collect from this instant" was an attempt to make a window mean live arrival.
 With a real live feed there is nothing to anchor: arrival is the qualification.
 The window goes back to meaning only what it says, how far to replay.

@@ -868,6 +868,58 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
+Current source refresh, 2026-09-16:
+
+- `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.258` to `0.3.273`;
+  the SDK-native executable reports Claude Code `2.1.273`, the same version as
+  the independently installed `claude`. YA still resolves the bundled binary
+  first, so the standalone installation had not changed what YA launches: the
+  pre-bump resolution answered `2.1.258` from the SDK's own native package.
+- Declared surfaces drift additively. No type or method YA consumes was removed
+  or renamed. `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` and
+  `reloadPlugins()` each gained an optional argument, `SDKControlGetUsageResponse`
+  is unchanged field for field, and `terminal_slash_commands` still carries the
+  remote-inventory filter. New unused surfaces are `reloadOutputStyles()`,
+  hooks-listing and permission-rule control requests, a result-frame
+  `usage_report`, `markDelivered()`, host permission-prompt and plugin-delivery
+  options, and no-response retry timings. Repository typecheck passes unchanged.
+- The usage response carries more than YA reads and more than the SDK declares.
+  A live no-turn call returns `limits[]` rows with `kind`, `group`, `percent`,
+  `severity`, and model/surface `scope`; a `spend` block; a `seven_day_breakdown`
+  attributing the weekly window across Claude Code, Chats, Cowork, and Other;
+  `member_dashboard_available`; and roughly a dozen additional named limit
+  buckets that were null for this account. `normalizeClaudeSubscriptionUsage`
+  consumes `five_hour`, `seven_day`, `model_scoped`, and `extra_usage` only.
+  The declared `behaviors` aggregates are likewise populated in a no-turn
+  session. `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` gained
+  an optional `skipBehaviors`; YA deliberately does not pass it, because the
+  saved work is a payload nobody pays for and declining it would foreclose
+  surfacing that detail later.
+- An authenticated no-turn handshake returns the same catalog the 2026-09-02
+  refresh recorded — `default`, `opus[1m]`, `claude-fable-5-1[1m]`, `sonnet`,
+  `haiku`, with `default` resolving to `claude-opus-5[1m]`. Effort levels, 1M
+  context, and the Opus-only fast-mode split still match the YA fallback rows,
+  so no fallback constant changed. The same probe returned five-hour, seven-day,
+  and Fable-scoped usage windows through the real provider path.
+- Claude Code offers `/goal` natively in the live command inventory, which is
+  the condition `withClaudeGoalAlias()` already steps aside for; YA adds no
+  alias row and keeps owning the paused state it reads from transcript rows.
+- Persisted-schema coverage holds. 1,658 transcript rows written by Claude Code
+  2.1.263 through 2.1.273 parse against `claude-sdk-schema` with no failures and
+  no entry type outside the known union.
+- `SDKAssistantMessageError` gained `verification_required` and
+  `cloud_credential_error`. Both stay mapped to the `unknown` runtime reason,
+  which is how YA already treats `authentication_failed`, `billing_error`, and
+  the rest of the non-retry codes; the terminal status still shows the
+  provider's own message text. Adding reason members for two codes with no
+  observed occurrence would widen a client-visible contract for no gain.
+- No token-consuming turn was run. Authentication, model catalog, command
+  inventory, and subscription usage all come from no-turn control requests.
+
+Status: Claude Code 2.1.273 / SDK 0.3.273 package, declared surfaces, model
+catalog, command inventory, usage response, and persisted-schema coverage are
+refreshed. The bump is dependency-only; no YA source changed.
+
 Current source refresh, 2026-09-02:
 
 - `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.251` to `0.3.258`;
@@ -1358,7 +1410,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.258` | `0.3.258` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.273` | `0.3.273` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

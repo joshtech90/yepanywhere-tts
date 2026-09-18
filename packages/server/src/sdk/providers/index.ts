@@ -12,6 +12,7 @@ import {
   type CodexCyberAccessProgram,
   type CodexPlanToolMode,
   type CodexReasoningSummary,
+  type GatewayService,
   type SubagentMaxDepth,
 } from "@yep-anywhere/shared";
 import {
@@ -126,6 +127,9 @@ export interface ProviderRuntimeSnapshot {
   claudeGatewayStartCommand?: string;
   claudeGatewayDisableAgent?: boolean;
   claudeGatewayDisablePlanMode?: boolean;
+  /** Configured model-serving endpoints; the legacy keys mirror the default. */
+  gatewayServices?: readonly GatewayService[];
+  defaultGatewayServiceId?: string;
   subagentMaxDepth?: SubagentMaxDepth;
   ollamaUrl?: string;
   ollamaSystemPrompt?: string;
@@ -144,6 +148,9 @@ export function configureProviderRuntime(config: ProviderRuntimeConfig): void {
   );
   codexProvider.setCodexPath(config.codexCliPath);
   codexOSSProvider.setCodexPath(config.codexCliPath);
+  codexOSSProvider.setGatewayServicesGetter(
+    () => getProviderRuntimeSnapshot().gatewayServices ?? [],
+  );
   isClaudeOllamaVisible = config.isClaudeOllamaVisible ?? (() => false);
   getProviderRuntimeSnapshot =
     config.getProviderRuntimeSnapshot ?? (() => ({}));

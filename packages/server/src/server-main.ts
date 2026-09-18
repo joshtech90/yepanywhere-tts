@@ -12,6 +12,8 @@ import {
   SPEECH_RELAY_CHANNEL,
   idleReapHoursToMs,
   isClaudeProviderName,
+  parseSpeechVoiceBackends,
+  unionSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
 import { createApp } from "./app.js";
 import { markdownAugmentCacheDiagnostics } from "./augments/markdown-augments.js";
@@ -86,6 +88,8 @@ import {
 } from "./sdk/providers/provider-runtime-host.js";
 import { isProviderHostDegraded } from "./sdk/providers/provider-host-status.js";
 import { ClaudeGatewayProvider } from "./sdk/providers/claude-gateway.js";
+import { gatewayEffortProbeCache } from "./services/GatewayEffortProbe.js";
+import { syncGatewayServiceExports } from "./sdk/providers/gatewayServiceExport.js";
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 import { RealClaudeSDK } from "./sdk/real.js";
@@ -117,6 +121,7 @@ import {
   getRequestedSpeechBackendIds,
   registerSpeechBackends,
 } from "./services/voice/registry.js";
+import { SpeechBackendInstallService } from "./services/voice/speechBackendInstall.js";
 import { claudeTranscriptCache } from "./sessions/claude-transcript-cache.js";
 import { providerCatalogFamily } from "./sessions/provider-catalog-family.js";
 import { ClaudeSessionReader } from "./sessions/reader.js";
@@ -853,13 +858,23 @@ async function startServer() {
   updateFileAccess(serverSettingsService.getSetting("fileAccess"));
 
   // Seed Claude transport settings from persisted settings
-  await ClaudeGatewayProvider.configureGateway({
-    url: serverSettingsService.getSetting("claudeGatewayUrl"),
-    startCommand: serverSettingsService.getSetting("claudeGatewayStartCommand"),
+  gatewayEffortProbeCache.setEnabled(
+    serverSettingsService.getSetting("gatewayServiceEffortDetection") ?? true,
+  );
+  await ClaudeGatewayProvider.configureGatewayServices({
+    services: serverSettingsService.getSetting("gatewayServices") ?? [],
+    defaultServiceId: serverSettingsService.getSetting(
+      "defaultGatewayServiceId",
+    ),
     disableAgent: serverSettingsService.getSetting("claudeGatewayDisableAgent"),
     disablePlanMode: serverSettingsService.getSetting(
       "claudeGatewayDisablePlanMode",
     ),
+  });
+  await syncGatewayServiceExports({
+    services: serverSettingsService.getSetting("gatewayServices") ?? [],
+    enabled:
+      serverSettingsService.getSetting("gatewayServiceExportEnabled") ?? false,
   });
   const savedOllamaUrl = serverSettingsService.getSetting("ollamaUrl");
   const savedOllamaSystemPrompt =
@@ -966,20 +981,69 @@ async function startServer() {
     );
   }
 
+  const persistedSpeechBackends =
+    parseSpeechVoiceBackends(
+      serverSettingsService.getSetting("speechVoiceBackends"),
+    ) ?? [];
+  const populatedSpeechBackends = unionSpeechVoiceBackends(
+    persistedSpeechBackends,
+    config.voiceBackends,
+  );
+  if (populatedSpeechBackends.join(",") !== persistedSpeechBackends.join(",")) {
+    await serverSettingsService.updateSettings({
+      speechVoiceBackends: populatedSpeechBackends,
+    });
+    console.log(
+      `[Voice] Copied local backends from YEP_VOICE_BACKENDS into server settings: ${populatedSpeechBackends.join(", ")}`,
+    );
+  }
   const speechBackendOptions: SpeechRegistryInitOptions = {
     voiceInputEnabled: config.voiceInputEnabled,
-    voiceBackends: config.voiceBackends,
+    voiceBackends: [...config.voiceBackends, ...populatedSpeechBackends],
     deepgramApiKey: config.deepgramApiKey,
     xaiSttApiKey: config.xaiSttApiKey,
     whisperModel: config.whisperModel,
-    whisperDevice: config.whisperDevice,
+    whisperDevice:
+      serverSettingsService.getSetting("speechWhisperGpu") === undefined
+        ? config.whisperDevice
+        : serverSettingsService.getSetting("speechWhisperGpu")
+          ? "cuda"
+          : "cpu",
     whisperComputeType: config.whisperComputeType,
     parakeetModel: config.parakeetModel,
     parakeetDevice: config.parakeetDevice,
     nemoModel: config.nemoModel,
     nemoDevice: config.nemoDevice,
+    graniteModel: config.graniteModel,
+    graniteDevice: config.graniteDevice,
+    qwenModel: config.qwenModel,
+    qwenDevice: config.qwenDevice,
   };
   const speechBackendRegistry = new SpeechBackendRegistry();
+  const speechBackendInstallService = new SpeechBackendInstallService(
+    async (id) => {
+      speechBackendRegistry.revalidate(id);
+      await speechBackendRegistry.waitForValidation();
+    },
+  );
+  serverSettingsService.onSettingsChanged((next, previous) => {
+    speechBackendOptions.whisperDevice =
+      next.speechWhisperGpu === undefined
+        ? config.whisperDevice
+        : next.speechWhisperGpu
+          ? "cuda"
+          : "cpu";
+    if (next.speechVoiceBackends === previous.speechVoiceBackends) return;
+    void registerSpeechBackends(speechBackendRegistry, {
+      ...speechBackendOptions,
+      voiceBackends: [
+        ...config.voiceBackends,
+        ...unionSpeechVoiceBackends(next.speechVoiceBackends),
+      ],
+    }).catch((error) => {
+      console.error("[Voice] Could not enable speech backends:", error);
+    });
+  });
   const requestedSpeechBackends =
     getRequestedSpeechBackendIds(speechBackendOptions);
   if (requestedSpeechBackends.length > 0) {
@@ -1008,6 +1072,7 @@ async function startServer() {
     artifactServer,
     conversationSubscriptions,
     focusedSessionWatchManager,
+    safeRestartService,
   } = createApp({
     getCatalogFamilies: () => installService.getCatalogFamilies(),
     artifacts: config.artifacts,
@@ -1096,6 +1161,8 @@ async function startServer() {
     codexCyberAccessProgram: config.codexCyberAccessProgram,
     voiceInputEnabled: config.voiceInputEnabled,
     speechBackendRegistry,
+    envVoiceBackends: config.voiceBackends,
+    speechBackendInstallService,
     xaiSttApiKey: config.xaiSttApiKey,
     shareXaiSttApiKeyWithClients: config.shareXaiSttApiKeyWithClients,
     allowedImagePaths: config.allowedImagePaths,
@@ -1228,6 +1295,9 @@ async function startServer() {
       serverSettingsService,
       xaiSttApiKey: config.xaiSttApiKey,
       shareXaiSttApiKeyWithClients: config.shareXaiSttApiKeyWithClients,
+      envVoiceBackends: config.voiceBackends,
+      speechBackendInstallService,
+      safeRestartService,
     }),
   );
   markStartup("speech routes mounted");

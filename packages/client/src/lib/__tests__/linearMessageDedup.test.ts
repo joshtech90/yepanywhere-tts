@@ -7,6 +7,7 @@ import {
   reconcileLinearMessages,
   reconcileSelfSendUserEchoes,
 } from "../linearMessageDedup";
+import { mergeStreamMessage } from "../mergeMessages";
 
 describe("hasEquivalentJsonlMessage", () => {
   it("requires matching content and close timestamps", () => {
@@ -990,6 +991,27 @@ describe("reconcileSelfSendUserEchoes", () => {
     const row = durableRow({ timestamp: "2026-09-08T21:12:31.000Z" });
 
     expect(reconcileSelfSendUserEchoes([sent, row])).toHaveLength(1);
+  });
+
+  it("still confirms after a same-uuid provider re-echo keeps the self-send marker", () => {
+    const sent = echo({ timestamp: "2026-09-08T21:05:56.400Z" });
+    let messages = mergeStreamMessage([], sent).messages;
+    messages = mergeStreamMessage(messages, {
+      uuid: sent.uuid,
+      type: "user",
+      timestamp: "2026-09-08T21:05:56.450Z",
+      message: { role: "user", content: PROMPT },
+    }).messages;
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.tempId).toBe("temp-send");
+
+    const result = reconcileSelfSendUserEchoes([
+      messages[0]!,
+      durableRow({ timestamp: "2026-09-08T21:05:56.000Z" }),
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0]?.uuid).toBe("grok-evt-session-2");
+    expect(result[0]?.tempId).toBe("temp-send");
   });
 
   it("leaves provider stream copies and later resends alone", () => {

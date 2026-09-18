@@ -72,6 +72,7 @@ import { useI18n } from "../i18n";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
 import { writeClipboardTextLater } from "../lib/clipboard";
 import { BROWSER_DEBUG_LEASE_TTL_MS } from "../lib/browserDebugLease";
+import { sessionViewerUsesRightPane } from "../lib/sessionViewerPlacement";
 import {
   type SessionViewerControllerState,
   useSessionViewerController,
@@ -1857,8 +1858,12 @@ export function MessageInputToolbarView({
       openShortcutSettings();
     }, 520);
   };
+  const coveringViewerOpen =
+    fileViewerController &&
+    !sessionViewerUsesRightPane(fileViewerController) &&
+    !fileViewerController.minimized;
   const handleToolbarClickCapture = (event: MouseEvent<HTMLDivElement>) => {
-    if (!fileViewerController || fileViewerController.minimized) return;
+    if (!coveringViewerOpen) return;
     if (!(event.target instanceof Element)) return;
     const action = event.target.closest(
       "button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), [role='button']:not([aria-disabled='true'])",
@@ -1914,11 +1919,7 @@ export function MessageInputToolbarView({
         fileViewerController
           ? ` ${toolbarModuleStyles.fileViewerControllerActive}`
           : ""
-      }${
-        fileViewerController && !fileViewerController.minimized
-          ? ` ${toolbarModuleStyles.fileViewerOpen}`
-          : ""
-      }${
+      }${coveringViewerOpen ? ` ${toolbarModuleStyles.fileViewerOpen}` : ""}${
         waveformBackdropActive
           ? ` ${toolbarModuleStyles.waveformBackdropActive}`
           : ""

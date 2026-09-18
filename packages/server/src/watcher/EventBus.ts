@@ -4,6 +4,7 @@
 
 import type {
   AgentActivity,
+  NonHumanUserTurn,
   CacheMissBillingRecord,
   ContextUsage,
   PendingInputType,
@@ -188,6 +189,7 @@ export interface SessionQueuePersistenceChangedEvent {
 
 /** Event emitted when session metadata changes (title, archived, starred) */
 export interface SessionMetadataChangedEvent {
+  nonHumanUserTurn?: NonHumanUserTurn | null;
   type: "session-metadata-changed";
   sessionId: string;
   /** Updated title (if changed) */

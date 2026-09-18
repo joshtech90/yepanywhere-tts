@@ -223,11 +223,7 @@ function renderConfirmedProjectPathText(
   text: string,
   options: RenderOptions,
 ): RenderedMathResult {
-  if (
-    options.publicShare ||
-    !options.projectId ||
-    !options.projectPathLinks?.length
-  ) {
+  if (!options.projectId || !options.projectPathLinks?.length) {
     return { html: escapeHtml(text), changed: false };
   }
 
@@ -244,13 +240,19 @@ function renderConfirmedProjectPathText(
   let html = "";
   let cursor = 0;
   for (const match of matches) {
-    html += escapeHtml(text.slice(cursor, match.start));
     const filePath = targets.get(match.text)!;
-    const rawUrl =
-      options.publicShare &&
-      buildPublicShareFileHref(options.publicShare, { filePath });
+    const shareUrl = options.publicShare
+      ? buildPublicShareFileHref(options.publicShare, { filePath })
+      : null;
+    if (options.publicShare && !shareUrl) {
+      // Outside the share's project, so the share cannot serve it: plain text.
+      html += escapeHtml(text.slice(cursor, match.end));
+      cursor = match.end;
+      continue;
+    }
+    html += escapeHtml(text.slice(cursor, match.start));
     const fileUrl =
-      rawUrl ??
+      shareUrl ??
       toBrowserAppHref(
         `${options.basePath ?? ""}/projects/${encodeURIComponent(options.projectId)}/file?path=${encodeURIComponent(filePath)}`,
       );

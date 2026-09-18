@@ -310,7 +310,7 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     name: "IDLE_TIMEOUT",
     group: "Processes & workers",
     description:
-      "Seconds an eligible idle provider process is kept warm before it may be reaped. Default 86400 (24 hours).",
+      "Seconds an eligible idle provider process is kept warm before it may be reaped. Default 3600 (1 hour).",
   },
   {
     name: "IDLE_PREEMPT_THRESHOLD",
@@ -506,10 +506,27 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     description: "Device for the ya-nemo backend (default auto).",
   },
   {
+    name: "GRANITE_MODEL",
+    group: "Speech & transcription",
+    description:
+      "Model name for the ya-granite backend (default ibm-granite/granite-speech-4.1-2b).",
+  },
+  {
+    name: "GRANITE_DEVICE",
+    group: "Speech & transcription",
+    description: "Device for the ya-granite backend (default auto).",
+  },
+  {
+    name: "GRANITE_KEYWORD_BIAS",
+    group: "Speech & transcription",
+    description:
+      "Constant logit boost applied to Granite keyword-prefix tokens (default 1.0). 0 keeps the Keywords: prompt and disables the extra logit processor.",
+  },
+  {
     name: "HF_HUB_CACHE",
     group: "Speech & transcription",
     description:
-      "Hugging Face hub cache directory for local STT model weights (ya-whisper/parakeet/nemo). YA mirrors HF's own resolution, so this overrides HF_HOME/hub and the default ~/.cache/huggingface/hub.",
+      "Hugging Face hub cache directory for local STT model weights (ya-whisper/parakeet/nemo/granite). YA mirrors HF's own resolution, so this overrides HF_HOME/hub and the default ~/.cache/huggingface/hub.",
   },
   {
     name: "HF_HOME",

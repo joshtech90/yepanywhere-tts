@@ -30,7 +30,7 @@ Related:
 [reload-safe provider runtimes](reload-safe-provider-runtimes.md),
 [provider host API](provider-host-api.md),
 [remote-session project-view gap](../gaps/remote-session-project-views-use-local-files.md),
-[provider-neutral remote-executor gap](../gaps/provider-neutral-remote-executors.md),
+[provider-neutral remote-executor gap](../gaps/sketches/provider-neutral-remote-executors.md),
 [source control](source-control.md),
 [project directory storage](project-directory-storage.md),
 [session sandboxing](session-sandboxing.md),

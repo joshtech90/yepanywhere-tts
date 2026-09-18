@@ -28,6 +28,7 @@ import {
   isWorkstreamId,
   mainWorkstreamId,
   truncateSessionTitle,
+  isPostCompactReplayText,
 } from "@yep-anywhere/shared";
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
@@ -42,6 +43,7 @@ import type {
   SessionMetadataService,
 } from "../metadata/index.js";
 import type { ProjectMetadataService } from "../metadata/index.js";
+import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
 import type { NotificationService } from "../notifications/index.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
@@ -1369,7 +1371,8 @@ function isUserAuthoredRequest(message: Message): boolean {
     isHumanUserMessage(message) &&
     message.isSynthetic !== true &&
     !isCompactSummaryUserMessage(message) &&
-    !isSlashCommandSkillBodyUserMessage(message)
+    !isSlashCommandSkillBodyUserMessage(message) &&
+    !isPostCompactReplayText(renderRestartContent(messageContent(message)))
   );
 }
 
@@ -2736,6 +2739,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         sandboxPolicy: sessionSummary?.sandboxPolicy,
         contextUsage: sessionSummary?.contextUsage,
         effectiveModelSettings: effectiveModelSettingsFromMetadata(metadata),
+        nonHumanUserTurn:
+          pendingNonHumanUserTurn(
+            deps.sessionMetadataService?.getMetadata(sessionId),
+          ) ?? null,
         customTitle: metadata?.customTitle,
         isArchived: metadata?.isArchived,
         isStarred: metadata?.isStarred,
@@ -3243,6 +3250,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             updatedAt: newSessionUpdatedAt,
             messageCount: processMessages.length,
             ownership,
+            nonHumanUserTurn:
+              pendingNonHumanUserTurn(
+                deps.sessionMetadataService?.getMetadata(sessionId),
+              ) ?? null,
             customTitle: metadata?.customTitle,
             isArchived: metadata?.isArchived,
             isStarred: metadata?.isStarred,
@@ -3662,6 +3673,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       session: {
         ...sessionMetadata,
         projectId: effectiveProjectId,
+        nonHumanUserTurn:
+          pendingNonHumanUserTurn(
+            deps.sessionMetadataService?.getMetadata(sessionId),
+          ) ?? null,
         ownership,
         contextUsage,
         customTitle: metadata?.customTitle,
@@ -7298,11 +7313,40 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: "Notification service not available" }, 503);
     }
 
-    let body: { timestamp?: string; messageId?: string } = {};
+    let body: {
+      timestamp?: string;
+      messageId?: string;
+      nonHumanUserTurnMessageId?: string;
+    } = {};
     try {
       body = await c.req.json();
     } catch {
       // Body is optional
+    }
+
+    if (body.nonHumanUserTurnMessageId !== undefined) {
+      if (
+        typeof body.nonHumanUserTurnMessageId !== "string" ||
+        !body.nonHumanUserTurnMessageId
+      ) {
+        return c.json({ error: "Invalid non-human user turn id" }, 400);
+      }
+      if (!deps.sessionMetadataService) {
+        return c.json({ error: "Session metadata service not available" }, 503);
+      }
+      await deps.sessionMetadataService.acknowledgeNonHumanUserTurn(
+        sessionId,
+        body.nonHumanUserTurnMessageId,
+      );
+      deps.eventBus?.emit({
+        type: "session-metadata-changed",
+        sessionId,
+        nonHumanUserTurn:
+          pendingNonHumanUserTurn(
+            deps.sessionMetadataService?.getMetadata(sessionId),
+          ) ?? null,
+        timestamp: new Date().toISOString(),
+      });
     }
 
     await deps.notificationService.markSeen(

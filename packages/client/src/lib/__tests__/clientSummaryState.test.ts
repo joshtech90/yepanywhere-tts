@@ -1227,6 +1227,59 @@ describe("clientSummaryState", () => {
     );
   });
 
+  it("keeps delivery acknowledgement across stale and omitted summary fields", () => {
+    const turn = {
+      messageId: "delivery",
+      timestamp: RECENT,
+      sourceSessionId: "sender",
+    };
+    const snapshot = (
+      nonHumanUserTurn: GlobalSessionItem["nonHumanUserTurn"],
+    ) => ({
+      query: { scope: "global-sessions" as const, limit: 50 },
+      sessions: [globalSession("session-1", { nonHumanUserTurn })],
+      hasMore: false,
+    });
+    let state = applyGlobalSessionsCollectionSnapshot(
+      createEmptyClientSummaryState(),
+      snapshot(turn),
+      100,
+    );
+    state = applySessionCollectionMetadataChanged(
+      state,
+      {
+        type: "session-metadata-changed",
+        sessionId: "session-1",
+        timestamp: RECENT,
+        nonHumanUserTurn: null,
+      },
+      200,
+    );
+    state = applyGlobalSessionsCollectionSnapshot(state, snapshot(turn), 150);
+    state = applyGlobalSessionsCollectionSnapshot(
+      state,
+      snapshot(undefined),
+      300,
+    );
+    expect(
+      selectSessionCollectionRecord(state, "session-1")?.nonHumanUserTurn,
+    ).toBeNull();
+    const newer = { ...turn, messageId: "newer-delivery" };
+    state = applySessionCollectionMetadataChanged(
+      state,
+      {
+        type: "session-metadata-changed",
+        sessionId: "session-1",
+        timestamp: RECENT,
+        nonHumanUserTurn: newer,
+      },
+      400,
+    );
+    expect(
+      selectSessionCollectionRecord(state, "session-1")?.nonHumanUserTurn,
+    ).toEqual(newer);
+  });
+
   it("keeps visible rows through a cold catalog and preserves omitted details", () => {
     const query = { scope: "global-sessions" as const, limit: 50 };
     let state = applyGlobalSessionsCollectionSnapshot(

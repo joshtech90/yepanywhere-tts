@@ -14,6 +14,12 @@ import {
   type SyntheticSessionBoundaryCommand,
   type UrlProjectId,
   type WorkstreamId,
+  type PostCompactReplaySettings,
+  type PostCompactReplayTurn,
+  buildPostCompactReplayPrompt,
+  formatPostCompactReplayPrompt,
+  isPostCompactReplayEnabledForProvider,
+  selectPostCompactReplayTurns,
   readGoalDetails,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
@@ -551,6 +557,12 @@ export interface SupervisorOptions {
     contextWindow: number,
     provider: ProviderName,
   ) => void;
+  /**
+   * Called after a process joins or leaves the live inventory. Consumers that
+   * track "is anything still using X" — gateway service auto-stop, for one —
+   * recompute from the current process list here rather than polling.
+   */
+  onProcessInventoryChanged?: () => void;
   /** Callback to fetch session summary for initial metadata reconciliation */
   onSessionSummary?: OnSessionSummaryCallback;
   /** Notification policy only; called before a supported manual turn stop. */
@@ -575,6 +587,8 @@ export interface SupervisorOptions {
   getPromptCacheKeepaliveSettings?: (
     provider: ProviderName,
   ) => PromptCacheKeepaliveSettings | undefined;
+  /** Callback to read the post-compact continuation setting. */
+  getPostCompactReplaySettings?: () => PostCompactReplaySettings | undefined;
   /** Callback to read live cache-miss billing monitor settings. */
   getCacheMissBillingSettings?: () => CacheMissBillingSettings | undefined;
   /** Current install-wide Claude Bash re-foregrounding policy. */
@@ -624,6 +638,7 @@ export class Supervisor {
   private maxWorkers: number;
   private idlePreemptThresholdMs: number;
   private workerQueue: WorkerQueue;
+  private onProcessInventoryChanged?: () => void;
   private onSessionExecutor?: OnSessionExecutorCallback;
   private onSuccessfulProviderSession?: OnSuccessfulProviderSessionCallback;
   private getSessionChildEnv?: SupervisorOptions["getSessionChildEnv"];
@@ -656,6 +671,9 @@ export class Supervisor {
   private getPromptCacheKeepaliveSettings?: (
     provider: ProviderName,
   ) => PromptCacheKeepaliveSettings | undefined;
+  private getPostCompactReplaySettings?: () =>
+    | PostCompactReplaySettings
+    | undefined;
   private getClaudeSteerBackgroundBashSettings?: () =>
     | ClaudeSteerBackgroundBashSettings
     | undefined;
@@ -692,6 +710,17 @@ export class Supervisor {
    * second attempt must never start while the first is outstanding.
    */
   private thresholdCompactionInFlight = new Set<string>();
+  /**
+   * Compact-boundary snapshots waiting for idle so a configured continuation
+   * turn can be injected without interrupting in-flight compact work.
+   */
+  private pendingPostCompactReplay = new Map<
+    string,
+    {
+      turns: PostCompactReplayTurn[];
+      inputIntentVersion: number;
+    }
+  >();
   private interruptTimeoutMs: number;
   private sessionMetadataService?: SessionMetadataService;
   private notificationService?: NotificationService;
@@ -724,6 +753,7 @@ export class Supervisor {
       eventBus: options.eventBus,
       maxQueueSize: options.maxQueueSize,
     });
+    this.onProcessInventoryChanged = options.onProcessInventoryChanged;
     this.onSessionExecutor = options.onSessionExecutor;
     this.onSuccessfulProviderSession = options.onSuccessfulProviderSession;
     this.getSessionChildEnv = options.getSessionChildEnv;
@@ -736,6 +766,7 @@ export class Supervisor {
     this.getHeartbeatWaitingSessionIds = options.getHeartbeatWaitingSessionIds;
     this.getPromptCacheKeepaliveSettings =
       options.getPromptCacheKeepaliveSettings;
+    this.getPostCompactReplaySettings = options.getPostCompactReplaySettings;
     this.getClaudeSteerBackgroundBashSettings =
       options.getClaudeSteerBackgroundBashSettings;
     this.cacheMissBillingMonitor = new CacheMissBillingMonitor({
@@ -1807,6 +1838,82 @@ export class Supervisor {
     }
   }
 
+  private notePostCompactReplay(process: Process): void {
+    const settings = this.getPostCompactReplaySettings?.();
+    if (!isPostCompactReplayEnabledForProvider(settings, process.provider)) {
+      this.pendingPostCompactReplay.delete(process.id);
+      return;
+    }
+    const replayTurnCount = settings?.replayTurnCount ?? 0;
+    this.pendingPostCompactReplay.set(process.id, {
+      turns: selectPostCompactReplayTurns(
+        process.getRecentProseTurns(),
+        replayTurnCount,
+      ),
+      inputIntentVersion: process.inputIntentVersion,
+    });
+  }
+
+  private async maybePostCompactReplay(process: Process): Promise<void> {
+    const pending = this.pendingPostCompactReplay.get(process.id);
+    if (!pending) return;
+    if (this.isAutomationPausedUntilUserTurn(process.sessionId)) {
+      this.pendingPostCompactReplay.delete(process.id);
+      return;
+    }
+    const settings = this.getPostCompactReplaySettings?.();
+    if (!isPostCompactReplayEnabledForProvider(settings, process.provider)) {
+      this.pendingPostCompactReplay.delete(process.id);
+      return;
+    }
+    if (process.state.type !== "idle") return;
+    if (process.isRetainingProviderWork()) return;
+    if (process.isTerminated) {
+      this.pendingPostCompactReplay.delete(process.id);
+      return;
+    }
+    if (
+      process.queueDepth > 0 ||
+      process.hasPatientDeferredMessages() ||
+      process.hasVolatileDeferredMessages()
+    ) {
+      this.pendingPostCompactReplay.delete(process.id);
+      return;
+    }
+    if (process.inputIntentVersion !== pending.inputIntentVersion) {
+      this.pendingPostCompactReplay.delete(process.id);
+      return;
+    }
+
+    this.pendingPostCompactReplay.delete(process.id);
+    const prompt = buildPostCompactReplayPrompt({
+      provider: process.provider,
+      sessionId: process.sessionId,
+      turns: pending.turns,
+    });
+    const queued = await this.queueProcessMessage(
+      process,
+      {
+        text: formatPostCompactReplayPrompt(prompt),
+        automaticSource: "post-compact-replay",
+        metadata: { hidden: true },
+      },
+      { allowSteer: false },
+    );
+    if (!queued.success) {
+      getLogger().info(
+        {
+          event: "post_compact_replay_skipped",
+          sessionId: process.sessionId,
+          processId: process.id,
+          provider: process.provider,
+          error: queued.error,
+        },
+        "Post-compact continuation was not accepted",
+      );
+    }
+  }
+
   private async queueAfterResumeCompaction(params: {
     process: Process;
     sessionId: string;
@@ -2259,6 +2366,7 @@ export class Supervisor {
       setEffort,
       interrupt,
       steer,
+      steerUsesMessageQueue,
       supportedModels,
       supportedCommands,
       setModel,
@@ -2301,6 +2409,7 @@ export class Supervisor {
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       steerFn: steer,
+      steerUsesMessageQueue,
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
       onCommandsObserved: (sessionId, commands) =>
@@ -2528,6 +2637,7 @@ export class Supervisor {
       setEffort,
       interrupt,
       steer,
+      steerUsesMessageQueue,
       supportedModels,
       supportedCommands,
       setModel,
@@ -2570,6 +2680,7 @@ export class Supervisor {
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       steerFn: steer,
+      steerUsesMessageQueue,
       supportedModelsFn: supportedModels,
       supportedCommandsFn: supportedCommands,
       onCommandsObserved: (sessionId, commands) =>
@@ -4945,7 +5056,28 @@ export class Supervisor {
     }
     this.observedProcessIds.add(process.id);
     process.subscribe((event) => {
-      if (event.type === "provider-turn-started") {
+      if (event.type === "non-human-user-turn") {
+        void this.sessionMetadataService
+          ?.recordNonHumanUserTurn(process.sessionId, event.turn)
+          .then(() => {
+            this.eventBus?.emit({
+              type: "session-metadata-changed",
+              sessionId: process.sessionId,
+              projectId: process.projectId,
+              nonHumanUserTurn:
+                this.sessionMetadataService?.getPendingNonHumanUserTurn(
+                  process.sessionId,
+                ) ?? null,
+              timestamp: new Date().toISOString(),
+            });
+          })
+          .catch((error) => {
+            getLogger().error(
+              { err: error, sessionId: process.sessionId },
+              "Failed to persist non-human user turn",
+            );
+          });
+      } else if (event.type === "provider-turn-started") {
         this.cacheMissBillingMonitor.observeProviderTurnStarted(
           process,
           event.turnKind,
@@ -4984,6 +5116,10 @@ export class Supervisor {
             process.id,
             process.assistantActivityVersion,
           );
+          this.notePostCompactReplay(process);
+          if (process.state.type === "idle") {
+            void this.maybePostCompactReplay(process);
+          }
         }
         if (event.message.type === "user") {
           this.clearTerminalProviderStatus(
@@ -5172,6 +5308,7 @@ export class Supervisor {
           }
           this.flushPendingForkedRecapRequest(process);
           void this.maybeCompactAfterIdle(process);
+          void this.maybePostCompactReplay(process);
         }
         // Parent started a new turn: cancel any in-flight/deferred forked recap
         // so a returning user's live turn is not shadowed by a stale recap.
@@ -5230,6 +5367,7 @@ export class Supervisor {
     this.sessionToProcess.set(process.sessionId, process.id);
     this.everOwnedSessions.add(process.sessionId);
     this.sessionDone.recoverPendingDone(process);
+    this.onProcessInventoryChanged?.();
 
     const ownership: SessionOwnership = {
       owner: "self",
@@ -5346,6 +5484,7 @@ export class Supervisor {
     this.compactThresholdCheckedAssistantVersion.delete(process.id);
     this.compactionSettledAtAssistantVersion.delete(process.id);
     this.thresholdCompactionInFlight.delete(process.id);
+    this.pendingPostCompactReplay.delete(process.id);
     this.cacheMissBillingMonitor.forgetProcess(process.id);
     this.activationCoordinator.discardProcess(process);
     this.pendingForkedRecapRequests.delete(process.id);
@@ -5385,6 +5524,7 @@ export class Supervisor {
     this.addTerminatedProcess(terminatedInfo);
 
     this.processes.delete(process.id);
+    this.onProcessInventoryChanged?.();
 
     // Delete all session ID mappings that point to this process
     // This handles both temp and real session IDs
@@ -5491,6 +5631,7 @@ export class Supervisor {
 
     const now = new Date().toISOString();
     const optimistic = this.buildOptimisticSessionSeed(process);
+    const info = process.getInfo();
     const session: SessionSummary = {
       id: process.sessionId,
       projectId: process.projectId,
@@ -5503,6 +5644,9 @@ export class Supervisor {
       ownership,
       provider: process.provider,
       initialPrompt: optimistic.fullTitle ?? undefined,
+      model: info.model,
+      executor: info.executor,
+      activity: info.state,
     };
 
     const event: SessionCreatedEvent = {
@@ -5651,6 +5795,7 @@ export class Supervisor {
       if (!process.isRetainingProviderWork()) {
         void this.finalizePendingDone(process);
         void this.maybeCompactAfterIdle(process);
+        void this.maybePostCompactReplay(process);
       }
     }
   }

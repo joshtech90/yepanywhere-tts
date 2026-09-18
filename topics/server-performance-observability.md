@@ -8,9 +8,9 @@
 
 Topic: server-performance-observability
 
-Status: Draft proposal, with one implemented piece. The periodic resource
-sample under *Server metrics* below exists
-(`packages/server/src/logging/resource-sample.ts`). No route, recorder, cache
+Status: Draft proposal, with implemented resource samples and bounded Node
+stall profiles under *Server metrics* below
+(`packages/server/src/logging/resource-sample.ts`). No route, general event recorder, cache
 registry, pressure coordinator, or client panel described here is implemented
 or approved for implementation yet.
 
@@ -196,16 +196,52 @@ Each line carries uptime, CPU share of one core since the previous line,
 resident set size, V8 used/total heap against `heap_size_limit`, external and
 array-buffer memory, and the maximum, 99th-percentile, and mean event-loop
 delay since the previous line. It also times one `stat` of the data directory.
-Reading the pair matters: a large event-loop delay means JavaScript work or
-garbage collection held the loop, while a slow data-directory `stat` beside a
+Reading the pair matters: a large event-loop delay can mean JavaScript work,
+garbage collection, a synchronous native/I/O wait, or process descheduling;
+it does not identify the blocker. A slow data-directory `stat` beside a
 healthy delay means filesystem or libuv threadpool saturation, which is the
 shape a network-mounted data directory produces.
 
-Sampling stays one process-wide interval that allocates nothing per session,
+Resource sampling stays one process-wide interval that allocates nothing per session,
 project, or client, so it can be left on permanently. The reported memory
 figures are the ones *Address space is not heap* above distinguishes: resident
 set size and heap are separate facts, and VIRT is deliberately absent because a
 large stable reservation is not a pressure signal.
+
+### Event-loop stall profiles
+
+On Node, enabled resource sampling also owns a rolling in-process V8 CPU
+profile sampled every 10 ms. A 100 ms timer checks for recovered stalls;
+healthy windows are discarded every 30 seconds. When maximum event-loop delay
+reaches one second it saves a profile, at most once per 30 seconds. The recorder
+measures its own timer lateness so the delay and stacks belong to the same
+window; a separate delay histogram can report a stall after profile rotation.
+This coarse delay can undercount the full block by up to one timer interval. Starting
+the profiler before the stall preserves stacks that a post-stall capture would
+miss. No inspector network listener is opened. Bun retains resource samples
+but does not start this Node-specific recorder.
+
+Profiles occupy three rotating files under `{dataDir}/logs/stalls/`, each
+capped at 8 MiB. They contain sampled function names/source locations, timing,
+PID, Node version and CPU totals, not transcript bodies or request arguments.
+The `server_stall_profile` warning names the file and affected interval; the
+file opens as a standard `.cpuprofile` in developer tools. Healthy windows
+write nothing. Capture/storage failures disable recording with a warning;
+oversized profiles are skipped with a warning. Shutdown stops the profiler
+and timer. `YEP_RESOURCE_SAMPLE_SECONDS=0` disables both resource sampling
+and stall recording.
+
+This is diagnostic evidence, not a CPU-only diagnosis: synchronous I/O or
+descheduling can produce delay with little CPU use, and native waits may not
+resolve to a useful JavaScript frame. Profiles are saved after recovery, so
+an unrecovered hang or termination before the next capture check can lose the
+current window. A suspended event loop can also extend a profile window.
+
+The 2026-09-14 direct-client loading incident recorded 22,599 ms maximum
+event-loop delay, 7.8% process CPU over its resource interval, and a roughly
+25-second log gap before a user restart. These locate a stall but do not
+establish its cause; vocabulary scanning remains unproven. This recorder is
+the next-occurrence diagnostic, not a claim that the stall is fixed.
 
 ## Performance events
 

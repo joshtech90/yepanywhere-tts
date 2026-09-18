@@ -19,10 +19,13 @@ import type {
   CodexCyberAccessProgram,
   CodexPlanToolMode,
   CodexReasoningSummary,
+  GatewayService,
+  GatewayServiceExportPaths,
   HelperTargetConfig,
   HostIdentity,
   HostAwakeMode,
   NewSessionDefaults,
+  PostCompactReplaySettings,
   PromptCacheKeepaliveSettings,
   ProjectQueueReadinessCommand,
   SessionToolbarPresenceClientDefaults,
@@ -53,7 +56,12 @@ import {
   isCodexCyberAccessProgram,
   parseClaudeAdditionalModelSelections,
   parseClaudeSteerBackgroundBashSettings,
+  parseGatewayServices,
+  parsePostCompactReplaySettings,
+  parseSpeechVoiceBackends,
+  DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
 } from "@yep-anywhere/shared";
+import { reconcileGatewaySettings } from "./gatewayServiceSettings.js";
 import type { FileAccessSettings } from "../middleware/file-access.js";
 import { publishDeferredDeliverySettings } from "../supervisor/deferredDeliverySettings.js";
 
@@ -158,6 +166,32 @@ export interface ServerSettings {
   heartbeatTurnText?: string;
   /** Whether authenticated external session-wake turns are enabled by default. */
   wakeTurnsEnabled?: boolean;
+  /**
+   * Configured model-serving endpoints. Claude Gateway reads every enabled
+   * entry; CodexOSS reads those that opt in. The default entry mirrors the
+   * legacy single-gateway keys below.
+   */
+  gatewayServices?: GatewayService[];
+  /** Which entry Claude Gateway treats as its default service. */
+  defaultGatewayServiceId?: string;
+  /**
+   * Whether YA writes the configured services out for the provider CLIs, so
+   * the same models are selectable from a plain terminal session. Default off.
+   */
+  gatewayServiceExportEnabled?: boolean;
+  /**
+   * Whether YA asks each configured endpoint which thinking efforts it accepts
+   * and offers what it answers. Default on: an endpoint that can describe
+   * itself should not need its levels typed in by hand. An entry stating its
+   * own levels is never asked, and its levels still win.
+   */
+  gatewayServiceEffortDetection?: boolean;
+  /**
+   * Where that export writes. Reported by `GET /api/settings` so the client
+   * can state exact commands; resolved from the server environment and never
+   * accepted from a client.
+   */
+  gatewayServiceExportPaths?: GatewayServiceExportPaths;
   /** Anthropic-compatible endpoint for the isolated claude-gateway provider */
   claudeGatewayUrl?: string;
   /** Optional shell line that starts a loopback Claude Gateway on demand. */
@@ -193,10 +227,24 @@ export interface ServerSettings {
   clientDefaults?: ClientDefaults;
   /** Server-routed speech audio retention policy. */
   speechAudioRetention: SpeechAudioRetentionSettings;
+  /**
+   * Local STT backends enabled from the Speech settings UI. Unioned with
+   * `YEP_VOICE_BACKENDS` at startup; the env list is copied into this array
+   * when missing and never removes an already-saved backend.
+   */
+  speechVoiceBackends: string[];
+  /** Explicit Whisper device choice; absent preserves WHISPER_DEVICE. */
+  speechWhisperGpu?: boolean;
   /** OpenAI-compatible helper endpoints for side-session helper work */
   helperTargets?: HelperTargetConfig[];
   /** Per-provider prompt-cache keepalive policy and cadence. */
   promptCacheKeepalive?: PromptCacheKeepaliveSettings;
+  /**
+   * After compaction settles, optionally inject a hidden continuation turn.
+   * Default off. Per-provider because some harnesses already continue from
+   * their own compact summary.
+   */
+  postCompactReplay?: PostCompactReplaySettings;
   /** Usage-accounting monitor for suspected prompt-cache billing misses. */
   cacheMissBilling?: CacheMissBillingSettings;
   /** Whether lifecycle webhook delivery is enabled */
@@ -301,6 +349,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
     maxAgeDays: DEFAULT_SPEECH_AUDIO_RETENTION_MAX_AGE_DAYS,
     maxBytes: DEFAULT_SPEECH_AUDIO_RETENTION_MAX_BYTES,
   },
+  speechVoiceBackends: [],
   lifecycleWebhooksEnabled: false,
   lifecycleWebhookDryRun: true,
   grokBuildUseXaiApiKey: false,
@@ -315,6 +364,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   cacheMissBilling: DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   projectQueueQuietSeconds: DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   autoSessionTitle: DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
+  postCompactReplay: DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
 };
 
 const TOOLBAR_PRESENCE_TIERS = new Set(["pin", "last", "mid", "first"]);
@@ -461,6 +511,13 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.autoSessionTitle = normalizeAutoSessionTitleSettings(
     settings.autoSessionTitle,
   );
+  normalized.speechVoiceBackends =
+    parseSpeechVoiceBackends(settings.speechVoiceBackends) ??
+    DEFAULT_SERVER_SETTINGS.speechVoiceBackends;
+  normalized.speechWhisperGpu =
+    typeof settings.speechWhisperGpu === "boolean"
+      ? settings.speechWhisperGpu
+      : undefined;
   normalized.claudeAdditionalModels =
     parseClaudeAdditionalModelSelections(settings.claudeAdditionalModels) ??
     undefined;
@@ -485,6 +542,27 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     gatewayStartCommand.trim()
       ? gatewayStartCommand.trim()
       : undefined;
+  // The services list and the legacy single-gateway keys are two views of the
+  // same configuration; keep them in agreement on every load.
+  const reconciledGateways = reconcileGatewaySettings(
+    parseGatewayServices(settings.gatewayServices) ?? [],
+    typeof settings.defaultGatewayServiceId === "string"
+      ? settings.defaultGatewayServiceId
+      : undefined,
+    {
+      ...(settings.claudeGatewayUrl
+        ? { claudeGatewayUrl: settings.claudeGatewayUrl }
+        : {}),
+      ...(normalized.claudeGatewayStartCommand
+        ? { claudeGatewayStartCommand: normalized.claudeGatewayStartCommand }
+        : {}),
+    },
+  );
+  normalized.gatewayServices = reconciledGateways.services;
+  normalized.defaultGatewayServiceId = reconciledGateways.defaultServiceId;
+  normalized.claudeGatewayUrl = reconciledGateways.claudeGatewayUrl;
+  normalized.claudeGatewayStartCommand =
+    reconciledGateways.claudeGatewayStartCommand;
   normalized.claudeGatewayDisableAgent =
     typeof settings.claudeGatewayDisableAgent === "boolean"
       ? settings.claudeGatewayDisableAgent
@@ -547,6 +625,9 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     typeof settings.wakeTurnsEnabled === "boolean"
       ? settings.wakeTurnsEnabled
       : DEFAULT_SERVER_SETTINGS.wakeTurnsEnabled;
+  normalized.postCompactReplay =
+    parsePostCompactReplaySettings(settings.postCompactReplay) ??
+    DEFAULT_POST_COMPACT_REPLAY_SETTINGS;
   return normalized;
 }
 
@@ -682,11 +763,38 @@ export class ServerSettingsService {
     this.ensureInitialized();
     const operation = this.updateTail.then(async () => {
       const previousSettings = this.state.settings;
+      const merged: ServerSettings = {
+        ...previousSettings,
+        ...updates,
+      };
+      // The services list and the legacy single-gateway keys are two views of
+      // one configuration, so an edit to either has to settle both before the
+      // save — the runtime reads this result, not the reloaded file.
+      const reconciledGateways = reconcileGatewaySettings(
+        merged.gatewayServices ?? [],
+        merged.defaultGatewayServiceId,
+        {
+          ...(merged.claudeGatewayUrl
+            ? { claudeGatewayUrl: merged.claudeGatewayUrl }
+            : {}),
+          ...(merged.claudeGatewayStartCommand
+            ? { claudeGatewayStartCommand: merged.claudeGatewayStartCommand }
+            : {}),
+        },
+        {
+          legacyUrlEdited: "claudeGatewayUrl" in updates,
+          legacyCommandEdited: "claudeGatewayStartCommand" in updates,
+        },
+      );
       const nextState: SettingsState = {
         version: CURRENT_VERSION,
         settings: {
-          ...previousSettings,
-          ...updates,
+          ...merged,
+          gatewayServices: reconciledGateways.services,
+          defaultGatewayServiceId: reconciledGateways.defaultServiceId,
+          claudeGatewayUrl: reconciledGateways.claudeGatewayUrl,
+          claudeGatewayStartCommand:
+            reconciledGateways.claudeGatewayStartCommand,
         },
       };
       let durabilityError: CommittedSettingsSaveError | undefined;

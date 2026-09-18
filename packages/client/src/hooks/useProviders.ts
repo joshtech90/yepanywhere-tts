@@ -110,6 +110,7 @@ function snapshotProvider(provider: ProviderInfo): ProviderInfo {
         }
       : undefined,
     supportsForkSession: provider.supportsForkSession,
+    supportsBoundedTurnSearch: provider.supportsBoundedTurnSearch,
   };
 }
 

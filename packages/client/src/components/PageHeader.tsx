@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 import { useI18n } from "../i18n";
 import { truncateText } from "../lib/text";
 import { HostIdentityMarker } from "./HostIdentityMarker";
+import sessionHeaderStyles from "./SessionHeader.module.css";
 import { SidebarLauncher } from "./SidebarLauncher";
 
 interface PageHeaderProps {
@@ -10,14 +11,10 @@ interface PageHeaderProps {
   titleElement?: ReactNode;
   /** Optional action for clicking the default title text */
   onTitleClick?: () => void;
-  /** Mobile: opens the sidebar overlay */
+  /** Mobile/overlay: opens the sidebar overlay */
   onOpenSidebar?: () => void;
-  /** Desktop: toggles sidebar expanded/collapsed */
-  onToggleSidebar?: () => void;
-  /** Whether we're in desktop mode (wide screen) */
+  /** Whether we're in desktop mode (wide screen), where the sidebar owns its toggle */
   isWideScreen?: boolean;
-  /** Whether the sidebar is currently collapsed (desktop only) */
-  isSidebarCollapsed?: boolean;
   /** Show a back button instead of sidebar toggle */
   showBack?: boolean;
   /** Callback when back button is clicked */
@@ -47,28 +44,23 @@ export function PageHeader({
   titleElement,
   onTitleClick,
   onOpenSidebar,
-  onToggleSidebar,
   isWideScreen = false,
-  isSidebarCollapsed = false,
   showBack = false,
   onBack,
   actions,
 }: PageHeaderProps) {
   const { t } = useI18n();
-  // On desktop: toggle sidebar collapse. On mobile: open sidebar overlay
-  // Hide the toggle on desktop when sidebar is collapsed (sidebar has its own toggle)
-  const handleToggle = isWideScreen
-    ? isSidebarCollapsed
-      ? undefined
-      : onToggleSidebar
-    : onOpenSidebar;
-  const toggleTitle = isWideScreen
-    ? t("actionToggleSidebar")
-    : t("actionOpenSidebar");
+  // Desktop keeps the toggle inside the sidebar itself, whether expanded or
+  // collapsed to the icon rail. Only the mobile/overlay case opens from here.
+  const handleToggle = isWideScreen ? undefined : onOpenSidebar;
+  const toggleTitle = t("actionOpenSidebar");
+  const hasLeadingControl = Boolean((showBack && onBack) || handleToggle);
 
   return (
     <header className="session-header">
-      <div className="session-header-inner">
+      <div
+        className={`session-header-inner${hasLeadingControl ? "" : ` ${sessionHeaderStyles.noLeadingControl}`}`}
+      >
         <div className="session-header-left">
           {showBack && onBack ? (
             <button

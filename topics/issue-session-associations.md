@@ -208,6 +208,12 @@ server settings, which the settings route hands to any authenticated client.
 Both credential routes stay reachable while discovery is off, so an
 installation can be configured before it is turned on.
 
+Both credential override inputs start empty and clear after a successful save,
+regardless of the active credential source. They mask newly entered keys and
+request no existing-password autofill or password-manager save/fill handling;
+browser-native password-saving prompts remain under browser control. The
+source inventory, rather than password dots, indicates configured credentials.
+
 ## Identity and evidence
 
 `services/issues/extract.ts` recognizes Jira browse URLs and uppercase Jira keys,
@@ -360,7 +366,7 @@ only to ask whether a reference exists: YA writes nothing to a tracker, mirrors
 no tracker state, and makes no request for a reference it has already asked
 about. This feature does not
 close the [cold-storage startup gap](../gaps/sqlite-backed-cold-storage-startup.md),
-[commit attribution gap](../gaps/committed-change-session-attribution.md) or
+[commit attribution gap](../gaps/sketches/committed-change-session-attribution.md) or
 [worktree identity gap](../gaps/session-worktree-file-links.md).
 
 T3 reference: `~/github/t3code` at `d29c56a5c`, inspected 2026-09-10.

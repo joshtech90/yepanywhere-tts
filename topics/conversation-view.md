@@ -174,7 +174,12 @@ provider-history rewrite and not deletion.
   height, the previous preview disappearing at turn completion causes no
   shrink — and so no main-conversation autofollow flicker. The same cap covers
   the activity names, which shorten at turn completion as the bound below moves
-  to the newly completed block.
+  to the newly completed block. Growth of the published cap is applied at
+  once; shrinks of two CSS pixels or less keep the previous value so a
+  wrap/subpixel/scrollbar flap cannot restyle siblings at ResizeObserver
+  cadence and, under follow, bounce the whole transcript. Larger shrinks
+  (collapse, a replaced block) still publish. The current card's max-content
+  width is measured once per thinking block, not on every streaming token.
 - **A previous preview that wrapped below the current one gets a vertical
   budget instead.** The cap above is free only while the two cards share a flex
   line, where the previous card fits inside the height the current one already
@@ -193,8 +198,8 @@ provider-history rewrite and not deletion.
   Policy lives in
   `packages/client/src/lib/sessionDetail/thinkingPreviewBudget.ts` as pure
   functions; `RenderItemComponent` measures the geometry and publishes
-  `--conversation-previous-thinking-budget` with `is-thinking-stacked` or
-  `is-previous-thinking-dropped` on the row. Three invariants make the decision
+  `--conversation-previous-thinking-budget` with `data-previous-thinking`
+  `stacked` or `dropped` on the row. Four invariants make the decision
   stable, since dropping a card changes the space the next decision sees:
   - **Measure the first line and the current card, never the previous card's
     own height.** The wrap position, the card chrome, and the prose line height
@@ -202,6 +207,10 @@ provider-history rewrite and not deletion.
   - **A dropped card keeps its box in the flex layout at zero height.**
     Removing the item would change the wrap the budget was measured from, and
     the drop would then flap on and off.
+  - **Same-line vs wrapped uses a deadband, not a 1px ceiling.** Cards share
+    a flex line at a top delta of 1px or less and leave that state only once
+    the previous card is more than 4px below. A 2px baseline wobble must not
+    flap stacked vs side-by-side.
   - **The held reserve below is bounded by the same budget.** After the
     viewport shrinks — rotation, a taller composer — the row must not go on
     claiming a height the viewport no longer has.

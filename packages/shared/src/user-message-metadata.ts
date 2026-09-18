@@ -98,7 +98,15 @@ export interface UserMessageSpeechMetadata {
   transcriptionIds?: string[];
 }
 
+export interface NonHumanUserTurn {
+  messageId: string;
+  timestamp: string;
+  sourceSessionId: string;
+}
+
 export interface UserMessageMetadata {
+  /** Caller-declared cross-session provenance; never a grant of authority. */
+  sourceSessionId?: string;
   /** One-turn effort selection, resolved at provider admission. */
   turnEffort?: TurnEffort;
   /** Stable idempotency key for a source-review submission turn. */

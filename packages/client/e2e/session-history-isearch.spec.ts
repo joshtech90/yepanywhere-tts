@@ -1,40 +1,19 @@
-import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Page, TestInfo } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
 const sessionId = "history-search-001";
 
-async function captureSearchPanel(
-  page: Page,
-  testInfo: TestInfo,
-  viewportName: string,
-) {
-  const body = await page.screenshot({ animations: "disabled" });
-  await testInfo.attach(`history-isearch-${viewportName}`, {
-    body,
-    contentType: "image/png",
-  });
-  const captureDir = process.env.YEP_E2E_UI_CAPTURE_DIR;
-  if (captureDir) {
-    mkdirSync(captureDir, { recursive: true });
-    await page.screenshot({
-      animations: "disabled",
-      path: join(captureDir, `${viewportName}.png`),
-    });
-  }
-}
-
 for (const viewport of [
-  { name: "desktop", width: 1000, height: 600 },
+  { name: "desktop", width: 1200, height: 600 },
   { name: "mobile", width: 375, height: 812 },
 ] as const) {
   test(`continues isearch through bounded history at ${viewport.name} width`, async ({
     page,
     baseURL,
-  }, testInfo) => {
+  }) => {
     const consoleFailures: string[] = [];
     const pageErrors: string[] = [];
     const olderPageRequests: string[] = [];
@@ -55,6 +34,7 @@ for (const viewport of [
       width: viewport.width,
       height: viewport.height,
     });
+    await page.emulateMedia({ colorScheme: "dark" });
     await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
     const list = page.locator(".session-messages .message-list");
     await expect(list.locator('[data-render-id="history-user-9"]')).toBeVisible(
@@ -73,7 +53,17 @@ for (const viewport of [
     const input = page.getByRole("textbox", {
       name: "Reverse search user turns",
     });
-    await input.fill("horizon needle");
+    let typed = "";
+    for (const character of "horizon needle") {
+      typed += character;
+      await input.pressSequentially(character);
+      await expect(input).toHaveValue(typed, { timeout: 100 });
+    }
+    const coverage = page.getByLabel("Percentage of session messages checked");
+    await expect(coverage).toHaveText(/\d+%/);
+    expect(Number((await coverage.innerText()).replace("%", ""))).toBeLessThan(
+      100,
+    );
     await expect(list.locator('[data-render-id="history-user-0"]')).toHaveCount(
       0,
     );
@@ -111,9 +101,26 @@ for (const viewport of [
     expect(olderPageRequests).toContain("history-compact-4");
     expect(olderPageRequests).toContain("history-compact-2");
     const requestsBeforeHydration = olderPageRequests.length;
-    await captureSearchPanel(page, testInfo, viewport.name);
+    await expect(coverage).toHaveText("100%");
+    await recordUiCapture(page, `${viewport.name}-search`);
 
-    await page.keyboard.press("Enter");
+    await page
+      .getByRole("search")
+      .getByRole("button", { name: /Older result/ })
+      .click();
+    const highlighted = list.locator('[data-search-match="true"]');
+    await expect(highlighted).toContainText("archived horizon needle");
+    await expect(input).toBeVisible();
+    await recordUiCapture(page, `${viewport.name}-highlight`);
+
+    await page.addStyleTag({
+      content:
+        '[data-render-id="history-user-0"] .text-block { padding-top: 700px; }',
+    });
+
+    if (viewport.name === "mobile")
+      await page.getByRole("button", { name: "Go to selected match" }).click();
+    else await page.keyboard.press("Enter");
     const historicalTarget = list.locator('[data-render-id="history-user-0"]');
     await expect(historicalTarget).toBeVisible();
     await expect(input).toHaveCount(0);
@@ -127,19 +134,24 @@ for (const viewport of [
       .poll(() => olderPageRequests.length)
       .toBe(requestsBeforeHydration + 1);
     const targetOffset = async () => {
-      const targetBox = await historicalTarget.boundingBox();
-      const viewportBox = await page.locator(".session-messages").boundingBox();
-      if (!targetBox || !viewportBox) return null;
-      const fullyVisible =
-        targetBox.y >= viewportBox.y - 1 &&
-        targetBox.y + targetBox.height <=
-          viewportBox.y + viewportBox.height + 1;
-      return fullyVisible ? targetBox.y - viewportBox.y : null;
+      return page.evaluate(() => {
+        const range = CSS.highlights.get("session-isearch")?.values().next()
+          .value as Range | undefined;
+        const port = document
+          .querySelector(".session-messages")
+          ?.getBoundingClientRect();
+        if (!range || !port) return null;
+        const rect = range.getBoundingClientRect();
+        return rect.top >= port.top && rect.bottom <= port.bottom
+          ? rect.top - port.top
+          : null;
+      });
     };
     await expect.poll(targetOffset).not.toBeNull();
     const settledTargetOffset = await targetOffset();
     await page.waitForTimeout(100);
     expect(await targetOffset()).toBeCloseTo(settledTargetOffset ?? 0, 0);
+    await recordUiCapture(page, `${viewport.name}-long-match`);
 
     await page.keyboard.press("Control+End");
     await expect(historicalTarget).toHaveCount(0);

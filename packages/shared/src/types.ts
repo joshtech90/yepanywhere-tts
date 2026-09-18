@@ -506,6 +506,8 @@ export interface ProviderInfo {
    * never emulated when absent.
    */
   supportsForkSession?: boolean;
+  /** Native transcript reader supports bounded turn search, independent of launch/auth state. */
+  supportsBoundedTurnSearch?: boolean;
   /** Provider-specific command a user can run to authenticate this provider. */
   loginCommand?: string;
 }

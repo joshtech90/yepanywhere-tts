@@ -1,0 +1,143 @@
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.card {
+  /* Two fields across once the row is wide enough for both to stay legible;
+     one column on a phone, where a 200px field would wrap every label. */
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  align-items: end;
+  gap: 0.5rem 1rem;
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border-color, #3a3a3a);
+  border-radius: 6px;
+  min-width: 0;
+}
+
+.legend {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0 0.35rem;
+}
+
+/* Reordering sits with the entry's title because the list order is what the
+   model pickers show, so it reads as a property of this entry's place in the
+   list rather than as one more setting inside it. */
+.reorder {
+  display: inline-flex;
+  gap: 0.15rem;
+}
+
+.reorder > button {
+  /* Square enough to stay a comfortable target on a phone without making the
+     legend taller than the border it sits on. */
+  min-width: 1.75rem;
+  min-height: 1.75rem;
+  padding: 0;
+  line-height: 1;
+  cursor: pointer;
+  border: 1px solid var(--border-color, #3a3a3a);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+}
+
+.reorder > button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* Hints and the wide rows read as their own band rather than as a column. */
+.wide {
+  grid-column: 1 / -1;
+}
+
+/* The id doubles as the entry's title, so it reads as a heading rather than
+   as one more field in the stack. */
+.id {
+  font-weight: 600;
+  width: 12ch;
+  min-width: 8ch;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.field > span {
+  font-size: 0.85rem;
+  opacity: 0.85;
+}
+
+.inline {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.inline > input {
+  /* Wide enough for the largest accepted delay (86400) plus the spinner. */
+  width: 10ch;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem 1rem;
+}
+
+/* Checkbox and its label share a baseline; the control keeps a touch-sized
+   hit area on a phone even though the text is small. */
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 2.25rem;
+  font-size: 0.9rem;
+}
+
+.advanced {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.advanced > summary {
+  cursor: pointer;
+  min-height: 2.25rem;
+  display: flex;
+  align-items: center;
+  font-size: 0.9rem;
+}
+
+/* The exact commands, one per line, selectable and never wrapped mid-token. */
+.commands {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.85rem;
+}
+
+.commands > span {
+  opacity: 0.85;
+}
+
+.commands > code {
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}

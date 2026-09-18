@@ -1,9 +1,12 @@
 import { join } from "node:path";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
 const sessionId = "mock-session-001";
+
+test.use({ serviceWorkers: "block" });
 
 async function dismissOnboardingIfVisible(
   page: import("@playwright/test").Page,
@@ -26,6 +29,131 @@ function decodeClientFrame(payload: string | Buffer): unknown {
 }
 
 test.describe("Session streams", () => {
+  test("idle heartbeat clears processing when completion and tool output were missed", async ({
+    page,
+    baseURL,
+  }) => {
+    test.setTimeout(60_000);
+    const timestamp = new Date().toISOString();
+    const ownership = { owner: "self", processId: "heartbeat-process" };
+    const messages = [
+      { uuid: "u1", type: "user", content: "Check the build.", timestamp },
+      {
+        uuid: "a1",
+        type: "assistant",
+        timestamp,
+        content: [
+          {
+            type: "tool_use",
+            id: "t1",
+            name: "Bash",
+            input: { command: "npm test" },
+          },
+        ],
+      },
+    ];
+    await page.route(
+      new RegExp(
+        `/api/projects/[^/]+/sessions/${sessionId}(?:/metadata)?(?:\\?|$)`,
+      ),
+      (route) =>
+        route.fulfill({
+          json: {
+            session: {
+              id: sessionId,
+              projectId,
+              provider: "codex",
+              title: "Build check",
+              createdAt: timestamp,
+              updatedAt: timestamp,
+              ownership,
+              messageCount: messages.length,
+            },
+            ownership,
+            processState: "in-turn",
+            messages,
+          },
+        }),
+    );
+    let emitSession: ((eventType: string, data: object) => void) | undefined;
+    await page.routeWebSocket("**/api/ws", (socket) => {
+      const upstream = socket.connectToServer();
+      socket.onMessage((wire) => {
+        const message = decodeClientFrame(wire) as {
+          type: string;
+          channel?: string;
+          subscriptionId?: string;
+        } | null;
+        if (message?.type === "subscribe" && message.channel === "session") {
+          let eventId = 0;
+          emitSession = (eventType, data) =>
+            socket.send(
+              JSON.stringify({
+                type: "event",
+                subscriptionId: message.subscriptionId,
+                eventId: String(eventId++),
+                eventType,
+                data,
+              }),
+            );
+          emitSession("connected", {
+            sessionId,
+            processId: "heartbeat-process",
+            state: "in-turn",
+          });
+          return;
+        }
+        upstream.send(wire);
+      });
+    });
+
+    for (const viewport of [
+      { name: "desktop", width: 1200, height: 600 },
+      { name: "phone", width: 375, height: 812 },
+    ]) {
+      emitSession = undefined;
+      await page.setViewportSize(viewport);
+      await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+      await dismissOnboardingIfVisible(page);
+      const indicator = page.locator(
+        ".processing-indicator:not(.processing-indicator--control-only)",
+      );
+      await expect(indicator).toBeVisible({ timeout: 30_000 });
+      await recordUiCapture(
+        page,
+        `heartbeat-before-${viewport.name}`,
+        viewport,
+      );
+      await expect.poll(() => Boolean(emitSession)).toBe(true);
+      emitSession?.("heartbeat", {
+        timestamp,
+        liveness: {
+          checkedAt: timestamp,
+          state: "idle",
+          derivedStatus: "verified-idle",
+          activeWorkKind: "none",
+          evidence: [],
+          lastProviderMessageAt: timestamp,
+          lastRawProviderEventAt: null,
+          lastRawProviderEventSource: null,
+          lastStateChangeAt: timestamp,
+          lastVerifiedProgressAt: timestamp,
+          lastVerifiedIdleAt: timestamp,
+          lastLivenessProbeAt: null,
+          lastLivenessProbeStatus: null,
+          lastLivenessProbeSource: null,
+          silenceMs: 0,
+          longSilenceThresholdMs: 300_000,
+          queueDepth: 0,
+          deferredQueueDepth: 0,
+        },
+      });
+      await expect(indicator).toHaveCount(0);
+      await expect(page.locator("[data-composer-input]")).toBeVisible();
+      await recordUiCapture(page, `heartbeat-idle-${viewport.name}`, viewport);
+    }
+  });
+
   test("session detail subscribes to focused watch stream over WebSocket", async ({
     page,
     baseURL,

@@ -125,10 +125,14 @@ class RemoteMessageQueue implements AgentMessageQueue {
   }
 
   push(message: UserMessage): number {
-    this.pending.push(message);
+    this.trackSteer(message);
     this.remoteDepth = Math.max(this.remoteDepth, this.pending.length);
     this.send({ type: "queuePush", message });
     return this.remoteDepth;
+  }
+
+  trackSteer(message: UserMessage): void {
+    this.pending.push(message);
   }
 
   drain(): UserMessage[] {
@@ -392,7 +396,22 @@ class RemoteAgentSession {
           }
         : {}),
       ...(capabilities.steer
-        ? { steer: (message) => this.rpc("steer", [message]) }
+        ? {
+            steerUsesMessageQueue: capabilities.steerUsesMessageQueue,
+            steer: async (message) => {
+              if (capabilities.steerUsesMessageQueue)
+                this.queue.trackSteer(message);
+              try {
+                const steered = await this.rpc<boolean>("steer", [message]);
+                if (!steered && message.uuid)
+                  this.queue.removeAccepted([message.uuid]);
+                return steered;
+              } catch (error) {
+                if (message.uuid) this.queue.removeAccepted([message.uuid]);
+                throw error;
+              }
+            },
+          }
         : {}),
       ...(capabilities.appendConversationContext
         ? {

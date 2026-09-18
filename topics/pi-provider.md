@@ -10,6 +10,10 @@ Topic: pi-provider
 Related topics: [provider refresh](provider-refresh.md),
 [provider state machine](provider-state-machine.md).
 
+Candidate designs that are not current behavior, including YA-supplied web
+search/fetch tools for pi, live in
+[`pi-provider.sketches.md`](pi-provider.sketches.md).
+
 ## What pi is (confirmed against the local checkout, 2026-06-21)
 
 A TypeScript monorepo coding agent. The fork at `~/pi` (`origin

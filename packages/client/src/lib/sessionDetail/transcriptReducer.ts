@@ -120,6 +120,8 @@ function mergePersistedMessagesForProvider(
 ): Message[] {
   const result = mergeJSONLMessages(baseMessages, taggedMessages, {
     skipDagOrdering: !getProvider(provider).capabilities.supportsDag,
+    preserveIncomingOrder:
+      provider === "codex" && codexStreamDurableIdAlignment,
   });
   return maybeReconcileApprox(
     result.messages,

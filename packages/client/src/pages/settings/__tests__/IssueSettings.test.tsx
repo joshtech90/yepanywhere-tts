@@ -164,6 +164,9 @@ describe("IssueSettings tracker confirmation", () => {
       "Jira credential: Key (overrides the environment)",
     );
     expect(input.type).toBe("password");
+    expect(input.autocomplete).toBe("new-password");
+    expect(input.hasAttribute("data-1p-ignore")).toBe(true);
+    expect(input.getAttribute("data-lpignore")).toBe("true");
     fireEvent.change(input, { target: { value: " secret-token " } });
     await act(async () =>
       fireEvent.click(
@@ -174,6 +177,7 @@ describe("IssueSettings tracker confirmation", () => {
       method: "PUT",
       body: JSON.stringify({ provider: "jira", key: "secret-token" }),
     });
+    expect(input.value).toBe("");
   });
 
   it("edits the blocked project names and rejects an unusable entry", async () => {

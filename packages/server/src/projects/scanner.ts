@@ -165,6 +165,7 @@ export class ProjectScanner {
   } | null = null;
   private snapshotSavePromise: Promise<void> | null = null;
   private unsubscribeEventBus: (() => void) | null = null;
+  private disposed = false;
 
   constructor(options: ScannerOptions = {}) {
     this.projectsDir = options.projectsDir ?? CLAUDE_PROJECTS_DIR;
@@ -225,6 +226,7 @@ export class ProjectScanner {
   }
 
   private async getSnapshot(forceRefresh = false): Promise<ProjectSnapshot> {
+    if (this.disposed) throw new Error("Project scanner is disposed");
     const now = Date.now();
     const scanRevision = this.cacheRevision;
     const isFresh =
@@ -373,7 +375,7 @@ export class ProjectScanner {
     snapshot: ProjectSnapshot,
     revision: number,
   ): void {
-    if (!this.projectScanCachePath) return;
+    if (this.disposed || !this.projectScanCachePath) return;
     this.pendingSnapshotSave = { snapshot, revision };
     this.startSnapshotSave();
   }
@@ -1128,9 +1130,12 @@ export class ProjectScanner {
     return project ? this.cloneProject(project) : null;
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
+    this.disposed = true;
     this.unsubscribeEventBus?.();
     this.unsubscribeEventBus = null;
+    this.pendingSnapshotSave = null;
+    await this.snapshotSavePromise;
   }
 
   /**

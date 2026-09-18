@@ -29,7 +29,10 @@ import type {
 import type { ToolDisplayAction } from "./tool-display-actions.js";
 import type { ProjectPathLinkTarget } from "./project-path-links.js";
 import type { UploadedFile } from "./upload.js";
-import type { UserMessageMetadata } from "./user-message-metadata.js";
+import type {
+  NonHumanUserTurn,
+  UserMessageMetadata,
+} from "./user-message-metadata.js";
 import type { WorkstreamId } from "./workstreams.js";
 
 // =============================================================================
@@ -530,6 +533,8 @@ export interface DurableSyntheticDoneMessage extends AppMessageExtensions {
  * Contains metadata without full message content.
  */
 export interface AppSessionSummary {
+  /** null clears a known receipt; omission preserves unknown older-server state. */
+  nonHumanUserTurn?: NonHumanUserTurn | null;
   /** Bounded recent question previews; absence means this projection is unknown. */
   asyncQuestions?: {
     questions: {
@@ -575,6 +580,13 @@ export interface AppSessionSummary {
   initialPrompt?: string;
   /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
+  /**
+   * When someone last wrote into this session, which agent work never
+   * advances. Sidebar chronology is stated in the reader's own turns, so it
+   * needs a time every client agrees on rather than one each browser keeps for
+   * itself. A message another session delivered counts as written.
+   */
+  lastHumanTurnAt?: string;
   contextUsage?: ContextUsage;
   /** SSH host alias for remote execution (undefined = local) */
   executor?: string;
@@ -1118,6 +1130,7 @@ export function isAppSession(value: unknown): value is AppSession {
     "forkedFromSessionId",
     "initialPrompt",
     "lastAgentText",
+    "lastHumanTurnAt",
     "executor",
     "originator",
     "cliVersion",

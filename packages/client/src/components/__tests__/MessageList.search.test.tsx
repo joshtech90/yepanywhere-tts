@@ -146,6 +146,122 @@ function historyPage(
 }
 
 describe("MessageList reverse search", () => {
+  it("preserves the query and case when Ctrl+Alt+S changes scope", async () => {
+    render(<MessageList messages={[userMessage("first", "Needle first")]} />);
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Reverse search user turns" }),
+      { target: { value: "Needle" } },
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Case-sensitive search" }),
+    );
+    fireEvent.keyDown(window, { key: "s", ctrlKey: true, altKey: true });
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Reverse search full session",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("Needle");
+    expect(
+      screen
+        .getByRole("button", { name: "Case-sensitive search" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+  });
+
+  it("waits for an older page and advances to k of n+k with honest coverage", async () => {
+    const pending = deferred<ReturnType<typeof historyPage>>();
+    const read = vi.fn(() => pending.promise);
+    render(
+      <MessageList
+        messages={[userMessage("recent", "needle recent")]}
+        hasOlderMessages
+        olderMessagesCursor="boundary"
+        totalMessageCount={4}
+        onReadOlderSearchPage={read}
+      />,
+    );
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Reverse search user turns" }),
+      { target: { value: "needle" } },
+    );
+    expect(
+      screen.getByLabelText("Percentage of session messages checked")
+        .textContent,
+    ).toBe("25%");
+    fireEvent.click(screen.getByRole("button", { name: "Previous match" }));
+    expect(screen.getByText("1/1")).toBeTruthy();
+    expect(screen.getByText("Searching…")).toBeTruthy();
+    await act(async () =>
+      pending.resolve(
+        historyPage(
+          [
+            userMessage("oldest", "needle oldest"),
+            userMessage("older", "needle older"),
+          ],
+          "more",
+        ),
+      ),
+    );
+    expect(await screen.findByText("2/3")).toBeTruthy();
+    expect(
+      screen.getByLabelText("Percentage of session messages checked")
+        .textContent,
+    ).toBe("75%");
+  });
+
+  it("announces the search boundary and cycles without another press", async () => {
+    render(
+      <MessageList
+        messages={[
+          userMessage("first", "needle first"),
+          userMessage("last", "needle last"),
+        ]}
+      />,
+    );
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Reverse search user turns" }),
+      { target: { value: "needle" } },
+    );
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    expect(screen.getByText("1/2")).toBeTruthy();
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    expect(screen.getByText("Start of session · wrapped")).toBeTruthy();
+    expect(screen.getByText("2/2")).toBeTruthy();
+  });
+
+  it("activates an older preview by click and provides Go", async () => {
+    const read = vi.fn(async () =>
+      historyPage([userMessage("old", "needle old")], null),
+    );
+    const { container } = render(
+      <MessageList
+        messages={[userMessage("recent", "recent request")]}
+        hasOlderMessages
+        olderMessagesCursor="boundary"
+        onReadOlderSearchPage={read}
+      />,
+    );
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    fireEvent.change(
+      await screen.findByRole("textbox", { name: "Reverse search user turns" }),
+      { target: { value: "needle" } },
+    );
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    fireEvent.click(await screen.findByText("needle old"));
+    await waitFor(() =>
+      expect(container.querySelector('[data-render-id="old"]')).not.toBeNull(),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Go to selected match" }),
+    );
+    await waitFor(() => expect(screen.queryByRole("search")).toBeNull());
+  });
+
   it.each([
     {
       shortcut: "r",

@@ -60,6 +60,19 @@ echoes, so the echo chokepoint above does not touch them. The fix is to
 classify/tag injected context-init text in the reader/render pipeline so it
 inherits the system/hidden contract.
 
+### Post-compact replay continuation (landed 2026-09-15)
+
+When Settings → Providers → Continue after compaction is enabled for the
+session's provider, YA queues a hidden user turn after a compact boundary
+settles. The text always starts with
+`This session is being continued after compaction (Yep Anywhere replay).` and
+ends with `continue.` Optional last-N prose uses the **Handoff from…** `user: `
+format and states that it is a replay. Optimistic echo is hidden via
+`metadata.hidden`. Persisted provider-echoed copies are dropped from transcript
+projection by that opener, the same way Claude's compact-summary preamble is
+hidden, so the row is never a user bubble. See
+[post-compact-replay](post-compact-replay.md).
+
 ### Claude compact summary (landed 2026-06-26)
 
 Claude can persist a manual compact as a cluster of rows:

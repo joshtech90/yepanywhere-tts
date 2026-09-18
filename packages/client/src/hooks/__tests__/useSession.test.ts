@@ -12,6 +12,8 @@ import type {
   SessionUpdatedEvent,
 } from "../../lib/activityBus";
 import { sessionModelPick } from "../../lib/sessionPickStorage";
+import { getSessionActivityUiState } from "../../lib/sessionActivityUi";
+import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import type { SessionStatus } from "../../types";
 import { PENDING_SEND_RECONCILE_MS } from "../../lib/deliveryState";
 import { __resetAwayRecapTimersForTest, useSession } from "../useSession";
@@ -1812,6 +1814,26 @@ describe("useSession completion reconciliation", () => {
 
     expect(result.current.processState).toBe("in-turn");
 
+    const items: RenderItem[] = [
+      { type: "user_prompt", id: "u1", content: "go", sourceMessages: [] },
+      {
+        type: "tool_call",
+        id: "t1",
+        toolName: "Bash",
+        toolInput: { command: "npm test" },
+        sourceMessages: [],
+        status: "pending",
+      },
+    ];
+    const activity = () =>
+      getSessionActivityUiState({
+        owner: result.current.status.owner,
+        processState: result.current.processState,
+        sessionLiveness: result.current.sessionLiveness,
+        items,
+      });
+    expect(activity().showProcessingIndicator).toBe(true);
+
     act(() => {
       sessionStreamHandler?.({
         eventType: "heartbeat",
@@ -1829,6 +1851,10 @@ describe("useSession completion reconciliation", () => {
       derivedStatus: "verified-idle",
       state: "idle",
     });
+    expect(activity().showProcessingIndicator).toBe(false);
+    expect(activity().shouldDeferMessages).toBe(false);
+    expect(activity().canStopOwnedProcess).toBe(false);
+    expect(activity().shouldSuppressCurrentTurnOrphans).toBe(false);
   });
 
   it("moves stale liveness to live on user-visible stream progress", () => {

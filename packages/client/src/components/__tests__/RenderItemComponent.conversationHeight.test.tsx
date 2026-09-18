@@ -115,6 +115,50 @@ describe("conversation thinking preview height publication", () => {
     );
   });
 
+  it("does not republish a 2px shrink of the latest preview height", () => {
+    vi.stubGlobal("ResizeObserver", MockResizeObserver);
+
+    const { container } = render(
+      <I18nProvider>
+        <RenderItemComponent
+          item={conversationActivityItem()}
+          isStreaming
+          thinkingExpanded={false}
+          toggleThinkingExpanded={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    const row = container.querySelector<HTMLElement>(
+      ".conversation-activity-row",
+    );
+    const latestContent = container.querySelector<HTMLElement>(
+      '.conversation-thinking-preview[data-preview-slot="latest"] .conversation-thinking-preview-content',
+    );
+    const watching = observers.find((observer) =>
+      observer.targets.includes(latestContent as Element),
+    );
+    let offsetHeight = 240;
+    Object.defineProperty(latestContent, "offsetHeight", {
+      configurable: true,
+      get: () => offsetHeight,
+    });
+    act(() => {
+      watching?.cb([], watching as unknown as ResizeObserver);
+    });
+    expect(row?.style.getPropertyValue("--conversation-thinking-height")).toBe(
+      "240px",
+    );
+
+    offsetHeight = 238;
+    act(() => {
+      watching?.cb([], watching as unknown as ResizeObserver);
+    });
+    expect(row?.style.getPropertyValue("--conversation-thinking-height")).toBe(
+      "240px",
+    );
+  });
+
   it("publishes 0 when the current/latest card is collapsed so siblings never exceed it", () => {
     vi.stubGlobal("ResizeObserver", MockResizeObserver);
 
@@ -602,6 +646,13 @@ describe("stacked previous thinking preview budget", () => {
 
   it("leaves side-by-side cards on their ordinary current-height cap", () => {
     const row = renderStacked(0);
+
+    expect(row.dataset.previousThinking).toBeUndefined();
+    expect(row.style.getPropertyValue(BUDGET_VAR)).toBe("");
+  });
+
+  it("does not treat a 2px baseline wobble as a wrap", () => {
+    const row = renderStacked(2);
 
     expect(row.dataset.previousThinking).toBeUndefined();
     expect(row.style.getPropertyValue(BUDGET_VAR)).toBe("");

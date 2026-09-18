@@ -662,7 +662,7 @@ describe("SessionListItem links", () => {
     refreshSpy.mockRestore();
   });
 
-  it("keeps a session hover preview open while the pointer is over the card", () => {
+  it("keeps a session hover preview open while the pointer is over the card", async () => {
     vi.useFakeTimers();
 
     render(
@@ -690,8 +690,8 @@ describe("SessionListItem links", () => {
     expect(item).toBeTruthy();
 
     fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
-    act(() => {
-      vi.advanceTimersByTime(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(DEFAULT_HOVERCARD_SHOW_DELAY_MS);
     });
 
     const hoverCard = screen.getByRole("tooltip");
@@ -775,7 +775,7 @@ describe("SessionListItem links", () => {
     expect(screen.getByText("Second session prompt")).toBeTruthy();
   });
 
-  it("keeps session hover previews open during unrelated scrolls", () => {
+  it("keeps session hover previews open during unrelated scrolls", async () => {
     vi.useFakeTimers();
 
     render(
@@ -805,8 +805,8 @@ describe("SessionListItem links", () => {
     expect(item).toBeTruthy();
 
     fireEvent.pointerEnter(item!, { pointerType: "mouse", clientX: 20 });
-    act(() => {
-      vi.advanceTimersByTime(200);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(200);
     });
     expect(screen.getByText("Scoped scroll prompt")).toBeTruthy();
 

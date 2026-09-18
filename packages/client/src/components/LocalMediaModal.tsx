@@ -11,6 +11,7 @@ import {
   useCallback,
   useEffect,
   useId,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -443,6 +444,28 @@ export function LocalMediaModal(props: LocalMediaModalProps) {
     if (mountedRef.current) onCloseRef.current();
   }, []);
 
+  // Callers build navigation inline, so its identity changes on every render of
+  // the surface that owns the images. Registering the managed viewer again
+  // re-renders that surface, which would rebuild navigation again: an update
+  // loop that React aborts as exceeded update depth. Only a changed position
+  // re-registers; the handlers stay stable and read the latest caller.
+  const navigationRef = useRef(imageNavigation);
+  navigationRef.current = imageNavigation;
+  const navigationCount = imageNavigation?.count;
+  const navigationCurrent = imageNavigation?.current;
+  const managedNavigation = useMemo(
+    () =>
+      navigationCount === undefined || navigationCurrent === undefined
+        ? undefined
+        : {
+            count: navigationCount,
+            current: navigationCurrent,
+            onNext: () => navigationRef.current?.onNext(),
+            onPrevious: () => navigationRef.current?.onPrevious(),
+          },
+    [navigationCount, navigationCurrent],
+  );
+
   useEffect(() => {
     if (!managed || !sessionId || !semanticFilePath) return;
     presentSessionViewer({
@@ -460,7 +483,7 @@ export function LocalMediaModal(props: LocalMediaModalProps) {
           filePath={filePath}
           mediaType={mediaType}
           mediaSource={mediaSource}
-          imageNavigation={imageNavigation}
+          imageNavigation={managedNavigation}
           dismissOnBack={dismissOnBack}
           managedViewerId={managedViewerId}
           ownsManagedViewer
@@ -473,7 +496,7 @@ export function LocalMediaModal(props: LocalMediaModalProps) {
     closeSource,
     dismissOnBack,
     filePath,
-    imageNavigation,
+    managedNavigation,
     managed,
     managedViewerId,
     mediaSource,

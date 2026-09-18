@@ -25,6 +25,7 @@ import {
   useClientSummarySourceKey,
 } from "../lib/clientSummaryStore";
 import { isRemoteClient } from "../lib/connection";
+import { isConnectionReconnectingError } from "../lib/connection/types";
 import {
   readRouteRetention,
   subscribeRouteRetention,
@@ -32,6 +33,10 @@ import {
   type RouteRetentionKeyInput,
 } from "../lib/routeRetention";
 
+// Transport churn is reported by the connection indicator, not by this panel:
+// a read rejected because the socket was being replaced re-issues itself on
+// the new socket, so surfacing it here would show an alarming transient error
+// beside data that is about to arrive.
 const SAFETY_REFRESH_INTERVAL_MS = 30_000;
 const ACTIVITY_REFRESH_DELAY_MS = 750;
 const GIT_STATUS_TTL_MS = 60 * 1000;
@@ -241,6 +246,7 @@ export function useGitStatus(
         if (
           mountedRef.current &&
           requestId === untrackedRequestSequenceRef.current &&
+          !isConnectionReconnectingError(err) &&
           (!background || untrackedFilesRef.current === null)
         ) {
           setUntrackedError(
@@ -333,7 +339,10 @@ export function useGitStatus(
         if (!mountedRef.current || requestId !== requestSequenceRef.current) {
           return;
         }
-        if (gitStatusRef.current === null) {
+        if (
+          gitStatusRef.current === null &&
+          !isConnectionReconnectingError(err)
+        ) {
           setStatusError(err instanceof Error ? err : new Error(String(err)));
         }
       } finally {

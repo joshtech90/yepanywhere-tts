@@ -101,9 +101,11 @@ describe("git-working-tree-files routes", () => {
     });
   });
 
-  it("enumerates ignored paths only when their section is enabled", async () => {
+  it("enumerates locally excluded paths only when their section is enabled", async () => {
     await writeFile(join(dir, "untracked.txt"), "untracked\n");
     await writeFile(join(dir, "ignored.txt"), "ignored\n");
+    await writeFile(join(dir, ".git", "info", "exclude"), "/notes.local.md\n");
+    await writeFile(join(dir, "notes.local.md"), "notes\n");
     await writeFile(join(dir, ".git", "administrative.txt"), "hidden\n");
     const { projectId, routes } = createRoutesForProject(dir, dataDir);
 
@@ -113,8 +115,10 @@ describe("git-working-tree-files routes", () => {
     const body = (await response.json()) as GitWorkingTreeFileListResult;
 
     expect(response.status).toBe(200);
+    // `.gitignore` content (ignored.txt) is shared build-style exclusion and
+    // never listed; this clone's own info/exclude entry stays browsable.
     expect(body.files).toEqual([
-      { path: "ignored.txt", tracked: false, kind: "ignored" },
+      { path: "notes.local.md", tracked: false, kind: "ignored" },
     ]);
   });
 

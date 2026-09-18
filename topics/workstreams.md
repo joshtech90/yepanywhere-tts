@@ -82,6 +82,18 @@ The default for existing users should remain the current single-lane behavior.
 Workstreams are YA-novel and should be opt-in/default-off until deliberately
 promoted.
 
+Promotion is gated on maintainer dogfooding, not on feature completeness. As
+of 2026-09-15 the maintainers do not themselves work through lanes, because
+agents of the current generation have been observed stranding or mishandling
+work that must move from a side tree back into the canonical checkout; a
+lane UX designed without that daily use would get the details wrong. The
+intended path is to become comfortable through disposable lanes first (work
+whose product is a transcript, a report, or a hand-reapplied change, never a
+tree that must land) and then through human-attended landings under
+[Landing Back To Main](#landing-back-to-main), one at a time. YA should
+eventually serve users who are already comfortable with workstream-style
+parallel work; that support follows the maintainers' own use.
+
 ## Product Shape
 
 The user-facing object is **workstream**, not "PR". A workstream includes:

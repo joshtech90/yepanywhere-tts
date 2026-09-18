@@ -313,18 +313,21 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")).toHaveLength(1);
     expect(transport.getSubscriptions("worktree")[0]).toMatchObject({
       projectId: "p1",
-      coverage: { tracked: true, untracked: true, ignored: false },
+      coverage: { tracked: true, untracked: true, ignored: true },
     });
     expect(listGitWorkingTreeFiles).not.toHaveBeenCalled();
     expect(listGitFiles).not.toHaveBeenCalled();
     expect(
       screen.getByRole("button", { name: /sourceTrackedFiles/, pressed: true }),
     ).toBeDefined();
-    const ignoredToggle = screen.getByRole("button", {
-      name: /sourceIgnoredFiles/,
-      pressed: false,
-    });
-    expect(ignoredToggle).toBeDefined();
+    // Locally excluded content (this clone's .git/info/exclude paths) is
+    // browsable without asking; .gitignore content never reaches the client.
+    expect(
+      screen.getByRole("button", {
+        name: /sourceIgnoredFiles/,
+        pressed: true,
+      }),
+    ).toBeDefined();
     const packageGroup = (await screen.findByText("packages/client/")).closest(
       "button",
     );
@@ -343,13 +346,26 @@ describe("BlameBrowser", () => {
     fireEvent.click(
       screen.getByRole("button", {
         name: "sourceIgnoredFiles",
-        expanded: false,
+        expanded: true,
       }),
     );
     await waitFor(() =>
       expect(transport.getSubscriptions("worktree")).toHaveLength(2),
     );
     expect(transport.getSubscriptions("worktree")[1]).toMatchObject({
+      projectId: "p1",
+      coverage: { tracked: true, untracked: true, ignored: false },
+    });
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "sourceIgnoredFiles",
+        expanded: false,
+      }),
+    );
+    await waitFor(() =>
+      expect(transport.getSubscriptions("worktree")).toHaveLength(3),
+    );
+    expect(transport.getSubscriptions("worktree")[2]).toMatchObject({
       projectId: "p1",
       coverage: { tracked: true, untracked: true, ignored: true },
     });
@@ -433,7 +449,7 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")[0]?.coverage).toEqual({
       tracked: true,
       untracked: true,
-      ignored: false,
+      ignored: true,
       expandedPrefixes: [],
     });
     const pendingSrc = screen.getByRole("button", {
@@ -457,7 +473,7 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")[1]?.coverage).toEqual({
       tracked: true,
       untracked: true,
-      ignored: false,
+      ignored: true,
       expandedPrefixes: ["src"],
     });
     expect(getFile).not.toHaveBeenCalled();
@@ -486,7 +502,7 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")[2]?.coverage).toEqual({
       tracked: true,
       untracked: true,
-      ignored: false,
+      ignored: true,
       expandedPrefixes: ["src", "src/nested"],
     });
 
@@ -502,7 +518,7 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")[3]?.coverage).toEqual({
       tracked: true,
       untracked: true,
-      ignored: false,
+      ignored: true,
       expandedPrefixes: [],
     });
   });
@@ -554,7 +570,7 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")[0]?.coverage).toEqual({
       tracked: true,
       untracked: true,
-      ignored: false,
+      ignored: true,
       expandedPrefixes: [],
     });
     expect(screen.getByRole("button", { name: "Show all 3" })).toBeDefined();
@@ -566,7 +582,7 @@ describe("BlameBrowser", () => {
     expect(transport.getSubscriptions("worktree")[1]?.coverage).toEqual({
       tracked: true,
       untracked: true,
-      ignored: false,
+      ignored: true,
       expandedPrefixes: [],
       filesystemScan: "complete",
     });

@@ -358,3 +358,83 @@ it("keeps launch overrides explicit and rejects shared-loopback origins", () => 
     }),
   ).toThrow();
 });
+
+it("proxies a static vhost Host to loopback before YA APIs", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-vhost-"));
+  initFileAccess({
+    uploadsDir: directory,
+    homeDir: directory,
+    tempPaths: [directory],
+    envPaths: [directory],
+  });
+  const upstream = createServer((req, res) => {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end(`ok ${req.headers.host} ${req.url}`);
+  });
+  await new Promise<void>((ready) => upstream.listen(0, "127.0.0.1", ready));
+  const upstreamAddress = upstream.address();
+  if (!upstreamAddress || typeof upstreamAddress === "string")
+    throw new Error("Missing upstream port");
+  const instance = createApp({
+    sdk: new MockClaudeSDK(),
+    dataDir: join(directory, "data"),
+    projectsDir: join(directory, "sessions"),
+    artifacts: {
+      port: 4402,
+      localOrigin: "http://artifacts.localhost:3400",
+      vhostPublicRoot: "graehl.org",
+      vhosts: [{ name: "plan", port: upstreamAddress.port, public: true }],
+    },
+  });
+  const listener = createServer(getRequestListener(instance.app.fetch));
+  await new Promise<void>((ready) => listener.listen(0, "127.0.0.1", ready));
+  const address = listener.address();
+  if (!address || typeof address === "string")
+    throw new Error("Missing listener port");
+  const get = (path: string, host: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = request(
+        {
+          hostname: "127.0.0.1",
+          port: address.port,
+          path,
+          headers: { Host: host },
+        },
+        (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => {
+            body += chunk;
+          });
+          res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+  try {
+    expect(await get("/health", "plan.localhost:3400")).toMatchObject({
+      status: 200,
+      body: `ok plan.localhost:3400 /health`,
+    });
+    expect(await get("/health", "plan.graehl.org")).toMatchObject({
+      status: 200,
+      body: "ok plan.graehl.org /health",
+    });
+    expect(await get("/api/version", "plan.localhost:3400")).toMatchObject({
+      status: 200,
+      body: "ok plan.localhost:3400 /api/version",
+    });
+    expect((await get("/api/version", "localhost:3400")).status).toBe(200);
+  } finally {
+    listener.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      listener.close((error) => (error ? reject(error) : resolve())),
+    );
+    upstream.closeAllConnections();
+    await new Promise<void>((resolve, reject) =>
+      upstream.close((error) => (error ? reject(error) : resolve())),
+    );
+    await instance.disposeSessionReaders();
+  }
+});

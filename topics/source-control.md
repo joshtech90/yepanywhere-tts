@@ -242,16 +242,22 @@ depending on hover.
 ### Current-content inventory and untracked cache
 
 Working Tree exposes a route-local row of **Tracked**, **Untracked**, and
-**Ignored** visibility toggles. Revisiting the route restores its defaults:
-Tracked and Untracked on, Ignored off. Ordinary entry therefore performs no
-ignored-file enumeration merely to hide its result. Tracked means every present
-tracked path. Changes retains its diff-oriented changed-tracked and non-ignored
-untracked list; composing it from the same section-control surface remains an
-optional unification, not a requirement.
+**Locally excluded** visibility toggles, all three on by default. Tracked means
+every present tracked path. Changes retains its diff-oriented changed-tracked
+and non-ignored untracked list; composing it from the same section-control
+surface remains an optional unification, not a requirement.
 
-Ignored is the final divider-separated section and includes every path Git
-classifies through repository ignore rules, `.git/info/exclude`, or global
-excludes. `.git` itself and every descendant are categorically absent: YA does
+Locally excluded is the final divider-separated section, and the two kinds of
+ignored content are split by where the rule lives. A `.gitignore` (or global
+excludes) rule is shared project truth about build output and dependencies:
+that content is never enumerated, never sent, and has no toggle. A
+`.git/info/exclude` rule is this clone's own decision to keep authored material
+— private notes, review files, task state — out of commits, so that material
+stays browsable and is shown without asking. Making a directory browsable is
+therefore an ordinary Git operation: move its rule from `.gitignore` to
+`.git/info/exclude`. `git check-ignore -v` decides each path by the rule Git
+actually applied, so a path named in both files follows `.gitignore` and stays
+hidden. `.git` itself and every descendant are categorically absent: YA does
 not list, traverse for content, or attach a filesystem watch within that
 administrative subtree. No config-file exception is implied.
 
@@ -406,8 +412,9 @@ When enabled, one project-keyed server owner replaces the static file corpus as
 the current Source Control truth while a visible and focused Source Control
 view holds a lease. Identical subscribers across direct and relay transports
 share one snapshot, watcher set, and reconciliation computation. Subscriber
-coverage is unioned: Tracked and Untracked are present by default, while
-Ignored paths are neither enumerated nor retained until explicitly requested.
+coverage is unioned: Tracked, Untracked, and locally excluded paths are present
+by default, and the `ignored` coverage dimension carries only this clone's
+`.git/info/exclude` content, so `.gitignore` paths are never enumerated at all.
 For filesystem-only projects, explicitly opened directory prefixes are unioned
 as well, then projected back to each subscriber's own lease. Leaving Source
 Control, hiding or unfocusing the document, pressing Pause, or releasing the

@@ -193,6 +193,10 @@ export function AgentContextSettings() {
   return (
     <SettingsSection
       description={t("agentContextDescription")}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (hasChanges && !isSaving) void handleSave();
+      }}
       keywords={[
         t("agentContextGlobalInstructions"),
         t("agentContextGlobalInstructionsDescription"),
@@ -244,10 +248,9 @@ export function AgentContextSettings() {
               })}
             </span>
             <button
-              type="button"
+              type="submit"
               className="settings-button"
               disabled={!hasChanges || isSaving}
-              onClick={handleSave}
             >
               {isSaving ? t("providersSaving") : t("providersSave")}
             </button>

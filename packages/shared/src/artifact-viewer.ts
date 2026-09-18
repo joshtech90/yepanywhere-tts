@@ -1,3 +1,10 @@
+export interface ArtifactVhost {
+  name: string;
+  port: number;
+  env?: string;
+  public?: boolean;
+}
+
 export interface ArtifactViewerConfig {
   port: number;
   localOrigin?: string;
@@ -8,6 +15,10 @@ export interface ArtifactViewerConfig {
   expiryDays?: number;
   /** Whether a grant that states no ownership deletes its directory. */
   deleteOnExpiry?: boolean;
+  /** Presence enables the static vhost table. */
+  vhosts?: ArtifactVhost[];
+  /** Optional apex such as graehl.org; empty means name.localhost only. */
+  vhostPublicRoot?: string;
 }
 
 export interface ArtifactViewerStatus extends ArtifactViewerConfig {

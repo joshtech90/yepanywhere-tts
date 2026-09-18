@@ -215,7 +215,7 @@ export function getSearchScopeKeys(scope: RenderSearchScope): string {
   if (scope === "full") {
     return "Ctrl+Alt+S";
   }
-  return scope === "all" ? "Ctrl+S" : "Ctrl+R/Ctrl+Alt+R";
+  return scope === "all" ? "Ctrl+S" : "Ctrl+Alt+R";
 }
 
 export function getSearchPanelProjection<

@@ -162,9 +162,19 @@ it("forwards the selected vocabulary through real HTTP and relayed stream entryp
     } finally {
       batch.close();
     }
+    expect(await registry.keyterms("ya-granite")).toEqual([
+      "unknown",
+      "assistantonly",
+      "parakeet",
+      "sqlite",
+      "typo",
+    ]);
     store.configure({ enabled: false, biasing: false, hours: 24 });
     expect(await registry.keyterms("ya-grok")).toEqual([]);
     expect(await registry.keyterms("ya-whisper", ["existing"])).toEqual([
+      "existing",
+    ]);
+    expect(await registry.keyterms("ya-granite", ["existing"])).toEqual([
       "existing",
     ]);
   } finally {

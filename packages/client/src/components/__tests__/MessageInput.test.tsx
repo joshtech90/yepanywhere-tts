@@ -3616,6 +3616,32 @@ describe("MessageInput", () => {
 
     expect(textarea.value).toBe("/compact ");
   });
+  it("expands the skill prefix with Tab and selects the first match with Shift-Space", () => {
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: ["plannotator-last", "plannotator-review"].map(
+          (name) => ({
+            name,
+            description: "Review",
+            invocation: {
+              kind: "skill" as const,
+              prefix: "$" as const,
+              inventoryState: "current" as const,
+            },
+          }),
+        ),
+      },
+    ) as HTMLTextAreaElement;
+    fireEvent.change(textarea, { target: { value: "$pla" } });
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(textarea.value).toBe("$plannotator-");
+    fireEvent.keyDown(textarea, { key: "Tab" });
+    expect(textarea.value).toBe("$plannotator-");
+    fireEvent.keyDown(textarea, { key: "ArrowDown" });
+    fireEvent.keyDown(textarea, { key: " ", shiftKey: true });
+    expect(textarea.value).toBe("$plannotator-last ");
+  });
 
   it("shows and inserts provider-owned slash argument completions", () => {
     const textarea = renderMessageInput(

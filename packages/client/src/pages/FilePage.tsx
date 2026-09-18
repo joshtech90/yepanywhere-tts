@@ -1,4 +1,5 @@
 import { Link, useParams, useSearchParams } from "react-router-dom";
+import { BackArrowIcon } from "../components/BackArrowIcon";
 import { FileViewer } from "../components/FileViewer";
 import { SidebarLauncher } from "../components/SidebarLauncher";
 import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
@@ -57,21 +58,6 @@ export function FilePage() {
   return (
     <GlossaryProjectBoundary projectId={projectId}>
       <div className="file-page">
-        <div className="file-page-nav">
-          <SidebarLauncher
-            label={t("actionOpenSidebar")}
-            newSessionLabel={t("sidebarNewSession")}
-            onActivate={openSidebar}
-          />
-          <Link
-            to={`${basePath}/projects/${projectId}`}
-            className="file-page-back-link"
-            title={t("fileBackToProject" as never)}
-          >
-            <BackIcon />
-            <span>{t("fileBackToProject" as never)}</span>
-          </Link>
-        </div>
         <div className="file-page-content">
           <FileViewer
             projectId={projectId}
@@ -81,6 +67,23 @@ export function FilePage() {
             viewMode={viewMode}
             diffMode={diffMode}
             standalone
+            headerLeading={
+              <>
+                <SidebarLauncher
+                  label={t("actionOpenSidebar")}
+                  newSessionLabel={t("sidebarNewSession")}
+                  onActivate={openSidebar}
+                />
+                <Link
+                  to={`${basePath}/projects/${projectId}`}
+                  className="file-viewer-action"
+                  title={t("fileBackToProject" as never)}
+                  aria-label={t("fileBackToProject" as never)}
+                >
+                  <BackArrowIcon />
+                </Link>
+              </>
+            }
           />
         </div>
       </div>
@@ -101,22 +104,4 @@ function parsePositiveInteger(value: string | null): number | undefined {
     return undefined;
   }
   return parsed;
-}
-
-function BackIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M10 12L6 8l4-4" />
-    </svg>
-  );
 }

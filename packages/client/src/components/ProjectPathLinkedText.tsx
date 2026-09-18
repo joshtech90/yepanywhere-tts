@@ -3,7 +3,6 @@ import {
   type ProjectPathLinkTarget,
 } from "@yep-anywhere/shared";
 import { Fragment, type ReactNode, useMemo } from "react";
-import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { SessionFilePathLink } from "./SessionFilePathLink";
 
 export function ProjectPathLinkedText({
@@ -15,9 +14,8 @@ export function ProjectPathLinkedText({
   renderText?: (text: string) => ReactNode;
   text: string;
 }): ReactNode {
-  const publicShare = usePublicShareContext();
   const segments = useMemo(() => {
-    if (publicShare || !links?.length) return null;
+    if (!links?.length) return null;
     const targets = new Map(links.map((link) => [link.text, link.filePath]));
     const matches = findProjectPathTokens(text).filter((token) =>
       targets.has(token.text),
@@ -56,7 +54,7 @@ export function ProjectPathLinkedText({
       );
     }
     return rendered;
-  }, [links, publicShare, renderText, text]);
+  }, [links, renderText, text]);
 
   if (segments) return segments;
   return renderText ? renderText(text) : text;

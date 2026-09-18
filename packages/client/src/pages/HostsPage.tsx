@@ -43,17 +43,14 @@ function UnavailableRelationship({ description }: { description: string }) {
 export function HostsPage() {
   const { t } = useI18n();
   const { icon } = useHostIdentity();
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
-    useNavigationLayout();
+  const { openSidebar, isWideScreen } = useNavigationLayout();
 
   return (
     <MainContent isWideScreen={isWideScreen}>
       <PageHeader
         title={t("hostsTitle")}
         onOpenSidebar={openSidebar}
-        onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
-        isSidebarCollapsed={isSidebarCollapsed}
         actions={<span className={styles.badge}>{t("hostsExperimental")}</span>}
       />
 

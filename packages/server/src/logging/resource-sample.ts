@@ -2,6 +2,7 @@ import { stat } from "node:fs/promises";
 import { monitorEventLoopDelay } from "node:perf_hooks";
 import { getHeapStatistics } from "node:v8";
 import { getLogger } from "./logger.js";
+import { startStallRecording } from "./stall-recording.js";
 
 /**
  * Periodic process-resource line for a server that is *currently* impaired.
@@ -54,6 +55,7 @@ export interface ResourceSamplerOptions {
   dataDir: string;
   intervalMs?: number;
   onSample?: (sample: ResourceSample) => void;
+  recordStalls?: boolean;
 }
 
 /**
@@ -82,6 +84,18 @@ export function startResourceSampling(
 ): () => void {
   const intervalMs = options.intervalMs ?? resourceSampleIntervalMs();
   if (intervalMs <= 0) return () => {};
+
+  const stopStallRecording =
+    options.recordStalls === false
+      ? undefined
+      : startStallRecording({ dataDir: options.dataDir }).catch(
+          (error: unknown) => {
+            getLogger().warn(
+              { event: "server_stall_recording_failed", err: error },
+              "STALL: recording could not start",
+            );
+          },
+        );
 
   const histogram = monitorEventLoopDelay({ resolution: 10 });
   histogram.enable();
@@ -144,5 +158,13 @@ export function startResourceSampling(
   return () => {
     clearInterval(timer);
     histogram.disable();
+    void stopStallRecording
+      ?.then((stop) => stop?.())
+      .catch((error: unknown) => {
+        getLogger().warn(
+          { event: "server_stall_recording_failed", err: error },
+          "STALL: recording could not stop cleanly",
+        );
+      });
   };
 }

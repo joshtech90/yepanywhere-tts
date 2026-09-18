@@ -1,0 +1,18 @@
+# Optional IBM Granite Speech dependencies for the committed pixi stt env.
+#
+# Install inside the existing stt environment with:
+#   pixi run -e stt stt-bootstrap-granite
+#
+# YA validates and launches ya-granite through:
+#   pixi run --frozen -e stt python ...
+#
+# Granite Speech runs on the same Torch/Transformers stack as the Transformers
+# Parakeet backend (its `granite_speech` model support landed in Transformers
+# 4.52), so this file includes that install rather than pinning a second copy.
+# On top of it Granite needs the torchaudio mel front-end its feature extractor
+# imports and the PEFT LoRA runtime its audio adapter enables during
+# generation.
+-r stt-parakeet.txt
+
+torchaudio
+peft>=0.17,<1

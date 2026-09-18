@@ -16,7 +16,7 @@ The current names and collision-resistant replacements are:
 | `YEP_BROWSER_DEBUG_AGENT_URL` | `AGENT_BROWSER_DEBUG_BROKER_URL` | Names the diagnostic broker role rather than the vague recipient `AGENT`. |
 | `YEP_BROWSER_DEBUG_CALLER_TOKEN` | `AGENT_BROWSER_DEBUG_CALLER_TOKEN` | Preserves the protocol's caller-factor distinction from the separately pasted per-tab grant. |
 | `YEP_CLAUDE_GATEWAY=1` | `AGENT_LAUNCH_ROUTE=claude-gateway` | Route is distinct from the `claude` harness and from the backend implementation. |
-| `YEP_COPILOT_API=1` | `AGENT_LAUNCH_BACKEND=copilot-api` | Backend identity is an explicit catalog handshake, not a route, model, vendor, URL, or port inference. |
+| `YEP_COPILOT_API=1` | `AGENT_LAUNCH_BACKEND=copilot-api` | Backend identity is an explicit catalog handshake, not a route, model, vendor, URL, or port inference. Gateway launches now dual-publish both names (2026-09-16); the legacy marker stays until out-of-repo readers move. |
 
 Do not shorten these to an ambiguous `AGENT_SESSION_ID`, `AGENT_WAKE_*`, or
 `AGENT_BACKEND`. The names must remain safe in non-YA shells where unrelated

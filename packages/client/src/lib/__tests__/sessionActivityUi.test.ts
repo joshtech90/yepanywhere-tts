@@ -255,6 +255,49 @@ describe("getSessionActivityUiState", () => {
     expect(state.shouldSuppressCurrentTurnOrphans).toBe(true);
   });
 
+  it.each([true, false])(
+    "honors verified idle with incomplete tool rows (stream connected: %s)",
+    (sessionUpdatesConnected) => {
+      const state = getSessionActivityUiState({
+        owner: "self",
+        processState: "idle",
+        items: [user("u1"), tool("t1", "pending")],
+        hasSessionUpdateStream: true,
+        sessionUpdatesConnected,
+        sessionLiveness: {
+          ...waitingProviderLiveness,
+          derivedStatus: "verified-idle",
+          activeWorkKind: "none",
+          providerRetention: undefined,
+        },
+      });
+
+      expect(state.hasPendingToolCallsInLatestTurn).toBe(true);
+      expect(state.showProcessingIndicator).toBe(false);
+      expect(state.shouldDeferMessages).toBe(false);
+      expect(state.canStopOwnedProcess).toBe(false);
+      expect(state.shouldSuppressCurrentTurnOrphans).toBe(false);
+    },
+  );
+
+  it("does not let a previous idle snapshot settle a newly started turn", () => {
+    const state = getSessionActivityUiState({
+      owner: "self",
+      processState: "in-turn",
+      items: [user("u2"), tool("t2", "pending")],
+      sessionLiveness: {
+        ...waitingProviderLiveness,
+        derivedStatus: "verified-idle",
+        activeWorkKind: "none",
+        providerRetention: undefined,
+      },
+    });
+
+    expect(state.showProcessingIndicator).toBe(true);
+    expect(state.shouldDeferMessages).toBe(true);
+    expect(state.canStopOwnedProcess).toBe(true);
+  });
+
   it("ignores stale ownership from other sessions", () => {
     const state = getSessionActivityUiState({
       owner: "none",

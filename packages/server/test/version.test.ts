@@ -73,6 +73,12 @@ describe("GET /version", () => {
       const version = await (await routes.request(query)).json();
       expect(version.current).toBe("5756cfd");
       expect(
+        serverHasCapability(
+          version,
+          SERVER_CAPABILITIES.speechBackendSetup.name,
+        ),
+      ).toBe(true);
+      expect(
         serverHasCapability(version, SUBAGENT_MAX_DEPTH_SETTING_CAPABILITY),
       ).toBe(true);
     }
@@ -381,6 +387,10 @@ describe("GET /version", () => {
 
     const { createVersionRoutes } = await importVersion();
     const routes = createVersionRoutes({
+      getCurrentVersionInfo: async () => ({
+        version: "0.8.1",
+        installSource: "source",
+      }),
       getSessionSandboxAvailability: async () => ({
         state: "unsupported-platform",
         platform: "darwin",
@@ -392,8 +402,16 @@ describe("GET /version", () => {
     expect(version.capabilities).toBeUndefined();
     expect(version.optionalCapabilityBits).toEqual([
       [0, 1],
-      [2, 192],
+      // Bit 72 (claude-gateway-services) rides in the same word as the
+      // computer-control bits, hence 4288 + 256.
+      [2, 4544],
     ]);
+    expect(
+      serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.claudeGatewayServices.name,
+      ),
+    ).toBe(true);
     expect(
       serverHasCapability(version, SERVER_CAPABILITIES.computerControl.name),
     ).toBe(true);

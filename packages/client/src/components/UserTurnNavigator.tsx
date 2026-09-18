@@ -1,7 +1,6 @@
 import {
   type CSSProperties,
   memo,
-  type ReactElement,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type RefObject,
@@ -14,6 +13,11 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  getCollapsedSearchPreviewText,
+  normalizeSearchPreviewText as normalizePreviewText,
+} from "@yep-anywhere/shared";
+import { renderHighlightedText } from "./SearchPreview";
 import { useI18n } from "../i18n";
 import { findRenderRow, indexRenderRowsById } from "../lib/scrollAnchors";
 import styles from "./UserTurnNavigator.module.css";
@@ -164,8 +168,6 @@ const MAX_SEARCH_PREVIEW_LABELS = 64;
 const SHORT_PREVIEW_MAX_CHARS = 48;
 const MOTION_CUE_CLEAR_MS = 760;
 const SEARCH_MARKER_HOVER_STICKY_Y_PX = 1;
-const COLLAPSED_SEARCH_PREVIEW_PREFIX_CHARS = 24;
-const COLLAPSED_SEARCH_PREVIEW_SUFFIX_CHARS = 118;
 
 type LayoutUpdateKind = "full" | "scroll";
 
@@ -217,92 +219,12 @@ function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function normalizePreviewText(text: string): string {
-  return text.replace(/\r\n?/g, "\n").replace(/\\n/g, "\n");
-}
-
 function isShortSingleLinePreview(text: string): boolean {
   const normalizedText = normalizePreviewText(text);
   return (
     normalizedText.length <= SHORT_PREVIEW_MAX_CHARS &&
     !normalizedText.includes("\n")
   );
-}
-
-function renderHighlightedText(
-  text: string,
-  query: string,
-  caseSensitive = false,
-) {
-  const normalizedQuery = query.replace(/\s+/g, " ").trim();
-  if (!normalizedQuery) {
-    return text;
-  }
-
-  const searchableText = caseSensitive ? text : text.toLowerCase();
-  const searchableQuery = caseSensitive
-    ? normalizedQuery
-    : normalizedQuery.toLowerCase();
-  const parts: Array<string | ReactElement> = [];
-  let cursor = 0;
-  let key = 0;
-
-  while (cursor < text.length) {
-    const index = searchableText.indexOf(searchableQuery, cursor);
-    if (index === -1) {
-      break;
-    }
-    if (index > cursor) {
-      parts.push(text.slice(cursor, index));
-    }
-    parts.push(
-      <mark key={key} className={styles.previewMatch}>
-        {text.slice(index, index + normalizedQuery.length)}
-      </mark>,
-    );
-    key += 1;
-    cursor = index + normalizedQuery.length;
-  }
-
-  if (parts.length === 0) {
-    return text;
-  }
-  if (cursor < text.length) {
-    parts.push(text.slice(cursor));
-  }
-  return parts;
-}
-
-function getCollapsedSearchPreviewText(
-  text: string,
-  query: string,
-  caseSensitive = false,
-): string {
-  const compactText = normalizePreviewText(text).replace(/\s+/g, " ").trim();
-  const compactQuery = query.replace(/\s+/g, " ").trim();
-  if (!compactText || !compactQuery) {
-    return compactText;
-  }
-
-  const searchableText = caseSensitive
-    ? compactText
-    : compactText.toLowerCase();
-  const searchableQuery = caseSensitive
-    ? compactQuery
-    : compactQuery.toLowerCase();
-  const index = searchableText.indexOf(searchableQuery);
-  if (index === -1) {
-    return compactText;
-  }
-
-  const start = Math.max(0, index - COLLAPSED_SEARCH_PREVIEW_PREFIX_CHARS);
-  const end = Math.min(
-    compactText.length,
-    index + compactQuery.length + COLLAPSED_SEARCH_PREVIEW_SUFFIX_CHARS,
-  );
-  const prefix = start > 0 ? "..." : "";
-  const suffix = end < compactText.length ? "..." : "";
-  return `${prefix}${compactText.slice(start, end).trim()}${suffix}`;
 }
 
 function isPreviewLineMono(line: string): boolean {

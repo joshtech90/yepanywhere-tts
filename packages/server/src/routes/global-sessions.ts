@@ -9,12 +9,15 @@ import {
   isUrlProjectId,
   type ProviderChildSessionSummary,
   type ProviderName,
+  type NonHumanUserTurn,
   type WorkstreamId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
 import type { RetainedSessionCollectionState } from "@yep-anywhere/shared";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
 import { readRetainedSessionItems } from "./retained-session-collections.js";
+import { createSessionContentSearchRoutes } from "./session-content-search.js";
 import type { SessionIndexService } from "../indexes/index.js";
 import type { SessionIndexListOptions } from "../indexes/types.js";
 import type { SessionMetadataService } from "../metadata/SessionMetadataService.js";
@@ -124,7 +127,10 @@ export interface GlobalSessionItem {
   executor?: string;
   /** Capped excerpt of the most recent visible agent turn or provider recap. */
   lastAgentText?: string;
+  /** When someone last wrote into this session; agent work never advances it. */
+  lastHumanTurnAt?: string;
   asyncQuestions?: SessionSummary["asyncQuestions"];
+  nonHumanUserTurn?: NonHumanUserTurn | null;
   /** Provider-launched child work nested under this parent. Absent when none. */
   providerChildren?: ProviderChildSessionSummary[];
 }
@@ -212,6 +218,7 @@ function createEmptyStats(): GlobalSessionStats {
 
 export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
   const routes = new Hono();
+  routes.route("/", createSessionContentSearchRoutes(deps));
   let cachedStats: { value: GlobalSessionStats; timestamp: number } | null =
     null;
   let statsDirty = true;
@@ -694,7 +701,12 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           initialPrompt: initialPrompt ?? undefined,
           executor,
           lastAgentText: overlaidSession.lastAgentText,
+          lastHumanTurnAt: overlaidSession.lastHumanTurnAt,
           asyncQuestions: overlaidSession.asyncQuestions,
+          nonHumanUserTurn:
+            pendingNonHumanUserTurn(
+              deps.sessionMetadataService?.getMetadata(overlaidSession.id),
+            ) ?? null,
         });
       }
     }

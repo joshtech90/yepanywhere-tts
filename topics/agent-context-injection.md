@@ -98,7 +98,7 @@ The non-Claude prefix has this provider-facing shape:
 YA's optimistic live echo normally hides the adapter echo as a duplicate. That
 presentation behavior does not remove the wrapper from provider history or
 raise its authority. The current placement discrepancy and Settings wording
-remain tracked in [`gaps/confusing-settings.md`](../gaps/confusing-settings.md).
+remain tracked in [`gaps/sketches/confusing-settings.md`](../gaps/sketches/confusing-settings.md).
 
 ## Provider compaction contracts
 

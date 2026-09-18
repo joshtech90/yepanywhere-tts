@@ -1,4 +1,5 @@
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useId,
@@ -9,6 +10,8 @@ import {
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "../api/client";
 import { SessionAsyncQuestionsButton } from "./SessionAsyncQuestionsButton";
+import { useNonHumanUserTurn } from "../hooks/useNonHumanUserTurn";
+import attentionStyles from "./SessionNonHumanUserTurn.module.css";
 import type { AgentActivity } from "../hooks/useFileActivity";
 import { useHoverCardSettings } from "../hooks/useHoverCardAppearance";
 import { useSessionHoverCardController } from "../hooks/useSessionHoverCardController";
@@ -47,6 +50,7 @@ import { LegacySessionShareModal } from "./SessionShareModal";
 import { SessionStatusBadge } from "./StatusBadge";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import styles from "./SessionListItem.module.css";
+import { useSessionApps } from "../lib/sessionApps";
 
 export interface SessionNavigationIntent {
   event: React.MouseEvent<HTMLAnchorElement>;
@@ -60,6 +64,7 @@ interface SessionListItemProps {
   sessionId: string;
   projectId: string;
   title: string | null;
+  titleContent?: ReactNode;
 
   // Optional display data
   fullTitle?: string | null;
@@ -88,6 +93,8 @@ interface SessionListItemProps {
 
   // Feature toggles
   mode: "card" | "compact";
+  searchPreviews?: ReactNode;
+  openMessageId?: string;
   showProjectName?: boolean;
   showTimestamp?: boolean;
   /** Hide session management when the enclosing surface owns its actions. */
@@ -98,6 +105,8 @@ interface SessionListItemProps {
 
   // Custom badge (for Inbox)
   customBadge?: { label: string; className: string } | null;
+  /** Inbox rows open their pending delivery instead of the normal session tail. */
+  openNonHumanUserTurn?: boolean;
 
   // Actions (menu hidden when all undefined)
   isStarred?: boolean;
@@ -173,6 +182,7 @@ export function SessionListItem({
   sessionId,
   projectId,
   title,
+  titleContent,
   // Optional display data
   fullTitle,
   initialPrompt,
@@ -193,6 +203,8 @@ export function SessionListItem({
   providerChildren = [],
   // Feature toggles
   mode,
+  searchPreviews,
+  openMessageId,
   showProjectName = false,
   showTimestamp = true,
   showMenu = true,
@@ -201,6 +213,7 @@ export function SessionListItem({
   showActivityIndicator = false,
   // Custom badge
   customBadge,
+  openNonHumanUserTurn = false,
   // Actions
   isStarred: isStarredProp,
   isArchived: isArchivedProp,
@@ -230,7 +243,11 @@ export function SessionListItem({
   publicShareControlsVisible = false,
 }: SessionListItemProps) {
   const { t } = useI18n();
+  const { value: sessionApps } = useSessionApps(
+    `${basePath}/${projectId}/${sessionId}`,
+  );
   const navigate = useNavigate();
+  const nonHumanUserTurn = useNonHumanUserTurn(sessionId);
 
   // Local state for optimistic updates (only used when action handlers are provided)
   const [localIsStarred, setLocalIsStarred] = useState<boolean | undefined>(
@@ -539,13 +556,21 @@ export function SessionListItem({
     },
   });
 
-  const handlePreviewEnter = useCallback(
-    (e: React.PointerEvent<HTMLLIElement>) => {
-      if (menuOpenRef.current) return;
-      enterPreview(e);
-    },
-    [enterPreview],
-  );
+  const handlePreviewPointer = (
+    e: React.PointerEvent<HTMLLIElement>,
+    handle: typeof enterPreview,
+  ) => {
+    if (
+      menuOpenRef.current ||
+      (searchPreviews !== undefined &&
+        (!(e.target instanceof Element) ||
+          !e.target.closest(".session-list-item__link")))
+    ) {
+      clearPreview();
+      return;
+    }
+    handle(e);
+  };
 
   // A fixed card would drift if the sidebar scrolls under it; clear only when
   // the row's own scroll ancestors move. Transcript autoscroll elsewhere should
@@ -586,6 +611,7 @@ export function SessionListItem({
   // Build CSS classes
   const liClasses = [
     "session-list-item",
+    searchPreviews !== undefined && styles.searchRow,
     mode === "card" ? "session-list-item--card" : "session-list-item--compact",
     isCurrent && "current",
     hasUnread && "unread",
@@ -600,7 +626,15 @@ export function SessionListItem({
     .filter(Boolean)
     .join(" ");
 
-  const sessionHref = `${basePath}/projects/${projectId}/sessions/${sessionId}`;
+  const plainSessionHref = `${basePath}/projects/${projectId}/sessions/${sessionId}`;
+  const nonHumanTurnHref = nonHumanUserTurn
+    ? `${plainSessionHref}?nonHumanTurn=${encodeURIComponent(nonHumanUserTurn.messageId)}`
+    : plainSessionHref;
+  const sessionHref = openMessageId
+    ? `${plainSessionHref}?searchMatch=${encodeURIComponent(openMessageId)}`
+    : openNonHumanUserTurn
+      ? nonHumanTurnHref
+      : plainSessionHref;
   const parentHref =
     parentSessionId && isBtwAside
       ? buildBtwAsideParentHref(basePath, projectId, parentSessionId, sessionId)
@@ -742,13 +776,27 @@ export function SessionListItem({
     <li
       ref={liRef}
       className={liClasses}
-      onPointerEnter={showHoverCard ? handlePreviewEnter : undefined}
-      onPointerMove={showHoverCard ? movePreview : undefined}
+      onPointerEnter={
+        showHoverCard ? (e) => handlePreviewPointer(e, enterPreview) : undefined
+      }
+      onPointerMove={
+        showHoverCard ? (e) => handlePreviewPointer(e, movePreview) : undefined
+      }
       onPointerLeave={showHoverCard ? leavePreview : undefined}
       onWheel={showHoverCard ? clearPreview : undefined}
     >
       {/* Checkbox for multi-select (only shown when onSelect is provided) */}
-      {onSelect && (
+      {onSelect && searchPreviews !== undefined && (
+        <label className={styles.searchSelection}>
+          <input
+            type="checkbox"
+            checked={isSelected}
+            onChange={handleCheckboxChange}
+            aria-label={t("sessionSearchSelect", { title: displayTitle })}
+          />
+        </label>
+      )}
+      {onSelect && searchPreviews === undefined && (
         <input
           type="checkbox"
           className="session-list-item__checkbox"
@@ -831,7 +879,7 @@ export function SessionListItem({
                       /btw
                     </span>
                   )}
-                  <span>{visibleTitle}</span>
+                  {titleContent ?? <span>{visibleTitle}</span>}
                   {hasDraft && (
                     <span className="session-draft-badge">Draft</span>
                   )}
@@ -946,58 +994,59 @@ export function SessionListItem({
               </>
             ) : (
               // Compact mode: single line with badges
-              <>
-                <span className="session-list-item__title-row">
-                  {isStarred && <StarIcon filled />}
-                  <span
-                    className="session-list-item__title-text"
-                    {...titleTooltipAttributes}
-                  >
-                    {isNewSession && <ThinkingIndicator />}
-                    {isBtwAside && (
-                      // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
-                      <span
-                        className="session-badge session-badge-btw"
-                        title={
-                          parentHref
-                            ? "Open parent session with this /btw aside visible"
-                            : "/btw aside session"
-                        }
-                        role={parentHref ? "link" : undefined}
-                        tabIndex={parentHref ? 0 : undefined}
-                        onClick={handleBtwBadgeClick}
-                        onKeyDown={handleBtwBadgeKeyDown}
-                      >
-                        /btw
-                      </span>
-                    )}
-                    <span>{visibleTitle}</span>
-                  </span>
-                  {hasDraft && (
-                    <span className="session-draft-badge">Draft</span>
-                  )}
-                  {hasProjectQueue && (
+              <span className="session-list-item__title-row">
+                {isStarred && <StarIcon filled />}
+                <span
+                  className="session-list-item__title-text"
+                  {...titleTooltipAttributes}
+                >
+                  {isNewSession && <ThinkingIndicator />}
+                  {isBtwAside && (
+                    // biome-ignore lint/a11y/noStaticElementInteractions: clickable variant has link role and keyboard handling; inert variant only shows the badge
                     <span
-                      className="session-project-queue-badge"
-                      title={t("projectQueueSidebarBadge")}
+                      className="session-badge session-badge-btw"
+                      title={
+                        parentHref
+                          ? "Open parent session with this /btw aside visible"
+                          : "/btw aside session"
+                      }
+                      role={parentHref ? "link" : undefined}
+                      tabIndex={parentHref ? 0 : undefined}
+                      onClick={handleBtwBadgeClick}
+                      onKeyDown={handleBtwBadgeKeyDown}
                     >
-                      Q
+                      /btw
                     </span>
                   )}
-                  {providerChildren.length > 0 && (
-                    <span
-                      className={`${styles.providerChildrenBadge} ${
-                        hasUnread ? styles.providerChildrenBadgeUnread : ""
-                      }`}
-                      role="img"
-                      title={providerChildrenTooltip}
-                      aria-label={providerChildrenLabel}
-                    >
-                      {providerChildren.length}
-                    </span>
-                  )}
+                  <span>{visibleTitle}</span>
                 </span>
-              </>
+                {sessionApps.latest && (
+                  <span className={styles.appChip}>
+                    {t("sessionRightPaneApps")}
+                  </span>
+                )}
+                {hasDraft && <span className="session-draft-badge">Draft</span>}
+                {hasProjectQueue && (
+                  <span
+                    className="session-project-queue-badge"
+                    title={t("projectQueueSidebarBadge")}
+                  >
+                    Q
+                  </span>
+                )}
+                {providerChildren.length > 0 && (
+                  <span
+                    className={`${styles.providerChildrenBadge} ${
+                      hasUnread ? styles.providerChildrenBadgeUnread : ""
+                    }`}
+                    role="img"
+                    title={providerChildrenTooltip}
+                    aria-label={providerChildrenLabel}
+                  >
+                    {providerChildren.length}
+                  </span>
+                )}
+              </span>
             )}
           </Link>
         )}
@@ -1031,6 +1080,9 @@ export function SessionListItem({
           />
         )}
       </div>
+      {searchPreviews !== undefined && (
+        <div className={styles.searchPreviews}>{searchPreviews}</div>
+      )}
       {compactTrailing && (
         <Link
           to={sessionHref}
@@ -1044,6 +1096,30 @@ export function SessionListItem({
         </Link>
       )}
       <span className={styles.questions}>
+        {nonHumanUserTurn && (
+          <Link
+            to={nonHumanTurnHref}
+            className={attentionStyles.flag}
+            title={t("nonHumanUserTurnFlag")}
+            aria-label={t("nonHumanUserTurnFlag")}
+            onClick={(event) => {
+              event.stopPropagation();
+              onNavigate?.();
+            }}
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              aria-hidden="true"
+            >
+              <path d="M5 21V3m0 1c5-4 9 4 14 0v10c-5 4-9-4-14 0" />
+            </svg>
+          </Link>
+        )}
         <SessionAsyncQuestionsButton
           sessionId={sessionId}
           basePath={basePath}

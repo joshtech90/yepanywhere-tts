@@ -1,0 +1,132 @@
+.wrap {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  width: 100%;
+}
+
+.wrap h3 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.wrap p {
+  margin: 0;
+  color: var(--text-secondary);
+}
+
+.catalog {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.backend {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+}
+.enable {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  cursor: pointer;
+}
+.enable input {
+  width: 20px;
+  height: 20px;
+  flex-shrink: 0;
+}
+.enable[data-locked] {
+  cursor: not-allowed;
+}
+.environmentLock {
+  padding: 8px;
+  border-left: 3px solid var(--border-color);
+  background: var(--bg-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.model {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.backendActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
+.modelLink {
+  min-height: 44px;
+  border: 0;
+  background: none;
+  color: var(--link-color);
+  font: inherit;
+  cursor: pointer;
+}
+.access {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.access code {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.meta {
+  overflow-wrap: anywhere;
+  margin-top: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.install,
+.restart {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.install:disabled,
+.restart:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.consoleLabel {
+  font-size: 13px;
+}
+
+.console {
+  max-height: 12rem;
+  min-height: 6rem;
+  overflow: auto;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}

@@ -278,6 +278,7 @@ function sessionCreatedEventToGlobalSessionItem(
     initialPrompt: event.session.initialPrompt,
     executor: event.session.executor,
     lastAgentText: event.session.lastAgentText,
+    lastHumanTurnAt: event.session.lastHumanTurnAt,
     providerChildren: event.session.providerChildren,
   };
 }

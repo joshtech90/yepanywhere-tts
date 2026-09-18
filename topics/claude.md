@@ -129,8 +129,8 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   deliberately does not identify which blocks are progress versus summarized
   reasoning, so YA must not infer that distinction from prose or reclassify
   them as task/plan events. The dedicated `display: "updates"` API beta would
-  make every non-empty thinking block a progress update, but Agent SDK 0.3.258
-  excludes that value and bundled Claude Code 2.1.258 rejects
+  make every non-empty thinking block a progress update, but Agent SDK 0.3.273
+  excludes that value and bundled Claude Code 2.1.273 rejects
   `--thinking-display updates`; expose a distinct progress presentation only
   after the supported SDK surface carries the mode. Sources: [Fable 5.1
   progress updates](https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1#progress-updates-between-tool-calls-beta)
@@ -195,10 +195,12 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   `DISABLE_NON_ESSENTIAL_MODEL_CALLS=1` is inert on current Claude Code —
   absent from 2.1.220's env registry, with no replacement knob for spinner
   flavor text or automatic title generation — and is kept only for older CLIs.
-- A Claude Gateway's `/v1/models` response is the authoritative selection
-  catalog. YA must not merge Claude Code's first-party `supportedModels()`
+- A configured service's `/v1/models` response is the authoritative selection
+  catalog for that service. YA must not merge Claude Code's first-party `supportedModels()`
   result or static Claude fallbacks into it, because those can advertise
-  regular-subscription models the gateway cannot serve. Invalid, duplicate,
+  regular-subscription models the gateway cannot serve. With several services
+  configured, the catalog is their union; see
+  [gateway-services](gateway-services.md). Invalid, duplicate,
   disabled, non-chat, embedding, and trajectory-compaction rows are omitted;
   an unavailable catalog produces no model choices rather than silently
   escaping to regular Claude. When a row supplies catalog endpoint metadata,
@@ -216,18 +218,15 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   fallback, so a model id from Codex or regular Claude cannot bleed into a
   Gateway launch. Once the catalog arrives, YA selects the saved advertised
   model or its first row and derives thinking/effort controls from that row.
-- Claude Gateway may carry an explicit, default-off server-side start command.
-  Catalog discovery runs that shell line only when the configured URL is exact
-  `localhost` / `localhost.`, IPv4 `127.0.0.0/8`, or IPv6 `::1` and a bounded
-  TCP probe finds no listener on its port. Any listener suppresses execution,
-  even when `/v1/models` is unhealthy; non-loopback URLs never execute the
-  command. Concurrent catalog reads share one bounded Bash launch/readiness
-  attempt, and no timer retries after it settles. A later catalog refresh may
-  try again. The command runs on the YA server host and owns its working
-  directory, environment, and port choices. YA terminates a foreground child
-  it launched when Gateway configuration changes or the server shuts down;
-  commands that daemonize fall outside that ownership, so the settings UI
-  directs operators to keep the gateway in the foreground.
+- Claude Gateway is configured as a list of model services, each with an
+  endpoint and optionally a command YA may run to start and stop it.
+  [gateway-services](gateway-services.md) owns that contract: loopback-only
+  lifecycle, verb discovery and foreground ownership, auto-stop and its
+  port-listener fallback, the union catalog and collision-qualified model ids,
+  declared context and output sizes, observed backend identity, and per-service
+  Agent and plan-mode overrides. The older single-gateway settings remain the
+  wire form for clients without the `claude-gateway-services` capability, and
+  the default entry mirrors them.
 - Claude Gateway retains the Claude harness, transcript, tools, permissions,
   compaction, and resume contracts. Per-model gateway catalog metadata controls
   whether YA advertises adaptive thinking and which effort levels it offers;

@@ -296,6 +296,7 @@ function InboxSection({
                 activity={activity}
                 pendingInputType={item.pendingInputType}
                 mode="card"
+                openNonHumanUserTurn
                 showProjectName={!hideProjectName}
                 showTimestamp
                 showContextUsage={false}

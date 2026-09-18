@@ -144,6 +144,20 @@ describe.skipIf(process.platform === "win32")(
         message: { content: "approved target turn" },
       });
       expect(approvals).toEqual(["Bash"]);
+      const yielded: unknown[] = [];
+      const unsubscribe = result.session.queue.subscribeYielded?.((messages) =>
+        yielded.push(...messages),
+      );
+      const external = {
+        text: "external steer",
+        uuid: "external-steer",
+        metadata: { sourceSessionId: "sender" },
+      };
+      expect(result.session.steerUsesMessageQueue).toBe(true);
+      await expect(result.session.steer?.(external)).resolves.toBe(true);
+      await waitFor(() => yielded.length === 1);
+      expect(yielded).toEqual([external]);
+      unsubscribe?.();
       await waitFor(() => refreshCount === 1);
       await expect(result.session.interrupt?.()).resolves.toBe(true);
 
@@ -324,6 +338,7 @@ process.stdin.on("data", (chunk) => {
             getProviderRetention: true,
             publishAgentctlSessionId: true,
             steer: true,
+            steerUsesMessageQueue: true,
             setMaxThinkingTokens: false,
             setEffort: true,
             setSessionOptions: true,
@@ -386,7 +401,8 @@ process.stdin.on("data", (chunk) => {
         providerRetention: { retained: false, reasons: [] }
       });
     } else if (frame.type === "rpc") {
-      send({ type: "rpcResult", id: frame.id, ok: true, result: frame.method === "interrupt" ? true : undefined });
+      if (frame.method === "steer") send({ type: "queueYielded", uuids: [frame.args[0].uuid] });
+      send({ type: "rpcResult", id: frame.id, ok: true, result: ["interrupt", "steer"].includes(frame.method) ? true : undefined });
     } else if (frame.type === "shutdown") {
       releaseLease();
       send({ type: "shutdownComplete" });

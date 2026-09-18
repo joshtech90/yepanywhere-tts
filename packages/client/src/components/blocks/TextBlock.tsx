@@ -12,7 +12,10 @@ import {
 } from "react";
 import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
 import { createPortal } from "react-dom";
-import { usePublicShareContext } from "../../contexts/PublicShareContext";
+import {
+  type PublicShareContextValue,
+  usePublicShareContext,
+} from "../../contexts/PublicShareContext";
 import { useRenderModeToggle } from "../../contexts/RenderModeContext";
 import {
   getReadAloudState,
@@ -74,21 +77,24 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
   html,
   projectId,
   projectPathLinks,
+  publicShare,
 }: {
   artifact?: import("@yep-anywhere/shared").GlossaryArtifact;
   className?: string;
   html: string;
   projectId?: string;
   projectPathLinks?: readonly ProjectPathLinkTarget[];
+  publicShare?: PublicShareContextValue | null;
 }) {
   const renderedHtml = useMemo(() => {
     const withProjectPaths = annotateProjectPathLinksHtml(
       html,
       projectPathLinks,
       projectId,
+      publicShare,
     ).html;
     return annotateGlossaryHtml(withProjectPaths, artifact).html;
-  }, [artifact, html, projectId, projectPathLinks]);
+  }, [artifact, html, projectId, projectPathLinks, publicShare]);
   return (
     <div
       className={className}
@@ -146,17 +152,19 @@ export const TextBlock = memo(function TextBlock({
       : undefined;
   const publicShare = usePublicShareContext();
   const sessionMetadata = useOptionalSessionMetadata();
-  const projectId = publicShare ? undefined : sessionMetadata?.projectId;
+  const projectId =
+    sessionMetadata?.projectId ?? publicShare?.projectId ?? undefined;
   const transformRenderedHtml = useCallback(
     (html: string) => {
       const withProjectPaths = annotateProjectPathLinksHtml(
         html,
         projectPathLinks,
         projectId,
+        publicShare,
       ).html;
       return annotateGlossaryHtml(withProjectPaths, glossaryArtifact).html;
     },
-    [glossaryArtifact, projectId, projectPathLinks],
+    [glossaryArtifact, projectId, projectPathLinks, publicShare],
   );
   const serverMarkdownChanged = useMemo(() => {
     if (!augmentHtml) return false;
@@ -483,6 +491,7 @@ export const TextBlock = memo(function TextBlock({
               html={augmentHtml}
               projectId={projectId}
               projectPathLinks={projectPathLinks}
+              publicShare={publicShare}
             />
           ) : showRendered && localMathPreview.changed ? (
             <RenderedHtmlIsland
@@ -491,6 +500,7 @@ export const TextBlock = memo(function TextBlock({
               html={localMathPreview.html}
               projectId={projectId}
               projectPathLinks={projectPathLinks}
+              publicShare={publicShare}
             />
           ) : (
             <pre className={`${styles.source} text-block-source`}>

@@ -26,7 +26,8 @@ Nothing semantically owned by the conversation is discarded by
 inactivity; what dies is the *process* and the *cache warmth*.
 
 - YA may reap a verified-idle, unretained provider process after the
-  server-wide `idleReapHours` grace (default 24 hours). A mounted view of that
+  server-wide `idleReapHours` grace (default 1 hour, matching the longest
+  provider prompt-cache TTL YA requests). A mounted view of that
   session suspends its own process's deadline; global app activity and views of
   other sessions do not. The final viewer release or a later verified-idle
   transition starts a fresh full grace. Active and waiting-input sessions have
@@ -53,6 +54,15 @@ inactivity; what dies is the *process* and the *cache warmth*.
   recorded API error is treated as not safely resumable
   (`handoff-required` in `packages/server/src/routes/sessions.ts`); the
   validated recovery there is the template handoff.
+- Reaping a Claude process is therefore not purely a loss of cache warmth.
+  `claude --resume` rebuilds context by walking `parentUuid` from one chosen
+  tip, so a transcript carrying a falsely-dead segment (api_error
+  mis-parenting) or a concurrent-writer fork resumes without work the user
+  already read, silently and unpredictably. See the resume-context-loss and
+  concurrent-writer sections of [claude](CLAUDE.md). A live process is the only
+  thing holding that context, which is a real argument for retaining idle
+  harnesses — but not one that scales with grace duration, since a longer
+  deadline only postpones the same loss.
 
 In-memory-only state (deferred queue contents, per-process status) is
 the one thing a reap or server restart can lose ahead of the

@@ -22,7 +22,10 @@ import {
   sessionCatalogRowKey,
 } from "../catalog-types.js";
 import { toSessionListSummary } from "../types.js";
-import { readClaudeCatalogTitle } from "../claude-summary.js";
+import {
+  readClaudeCatalogRecency,
+  readClaudeCatalogTitle,
+} from "../claude-summary.js";
 import { GrokSessionCatalogAdapter } from "./grok-catalog-adapter.js";
 import { PiSessionCatalogAdapter } from "./pi-catalog-adapter.js";
 import { OpenCodeSessionCatalogAdapter } from "./opencode-catalog-adapter.js";
@@ -85,6 +88,20 @@ async function readFileRow(
       (family === "claude"
         ? await readClaudeCatalogTitle(file.filePath)
         : undefined);
+    // Storage time is not content time. Claude appends non-conversation rows
+    // at shutdown, so an mtime-derived row makes a read session unread and
+    // falsely recent; Codex has its own content-aware activity time.
+    const contentUpdatedAt =
+      summary?.updatedAt ??
+      (family === "claude"
+        ? await readClaudeCatalogRecency(file.filePath)
+        : undefined);
+    const storageUpdatedAt = () =>
+      new Date(
+        family === "codex"
+          ? getCodexRolloutActivityTimeMs(file.filePath, stats)
+          : stats.mtimeMs,
+      ).toISOString();
     const after = await stat(file.filePath);
     if (catalogFileVersion(after) !== sourceVersion) {
       // Never label facts read across an append/replacement as an exact projection.
@@ -97,7 +114,7 @@ async function readFileRow(
         projectId: project.id,
         projectName: project.name,
         provider: source.provider,
-        updatedAt: new Date(stats.mtimeMs).toISOString(),
+        updatedAt: contentUpdatedAt ?? storageUpdatedAt(),
         fidelity: "identity",
         sourceVersion: `unsettled:${sourceVersion}`,
         location: { kind: "file", path: file.filePath },
@@ -111,13 +128,7 @@ async function readFileRow(
       projectId: project.id,
       projectName: project.name,
       provider: summary?.provider ?? source.provider,
-      updatedAt:
-        summary?.updatedAt ??
-        new Date(
-          family === "codex"
-            ? getCodexRolloutActivityTimeMs(file.filePath, stats)
-            : stats.mtimeMs,
-        ).toISOString(),
+      updatedAt: contentUpdatedAt ?? storageUpdatedAt(),
       ...(cached ? { createdAt: cached.createdAt } : {}),
       ...(title !== undefined ? { title: title?.slice(0, 1024) } : {}),
       fidelity: summary || title ? "head" : "identity",

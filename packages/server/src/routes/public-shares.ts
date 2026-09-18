@@ -20,6 +20,7 @@ import { dirname, extname, posix, win32 } from "node:path";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { decodeProjectId, getProjectName } from "../projects/paths.js";
+import { tryClaimProjectPathIndex } from "../projects/projectPathIndex.js";
 import type { RelayClientStatus } from "../services/RelayClientService.js";
 import {
   PublicShareCaptureError,
@@ -27,6 +28,7 @@ import {
   type PublicShareCapture,
   type PublicShareService,
 } from "../services/PublicShareService.js";
+import { augmentProjectPathLinksInMessage } from "../augments/finalized-message-augmenter.js";
 import { augmentTextBlocks } from "../augments/markdown-augments.js";
 import { augmentEditToolUses } from "../sessions/persisted-augments.js";
 import type { Message } from "../supervisor/types.js";
@@ -162,11 +164,59 @@ function getPublicShareReadiness(deps: PublicSharePublicRoutesDeps): {
   };
 }
 
-async function augmentPublicShareMessages(messages: Message[]): Promise<void> {
-  await Promise.all([
-    augmentTextBlocks(messages),
-    augmentEditToolUses(messages),
-  ]);
+/**
+ * Render share transcript markdown with the same project-file links the
+ * authenticated session shows.
+ *
+ * The share serves the project files its session mentions, so a path the
+ * session names is a path the viewer may open. Only in-project paths the
+ * server confirms exist become links: no absolute-path resolver is supplied,
+ * which is what keeps files outside the project root plain text.
+ */
+async function augmentPublicShareMessages(
+  messages: Message[],
+  projectId: UrlProjectId,
+): Promise<void> {
+  let projectPath: string;
+  try {
+    projectPath = decodeProjectId(projectId);
+  } catch {
+    await Promise.all([
+      augmentTextBlocks(messages),
+      augmentEditToolUses(messages),
+    ]);
+    return;
+  }
+
+  const pathIndex = await tryClaimProjectPathIndex(projectPath);
+  const safeMarkdownOptions = {
+    projectFileLinks: {
+      projectId,
+      projectPath,
+      publicShare: true,
+      ...(pathIndex ? { index: pathIndex } : {}),
+    },
+  };
+  try {
+    await Promise.all([
+      augmentTextBlocks(messages, safeMarkdownOptions),
+      augmentEditToolUses(messages),
+      // Command text, string tool results, and user turns carry their path
+      // targets as data rather than markup; the share client turns those into
+      // the same share file links.
+      ...messages.map((message) =>
+        augmentProjectPathLinksInMessage(
+          message as unknown as Record<string, unknown>,
+          safeMarkdownOptions,
+        ).catch(() => {
+          // Path links are advisory; a frozen or unreadable message must not
+          // fail the share response that carries it.
+        }),
+      ),
+    ]);
+  } finally {
+    pathIndex?.release();
+  }
 }
 
 function parsePositiveIntegerQuery(
@@ -1147,7 +1197,10 @@ export async function captureCompletePublicShare(
     async () => {
       const session = await deps.loadCompleteSession(projectId, sessionId);
       if (session) {
-        await augmentPublicShareMessages(session.messages as Message[]);
+        await augmentPublicShareMessages(
+          session.messages as Message[],
+          projectId,
+        );
       }
       return session;
     },
@@ -1682,7 +1735,10 @@ export function createPublicSharePublicRoutes(
       return notFound(c);
     }
 
-    await augmentPublicShareMessages(response.session.messages as Message[]);
+    await augmentPublicShareMessages(
+      response.session.messages as Message[],
+      record.source.projectId,
+    );
     response.share.activeViewerCount = viewerId
       ? deps.publicShareService.recordViewerHeartbeat(record, viewerId)
       : deps.publicShareService.getActiveViewerCount(record);

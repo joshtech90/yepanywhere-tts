@@ -51,6 +51,22 @@ claim that message count, model, context usage, or tail text were re-observed.
 
 ## Reader and index contract
 
+A readable Claude transcript containing only setup or system records is a real
+session with zero conversation messages. Complete summaries and session detail
+must remain available with a null title when no user prompt exists; supported
+system records remain available through the normal transcript path. Zero
+conversation messages alone must not produce `Session not found`. Existing
+negative Claude summary-cache entries are revalidated on load. Missing or
+unreadable transcripts retain their existing failure behavior.
+
+Claude `informational` system records with nonblank text render in the ordinary
+transcript as historical system notices, even without conversation messages.
+Warning-level notices use the existing warning styling; other levels use a
+neutral information notice. Provider text and source timestamps are preserved,
+using the transcript's normal message-age display. These records do not create
+persistent current-status banners. Setup records without displayable text stay
+hidden.
+
 A provider that implements a lightweight list-summary reader must bound its
 work independently of transcript tail size. Reading enough head data to find
 stable metadata and the first user title is allowed; scanning to EOF merely to

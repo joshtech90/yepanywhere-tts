@@ -1,5 +1,6 @@
 import {
   VOICE_INPUT_CAPABILITY,
+  SPEECH_BACKEND_SETUP_CAPABILITY,
   SERVER_CAPABILITIES,
   hasServerCapabilityAdvertisement,
   serverHasCapability,
@@ -17,6 +18,7 @@ import {
 import { SpeechSmartTurnControls } from "../../components/SpeechSmartTurnControls";
 import { SpeechMessagePrefixControls } from "../../components/SpeechMessagePrefixControls";
 import { WhisperModelControls } from "../../components/WhisperModelControls";
+import { SpeechBackendSetup } from "./SpeechBackendSetup";
 import { useModelSettings } from "../../hooks/useModelSettings";
 import { useBrowserXaiSttApiKey } from "../../hooks/useBrowserXaiSttApiKey";
 import { useSpeechCaptureSettings } from "../../hooks/useSpeechCaptureSettings";
@@ -49,6 +51,15 @@ import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
 import { SpeechVocabularyControls } from "./SpeechVocabularyControls";
 import { useSettingsUndoBaseline } from "./SettingsUndoContext";
+
+function prewarmSpeechModel(backend: string, model?: string): void {
+  void prewarmYaServerSpeechBackend(backend, model).catch((error: unknown) => {
+    console.warn(
+      "[YaSTT] Speech model prewarm failed",
+      error instanceof Error ? error.message : String(error),
+    );
+  });
+}
 
 export function SpeechSettings() {
   const { t } = useI18n();
@@ -257,14 +268,7 @@ export function SpeechSettings() {
         return;
       }
       const model = requestedParakeetModel(modelValue, recentModels);
-      void prewarmYaServerSpeechBackend(targetBackend, model).catch(
-        (err: unknown) => {
-          console.warn(
-            "[YaSTT] Speech model prewarm failed",
-            err instanceof Error ? err.message : String(err),
-          );
-        },
-      );
+      prewarmSpeechModel(targetBackend, model);
     },
     [selectedBackend, recentModels],
   );
@@ -499,6 +503,17 @@ export function SpeechSettings() {
                 if (!nextBackend) return;
                 if (isParakeetModelBackend(nextBackend)) {
                   prepareParakeetBackend(nextBackend);
+                } else if (
+                  nextBackend === "ya-granite" ||
+                  nextBackend === "ya-qwen" ||
+                  nextBackend === "ya-whisper"
+                ) {
+                  prewarmSpeechModel(
+                    nextBackend,
+                    nextBackend === "ya-whisper"
+                      ? whisperSpeechModel.trim() || undefined
+                      : undefined,
+                  );
                 }
                 setSpeechMethod(nextBackend);
               }}
@@ -608,6 +623,10 @@ export function SpeechSettings() {
         >
           <SpeechMessagePrefixControls showDescription={false} />
         </SettingsItem>
+
+        {serverHasCapability(versionInfo, SPEECH_BACKEND_SETUP_CAPABILITY) && (
+          <SpeechBackendSetup />
+        )}
       </div>
     </SettingsSection>
   );

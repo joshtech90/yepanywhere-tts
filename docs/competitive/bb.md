@@ -127,8 +127,8 @@ Evidence: [runtime][runtime], [providers][acp], [fork implementation][fork],
 [release notes][changelog]. YA: [inbox](../../topics/inbox.md),
 [Source Control](../../topics/source-control.md),
 [workstreams](../../topics/workstreams.md),
-[remote-executor gap](../../gaps/provider-neutral-remote-executors.md),
-[scheduler gap](../../gaps/yacron-scheduler.md), and
+[remote-executor gap](../../gaps/sketches/provider-neutral-remote-executors.md),
+[scheduler gap](../../gaps/sketches/yacron-scheduler.md), and
 [roadmap](../roadmap/README.md).
 
 ## Where bb is particularly strong
@@ -287,20 +287,20 @@ implications.
 2. **Use bb as prior art for the existing scheduling direction.** Its run
    records, restart reconciliation, cancellation and observable workflows are
    relevant to [yacron](../../topics/yacron.md) and the
-   [open scheduler gap](../../gaps/yacron-scheduler.md). They do not remove the
+   [open scheduler gap](../../gaps/sketches/yacron-scheduler.md). They do not remove the
    management-UI prerequisite or authorize another scheduler implementation.
 3. **Compare multi-machine outcomes, not a boolean feature.** bb has explicit
    host/environment routing and server-matched daemon distribution. YA's
    [simple-client demo](../tactical/130-simple-client-api-and-three-client-demo.md)
    addresses multiple servers, while the
-   [remote-executor gap](../../gaps/provider-neutral-remote-executors.md)
+   [remote-executor gap](../../gaps/sketches/provider-neutral-remote-executors.md)
    records a different, provider-limited dispatch path.
 4. **Preserve the chosen workspace and source-control direction.** Evaluate
    bb's cleanup and setup contracts when refining
    [workstreams](../../topics/workstreams.md); ordinary lane clones remain
    YA's proposed model. YA already has substantial
    [Source Control](../../topics/source-control.md). The remaining
-   [commit/session attribution gap](../../gaps/committed-change-session-attribution.md)
+   [commit/session attribution gap](../../gaps/sketches/committed-change-session-attribution.md)
    is more precise than an obsolete “no Git support” comparison.
 5. **Track extensibility as a strategic choice.** A general plugin SDK and
    durable workflow engine would expand YA's scope materially. Revisit only

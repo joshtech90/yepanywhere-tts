@@ -155,7 +155,14 @@ export const displayExpectations = {
       "Verify display contracts",
     ),
   },
-  WriteStdin: { standard: ordinary("command session 12", "contract output") },
+  WriteStdin: {
+    standard: ordinary(
+      "command session 12",
+      "contract output",
+      null,
+      "contract output",
+    ),
+  },
   create_goal: {
     standard: ordinary(
       "Verify contracts",

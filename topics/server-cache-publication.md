@@ -91,6 +91,12 @@ revision is discarded before canonical replacement. The disk snapshot remains
 a disposable startup optimization and is accepted only when its recorded
 source state still matches.
 
+App disposal closes the project scanner after its consumers stop. Closing
+unsubscribes observations, rejects new scans, drops the queued disposable
+snapshot and awaits the active writer. A scan already in flight may finish for
+its caller but cannot schedule persistence after close. No snapshot filesystem
+work remains after disposal resolves, so its app-data directory can be removed.
+
 ### Gemini project mapping
 
 The Gemini hash-to-project map is durable identity-adjacent state rather than

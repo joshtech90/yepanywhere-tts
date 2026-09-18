@@ -8,14 +8,31 @@
  */
 
 import { type ChildProcess, spawn } from "node:child_process";
-import { isIP, createConnection } from "node:net";
+import { createConnection } from "node:net";
+import {
+  isLoopbackGatewayUrl,
+  loopbackGatewayHostname,
+} from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
+import {
+  identifySignallableListener,
+  portListenerControlAvailable,
+  stopIdentifiedListener,
+} from "../../utils/portListener.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
 
 const DEFAULT_PROBE_TIMEOUT_MS = 500;
 const DEFAULT_READINESS_TIMEOUT_MS = 10_000;
 const DEFAULT_READINESS_POLL_MS = 100;
 const DEFAULT_STOP_GRACE_MS = 2_000;
+/**
+ * A stop request gets this long to take effect before YA re-probes the port.
+ * Generous on purpose: a service that waits for its own last client to go idle
+ * should finish on its own terms rather than be signalled.
+ */
+const DEFAULT_STOP_VERIFY_DELAY_MS = 30_000;
+/** A status verb answers fast; anything still running is the server itself. */
+const DEFAULT_STATUS_PROBE_TIMEOUT_MS = 3_000;
 
 export interface ClaudeGatewayLaunchConfig {
   url?: string;
@@ -32,14 +49,25 @@ export interface ClaudeGatewayLauncherOptions {
   readinessTimeoutMs?: number;
   readinessPollMs?: number;
   stopGraceMs?: number;
+  /** How long a stop request has before YA checks the port again. */
+  stopVerifyDelayMs?: number;
+  /** Signals the process listening on a port; true when the port went free. */
+  stopListener?: (port: number) => Promise<boolean>;
+  /** How long `<command> status` has to exit before it counts as the server. */
+  statusProbeTimeoutMs?: number;
 }
 
 interface OwnedChild {
   child: ChildProcess;
   generation: number;
   closed: boolean;
+  /** Exit status once closed; null for a signal or an `error` event. */
+  exitCode: number | null;
   closedPromise: Promise<void>;
 }
+
+/** How a configured service command must be invoked. */
+export type GatewayCommandStyle = "verbs" | "bare" | "unknown";
 
 interface LaunchAttempt {
   generation: number;
@@ -53,35 +81,7 @@ interface LaunchAttempt {
  */
 const LOOPBACK_PROBE_HOSTS = ["127.0.0.1", "::1"];
 
-function stripIpv6Brackets(hostname: string): string {
-  return hostname.startsWith("[") && hostname.endsWith("]")
-    ? hostname.slice(1, -1)
-    : hostname;
-}
-
-function normalizedLoopbackHostname(rawUrl: string): string | null {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    const hostname = stripIpv6Brackets(url.hostname).toLowerCase();
-    if (hostname === "localhost" || hostname === "localhost.") {
-      return hostname;
-    }
-    if (isIP(hostname) === 4 && hostname.split(".")[0] === "127") {
-      return hostname;
-    }
-    if (isIP(hostname) === 6 && hostname === "::1") {
-      return hostname;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-export function isClaudeGatewayLoopbackUrl(rawUrl: string): boolean {
-  return normalizedLoopbackHostname(rawUrl) !== null;
-}
+export { isLoopbackGatewayUrl as isClaudeGatewayLoopbackUrl };
 
 function connectToHost(
   host: string,
@@ -101,6 +101,28 @@ function connectToHost(
     socket.once("error", () => settle(false));
     socket.setTimeout(timeoutMs, () => settle(false));
   });
+}
+
+/** The TCP port a gateway URL names, including the scheme's default. */
+export function gatewayUrlPort(rawUrl: string): number | undefined {
+  try {
+    const url = new URL(rawUrl);
+    if (url.port) return Number.parseInt(url.port, 10);
+    return url.protocol === "https:" ? 443 : 80;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Signal whatever is listening on a loopback port, with the same guards Apps
+ * use: a unique, same-user listener that is not YA or one of its ancestors.
+ */
+async function stopGatewayPortListener(port: number): Promise<boolean> {
+  if (!portListenerControlAvailable) return false;
+  const identity = await identifySignallableListener(port);
+  if (!identity) return true;
+  return stopIdentifiedListener(port, identity);
 }
 
 /** Rewrite a gateway URL onto a specific address, preserving port and path. */
@@ -125,7 +147,7 @@ export async function resolveClaudeGatewayEndpoint(
   rawUrl: string,
   timeoutMs = DEFAULT_PROBE_TIMEOUT_MS,
 ): Promise<string | null> {
-  const loopbackHostname = normalizedLoopbackHostname(rawUrl);
+  const loopbackHostname = loopbackGatewayHostname(rawUrl);
   if (!loopbackHostname) return null;
 
   const url = new URL(rawUrl);
@@ -183,13 +205,31 @@ function configKey(config: ClaudeGatewayLaunchConfig): string {
   return `${config.url ?? ""}\n${config.startCommand ?? ""}`;
 }
 
+/**
+ * A configured command written as `<script> start` states its own contract:
+ * the trailing verb documents that this is a service script, so YA strips it
+ * and uses the verb forms throughout — `start`, `status`, and `stop` — without
+ * probing or falling back to running the bare script as a foreground server.
+ */
+export function interpretServiceCommand(raw: string | undefined): {
+  command: string | undefined;
+  style: GatewayCommandStyle;
+} {
+  const trimmed = raw?.trim();
+  if (!trimmed) return { command: undefined, style: "unknown" };
+  const match = /^(.*\S)\s+start$/u.exec(trimmed);
+  return match
+    ? { command: match[1], style: "verbs" }
+    : { command: trimmed, style: "unknown" };
+}
+
 function normalizeConfig(
   config: ClaudeGatewayLaunchConfig,
 ): ClaudeGatewayLaunchConfig {
-  const startCommand = config.startCommand?.trim();
+  const { command } = interpretServiceCommand(config.startCommand);
   return {
     url: config.url,
-    startCommand: startCommand || undefined,
+    startCommand: command,
   };
 }
 
@@ -205,6 +245,11 @@ export class ClaudeGatewayLauncher {
   private readonly readinessTimeoutMs: number;
   private readonly readinessPollMs: number;
   private readonly stopGraceMs: number;
+  private readonly stopVerifyDelayMs: number;
+  private readonly statusProbeTimeoutMs: number;
+  private commandStyle: GatewayCommandStyle = "unknown";
+  private readonly stopListener: (port: number) => Promise<boolean>;
+  private stopVerification: ReturnType<typeof setTimeout> | undefined;
 
   private config: ClaudeGatewayLaunchConfig = {};
   private currentConfigKey = configKey(this.config);
@@ -224,6 +269,11 @@ export class ClaudeGatewayLauncher {
       options.readinessTimeoutMs ?? DEFAULT_READINESS_TIMEOUT_MS;
     this.readinessPollMs = options.readinessPollMs ?? DEFAULT_READINESS_POLL_MS;
     this.stopGraceMs = options.stopGraceMs ?? DEFAULT_STOP_GRACE_MS;
+    this.stopVerifyDelayMs =
+      options.stopVerifyDelayMs ?? DEFAULT_STOP_VERIFY_DELAY_MS;
+    this.stopListener = options.stopListener ?? stopGatewayPortListener;
+    this.statusProbeTimeoutMs =
+      options.statusProbeTimeoutMs ?? DEFAULT_STATUS_PROBE_TIMEOUT_MS;
   }
 
   async configure(config: ClaudeGatewayLaunchConfig): Promise<void> {
@@ -237,6 +287,8 @@ export class ClaudeGatewayLauncher {
     this.generation += 1;
     this.config = normalized;
     this.currentConfigKey = nextKey;
+    this.commandStyle = interpretServiceCommand(config.startCommand).style;
+    this.clearStopVerification();
     const previousTransition = this.configurationReady;
     const transition = (async () => {
       await previousTransition;
@@ -261,7 +313,7 @@ export class ClaudeGatewayLauncher {
 
     const { url, startCommand } = this.config;
     const generation = this.generation;
-    if (!url || !isClaudeGatewayLoopbackUrl(url)) return null;
+    if (!url || !isLoopbackGatewayUrl(url)) return null;
     const listening = await this.probe(url);
     if (listening) return listening;
     if (!startCommand) return null;
@@ -283,8 +335,91 @@ export class ClaudeGatewayLauncher {
     }
   }
 
+  /**
+   * Ask the service to stop, then verify.
+   *
+   * A stop request is a request: a service that defers shutdown until its last
+   * client goes idle answers immediately while the port stays open, and that
+   * is not a failure. YA therefore re-probes once after a delay and only then
+   * signals the listener — which also covers a command with no `stop` verb,
+   * since an unrecognized argument leaves the port exactly as it was.
+   */
+  async stopService(): Promise<void> {
+    if (this.disposed) return;
+    const { url, startCommand } = this.config;
+    if (!url || !isLoopbackGatewayUrl(url)) return;
+
+    if (this.ownedChild) {
+      await this.stopOwnedChild();
+    } else if (startCommand) {
+      await this.runStopCommand(startCommand, url);
+    } else {
+      // Nothing to ask and nothing owned: an externally managed listener is
+      // not YA's to kill.
+      return;
+    }
+    this.scheduleStopVerification(url, this.generation);
+  }
+
+  private async runStopCommand(
+    startCommand: string,
+    url: string,
+  ): Promise<void> {
+    let child: ChildProcess;
+    try {
+      child = this.spawnCommand(`${startCommand} stop`);
+    } catch (error) {
+      getLogger().warn(
+        { error, gatewayUrl: url },
+        "Failed to run configured gateway stop command",
+      );
+      return;
+    }
+    const entry = this.trackChild(child, this.generation);
+    await this.waitForClose(entry, this.readinessTimeoutMs);
+    if (this.ownedChild === entry) this.ownedChild = undefined;
+  }
+
+  private scheduleStopVerification(url: string, generation: number): void {
+    this.clearStopVerification();
+    const timer = setTimeout(() => {
+      this.stopVerification = undefined;
+      void this.verifyStopped(url, generation);
+    }, this.stopVerifyDelayMs);
+    timer.unref();
+    this.stopVerification = timer;
+  }
+
+  private clearStopVerification(): void {
+    if (!this.stopVerification) return;
+    clearTimeout(this.stopVerification);
+    this.stopVerification = undefined;
+  }
+
+  private async verifyStopped(url: string, generation: number): Promise<void> {
+    if (this.disposed || generation !== this.generation) return;
+    const listening = await this.probe(url);
+    if (!listening) return;
+    if (this.disposed || generation !== this.generation) return;
+    const port = gatewayUrlPort(url);
+    if (port === undefined) return;
+    getLogger().info(
+      { gatewayUrl: url, port },
+      "Gateway still listening after its stop request; signalling the listener",
+    );
+    try {
+      await this.stopListener(port);
+    } catch (error) {
+      getLogger().warn(
+        { error, gatewayUrl: url, port },
+        "Could not stop the gateway's port listener",
+      );
+    }
+  }
+
   async shutdown(): Promise<void> {
     if (this.disposed) return;
+    this.clearStopVerification();
     this.disposed = true;
     this.generation += 1;
     this.config = {};
@@ -304,10 +439,97 @@ export class ClaudeGatewayLauncher {
     return true;
   }
 
+  /**
+   * Bring the endpoint up.
+   *
+   * A service script that dispatches verbs needs `<command> start`; a command
+   * that *is* the server needs no argument at all, and YA then owns it as a
+   * foreground child exactly as it always has. Nothing standardizes the
+   * difference, so YA asks the command itself: `<command> status` exiting 0 is
+   * a dispatcher answering a question, while a command that ignores the
+   * argument and keeps running is the server itself. An ambiguous answer
+   * (nonzero exit, which is both "service stopped" and "unknown argument")
+   * falls back to trying `start` and then the bare command once.
+   */
   private async launchAndWait(
     url: string,
     startCommand: string,
     generation: number,
+  ): Promise<string | null> {
+    const style = await this.resolveCommandStyle(startCommand, generation);
+    if (generation !== this.generation || this.disposed) return null;
+
+    if (style === "bare") {
+      return this.attemptLaunch(url, startCommand, generation, {
+        fallbackOnNonzeroExit: false,
+      });
+    }
+
+    const ready = await this.attemptLaunch(
+      url,
+      `${startCommand} start`,
+      generation,
+      { fallbackOnNonzeroExit: true },
+    );
+    if (ready || style === "verbs") return ready;
+    if (generation !== this.generation || this.disposed) return null;
+    getLogger().info(
+      { gatewayUrl: url },
+      "Gateway start verb did not open the endpoint; retrying the bare command",
+    );
+    return this.attemptLaunch(url, startCommand, generation, {
+      fallbackOnNonzeroExit: false,
+    });
+  }
+
+  /**
+   * Ask the command whether it takes verbs, once per configuration.
+   *
+   * `unknown` means the probe was inconclusive and both invocation forms are
+   * still worth trying; it is not an error.
+   */
+  private async resolveCommandStyle(
+    startCommand: string,
+    generation: number,
+  ): Promise<GatewayCommandStyle> {
+    if (this.commandStyle !== "unknown") return this.commandStyle;
+
+    let child: ChildProcess;
+    try {
+      child = this.spawnCommand(`${startCommand} status`);
+    } catch {
+      return "unknown";
+    }
+    const entry = this.trackChild(child, generation);
+    if (this.ownedChild === entry) this.ownedChild = undefined;
+    const exited = await this.waitForClose(entry, this.statusProbeTimeoutMs);
+
+    let style: GatewayCommandStyle;
+    if (!exited) {
+      // It is still running: the command ignored the argument and is the
+      // server itself. Stop this probe copy and launch it the plain way.
+      this.signalChild(child, "SIGTERM");
+      style = "bare";
+    } else if (entry.exitCode === 0) {
+      style = "verbs";
+    } else {
+      style = "unknown";
+    }
+    if (generation === this.generation && !this.disposed) {
+      this.commandStyle = style;
+    }
+    getLogger().info(
+      { commandStyle: style, exitCode: entry.exitCode },
+      "Probed configured gateway command for verb support",
+    );
+    return style;
+  }
+
+  private async attemptLaunch(
+    url: string,
+    startCommand: string,
+    generation: number,
+    options: { fallbackOnNonzeroExit: boolean },
   ): Promise<string | null> {
     await this.stopOwnedChild();
     if (generation !== this.generation || this.disposed) return null;
@@ -344,9 +566,12 @@ export class ClaudeGatewayLauncher {
         );
         return listening;
       }
-      if (entry.closed) {
+      if (
+        entry.closed &&
+        (options.fallbackOnNonzeroExit ? entry.exitCode !== 0 : true)
+      ) {
         getLogger().warn(
-          { gatewayUrl: url },
+          { gatewayUrl: url, exitCode: entry.exitCode },
           "Configured Claude gateway command exited before readiness",
         );
         return null;
@@ -372,13 +597,15 @@ export class ClaudeGatewayLauncher {
       child,
       generation,
       closed: false,
+      exitCode: null,
       closedPromise: new Promise((resolve) => {
         closeEntry = resolve;
       }),
     };
-    const close = () => {
+    const close = (code?: number | null) => {
       if (entry.closed) return;
       entry.closed = true;
+      entry.exitCode = typeof code === "number" ? code : null;
       closeEntry?.();
       if (this.ownedChild === entry) {
         this.ownedChild = undefined;

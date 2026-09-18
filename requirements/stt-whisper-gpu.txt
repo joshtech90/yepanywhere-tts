@@ -1,0 +1,4 @@
+# CTranslate2 requires CUDA 12; keep these away from Torch's CUDA 13 packages.
+-r stt.txt
+nvidia-cublas-cu12>=12,<13
+nvidia-cudnn-cu12>=9,<10

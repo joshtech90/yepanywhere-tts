@@ -10,6 +10,7 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import {
   type CacheMissBillingRecord,
+  type NonHumanUserTurn,
   type DurableRecapMessage,
   type DurableLocalCommandMessage,
   type DurableSyntheticDoneMessage,
@@ -54,6 +55,8 @@ export type EffectiveSessionLaunchSettingsValue = Omit<
 >;
 
 export interface SessionMetadata {
+  /** Retain the acknowledged receipt so replay cannot raise it again. */
+  nonHumanUserTurn?: NonHumanUserTurn & { acknowledged?: boolean };
   /** Custom title that overrides auto-generated title */
   customTitle?: string;
   /** Whether the session is archived (hidden from default list) */
@@ -157,6 +160,19 @@ const MAX_CACHE_MISS_BILLING_EVENTS_PER_SESSION = 100;
 export interface SessionMetadataServiceOptions {
   /** Directory to store metadata state (defaults to ~/.yep-anywhere) */
   dataDir?: string;
+}
+
+/** Public projection omits the persisted acknowledgement tombstone. */
+export function pendingNonHumanUserTurn(
+  metadata: SessionMetadata | undefined,
+): NonHumanUserTurn | undefined {
+  const turn = metadata?.nonHumanUserTurn;
+  if (!turn || turn.acknowledged) return undefined;
+  return {
+    messageId: turn.messageId,
+    timestamp: turn.timestamp,
+    sourceSessionId: turn.sourceSessionId,
+  };
 }
 
 export class SessionMetadataService {
@@ -280,6 +296,42 @@ export class SessionMetadataService {
       if (metadata?.provider) providers.add(metadata.provider);
     }
     return [...providers];
+  }
+
+  getPendingNonHumanUserTurn(sessionId: string): NonHumanUserTurn | undefined {
+    return pendingNonHumanUserTurn(this.getMetadata(sessionId));
+  }
+
+  async recordNonHumanUserTurn(
+    sessionId: string,
+    turn: NonHumanUserTurn,
+  ): Promise<void> {
+    const previous = this.getMetadata(sessionId)?.nonHumanUserTurn;
+    if (
+      previous?.messageId !== turn.messageId &&
+      (!previous ||
+        Date.parse(turn.timestamp) >= Date.parse(previous.timestamp))
+    ) {
+      this.updateSessionMetadata(sessionId, (metadata) => ({
+        ...metadata,
+        nonHumanUserTurn: { ...turn },
+      }));
+    }
+    await this.metadataSaver.flush();
+  }
+
+  async acknowledgeNonHumanUserTurn(
+    sessionId: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const turn = this.getMetadata(sessionId)?.nonHumanUserTurn;
+    if (!turn || turn.messageId !== messageId) return false;
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      nonHumanUserTurn: { ...turn, acknowledged: true },
+    }));
+    await this.metadataSaver.flush();
+    return true;
   }
 
   getTranscriptDisplayObjects(sessionId: string): TranscriptDisplayObject[] {
@@ -982,6 +1034,9 @@ export class SessionMetadataService {
 
     // Remove undefined values and check if entry should be deleted
     const cleaned: SessionMetadata = {};
+    if (updated.nonHumanUserTurn) {
+      cleaned.nonHumanUserTurn = updated.nonHumanUserTurn;
+    }
     if (updated.customTitle) cleaned.customTitle = updated.customTitle;
     if (updated.isArchived) cleaned.isArchived = updated.isArchived;
     if (updated.isStarred) cleaned.isStarred = updated.isStarred;

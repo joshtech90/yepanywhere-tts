@@ -135,7 +135,11 @@ Consequences:
   increase while `shouldAutoScrollRef` is true. During streaming this fires at
   the flush cadence (~200ms). During initial parked restoration, it instead
   reapplies the pending retained anchor through asynchronous content growth;
-  the first user scroll or explicit Follow action ends that retry.
+  the first user scroll or explicit Follow action ends that retry. A 2px
+  oscillation of the conversation-activity row therefore moves the whole
+  transcript; that row's published thinking height ignores ≤2px shrinks and
+  its same-line vs wrapped test uses a 1px/4px deadband (see
+  [conversation-view](conversation-view.md)).
 - **Near-bottom re-engage** — historical behavior let size/resize paths
   re-arm `shouldAutoScrollRef` whenever `isNearScrollBottom` held, i.e. within
   `BOTTOM_FOLLOW_VIEWPORT_FRACTION` (0.45) of the viewport, capped at

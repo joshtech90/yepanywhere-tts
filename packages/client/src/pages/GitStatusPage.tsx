@@ -660,8 +660,7 @@ export function GitStatusPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const projectId = searchParams.get("projectId");
   const sourceKey = useClientSummarySourceKey();
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
-    useNavigationLayout();
+  const { openSidebar, isWideScreen } = useNavigationLayout();
   const pageScrollRef = useRef<HTMLElement | null>(null);
   const [worktreePaused, setWorktreePaused] = useState(false);
   const documentAttentive = useDocumentAttention();
@@ -891,9 +890,7 @@ export function GitStatusPage() {
           ) : undefined
         }
         onOpenSidebar={openSidebar}
-        onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
-        isSidebarCollapsed={isSidebarCollapsed}
         actions={
           supportsSourceReview && effectiveProjectId && gitStatus?.isGitRepo ? (
             <SourceHeaderActions

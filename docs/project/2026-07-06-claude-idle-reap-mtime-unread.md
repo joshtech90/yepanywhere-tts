@@ -321,3 +321,64 @@ Focused regressions cover a file whose mtime postdates its content, an internal
 system tail row, a newly appended meaningful row, and Inbox classification when
 the storage touch is later than last-seen but content is older. The targeted
 Claude reader and Inbox route suites pass with 77 tests and no warnings.
+
+## Recurrence Through The Session Catalog (2026-09-17)
+
+The symptom returned and was reported as constant: every reaped session went
+unread. The 2026-07-10 fix is intact — it just does not reach the code path the
+browser reads.
+
+Two corrections to the analysis above.
+
+First, the teardown write is not an mtime-only touch. Claude appends a real row
+at shutdown, `{"type":"last-prompt","lastPrompt":…,"leafUuid":…,"sessionId":…}`;
+every idle-reaped transcript ends with one. It is a metadata entry, so it never
+advances content time, and the July fix covers it. The damage is that an append
+invalidates the summary index for that session.
+
+Second, unread no longer comes only from the summary index. The durable session
+catalog added in `dee048f37` is what `readRetainedSessionItems` compares against
+(`packages/server/src/routes/retained-session-collections.ts`), and Inbox asks
+for it whenever the server advertises retained collections. `readFileRow` in
+`packages/server/src/sessions/catalog-adapters/collection-catalog-adapters.ts`
+builds those rows from `getCachedSessionSummary`, which returns null while a
+session is dirty or its mtime/size moved — always true just after any append —
+and then fell back to `stats.mtimeMs`. Codex escaped this because it is the only
+reader implementing `getSessionListSummary` and because its fallback already
+used `getCodexRolloutActivityTimeMs`. Claude had neither, so every reap wrote a
+catalog row whose `updatedAt` was the shutdown time: unread, falsely recent, and
+sorted to the top.
+
+Measured on one machine before the fix, same server and instant:
+
+```text
+retained (what the UI reads):  updatedAt 12:12:52.004Z  unread=true
+non-retained walk:             updatedAt 12:05:35.644Z  unread=false
+```
+
+The fix gives the catalog a bounded tail read, `readClaudeCatalogRecency`, the
+counterpart to the existing `readClaudeCatalogTitle` head read. Claude rows now
+claim the latest `user`/`assistant` timestamp in the tail window and fall back
+to storage time only when none is present. Like `getLastAgentExcerpt`, the scan
+approximates the active branch rather than building the DAG.
+
+Implementing `ISessionReader.getSessionListSummary` for Claude was rejected:
+`provider-resolution.ts` switches whole list routes onto that projection, which
+would trade exact indexed message counts for a bounded guess well outside this
+defect.
+
+Still open after this fix:
+
+- Catalog rows already persisted keep their mtime-derived `updatedAt` until the
+  session file next changes, because `readFileRow` short-circuits on an
+  unchanged `sourceVersion`. This follows the 2026-07-10 decision to accept
+  gradual correction, but unlike the summary index it does not self-heal on
+  read.
+- Gemini is the third file-backed catalog family and has neither a list-summary
+  reader nor a content-aware fallback, so the same class remains latent there.
+- Nothing structurally prevents the next storage-derived freshness source from
+  driving unread. Tagging rows with whether `updatedAt` is content- or
+  storage-derived, and refusing the unread comparison for storage-derived rows,
+  is the invariant that would close the class — weighed against the Windows
+  Codex precedent in `topics/inbox.md`, which deliberately prefers a false
+  unread over hiding real output.

@@ -1,9 +1,11 @@
 import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import {
   parseCodexSessionEntry,
   type ClaudeSessionEntry,
   type CodexSessionEntry,
+  type SessionContentDiagnostic,
 } from "@yep-anywhere/shared";
 import {
   normalizeIssueEntries,
@@ -19,6 +21,7 @@ export interface IssueReadSegment {
 export interface IssueReadOptions {
   cursor?: string;
   signal: AbortSignal;
+  maxRecords?: number;
 }
 export interface IssueTextBatch {
   messages: IssueText[];
@@ -26,6 +29,10 @@ export interface IssueTextBatch {
   done: boolean;
   partial: boolean;
   bytesRead: number;
+  /** Cumulative malformed/oversized records, excluding an unfinished live tail. */
+  recordErrors?: boolean;
+  restarted?: boolean;
+  diagnostics?: SessionContentDiagnostic[];
 }
 interface Cursor {
   layout?: string;
@@ -35,8 +42,10 @@ interface Cursor {
   partial: boolean;
   boundary?: string;
   size?: number;
+  fileSize?: number;
   mtime?: number;
   inode?: string;
+  lastMessageId?: string;
 }
 const MAX_BYTES = 8 * 1024 * 1024;
 const MAX_RECORD = 1024 * 1024;
@@ -58,16 +67,30 @@ export async function readIssueTextBatch(
   )
     throw new Error("Invalid issue cursor");
   const layout = JSON.stringify(segments);
+  let restarted = false;
+  const reset = () => {
+    restarted = true;
+    Object.assign(cursor, {
+      segment: 0,
+      offset: 0,
+      boundary: undefined,
+      size: undefined,
+      fileSize: undefined,
+      mtime: undefined,
+      inode: undefined,
+      skipping: false,
+      partial: false,
+      lastMessageId: undefined,
+    });
+  };
   if (cursor.layout !== undefined && cursor.layout !== layout) {
-    cursor.segment = 0;
-    cursor.offset = 0;
-    cursor.boundary = undefined;
-    cursor.mtime = undefined;
-    cursor.inode = undefined;
-    cursor.skipping = false;
+    reset();
   }
   cursor.layout = layout;
   const entries: Array<ClaudeSessionEntry | CodexSessionEntry> = [];
+  const diagnostics: Array<SessionContentDiagnostic & { entryCount: number }> =
+    [];
+  const maxRecords = options.maxRecords ?? 2000;
   let bytesRead = 0;
   let records = 0;
   let incomplete = false;
@@ -76,7 +99,7 @@ export async function readIssueTextBatch(
   while (
     cursor.segment < segments.length &&
     bytesRead < MAX_BYTES &&
-    records < 2000 &&
+    records < maxRecords &&
     Date.now() < deadline
   ) {
     options.signal.throwIfAborted();
@@ -94,16 +117,28 @@ export async function readIssueTextBatch(
       };
       if (
         cursor.offset > end ||
-        (cursor.size === end &&
+        ((cursor.fileSize ?? cursor.size) === stats.size &&
           cursor.mtime !== undefined &&
           cursor.mtime !== stats.mtimeMs) ||
         (cursor.inode !== undefined && cursor.inode !== String(stats.ino)) ||
         (cursor.boundary &&
           cursor.boundary !== (await fingerprint(cursor.offset)))
       ) {
-        cursor.offset = 0;
-        cursor.skipping = false;
+        reset();
+        entries.length = 0;
+        diagnostics.length = 0;
+        continue;
       }
+      const report = (position: number, reason: string) => {
+        cursor.partial = true;
+        diagnostics.push({
+          id: `${segment.path}:${position}`,
+          message: `${basename(segment.path)} at byte ${position}: ${reason}`,
+          sourcePath: segment.path,
+          byteOffset: position,
+          entryCount: entries.length,
+        });
+      };
       let carry = Buffer.alloc(0);
       let lineStart = cursor.offset;
       const appendLine = (line: string, position: number): void => {
@@ -133,7 +168,7 @@ export async function readIssueTextBatch(
       while (
         cursor.offset < end &&
         bytesRead < MAX_BYTES - 256 &&
-        records < 2000 &&
+        records < maxRecords &&
         Date.now() < deadline
       ) {
         options.signal.throwIfAborted();
@@ -152,23 +187,34 @@ export async function readIssueTextBatch(
             const line = Buffer.concat([carry, part]).toString("utf8");
             try {
               appendLine(line, lineStart);
-            } catch {
-              cursor.partial = true;
+            } catch (error) {
+              report(
+                lineStart,
+                error instanceof Error ? error.message : String(error),
+              );
             }
-          } else cursor.partial = true;
+          } else if (!cursor.skipping)
+            report(
+              lineStart,
+              `Record exceeds the ${MAX_RECORD}-byte search limit`,
+            );
           carry = Buffer.alloc(0);
           cursor.skipping = false;
           records++;
           start = i + 1;
           lineStart = cursor.offset + start;
-          if (records >= 2000) break;
+          if (records >= maxRecords) break;
         }
-        const consumed = records >= 2000 ? start : chunk.length;
-        if (records < 2000) {
+        const consumed = records >= maxRecords ? start : chunk.length;
+        if (records < maxRecords) {
           const suffix = chunk.subarray(start);
           if (carry.length + suffix.length > MAX_RECORD) {
+            if (!cursor.skipping)
+              report(
+                lineStart,
+                `Record exceeds the ${MAX_RECORD}-byte search limit`,
+              );
             cursor.skipping = true;
-            cursor.partial = true;
             carry = Buffer.alloc(0);
           } else if (!cursor.skipping) carry = Buffer.concat([carry, suffix]);
         }
@@ -182,7 +228,6 @@ export async function readIssueTextBatch(
           } catch {
             incomplete = true;
             cursor.offset = lineStart;
-            cursor.partial = true;
           }
         } else cursor.offset = lineStart;
       }
@@ -199,16 +244,33 @@ export async function readIssueTextBatch(
         cursor.offset = lastEntryStart;
       }
       const after = await file.stat();
-      if (after.size !== stats.size || after.mtimeMs !== stats.mtimeMs)
-        throw new Error("Issue source changed during read");
+      // Appends leave the pinned prefix readable. Replacement/truncation needs
+      // an authoritative reset, not a user-facing warning or failed traversal.
+      if (
+        after.size < stats.size ||
+        (after.size === stats.size && after.mtimeMs !== stats.mtimeMs)
+      ) {
+        reset();
+        return {
+          messages: [],
+          cursor: JSON.stringify(cursor),
+          done: false,
+          partial: false,
+          bytesRead,
+          restarted: true,
+          diagnostics: [],
+        };
+      }
       cursor.boundary = await fingerprint(cursor.offset);
       cursor.size = end;
+      cursor.fileSize = stats.size;
       cursor.mtime = stats.mtimeMs;
       cursor.inode = String(stats.ino);
       if (cursor.offset >= end && cursor.segment < segments.length - 1) {
         cursor.segment++;
         cursor.offset = 0;
         cursor.boundary = undefined;
+        cursor.fileSize = undefined;
         cursor.mtime = undefined;
         cursor.inode = undefined;
       } else break;
@@ -219,11 +281,26 @@ export async function readIssueTextBatch(
   const done =
     cursor.segment === segments.length - 1 &&
     (incomplete || cursor.offset >= (cursor.size ?? 0));
+  const messages = normalizeIssueEntries(provider, entries);
+  const anchors = new Map<number, string | undefined>();
+  const details = diagnostics.map(({ entryCount, ...diagnostic }) => {
+    if (!anchors.has(entryCount))
+      anchors.set(
+        entryCount,
+        normalizeIssueEntries(provider, entries.slice(0, entryCount)).at(-1)
+          ?.id ?? cursor.lastMessageId,
+      );
+    return { ...diagnostic, messageId: anchors.get(entryCount) };
+  });
+  cursor.lastMessageId = messages.at(-1)?.id ?? cursor.lastMessageId;
   return {
-    messages: normalizeIssueEntries(provider, entries),
+    messages,
     cursor: JSON.stringify(cursor),
     done,
-    partial: cursor.partial,
+    partial: cursor.partial || incomplete,
+    recordErrors: cursor.partial,
     bytesRead,
+    diagnostics: details,
+    ...(restarted ? { restarted: true } : {}),
   };
 }

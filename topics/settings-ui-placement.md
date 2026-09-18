@@ -73,6 +73,26 @@ the ordinary local settings behavior.
 
 ## Reviewed settings behavior
 
+**Appearance → Slide animations** is a browser-local preference, enabled by
+default to preserve sidebar motion. It also controls the right pane's own
+show/hide animation and desktop space allocation. Turning it off makes sidebar
+and right-pane changes immediate. Reduced-motion preferences also suppress
+these animations without changing the saved setting. It does not change which
+panes open, their widths, or unrelated animations. The preference applies
+immediately, supports Appearance undo, and transfers with browser settings.
+
+**Apps** owns artifact delivery, expiry/deletion options, static vhosts and
+app-link protection. Local Access and Remote Access provide links there.
+**Appearance → Session right pane** remains a default-off browser preference;
+it places session file viewers and detected apps in the same right pane,
+without changing hosting or access policy. Apps configuration is
+server-persisted, while discovered session App chips are source/session-scoped
+browser state.
+Apps text/number fields save on defocus (Enter also commits); toggles, slider
+commits and row removal save immediately. There is no bottom Save button.
+Writes are serialized while typing remains enabled, and server metadata refresh
+must not remount the form or replace another field's in-progress draft.
+
 The following controls and descriptions were checked against their current
 implementation on 2026-08-16. These are the user-visible contracts the Settings
 UI should state directly.
@@ -130,6 +150,14 @@ UI should state directly.
 - **Providers → Compact context early.** Off means YA sends no threshold or
   `/compact` request and leaves provider defaults unchanged. A percentage asks
   YA to initiate compaction at that context-window threshold.
+- **Providers → Continue after compaction.** Off for every provider. When a
+  provider checkbox is on, YA injects a hidden continuation turn after
+  compaction settles and the session is idle. The turn ends with `continue.`
+  The N slider (0–20) copies that many recent user/assistant prose turns in
+  **Handoff from…** format and labels them as a replay when N > 0. This is
+  often redundant with the provider's own compact summary; Codex in particular
+  commonly keeps working through compaction. Older servers omit the field and
+  the client hides the row.
 - **Providers → Idle harness lifetime.** Sets how long an idle provider harness
   with no viewer and no feature-owned retention may remain in memory. Running
   and waiting sessions are outside this timer; `-1` disables idle reaping.

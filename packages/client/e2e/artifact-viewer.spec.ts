@@ -10,6 +10,7 @@ import { createFrontendProxy } from "../../server/src/frontend/proxy";
 import { MockClaudeSDK } from "../../server/src/sdk/mock";
 import { ServerSettingsService } from "../../server/src/services/ServerSettingsService";
 import { initFileAccess } from "../../server/src/middleware/file-access";
+import { recordUiCapture } from "./support/ui-capture";
 
 const clientRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverRequire = createRequire(join(clientRoot, "../server/package.json"));
@@ -194,14 +195,14 @@ test("saves artifact expiry without revoking links, alongside addresses and port
   const numeric = page.getByRole("spinbutton", { name: "Link expiry (days)" });
   await expect(numeric).toHaveValue("2");
   await numeric.fill("12");
-  await numeric.press("Tab");
-  await expect(slider).toHaveValue("12");
   const saved = page.waitForResponse(
     (response) =>
       response.url().endsWith("/api/artifacts/config") &&
-      response.request().method() === "PUT",
+      response.request().method() === "PUT" &&
+      response.request().postDataJSON().expiryDays === 12,
   );
-  await page.getByRole("button", { name: "Save artifact settings" }).click();
+  await numeric.press("Tab");
+  await expect(slider).toHaveValue("12");
   expect((await saved).ok()).toBe(true);
   await expect.poll(() => instance.artifactServer.config.expiryDays).toBe(12);
   const persisted = new ServerSettingsService({
@@ -221,22 +222,13 @@ test("saves artifact expiry without revoking links, alongside addresses and port
   const twelveDays = 12 * 24 * 3600_000;
   expect(shorter.expiresAt).toBeGreaterThanOrEqual(start + twelveDays);
   expect(shorter.expiresAt).toBeLessThanOrEqual(Date.now() + twelveDays);
-  const artifacts = resolve(
-    clientRoot,
-    "../../.artifacts/ui-testing/2026-09-07-artifact-viewer",
-  );
-  await mkdir(artifacts, { recursive: true });
-  await page.screenshot({
-    path: join(artifacts, `${testInfo.project.name}-settings-desktop.png`),
-  });
+  await recordUiCapture(page, `${testInfo.project.name}-settings-desktop`);
   await page.setViewportSize({ width: 375, height: 812 });
-  await page.screenshot({
-    path: join(artifacts, `${testInfo.project.name}-settings-phone.png`),
-  });
+  await recordUiCapture(page, `${testInfo.project.name}-settings-phone`);
   await page
     .getByLabel("Public artifact address (optional)")
     .fill("https://artifacts.example.test");
-  await page.getByRole("button", { name: "Save artifact settings" }).click();
+  await page.getByLabel("Public artifact address (optional)").press("Tab");
   await expect
     .poll(() => instance.artifactServer.config.publicOrigin)
     .toBe("https://artifacts.example.test");
@@ -267,7 +259,6 @@ test("saves artifact expiry without revoking links, alongside addresses and port
   expect(health).toEqual({ status: 200, body: '{"artifactViewer":1}' });
   await page.getByLabel("Public artifact address (optional)").fill("");
   await page.getByLabel("Enable local artifact access").uncheck();
-  await page.getByRole("button", { name: "Save artifact settings" }).click();
   await expect.poll(() => instance.artifactServer.available).toBe(false);
 });
 
@@ -289,7 +280,7 @@ test("omits expiry controls and writes when older metadata lacks the field", asy
   });
   await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);
   await expect(
-    page.getByRole("button", { name: "Save artifact settings" }),
+    page.getByRole("heading", { name: "Interactive HTML artifacts" }),
   ).toBeVisible();
   await expect(page.getByRole("slider")).toHaveCount(0);
   await expect(
@@ -300,7 +291,8 @@ test("omits expiry controls and writes when older metadata lacks the field", asy
       request.url().endsWith("/api/artifacts/config") &&
       request.method() === "PUT",
   );
-  await page.getByRole("button", { name: "Save artifact settings" }).click();
+  await page.getByLabel("Public artifact address (optional)").focus();
+  await page.getByLabel("Public artifact address (optional)").press("Tab");
   expect((await write).postDataJSON()).not.toHaveProperty("expiryDays");
   await expect(page.getByRole("status")).toHaveText("Artifact settings saved");
   expect(instance.artifactServer.config.expiryDays).toBe(2);

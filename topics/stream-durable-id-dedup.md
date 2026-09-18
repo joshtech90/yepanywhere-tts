@@ -398,7 +398,10 @@ envelopes into one row leaves leftover `</user_query>` boilerplate that
 matches neither echo, so both stay unconfirmed. Live assistant double-echo
 that clears on reload is a separate gap
 (`gaps/grok-live-assistant-double-echo.md`); do not treat an unconfirmed
-joined user row as proof that it is the same defect.
+joined user row as proof that it is the same defect. Grok ACP also
+re-yields the queued user turn on the provider iterator; Process must not
+SSE-emit that same-uuid copy, because a tempId-less re-echo makes the
+self-send reconciler leave Grok's jsonl row as a second confirmed bubble.
 
 This one gap was self-amplifying: a Grok user echo could never be confirmed, so
 `useSession.handleFileChange` treated the session as permanently holding an

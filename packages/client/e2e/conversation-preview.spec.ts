@@ -143,6 +143,42 @@ test("experimental preview isolates real encrypted sources and groups without re
       sessions.getByRole("button", { name: /Beta previous message/ }),
     ).toHaveAttribute("aria-current", "true");
     const gamma = harness.hosts[2];
+    await test.step("Refresh replaces the catalog and keeps later live updates", async () => {
+      for (let refresh = 1; refresh <= 2; refresh++) {
+        await page.getByLabel("Group by").selectOption("issue");
+        const title = `Beta refreshed catalog ${refresh}`;
+        const renamed = await page.request.put(
+          `${beta.server.baseUrl}/api/sessions/${harness.sessionId}/metadata`,
+          { headers: { "X-Yep-Anywhere": "true" }, data: { title } },
+        );
+        expect(
+          renamed.ok(),
+          `${renamed.status()} ${await renamed.text()}`,
+        ).toBe(true);
+        await source("Beta").getByRole("button", { name: "Refresh" }).click();
+        await expect(
+          sessions.getByRole("button", { name: new RegExp(title) }),
+        ).toBeVisible();
+        await page.getByLabel("Group by").selectOption("none");
+        const text = `Live response after refresh ${refresh}`;
+        appendFileSync(
+          transcript,
+          `${JSON.stringify({
+            type: "assistant",
+            uuid: `preview-after-refresh-${refresh}`,
+            parentUuid: "preview-finalized-response",
+            timestamp: new Date().toISOString(),
+            message: { role: "assistant", content: [{ type: "text", text }] },
+          })}\n`,
+        );
+        await expect(conversation).toContainText(text, { timeout: 15_000 });
+        for (const name of ["Alpha", "Beta", "Gamma"])
+          await expect(source(name)).toHaveAttribute(
+            "data-source-status",
+            "ready",
+          );
+      }
+    });
     if (!gamma) throw new Error("Missing Gamma");
     stopYaServerProcess(gamma.server);
     await expect(source("Gamma")).toHaveAttribute(

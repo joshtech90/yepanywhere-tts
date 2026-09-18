@@ -10,26 +10,18 @@ Request line:  {"audio_b64":"<base64>","mime_type":"audio/webm;codecs=opus"}
 Response line: {"text":"..."} or {"error":"..."}
 Startup line:  {"status":"ready"} (written once after model loads)
 """
+
 import base64
 import json
-import os
 import sys
 import tempfile
 from typing import Any
 
-
-def suffix_for_mime(mime: str) -> str:
-    if "ogg" in mime:
-        return ".ogg"
-    if "mp4" in mime or "m4a" in mime:
-        return ".mp4"
-    if "wav" in mime:
-        return ".wav"
-    if "mp3" in mime:
-        return ".mp3"
-    if "flac" in mime:
-        return ".flac"
-    return ".webm"
+from stt_worker_common import (
+    suffix_for_mime,
+    summarize_model_load_error,
+    unlink_if_present,
+)
 
 
 def resolve_pipeline_device(device_arg: str, torch: Any) -> int:
@@ -53,38 +45,10 @@ def transcript_text(output: Any) -> str:
     return str(output or "").strip()
 
 
-def summarize_model_load_error(model_name: str, exc: Exception) -> str:
-    message = str(exc)
-    lower = message.lower()
-    if "no space left on device" in lower or "os error 28" in lower:
-        return (
-            f"Model load failed for {model_name}: no space left on device while "
-            "downloading or reconstructing Hugging Face model files. Free the "
-            "cache/tmp filesystem used by the server, or set HF_HUB_CACHE, "
-            "HF_XET_CACHE, and TMPDIR to a filesystem with enough space before "
-            "starting YA."
-        )
-    if (
-        "gated repo" in lower
-        or "gated model" in lower
-        or "401" in lower
-        or "403" in lower
-        or "access to model" in lower
-    ):
-        return (
-            f"Model load failed for {model_name}: Hugging Face authentication "
-            "or model access is required. Run `pixi run --frozen -e stt hf auth "
-            "login`, accept the model terms on Hugging Face if prompted, then "
-            "restart YA."
-        )
-    compact = " ".join(message.split())
-    if len(compact) > 700:
-        compact = compact[:700].rstrip() + "..."
-    return f"Model load failed for {model_name}: {compact}"
-
-
 def main() -> None:
-    model_name = sys.argv[1] if len(sys.argv) > 1 else "nvidia/parakeet-tdt-0.6b-v3"
+    model_name = (
+        sys.argv[1] if len(sys.argv) > 1 else "ai-and-i-project/parakeet-tdt-0.6b-v2-hf"
+    )
     device_arg = sys.argv[2] if len(sys.argv) > 2 else "auto"
 
     sys.stderr.write(
@@ -139,7 +103,7 @@ def main() -> None:
                 output = pipe(tmpfile)
                 sys.stdout.write(json.dumps({"text": transcript_text(output)}) + "\n")
             finally:
-                os.unlink(tmpfile)
+                unlink_if_present(tmpfile)
 
         except Exception as exc:
             sys.stdout.write(json.dumps({"error": str(exc)}) + "\n")

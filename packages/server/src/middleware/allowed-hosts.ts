@@ -34,6 +34,7 @@ const ENV_HOSTS: Set<string> | "*" = (() => {
 let settingsHosts: Set<string> | "*" | null = null;
 
 const artifactHosts = new Set<string>();
+let vhostHosts = new Set<string>();
 
 export function registerArtifactOrigins(
   origins: readonly (string | undefined)[],
@@ -59,6 +60,28 @@ export function isArtifactHost(host: string | undefined): boolean {
   if (!host) return false;
   try {
     return artifactHosts.has(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function setVhostHostnames(hosts: readonly string[]): void {
+  vhostHosts = new Set(hosts.map((host) => host.toLowerCase()));
+}
+
+export function isVhostHost(host: string | undefined): boolean {
+  if (!host) return false;
+  try {
+    return vhostHosts.has(new URL(`http://${host}`).hostname);
+  } catch {
+    return false;
+  }
+}
+
+export function isVhostOrigin(origin: string | undefined): boolean {
+  if (!origin) return false;
+  try {
+    return vhostHosts.has(new URL(origin).hostname);
   } catch {
     return false;
   }
@@ -105,7 +128,7 @@ export function allowAllHosts(): boolean {
  */
 export function isAllowedHostname(hostname: string): boolean {
   const h = hostname.toLowerCase();
-  if (artifactHosts.has(h)) return false;
+  if (artifactHosts.has(h) || vhostHosts.has(h)) return false;
 
   // Localhost variants (IPv4 + IPv6)
   if (h === "localhost" || h === "127.0.0.1" || h === "::1" || h === "[::1]")

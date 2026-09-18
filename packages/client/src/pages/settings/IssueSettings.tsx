@@ -366,7 +366,9 @@ function CredentialControl({
         <input
           type="password"
           aria-label={`${label}: ${t("issuesCredentialOverride")}`}
-          autoComplete="off"
+          autoComplete="new-password"
+          data-1p-ignore
+          data-lpignore="true"
           value={key}
           disabled={busy}
           onChange={(e) => setKey(e.target.value)}

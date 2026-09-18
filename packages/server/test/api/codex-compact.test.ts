@@ -323,11 +323,10 @@ describe("Codex native compaction delivery", () => {
     async (path) => {
       expect((await resume("hold")).status).toBe(200);
       const process = server.supervisor.getProcessForSession(sessionId);
-      await expect
-        .poll(async () =>
-          (await requests()).some((r) => r.method === "turn/start"),
-        )
-        .toBe(true);
+      // Wait for the turn this rejection is about, not for the request that
+      // announces it: the recorded `turn/start` appears before the process is
+      // in a turn, so compaction used to arrive while it was still idle.
+      await expect.poll(() => process?.state.type).toBe("in-turn");
       const response = await sendCompact(path);
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({

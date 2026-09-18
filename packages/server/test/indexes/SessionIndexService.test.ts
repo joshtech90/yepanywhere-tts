@@ -255,6 +255,48 @@ describe("SessionIndexService", () => {
       ).toBeNull();
     });
 
+    it("revalidates persisted empty Claude summaries without a transcript change", async () => {
+      const sessionId = "setup-only";
+      const filePath = join(sessionDir, `${sessionId}.jsonl`);
+      await writeFile(
+        filePath,
+        JSON.stringify({ type: "mode", mode: "normal", sessionId }),
+      );
+      const stats = await stat(filePath);
+      await writeFile(
+        service.getIndexPath(sessionDir),
+        JSON.stringify({
+          version: 3,
+          projectId,
+          sessions: {
+            [sessionId]: {
+              title: null,
+              fullTitle: null,
+              createdAt: stats.mtime.toISOString(),
+              updatedAt: stats.mtime.toISOString(),
+              messageCount: 0,
+              indexedBytes: stats.size,
+              fileMtime: stats.mtimeMs,
+              isEmpty: true,
+              provider: "claude",
+            },
+          },
+        }),
+      );
+      expect(
+        await service.getSessionSummaryWithCache(
+          sessionDir,
+          projectId,
+          sessionId,
+          reader,
+        ),
+      ).toMatchObject({ id: sessionId, messageCount: 0, title: null });
+      const persisted = JSON.parse(
+        await readFile(service.getIndexPath(sessionDir), "utf8"),
+      );
+      expect(persisted.sessions[sessionId].isEmpty).toBeUndefined();
+    });
+
     it("repairs persisted Claude titles captured from meta rows", async () => {
       const sessionId = "meta-command";
       const filePath = join(sessionDir, `${sessionId}.jsonl`);

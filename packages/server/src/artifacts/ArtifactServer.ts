@@ -19,7 +19,13 @@ import {
   type PendingDeletion,
   type StoredGrant,
 } from "./GrantStore.js";
-import { registerArtifactOrigins } from "../middleware/allowed-hosts.js";
+import {
+  registerArtifactOrigins,
+  setVhostHostnames,
+} from "../middleware/allowed-hosts.js";
+import { proxyLoopbackVhost } from "./vhost-proxy.js";
+import { matchVhost, vhostHostnames } from "./vhosts.js";
+import { VhostAccess } from "./VhostAccess.js";
 
 const MAX_GRANTS = 256;
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
@@ -51,6 +57,7 @@ export interface ArtifactServerOptions {
 }
 
 export class ArtifactServer {
+  readonly vhostAccess: VhostAccess;
   readonly app = new Hono();
   private readonly grants = new Map<string, Grant>();
   private listener: Server | undefined;
@@ -71,8 +78,18 @@ export class ArtifactServer {
     this.config = validateArtifactConfig(config);
     this.store = new GrantStore(options.stateDir);
     this.protectedPaths = options.protectedPaths ?? [];
-    this.ready = this.restore();
-    registerArtifactOrigins([config.localOrigin, config.publicOrigin]);
+    this.vhostAccess = new VhostAccess(options.stateDir);
+    this.ready = Promise.all([this.restore(), this.vhostAccess.ready]).then(
+      () => {},
+    );
+    // Startup restores and saves before any caller awaits readiness, so a
+    // failed state write would otherwise reject with no handler attached and
+    // take down the process. Report it here; `ready` still rejects for the
+    // request paths that await it.
+    this.ready.catch((error: unknown) =>
+      console.warn("[ArtifactServer] Grant state unavailable:", error),
+    );
+    this.registerHosts(this.config);
     this.app.use("*", async (c, next) => {
       await this.ready;
       if (!this.matchesHost(c.req.header("Host") ?? new URL(c.req.url).host))
@@ -81,9 +98,13 @@ export class ArtifactServer {
       c.header("X-Content-Type-Options", "nosniff");
       c.header("Referrer-Policy", "no-referrer");
       c.header("Cache-Control", "no-store");
+      // Every feature named here is one browsers actually recognize: an
+      // unknown name is ignored anyway, and Chromium logs it as an error in
+      // the reader's console for every artifact they open. Web Bluetooth is
+      // the name that costs more noise than it denies.
       c.header(
         "Permissions-Policy",
-        "camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=(), bluetooth=(), display-capture=()",
+        "camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=(), display-capture=()",
       );
       if (c.req.method !== "GET" && c.req.method !== "HEAD")
         return c.text("Read only", 405);
@@ -249,7 +270,20 @@ export class ArtifactServer {
   }
 
   get available(): boolean {
-    return Boolean(this.config.localOrigin) || this.listening;
+    return (
+      Boolean(this.config.localOrigin) || Boolean(this.config.publicOrigin)
+    );
+  }
+
+  private shouldListen(config = this.config): boolean {
+    return Boolean(config.publicOrigin) || Boolean(config.vhostPublicRoot);
+  }
+
+  private registerHosts(config: ArtifactConfig): void {
+    registerArtifactOrigins([config.localOrigin, config.publicOrigin]);
+    setVhostHostnames(
+      vhostHostnames(config.vhosts ?? [], config.vhostPublicRoot),
+    );
   }
 
   matchesHost(host: string): boolean {
@@ -258,11 +292,45 @@ export class ArtifactServer {
     );
   }
 
+  matchesVhost(host: string | undefined) {
+    return matchVhost(
+      host,
+      this.config.vhosts ?? [],
+      this.config.vhostPublicRoot,
+    );
+  }
+
+  async dispatchHost(request: Request): Promise<Response | null> {
+    const host = request.headers.get("host") ?? new URL(request.url).host;
+    const vhost = this.matchesVhost(host);
+    if (vhost) {
+      await this.ready;
+      const authorized = this.vhostAccess.authorize(request, vhost);
+      if (!authorized)
+        return new Response("App link required", {
+          status: 401,
+          headers: {
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+          },
+        });
+      const response = await proxyLoopbackVhost(authorized.request, vhost.port);
+      response.headers.set("Cache-Control", "no-store");
+      response.headers.set("Referrer-Policy", "no-referrer");
+      if (authorized.cookie)
+        response.headers.append("Set-Cookie", authorized.cookie);
+      return response;
+    }
+    if (this.matchesHost(host)) return this.app.fetch(request);
+    return null;
+  }
+
   async configure(config: ArtifactConfig): Promise<void> {
     config = validateArtifactConfig(
       config,
       this.config.expiryDays,
       this.config.deleteOnExpiry,
+      this.config,
     );
     const previous = this.config;
     const deliveryChanged =
@@ -272,13 +340,13 @@ export class ArtifactServer {
     const wasListening = this.listening;
     if (
       config.port !== previous.port ||
-      (this.listening && !config.publicOrigin)
+      (this.listening && !this.shouldListen(config))
     )
       await this.close();
     this.config = config;
-    registerArtifactOrigins([config.localOrigin, config.publicOrigin]);
+    this.registerHosts(config);
     try {
-      if (!this.listening && config.publicOrigin) await this.start();
+      if (!this.listening && this.shouldListen(config)) await this.start();
       if (deliveryChanged) {
         // Changing where artifacts are served revokes outstanding links, and
         // an owning grant pays its deletion on revocation.
@@ -300,7 +368,11 @@ export class ArtifactServer {
   async start(): Promise<void> {
     if (this.listener) throw new Error("Artifact server already started");
     await new Promise<void>((resolveReady, reject) => {
-      const listener = createServer(getRequestListener(this.app.fetch));
+      const listener = createServer(
+        getRequestListener(async (request) => {
+          return (await this.dispatchHost(request)) ?? this.app.fetch(request);
+        }),
+      );
       this.listener = listener;
       listener.once("error", reject);
       listener.listen(this.config.port, "127.0.0.1", () => {
@@ -396,13 +468,14 @@ export class ArtifactServer {
   }
 
   /** Revoking an owning grant pays its deletion now, not at its old deadline. */
-  revoke(id: string): void {
+  async revoke(id: string): Promise<void> {
+    await this.ready;
     for (const [token, grant] of this.grants)
       if (grant.id === id) {
         this.grants.delete(token);
         if (grant.owned)
           this.owe(grant.root, grant.ownedFiles ?? [], Date.now());
       }
-    void this.sweep();
+    await this.sweep();
   }
 }

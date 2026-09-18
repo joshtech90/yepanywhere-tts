@@ -1079,6 +1079,86 @@ describe("ToolCallRow", () => {
     expect(container.querySelector(".expand-chevron")).toBeNull();
   });
 
+  it.each(
+    ["Bash", "WriteStdin"].flatMap((toolName) =>
+      ["normalized", "shell envelope", "code mode"].map((format) => [
+        toolName,
+        format,
+      ]),
+    ),
+  )(
+    "shows a still-running %s %s result without an error or expansion control",
+    (toolName, format) => {
+      const output =
+        "timeout waiting for master-release-hostpaths-20260915 to reach not-running; current status=running";
+      const result =
+        format === "normalized"
+          ? { stdout: output, exitCode: 1 }
+          : format === "shell envelope"
+            ? `Chunk ID: abc\nWall time: 60 seconds\nProcess exited with code 1\nOutput:\n${output}`
+            : JSON.stringify([
+                {
+                  type: "input_text",
+                  text: "Script completed\nWall time 60.0 seconds\nOutput:\n",
+                },
+                {
+                  type: "input_text",
+                  text: JSON.stringify({
+                    chunk_id: "abc",
+                    wall_time_seconds: 60,
+                    exit_code: 1,
+                    output,
+                  }),
+                },
+              ]);
+      const { container } = render(
+        <ToolCallRow
+          id="tool-wait-timeout"
+          toolName={toolName!}
+          toolInput={
+            toolName === "Bash"
+              ? { command: "agentctl wait example" }
+              : { session_id: 37863, chars: "" }
+          }
+          toolResult={{
+            content: output,
+            structured: result,
+            isError: true,
+          }}
+          status="error"
+        />,
+      );
+      expect(
+        screen.getByText("master-release-hostpaths-20260915 · running"),
+      ).toBeDefined();
+      expect(screen.getByText("Waiting")).toBeDefined();
+      expect(screen.queryByText("rc=1")).toBeNull();
+      expect(screen.queryByText("Error")).toBeNull();
+      expect(screen.queryByRole("button", { name: "Expand" })).toBeNull();
+      expect(container.querySelector(".tool-row-content")).toBeNull();
+    },
+  );
+
+  it("keeps an ordinary exit-code-1 failure visible in a compact poll", () => {
+    render(
+      <ToolCallRow
+        id="ordinary-failure"
+        toolName="WriteStdin"
+        toolInput={{ session_id: 42, chars: "" }}
+        toolResult={{
+          content: "permission denied",
+          structured: { stdout: "permission denied", exitCode: 1 },
+          isError: true,
+        }}
+        status="error"
+      />,
+    );
+    expect(screen.getByText("permission denied")).toBeDefined();
+    expect(screen.getByText("rc=1")).toBeDefined();
+    expect(screen.queryByText("Waiting")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Expand" })).toBeNull();
+  });
+
   it("keeps generic shell rows expandable when no inline PTY summary applies", () => {
     render(
       <ToolCallRow

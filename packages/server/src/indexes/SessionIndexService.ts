@@ -89,7 +89,7 @@ type PersistedSessionIndexState = Omit<SessionIndexState, "version"> & {
   version: number;
 };
 
-function needsClaudeTitleRefresh(summary: CachedSessionSummary): boolean {
+function needsClaudeSummaryRefresh(summary: CachedSessionSummary): boolean {
   if (
     summary.provider !== DEFAULT_PROVIDER &&
     summary.provider !== "claude-gateway" &&
@@ -97,6 +97,9 @@ function needsClaudeTitleRefresh(summary: CachedSessionSummary): boolean {
   ) {
     return false;
   }
+  // Older readers treated setup-only Claude sessions as absent. Reparse those
+  // negative cache entries so existing sessions can open without a file change.
+  if (summary.isEmpty) return true;
   const fullTitle = summary.fullTitle ?? summary.title;
   return (
     fullTitle
@@ -454,12 +457,12 @@ export class SessionIndexService implements ISessionIndexService {
           version: CURRENT_VERSION,
         };
         // Repair only the provider summaries known to violate the current
-        // title contract instead of rebuilding every provider's shared index.
+        // summary contract instead of rebuilding every provider's shared index.
         for (const [sessionId, summary] of Object.entries(
           compatible.sessions,
         )) {
           migrateCachedForkLineage(summary);
-          if (needsClaudeTitleRefresh(summary)) {
+          if (needsClaudeSummaryRefresh(summary)) {
             delete compatible.sessions[sessionId];
             this.markSessionDirtyByScopeKey(scopeKey, sessionId);
           }

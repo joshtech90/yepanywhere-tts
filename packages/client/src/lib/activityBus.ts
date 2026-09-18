@@ -1,5 +1,6 @@
 import type {
   AgentActivity,
+  NonHumanUserTurn,
   CacheMissBillingRecord,
   ContextUsage,
   PendingInputType,
@@ -109,6 +110,7 @@ export interface ProviderRuntimeStatusChangedEvent {
 }
 
 export interface SessionMetadataChangedEvent {
+  nonHumanUserTurn?: NonHumanUserTurn | null;
   type: "session-metadata-changed";
   sessionId: string;
   title?: string;

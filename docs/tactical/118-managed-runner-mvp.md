@@ -73,7 +73,7 @@ build a parallel runner stack.
 - [`gaps/session-worktree-file-links.md`](../../gaps/session-worktree-file-links.md)
   proves that even a local sibling worktree needs an exact source coordinate;
   suffix rewriting is not safe.
-- [`gaps/committed-change-session-attribution.md`](../../gaps/committed-change-session-attribution.md)
+- [`gaps/sketches/committed-change-session-attribution.md`](../../gaps/sketches/committed-change-session-attribution.md)
   is adjacent but not absorbed. Managed-head metadata links one fetched head to
   its originating session in YA app data; it does not implement general Git
   notes attribution.

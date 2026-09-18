@@ -1,4 +1,5 @@
 export type {
+  ArtifactVhost,
   ArtifactViewerConfig,
   ArtifactViewerStatus,
   ArtifactViewerGrant,
@@ -8,6 +9,7 @@ export type {
   SessionCatalogUpdatedEvent,
 } from "./retained-session-collections.js";
 
+export * from "./session-content-search.js";
 export {
   ACLI_COMMENTARY_MAX_TEXTS,
   ACLI_COMMENTARY_MAX_BODY_BYTES,
@@ -33,6 +35,25 @@ export {
   type ConversationContextRequest,
   type ConversationContextReceipt,
 } from "./conversation-context.js";
+export {
+  DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
+  DEFAULT_POST_COMPACT_REPLAY_TURNS,
+  MAX_POST_COMPACT_REPLAY_TURNS,
+  MAX_POST_COMPACT_REPLAY_TURN_CHARS,
+  POST_COMPACT_REPLAY_CONTINUE,
+  POST_COMPACT_REPLAY_PREAMBLE,
+  buildPostCompactReplayPrompt,
+  buildPostCompactReplayText,
+  formatPostCompactReplayPrompt,
+  clampPostCompactReplayTurnCount,
+  isPostCompactReplayEnabledForProvider,
+  isPostCompactReplayText,
+  parsePostCompactReplaySettings,
+  selectPostCompactReplayTurns,
+  type PostCompactReplaySettings,
+  type PostCompactReplayPrompt,
+  type PostCompactReplayTurn,
+} from "./postCompactReplay.js";
 
 export {
   EFFORT_LEVEL_ORDER,
@@ -165,6 +186,62 @@ export {
   type AutoSessionTitleLanguage,
   type AutoSessionTitleSettings,
 } from "./auto-session-title.js";
+
+export {
+  DEFAULT_GATEWAY_AUTO_STOP_SECONDS,
+  DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
+  DEFAULT_GATEWAY_SERVICE_ID,
+  DEFAULT_GATEWAY_SERVICE_MODEL_LIMIT,
+  GATEWAY_MODEL_ID_SEPARATOR,
+  MAX_GATEWAY_AUTO_STOP_SECONDS,
+  MAX_GATEWAY_SERVICES,
+  MAX_GATEWAY_SERVICE_COMMAND_LENGTH,
+  MAX_GATEWAY_SERVICE_CONTEXT_TOKENS,
+  MAX_GATEWAY_SERVICE_ID_LENGTH,
+  MAX_GATEWAY_SERVICE_LABEL_LENGTH,
+  MAX_GATEWAY_SERVICE_MODEL_LIMIT,
+  MAX_GATEWAY_SERVICE_OUTPUT_TOKENS,
+  MAX_GATEWAY_SERVICE_SHORT_NAME_LENGTH,
+  MAX_GATEWAY_SERVICE_URL_LENGTH,
+  MIN_GATEWAY_AUTO_STOP_SECONDS,
+  claudeSettingsPath,
+  codexProfileName,
+  codexProfilePath,
+  gatewayServiceCliInvocations,
+  gatewayServiceDisplayName,
+  gatewayServiceShortName,
+  isValidGatewayServiceCommand,
+  isValidGatewayServiceId,
+  isValidGatewayServiceLabel,
+  isValidGatewayServiceShortName,
+  isLoopbackGatewayUrl,
+  loopbackGatewayHostname,
+  normalizeGatewayServiceUrl,
+  parseGatewayModelId,
+  parseGatewayServices,
+  qualifiedGatewayModelId,
+  type GatewayService,
+  type GatewayServiceCodexWireApi,
+  type GatewayServiceExportPaths,
+} from "./gateway-services.js";
+
+export {
+  advertisedGatewayEffortLevels,
+  builtInGatewayModelEffort,
+  gatewayModelEffort,
+  isEffortLevel,
+  nearestGatewayEffortLevel,
+  type GatewayModelEffort,
+  type GatewayModelEffortSources,
+} from "./gateway-model-effort.js";
+
+export {
+  GATEWAY_EFFORT_PROBE_VALUE,
+  gatewayEffortProbeRequest,
+  parseGatewayEffortProbe,
+  probeModelIdFromCatalog,
+  type GatewayEndpointEffortProbe,
+} from "./gateway-effort-probe.js";
 
 export {
   DEFAULT_SNIPPET_CONTEXT_RADIUS,
@@ -505,6 +582,7 @@ export type {
 
 export type {
   UserMessageCompositionMetadata,
+  NonHumanUserTurn,
   UserMessageDeliveryIntent,
   UserMessageMetadata,
   UserMessageSpeechMetadata,
@@ -638,6 +716,7 @@ export {
   CODEX_PAGINATED_ROLLOUT_LINEAGE_CAPABILITY,
   CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
+  CLAUDE_GATEWAY_SERVICES_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_AGENT_CAPABILITY,
   CLAUDE_GATEWAY_DISABLE_PLAN_MODE_CAPABILITY,
   CODEX_PLAN_TOOL_SETTING_CAPABILITY,
@@ -653,6 +732,8 @@ export {
   PROJECT_FILE_COMPLETION_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
   SESSION_ASYNC_QUESTIONS_CAPABILITY,
+  NON_HUMAN_USER_TURN_CAPABILITY,
+  SESSION_CONTENT_SEARCH_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
   GLOSSARY_TOOLTIPS_CAPABILITY,
@@ -688,6 +769,7 @@ export {
   RELOAD_SAFE_CODEX_RUNTIME_CAPABILITY,
   RELOAD_SAFE_CODEX_RUNTIME_SETTINGS_CAPABILITY,
   SERVER_CAPABILITIES,
+  SPEECH_BACKEND_SETUP_CAPABILITY,
   OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS,
   TOOL_RESULT_MEDIA_PRESERVATION_POLICY_CAPABILITY,
   VOICE_INPUT_CAPABILITY,
@@ -1335,6 +1417,7 @@ export * from "./glossary/index.js";
 
 export type { SqliteStatus } from "./sqlite-status.js";
 export type { SpeechVocabularyStatus } from "./speech-vocabulary.js";
+export * from "./speech-backend-setup.js";
 export type {
   SpeechVocabularyOccurrence,
   VocabularyCaseForms,

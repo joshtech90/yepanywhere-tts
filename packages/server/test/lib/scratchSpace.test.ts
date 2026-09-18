@@ -1,13 +1,35 @@
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   parseByteSize,
   reserveScratchSpace,
 } from "../../src/lib/scratchSpace.js";
 
 const directories: string[] = [];
+const filesystem = vi.hoisted(() => ({ memoryRoot: "" }));
+
+vi.mock("node:fs", async (original) => {
+  const fs = await original<typeof import("node:fs")>();
+  return {
+    ...fs,
+    statfsSync: (path: import("node:fs").PathLike) => ({
+      ...fs.statfsSync(path),
+      type:
+        filesystem.memoryRoot && String(path).startsWith(filesystem.memoryRoot)
+          ? 0x01021994
+          : 0xef53,
+      bsize: 4096,
+      bavail: 1024 * 1024,
+    }),
+  };
+});
+
+beforeEach(() => {
+  filesystem.memoryRoot = "";
+});
+
 afterEach(() => {
   for (const dir of directories.splice(0))
     rmSync(dir, { recursive: true, force: true });
@@ -53,6 +75,24 @@ it("keeps two data directories apart under one scratch root", () => {
       env: { YEP_SCRATCH_DIR: base },
     }).dir;
   expect(reserve(scratch())).not.toBe(reserve(scratch()));
+});
+
+it("rejects a memory-backed override and selects the local cache", () => {
+  const base = scratch();
+  const cache = scratch();
+  filesystem.memoryRoot = base;
+  const space = reserveScratchSpace({
+    purpose: "test-cache",
+    bytes: 1024,
+    dataDir: scratch(),
+    env: { YEP_SCRATCH_DIR: base, XDG_CACHE_HOME: cache },
+  });
+  expect(space.dir.startsWith(join(cache, "yep-anywhere", "test-cache-"))).toBe(
+    true,
+  );
+  expect(existsSync(space.dir)).toBe(true);
+  expect(space.bytes).toBe(1024);
+  expect(space.degraded).toBe(false);
 });
 
 it("grants less than asked rather than filling the disk", () => {

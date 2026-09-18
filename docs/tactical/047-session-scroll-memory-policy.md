@@ -141,5 +141,5 @@ Contributing-model: Daybreak Blue
   height changes.
 - Add a capability-gated server-shared cursor for cross-device continuity; the
   client-only limitation is tracked in
-  [`gaps/server-synced-session-scroll-memory.md`](../../gaps/server-synced-session-scroll-memory.md)
+  [`gaps/sketches/server-synced-session-scroll-memory.md`](../../gaps/sketches/server-synced-session-scroll-memory.md)
   until that contract lands.

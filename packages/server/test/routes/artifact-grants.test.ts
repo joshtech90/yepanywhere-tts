@@ -129,7 +129,7 @@ describe("durable artifact grants", () => {
     const { base, bundle, entry } = await workspace();
     const owning = serverFor(base, { deleteOnExpiry: true });
     const owned = await owning.createGrant(entry, "local", true);
-    owning.revoke(owned.id);
+    await owning.revoke(owned.id);
     await owning.settleExpired();
     expect(await exists(bundle)).toBe(false);
     await owning.close();
@@ -139,7 +139,7 @@ describe("durable artifact grants", () => {
     const borrowing = serverFor(base, { deleteOnExpiry: false });
     const borrowed = await borrowing.createGrant(entry, "local");
     expect(borrowed.owned).toBe(false);
-    borrowing.revoke(borrowed.id);
+    await borrowing.revoke(borrowed.id);
     await borrowing.settleExpired();
     expect(await exists(entry)).toBe(true);
     await borrowing.close();

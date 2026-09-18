@@ -1,0 +1,11 @@
+.target {
+  outline: 2px solid var(--primary-color);
+  outline-offset: -2px;
+  background-color: color-mix(in srgb, var(--primary-color) 12%, transparent);
+}
+
+.target::highlight(session-isearch),
+.target ::highlight(session-isearch) {
+  background-color: #ffdc70;
+  color: #171717;
+}

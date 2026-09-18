@@ -301,8 +301,9 @@ function getUserPromptText(message: Record<string, unknown>): string | null {
 
 /**
  * Attach exact file targets to raw tool text without shipping a project path
- * corpus to the client. The field is optional so older servers and public
- * shares retain their existing plain-text behavior.
+ * corpus to the client. The field is optional so older servers retain their
+ * existing plain-text behavior. Public shares supply project options without an
+ * absolute-path resolver, so a share annotates only paths inside its project.
  */
 export async function augmentProjectPathLinksInMessage(
   message: Record<string, unknown>,

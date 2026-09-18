@@ -26,6 +26,62 @@ describe("SessionReader", () => {
     await rm(testDir, { recursive: true, force: true });
   });
 
+  describe("sessions without conversation messages", () => {
+    it.each([false, true])(
+      "opens setup-only sessions (system record: %s)",
+      async (withSystem) => {
+        const sessionId = "setup-only";
+        const records = [
+          { type: "mode", mode: "normal", sessionId },
+          ...(withSystem
+            ? [
+                {
+                  type: "system",
+                  subtype: "informational",
+                  uuid: "warning-1",
+                  parentUuid: null,
+                  timestamp: "2026-09-13T15:57:25.295Z",
+                  content: "Remote Control disconnected",
+                  level: "warning",
+                  sessionId,
+                },
+              ]
+            : []),
+        ];
+        await writeFile(
+          join(testDir, `${sessionId}.jsonl`),
+          records.map((record) => JSON.stringify(record)).join("\n"),
+        );
+        const projectId = "test-project" as UrlProjectId;
+        const cold = await reader.getSessionSummary(sessionId, projectId);
+        expect(cold).toMatchObject({
+          id: sessionId,
+          title: null,
+          messageCount: 0,
+        });
+        const loaded = await reader.getSession(sessionId, projectId);
+        expect(loaded?.summary).toEqual(cold);
+        expect(await reader.getSessionSummary(sessionId, projectId)).toEqual(
+          cold,
+        );
+        if (withSystem) {
+          expect(JSON.stringify(loaded?.data)).toContain(
+            "Remote Control disconnected",
+          );
+        }
+      },
+    );
+
+    it("still rejects missing and unparseable transcripts", async () => {
+      const projectId = "test-project" as UrlProjectId;
+      await writeFile(join(testDir, "malformed.jsonl"), "not json\n");
+      for (const sessionId of ["missing", "malformed"]) {
+        expect(await reader.getSessionSummary(sessionId, projectId)).toBeNull();
+        expect(await reader.getSession(sessionId, projectId)).toBeNull();
+      }
+    });
+  });
+
   describe("title extraction", () => {
     it("skips ide_opened_file blocks and uses actual message", async () => {
       const sessionId = "test-session-1";

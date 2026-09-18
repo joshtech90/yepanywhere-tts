@@ -32,3 +32,38 @@ silently skip presentation.
 
 The working tree may contain concurrent human or agent edits. Avoid reverting
 or tidying unrelated changes unless the task directly requires them.
+
+## Agent Attribution
+
+Record agent involvement with a `Contributing-model: <short-model-name>`
+trailer, one per contributing model, and with nothing else. Do not credit an
+agent as an author: no `Co-Authored-By` trailer naming a model, no
+"Generated with" banner, no robot-emoji line, and no commit authored from a
+no-reply bot address. The trailer states which model helped; an authorship line
+states that it wrote the commit, which is the claim this project does not make.
+
+`scripts/check-no-agent-attribution.mjs` enforces this, and `.husky/pre-push`
+runs it on every push, so an install activates it in any clone. It refuses
+before the first destination accepts the commit, which is the point: publishing
+destinations disagree about what they accept, and once a violation reaches
+shared history it can no longer be rewritten.
+
+Only unpublished commits are checked. Anything a remote already carries is
+accepted history that must not be rewritten, so refusing to push it onward
+would make `--no-verify` the routine path and the guard would stop meaning
+anything. A commit reaches its first destination only by passing the check, so
+being excluded here means it was clean earlier or it arrived from upstream.
+
+```bash
+node scripts/check-no-agent-attribution.mjs --range origin/main..HEAD
+node scripts/check-no-agent-attribution.mjs --range HEAD~50..HEAD --any
+```
+
+`--any` reports published commits as well, for auditing rather than gating.
+
+For existing and new UI features, verify real sequential typing under the
+feature's expected data volume and concurrent updates. Dropped user keystrokes
+are never acceptable; each keystroke must appear within 100 ms. Whole-field
+replacement tests do not establish this. Keep input acknowledgement independent
+of navigation, filtering, scans, and result rendering; add a regression check
+when changing those paths.

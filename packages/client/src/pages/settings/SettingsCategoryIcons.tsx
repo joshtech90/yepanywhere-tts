@@ -51,6 +51,7 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
   devices: "📱",
   "computer-control": "🖱️",
   "local-access": "🔒",
+  apps: "▦",
   remote: "🌐",
   providers: "🔌",
   speech: "🎙️",
@@ -62,6 +63,14 @@ export const settingsCategoryEmojiIcons: Record<string, string> = {
 };
 
 export const settingsCategoryIcons: Record<string, ReactNode> = {
+  apps: (
+    <Icon>
+      <rect x="3" y="3" width="7" height="7" rx="1" />
+      <rect x="14" y="3" width="7" height="7" rx="1" />
+      <rect x="3" y="14" width="7" height="7" rx="1" />
+      <rect x="14" y="14" width="7" height="7" rx="1" />
+    </Icon>
+  ),
   issues: <IssueIcon size={22} />,
   appearance: (
     <Icon strokeWidth={2.5}>

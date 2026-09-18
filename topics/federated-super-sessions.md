@@ -536,7 +536,7 @@ The provider-specific source-role and compaction matrix is documented in
 [provider compaction contracts](agent-context-injection.md#provider-compaction-contracts).
 Migration-time correction of inherited cwd, date, repository, permission, and
 tool facts must follow
-[freshness repair after fork](agent-context-injection.md#freshness-repair-after-fork).
+[task transitions and fresh state](agent-context-injection.md#task-transitions-and-fresh-state).
 For reusable request-free prefixes, see the opt-in
 [prepare-only boot manager](agent-context-injection.sketches.md#prepare-only-boot-manager).
 

@@ -22,7 +22,11 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api/client";
-import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { BackArrowIcon } from "./BackArrowIcon";
+import {
+  buildPublicShareFileHref,
+  usePublicShareContext,
+} from "../contexts/PublicShareContext";
 import { useQuoteReply } from "../contexts/QuoteReplyContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useSessionViewerComment } from "../contexts/SessionViewerCommentContext";
@@ -48,6 +52,7 @@ import { isMarkdownLikeFile } from "../lib/markdownFiles";
 import { extractMarkdownSnippetsFromSelection } from "../lib/markdownSelectionCopy";
 import { getRenderedFileClipboardPayload } from "../lib/renderedFileClipboard";
 import { ArtifactPreview } from "./ArtifactPreview";
+import { ViewerWindowActions } from "./ViewerWindowActions";
 import {
   annotateShikiSourceOffsets,
   compactShikiLineBreaks,
@@ -106,7 +111,7 @@ import {
   MarkdownPreview,
   useFileViewerDensity,
 } from "./MarkdownPreview";
-import { Modal } from "./ui/Modal";
+import { FileViewerModal } from "./FilePathLink";
 import { ViewerSelectAllButton } from "./ViewerSelectAllButton";
 import { ParagraphQuoteRail } from "./ParagraphQuoteRail";
 
@@ -160,6 +165,8 @@ interface FileViewerProps {
   initialPresentation?: FileViewPresentation;
   /** Exact Git comparison selected for this file, when present. */
   diffMode?: GitFileDiffMode;
+  /** Page-level controls hosted in the header's leading slot. */
+  headerLeading?: ReactNode;
 }
 
 export type FileViewerMode = "full" | "range";
@@ -561,6 +568,7 @@ export const FileViewer = memo(function FileViewer({
   viewMode = "full",
   initialPresentation,
   diffMode,
+  headerLeading,
 }: FileViewerProps) {
   const { t } = useI18n();
   const quoteTextBlock = useQuoteReply();
@@ -1206,8 +1214,25 @@ export const FileViewer = memo(function FileViewer({
   const absoluteCopyPath = useMemo(() => {
     return getAbsoluteFilePath(filePath, projectPath);
   }, [filePath, projectPath]);
+  /**
+   * A share viewer's own link, for callers that did not supply one.
+   *
+   * The authenticated `/projects/:id/file` URL is unusable to a share reader,
+   * so a viewer opened from a share transcript anchor — which passes no
+   * `openInNewTabUrl` — must name the share's route instead.
+   */
+  const shareViewerUrl = useMemo(() => {
+    if (!publicShareContext) return null;
+    return buildPublicShareFileHref(publicShareContext, {
+      filePath,
+      lineEnd,
+      lineNumber,
+      viewMode,
+    });
+  }, [filePath, lineEnd, lineNumber, publicShareContext, viewMode]);
   const sourceViewerUrl = useMemo(() => {
     if (openInNewTabUrl) return openInNewTabUrl;
+    if (shareViewerUrl) return shareViewerUrl;
     return toBrowserAppHref(
       buildProjectFileViewUrl({
         basePath,
@@ -1225,10 +1250,11 @@ export const FileViewer = memo(function FileViewer({
     lineNumber,
     openInNewTabUrl,
     projectId,
+    shareViewerUrl,
     viewMode,
   ]);
   const standaloneViewerUrl = useMemo(() => {
-    if (activeView === "source") return sourceViewerUrl;
+    if (activeView === "source" || shareViewerUrl) return sourceViewerUrl;
     return toBrowserAppHref(
       buildProjectFileViewUrl({
         basePath,
@@ -1243,6 +1269,7 @@ export const FileViewer = memo(function FileViewer({
     filePath,
     fileVersionControl.relativePath,
     projectId,
+    shareViewerUrl,
     sourceViewerUrl,
   ]);
   const fileName = getPathBasename(filePath);
@@ -1283,6 +1310,11 @@ export const FileViewer = memo(function FileViewer({
         );
       });
   }, [fileData, fileName, filePath, projectId, source, transport]);
+
+  const absoluteViewerLink = useMemo(
+    () => new URL(standaloneViewerUrl, window.location.href).href,
+    [standaloneViewerUrl],
+  );
 
   const handleOpenInNewTab = useCallback(() => {
     if (imageOpenUrl) {
@@ -1643,7 +1675,8 @@ export const FileViewer = memo(function FileViewer({
 
   // Header with file info and actions
   const header = (
-    <div className={`file-viewer-header ${viewerStyles.header}`}>
+    <div className="file-viewer-header">
+      {headerLeading}
       {onClose && (
         <button
           type="button"
@@ -1652,8 +1685,7 @@ export const FileViewer = memo(function FileViewer({
           title={t("actionBack")}
           aria-label={t("actionBack")}
         >
-          <BackIcon />
-          <span className={viewerStyles.backLabel}>{t("actionBack")}</span>
+          <BackArrowIcon />
         </button>
       )}
       <div className={`file-viewer-info ${viewerStyles.info}`}>
@@ -1780,37 +1812,6 @@ export const FileViewer = memo(function FileViewer({
             <PlusCircleIcon />
           </button>
         )}
-        {!standalone && (
-          <a
-            className="file-viewer-action"
-            href={imageOpenUrl ?? standaloneViewerUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            aria-label={
-              imageOpenUrl
-                ? openImageInNewTabLabel
-                : t("fileViewerOpenNewTab" as never)
-            }
-            title={
-              imageOpenUrl
-                ? openImageInNewTabLabel
-                : t("fileViewerOpenNewTab" as never)
-            }
-          >
-            <ExternalLinkIcon />
-          </a>
-        )}
-        {onMinimize && (
-          <button
-            type="button"
-            className={`file-viewer-action file-viewer-minimize ${viewerStyles.minimizeButton}`}
-            onClick={handleMinimize}
-            title={t("fileViewerMinimize" as never)}
-            aria-label={t("fileViewerMinimize" as never)}
-          >
-            <MinimizeIcon />
-          </button>
-        )}
         {!diffActive && canDownload && (
           <button
             type="button"
@@ -1833,22 +1834,21 @@ export const FileViewer = memo(function FileViewer({
         >
           {fullscreen ? <ExitFullscreenIcon /> : <FullscreenIcon />}
         </button>
-        {onClose && (
-          <button
-            type="button"
-            className="file-viewer-action file-viewer-close"
-            onClick={handleClose}
-            title={t("modalClose")}
-          >
-            <CloseIcon />
-          </button>
-        )}
+        <ViewerWindowActions
+          className={viewerStyles.windowActions}
+          url={absoluteViewerLink}
+          moveOut={!standalone}
+          onMinimize={onMinimize ? handleMinimize : undefined}
+          onClose={onClose ? handleClose : undefined}
+          minimizeLabel={t("fileViewerMinimize")}
+        />
       </div>
     </div>
   );
 
   const viewerClass = [
     "file-viewer",
+    viewerStyles.viewer,
     standalone && "file-viewer-standalone",
     fullscreen && "file-viewer-fullscreen",
     effectiveViewMode === "range" && "file-viewer-compact",
@@ -1907,11 +1907,7 @@ export const FileViewer = memo(function FileViewer({
               ? () => void writeClipboardText(filePath)
               : undefined
           }
-          onCopyViewerLink={() =>
-            void writeClipboardText(
-              new URL(standaloneViewerUrl, window.location.href).href,
-            )
-          }
+          onCopyViewerLink={() => void writeClipboardText(absoluteViewerLink)}
           onCopyContents={handleCopyContentsFromMenu}
           onCopyRenderedContents={
             renderedClipboardPayload
@@ -1989,21 +1985,15 @@ export const FileViewer = memo(function FileViewer({
         />
       ) : null}
       {projectFileModal ? (
-        <Modal
-          title={getPathBasename(projectFileModal.filePath)}
+        <FileViewerModal
+          nestedViewer
+          projectId={projectFileModal.projectId}
+          filePath={projectFileModal.filePath}
+          lineNumber={projectFileModal.lineNumber}
+          lineEnd={projectFileModal.lineEnd}
+          initialPresentation={projectFileModal.initialPresentation}
           onClose={closeProjectFileModal}
-          closeOnBackGesture
-          closeOnBackspace
-        >
-          <FileViewer
-            projectId={projectFileModal.projectId}
-            filePath={projectFileModal.filePath}
-            lineNumber={projectFileModal.lineNumber}
-            lineEnd={projectFileModal.lineEnd}
-            initialPresentation={projectFileModal.initialPresentation}
-            onClose={closeProjectFileModal}
-          />
-        </Modal>
+        />
       ) : null}
     </div>
   );
@@ -2038,24 +2028,6 @@ function FileViewerSelectionActions({
 }
 
 // Icons
-function BackIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M13.5 8h-11M6.5 4l-4 4 4 4" />
-    </svg>
-  );
-}
-
 function RawSourceIcon() {
   return (
     <svg
@@ -2207,59 +2179,6 @@ function DownloadIcon() {
       aria-hidden="true"
     >
       <path d="M8 2v9M4 8l4 4 4-4M2 14h12" />
-    </svg>
-  );
-}
-
-function ExternalLinkIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 9v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h4M9 2h5v5M6 10l8-8" />
-    </svg>
-  );
-}
-
-function CloseIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 4l8 8M12 4l-8 8" />
-    </svg>
-  );
-}
-
-function MinimizeIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 16 16"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.5"
-      strokeLinecap="round"
-      aria-hidden="true"
-    >
-      <path d="M3 11.5h10" />
     </svg>
   );
 }

@@ -968,20 +968,31 @@ export function Sidebar({
               )}
             </>
           ) : isDesktop ? (
-            /* Desktop expanded mode: show brand (toggle is in toolbar) */
-            <Link
-              to={newSessionHref}
-              className="sidebar-brand sidebar-brand-link"
-              title={t("sidebarNewSession")}
-            >
-              <YepAnywhereLogo />
-            </Link>
+            /* Desktop expanded mode: brand at the left edge, collapse toggle
+               at the right edge so the control stays inside the sidebar. */
+            <>
+              <Link
+                to={newSessionHref}
+                className={`sidebar-brand sidebar-brand-link ${sidebarStyles.brandLink}`}
+                title={t("sidebarNewSession")}
+              >
+                <YepAnywhereLogo />
+              </Link>
+              {onToggleExpanded && (
+                <SidebarLauncher
+                  className={sidebarStyles.headerToggle}
+                  label={t("actionToggleSidebar")}
+                  newSessionLabel={t("sidebarNewSession")}
+                  onActivate={onToggleExpanded}
+                />
+              )}
+            </>
           ) : (
             /* Mobile mode: brand text + close button */
             <>
               <Link
                 to={newSessionHref}
-                className="sidebar-brand sidebar-brand-link"
+                className={`sidebar-brand sidebar-brand-link ${sidebarStyles.brandLink}`}
                 title={t("sidebarNewSession")}
                 onClick={onNavigate}
               >

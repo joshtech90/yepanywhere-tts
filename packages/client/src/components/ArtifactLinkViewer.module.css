@@ -30,24 +30,6 @@
   font-size: var(--font-size-sm);
 }
 
-.header button {
-  flex: 0 0 auto;
-  width: 36px;
-  height: 36px;
-  padding: 0;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 22px;
-  cursor: pointer;
-}
-
-.header button:hover {
-  background: var(--bg-hover);
-}
-
 .frame {
   flex: 1;
   width: 100%;

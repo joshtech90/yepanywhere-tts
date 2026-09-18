@@ -12,6 +12,8 @@
  * a remote executor would assert a service that child cannot reach; those
  * sessions fall back to asking the server.
  */
+import { vhostSessionEnvironment } from "./vhosts.js";
+
 export const ARTIFACT_VIEWER_ORIGIN_ENV = "AGENT_ARTIFACT_VIEWER_ORIGIN";
 
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "::1", "[::1]", "localhost"]);
@@ -25,11 +27,23 @@ function isLoopbackUrl(value: string): boolean {
 }
 
 export function artifactViewerAgentEnvironment(
-  server: { available: boolean; config: { localOrigin?: string } },
+  server: {
+    available: boolean;
+    config: {
+      localOrigin?: string;
+      vhosts?: { env?: string; port: number }[];
+    };
+  },
   serverUrl: string | undefined,
+  executor?: string,
 ): Record<string, string> {
+  const env: Record<string, string> = {};
   const origin = server.config.localOrigin;
-  if (!server.available || !origin) return {};
-  if (!serverUrl || !isLoopbackUrl(serverUrl)) return {};
-  return { [ARTIFACT_VIEWER_ORIGIN_ENV]: origin };
+  const onLoopback = Boolean(serverUrl && isLoopbackUrl(serverUrl));
+  if (server.available && origin && onLoopback)
+    env[ARTIFACT_VIEWER_ORIGIN_ENV] = origin;
+  if (!executor && (!serverUrl || onLoopback)) {
+    Object.assign(env, vhostSessionEnvironment(server.config.vhosts ?? []));
+  }
+  return env;
 }

@@ -298,3 +298,13 @@ the maintainer requires it as normal server storage infrastructure now that
 supported runtimes include it. Preserve explicit `off` as a development/recovery
 escape hatch, with dependent capabilities unavailable. Learning and other
 feature opt-ins remain independent; browsers carry no SQLite opt-in to migrate.
+
+2026-09-16 `settings.claudeGatewayUrl` / `claudeGatewayStartCommand` — keep both
+keys readable and writable as the mirror of the default entry in the new
+`gatewayServices` list, gated by the `claude-gateway-services` capability.
+A client without that capability keeps editing the gateway actually in use, and
+an installation upgrading from the single-gateway settings has its configuration
+migrated into a `default` entry rather than lost. Audited stable releases
+`v0.8.1` and `v0.8.0` have only the single-gateway settings. An absent legacy
+value never clears a configured command; an explicit legacy write of an empty
+URL removes that one entry.

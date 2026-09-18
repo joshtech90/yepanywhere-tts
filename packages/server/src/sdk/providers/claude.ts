@@ -2375,6 +2375,7 @@ export class ClaudeProvider implements AgentProvider {
         abortController.abort();
         agentctlSessionEnvBridge?.cleanup();
       },
+      steerUsesMessageQueue: true,
       steer: async (message) => {
         const yielded = waitForMessageYield(
           queue,

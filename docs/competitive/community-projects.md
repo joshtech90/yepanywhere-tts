@@ -76,7 +76,7 @@ post-reboot "recreate" restores the recorded working directory and launch
 command, not the original process state.
 
 For YA, it is useful evidence for closing the existing
-[provider-neutral remote executor](../../gaps/provider-neutral-remote-executors.md)
+[provider-neutral remote executor](../../gaps/sketches/provider-neutral-remote-executors.md)
 and
 [remote-session project view](../../gaps/remote-session-project-views-use-local-files.md)
 gaps. It is not a reason to replace YA's structured provider adapters with a raw

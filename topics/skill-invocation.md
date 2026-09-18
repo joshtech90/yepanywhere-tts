@@ -75,7 +75,12 @@ not be reinterpreted as confirmed skills.
 Typed completion is available only for a root invocation draft: the text before
 the `/` or `$` is empty or whitespace, and the caret is at the end of the
 composer. The draft must also have no completed or still-uploading attachment.
-Enter or Tab may accept a visible completion in that state. Completion stays
+Enter accepts a visible completion in that state. Tab expands multiple skill
+matches to their longest common canonical prefix without adding a space or
+choosing a match; a unique match is completed normally. Shift-Space chooses
+the first match regardless of the highlighted row. Ctrl-Space retains the
+microphone shortcut, and Shift-Tab retains backward keyboard navigation.
+Completion stays
 entirely inactive while editing inside a draft, after intervening text, when an
 attachment is present, or when text follows the caret, so those keys retain
 their normal composer behavior. Invocation recognition and provider

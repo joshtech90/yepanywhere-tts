@@ -410,7 +410,7 @@ mode and no promise that filesystem state continuously mirrors live schedules.
 
 The primary machine-loss path should be a coordinated backup of full YA state,
 including the authoritative yacron store. YA does not yet provide a meaningful
-live full-state snapshot; [`gaps/live-full-state-backup.md`](../gaps/live-full-state-backup.md)
+live full-state snapshot; [`gaps/sketches/live-full-state-backup.md`](../gaps/sketches/live-full-state-backup.md)
 tracks that separate recovery requirement. Exported project files remain useful
 when the central YA data area was not backed up.
 

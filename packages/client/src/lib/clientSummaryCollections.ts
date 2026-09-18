@@ -33,6 +33,7 @@ export type SessionCollectionObservationSource =
   | "session-seen";
 
 export interface SessionCollectionRecord {
+  nonHumanUserTurn?: GlobalSessionItem["nonHumanUserTurn"];
   id: string;
   title?: string | null;
   fullTitle?: string | null;
@@ -59,6 +60,8 @@ export interface SessionCollectionRecord {
   initialPrompt?: string;
   executor?: string;
   lastAgentText?: string;
+  /** When someone last wrote into this session; the sidebar orders by it. */
+  lastHumanTurnAt?: string;
   asyncQuestions?: GlobalSessionItem["asyncQuestions"];
   providerChildren?: ProviderChildSessionSummary[];
   observedAt: number;

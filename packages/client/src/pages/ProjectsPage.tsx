@@ -58,8 +58,7 @@ export function ProjectsPage() {
   const basePath = useRemoteBasePath();
   const highlightedQueueItemId = searchParams.get("queueItem");
 
-  const { openSidebar, isWideScreen, toggleSidebar, isSidebarCollapsed } =
-    useNavigationLayout();
+  const { openSidebar, isWideScreen } = useNavigationLayout();
 
   const projectIds = useMemo(
     () => projects.map((project) => project.id),
@@ -257,9 +256,7 @@ export function ProjectsPage() {
       <PageHeader
         title={t("pageTitleProjects")}
         onOpenSidebar={openSidebar}
-        onToggleSidebar={toggleSidebar}
         isWideScreen={isWideScreen}
-        isSidebarCollapsed={isSidebarCollapsed}
       />
 
       <main className="page-scroll-container">

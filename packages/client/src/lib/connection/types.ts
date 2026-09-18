@@ -107,6 +107,28 @@ function formatRelayReconnectError(cause?: Error): string {
 }
 
 /**
+ * Rejection used when a transport tears its socket down to reconnect.
+ *
+ * The request never reached a server verdict, so this is a transport
+ * lifecycle event rather than a request failure: idempotent reads re-issue
+ * themselves on the new socket, and feature panels defer to the connection
+ * indicator instead of reporting the churn as their own error.
+ */
+export class ConnectionReconnectingError extends Error {
+  constructor(message = "Connection reconnecting") {
+    super(message);
+    this.name = "ConnectionReconnectingError";
+  }
+}
+
+/** Whether a rejection came from the transport cycling its own socket. */
+export function isConnectionReconnectingError(
+  error: unknown,
+): error is ConnectionReconnectingError {
+  return error instanceof ConnectionReconnectingError;
+}
+
+/**
  * Error for subscription-level failures (e.g., 404 "No active process for session").
  * Distinguished from transport-level errors so callers can decide whether to retry.
  */

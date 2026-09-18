@@ -27,7 +27,7 @@ export interface SettingsItemProps {
    * their checkbox (the search jump link stays safe inside a label: clicks
    * on interactive descendants do not activate the labeled control).
    */
-  as?: "div" | "label";
+  as?: "div" | "label" | "form";
   /** Native tooltip on the row container (rarely needed). */
   title?: string;
   /** Plain-text row title; searchable and rendered bold. */
@@ -192,10 +192,43 @@ export function SettingsItem({
     .filter(Boolean)
     .join(" ");
 
+  const origin = scope && originLabel && (
+    <button
+      type="button"
+      className="settings-search-origin"
+      aria-label={t("settingsSearchJumpTo", { location: originLabel })}
+      onClick={() => scope.jumpToItem(resolvedId)}
+    >
+      {originLabel} ›
+    </button>
+  );
+
   const row = (
     <>
       <RowElement
         {...containerProps}
+        onClick={(event) => {
+          containerProps?.onClick?.(event);
+          if (
+            !scope ||
+            event.defaultPrevented ||
+            RowElement === "label" ||
+            window.getSelection()?.isCollapsed === false
+          ) {
+            return;
+          }
+          const target = event.target;
+          if (
+            !(target instanceof Element) ||
+            target.closest("[data-settings-item]") !== event.currentTarget ||
+            target.closest(
+              "a, button, input, select, textarea, label, summary, [role=button], [role=switch], [role=checkbox], [role=combobox], [role=slider], [role=textbox], [contenteditable]:not([contenteditable=false])",
+            )
+          ) {
+            return;
+          }
+          scope.jumpToItem(resolvedId);
+        }}
         className={itemClassName}
         data-settings-item={resolvedId}
         data-description-layout={
@@ -207,37 +240,16 @@ export function SettingsItem({
         {layout === "custom" ? (
           <>
             {children}
-            {scope && originLabel && (
-              <button
-                type="button"
-                className="settings-search-origin"
-                aria-label={t("settingsSearchJumpTo", {
-                  location: originLabel,
-                })}
-                onClick={() => scope.jumpToItem(resolvedId)}
-              >
-                {originLabel} ›
-              </button>
-            )}
+            {origin}
           </>
         ) : (
           <>
             <div className="settings-item-info">
               {infoBody}
-              {scope && originLabel && (
-                <button
-                  type="button"
-                  className="settings-search-origin"
-                  aria-label={t("settingsSearchJumpTo", {
-                    location: originLabel,
-                  })}
-                  onClick={() => scope.jumpToItem(resolvedId)}
-                >
-                  {originLabel} ›
-                </button>
-              )}
+              {RowElement !== "label" && origin}
             </div>
             {children}
+            {RowElement === "label" && origin}
           </>
         )}
       </RowElement>

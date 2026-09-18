@@ -140,6 +140,16 @@ server or provider cannot supply it, the reducer preserves both rows rather
 than guessing from content or client-observed time. A provider-log timestamp
 may advance a durable freshness watermark, but it is not message identity.
 
+For Codex servers with stream/durable ID alignment, catch-up reconciles order
+as well as content. A durable batch's sequence takes precedence over the
+arrival positions of its matching live rows: missed user turns are inserted
+before a reply already received live. Matching IDs anchor the batch while
+preserving intervening retained rows and unmatched live output. Without a
+shared ID, a batch is placed before the first retained row with a later known
+timestamp; equal or missing timestamps alone do not justify moving unmatched
+rows. Timestamp placement never deduplicates content. An ordered batch with
+shared IDs can resolve order even when timestamps are equal or unavailable.
+
 ## Augment Contract
 
 Augments should attach at the data layer by stable message/block identity, not

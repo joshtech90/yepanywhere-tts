@@ -88,6 +88,8 @@ describe("scanGitWorktree", () => {
     await writeFile(join(repo, "untracked.txt"), "new\n");
     await mkdir(join(repo, "build"));
     await writeFile(join(repo, "build", "ignored.txt"), "ignored\n");
+    await writeFile(join(repo, ".git", "info", "exclude"), "/notes.local.md\n");
+    await writeFile(join(repo, "notes.local.md"), "private notes\n");
 
     const ordinary = await scanGitWorktree(repo, {
       tracked: true,
@@ -125,19 +127,23 @@ describe("scanGitWorktree", () => {
       cumulativeChange: { status: "?" },
     });
     expect(ordinary.files.has("build/ignored.txt")).toBe(false);
+    expect(ordinary.files.has("notes.local.md")).toBe(false);
     expect(ordinary.files.has(".git/config")).toBe(false);
 
-    const withIgnored = await scanGitWorktree(repo, {
+    const withExcluded = await scanGitWorktree(repo, {
       tracked: true,
       untracked: true,
       ignored: true,
     });
-    expect(withIgnored.files.get("build/ignored.txt")).toMatchObject({
+    // The ignored dimension carries this clone's info/exclude paths only;
+    // `.gitignore` build output stays out of the browser entirely.
+    expect(withExcluded.files.get("notes.local.md")).toMatchObject({
       tracked: false,
       kind: "ignored",
       present: true,
     });
-    expect(withIgnored.files.has(".git/config")).toBe(false);
+    expect(withExcluded.files.has("build/ignored.txt")).toBe(false);
+    expect(withExcluded.files.has(".git/config")).toBe(false);
   });
 
   it("lists a bounded filesystem-only working tree without Git metadata", async () => {

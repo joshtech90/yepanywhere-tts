@@ -41,8 +41,12 @@
   min-width: 0;
 }
 
+.queryRow {
+  display: contents;
+}
+
 .label {
-  color: var(--text-muted);
+  color: var(--text-secondary);
   font-size: var(--font-size-xs);
   font-weight: 600;
   text-transform: uppercase;
@@ -95,7 +99,7 @@
 
 .count,
 .help {
-  color: var(--text-dimmed);
+  color: var(--text-secondary);
   font-size: var(--font-size-xs);
 }
 
@@ -140,11 +144,19 @@
 
 .olderStatus,
 .olderPreviewLabel {
-  color: var(--text-dimmed);
+  color: var(--text-secondary);
   font-size: var(--font-size-xs);
 }
 
 .olderPreview {
+  appearance: none;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  padding: 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   display: flex;
   flex: 1 1 240px;
   align-items: baseline;
@@ -176,6 +188,69 @@
   white-space: nowrap;
 }
 
+.coverage {
+  color: var(--text-primary);
+  font-weight: 700;
+  min-inline-size: 4ch;
+  text-align: right;
+}
+
+.navigation {
+  display: grid;
+  grid-template-columns: 32px 40px;
+  grid-template-rows: repeat(2, 26px);
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
+.previous,
+.next,
+.go {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+}
+
+.previous {
+  grid-area: 1 / 1;
+}
+.next {
+  grid-area: 2 / 1;
+}
+.go {
+  grid-area: 1 / 2 / 3 / 3;
+  font-weight: 600;
+}
+.go:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.boundary {
+  color: var(--text-primary);
+  font-weight: 600;
+  animation: boundaryFlash 650ms ease-out;
+}
+
+@keyframes boundaryFlash {
+  from {
+    background: var(--primary-color);
+  }
+  to {
+    background: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .boundary {
+    animation: none;
+  }
+}
+
 @media (max-width: 600px) {
   .panel {
     right: 6px;
@@ -187,16 +262,36 @@
 
   .main {
     flex: 1 1 100%;
+    flex-wrap: wrap;
+    gap: 6px;
   }
 
   .input {
-    flex: 1 1 140px;
+    flex: 1 1 180px;
     width: auto;
   }
 
+  .queryRow {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+
+  .navigation {
+    grid-template-columns: 44px 48px;
+    grid-template-rows: repeat(2, 36px);
+    margin-left: auto;
+  }
+
+  .caseToggle {
+    min-height: 36px;
+    min-width: 36px;
+  }
+
   .help {
-    flex-basis: 100%;
-    margin-left: 0;
+    display: none;
   }
 
   .olderPreview,

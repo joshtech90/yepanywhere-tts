@@ -36,6 +36,7 @@ describe("local STT runtime validation", () => {
   afterEach(() => {
     execFileMock.mockReset();
     vi.resetModules();
+    vi.unstubAllEnvs();
   });
 
   it("does not bootstrap when the frozen import check already passes", async () => {
@@ -97,6 +98,10 @@ describe("local STT runtime validation", () => {
   });
 
   it("runs the matching pixi bootstrap when the first import check fails", async () => {
+    vi.stubEnv("LD_LIBRARY_PATH", "/host/cuda/lib:/old/toolchain/lib");
+    vi.stubEnv("LD_PRELOAD", "/host/liboverride.so");
+    vi.stubEnv("CUDA_VISIBLE_DEVICES", "1");
+    vi.stubEnv("HF_HUB_CACHE", "/configured/model-cache");
     execFileMock
       .mockImplementationOnce(completeExecFile(new Error("missing package")))
       .mockImplementationOnce(completeExecFile(null))
@@ -119,5 +124,16 @@ describe("local STT runtime validation", () => {
       "stt",
       "stt-bootstrap-parakeet",
     ]);
+    for (const call of execFileMock.mock.calls) {
+      const env = call[2].env;
+      expect(env).toBeDefined();
+      expect(env).not.toHaveProperty("LD_LIBRARY_PATH");
+      expect(env).not.toHaveProperty("LD_PRELOAD");
+      expect(env.CUDA_VISIBLE_DEVICES).toBe("1");
+      expect(env.HF_HUB_CACHE).toBe("/configured/model-cache");
+    }
+    expect(process.env.LD_LIBRARY_PATH).toBe(
+      "/host/cuda/lib:/old/toolchain/lib",
+    );
   });
 });
