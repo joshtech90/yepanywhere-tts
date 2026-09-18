@@ -28,23 +28,25 @@ export function useSidebarSessionOrder(
     // hard to find. Taking the later of the two keeps a click's effect
     // immediate while letting a fresh browser, with nothing stored, still land
     // on the same chronology.
-    const time = (record: SessionCollectionRecord) => {
-      const reader = Math.max(
+    const time = (record: SessionCollectionRecord) =>
+      Math.max(
         interactions.get(record.id) ?? 0,
         Date.parse(record.lastHumanTurnAt ?? "") || 0,
         // Nothing has been written into it yet, or the provider does not report
         // it: fall back to when the session appeared.
         Date.parse(record.createdAt ?? "") || 0,
+        // Provider write time, which upstream deliberately leaves out so agent
+        // output cannot move a row while someone is reading it. That holds
+        // where a reader time exists, and here one usually does not: the
+        // retained feed the sidebar reads reports no human turn at all, and the
+        // catalog drops a session's creation time for as long as an agent is
+        // appending to it. Sessions this fork runs headless are never opened in
+        // a browser either, so a whole day of them sorted below work nobody had
+        // touched in weeks, and a phone with cleared storage showed almost
+        // nothing at all under Last 24 Hours. The list has to answer what ran
+        // recently, on any device, so the newest signal wins.
+        Date.parse(record.updatedAt ?? "") || 0,
       );
-      // A feed can carry none of the three: the retained collection leaves out
-      // a session's creation time while its transcript is being appended to,
-      // which is every session an agent is working in right now. Those sorted
-      // as the epoch, so a browser that had not opened them filed a whole day
-      // of headless runs under older work in id order, where they read as
-      // missing. Provider write time is the only timestamp left, and a row
-      // with no reader time cannot be jumped away from one by using it.
-      return reader || Date.parse(record.updatedAt ?? "") || 0;
-    };
     const order = (rows: readonly SessionCollectionRecord[]) =>
       [...rows].sort((a, b) => time(b) - time(a) || a.id.localeCompare(b.id));
     const cutoff = Date.now() - 24 * 60 * 60 * 1000;

@@ -25,12 +25,8 @@ describe("sidebar user chronology", () => {
     setCurrentClientSummarySourceKey(first);
     const old = new Date(Date.now() - 3 * 86400000).toISOString();
     const rows: SessionCollectionRecord[] = [
-      {
-        id: "old",
-        createdAt: old,
-        updatedAt: new Date().toISOString(),
-        observedAt: 0,
-      },
+      // Old on every signal, including the write time the order now counts.
+      { id: "old", createdAt: old, updatedAt: old, observedAt: 0 },
       { id: "new", createdAt: new Date().toISOString(), observedAt: 0 },
     ];
     const mounted = renderHook(() => useSidebarSessionOrder(rows, []));
@@ -135,29 +131,49 @@ describe("sidebar user chronology", () => {
     ]);
   });
 
-  it("does not let provider write time outrank the reader's own place", () => {
-    const source = createClientSummaryHostSourceKey("reader-wins");
-    setCurrentClientSummarySourceKey(source);
+  it("keeps a session an agent worked in today out of older work", () => {
+    // Created weeks ago, never opened in this browser, and no reported human
+    // turn: only the provider write time says this ran an hour ago. Without it
+    // the session sat under older work while the agent was still writing.
+    setCurrentClientSummarySourceKey(
+      createClientSummaryHostSourceKey("worked-in-today"),
+    );
+    const weeksAgo = new Date(Date.now() - 21 * 86400000).toISOString();
     const rows: SessionCollectionRecord[] = [
       {
         id: "agent-busy",
-        createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: weeksAgo,
+        updatedAt: new Date(Date.now() - 3600000).toISOString(),
+        observedAt: 0,
+      },
+      { id: "quiet", createdAt: weeksAgo, updatedAt: weeksAgo, observedAt: 0 },
+    ];
+    const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
+    expect(result.current.recent.map((row) => row.id)).toEqual(["agent-busy"]);
+    expect(result.current.older.map((row) => row.id)).toEqual(["quiet"]);
+  });
+
+  it("keeps a local visit ahead of quieter provider writes", () => {
+    const source = createClientSummaryHostSourceKey("visit-ahead");
+    setCurrentClientSummarySourceKey(source);
+    const rows: SessionCollectionRecord[] = [
+      {
+        id: "written-an-hour-ago",
+        updatedAt: new Date(Date.now() - 3600000).toISOString(),
         observedAt: 0,
       },
       {
-        id: "read-yesterday",
-        createdAt: new Date(Date.now() - 5 * 86400000).toISOString(),
-        updatedAt: new Date(Date.now() - 5 * 86400000).toISOString(),
+        id: "opened-just-now",
+        updatedAt: new Date(Date.now() - 2 * 3600000).toISOString(),
         observedAt: 0,
       },
     ];
     const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
-    act(() => recordSessionInteraction(source, "read-yesterday"));
+    act(() => recordSessionInteraction(source, "opened-just-now"));
     expect(result.current.recent.map((row) => row.id)).toEqual([
-      "read-yesterday",
+      "opened-just-now",
+      "written-an-hour-ago",
     ]);
-    expect(result.current.older.map((row) => row.id)).toEqual(["agent-busy"]);
   });
 
   it("ignores malformed stored history and bounds retained interactions", () => {
