@@ -5,8 +5,10 @@ Native Mac ownership, assembled production-worker replay/callbacks, live Claude
 and Codex reload/approval/resume, simultaneous active turns and approvals, and
 terminal cleanup are verified. The previous `oauth_org_not_allowed` deferral
 is closed. Linux, Apple Silicon Mac, Intel Mac and Windows fallback CI jobs
-passed for the tested base commit. Evidence and remaining support boundaries
-are in the owning [runtime topic](../../topics/reload-safe-provider-runtimes.md#macos-live-verification-2026-09-12).
+passed for the tested base commit. Both validation runs are recorded in
+[macOS verification evidence](#macos-verification-evidence) below; the
+supported-platform contract and the commands that reproduce them are in the
+owning [runtime topic](../../topics/reload-safe-provider-runtimes.md#macos-source-runtime-boundary).
 
 Topic: reload-safe-provider-runtimes
 
@@ -277,13 +279,119 @@ test commands when source changes land, plus browser E2E for UI source changes.
 - [x] Focused CI coverage and evidence locations recorded.
 - [x] Owning architecture/runtime/API topics updated to actual supported modes.
 
-Implementation evidence and repeatable commands are in the owning
-[runtime topic](../../topics/reload-safe-provider-runtimes.md#macos-live-verification-2026-09-12).
+The two validation runs are recorded below. The repeatable commands and the
+supported-platform contract they exercise live in the owning
+[runtime topic](../../topics/reload-safe-provider-runtimes.md#macos-verification-procedure).
 The 2026-09-12 validation closes the live Claude/concurrent-provider cells and
 the previously pending native CI results. Both credentialed browser cases
 verify durable history as well as surviving workers. Exact replay cursor/byte
 assertions remain in the deterministic production-worker/protocol suites;
 these live smokes are integration evidence, not a transport benchmark.
+
+## macOS verification evidence
+
+### Initial verification, 2026-09-11
+
+Tested from the uncommitted implementation based on `1b44fa073`, macOS 26.6.2
+(25G83), arm64, Node 25.8.2. The independent Linux arm64 testbed used Node
+22.16.0: 52 focused tests passed, with only the explicitly Darwin-specific
+identity-failure case skipped. The equivalent Mac suites pass all 54 cases.
+Final repository checks passed: `pnpm lint`, `pnpm format:check`,
+`pnpm typecheck`, `pnpm test` (11,757 tests passed, 29 skipped), and
+`pnpm test:e2e` (224 passed, 8 skipped). Lint reports two existing
+informational template-string suggestions, with no errors. The focused CI job
+in `.github/workflows/ci.yml` runs Node 22.16.0 on Linux, Mac arm64, Mac Intel
+and Windows; those hosted CI executions were still pending at this run.
+Runner labels follow the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+Bun, compiled macOS servers and Desktop remained disabled. This does not close
+[general CI platform coverage](../../gaps/ci-platform-coverage-holes.md).
+
+| Live Mac scenario | Result |
+| --- | --- |
+| New Codex session, API reload during numbered command | Same worker, provider group, native session and runtime; command completes |
+| Second Codex turn, wrapper HUP during command | Same retained runtime; numbered command completes |
+| Ordinary durable resume after terminal wrapper shutdown | Same native conversation, fresh hosted worker |
+| Hono-only edit, browser Server changed → Reload | New backend returns the test property; same worker; command and unsent draft survive; edit restored |
+| Native Codex approval across API reload | Request remains actionable under current default mode; answer completes original command in same worker |
+| Terminal shutdown after live runs | Host descriptor/socket absent and all recorded worker/provider groups gone |
+| Real Claude and both providers active | Blocked: native `oauth_org_not_allowed`, organization disables subscription access |
+
+Codex app-server 0.154.0 used `gpt-6-astra` with low effort. The account rejects
+`gpt-5.4-mini`; that failed launch is not counted as continuity. Claude SDK
+0.3.258 was attempted and produced the native organization error before a turn.
+The synthetic project, YA data, ports and private host directory were isolated;
+native same-user Claude/Codex authentication and transcript stores were
+intentionally shared. No credentials were copied. Only created-session evidence
+was read, and no unrelated native session was removed.
+
+Run evidence is retained under `.artifacts/ui-testing/2026-09-11-macos-provider-host`
+and `.artifacts/ui-testing/2026-09-11-macos-provider-host-live`; compact
+structured results and test logs are archived with the latter. Browser captures
+at 1000×600 and 375×812 verify the resulting transcript and the degraded
+banner's reachable navigation. The two numbered native turns each have one start
+and one terminal result; both reload intervals fall inside their original native
+turn. Request-to-attach was 2730 ms for API reload and 2556 ms for wrapper HUP
+on this run. The native conversation contains nine distinct test turns with no
+duplicate starts or terminal records across the repeated smoke attempts. The
+run also exposed a launch-mode regression, which the assembled test now covers
+by changing the standing mode from bypass to default before replacement.
+
+### Live verification, 2026-09-12
+
+The account-access deferral above is closed. Validation used YA
+`6ef7771748797ab5ac5ffb943a54adcf609f3a43` plus the credentialed test extension,
+macOS 26.5.1 (25F80), arm64, Node 24.20.0, and the non-watch source wrapper.
+The actual Claude session used SDK 0.3.258 / bundled CLI 2.1.258 with
+`claude-sonnet-5`; the actual Codex transcript reports app-server
+`0.154.0-alpha.6.2`, `gpt-6-astra`, low effort. The shell's independently
+installed `claude` 2.1.268 and `codex` 0.153.4 were not the runtime-version
+oracle. This validation did not update providers or widen compatibility.
+
+The canonical synthetic project, YA data, private host directory and three
+ports were isolated. Same-user provider authentication and native transcript
+stores were intentionally shared; credentials were not copied or logged.
+
+| Scenario | Result |
+| --- | --- |
+| New Claude session, API reload during a numbered foreground command | Same host, worker, provider process group, YA/native session and original tool call; complete ordered progress |
+| Second Claude command, wrapper HUP | Same retained runtime and original tool call; complete ordered progress |
+| Native Claude approval across reload, then another turn | Reconstructed UI approval resolves the original SDK callback; later turn completes |
+| Claude and Codex commands active together, API and HUP | Both original workers/providers survive each replacement; both commands complete |
+| Terminal shutdown, then durable resume for each provider | Old process groups and sockets disappear; each native conversation resumes into a fresh hosted worker |
+| Hono-only edit and browser Server changed → Reload, each provider | Changed backend property appears, worker/provider identity persists, unsent draft survives, test edit is restored |
+| Browser-run native approvals, each provider | Same pending tool/input after attach; approval completes the original command and persisted history remains readable |
+| Two native approvals pending across the same reload | Both requests return; approving Claude leaves Codex pending; each command executes exactly once |
+| Final terminal cleanup | Every recorded worker/provider process group and owned socket is gone |
+
+The initial Claude API/HUP replacements attached in 1812/1264 ms; its approval
+replacement took 1531 ms. Combined API/HUP replacements took 1791/1786 ms.
+These are observed smoke timings, not performance ceilings. Wrapper-child
+snapshots show the host retained while Hono and Vite were replaced.
+The native audit pairs all eight Claude tool calls with exactly one successful
+result and records ten user turns with ten assistant end-turns. Codex has six
+unique started turns, each with one matching terminal event. Each measured
+API/HUP reload interval lies within its original Claude tool call or Codex
+turn, rather than an implicit restart/resume. After the combined approval run,
+the session-detail API returned 97 Claude and 41 Codex persisted records.
+
+The 54 focused native tests passed locally without skips. The existing
+[CI run for the tested base commit](https://github.com/kzahel/yepanywhere/actions/runs/34641697632)
+also passed native provider-host jobs on Linux, Apple Silicon Mac, Intel Mac,
+and Windows fallback, closing the previously pending CI evidence.
+
+Final local checks passed: `pnpm lint` (zero warnings, two informational
+suggestions), `pnpm format:check`, `pnpm typecheck`, `pnpm test` (11,763 passed,
+29 skipped), and `pnpm test:e2e` (226 passed, eight skipped). Both explicit
+credentialed browser runs passed in addition to the ordinary suite. The console
+scan passed with unchanged budgets: 110 ungated sites, 61 warn sites and 92
+error sites; this validation adds no client console calls.
+
+Evidence is under `.artifacts/ui-testing/2026-09-12-provider-host/`:
+`evidence/live.json`, `native-audit.json`, `dual-approval.json`, both
+`*-browser-live.json` files, and `final-cleanup.json`. Desktop 1000×600 and
+phone 375×812 captures in `canonical-captures/` show recovered transcripts,
+completed approvals and reachable composer controls, without a stale-server
+banner. The artifact capture facility presents those captures.
 
 The `/tmp` versus `/private/tmp` Claude transcript-routing issue discovered in
 validation remains a [separate gap](../../gaps/claude-symlink-project-transcript-routing.md).

@@ -1,3 +1,4 @@
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import type { CodexWebRunResult } from "@yep-anywhere/shared";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -60,38 +61,70 @@ describe("WebRenderer", () => {
 
   it("summarizes a single opened page with time, wordlim, lines, and host", () => {
     expect(
-      webRenderer.getResultSummary?.(openResult, false, {
-        open: [{ ref_id: "turn0search4" }],
-      }),
+      webRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            {
+              open: [{ ref_id: "turn0search4" }],
+            },
+            openResult,
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "",
     ).toBe("0.8s · wordlim 200 · 1174 lines · huggingface.co");
   });
 
   it("summarizes search results by hit count", () => {
     expect(
-      webRenderer.getResultSummary?.(searchResult, false, {
-        search_query: [{ q: "covost2" }],
-      }),
+      webRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            {
+              search_query: [{ q: "covost2" }],
+            },
+            searchResult,
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "",
     ).toBe("1.2s · 2 results");
   });
 
   it("summarizes the requested operations for tool use", () => {
     expect(
-      webRenderer.getUseSummary?.({
-        search_query: [{ q: "covost2 download" }, { q: "common voice" }],
-      }),
+      webRenderer
+        .prepare({
+          input: {
+            search_query: [{ q: "covost2 download" }, { q: "common voice" }],
+          },
+          status: "pending",
+        })
+        .getUseSummary() ?? "",
     ).toBe('search "covost2 download" (+1 more)');
     expect(
-      webRenderer.getUseSummary?.({
-        open: [{ ref_id: "turn0search4" }],
-        find: [{ ref_id: "turn0search4", pattern: "zh-CN" }],
-      }),
+      webRenderer
+        .prepare({
+          input: {
+            open: [{ ref_id: "turn0search4" }],
+            find: [{ ref_id: "turn0search4", pattern: "zh-CN" }],
+          },
+          status: "pending",
+        })
+        .getUseSummary() ?? "",
     ).toBe('open turn0search4 · find "zh-CN"');
   });
 
   it("renders page lines in prose with a linked title", () => {
     render(
       <div>
-        {webRenderer.renderToolResult(openResult, false, renderContext)}
+        {webRenderer
+          .prepare(
+            recordFromLegacyArgs(undefined, openResult, false, "complete"),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
     const link = screen.getByRole("link", {
@@ -110,12 +143,9 @@ describe("WebRenderer", () => {
   it("renders collapsed preview rows as hostname links", () => {
     render(
       <div>
-        {webRenderer.renderCollapsedPreview?.(
-          {},
-          searchResult,
-          false,
-          renderContext,
-        )}
+        {webRenderer
+          .prepare(recordFromLegacyArgs({}, searchResult, false))
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
     const link = screen.getByRole("link", { name: "arxiv.org" });
@@ -126,12 +156,9 @@ describe("WebRenderer", () => {
   it("keeps a selected preview collapsed", () => {
     render(
       <div>
-        {webRenderer.renderCollapsedPreview?.(
-          {},
-          searchResult,
-          false,
-          renderContext,
-        )}
+        {webRenderer
+          .prepare(recordFromLegacyArgs({}, searchResult, false))
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
     const preview = screen.getByRole("button", {
@@ -165,12 +192,9 @@ describe("WebRenderer", () => {
     };
     render(
       <div>
-        {webRenderer.renderCollapsedPreview?.(
-          {},
-          longResult,
-          false,
-          renderContext,
-        )}
+        {webRenderer
+          .prepare(recordFromLegacyArgs({}, longResult, false))
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
     expect(screen.getByText(/content line 0/)).toBeDefined();
@@ -206,12 +230,9 @@ describe("WebRenderer", () => {
     };
     const { container } = render(
       <div>
-        {webRenderer.renderCollapsedPreview?.(
-          {},
-          shortResult,
-          false,
-          renderContext,
-        )}
+        {webRenderer
+          .prepare(recordFromLegacyArgs({}, shortResult, false))
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
     expect(container.querySelector(".webrun-preview-fade")).toBeNull();
@@ -263,12 +284,9 @@ describe("WebRenderer", () => {
     };
     render(
       <div>
-        {webRenderer.renderCollapsedPreview?.(
-          {},
-          errorResult,
-          false,
-          renderContext,
-        )}
+        {webRenderer
+          .prepare(recordFromLegacyArgs({}, errorResult, false))
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
     expect(
@@ -279,7 +297,16 @@ describe("WebRenderer", () => {
   it("falls back to plain text for unstructured results", () => {
     render(
       <div>
-        {webRenderer.renderToolResult("raw text output", false, renderContext)}
+        {webRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              "raw text output",
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
     expect(screen.getByText("raw text output")).toBeDefined();

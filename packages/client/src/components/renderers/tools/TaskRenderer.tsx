@@ -29,38 +29,13 @@ const MAX_ERROR_SUMMARY_LENGTH = 80;
  * Handles both structured errors and raw string errors.
  */
 function extractErrorMessage(
-  result: unknown,
+  result: TaskResult | undefined,
 ): { raw: string; summary: string; label: string } | null {
-  if (!result) return null;
-
-  let rawMessage = "";
-
-  // Handle different result shapes
-  if (typeof result === "string") {
-    rawMessage = result;
-  } else if (typeof result === "object" && result !== null) {
-    // Check for content field (tool_result format)
-    if ("content" in result) {
-      const content = result.content;
-      if (typeof content === "string") {
-        rawMessage = content;
-      } else if (Array.isArray(content)) {
-        // Content blocks array - find text content
-        for (const block of content) {
-          if (
-            typeof block === "object" &&
-            block !== null &&
-            "type" in block &&
-            block.type === "text" &&
-            "text" in block
-          ) {
-            rawMessage = String(block.text);
-            break;
-          }
-        }
-      }
-    }
-  }
+  // A rejection reaches the renderer as the contract's failure projection:
+  // one text block carrying the provider's message.
+  const rawMessage =
+    result?.content?.find((block) => block.type === "text" && block.text)
+      ?.text ?? "";
 
   if (!rawMessage) return null;
 
@@ -499,9 +474,7 @@ function TaskToolResult({
   if (isError) {
     return (
       <div className="task-error">
-        {typeof result === "object" && "content" in result
-          ? String(result.content)
-          : "Task failed"}
+        {extractErrorMessage(result)?.raw || "Task failed"}
       </div>
     );
   }

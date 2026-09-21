@@ -376,6 +376,10 @@ export function getSearchableUserTurnPreview(item: RenderItem): string | null {
   if (item.type !== "user_prompt" || item.isSubagent) {
     return null;
   }
+  // Rows a same-session rewind dropped are history, never turns.
+  if (item.sourceMessages.some((message) => message.rewoundGroupId)) {
+    return null;
+  }
   const content = getPromptTextForCorrection(item.content);
   if (isSessionSetupText(content, item.sourceMessages)) return null;
   const preview = getUserTurnPreview(item.content);

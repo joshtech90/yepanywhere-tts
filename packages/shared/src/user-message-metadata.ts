@@ -132,6 +132,13 @@ export interface UserMessageMetadata {
   /** Server receive time for the REST request that accepted this user turn. */
   serverReceivedAt?: string;
   /**
+   * Limited user who sent this turn, stamped by the route from the acting
+   * principal and never read from the request body. Absent means the
+   * superuser sent it, which is also what every turn predating limited users
+   * means. topics/limited-users.md § Delivery v1 — Usage.
+   */
+  sentByUser?: string;
+  /**
    * Hidden from the transcript UI as a YA-injected control message — currently
    * the `/compact` command YA queues for a threshold-triggered or resume-time
    * compaction, which native auto-compaction shows no user turn for. This is

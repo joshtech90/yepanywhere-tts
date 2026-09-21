@@ -19,6 +19,9 @@ import {
   type ProviderName,
   type PromptSuggestionMode,
   type RecapMode,
+  type SessionClearloopJob,
+  type SessionPendingRewind,
+  type SessionRewindRecord,
   type SessionSandboxLevel,
   type SlashCommand,
   type ThinkingConfig,
@@ -55,6 +58,13 @@ export type EffectiveSessionLaunchSettingsValue = Omit<
 >;
 
 export interface SessionMetadata {
+  /**
+   * Limited user who started this session, when one did. Absent means the
+   * superuser started it (or it predates limited users). A limited user can
+   * always read their own sessions, even after a project grant is removed:
+   * topics/limited-users.md § Delivery v1 — Authorization.
+   */
+  createdByUser?: string;
   /** Retain the acknowledged receipt so replay cannot raise it again. */
   nonHumanUserTurn?: NonHumanUserTurn & { acknowledged?: boolean };
   /** Custom title that overrides auto-generated title */
@@ -69,11 +79,31 @@ export interface SessionMetadata {
   parentSessionKind?: "btw-aside";
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
+  /**
+   * How many forks/clones have been created in this session's fork lineage, so
+   * each new one can be titled with its own ordinal instead of repeating
+   * "Fork: <source>". Only meaningful on a lineage root — a session whose own
+   * `forkLineageRootId` is absent. Counts forks created, never forks that still
+   * exist: deleting a fork does not release its number.
+   */
+  forksCreated?: number;
+  /**
+   * The lineage root whose `forksCreated` numbers this session's forks. Set on
+   * every fork target so forking a fork continues the original session's
+   * numbering instead of restarting at "Fork:".
+   */
+  forkLineageRootId?: string;
   /** Saved viewer-only objects placed in the transcript. */
   transcriptDisplayObjects?: TranscriptDisplayObject[];
   /** Durable YA-owned recap rows merged into the transcript view only. */
   recapMessages?: DurableRecapMessage[];
   localCommandMessages?: DurableLocalCommandMessage[];
+  /** Same-session rewinds; the reader groups the rows they dropped. */
+  rewindRecords?: SessionRewindRecord[];
+  /** A rewind the next provider resume must apply. */
+  pendingRewind?: SessionPendingRewind;
+  /** The latest `/clearloop` job, running or terminal. */
+  clearloop?: SessionClearloopJob;
   /** Last observed goal, independent of historical command receipts. */
   goalCommand?: SlashCommand;
   /** Pre-Claude name for the same record; still read, no longer written. */
@@ -163,7 +193,7 @@ export interface SessionMetadataServiceOptions {
 }
 
 /** Public projection omits the persisted acknowledgement tombstone. */
-export function pendingNonHumanUserTurn(
+function pendingNonHumanUserTurn(
   metadata: SessionMetadata | undefined,
 ): NonHumanUserTurn | undefined {
   const turn = metadata?.nonHumanUserTurn;
@@ -173,6 +203,28 @@ export function pendingNonHumanUserTurn(
     timestamp: turn.timestamp,
     sourceSessionId: turn.sourceSessionId,
   };
+}
+
+/**
+ * Session row and event field carrying the pending non-human user turn.
+ * Explicit null is the wire value for "no pending turn"; an omitted field
+ * means unknown, so a caller without metadata storage still reports null.
+ */
+export function nonHumanUserTurnField(
+  service: SessionMetadataService | undefined,
+  sessionId: string,
+): NonHumanUserTurn | null {
+  return pendingNonHumanUserTurn(service?.getMetadata(sessionId)) ?? null;
+}
+
+/**
+ * Last observed goal command held by a session's metadata, reading the
+ * pre-Claude `codexGoalCommand` record when the current field is absent.
+ */
+export function goalCommandOf(
+  metadata: SessionMetadata | undefined,
+): SlashCommand | undefined {
+  return metadata?.goalCommand ?? metadata?.codexGoalCommand;
 }
 
 export class SessionMetadataService {
@@ -378,10 +430,105 @@ export class SessionMetadataService {
     await this.metadataSaver.flush();
   }
 
+  getRewindRecords(sessionId: string): SessionRewindRecord[] {
+    return [
+      ...(this.state.sessions[this.resolveSessionId(sessionId)]
+        ?.rewindRecords ?? []),
+    ];
+  }
+
+  getPendingRewind(sessionId: string): SessionPendingRewind | undefined {
+    return this.state.sessions[this.resolveSessionId(sessionId)]?.pendingRewind;
+  }
+
+  /** Record a rewind and arm it for the next provider resume. */
+  async addRewindRecord(
+    sessionId: string,
+    record: SessionRewindRecord,
+    pending: SessionPendingRewind,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      rewindRecords: [
+        ...(metadata.rewindRecords ?? []).filter((row) => row.id !== record.id),
+        record,
+      ],
+      pendingRewind: pending,
+    }));
+    await this.metadataSaver.flush();
+  }
+
+  /** Forget a rewind that was refused before it could apply. */
+  async removeRewindRecord(sessionId: string, recordId: string): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      rewindRecords: (metadata.rewindRecords ?? []).filter(
+        (row) => row.id !== recordId,
+      ),
+      pendingRewind:
+        metadata.pendingRewind?.recordId === recordId
+          ? undefined
+          : metadata.pendingRewind,
+    }));
+    await this.metadataSaver.flush();
+  }
+
+  /**
+   * Give a verbatim transcript copy the source's rewind history. Only valid
+   * when the copy keeps the source's message uuids (the legacy Claude clone);
+   * an SDK fork remaps them and is sliced at the cut instead.
+   */
+  async copyRewindState(
+    sourceSessionId: string,
+    targetSessionId: string,
+  ): Promise<void> {
+    const source = this.state.sessions[this.resolveSessionId(sourceSessionId)];
+    if (!source?.rewindRecords?.length && !source?.pendingRewind) return;
+    this.updateSessionMetadata(targetSessionId, (metadata) => ({
+      ...metadata,
+      ...(source.rewindRecords?.length
+        ? { rewindRecords: [...source.rewindRecords] }
+        : {}),
+      ...(source.pendingRewind
+        ? { pendingRewind: { ...source.pendingRewind } }
+        : {}),
+    }));
+    await this.metadataSaver.flush();
+  }
+
+  async clearPendingRewind(sessionId: string): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      pendingRewind: undefined,
+    }));
+    await this.metadataSaver.flush();
+  }
+
+  /** Sessions whose durable clearloop record still says `running`. */
+  listSessionIdsWithRunningClearloop(): string[] {
+    return Object.entries(this.state.sessions)
+      .filter(([, metadata]) => metadata.clearloop?.state === "running")
+      .map(([sessionId]) => sessionId);
+  }
+
+  getClearloop(sessionId: string): SessionClearloopJob | undefined {
+    return this.state.sessions[this.resolveSessionId(sessionId)]?.clearloop;
+  }
+
+  async setClearloop(
+    sessionId: string,
+    job: SessionClearloopJob | undefined,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      clearloop: job,
+    }));
+    await this.metadataSaver.flush();
+  }
+
   /** Last observed goal command for a session, whichever provider reported it. */
   getGoalCommand(sessionId: string): SlashCommand | undefined {
-    const metadata = this.getMetadata(this.resolveSessionId(sessionId));
-    return metadata?.goalCommand ?? metadata?.codexGoalCommand;
+    return goalCommandOf(this.getMetadata(this.resolveSessionId(sessionId)));
   }
 
   async observeCommandInventory(
@@ -649,6 +796,28 @@ export class SessionMetadataService {
   }
 
   /**
+   * Claim the next fork ordinal for a source session: 1 for the lineage's first
+   * fork, 2 for the next, and so on. Callers use it to title repeated forks
+   * "Fork: X", "Fork 2: X", "Fork 3: X" instead of naming them alike, and must
+   * record the returned `lineageRootId` on the new fork (see `updateMetadata`'s
+   * `forkLineageRootId`) so forking that fork continues the same sequence.
+   * The count only ever rises, so a deleted fork's number is not reissued.
+   */
+  async nextForkOrdinal(
+    sessionId: string,
+  ): Promise<{ ordinal: number; lineageRootId: string }> {
+    const lineageRootId =
+      this.getMetadata(sessionId)?.forkLineageRootId ?? sessionId;
+    const ordinal = (this.getMetadata(lineageRootId)?.forksCreated ?? 0) + 1;
+    this.updateSessionMetadata(lineageRootId, (metadata) => ({
+      ...metadata,
+      forksCreated: ordinal,
+    }));
+    await this.save();
+    return { ordinal, lineageRootId };
+  }
+
+  /**
    * Set the YA model id (launch alias) chosen when YA started this session.
    * Persisted so per-model settings still key by the requested YA id after a
    * server restart. See topics/provider-abstraction.md § Per-model settings keying.
@@ -811,6 +980,15 @@ export class SessionMetadataService {
   }
 
   /**
+   * The session whose fork count numbers this session's forks: the lineage
+   * root, or the session itself when it is one. Read-only companion to
+   * `nextForkOrdinal` for callers that record lineage without claiming a number.
+   */
+  forkLineageRoot(sessionId: string): string {
+    return this.getMetadata(sessionId)?.forkLineageRootId ?? sessionId;
+  }
+
+  /**
    * Get the executor for a session.
    * Returns undefined if the session ran locally or executor is unknown.
    */
@@ -890,6 +1068,18 @@ export class SessionMetadataService {
     await this.save();
   }
 
+  /** Record the limited user who started a session, at creation time. */
+  async recordSessionCreator(
+    sessionId: string,
+    username: string,
+  ): Promise<void> {
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      createdByUser: username,
+    }));
+    await this.flushPendingWrites();
+  }
+
   /**
    * Update metadata for a session (title, archived, starred).
    */
@@ -902,6 +1092,7 @@ export class SessionMetadataService {
       parentSessionId?: string | null;
       parentSessionKind?: "btw-aside" | null;
       forkedFromSessionId?: string | null;
+      forkLineageRootId?: string | null;
       heartbeatTurnsEnabled?: boolean;
       wakeTurnsEnabled?: boolean | null;
       autoResumeDisabled?: boolean;
@@ -950,6 +1141,14 @@ export class SessionMetadataService {
       if (updates.forkedFromSessionId !== undefined) {
         result.forkedFromSessionId =
           updates.forkedFromSessionId?.trim() || undefined;
+      }
+
+      if (updates.forkLineageRootId !== undefined) {
+        const lineageRootId = updates.forkLineageRootId?.trim() || undefined;
+        // A session is never its own lineage root record: the root's count is
+        // found by the absence of this field.
+        result.forkLineageRootId =
+          lineageRootId === sessionId ? undefined : lineageRootId;
       }
 
       if (updates.heartbeatTurnsEnabled !== undefined) {
@@ -1048,6 +1247,12 @@ export class SessionMetadataService {
     if (updated.forkedFromSessionId) {
       cleaned.forkedFromSessionId = updated.forkedFromSessionId;
     }
+    if (updated.forksCreated) {
+      cleaned.forksCreated = updated.forksCreated;
+    }
+    if (updated.forkLineageRootId) {
+      cleaned.forkLineageRootId = updated.forkLineageRootId;
+    }
     if (updated.transcriptDisplayObjects?.length) {
       cleaned.transcriptDisplayObjects = updated.transcriptDisplayObjects;
     }
@@ -1056,6 +1261,15 @@ export class SessionMetadataService {
     }
     if (updated.localCommandMessages?.length) {
       cleaned.localCommandMessages = updated.localCommandMessages;
+    }
+    if (updated.rewindRecords?.length) {
+      cleaned.rewindRecords = updated.rewindRecords;
+    }
+    if (updated.pendingRewind) {
+      cleaned.pendingRewind = updated.pendingRewind;
+    }
+    if (updated.clearloop) {
+      cleaned.clearloop = updated.clearloop;
     }
     if (updated.goalCommand) {
       cleaned.goalCommand = updated.goalCommand;

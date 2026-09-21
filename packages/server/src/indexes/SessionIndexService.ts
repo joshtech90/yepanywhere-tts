@@ -70,26 +70,39 @@ export interface CachedSessionSummary {
 }
 
 export interface SessionIndexState {
-  version: 3;
+  version: 5;
   projectId: string;
   sessions: Record<string, CachedSessionSummary>;
 }
 
-// This version gates every provider's persisted summary index. Bump it only
-// for an incompatible on-disk shape, not for provider-specific interpretation
-// changes that can correct gradually as sessions are modified.
-const CURRENT_VERSION = 3;
-// Version 4 was an unshipped semantic cachebuster with the same on-disk
-// shape. Accept it so development installs that briefly wrote v4 do not pay
-// another full rebuild when rolling back to version 3.
-const PRE_RELEASE_COMPATIBLE_VERSION = 4;
+// This version gates every provider's persisted summary index, and also dates
+// the entries an index holds so a one-shot repair can name the readers it
+// corrects. Bump it for an incompatible on-disk shape, or to end such a
+// repair; do not bump it for provider-specific interpretation changes that
+// can correct gradually as sessions are modified.
+const CURRENT_VERSION = 5;
+// Predecessors with the same on-disk shape, accepted so an install that wrote
+// one keeps its index: 3 shipped, 4 was an unshipped semantic cachebuster, and
+// 5 only records that `isEmpty` entries were written by a reader that means
+// them. A rollback to a build predating 5 pays one rebuild.
+const STRUCTURALLY_COMPATIBLE_VERSIONS: ReadonlySet<number> = new Set([
+  3,
+  4,
+  CURRENT_VERSION,
+]);
+// Indexes written before this version may hold `isEmpty: true` for a
+// setup-only Claude session that current readers summarize.
+const CLAUDE_EMPTY_SUMMARY_REPAIR_VERSION = 5;
 const CLAUDE_LOCAL_COMMAND_CAVEAT_TITLE_PREFIX = "<local-command-caveat>";
 
 type PersistedSessionIndexState = Omit<SessionIndexState, "version"> & {
   version: number;
 };
 
-function needsClaudeSummaryRefresh(summary: CachedSessionSummary): boolean {
+function needsClaudeSummaryRefresh(
+  summary: CachedSessionSummary,
+  persistedVersion: number,
+): boolean {
   if (
     summary.provider !== DEFAULT_PROVIDER &&
     summary.provider !== "claude-gateway" &&
@@ -99,7 +112,15 @@ function needsClaudeSummaryRefresh(summary: CachedSessionSummary): boolean {
   }
   // Older readers treated setup-only Claude sessions as absent. Reparse those
   // negative cache entries so existing sessions can open without a file change.
-  if (summary.isEmpty) return true;
+  // Current writers still record genuine emptiness, so the repair is keyed on
+  // the version that wrote the entry: keyed on the field, it would delete and
+  // reparse every unreadable Claude transcript on every load, forever.
+  if (
+    summary.isEmpty &&
+    persistedVersion < CLAUDE_EMPTY_SUMMARY_REPAIR_VERSION
+  ) {
+    return true;
+  }
   const fullTitle = summary.fullTitle ?? summary.title;
   return (
     fullTitle
@@ -448,8 +469,7 @@ export class SessionIndexService implements ISessionIndexService {
 
       // Validate version and projectId
       if (
-        (parsed.version === CURRENT_VERSION ||
-          parsed.version === PRE_RELEASE_COMPATIBLE_VERSION) &&
+        STRUCTURALLY_COMPATIBLE_VERSIONS.has(parsed.version) &&
         parsed.projectId === projectId
       ) {
         const compatible: SessionIndexState = {
@@ -462,7 +482,7 @@ export class SessionIndexService implements ISessionIndexService {
           compatible.sessions,
         )) {
           migrateCachedForkLineage(summary);
-          if (needsClaudeSummaryRefresh(summary)) {
+          if (needsClaudeSummaryRefresh(summary, parsed.version)) {
             delete compatible.sessions[sessionId];
             this.markSessionDirtyByScopeKey(scopeKey, sessionId);
           }

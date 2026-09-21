@@ -37,7 +37,8 @@ interface AuthContextValue {
   /** Whether unauthenticated localhost access is allowed */
   localhostOpen: boolean;
   /** Login with password */
-  login: (password: string) => Promise<void>;
+  /** Log in; a username names a limited user (topics/limited-users.md). */
+  login: (password: string, username?: string) => Promise<void>;
   /** Logout current session */
   logout: () => Promise<void>;
   /** Enable auth with a password (from settings) */
@@ -133,8 +134,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
     navigate,
   ]);
 
-  const login = useCallback(async (password: string) => {
-    await api.login(password);
+  const login = useCallback(async (password: string, username?: string) => {
+    await api.login(password, username);
     setIsAuthenticated(true);
     setIsSetupMode(false);
     // Clear the global login required flag so connections can resume

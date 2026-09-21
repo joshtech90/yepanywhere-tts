@@ -2255,6 +2255,9 @@ export class ClaudeProvider implements AgentProvider {
           cwd: effectiveCwd,
           resume: options.resumeSessionId,
           resumeSessionAt: options.resumeSessionAt,
+          ...(options.resumeSessionAt && options.resumeDropsTurn
+            ? { resumeDropsTurn: options.resumeDropsTurn }
+            : {}),
           abortController,
           // Pass permission mode to SDK for system prompt configuration.
           // However, for "bypassPermissions" we pass "default" to the SDK so it always

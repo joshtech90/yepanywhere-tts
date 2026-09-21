@@ -5,6 +5,7 @@ import {
   type ProjectQueueProjectStatus,
   type ProjectQueuePromoteNowResult,
   type ProviderName,
+  type QueuedYaCommand,
   type UploadedFile,
   type UrlProjectId,
   thinkingOptionToConfig,
@@ -71,6 +72,29 @@ export type ProjectQueueDispatchResult =
   | ProjectQueueProcessSnapshot
   | { queued: true; queueId: string; position: number }
   | { error: "queue_full"; maxQueueSize: number };
+
+/**
+ * What one dispatch settled to. A queued YA command starts no provider work,
+ * so it is not a supervisor result.
+ */
+type ProjectQueueDispatchOutcome =
+  | ProjectQueueDispatchResult
+  | { yaCommand: true };
+
+/**
+ * Runs a queued YA-emulated command against its target session at dispatch.
+ * Supplied by the session routes, which own rewind boundary resolution; a
+ * throw fails the item with its message and keeps the prompt for Retry.
+ */
+export interface ProjectQueueYaCommandRunner {
+  run(input: {
+    sessionId: string;
+    projectId: UrlProjectId;
+    projectPath: string;
+    command: QueuedYaCommand;
+    commandText: string;
+  }): Promise<void>;
+}
 
 export interface ProjectQueueSupervisor extends ProjectWorkSupervisor {
   getAllProcesses(): ProjectQueueProcessSnapshot[];
@@ -156,15 +180,21 @@ function errorMessage(error: unknown): string {
 }
 
 function isQueueFullResult(
-  result: ProjectQueueDispatchResult,
+  result: ProjectQueueDispatchOutcome,
 ): result is { error: "queue_full"; maxQueueSize: number } {
   return "error" in result && result.error === "queue_full";
 }
 
 function isQueuedResult(
-  result: ProjectQueueDispatchResult,
+  result: ProjectQueueDispatchOutcome,
 ): result is { queued: true; queueId: string; position: number } {
   return "queued" in result && result.queued === true;
+}
+
+function isYaCommandResult(
+  result: ProjectQueueDispatchOutcome,
+): result is { yaCommand: true } {
+  return "yaCommand" in result && result.yaCommand === true;
 }
 
 function isRecoveredPatientQueueItem(
@@ -194,6 +224,7 @@ export class ProjectQueueScheduler {
     AbortController
   >();
   private readonly unsubscribe: () => void;
+  private yaCommandRunner: ProjectQueueYaCommandRunner | null = null;
   private disposed = false;
 
   constructor(private readonly options: ProjectQueueSchedulerOptions) {
@@ -205,6 +236,11 @@ export class ProjectQueueScheduler {
     this.getConfiguredIdleGraceMs = options.getIdleGraceMs;
     this.unsubscribe = this.eventBus.subscribe(this.handleEvent);
     this.scheduleAllDispatchableProjects();
+  }
+
+  /** Wired once by the session routes, which own the rewind operations. */
+  setYaCommandRunner(runner: ProjectQueueYaCommandRunner): void {
+    this.yaCommandRunner = runner;
   }
 
   async dispose(): Promise<void> {
@@ -276,7 +312,13 @@ export class ProjectQueueScheduler {
     return { idle: status.blockers.length === 0, blockers: status.blockers };
   }
 
-  private async getProjectWorkStatus(
+  /**
+   * The project idle predicate without the Project Queue readiness check.
+   * Other schedulers — a patient `/clearloop`, for instance — share this work
+   * predicate, but the readiness snapshot is only refreshed while this queue
+   * has backlog, so an empty queue would hold them on a stale caption forever.
+   */
+  async getProjectWorkStatus(
     projectId: UrlProjectId,
   ): Promise<ProjectIdleStatus> {
     // Project Queue ordering and UI semantics are documented in
@@ -776,7 +818,9 @@ export class ProjectQueueScheduler {
       const sessionId =
         item.target.type === "existing-session"
           ? item.target.sessionId
-          : isQueuedResult(result) || isQueueFullResult(result)
+          : isQueuedResult(result) ||
+              isQueueFullResult(result) ||
+              isYaCommandResult(result)
             ? undefined
             : result.sessionId;
       return {
@@ -863,7 +907,7 @@ export class ProjectQueueScheduler {
   private async dispatchItem(
     item: ProjectQueueItem,
     options: PromoteNowOptions,
-  ): Promise<ProjectQueueDispatchResult> {
+  ): Promise<ProjectQueueDispatchOutcome> {
     const permissionMode = item.message.mode ?? item.target.mode;
     const modelSettings = this.toModelSettings(item);
     const result =
@@ -884,7 +928,7 @@ export class ProjectQueueScheduler {
       throw new Error(`Worker queue is full (${result.maxQueueSize})`);
     }
 
-    if (!isQueuedResult(result)) {
+    if (!isQueuedResult(result) && !isYaCommandResult(result)) {
       await this.options.onSessionStarted?.({ item, process: result });
     }
     return result;
@@ -895,9 +939,26 @@ export class ProjectQueueScheduler {
     permissionMode: PermissionMode | undefined,
     modelSettings: ModelSettings,
     deliveryIntent: PromoteNowOptions["deliveryIntent"],
-  ): Promise<ProjectQueueDispatchResult> {
+  ): Promise<ProjectQueueDispatchOutcome> {
     if (item.target.type !== "existing-session") {
       throw new Error("Project queue item target changed during dispatch");
+    }
+    const yaCommand = item.message.yaCommand;
+    if (yaCommand) {
+      // A YA-emulated command is not provider text; the composer deliberately
+      // did not run it, so the runner performs it here instead of resuming
+      // the session with its command line (topics/project-queue.md).
+      if (!this.yaCommandRunner) {
+        throw new Error("This server cannot run queued YA commands");
+      }
+      await this.yaCommandRunner.run({
+        sessionId: item.target.sessionId,
+        projectId: item.projectId,
+        projectPath: item.projectPath,
+        command: yaCommand,
+        commandText: item.message.text,
+      });
+      return { yaCommand: true };
     }
     const stagedAttachments = await this.materializeStagedAttachments(
       item,

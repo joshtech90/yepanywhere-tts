@@ -9,6 +9,7 @@ import {
   discoveryMigrationPrefix,
 } from "../../src/storage/discovery-sqlite.js";
 import { IssueStore } from "../../src/services/issues/IssueStore.js";
+import { storedRows } from "./sqlite-rows.js";
 
 const databases: SqliteDatabase[] = [];
 function fixture() {
@@ -41,7 +42,9 @@ it("requires known prefixes by default, learns from absolute URLs, and resolves 
   const { store, capture, settle } = fixture();
   capture("COVID-19 UNKNOWN-123 TF-42", "other", "older");
   expect(store.list()).toEqual([]);
-  expect(store.rows("SELECT * FROM session_issue_links")).toEqual([]);
+  expect(
+    storedRows(store.database, "SELECT * FROM session_issue_links"),
+  ).toEqual([]);
   capture("https://tomfit.atlassian.net/browse/TF-3996?token=hidden#details");
   settle();
   expect(store.knownJiraProjects()).toEqual([
@@ -76,7 +79,8 @@ it("applies aggressive matching and exclusions retroactively without erasing evi
   capture("https://tomfit.atlassian.net/browse/TF-1");
   capture("TF-2");
   expect(store.list("TF-2")).toHaveLength(1);
-  const before = store.rows(
+  const before = storedRows(
+    store.database,
     "SELECT COUNT(*) AS count FROM session_issue_evidence",
   )[0]?.count;
   settings.jiraKeyBlocklist = ["TF"];
@@ -89,8 +93,10 @@ it("applies aggressive matching and exclusions retroactively without erasing evi
   settle();
   expect(store.list("TF-2")).toHaveLength(1);
   expect(
-    store.rows("SELECT COUNT(*) AS count FROM session_issue_evidence")[0]
-      ?.count,
+    storedRows(
+      store.database,
+      "SELECT COUNT(*) AS count FROM session_issue_evidence",
+    )[0]?.count,
   ).toBe(before);
 });
 
@@ -164,7 +170,8 @@ it("upgrades v6 without changing decisions or titles, then backfills URLs in bou
   }
   expect(store.list("TF-2")[0]?.sessionCount).toBe(60);
   expect(
-    store.rows(
+    storedRows(
+      store.database,
       "SELECT state,decision_at FROM session_issue_links WHERE id=1",
     )[0],
   ).toMatchObject({ state: "confirmed", decision_at: 9 });
@@ -179,12 +186,14 @@ it("never queues blocked or unknown candidates for tracker lookup under conserva
     jiraEmail: "user@example.test",
   };
   capture("COVID-19 UNKNOWN-1");
-  expect(store.rows("SELECT * FROM issue_confirmations")).toEqual([]);
+  expect(
+    storedRows(store.database, "SELECT * FROM issue_confirmations"),
+  ).toEqual([]);
   settings.aggressiveMatching = true;
   capture("COVID-19 UNKNOWN-1");
   expect(
-    store
-      .rows("SELECT ref_key FROM issue_confirmations")
-      .map((row) => row.ref_key),
+    storedRows(store.database, "SELECT ref_key FROM issue_confirmations").map(
+      (row) => row.ref_key,
+    ),
   ).toEqual(["UNKNOWN-1"]);
 });

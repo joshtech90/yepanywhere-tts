@@ -10,6 +10,7 @@ import {
 import { Link } from "react-router-dom";
 import { ProviderChildNavTarget } from "../components/ProviderChildNavTarget";
 import { api } from "../api/client";
+import { ClearloopRemainingBadge } from "../components/ClearloopRemainingBadge";
 import { ContextUsageIndicator } from "../components/ContextUsageIndicator";
 import { PageHeader } from "../components/PageHeader";
 import { ThinkingIndicator } from "../components/ThinkingIndicator";
@@ -336,6 +337,9 @@ function ProcessCard({
           <span className={styles.cardSessionTitle}>
             {process.sessionTitle || t("agentsUntitled" as never)}
           </span>
+          {process.clearloop !== undefined && (
+            <ClearloopRemainingBadge badge={process.clearloop} />
+          )}
           <span
             className={cx(
               styles.providerBadge,

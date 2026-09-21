@@ -8,21 +8,75 @@ import {
   renderSafeMarkdown,
 } from "../../src/augments/safe-markdown.js";
 
+const serverRequire = createRequire(import.meta.url);
+
+function releaseParts(version: string): [number, number, number] | null {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(version);
+  if (!match) return null;
+  return [Number(match[1]), Number(match[2]), Number(match[3])];
+}
+
+/**
+ * Whether an installed version satisfies a declared dependency spec. The
+ * server declares either an exact pin or a caret range, and a caret pins the
+ * leftmost nonzero component: `^0.18.6` admits 0.18.7 but not 0.19.0.
+ */
+function satisfiesDependencySpec(version: string, spec: string): boolean {
+  if (!spec.startsWith("^")) return version === spec;
+  const installed = releaseParts(version);
+  const floor = releaseParts(spec.slice(1));
+  if (!installed || !floor) return false;
+  const leadingNonzero = floor.findIndex((part) => part !== 0);
+  const pinned = leadingNonzero === -1 ? 2 : leadingNonzero;
+  for (let i = 0; i <= pinned; i += 1) {
+    if (installed[i] !== floor[i]) return false;
+  }
+  for (let i = pinned + 1; i < floor.length; i += 1) {
+    if (installed[i] !== floor[i]) return installed[i] > floor[i];
+  }
+  return true;
+}
+
+function declaredDependencySpec(name: string): string {
+  const { dependencies } = serverRequire("../../package.json") as {
+    dependencies: Record<string, string | undefined>;
+  };
+  const spec = dependencies[name];
+  if (!spec) throw new Error(`${name} is not a declared server dependency`);
+  return spec;
+}
+
+function installedVersion(name: string): string {
+  return serverRequire(`${name}/package.json`).version as string;
+}
+
 describe("Markdown plugin dependency resolution", () => {
-  it("uses YA's exact markdown-it and KaTeX runtimes", () => {
-    const serverRequire = createRequire(import.meta.url);
+  it("admits an in-range refresh and rejects one outside the spec", () => {
+    expect(satisfiesDependencySpec("0.18.7", "^0.18.6")).toBe(true);
+    expect(satisfiesDependencySpec("0.18.5", "^0.18.6")).toBe(false);
+    expect(satisfiesDependencySpec("0.19.0", "^0.18.6")).toBe(false);
+    expect(satisfiesDependencySpec("1.3.0", "^1.2.3")).toBe(true);
+    expect(satisfiesDependencySpec("2.0.0", "^1.2.3")).toBe(false);
+    expect(satisfiesDependencySpec("15.0.0", "15.0.0")).toBe(true);
+    expect(satisfiesDependencySpec("15.0.1", "15.0.0")).toBe(false);
+  });
+
+  it("uses YA's declared markdown-it and KaTeX runtimes", () => {
     const pluginRequire = createRequire(
       serverRequire.resolve("@mdit/plugin-katex"),
     );
 
-    expect(serverRequire("markdown-it/package.json").version).toBe("15.0.0");
-    expect(serverRequire("katex/package.json").version).toBe("0.18.7");
-    expect(realpathSync(pluginRequire.resolve("markdown-it"))).toBe(
-      realpathSync(serverRequire.resolve("markdown-it")),
-    );
-    expect(realpathSync(pluginRequire.resolve("katex"))).toBe(
-      realpathSync(serverRequire.resolve("katex")),
-    );
+    for (const name of ["markdown-it", "katex"]) {
+      const spec = declaredDependencySpec(name);
+      const version = installedVersion(name);
+      expect(
+        satisfiesDependencySpec(version, spec),
+        `installed ${name} ${version} does not satisfy the declared ${spec}`,
+      ).toBe(true);
+      expect(realpathSync(pluginRequire.resolve(name))).toBe(
+        realpathSync(serverRequire.resolve(name)),
+      );
+    }
   });
 });
 
@@ -836,6 +890,12 @@ describe("renderSafeMarkdown — URLs in fixed-font contexts", () => {
     expect(html).toContain(
       '<code><a href="https://example.test/x">https://example.test/x</a></code>',
     );
+  });
+
+  it("keeps a code anchor in the same document", () => {
+    const html = renderSafeMarkdown("try `https://example.test/x` first");
+    expect(html).not.toContain("target=");
+    expect(html).not.toContain("rel=");
   });
 
   it("leaves a non-web scheme and ordinary code alone", () => {

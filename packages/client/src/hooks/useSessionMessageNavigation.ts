@@ -17,6 +17,12 @@ export interface MessageNavigationOptions {
   onError(kind: "unavailable" | "completion"): void;
 }
 
+/** The older page this navigation asked for, once it has landed. */
+interface LandedOlderPage {
+  key: string;
+  cursor: string;
+}
+
 export function useSessionMessageNavigation(options: MessageNavigationOptions) {
   const location = useLocation();
   const sourceKey = useClientSummarySourceKey();
@@ -30,9 +36,13 @@ export function useSessionMessageNavigation(options: MessageNavigationOptions) {
   const currentKey = useRef(key);
   currentKey.current = key;
   const handled = useRef<string | undefined>(undefined);
-  const attemptedPage = useRef<string | undefined>(undefined);
+  // Callers pass a fresh options literal every render, so the decision reads
+  // the current callbacks here rather than re-running whenever an inline
+  // arrow function gets a new identity.
+  const latest = useRef(options);
+  latest.current = options;
   const inFlightPage = useRef<string | undefined>(undefined);
-  const [, setCompletedLoads] = useState(0);
+  const [landedPage, setLandedPage] = useState<LandedOlderPage | null>(null);
 
   useEffect(() => {
     currentKey.current = key;
@@ -56,44 +66,55 @@ export function useSessionMessageNavigation(options: MessageNavigationOptions) {
         (message) => (message.uuid ?? message.id) === target,
       )
     ) {
-      const pageKey = JSON.stringify([key, options.olderCursor]);
+      // A page still on its way answers nothing yet. One that landed without
+      // adding the target is the give-up signal, whether or not it changed
+      // the message array or the cursor, so the decision reads the landing
+      // rather than re-running on an opaque counter.
       if (inFlightPage.current === key) return;
-      if (
-        options.hasOlder &&
-        options.olderCursor &&
-        attemptedPage.current !== pageKey
-      ) {
-        attemptedPage.current = pageKey;
+      const landedHere =
+        landedPage?.key === key && landedPage.cursor === options.olderCursor;
+      if (options.hasOlder && options.olderCursor && !landedHere) {
+        const cursor = options.olderCursor;
         inFlightPage.current = key;
-        void options
+        void latest.current
           .loadOlder()
           .catch(() => {
             if (currentKey.current === key) {
               handled.current = key;
-              options.onError("unavailable");
+              latest.current.onError("unavailable");
             }
           })
           .finally(() => {
             if (inFlightPage.current === key) inFlightPage.current = undefined;
-            if (currentKey.current === key)
-              setCompletedLoads((count) => count + 1);
+            setLandedPage({ key, cursor });
           });
         return;
       }
       handled.current = key;
-      options.onError("unavailable");
+      latest.current.onError("unavailable");
       return;
     }
     handled.current = key;
-    options.jump(target, (found) => {
+    latest.current.jump(target, (found) => {
       if (currentKey.current !== key) return;
       if (!found) {
-        options.onError("unavailable");
+        latest.current.onError("unavailable");
         return;
       }
-      void options.onResolved?.(target).catch(() => {
-        if (currentKey.current === key) options.onError("completion");
+      void latest.current.onResolved?.(target).catch(() => {
+        if (currentKey.current === key) latest.current.onError("completion");
       });
     });
-  });
+  }, [
+    key,
+    target,
+    options.enabled,
+    options.sessionId,
+    options.loading,
+    options.loadingOlder,
+    options.messages,
+    options.hasOlder,
+    options.olderCursor,
+    landedPage,
+  ]);
 }

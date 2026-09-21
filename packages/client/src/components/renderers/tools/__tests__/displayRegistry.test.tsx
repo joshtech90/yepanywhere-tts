@@ -11,7 +11,7 @@ import { displayFixtures } from "../__fixtures__/displayFixtures";
 import { toolDisplayContracts } from "../toolDisplayContracts";
 import { toolDisplayDiagnostics } from "../displayDiagnostics";
 import type { PreparedToolDisplay } from "../defineTool";
-import type { DisplayRecord } from "../prepareDisplay";
+import { recordFromLegacyArgs, type DisplayRecord } from "../prepareDisplay";
 
 const context = {
   isStreaming: false,
@@ -254,6 +254,24 @@ for (const [tool, variants] of Object.entries(displayFixtures)) {
   }
 }
 
+it("reads a call still running out of positional dispatch arguments", () => {
+  expect(
+    recordFromLegacyArgs({ file_path: "notes.md" }, undefined, false),
+  ).toEqual({
+    input: { file_path: "notes.md" },
+    result: undefined,
+    isError: false,
+    status: "pending",
+  });
+  expect(recordFromLegacyArgs(undefined, "output", false).status).toBe(
+    "complete",
+  );
+  expect(recordFromLegacyArgs(undefined, undefined, true).status).toBe("error");
+  expect(
+    recordFromLegacyArgs(undefined, undefined, false, "complete").status,
+  ).toBe("complete");
+});
+
 it("accounts for diagnostic schemas separately from display eligibility", () => {
   const omitted = [
     "ExitPlanMode",
@@ -261,6 +279,7 @@ it("accounts for diagnostic schemas separately from display eligibility", () => 
     "Web",
     "UpdatePlan",
     "ViewImage",
+    "Skill",
     "spawn_agent",
     "TaskCreate",
     "TaskUpdate",

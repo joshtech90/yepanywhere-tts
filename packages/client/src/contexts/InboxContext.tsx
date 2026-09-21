@@ -17,11 +17,6 @@ import {
 } from "react";
 import { type InboxItem, type InboxResponse, api } from "../api/client";
 import {
-  RETAINED_SESSION_COLLECTIONS_CAPABILITY,
-  serverHasCapability,
-} from "@yep-anywhere/shared";
-import { ensureVersionInfo } from "../hooks/useVersion";
-import {
   type RetainedClientQueryEvent,
   useRetainedClientQuery,
 } from "../hooks/useRetainedClientQuery";
@@ -32,6 +27,8 @@ import {
   type ClientQueryRequestContext,
 } from "../lib/clientQueryController";
 import { isRemoteClient } from "../lib/connection";
+import { catalogLoadState } from "../lib/clientSummaryCollections";
+import { resolveCollectionRequestMode } from "../lib/collectionRequestMode";
 import { useInboxResponseSnapshot } from "../lib/clientSummaryStore";
 import { INBOX_TIERS, type InboxTier } from "../lib/inboxTiers";
 import { useOptionalRemoteConnection } from "./RemoteConnectionContext";
@@ -323,13 +320,10 @@ export function InboxProvider({
     revalidateOn: INBOX_REVALIDATE_EVENTS,
     shouldRevalidateEvent: shouldRevalidateInboxEvent,
     fetcher: async () => {
-      const version = await ensureVersionInfo(sourceKey);
-      if (sourceKeyRef.current !== sourceKey)
-        throw new Error("Session source changed");
-      return serverHasCapability(
-        version,
-        RETAINED_SESSION_COLLECTIONS_CAPABILITY,
-      )
+      const mode = await resolveCollectionRequestMode(sourceKey, {
+        currentSourceKey: () => sourceKeyRef.current,
+      });
+      return mode === "retained"
         ? api.getInbox(undefined, "retained")
         : api.getInbox();
     },
@@ -361,6 +355,7 @@ export function InboxProvider({
     inbox.recentActivity.length +
     inbox.unread8h.length +
     inbox.unread24h.length;
+  const catalogState = catalogLoadState(inbox.catalog, totalItems);
 
   return (
     <InboxContext.Provider
@@ -371,17 +366,8 @@ export function InboxProvider({
         unread8h: inbox.unread8h,
         unread24h: inbox.unread24h,
         inbox,
-        loading:
-          loading ||
-          (queryEnabled &&
-            totalItems === 0 &&
-            inbox.catalog?.complete === false &&
-            inbox.catalog.refreshing),
-        error:
-          error ??
-          (inbox.catalog?.refreshError
-            ? new Error(inbox.catalog.refreshError)
-            : null),
+        loading: loading || (queryEnabled && catalogState.awaitingFirstRows),
+        error: error ?? catalogState.refreshError,
         refresh,
         refetch,
         totalNeedsAttention,

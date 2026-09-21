@@ -26,6 +26,7 @@ import {
   ExploredImageStrip,
 } from "./ExploredImageStrip";
 import { toolRegistry } from "../renderers/tools";
+import { effectiveInvocationError } from "../renderers/tools/prepareDisplay";
 import type { RenderContext } from "../renderers/types";
 import { SessionFilePathLink } from "../SessionFilePathLink";
 import { getToolSummary } from "../tools/summaries";
@@ -61,7 +62,7 @@ function renderEntrySummary(
   const kind = getExplorationKind(item.toolName);
   const result = item.toolResult?.structured ?? item.toolResult?.content;
   const isComplete = item.status === "complete";
-  const isError = item.toolResult?.isError ?? item.status === "error";
+  const isError = effectiveInvocationError(item);
   const context: RenderContext = {
     isStreaming: item.status === "pending",
     theme: "dark",

@@ -32,10 +32,15 @@ points normalize before rendering. So the Shiki grammar lookup, the `ansi` and
 the same form, and a fence written ```` ```JavaScript ```` behaves like
 ```` ```javascript ````.
 
-The fence-detection regexes previously required `(\w*)`, which rejected an info
-string containing a space or a punctuation attribute outright — such a line was
-not recognized as a fence at all and fell through to paragraph handling. They
-now accept `(.*)` and let normalization drop the tail.
+An info string may hold spaces and punctuation attributes; normalization drops
+that tail. The one exception is CommonMark's: a backtick fence's info string may
+not contain a backtick, so a line that is an inline code span — ```` ```code```
+followed by prose ```` — opens no code block and is a paragraph. A tilde fence
+has no such restriction and takes its info string whole. `codeFenceOpening` in
+`packages/server/src/augments/block-detector.ts` answers "does this line open a
+fence, and with what info string" for every one of the streaming detector's
+fence decisions, so block detection, the partial-line lookahead, and the
+language read cannot disagree.
 
 ## Every rendered block carries its language
 
@@ -138,6 +143,12 @@ with the new palette instead of reusing stale SVG; the hook watches
 hold rendered SVG, so the cache is bounded and evicts the oldest rather than
 growing for the life of the tab.
 
+That appearance has one owner, `getResolvedTheme` in `hooks/useTheme.ts`, which
+is the same answer every other client surface asks for: the stored preference,
+with `auto` following the OS and `verydark` resolving to dark. The cache key and
+Mermaid's own theme configuration both read it, so a diagram cannot be drawn in
+one appearance and then cached under another.
+
 ### Inline SVG from a reviewed renderer is allowed
 
 Mermaid's SVG is displayed inline as ordinary reviewed-renderer output. No new
@@ -165,7 +176,10 @@ The user-facing control for a rendered diagram is the ordinary source-or-
 rendered choice YA already offers everywhere else, not a security setting. A
 Mermaid block renders as a diagram by default and toggles back to its
 highlighted source on demand, reusing the Σ affordance and hover behavior of
-the fixed-font panels rather than introducing a per-language control.
+the fixed-font panels rather than introducing a per-language control. Reusing
+it is literal: this toggle is built in plain DOM rather than by React, and both
+surfaces draw the glyph from the one definition beside `RenderModeGlyph`, so
+the two controls cannot come to look different.
 Rendering by default is the deliberate choice here: showing diagram source
 where a diagram was requested is the defect this feature exists to fix, so it
 is not a case of disturbing a sound default.

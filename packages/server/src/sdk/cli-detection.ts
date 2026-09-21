@@ -13,6 +13,7 @@ import {
   buildNpmCommandArgs,
   resolveNpmCommandTarget,
 } from "../utils/npmCommand.js";
+import { whichCommand } from "./which-command.js";
 
 export type InstallationReadCoordinator = Pick<
   ProviderInstallationCoordinator,
@@ -31,14 +32,6 @@ let npmGlobalCodexPathsCache:
   | { paths: string[]; expiresAt: number }
   | undefined;
 let npmGlobalCodexPathsRequest: Promise<string[]> | undefined;
-
-/**
- * Returns the platform-appropriate command to locate an executable in PATH.
- * Uses `where` on Windows, `which` on Unix.
- */
-export function whichCommand(name: string): string {
-  return isWindows ? `where ${name}` : `which ${name}`;
-}
 
 /**
  * Information about the Claude CLI installation.

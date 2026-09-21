@@ -78,7 +78,11 @@ Contract obligations, not just the shape:
   the source selected `default`, YA pins the provider-reported model before
   persisting or resuming the fork. Fork-backed recap, retitle, and handoff
   helpers pass that model into their immediate generator turn. Effort is a
-  separate setting and a helper may deliberately use a lower level.
+  separate setting and a helper may deliberately use a lower level. A fork
+  request may carry an explicit `thinking` option, which becomes the fork's
+  recorded launch settings ([mid-session effort change](mid-session-effort-change.md)
+  § Fork launch settings); without it the fork's first send uses the client's
+  per-model default as before.
 - **Never emulated when absent.** Absence means the capability does not exist;
   YA must not ship a fork-labeled button backed by replay/forgery on a provider
   that cannot truly fork (`session-context-actions.md` § Fork; `types.ts:291`).

@@ -40,13 +40,7 @@ function WebFetchToolUse({ input }: { input: WebFetchInput }) {
 /**
  * WebFetch tool result - shows fetched content
  */
-function WebFetchToolResult({
-  result,
-  isError,
-}: {
-  result: WebFetchResult;
-  isError: boolean;
-}) {
+function WebFetchToolResult({ result }: { result: WebFetchResult }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
@@ -68,23 +62,6 @@ function WebFetchToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("WebFetch");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className="webfetch-error">
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="WebFetch" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Fetch failed"}
-      </div>
-    );
-  }
 
   if (!result) {
     return <div className="webfetch-empty">No content</div>;
@@ -150,8 +127,18 @@ export const webFetchRenderer = defineTool(toolDisplayContracts.WebFetch, {
     return <WebFetchToolUse input={input} />;
   },
 
-  renderToolResult(result, isError, _context) {
-    return <WebFetchToolResult result={result} isError={isError} />;
+  renderToolResult(result, _isError, _context) {
+    return <WebFetchToolResult result={result} />;
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className="webfetch-error">{failure.content || "Fetch failed"}</div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input) {
@@ -163,8 +150,7 @@ export const webFetchRenderer = defineTool(toolDisplayContracts.WebFetch, {
     }
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     return r?.code ? `${r.code} ${r.codeText}` : "Fetched";
   },

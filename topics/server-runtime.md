@@ -94,6 +94,12 @@ severity security/protocol notices retain priority; login/offline/reconnect
 screens do not gain a runtime overlay. Snoozes use the existing browser-local
 store, scoped to source, runtime/version and requirement epoch.
 
+Because the advisory returns until the runtime itself changes, it offers Remind
+me later and no Dismiss, and its floating card sits below the navigation header
+rather than over it. Each notice states those two presentation rules and its
+sort rank among notices of equal severity; no renderer recognizes a notice by
+its id.
+
 The notice is deliberately default-visible, authorized by the Maintainer on
 2026-09-08 to let remote operators arrange an SSH/agent-assisted runtime
 upgrade while keeping normal access. It changes no provider behavior, submitted

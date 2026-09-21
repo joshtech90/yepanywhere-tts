@@ -16,6 +16,30 @@ function rejecting(): Response {
   return new Response(REJECTION, { status: 400 });
 }
 
+/**
+ * Requests one ask costs.
+ *
+ * Asking is two stages: the schema stage that provokes the accepted literals,
+ * and the chat-template stage that checks whether the model behind the endpoint
+ * narrows them. Both run for every endpoint that answers the first.
+ */
+const FETCHES_PER_ASK = 2;
+
+/** vLLM's chat-template rejection of an effort its request schema accepts. */
+function templateRejecting(): Response {
+  return new Response(
+    JSON.stringify({
+      error: {
+        message:
+          "Unexpected reasoning effort high. Supported types are " +
+          "xhigh (default), medium, and low.",
+        type: "BadRequestError",
+      },
+    }),
+    { status: 400 },
+  );
+}
+
 describe("GatewayEffortProbeCache", () => {
   it("reports the levels the endpoint listed", async () => {
     const fetchImpl = vi.fn(async () => rejecting());
@@ -51,7 +75,58 @@ describe("GatewayEffortProbeCache", () => {
       cache.probe("http://127.0.0.1:8001/", "m"),
     ]);
     await cache.probe("http://127.0.0.1:8001", "m");
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl).toHaveBeenCalledTimes(FETCHES_PER_ASK);
+  });
+
+  it("narrows the schema's literals to what the chat template takes", async () => {
+    // vLLM validates the field against a seven-value literal, then hands the
+    // request to a chat template that knows three. Only the template's answer
+    // describes the model the user is about to run, and it names the default.
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        reasoning_effort: string;
+      };
+      return body.reasoning_effort === "ya-capability-probe"
+        ? rejecting()
+        : templateRejecting();
+    });
+    const cache = new GatewayEffortProbeCache(
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    expect(await cache.probe("http://127.0.0.1:8001", "m")).toEqual({
+      levels: ["low", "medium", "xhigh"],
+      defaultLevel: "xhigh",
+      // The template did not list "none", so thinking cannot be switched off
+      // however permissive the request schema was.
+      noThinking: false,
+    });
+    // The second stage asks with the highest level the schema listed, which is
+    // the one a narrowing template is most likely to reject for free.
+    const second = fetchImpl.mock.calls[1] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(second[1].body))).toMatchObject({
+      reasoning_effort: "high",
+      max_tokens: 1,
+    });
+  });
+
+  it("keeps the schema's answer when the template accepts its top level", async () => {
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        reasoning_effort: string;
+      };
+      return body.reasoning_effort === "ya-capability-probe"
+        ? rejecting()
+        : new Response("{}", { status: 200 });
+    });
+    const cache = new GatewayEffortProbeCache(
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    expect(await cache.probe("http://host:1", "m")).toEqual({
+      levels: ["low", "high"],
+      noThinking: true,
+    });
   });
 
   it("asks again once a cached answer has aged out", async () => {
@@ -65,7 +140,7 @@ describe("GatewayEffortProbeCache", () => {
     await cache.probe("http://host:1", "m");
     now = 31 * 60 * 1000;
     await cache.probe("http://host:1", "m");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2 * FETCHES_PER_ASK);
   });
 
   it("caches a silence briefly, so a down endpoint is retried sooner", async () => {
@@ -106,7 +181,7 @@ describe("GatewayEffortProbeCache", () => {
     cache.setEnabled(false);
     cache.setEnabled(true);
     await cache.probe("http://host:1", "m");
-    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(fetchImpl).toHaveBeenCalledTimes(2 * FETCHES_PER_ASK);
   });
 
   it("learns nothing from an endpoint that accepted the unrecognized value", async () => {

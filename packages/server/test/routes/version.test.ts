@@ -24,7 +24,9 @@ import {
   HOST_AWAKE_CONTROL_CAPABILITY,
   HOST_IDENTITY_CAPABILITY,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  PROJECT_CAPTIONS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
+  PROJECT_NAMES_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   PUBLIC_FILE_SHARES_CAPABILITY,
   PROVIDER_HOST_CONTROL_CAPABILITY,
@@ -88,6 +90,14 @@ describe("Version Routes", () => {
 
   it("advertises project code-name support", () => {
     expect(getServerCapabilities()).toContain(PROJECT_CODE_NAMES_CAPABILITY);
+  });
+
+  // Version-implied capabilities are only implied at or past their release.
+  // A development build is versioned below that release, so the client would
+  // never see these unless the explicit list carries them until then.
+  it("advertises project captions and chosen names ahead of their release", () => {
+    expect(getServerCapabilities()).toContain(PROJECT_CAPTIONS_CAPABILITY);
+    expect(getServerCapabilities()).toContain(PROJECT_NAMES_CAPABILITY);
   });
 
   it("advertises isolated Claude gateway configuration", () => {

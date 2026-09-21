@@ -173,6 +173,18 @@ register on the values it presents and reach the caller's latest handlers
 indirectly; registering on object identity is an update loop that React aborts
 as exceeded update depth, replacing the session with the crash screen.
 
+The parked controller's trailing button is one close descriptor — a label, a
+destructive flag, a busy flag and what to run — carried on the registration
+beside the viewer's other fields. A viewer that simply dismisses itself gets a
+default descriptor; a viewer whose dismissal costs something, such as an app
+pane that stops a server process, installs its own and may withhold it entirely,
+which is how a session with no authority to stop an app shows no button at all.
+The toolbar renders whatever descriptor is present and never asks what kind of
+viewer it is showing. Installing a descriptor compares its fields rather than
+its identity, for the same reason registration does: an owner rebuilds the
+descriptor on every render, and publishing an equal one re-enters the effect
+that produced it.
+
 **Keep the portaled controller and its positioning lifecycle in one component**
 (vs. embedding them in the composer toolbar):
 `SessionViewerToolbarController` owns the icons, accessible labels, copy-path

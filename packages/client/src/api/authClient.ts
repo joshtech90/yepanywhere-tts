@@ -40,10 +40,14 @@ export const authApi = {
       body: JSON.stringify({ password }),
     }),
 
-  login: (password: string) =>
-    fetchJSON<{ success: boolean }>("/auth/login", {
+  /**
+   * Log in. A username names a limited user (topics/limited-users.md); blank
+   * or absent is the superuser, exactly as before limited users existed.
+   */
+  login: (password: string, username?: string) =>
+    fetchJSON<{ success: boolean; username?: string }>("/auth/login", {
       method: "POST",
-      body: JSON.stringify({ password }),
+      body: JSON.stringify(username ? { password, username } : { password }),
     }),
 
   logout: () =>

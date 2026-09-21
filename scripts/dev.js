@@ -34,6 +34,7 @@ import {
 import {
   isOwnedProcessGroupAlive,
   providerHostCapability,
+  providerHostEnabled,
 } from "./provider-process-identity.mjs";
 import { exitIfUnsafeHome } from "./safe-home.js";
 
@@ -132,6 +133,7 @@ Options:
 // Use --watch to enable tsx watch mode
 const backendWatch = args.includes("--watch");
 const noFrontendReload = args.includes("--no-frontend-reload");
+const providerHostPolicyEnabled = providerHostEnabled();
 
 // Port configuration: PORT + 0 = server, PORT + 1 = maintenance, PORT + 2 = vite
 const basePort = process.env.PORT
@@ -168,6 +170,9 @@ if (backendWatch) console.log("  Backend auto-reload: ENABLED (--watch)");
 if (noFrontendReload) console.log("  Frontend HMR: DISABLED");
 if (!backendWatch && !noFrontendReload)
   console.log("  Frontend HMR: ENABLED, Backend: manual restart only");
+console.log(
+  `  Provider host: ${providerHostPolicyEnabled ? "ENABLED" : "DISABLED"}`,
+);
 
 // Build environment for child processes
 const env = {
@@ -176,11 +181,13 @@ const env = {
   // When not using --watch, enable manual reload mode (shows banner on file changes)
   NO_BACKEND_RELOAD: backendWatch ? "" : "true",
   NO_FRONTEND_RELOAD: noFrontendReload ? "true" : "",
+  YEP_PROVIDER_HOST_ENABLED: String(providerHostPolicyEnabled),
   // Pass vite port to both server and client for consistency
   VITE_PORT: String(vitePort),
 };
 
 const reloadSafeRuntimeHostsEnabled =
+  providerHostPolicyEnabled &&
   providerHostCapability().supported &&
   !backendWatch &&
   (env.USE_MOCK_SDK !== "true" ||
@@ -263,6 +270,16 @@ async function waitForRuntimeProcessGroupExit(target, timeoutMs) {
     );
   }
   return true;
+}
+
+function signalRuntimeProcessGroup(signalTarget, signal) {
+  try {
+    process.kill(signalTarget, signal);
+  } catch (error) {
+    // The group can exit between the liveness check and the signal; that is
+    // the outcome being asked for, not a failed reap.
+    if (error?.code !== "ESRCH") throw error;
+  }
 }
 
 function managedTarget(child) {
@@ -373,13 +390,13 @@ async function reapRuntimeProcessGroup(reportedTarget) {
       : reportedTarget;
   const signalTarget = -target.processGroupId;
   if (!runtimeProcessGroupAlive(target)) return;
-  if (runtimeProcessGroupAlive(target)) process.kill(signalTarget, "SIGTERM");
+  signalRuntimeProcessGroup(signalTarget, "SIGTERM");
   if (await waitForRuntimeProcessGroupExit(target, 1_500)) return;
   if (!runtimeProcessGroupAlive(target)) return;
-  if (runtimeProcessGroupAlive(target)) process.kill(signalTarget, "SIGTERM");
+  signalRuntimeProcessGroup(signalTarget, "SIGTERM");
   if (await waitForRuntimeProcessGroupExit(target, 500)) return;
   if (!runtimeProcessGroupAlive(target)) return;
-  if (runtimeProcessGroupAlive(target)) process.kill(signalTarget, "SIGKILL");
+  signalRuntimeProcessGroup(signalTarget, "SIGKILL");
   if (!(await waitForRuntimeProcessGroupExit(target, 1_000))) {
     throw new Error(
       `Runtime process group ${target.processGroupId} survived SIGKILL`,

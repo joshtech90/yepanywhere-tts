@@ -25,8 +25,10 @@ async function importVersion() {
 }
 
 // Both speech vocabulary capabilities are advertised only once SQLite is
-// ready, because learned vocabulary lives in that store. Every other
-// capability answers the same way with or without a SQLite status reader.
+// ready, because that readiness is what says the learned table's own database
+// can be opened here at all (topics/pluggable-speech-recognition.md § Keyterm
+// Biasing). Every other capability answers the same way with or without a
+// SQLite status reader.
 const SQLITE_GATED_CAPABILITY_NAMES: ReadonlySet<string> = new Set([
   SERVER_CAPABILITIES.speechVocabulary.name,
   SERVER_CAPABILITIES.speechVocabularySessionTerms.name,
@@ -402,9 +404,9 @@ describe("GET /version", () => {
     expect(version.capabilities).toBeUndefined();
     expect(version.optionalCapabilityBits).toEqual([
       [0, 1],
-      // Bit 72 (claude-gateway-services) rides in the same word as the
-      // computer-control bits, hence 4288 + 256.
-      [2, 4544],
+      // Bit 77 (claude-gateway-services) rides in the same word as the
+      // computer-control bits, hence 4288 + 8192.
+      [2, 12480],
     ]);
     expect(
       serverHasCapability(

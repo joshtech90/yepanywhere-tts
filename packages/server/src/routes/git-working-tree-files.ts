@@ -8,6 +8,7 @@ import type { Context } from "hono";
 import { Hono } from "hono";
 import { GIT_DECODE_PATHS_ARGS, runGit } from "../git/gitExec.js";
 import { listLocallyExcludedPaths } from "../git/locallyExcluded.js";
+import { compareWorktreePaths } from "../projects/projectWorktreeCoverage.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { DirtyFileEditorService } from "../services/DirtyFileEditorService.js";
 import { GitUntrackedCacheService } from "../services/GitUntrackedCacheService.js";
@@ -128,7 +129,7 @@ export async function listWorkingTreeFiles(
     ...ignored
       .filter((path) => !trackedPaths.has(path))
       .map((path) => ({ path, tracked: false, kind: "ignored" as const })),
-  ].sort((a, b) => comparePaths(a.path, b.path));
+  ].sort((a, b) => compareWorktreePaths(a.path, b.path));
   const truncated = Boolean(options.untrackedTruncated) || files.length > limit;
 
   return {
@@ -147,10 +148,6 @@ async function listPaths(cwd: string, flags: string[]): Promise<string[]> {
   const paths = stdout.split("\0");
   if (paths.at(-1) === "") paths.pop();
   return paths;
-}
-
-function comparePaths(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function decorateLastEditors(

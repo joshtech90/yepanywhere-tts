@@ -10,8 +10,16 @@ const ORIGINAL_BASH_ENV_ENV = "YEP_ORIGINAL_BASH_ENV";
  * Session-scoped names the bridge file owns. `extendEnv` drops them from a
  * spawn environment so a reused process cannot inherit a previous session's
  * values; the bridge writes the current ones back for each shell.
+ *
+ * `AGENTCTL_SESSION_ID` is here because an inherited one is worse than none:
+ * the YA server itself may have been started from an agent's shell, and a
+ * provider worker forked from it would otherwise hand that launcher's id to
+ * every tool shell of a session that has not reported its own id yet. A tool
+ * acting on it edits a live peer's coordination state. No id makes agentctl
+ * refuse; a foreign id makes it confidently wrong.
  */
 const SESSION_CHILD_ENV_NAMES = [
+  AGENTCTL_SESSION_ID_ENV,
   "AGENT_SERVER_URL",
   "AGENT_ARTIFACT_VIEWER_ORIGIN",
   "YEP_SESSION_WAKE_URL",
@@ -111,6 +119,11 @@ export function createAgentctlSessionEnvBridge(
             ? `export ${name}=${quoteShellWord(environment[name])}`
             : `unset ${name}`,
         ),
+        // The canonical session-id file is the only sanctioned source of this
+        // session's id. Clear any inherited value first so a shell that starts
+        // before the provider reports an id reports none, rather than the id of
+        // whatever session launched the server.
+        `unset ${AGENTCTL_SESSION_ID_ENV}`,
         `if [ -r ${quoteShellWord(sessionEnvPath)} ]; then`,
         `  . ${quoteShellWord(sessionEnvPath)}`,
         "fi",
@@ -200,6 +213,17 @@ export function copyAgentctlBashEnvInto(
     delete target.YEP_ORIGINAL_BASH_ENV;
   }
   if (options?.sessionId) {
+    // Publish as well as copy: the bridge file clears an inherited id before
+    // sourcing its own, so a Bash tool shell learns the id from the file, and
+    // an id only ever set on the spawn overlay would be cleared and not
+    // restored. The overlay copy still covers shells that never source
+    // BASH_ENV (codex's sandbox can strip it).
+    bridge.publishSessionId(options.sessionId);
     target.AGENTCTL_SESSION_ID = options.sessionId;
+  } else {
+    // Without a known id, leave none: `target` is often the worker's own
+    // `process.env`, which can carry the id of the session that started the
+    // server. See SESSION_CHILD_ENV_NAMES.
+    delete target.AGENTCTL_SESSION_ID;
   }
 }

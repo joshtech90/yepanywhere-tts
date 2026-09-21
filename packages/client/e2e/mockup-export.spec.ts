@@ -36,7 +36,18 @@ test("exports matching source states, a complete bundle, and a working direct YA
   page,
 }) => {
   test.setTimeout(90_000);
-  await build({ configFile });
+  // An exported mockup is a production artifact. Vite treats an ambient
+  // NODE_ENV as authoritative over the build mode, so a build started from
+  // Playwright's `test` environment resolves libraries' development exports
+  // and ships their dev branches. Every other build this suite starts is a
+  // subprocess that already pins this; only this one runs in-process.
+  const runnerNodeEnv = process.env.NODE_ENV;
+  process.env.NODE_ENV = "production";
+  try {
+    await build({ configFile });
+  } finally {
+    process.env.NODE_ENV = runnerNodeEnv;
+  }
   const problems: string[] = [];
   page.on("pageerror", (error) => problems.push(error.message));
   page.on("console", (message) => {
@@ -232,10 +243,9 @@ test("exports matching source states, a complete bundle, and a working direct YA
       expect(await child.evaluate(() => window.scrollY)).toBeGreaterThan(0);
       await child.evaluate(() => window.scrollTo(0, 0));
       await child
-        .getByRole("button", { name: "Project settings", exact: true })
+        .getByRole("button", { name: "Open project settings", exact: true })
         .first()
         .click();
-      await child.getByRole("menuitem", { name: "Project settings" }).click();
       await expect(child.getByRole("status")).toHaveText(
         "Settings selected: Yep Anywhere",
       );

@@ -130,6 +130,8 @@ export interface ProviderRuntimeSnapshot {
   /** Configured model-serving endpoints; the legacy keys mirror the default. */
   gatewayServices?: readonly GatewayService[];
   defaultGatewayServiceId?: string;
+  /** Whether endpoints may be asked which thinking efforts they accept. */
+  gatewayServiceEffortDetection?: boolean;
   subagentMaxDepth?: SubagentMaxDepth;
   ollamaUrl?: string;
   ollamaSystemPrompt?: string;
@@ -187,15 +189,13 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
       ) {
         return async () => {
           const models = await target.getAvailableModels();
-          const processGroupId =
-            ClaudeGatewayProvider.getOwnedGatewayProcessGroupId();
-          if (processGroupId) {
-            await retainProviderRuntimeProcessGroup(processGroupId);
-            if (
-              !ClaudeGatewayProvider.relinquishOwnedGatewayProcessGroup(
-                processGroupId,
-              )
-            ) {
+          const retentions =
+            await ClaudeGatewayProvider.retainOwnedGatewayProcessGroups(
+              retainProviderRuntimeProcessGroup,
+            );
+          for (const retention of retentions) {
+            if (retention.error) throw retention.error;
+            if (!retention.relinquished) {
               throw new Error(
                 "Claude Gateway ownership changed during host transfer",
               );

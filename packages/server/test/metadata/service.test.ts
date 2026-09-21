@@ -495,6 +495,47 @@ describe("SessionMetadataService", () => {
     });
   });
 
+  describe("goal command", () => {
+    const legacyGoal: SlashCommand = {
+      name: "goal",
+      description: "Goal",
+      providerDetails: { codex: { goalObjective: "Finish the old goal" } },
+    };
+
+    it("reads the pre-Claude codexGoalCommand record", async () => {
+      await writeFile(
+        join(testDir, "session-metadata.json"),
+        JSON.stringify({
+          version: 3,
+          sessions: { "session-1": { codexGoalCommand: legacyGoal } },
+        }),
+      );
+      await service.initialize();
+
+      expect(service.getGoalCommand("session-1")).toEqual(legacyGoal);
+    });
+
+    it("prefers the current goalCommand over the legacy record", async () => {
+      const current: SlashCommand = {
+        name: "goal",
+        description: "Goal",
+        providerDetails: { codex: { goalObjective: "Finish the new goal" } },
+      };
+      await writeFile(
+        join(testDir, "session-metadata.json"),
+        JSON.stringify({
+          version: 3,
+          sessions: {
+            "session-1": { codexGoalCommand: legacyGoal, goalCommand: current },
+          },
+        }),
+      );
+      await service.initialize();
+
+      expect(service.getGoalCommand("session-1")).toEqual(current);
+    });
+  });
+
   describe("effective launch settings", () => {
     it("persists complete settings and preserves exact default model tokens", async () => {
       await service.initialize();
@@ -1209,6 +1250,71 @@ describe("SessionMetadataService", () => {
       expect(service.getMetadata("session-1")).toEqual({
         customTitle: "My Title",
         workstreamId: "ws-feature",
+      });
+    });
+  });
+
+  describe("nextForkOrdinal", () => {
+    it("hands out rising ordinals per lineage and persists them", async () => {
+      await service.initialize();
+
+      expect(await service.nextForkOrdinal("session-1")).toEqual({
+        ordinal: 1,
+        lineageRootId: "session-1",
+      });
+      expect(await service.nextForkOrdinal("session-1")).toEqual({
+        ordinal: 2,
+        lineageRootId: "session-1",
+      });
+      // A second source session counts its own forks.
+      expect(await service.nextForkOrdinal("session-2")).toEqual({
+        ordinal: 1,
+        lineageRootId: "session-2",
+      });
+
+      expect(service.getMetadata("session-1")).toEqual({ forksCreated: 2 });
+
+      const restarted = new SessionMetadataService({ dataDir: testDir });
+      await restarted.initialize();
+      expect(await restarted.nextForkOrdinal("session-1")).toEqual({
+        ordinal: 3,
+        lineageRootId: "session-1",
+      });
+    });
+
+    it("continues the root's numbering when a fork is itself forked", async () => {
+      await service.initialize();
+
+      const first = await service.nextForkOrdinal("session-1");
+      await service.updateMetadata("fork-a", {
+        forkLineageRootId: first.lineageRootId,
+      });
+
+      // Forking the fork draws from the root's count, not a fresh one.
+      expect(await service.nextForkOrdinal("fork-a")).toEqual({
+        ordinal: 2,
+        lineageRootId: "session-1",
+      });
+      expect(service.getMetadata("session-1")).toEqual({ forksCreated: 2 });
+      expect(service.getMetadata("fork-a")).toEqual({
+        forkLineageRootId: "session-1",
+      });
+      // The source session keeps drawing from the same sequence.
+      expect(await service.nextForkOrdinal("session-1")).toEqual({
+        ordinal: 3,
+        lineageRootId: "session-1",
+      });
+    });
+
+    it("preserves other metadata while counting forks", async () => {
+      await service.initialize();
+      await service.setTitle("session-1", "My Title");
+
+      await service.nextForkOrdinal("session-1");
+
+      expect(service.getMetadata("session-1")).toEqual({
+        customTitle: "My Title",
+        forksCreated: 1,
       });
     });
   });

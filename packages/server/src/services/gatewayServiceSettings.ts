@@ -12,8 +12,8 @@
  */
 
 import {
-  DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
   DEFAULT_GATEWAY_SERVICE_ID,
+  legacyGatewayServiceEntry,
   type GatewayService,
 } from "@yep-anywhere/shared";
 
@@ -36,23 +36,6 @@ export function defaultGatewayService(
     services.find((service) => service.id === DEFAULT_GATEWAY_SERVICE_ID) ??
     services[0]
   );
-}
-
-function legacyServiceEntry(legacy: LegacyGatewaySettings): GatewayService {
-  return {
-    id: DEFAULT_GATEWAY_SERVICE_ID,
-    label: "",
-    shortName: "",
-    url: legacy.claudeGatewayUrl ?? "",
-    enabled: true,
-    ...(legacy.claudeGatewayStartCommand
-      ? { serviceCommand: legacy.claudeGatewayStartCommand }
-      : {}),
-    autoStop: false,
-    autoStopAfterSeconds: 0,
-    codexEnabled: false,
-    codexWireApi: DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
-  };
 }
 
 /** Which legacy keys this particular update touched, if any. */
@@ -114,10 +97,7 @@ export function reconcileGatewaySettings(
         claudeGatewayStartCommand: legacyCommand,
       };
     }
-    const migrated = legacyServiceEntry({
-      claudeGatewayUrl: legacyUrl,
-      ...(legacyCommand ? { claudeGatewayStartCommand: legacyCommand } : {}),
-    });
+    const migrated = legacyGatewayServiceEntry(legacyUrl, legacyCommand);
     return {
       services: [migrated],
       defaultServiceId: migrated.id,

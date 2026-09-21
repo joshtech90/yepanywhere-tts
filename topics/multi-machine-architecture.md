@@ -272,7 +272,10 @@ YA-operated authorization service, use Google or another identity provider to
 sign in, and manage access to enrolled YA servers from that account. No
 existing YA hosted-issuer implementation or dedicated proposal was found in the
 reviewed documents. This would extend the current manual peer-pairing direction;
-it is not authority already held by the relay.
+it is not authority already held by the relay. The later
+[[principals-and-grants]] sketch now records the shared relationship between
+this possible credential source, local limited users, target-enforced policy,
+and peer grants; it does not approve this hosted protocol.
 
 | Hosted role | Authority delegated by the owner |
 | --- | --- |

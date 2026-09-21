@@ -32,6 +32,13 @@ Related topic: [reload-safe provider runtimes](reload-safe-provider-runtimes.md)
   waiting-input sessions are presumed live and have no viewer-absence kill
   deadline; only `verified-idle` without another retention owner is eligible
   for the configured idle grace.
+- Every session-row projection reports the same live-process state. Ownership,
+  `pendingInputType`, `activity`, and `hasUnread` come from one owner,
+  `sessionRowRuntimeOverlay` in `packages/server/src/sessions/recap-overlays.ts`,
+  so All Sessions, the inbox, a project's session list, and the retained
+  collections cannot disagree about a session they all show. In particular an
+  idle process that still retains provider work (background tasks, crons)
+  reports `activity: "in-turn"` on every one of those surfaces.
 - An idle grace owns one absolute deadline. Delays longer than Node can arm in
   one timer are scheduled in safe chunks against that unchanged deadline; a
   chunk firing is not grace expiry. Live timeout changes replace the deadline

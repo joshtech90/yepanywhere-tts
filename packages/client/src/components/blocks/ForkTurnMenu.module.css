@@ -44,6 +44,15 @@
   color: var(--text-secondary);
 }
 
+/* Same-session Clear entries sit below the fork entries as their own group. */
+.menu button.rewind {
+  border-top: 1px solid var(--border-color);
+}
+
+.menu button.rewind + button.rewind {
+  border-top: 0;
+}
+
 @media (max-width: 600px), (pointer: coarse) {
   .menu {
     right: 8px;

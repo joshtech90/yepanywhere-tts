@@ -14,6 +14,13 @@ export interface IssueSettings {
   aggressiveMatching?: boolean;
 }
 
+/** Issue association settings for an installation that has never saved any. */
+export const DEFAULT_ISSUE_SETTINGS: IssueSettings = {
+  enabled: false,
+  scope: "viewed",
+  recentDays: 7,
+};
+
 /**
  * Opt-in tracker confirmation.
  *

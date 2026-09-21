@@ -12,7 +12,7 @@
  */
 
 import { isEffortLevel } from "./gateway-model-effort.js";
-import type { EffortLevel } from "./types.js";
+import type { EffortLevel, ModelInfo } from "./types.js";
 
 export const MAX_GATEWAY_SERVICES = 16;
 export const MAX_GATEWAY_SERVICE_ID_LENGTH = 32;
@@ -257,6 +257,29 @@ export function codexProfileName(service: Pick<GatewayService, "id">): string {
   return `ya-${service.id}`;
 }
 
+/**
+ * Codex's `model_providers` key for a service.
+ *
+ * A launch override (`codex -c model_providers.<key>.base_url=…`) and the
+ * generated `ya-<id>.config.toml` profile must name the same provider, so both
+ * spell the key here rather than each deriving it from the service id.
+ */
+export function codexProviderKey(service: Pick<GatewayService, "id">): string {
+  return `ya_${service.id.replace(/-/gu, "_")}`;
+}
+
+/**
+ * A value quoted as a TOML basic string, whose escapes are JSON's.
+ *
+ * Every value YA writes into a generated Codex profile or passes as a
+ * `codex -c <key>=<value>` launch override goes through this. A label such as
+ * `My "vLLM"` otherwise closes the string early and Codex rejects the
+ * override, so the launch fails on a name the user was allowed to type.
+ */
+export function tomlString(value: string): string {
+  return JSON.stringify(value);
+}
+
 function joinPath(directory: string, name: string): string {
   const separator =
     directory.includes("\\") && !directory.includes("/") ? "\\" : "/";
@@ -286,13 +309,21 @@ export function claudeSettingsPath(
 export function gatewayServiceCliInvocations(
   service: Pick<GatewayService, "id" | "codexEnabled">,
   paths: GatewayServiceExportPaths,
-): { claude: string; codex?: string } {
+): { claude: string; codex?: string; pi: string } {
   return {
     claude: `claude --settings ${claudeSettingsPath(paths, service)}`,
     ...(service.codexEnabled
       ? { codex: `codex -p ${codexProfileName(service)}` }
       : {}),
+    // pi selects a provider by name out of its one registry rather than by
+    // loading a file, because that registry is the only place it looks.
+    pi: `pi --provider ${piProviderName(service)}`,
   };
+}
+
+/** pi's provider name for a service, as the export writes it into models.json. */
+export function piProviderName(service: Pick<GatewayService, "id">): string {
+  return `ya-${service.id}`;
 }
 
 /** `<serviceId>::<modelId>`, used only when services collide on a model id. */
@@ -301,6 +332,58 @@ export function qualifiedGatewayModelId(
   modelId: string,
 ): string {
   return `${serviceId}${GATEWAY_MODEL_ID_SEPARATOR}${modelId}`;
+}
+
+/**
+ * One source's advertised models. `serviceId` is undefined for a source that
+ * is not a configured service: CodexOSS reads the local provider that way.
+ */
+export interface ModelCatalogRead<S extends string | undefined = string> {
+  serviceId: S;
+  models: readonly ModelInfo[];
+}
+
+/** Which source serves an exposed model id, and the name that source uses. */
+export interface ModelCatalogRoute<S extends string | undefined = string> {
+  serviceId: S;
+  modelId: string;
+}
+
+/**
+ * Merge per-source catalogs into one list, with the routes back to the sources.
+ *
+ * A model id stays exactly as its source advertises it while only one source
+ * offers it. When two do, both sides gain their service prefix, because leaving
+ * one of them bare would make the same id mean different things depending on
+ * which source answered first. A colliding id from a source with no service id
+ * cannot be qualified and keeps the bare id, so the later source wins its
+ * route; only CodexOSS has such a source, and only when no service is
+ * configured at all.
+ */
+export function unionModelCatalogs<S extends string | undefined>(
+  reads: readonly ModelCatalogRead<S>[],
+): { models: ModelInfo[]; routes: Map<string, ModelCatalogRoute<S>> } {
+  const sources = new Map<string, number>();
+  for (const read of reads) {
+    for (const model of read.models) {
+      sources.set(model.id, (sources.get(model.id) ?? 0) + 1);
+    }
+  }
+
+  const models: ModelInfo[] = [];
+  const routes = new Map<string, ModelCatalogRoute<S>>();
+  for (const read of reads) {
+    for (const model of read.models) {
+      const collides = (sources.get(model.id) ?? 0) > 1;
+      const exposedId =
+        collides && read.serviceId !== undefined
+          ? qualifiedGatewayModelId(read.serviceId, model.id)
+          : model.id;
+      routes.set(exposedId, { serviceId: read.serviceId, modelId: model.id });
+      models.push(exposedId === model.id ? model : { ...model, id: exposedId });
+    }
+  }
+  return { models, routes };
 }
 
 /**
@@ -317,6 +400,34 @@ export function parseGatewayModelId(
   const modelId = id.slice(index + GATEWAY_MODEL_ID_SEPARATOR.length);
   if (!modelId || !isValidGatewayServiceId(serviceId)) return null;
   return isKnownServiceId(serviceId) ? { serviceId, modelId } : null;
+}
+
+/**
+ * The entry a legacy single-gateway configuration describes.
+ *
+ * `claudeGatewayUrl`/`claudeGatewayStartCommand` say where the endpoint is and
+ * how to start it, and nothing about the fields a services entry adds, so each
+ * of those takes the same default `parseGatewayServices` applies to an entry
+ * that states none. `identity` carries the naming of an entry this one
+ * replaces, since a legacy write changes the endpoint rather than renaming it.
+ */
+export function legacyGatewayServiceEntry(
+  url: string,
+  serviceCommand?: string,
+  identity?: Partial<Pick<GatewayService, "id" | "label" | "shortName">>,
+): GatewayService {
+  return {
+    id: identity?.id ?? DEFAULT_GATEWAY_SERVICE_ID,
+    label: identity?.label ?? "",
+    shortName: identity?.shortName ?? "",
+    url,
+    enabled: true,
+    ...(serviceCommand ? { serviceCommand } : {}),
+    autoStop: false,
+    autoStopAfterSeconds: DEFAULT_GATEWAY_AUTO_STOP_SECONDS,
+    codexEnabled: false,
+    codexWireApi: DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
+  };
 }
 
 /**

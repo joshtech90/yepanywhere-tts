@@ -93,6 +93,15 @@ only the first-ever list of a scope (fresh data dir) still blocks.
   Claude titles beginning with a local-command caveat are re-read once and
   replaced by the first non-meta user title; unrelated provider rows keep their
   existing cache entries instead of paying a global index rebuild.
+- **A repair aimed at older readers is dated by the index version**, never by a
+  field current writers still produce. The persisted `version` says which
+  reader wrote the entries, so a repair runs on indexes below the version that
+  ended it and stops once the index is rewritten. A repair keyed on the field
+  instead re-runs forever: `isEmpty` marks a transcript that yields no summary,
+  which current validation still records, so deleting every `isEmpty` Claude
+  row re-parsed those transcripts on every index load. Ending such a repair
+  raises the current version, and every structurally compatible predecessor
+  stays accepted, so the bump dates entries without rebuilding any index.
 - **Legacy CLI sessions** (pre-1.16 projects with no DB row) are probed from
   one shared `opencode session list` spawn (module-level cache,
   `OPENCODE_CLI_LIST_CACHE_TTL_MS`), whose output is global — verified not

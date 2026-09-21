@@ -56,6 +56,7 @@ describe("registry", () => {
       "GROK_HOME",
       "YA_BANG_ACLI_COMPLETERS",
       "YEP_CLAUDE_PARSE_CACHE_MB",
+      "YEP_PROVIDER_HOST_ENABLED",
       "YEP_TURN_TIMESTAMPS",
     ]) {
       expect(() => entry({}, name)).not.toThrow();

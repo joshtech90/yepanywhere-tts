@@ -65,11 +65,7 @@ export function RemoteCompatibilityNotices({
       notice={notice}
       noticeCount={visibleNotices.length}
       placement="floating"
-      onDismiss={
-        notice.id === "server-runtime-node22"
-          ? undefined
-          : () => dismissNotice(notice)
-      }
+      onDismiss={() => dismissNotice(notice)}
       onSnooze={() => snoozeNotice(notice)}
     />
   );
@@ -107,8 +103,8 @@ export function RemoteCompatibilityNoticeCard({
         styles.root!,
         placementClassNames[placement],
         placement === "floating" &&
-          notice.id === "server-runtime-node22" &&
-          styles.runtimeFloating,
+          notice.floatingPlacement === "below-header" &&
+          styles.belowHeader,
         severityClassNames[notice.severity],
       ]
         .filter(Boolean)
@@ -182,7 +178,7 @@ export function RemoteCompatibilityNoticeCard({
             Show reminder
           </button>
         )}
-        {onDismiss && (
+        {onDismiss && notice.dismissal === "dismiss" && (
           <button type="button" className={styles.button!} onClick={onDismiss}>
             Dismiss
           </button>

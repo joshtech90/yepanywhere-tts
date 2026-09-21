@@ -21,6 +21,7 @@ export function LoginPage() {
     authEnabled,
     authDisabledByEnv,
   } = useAuth();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +66,7 @@ export function LoginPage() {
       if (isSetupMode) {
         await setupAccount(password);
       } else {
-        await login(password);
+        await login(password, username.trim() || undefined);
       }
       navigate(from, { replace: true });
     } catch (err) {
@@ -100,6 +101,21 @@ export function LoginPage() {
         </p>
 
         <form onSubmit={handleSubmit} className="login-form">
+          {/* A named login is a limited user; blank is the owner, exactly as
+              before limited users existed (topics/limited-users.md). */}
+          {!isSetupMode && (
+            <div className="login-field">
+              <label htmlFor="username">{t("loginUsernameOptional")}</label>
+              <input
+                id="username"
+                type="text"
+                autoComplete="username"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                disabled={isSubmitting}
+              />
+            </div>
+          )}
           <div className="login-field">
             <label htmlFor="password">{t("loginPasswordLabel")}</label>
             <input

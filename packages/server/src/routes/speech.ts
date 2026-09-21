@@ -346,9 +346,18 @@ function cleanOptionalString(
   return trimmed ? trimmed.slice(0, maxLength) : undefined;
 }
 
+/**
+ * The speech transcription context as a client sends it. Session hint terms
+ * bias recognition and live only here: `splitSpeechContext` is what turns a
+ * request context into the retained/audit one.
+ */
+interface SpeechRequestContext extends SpeechTranscriptionContext {
+  sessionTerms?: string[];
+}
+
 function parseTranscriptionContext(
   value: unknown,
-): SpeechTranscriptionContext | undefined {
+): SpeechRequestContext | undefined {
   if (!isRecord(value)) return undefined;
   const context = {
     projectId: cleanContextString(value.projectId),
@@ -372,8 +381,26 @@ function parseTranscriptionContext(
   };
   const clean = Object.fromEntries(
     Object.entries(context).filter(([, entry]) => entry !== undefined),
-  ) as SpeechTranscriptionContext;
+  ) as SpeechRequestContext;
   return Object.keys(clean).length > 0 ? clean : undefined;
+}
+
+/**
+ * Separates the recognition hint list from the audit context. Session terms
+ * bias recognition but must never reach retained metadata or request logs, so
+ * every caller that hands a parsed context onward splits it here. An audit
+ * context left with no fields is reported as absent rather than empty.
+ */
+function splitSpeechContext(context: SpeechRequestContext | undefined): {
+  audit?: SpeechTranscriptionContext;
+  sessionTerms?: string[];
+} {
+  if (!context) return {};
+  const { sessionTerms, ...audit } = context;
+  return {
+    audit: Object.keys(audit).length > 0 ? audit : undefined,
+    sessionTerms,
+  };
 }
 
 function getRetentionSettings(deps: SpeechSessionDeps) {
@@ -390,10 +417,10 @@ async function transcribeWithAudit(
     backendId: string;
     audio: Buffer;
     options: TranscribeOptions;
-    context?: SpeechTranscriptionContext;
+    context?: SpeechRequestContext;
   },
 ): Promise<{ text: string; retention: SpeechAudioRetentionResult }> {
-  input.options = {
+  const options: TranscribeOptions = {
     ...input.options,
     keyterms: await deps.speechBackendRegistry.keyterms(
       input.backendId,
@@ -401,10 +428,7 @@ async function transcribeWithAudit(
       input.context,
     ),
   };
-  if (input.context) {
-    const { sessionTerms: _sessionTerms, ...auditContext } = input.context;
-    input.context = auditContext;
-  }
+  const context = splitSpeechContext(input.context).audit;
   const requestId = randomUUID();
   const startedAtMs = Date.now();
   const startedAt = new Date(startedAtMs).toISOString();
@@ -413,13 +437,13 @@ async function transcribeWithAudit(
     requestId,
     source: input.source,
     backendId: input.backendId,
-    mimeType: input.options.mimeType ?? DEFAULT_MIME_TYPE,
-    model: input.options.model,
+    mimeType: options.mimeType ?? DEFAULT_MIME_TYPE,
+    model: options.model,
     audioBytes: input.audio.length,
-    hasPrompt: !!input.options.prompt,
-    keytermCount: input.options.keyterms?.length ?? 0,
-    keyterms: input.options.keyterms,
-    context: input.context,
+    hasPrompt: !!options.prompt,
+    keytermCount: options.keyterms?.length ?? 0,
+    keyterms: options.keyterms,
+    context,
   };
 
   logger.info(logContext, "Speech transcription started");
@@ -429,7 +453,7 @@ async function transcribeWithAudit(
       deps.speechBackendRegistry,
       input.backendId,
       input.audio,
-      input.options,
+      options,
     );
     const completedAtMs = Date.now();
     const completedAt = new Date(completedAtMs).toISOString();
@@ -439,15 +463,15 @@ async function transcribeWithAudit(
       requestId,
       source: input.source,
       backendId: input.backendId,
-      model: input.options.model,
-      mimeType: input.options.mimeType ?? DEFAULT_MIME_TYPE,
-      keyterms: input.options.keyterms,
+      model: options.model,
+      mimeType: options.mimeType ?? DEFAULT_MIME_TYPE,
+      keyterms: options.keyterms,
       audio: input.audio,
       transcript: text,
       startedAt,
       completedAt,
       durationMs: completedAtMs - startedAtMs,
-      context: input.context,
+      context,
     });
 
     logger.info(
@@ -557,7 +581,7 @@ function parseTranscribeBody(value: unknown):
       backendId: string;
       audio: Buffer;
       options: TranscribeOptions;
-      context?: SpeechTranscriptionContext;
+      context?: SpeechRequestContext;
     }
   | { ok: false; message: string } {
   if (!isRecord(value)) {
@@ -625,6 +649,13 @@ export function createSpeechWebSocketSession(
   let context: SpeechTranscriptionContext | undefined;
   let sessionTerms: string[] | undefined;
   let streamSession: SpeechStreamSession | null = null;
+  // The upstream handshake (e.g. xAI returning transcript.created) can take
+  // a noticeable moment. We establish it concurrently rather than awaiting
+  // inside the serialized message chain, so incoming audio is never blocked
+  // behind it. Frames that arrive before the session is ready buffer here
+  // and flush in order the instant it resolves — otherwise a slow handshake
+  // produced a dead window where early speech was lost and no live partials
+  // were emitted.
   let streamSessionPromise: Promise<SpeechStreamSession> | null = null;
   let pendingAudio: Buffer[] = [];
   let streamRequestId: string | null = null;
@@ -648,6 +679,7 @@ export function createSpeechWebSocketSession(
         if (streamSession) {
           streamSession.sendAudio(normalized.buffer);
         } else if (streamSessionPromise) {
+          // Session still handshaking: buffer in order, flushed on resolve.
           pendingAudio.push(normalized.buffer);
         }
       } else {
@@ -660,10 +692,9 @@ export function createSpeechWebSocketSession(
       chunks.length = 0;
       backendId = msg.backendId ?? null;
       mimeType = msg.mimeType ?? DEFAULT_MIME_TYPE;
-      const { sessionTerms: terms, ...auditContext } =
-        parseTranscriptionContext(msg.context) ?? {};
-      sessionTerms = terms;
-      context = Object.keys(auditContext).length ? auditContext : undefined;
+      const split = splitSpeechContext(parseTranscriptionContext(msg.context));
+      sessionTerms = split.sessionTerms;
+      context = split.audit;
       streamSession?.close();
       streamSession = null;
       streamSessionPromise = null;
@@ -724,6 +755,17 @@ export function createSpeechWebSocketSession(
           "Speech streaming transcription started",
         );
 
+        // Establish the backend session without blocking the WS message
+        // chain: the xAI handshake can take seconds, and awaiting it here
+        // would stall every audio frame behind it (head-of-line blocking),
+        // dropping the first seconds of speech. Instead, buffer incoming
+        // frames in `pendingAudio` and flush them in order once the session
+        // resolves.
+        // Tie every continuation to this request id. A new `start` can
+        // arrive before the handshake resolves; without this guard a late
+        // resolution would assign `streamSession`, flush the *new* request's
+        // buffered frames into the *old* session, and leak the superseded
+        // upstream socket.
         const requestId = streamRequestId;
         const isCurrent = (): boolean => streamRequestId === requestId;
         streamSessionPromise = deps.speechBackendRegistry
@@ -787,6 +829,8 @@ export function createSpeechWebSocketSession(
           )
           .then((session) => {
             if (!isCurrent()) {
+              // Superseded by a newer start (or a stop/close): do not touch
+              // current buffers; just close this orphaned session.
               session.close();
               return session;
             }
@@ -833,6 +877,8 @@ export function createSpeechWebSocketSession(
     if (streamSessionPromise && streamRequestId) {
       try {
         streamingStopRequested = true;
+        // The session may still be handshaking; wait for it (and the in-order
+        // flush of any buffered frames) before finishing.
         const session = await streamSessionPromise;
         const done = await session.finish();
         streamingTranscriptTrace.push(
@@ -924,6 +970,8 @@ export function createSpeechWebSocketSession(
       closed = true;
       streamRequestId = null;
       streamSession?.close();
+      // A still-handshaking session must be closed once it resolves, or it
+      // leaks an open xAI socket after the client disconnects.
       streamSessionPromise?.then((session) => session.close()).catch(() => {});
       streamSession = null;
       streamSessionPromise = null;
@@ -1206,357 +1254,28 @@ export function createSpeechRoutes(deps: SpeechRouteDeps): Hono {
   routes.get(
     "/ws",
     deps.upgradeWebSocket((_c: Context) => {
-      const chunks: Buffer[] = [];
-      let mimeType = DEFAULT_MIME_TYPE;
-      let backendId: string | null = null;
-      let context: SpeechTranscriptionContext | undefined;
-      let sessionTerms: string[] | undefined;
-      let streamSession: SpeechStreamSession | null = null;
-      // The upstream handshake (e.g. xAI returning transcript.created) can take
-      // a noticeable moment. We establish it concurrently rather than awaiting
-      // inside the serialized message chain, so incoming audio is never blocked
-      // behind it. Frames that arrive before the session is ready buffer here
-      // and flush in order the instant it resolves — otherwise a slow handshake
-      // produced a dead window where early speech was lost and no live partials
-      // were emitted.
-      let streamSessionPromise: Promise<SpeechStreamSession> | null = null;
-      let pendingAudio: Buffer[] = [];
-      let streamRequestId: string | null = null;
-      let streamStartedAt = "";
-      let streamStartedAtMs = 0;
-      let streamingTranscriptTrace: string[] = [];
-      let streamingTranscriptEvents: SpeechStreamingTranscriptTraceEvent[] = [];
-      let streamingSpeechFinalTexts: string[] = [];
-      let streamingStopRequested = false;
-      let messageChain = Promise.resolve();
-      let closed = false;
-
-      const processMessage = async (
-        data: SpeechWsData,
-        ws: WSContext,
-      ): Promise<void> => {
-        const normalized = await normalizeWsData(data);
-        if (closed) return;
-        const msg = parseWsControlMessage(normalized.text);
-
-        if (!msg) {
-          if (normalized.buffer) {
-            chunks.push(normalized.buffer);
-            if (streamSession) {
-              streamSession.sendAudio(normalized.buffer);
-            } else if (streamSessionPromise) {
-              // Session still handshaking: buffer in order, flushed on resolve.
-              pendingAudio.push(normalized.buffer);
-            }
-          } else {
-            logger.warn("Unparseable speech WS frame");
-          }
-          return;
-        }
-
-        if (msg.type === "start") {
-          chunks.length = 0;
-          backendId = msg.backendId ?? null;
-          mimeType = msg.mimeType ?? DEFAULT_MIME_TYPE;
-          const { sessionTerms: terms, ...auditContext } =
-            parseTranscriptionContext(msg.context) ?? {};
-          sessionTerms = terms;
-          context = Object.keys(auditContext).length ? auditContext : undefined;
-          streamSession?.close();
-          streamSession = null;
-          streamSessionPromise = null;
-          pendingAudio = [];
-          streamRequestId = null;
-          streamingTranscriptTrace = [];
-          streamingTranscriptEvents = [];
-          streamingSpeechFinalTexts = [];
-          streamingStopRequested = false;
-
-          if (msg.streaming && backendId) {
-            const backend = deps.speechBackendRegistry.getBackend(backendId);
-            if (!backend) {
-              send(ws, { type: "error", message: "No backend selected" });
-              return;
-            }
-            if (!supportsStreaming(backend)) {
-              send(ws, {
-                type: "error",
-                message: `Backend does not support streaming: ${backendId}`,
-              });
-              return;
-            }
-            const sampleRate = msg.sampleRate ?? 16_000;
-            const encoding = msg.encoding === "pcm" ? "pcm" : null;
-            if (!encoding) {
-              send(ws, {
-                type: "error",
-                message: "Streaming speech requires pcm encoding",
-              });
-              return;
-            }
-            const smartTurn =
-              backend.capabilities.smartTurn === true
-                ? msg.smartTurn
-                : undefined;
-
-            streamRequestId = randomUUID();
-            streamStartedAtMs = Date.now();
-            streamStartedAt = new Date(streamStartedAtMs).toISOString();
-            logger.info(
-              {
-                component: "speech",
-                requestId: streamRequestId,
-                source: "ws",
-                mode: "stream",
-                backendId,
-                mimeType,
-                sampleRate,
-                encoding,
-                smartTurn:
-                  smartTurn?.enabled === true
-                    ? {
-                        threshold: smartTurn.threshold ?? null,
-                        timeoutMs: smartTurn.timeoutMs ?? null,
-                      }
-                    : null,
-                context,
-              },
-              "Speech streaming transcription started",
-            );
-
-            // Establish the backend session without blocking the WS message
-            // chain: the xAI handshake can take seconds, and awaiting it here
-            // would stall every audio frame behind it (head-of-line blocking),
-            // dropping the first seconds of speech. Instead, buffer incoming
-            // frames in `pendingAudio` and flush them in order once the session
-            // resolves.
-            // Tie every continuation to this request id. A new `start` can
-            // arrive before the handshake resolves; without this guard a late
-            // resolution would assign `streamSession`, flush the *new*
-            // request's buffered frames into the *old* session, and leak the
-            // superseded upstream socket.
-            const requestId = streamRequestId;
-            const isCurrent = (): boolean => streamRequestId === requestId;
-            streamSessionPromise = deps.speechBackendRegistry
-              .stream(
-                backend,
-                {
-                  mimeType,
-                  sampleRate,
-                  encoding,
-                  interimResults: true,
-                  endpointingMs: 250,
-                  language: "en",
-                  smartTurnThreshold: smartTurn?.threshold,
-                  smartTurnTimeoutMs: smartTurn?.timeoutMs,
-                },
-                {
-                  onPartial: (event) => {
-                    if (!isCurrent()) return;
-                    streamingTranscriptTrace.push(
-                      formatStreamingTranscriptTraceLine(
-                        getPartialTraceKind(event),
-                        event.text,
-                      ),
-                    );
-                    streamingTranscriptEvents.push(
-                      toStreamingPartialTraceEvent(event),
-                    );
-                    if (event.speechFinal) {
-                      streamingSpeechFinalTexts.push(event.text);
-                    }
-                    send(ws, {
-                      type: "interim",
-                      text: event.text,
-                      isFinal: event.isFinal,
-                      speechFinal: event.speechFinal,
-                      start: event.start,
-                      duration: event.duration,
-                      words: event.words,
-                    });
-                  },
-                  onError: (err) => {
-                    if (!isCurrent() || streamingStopRequested) return;
-                    const message =
-                      err instanceof Error ? err.message : String(err);
-                    logger.warn(
-                      {
-                        component: "speech",
-                        requestId,
-                        source: "ws",
-                        mode: "stream",
-                        backendId,
-                      },
-                      `Speech streaming failed mid-session: ${message}`,
-                    );
-                    send(ws, { type: "error", message });
-                  },
-                },
-                requestId,
-                isCurrent,
-                { ...context, sessionTerms },
-              )
-              .then((session) => {
-                if (!isCurrent()) {
-                  // Superseded by a newer start (or a stop/close): do not touch
-                  // current buffers; just close this orphaned session.
-                  session.close();
-                  return session;
-                }
-                streamSession = session;
-                for (const buffered of pendingAudio) {
-                  session.sendAudio(buffered);
-                }
-                pendingAudio = [];
-                return session;
-              });
-            streamSessionPromise.catch((err: unknown) => {
-              if (!isCurrent()) return;
-              const message = err instanceof Error ? err.message : String(err);
-              logger.error(
-                {
-                  component: "speech",
-                  requestId,
-                  source: "ws",
-                  mode: "stream",
-                  backendId,
-                  err,
-                },
-                "Speech streaming session failed to open",
-              );
-              if (!isCurrent()) return;
-              streamSessionPromise = null;
-              pendingAudio = [];
-              if (!streamingStopRequested) {
-                send(ws, { type: "error", message });
-              }
-            });
-          }
-          return;
-        }
-
-        const audio = Buffer.concat(chunks);
-        chunks.length = 0;
-
-        if (!backendId) {
-          send(ws, { type: "error", message: "No backend selected" });
-          return;
-        }
-
-        if (streamSessionPromise && streamRequestId) {
-          try {
-            streamingStopRequested = true;
-            // The session may still be handshaking; wait for it (and the
-            // in-order flush of any buffered frames) before finishing.
-            const session = await streamSessionPromise;
-            const done = await session.finish();
-            streamingTranscriptTrace.push(
-              formatStreamingTranscriptTraceLine("done", done.text),
-            );
-            streamingTranscriptEvents.push(toStreamingDoneTraceEvent(done));
-            const transcript =
-              done.text.trim() ||
-              joinStreamingSpeechFinals(streamingSpeechFinalTexts);
-            const retention = await persistStreamingTranscription(deps, {
-              requestId: streamRequestId,
-              backendId,
-              audio,
-              mimeType,
-              transcript,
-              streamingTranscriptTrace,
-              streamingTranscriptEvents,
-              startedAt: streamStartedAt,
-              startedAtMs: streamStartedAtMs,
-              context,
-            });
-            send(ws, {
-              type: "final",
-              text: transcript,
-              transcriptionId: retention.transcriptionId,
-            });
-          } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : String(err);
-            logger.error(
-              {
-                component: "speech",
-                requestId: streamRequestId,
-                source: "ws",
-                mode: "stream",
-                backendId,
-                audioBytes: audio.length,
-                context,
-                err,
-              },
-              "Speech streaming transcription failed",
-            );
-            send(ws, { type: "error", message });
-          } finally {
-            streamSession = null;
-            streamSessionPromise = null;
-            pendingAudio = [];
-            streamRequestId = null;
-            streamingTranscriptTrace = [];
-            streamingTranscriptEvents = [];
-            streamingSpeechFinalTexts = [];
-            streamingStopRequested = false;
-          }
-          return;
-        }
-
-        try {
-          const { text, retention } = await transcribeWithAudit(deps, {
-            source: "ws",
-            backendId,
-            audio,
-            options: { mimeType },
-            context: { ...context, sessionTerms },
-          });
-          send(ws, {
-            type: "final",
-            text,
-            transcriptionId: retention.transcriptionId,
-          });
-        } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
-          send(ws, { type: "error", message });
-        }
-      };
+      // The direct browser upgrade and the relayed channel run the same speech
+      // session; only the frame transport differs, so this adapter owns nothing
+      // but the socket it answers on.
+      let socket: WSContext | null = null;
+      const session = createSpeechWebSocketSession(deps, (msg) => {
+        if (socket) send(socket, msg);
+      });
 
       return {
         onOpen(_evt: Event, ws: WSContext) {
+          socket = ws;
           send(ws, { type: "ready" });
         },
 
         onMessage(evt: MessageEvent, ws: WSContext) {
-          messageChain = messageChain
-            .then(() => processMessage(evt.data as SpeechWsData, ws))
-            .catch((err: unknown) => {
-              const message = err instanceof Error ? err.message : String(err);
-              logger.error(
-                { component: "speech", err },
-                "Speech WS message handling failed",
-              );
-              send(ws, { type: "error", message });
-            });
+          socket = ws;
+          session.handleMessage(evt.data as SpeechWsData);
         },
 
         onClose() {
-          closed = true;
-          streamRequestId = null;
-          streamSession?.close();
-          // A still-handshaking session must be closed once it resolves, or it
-          // leaks an open xAI socket after the client disconnects.
-          streamSessionPromise
-            ?.then((session) => session.close())
-            .catch(() => {});
-          streamSession = null;
-          streamSessionPromise = null;
-          pendingAudio = [];
-          streamingTranscriptTrace = [];
-          streamingTranscriptEvents = [];
-          streamingSpeechFinalTexts = [];
-          streamingStopRequested = false;
-          chunks.length = 0;
+          session.close();
+          socket = null;
         },
       } satisfies WSEvents;
     }),

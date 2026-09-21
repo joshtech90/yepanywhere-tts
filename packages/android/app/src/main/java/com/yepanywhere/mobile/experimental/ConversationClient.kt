@@ -10,8 +10,10 @@ import java.net.URLEncoder
 import java.util.UUID
 import org.json.JSONObject
 
-const val CONVERSATION_API_REVISION = "simple-client-spike-1"
+const val CONVERSATION_API_REVISION = SimpleClientContract.CONVERSATION_API_REVISION
 private const val CAPABILITY = "experimental-simple-client-conversation"
+/** Its permanent allocation in the server's capability ledger (`capability-ids.ts`). */
+private const val CAPABILITY_ID = 69
 
 enum class ConversationAvailability { AVAILABLE, UPDATE_REQUIRED, REVISION_MISMATCH }
 class ConversationUnavailableException(val reason: ConversationAvailability) : IllegalStateException()
@@ -22,14 +24,16 @@ fun conversationAvailability(version: JSONObject): ConversationAvailability {
         return (0 until entries.length()).any { entries.opt(it) == CAPABILITY }
     }
     fun hasBit(field: String): Boolean {
+        val wordIndex = CAPABILITY_ID / 32
+        val mask = 1L shl (CAPABILITY_ID % 32)
         val words = version.optJSONArray(field) ?: return false
         return (0 until words.length()).any {
             val pair = words.optJSONArray(it)
             val index = pair?.opt(0) as? Number
             val bits = pair?.opt(1) as? Number
-            index?.toDouble() == 2.0 && bits != null &&
+            index?.toDouble() == wordIndex.toDouble() && bits != null &&
                 bits.toDouble() == bits.toLong().toDouble() && bits.toLong() in 0..0xffff_ffffL &&
-                bits.toLong() and 32L != 0L
+                bits.toLong() and mask != 0L
         }
     }
     if (version.opt("experimentalSimpleClientApiRevision") !is String) return ConversationAvailability.UPDATE_REQUIRED

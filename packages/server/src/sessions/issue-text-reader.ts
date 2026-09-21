@@ -11,7 +11,7 @@ import {
   normalizeIssueEntries,
   tagCodexEntrySourceByteOffset,
 } from "./normalization.js";
-import type { IssueText } from "../services/issues/extract.js";
+import type { VisibleMessageText } from "./message-text.js";
 
 export interface IssueReadSegment {
   path: string;
@@ -24,7 +24,7 @@ export interface IssueReadOptions {
   maxRecords?: number;
 }
 export interface IssueTextBatch {
-  messages: IssueText[];
+  messages: VisibleMessageText[];
   cursor: string;
   done: boolean;
   partial: boolean;

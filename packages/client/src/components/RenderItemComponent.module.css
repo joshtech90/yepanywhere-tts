@@ -173,3 +173,61 @@
 .toolOutputDetails pre {
   color: var(--text-primary);
 }
+
+/*
+ * Rewound-group header (topics/session-rewind.md). A whole-row button so the
+ * collapsed group reads like the other outline chips and stays a touch
+ * target.
+ */
+.rewoundGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+}
+
+.rewoundGroupToggleButton {
+  display: inline-flex;
+  align-items: center;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+}
+
+.rewoundGroupToggleButton:hover,
+.rewoundGroupToggleButton:focus-visible {
+  background: var(--bg-hover);
+  outline: none;
+}
+
+.rewoundItem {
+  opacity: 0.85;
+  /* Expanded group rows hang off a vertical bar under the header's marker. */
+  margin-left: 0.75rem;
+  border-left: 3px solid var(--accent-secondary, #6b7280);
+  padding-left: 0.75rem;
+  border-radius: 0;
+}
+
+.rewoundGroupToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  margin-right: 0.35em;
+  border: 1px solid var(--accent-secondary, #6b7280);
+  border-radius: 3px;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.rewoundGroupCopy {
+  margin-left: auto;
+}

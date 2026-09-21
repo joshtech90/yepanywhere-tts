@@ -1,6 +1,6 @@
 import type { PreparedToolDisplay } from "../renderers/tools/defineTool";
-import { decodeCodeModeOutput } from "@yep-anywhere/shared";
 import { RawToolDisplay, ToolDisplayBoundary } from "./ToolDisplayBoundary";
+import { useI18n } from "../../i18n";
 import {
   type CSSProperties,
   type MouseEvent,
@@ -52,6 +52,7 @@ import {
 } from "./ToolResultMediaRows";
 import { toolRegistry } from "../renderers/tools";
 import { getOutputTailTooltip } from "../renderers/tools/outputPreview";
+import { shellPollOutcome } from "../renderers/tools/shellPollOutcome";
 import type { RenderContext } from "../renderers/types";
 import { getToolSummary } from "../tools/summaries";
 import { HiddenContentBadge } from "../ui/HiddenContentBadge";
@@ -563,6 +564,7 @@ export const ToolCallRow = memo(function ToolCallRow(props: Props) {
 });
 
 function PreparedToolCallRow(props: Props & { originalOutput?: unknown }) {
+  const { t } = useI18n();
   const output = props.toolResult?.structured ?? props.toolResult?.content;
   const prepared = useMemo(
     () =>
@@ -621,9 +623,9 @@ function PreparedToolCallRow(props: Props & { originalOutput?: unknown }) {
     return (
       <div className={`tool-row timeline-item ${styles.waitingRow}`}>
         <div className={`tool-row-header ${styles.waitingHeader}`}>
-          <span className="tool-name">Waiting</span>
+          <span className="tool-name">{t("toolShellPollWaitingLabel")}</span>
           <span className={styles.waitingSummary}>
-            {waitingTarget} · running
+            {t("toolShellPollWaitingSummary", { target: waitingTarget })}
           </span>
         </div>
       </div>
@@ -632,6 +634,11 @@ function PreparedToolCallRow(props: Props & { originalOutput?: unknown }) {
   return <ToolCallRowContent {...props} prepared={prepared} />;
 }
 
+/**
+ * The wait target when this call's result is the one informational wait
+ * outcome. Which calls can hold a poll is this row's question; what the
+ * result means belongs to the shell renderer's `shellPollOutcome`.
+ */
 function getWaitingTarget(
   tool: string,
   props: Props,
@@ -645,26 +652,12 @@ function getWaitingTarget(
       (props.toolInput.chars || props.toolInput.linked_file_path))
   )
     return undefined;
-  const decoded = decodeCodeModeOutput(result);
-  const parts = decoded?.parts.filter((part) => part.kind !== "script-status");
-  if (parts && parts.length !== 1) return undefined;
-  const part = parts?.[0];
-  const output = getBashResultOutputForRichPreview(
-    part?.text ?? result,
-    true,
-  ).trim();
-  const exitCode =
-    (part?.kind === "command-output" ? part.exitCode : undefined) ??
-    getBashExitCode(
-      part?.text ?? result,
-      props.toolResult?.content,
-      props.status === "error",
-    );
-  if (exitCode !== 1 || output.length > 500) return undefined;
-  // agentctl's observation window expired while the target remained running.
-  return /^timeout waiting for ([^\r\n]+) to reach not-running; current status=running$/.exec(
-    output,
-  )?.[1];
+  const outcome = shellPollOutcome(
+    result,
+    props.status === "error",
+    props.toolResult?.content,
+  );
+  return outcome?.kind === "waiting" ? outcome.target : undefined;
 }
 
 const ToolCallRowContent = memo(function ToolCallRowContent({

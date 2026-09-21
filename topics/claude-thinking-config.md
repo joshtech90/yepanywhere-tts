@@ -10,7 +10,9 @@ Topic: claude-thinking-config
 
 Related topics: [claude provider control](claude.md),
 [cost efficiency](cost-efficiency.md),
-[provider refresh](provider-refresh.md).
+[provider refresh](provider-refresh.md),
+[mid-session effort change](mid-session-effort-change.md) (the long-context
+warning that gates the live effort control described below).
 
 ## Current state (verified against installed SDK, 2026-07-24)
 

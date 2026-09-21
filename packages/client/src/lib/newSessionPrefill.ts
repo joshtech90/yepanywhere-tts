@@ -4,6 +4,13 @@ const NEW_SESSION_PREFILL_KEY_PREFIX = "new-session-prefill:";
 const NEW_SESSION_PREFILL_TOKEN_PREFIX = "new-session-prefill-token:";
 const CARET_SUFFIX = ":caret";
 
+/**
+ * How long a stashed new-tab prefill stays available, in milliseconds. A tab
+ * closed before its form mounts never consumes its token, so an unswept key
+ * would outlive every session that could use it.
+ */
+const NEW_SESSION_PREFILL_TOKEN_LIFETIME_MS = 60 * 60 * 1000;
+
 export type NewSessionPrefillCaret = "start" | "end";
 
 export interface NewSessionPrefillRecord {
@@ -71,23 +78,52 @@ export function consumeNewSessionPrefill(
   return { text, caret };
 }
 
+function writtenAt(raw: string): number {
+  try {
+    const parsed = JSON.parse(raw) as { writtenAt?: unknown };
+    return typeof parsed.writtenAt === "number" ? parsed.writtenAt : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** Drops every stashed token past its lifetime, and any left unstamped. */
+function forgetStaleNewSessionPrefillTokens(): void {
+  const cutoff = Date.now() - NEW_SESSION_PREFILL_TOKEN_LIFETIME_MS;
+  const stale: string[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (!key?.startsWith(NEW_SESSION_PREFILL_TOKEN_PREFIX)) continue;
+    if (writtenAt(localStorage.getItem(key) ?? "") <= cutoff) stale.push(key);
+  }
+  for (const key of stale) localStorage.removeItem(key);
+}
+
+export function createNewSessionPrefillToken(): string {
+  return crypto.randomUUID();
+}
+
+/**
+ * Stores the text a new tab will find under its token. Call this only once the
+ * tab exists: a blocked popup that never reads the token must not leave one.
+ */
 export function stashNewSessionPrefillToken(
+  token: string,
   sourceKey: ClientSummarySourceKey,
   text: string,
   options?: { caret?: NewSessionPrefillCaret },
-): string {
-  const token = crypto.randomUUID();
-  if (typeof window !== "undefined") {
-    localStorage.setItem(
-      `${NEW_SESSION_PREFILL_TOKEN_PREFIX}${token}`,
-      JSON.stringify({
-        caret: options?.caret === "start" ? "start" : "end",
-        sourceKey,
-        text,
-      }),
-    );
-  }
-  return token;
+): void {
+  if (typeof window === "undefined") return;
+  forgetStaleNewSessionPrefillTokens();
+  localStorage.setItem(
+    `${NEW_SESSION_PREFILL_TOKEN_PREFIX}${token}`,
+    JSON.stringify({
+      caret: options?.caret === "start" ? "start" : "end",
+      sourceKey,
+      text,
+      writtenAt: Date.now(),
+    }),
+  );
 }
 
 export function consumeNewSessionPrefillToken(
@@ -98,6 +134,7 @@ export function consumeNewSessionPrefillToken(
   const storageKey = `${NEW_SESSION_PREFILL_TOKEN_PREFIX}${token}`;
   const raw = localStorage.getItem(storageKey);
   localStorage.removeItem(storageKey);
+  forgetStaleNewSessionPrefillTokens();
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as {

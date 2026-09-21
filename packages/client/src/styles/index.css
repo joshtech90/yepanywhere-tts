@@ -1084,75 +1084,6 @@ textarea {
   background: var(--bg-hover);
 }
 
-/* Add Project */
-
-.add-project-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  padding: 1rem;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-input);
-  border-radius: 8px;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.add-project-form input {
-  width: 100%;
-  padding: 0.75rem;
-  background: var(--bg-input);
-  border: 1px solid var(--border-input);
-  border-radius: 6px;
-  color: inherit;
-  font-family: var(--font-mono);
-  font-size: var(--font-size-base);
-  box-sizing: border-box;
-}
-
-.add-project-form input:focus {
-  outline: none;
-  border-color: var(--color-primary);
-}
-
-.add-project-actions {
-  display: flex;
-  gap: 0.5rem;
-  justify-content: flex-end;
-}
-
-.add-project-actions button {
-  padding: 0.5rem 1rem;
-  border-radius: 6px;
-  font-size: var(--font-size-base);
-  cursor: pointer;
-}
-
-.add-project-actions button[type="submit"] {
-  background: var(--color-primary);
-  color: white;
-  border: none;
-}
-
-.add-project-actions button[type="submit"]:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.add-project-actions button[type="button"] {
-  background: transparent;
-  border: 1px solid var(--border-input);
-  color: var(--text-muted);
-}
-
-.add-project-error {
-  color: var(--color-error, #ef4444);
-  font-size: var(--font-size-sm);
-  padding: 0.5rem;
-  background: rgba(239, 68, 68, 0.1);
-  border-radius: 4px;
-}
-
 /* Lists */
 .project-list,
 .session-list {
@@ -9721,13 +9652,13 @@ a.sidebar-nav-item {
   margin: 0 auto;
 }
 
+/* An index column: one sentence-long description once took 60% of 1000px. */
 .settings-category-nav {
-  width: max-content;
+  max-width: 18rem;
   overflow-y: auto;
 }
 
-.settings-two-column .settings-category-label,
-.settings-two-column .settings-category-description {
+.settings-two-column .settings-category-label {
   white-space: nowrap;
 }
 
@@ -12251,11 +12182,6 @@ a.sidebar-nav-item {
   justify-content: flex-end;
   gap: var(--space-2);
   margin-bottom: var(--space-4);
-}
-
-/* When toolbar contains the add-project form, let it take full width */
-.inbox-toolbar .add-project-form {
-  flex: 1;
 }
 
 .inbox-refresh-button {

@@ -5,6 +5,7 @@ import { DirectXaiSpeechProvider } from "../speechProviders/DirectXaiSpeechProvi
 import { UnavailableSpeechProvider } from "../speechProviders/UnavailableSpeechProvider";
 import {
   YaServerProvider,
+  browserSelectedSpeechModel,
   decideSmartTurn,
   prewarmYaServerSpeechBackend,
 } from "../speechProviders/YaServerProvider";
@@ -401,6 +402,26 @@ describe("streaming smart-turn decision", () => {
   });
 });
 
+describe("browser-selected speech model", () => {
+  it("sends a model only for the backends whose model the browser picks", () => {
+    const options = {
+      parakeetModel: "nvidia/parakeet-rnnt-1.1b",
+      whisperModel: "large-v3",
+    };
+    expect(browserSelectedSpeechModel("ya-parakeet", options)).toBe(
+      "nvidia/parakeet-rnnt-1.1b",
+    );
+    expect(browserSelectedSpeechModel("ya-nemo", options)).toBe(
+      "nvidia/parakeet-rnnt-1.1b",
+    );
+    expect(browserSelectedSpeechModel("ya-whisper", options)).toBe("large-v3");
+    // Granite's model comes from GRANITE_MODEL on the server; a Parakeet or
+    // Whisper choice left in settings must not select it.
+    expect(browserSelectedSpeechModel("ya-granite", options)).toBeUndefined();
+    expect(browserSelectedSpeechModel("ya-grok", options)).toBeUndefined();
+  });
+});
+
 describe("server speech prewarm", () => {
   it("posts the selected model to the YA speech prewarm endpoint", async () => {
     const fetchMock = vi.fn(
@@ -424,6 +445,41 @@ describe("server speech prewarm", () => {
         }),
       }),
     );
+  });
+
+  it("posts no model for Granite, leaving the server setting in charge", async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ ok: true }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    // prewarm() only needs MediaRecorder to be defined; it never constructs one.
+    vi.stubGlobal("MediaRecorder", class FakeMediaRecorder {});
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: { getUserMedia: vi.fn(async () => ({ getTracks: () => [] })) },
+    });
+
+    const provider = new YaServerProvider("ya-granite", "", {
+      keepMicWarm: true,
+      parakeetModel: "nvidia/parakeet-rnnt-1.1b",
+      whisperModel: "large-v3",
+    });
+    provider.prewarm();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/speech/prewarm",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ backendId: "ya-granite" }),
+      }),
+    );
+
+    provider.dispose();
   });
 
   it("warms the backend model on pointer-near prewarm when keeping the mic warm", async () => {

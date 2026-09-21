@@ -11,6 +11,15 @@ const repoRoot = join(
 );
 
 /**
+ * Where a run keeps its private provider-host runtime state, given the run's
+ * temporary directory. Global setup, the per-test servers, and global teardown
+ * must name the same directory or each would own a different host.
+ */
+export function providerHostRuntimeDir(runTempDir: string): string {
+  return join(runTempDir, "provider-host");
+}
+
+/**
  * A headless provider host outlives the YA server that started it: it detaches
  * into its own process group and only shuts down on a signal. Test servers get
  * a private runtime directory so they never collide with the developer's own

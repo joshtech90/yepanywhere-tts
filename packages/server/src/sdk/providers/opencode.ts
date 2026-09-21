@@ -32,7 +32,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { parseOpenCodeSSEEvent } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
-import { whichCommand } from "../cli-detection.js";
+import { whichCommand } from "../which-command.js";
 import { MessageQueue } from "../messageQueue.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
 import { selectOpenCodeBinary } from "./opencode-binary-selection.js";

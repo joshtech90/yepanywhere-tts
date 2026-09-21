@@ -84,6 +84,31 @@ describe("data directory placement", () => {
     service.close();
   });
 
+  // Callers that gate a feature on readiness and callers that ask for the
+  // handle must select the same servers: the speech vocabulary feature reads
+  // readiness (app.ts) while the issue indexer takes the handle.
+  it("hands out its database exactly when it reports ready", () => {
+    using data = dataDir();
+    const disabled = new DiscoverySqliteService({
+      dataDir: data.dir,
+      mode: "off",
+    });
+    expect(disabled.getStatus().state).toBe("disabled");
+    expect(disabled.getDatabase()).toBeUndefined();
+
+    const service = new DiscoverySqliteService({
+      dataDir: data.dir,
+      mode: "auto",
+      probeNetworkFilesystem: () => undefined,
+    });
+    expect(service.getStatus().state).toBe("ready");
+    expect(service.getDatabase()).toBeDefined();
+
+    service.close();
+    expect(service.getStatus().state).toBe("disabled");
+    expect(service.getDatabase()).toBeUndefined();
+  });
+
   it("opens a network data directory when the operator asks for it", () => {
     using data = dataDir();
     const probe = vi.fn(() => "NFS");

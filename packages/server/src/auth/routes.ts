@@ -10,6 +10,7 @@ import {
   type DesktopBootstrapService,
 } from "../desktop/DesktopBootstrapService.js";
 import type { AuthService } from "./AuthService.js";
+import type { LimitedUsersService } from "./LimitedUsersService.js";
 
 export const SESSION_COOKIE_NAME = "yep-anywhere-session";
 
@@ -23,6 +24,10 @@ export interface AuthRoutesDeps {
   desktopBootstrapService?: DesktopBootstrapService;
   /** Whether an active project-write sandbox forbids weakening local auth. */
   isAuthenticationRelaxationBlocked?: () => boolean;
+  /** Limited-user records, for named logins (topics/limited-users.md). */
+  limitedUsers?: LimitedUsersService;
+  /** Whether limited users are enabled in server settings. */
+  isLimitedUsersEnabled?: () => boolean;
 }
 
 interface SetupBody {
@@ -31,13 +36,16 @@ interface SetupBody {
 
 interface LoginBody {
   password: string;
+  /** Limited user to log in as; blank or absent means the superuser. */
+  username?: string;
 }
 
 interface ChangePasswordBody {
   newPassword: string;
 }
 
-function shouldUseSecureCookie(c: {
+/** Whether a cookie set on this request should carry `Secure`. */
+export function shouldUseSecureCookie(c: {
   req: { url: string; header: (name: string) => string | undefined };
 }): boolean {
   // Honor reverse-proxy protocol hints when present.
@@ -67,6 +75,8 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     desktopAuthToken,
     desktopBootstrapService,
     isAuthenticationRelaxationBlocked,
+    limitedUsers,
+    isLimitedUsersEnabled,
   } = deps;
 
   /**
@@ -275,6 +285,41 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
    * Login with password
    */
   app.post("/login", async (c) => {
+    // A named login is a limited user (topics/limited-users.md); it needs no
+    // superuser account to exist and never grants superuser access.
+    const rawBody = await c.req
+      .json<LoginBody>()
+      .catch(() => null as LoginBody | null);
+    const requestedUsername = rawBody?.username?.trim();
+    if (requestedUsername) {
+      if (!limitedUsers || !isLimitedUsersEnabled?.()) {
+        return c.json({ error: "Invalid username or password" }, 401);
+      }
+      if (
+        !rawBody?.password ||
+        typeof rawBody.password !== "string" ||
+        !(await limitedUsers.verifyPassword(
+          requestedUsername,
+          rawBody.password,
+        ))
+      ) {
+        return c.json({ error: "Invalid username or password" }, 401);
+      }
+      await limitedUsers.recordLogin(requestedUsername);
+      const sessionId = await authService.createSession(
+        c.req.header("User-Agent"),
+        requestedUsername,
+      );
+      setCookie(c, SESSION_COOKIE_NAME, sessionId, {
+        httpOnly: true,
+        secure: shouldUseSecureCookie(c),
+        sameSite: "Lax",
+        path: "/",
+        maxAge: 30 * 24 * 60 * 60,
+      });
+      return c.json({ success: true, username: requestedUsername });
+    }
+
     if (!authService.hasAccount()) {
       c.header("X-Setup-Required", "true");
       return c.json(
@@ -283,9 +328,9 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
       );
     }
 
-    const body = await c.req.json<LoginBody>();
+    const body = rawBody;
 
-    if (!body.password || typeof body.password !== "string") {
+    if (!body?.password || typeof body.password !== "string") {
       return c.json({ error: "Password is required" }, 400);
     }
 

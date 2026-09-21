@@ -34,9 +34,11 @@ YA users. Run YA under a dedicated least-privilege OS account, VM, or container
 when the serving account itself must be isolated from other host state.
 
 A future restricted multiuser or delegated-guest layer requires new principals,
-server-side authorization, and an enforced execution boundary. Hiding controls,
-selecting a project working directory, or assigning a narrower-sounding
-permission mode would not establish that boundary.
+server-side authorization, and an enforced execution boundary. The
+[[principals-and-grants]] proposal records shared vocabulary for that work and
+its relationship to hosted and peer-issued authority without selecting a
+protocol. Hiding controls, selecting a project working directory, or assigning
+a narrower-sounding permission mode would not establish that boundary.
 
 ## File Access Is A Viewer Policy
 

@@ -47,6 +47,12 @@ recover a backend that remains busy rather than reaching YA's idle state.
   it as before-compaction activity, not a new request, and says later user
   instructions take precedence. The quotation ends before `continue.`; the
   40,000-character budget clips history without clipping that framing.
+- **The replayed window.** YA keeps the last 20 prose turns of the live
+  process, each trimmed and capped at 8,000 characters with a trailing
+  truncation marker. A turn is stored capped exactly as it is later quoted.
+  YA's own continuation never enters that window, including when the provider
+  echoes it back as a user row, so one replay cannot displace the prose the
+  next one needs.
 - **Delivery.** YA builds separate instruction, quoted-history, and continuation
   parts, then joins them into one ordinary user message for all providers.
   Internal separation does not split the quotation across messages or enable

@@ -34,8 +34,14 @@
   font-size: var(--font-size-base);
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Truncates the name itself so the code-name chip beside it stays visible. */
+.nameText {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .attentionBadge {
@@ -90,7 +96,8 @@
 }
 
 .newSession,
-.menuTrigger {
+.settingsTrigger,
+.deleteTrigger {
   display: flex;
   align-items: center;
   justify-content: center;
@@ -111,76 +118,52 @@
 }
 
 .newSession:hover,
-.menuTrigger:hover {
+.settingsTrigger:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
   border-color: var(--text-muted);
 }
 
-.menu {
-  position: relative;
-  flex-shrink: 0;
-}
-
-.menuDropdown {
-  position: absolute;
-  top: calc(100% + var(--space-1));
-  left: 0;
-  z-index: 10;
-  display: grid;
-  min-width: 10rem;
-  overflow: hidden;
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  background: var(--bg-surface);
-  box-shadow: 0 4px 12px rgb(0 0 0 / 30%);
-}
-
-.menuDropdown button {
-  padding: var(--space-2) var(--space-3);
-  border: 0;
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-size: var(--font-size-sm);
-  text-align: left;
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.menuDropdown button:hover:not(:disabled) {
+.deleteTrigger:hover:not(:disabled) {
   background: var(--bg-hover);
+  color: var(--error-color);
+  border-color: var(--error-color);
 }
 
-.menuDropdown button:disabled {
+.deleteTrigger:disabled {
   cursor: default;
   opacity: 0.45;
 }
 
-.menuDropdown .deleteMenuItem {
-  color: var(--error-color);
-}
-
+/* One footer line: path on the left, session stats right-aligned. */
 .meta {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: baseline;
+  gap: var(--space-3);
   font-size: var(--font-size-sm);
   color: var(--text-muted);
   margin-top: var(--space-1);
 }
 
 .path {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  /* Truncate the head, keeping the project's own directory visible. The
+     `bdi` around the path keeps it reading left to right inside this box. */
+  direction: rtl;
+  text-align: left;
 }
 
 .stats {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex-wrap: wrap;
+  flex-shrink: 0;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .separator {

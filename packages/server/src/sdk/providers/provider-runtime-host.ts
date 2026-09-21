@@ -166,7 +166,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function supportsProviderHostRuntime(): boolean {
+/**
+ * Whether a shared provider host is supported for this platform and this
+ * server's launch. `providerHostCapability()` in
+ * `scripts/provider-process-identity.mjs` owns the platform and runtime rule
+ * for the scripts that start and discover the host; this narrows it by how
+ * the server itself was launched, because macOS hosting is verified only for
+ * a Node source checkout running this module from TypeScript source.
+ */
+export function supportsProviderHostRuntimeAsLaunched(): boolean {
   return (
     process.platform === "linux" ||
     (process.platform === "darwin" &&
@@ -177,8 +185,21 @@ function supportsProviderHostRuntime(): boolean {
   );
 }
 
+export function providerHostEnabled(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const configured = env.YEP_PROVIDER_HOST_ENABLED?.trim().toLowerCase();
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+  if (configured) {
+    throw new Error("YEP_PROVIDER_HOST_ENABLED must be true or false");
+  }
+  return platform === "linux";
+}
+
 function getEnvironment(): RuntimeHostEnvironment | null {
-  if (!supportsProviderHostRuntime()) return null;
+  if (!supportsProviderHostRuntimeAsLaunched()) return null;
   const runtimeEnv = getModuleEnv("provider-runtime");
   const socketPath = runtimeEnv.SOCKET?.trim();
   const token = runtimeEnv.TOKEN?.trim();
@@ -230,17 +251,21 @@ function applyProviderHostConnection(connection: {
 }
 
 /**
- * Attach to a live provider host, or start one when absent.
+ * When enabled, attach to a live provider host or start one when absent.
  * Remote SSH executor sessions stay allowed either way: they still launch
  * from this YA server. A failed ensure continues in-process and sets the
  * provider-host degraded notice.
  */
 export async function ensureProviderRuntimeHost(): Promise<boolean> {
+  if (!providerHostEnabled()) {
+    setProviderHostDegraded(false);
+    return false;
+  }
   if (isProviderRuntimeHostAvailable()) {
     setProviderHostDegraded(false);
     return true;
   }
-  if (!supportsProviderHostRuntime()) return false;
+  if (!supportsProviderHostRuntimeAsLaunched()) return false;
   // Mock servers must not discover or bootstrap an ambient real-provider host.
   // A wrapper may still supply an explicit simulated host for lifecycle tests.
   if (process.env.VITEST || process.env.USE_MOCK_SDK === "true") {

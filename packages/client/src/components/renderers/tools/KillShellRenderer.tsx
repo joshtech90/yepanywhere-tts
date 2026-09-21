@@ -23,13 +23,7 @@ function KillShellToolUse({ input }: { input: KillShellInput }) {
 /**
  * KillShell tool result - shows confirmation message
  */
-function KillShellToolResult({
-  result,
-  isError,
-}: {
-  result: KillShellResult;
-  isError: boolean;
-}) {
+function KillShellToolResult({ result }: { result: KillShellResult }) {
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
   const [validationErrors, setValidationErrors] = useState<ZodError | null>(
@@ -50,23 +44,6 @@ function KillShellToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("KillShell");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className={styles.error}>
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="KillShell" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Failed to kill shell"}
-      </div>
-    );
-  }
 
   if (!result) {
     return <div className={styles.empty}>No result</div>;
@@ -92,16 +69,27 @@ export const killShellRenderer = defineTool(toolDisplayContracts.KillShell, {
     return <KillShellToolUse input={input} />;
   },
 
-  renderToolResult(result, isError, _context) {
-    return <KillShellToolResult result={result} isError={isError} />;
+  renderToolResult(result, _isError, _context) {
+    return <KillShellToolResult result={result} />;
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className={styles.error}>
+        {failure.content || "Failed to kill shell"}
+      </div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input) {
     return input.shell_id;
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     return r?.message || "Killed";
   },

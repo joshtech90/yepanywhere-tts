@@ -10,6 +10,8 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { VersionInfo } from "../../api/client";
+import type { TranslationFn } from "../../i18n";
+import messages from "../../i18n/en.json";
 import {
   REMOTE_COMPATIBILITY_REMINDER_SNOOZE_MS,
   restoreRemoteCompatibilityNoticeDismissals,
@@ -23,6 +25,12 @@ import {
   RemoteCompatibilityNoticeCard,
   RemoteCompatibilityNotices,
 } from "../RemoteCompatibilityNotices";
+
+const t: TranslationFn = (key, vars) =>
+  Object.entries(vars ?? {}).reduce(
+    (text, [name, value]) => text.replaceAll(`{${name}}`, String(value)),
+    messages[key],
+  );
 
 function version(overrides: Partial<VersionInfo> = {}): VersionInfo {
   return {
@@ -47,6 +55,9 @@ function notice(
     guidance: "Update the local server before the next hosted release.",
     versionSummary: "Server v0.5.0; recommended v0.5.1",
     dismissKey: "test-notice-key",
+    priority: 10,
+    dismissal: "dismiss",
+    floatingPlacement: "over-header",
     ...overrides,
   };
 }
@@ -169,6 +180,56 @@ describe("RemoteCompatibilityNotices", () => {
     expect(onDismiss).toHaveBeenCalledOnce();
     expect(onSnooze).toHaveBeenCalledOnce();
     expectNoLegacyNoticeClasses(container);
+  });
+
+  it("offers a reminder but no Dismiss for a snooze-only notice", () => {
+    const onDismiss = vi.fn();
+    const onSnooze = vi.fn();
+    render(
+      <RemoteCompatibilityNoticeCard
+        notice={notice({ id: "unrelated-notice", dismissal: "snooze-only" })}
+        placement="floating"
+        onDismiss={onDismiss}
+        onSnooze={onSnooze}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remind me later" }));
+    expect(onSnooze).toHaveBeenCalledOnce();
+    expect(onDismiss).not.toHaveBeenCalled();
+  });
+
+  it("floats below the header when the notice asks, whatever its id", () => {
+    const { unmount } = render(
+      <RemoteCompatibilityNoticeCard
+        notice={notice({
+          id: "unrelated-notice",
+          floatingPlacement: "below-header",
+        })}
+        placement="floating"
+      />,
+    );
+
+    expect(
+      screen
+        .getByTestId("remote-compatibility-notice")
+        .classList.contains(styles.belowHeader!),
+    ).toBe(true);
+    unmount();
+
+    render(
+      <RemoteCompatibilityNoticeCard
+        notice={notice({ id: "server-runtime-node22" })}
+        placement="floating"
+      />,
+    );
+
+    expect(
+      screen
+        .getByTestId("remote-compatibility-notice")
+        .classList.contains(styles.belowHeader!),
+    ).toBe(false);
   });
 
   it("keeps inline info links and restore actions in the same structure", () => {
@@ -398,6 +459,26 @@ describe("RemoteCompatibilityNotices", () => {
     await waitFor(() =>
       expect(screen.getByTestId("remote-compatibility-notice")).toBeTruthy(),
     );
+  });
+
+  it("keeps the runtime advisory snoozeable but never dismissable", () => {
+    render(
+      <RemoteCompatibilityNotices
+        relayUsername={null}
+        versionInfo={version()}
+        runtimeNotice={{
+          runtime: { kind: "node", version: "20.20.0" },
+          sourceKey: "direct:one",
+          t,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Upgrade Node.js before updating YA")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Dismiss" })).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Remind me later" }),
+    ).toBeTruthy();
   });
 
   it("stays hidden while server version data is still loading", () => {

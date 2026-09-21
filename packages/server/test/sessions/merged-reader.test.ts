@@ -1,6 +1,10 @@
+import type { UrlProjectId } from "@yep-anywhere/shared";
 import { describe, expect, it, vi } from "vitest";
 import { MergedSessionReader } from "../../src/sessions/merged-reader.js";
-import type { ISessionReader } from "../../src/sessions/types.js";
+import type {
+  ISessionReader,
+  SessionListSummary,
+} from "../../src/sessions/types.js";
 
 function childReader(options: {
   accepted?: ReturnType<typeof vi.fn>;
@@ -79,6 +83,58 @@ describe("MergedSessionReader provider child freshness", () => {
     ]);
 
     expect(reader.listAcceptedProviderChildSessions("parent")).toBeUndefined();
+  });
+});
+
+describe("MergedSessionReader list summaries", () => {
+  const projectId = "proj-merged" as UrlProjectId;
+  const hint: SessionListSummary = {
+    id: "session-merged",
+    projectId,
+    title: "Indexed",
+    fullTitle: "Indexed",
+    updatedAt: "2026-09-01T00:00:00.000Z",
+    provider: "codex",
+  };
+
+  it("forwards the indexed hint and the question deferral to every root", async () => {
+    // A sandbox root that does not hold the session must still receive the
+    // hint and the deferral, or the root that answers next reads a tail the
+    // caller asked it to skip.
+    const sandbox = vi.fn(async () => null);
+    const global = vi.fn(async () => ({ ...hint, title: "Answered" }));
+    const reader = new MergedSessionReader([
+      { getSessionListSummary: sandbox } as unknown as ISessionReader,
+      { getSessionListSummary: global } as unknown as ISessionReader,
+    ]);
+
+    await expect(
+      reader.getSessionListSummary("session-merged", projectId, hint, {
+        deferAsyncQuestions: true,
+      }),
+    ).resolves.toEqual({ ...hint, title: "Answered" });
+    for (const root of [sandbox, global]) {
+      expect(root).toHaveBeenCalledWith("session-merged", projectId, hint, {
+        deferAsyncQuestions: true,
+      });
+    }
+  });
+
+  it("passes an absent hint and absent options through unchanged", async () => {
+    const global = vi.fn(async () => hint);
+    const reader = new MergedSessionReader([
+      { getSessionListSummary: global } as unknown as ISessionReader,
+    ]);
+
+    await expect(
+      reader.getSessionListSummary("session-merged", projectId),
+    ).resolves.toEqual(hint);
+    expect(global).toHaveBeenCalledWith(
+      "session-merged",
+      projectId,
+      undefined,
+      undefined,
+    );
   });
 });
 

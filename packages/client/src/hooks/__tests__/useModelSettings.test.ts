@@ -38,6 +38,27 @@ describe("useModelSettings speech defaults", () => {
     const reloaded = renderHook(() => useModelSettings());
     expect(reloaded.result.current.whisperSpeechModel).toBe("large-v3");
   });
+
+  it("adopts a speech model another tab chose", async () => {
+    const { useModelSettings } = await import("../useModelSettings");
+    const { result } = renderHook(() => useModelSettings());
+    expect(result.current.whisperSpeechModel).toBe("");
+
+    act(() => {
+      window.localStorage.setItem(
+        BROWSER_LOCAL_KEYS.whisperSpeechModel,
+        "small.en",
+      );
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: BROWSER_LOCAL_KEYS.whisperSpeechModel,
+          newValue: "small.en",
+        }),
+      );
+    });
+
+    expect(result.current.whisperSpeechModel).toBe("small.en");
+  });
   afterEach(() => {
     cleanup();
     window.localStorage.clear();

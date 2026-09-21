@@ -69,7 +69,8 @@ import {
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
 import { attachToolResultMediaCandidates } from "../../media/inlineImageData.js";
-import { selectCommandLookupTarget, whichCommand } from "../cli-detection.js";
+import { selectCommandLookupTarget } from "../cli-detection.js";
+import { whichCommand } from "../which-command.js";
 import { MessageQueue } from "../messageQueue.js";
 import type {
   PermissionMode,

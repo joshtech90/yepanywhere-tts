@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { InstallService } from "../../server/src/services/InstallService.js";
 import { ensureColorEmojiFont } from "../scripts/emoji-font.js";
 
+import { providerHostRuntimeDir } from "./support/provider-host-runtime.js";
 import { createE2ERunDirectory } from "./support/run-directory.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -101,7 +102,7 @@ export default async function globalSetup() {
   // holds that path with a host built from whatever sources it started with,
   // so this server would find an incompatible host, decline to replace it, and
   // serve the whole suite in its "provider host is not running" degraded mode.
-  E2E_PROVIDER_HOST_RUNTIME_DIR = join(E2E_TEMP_DIR, "provider-host");
+  E2E_PROVIDER_HOST_RUNTIME_DIR = providerHostRuntimeDir(E2E_TEMP_DIR);
 
   // Create isolated test directories
   console.log(`[E2E] Creating isolated test directories at ${E2E_TEST_DIR}`);

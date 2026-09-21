@@ -5,11 +5,17 @@
 }
 
 .card {
-  /* Two fields across once the row is wide enough for both to stay legible;
-     one column on a phone, where a 200px field would wrap every label. */
+  /* As many short fields across as stay legible: two in the settings pane at a
+     laptop width, three in a wide one, one on a phone. 16rem paired nothing —
+     the pane is ~430px inside a 1000px viewport, and this app's root font makes
+     a rem 18.4px, so 16rem asked for more than two columns could ever have. */
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
-  align-items: end;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  /* Fields align at the top of their row. Bottom alignment let a short field
+     drop to the foot of a row whose height came from a neighbour's hint, which
+     left a hole above it and put two labels in the same row at different
+     heights. */
+  align-items: start;
   gap: 0.5rem 1rem;
   margin: 0;
   padding: 0.75rem;
@@ -55,6 +61,34 @@
 /* Hints and the wide rows read as their own band rather than as a column. */
 .wide {
   grid-column: 1 / -1;
+}
+
+/* A field whose value is long — a URL, a shell command — takes two tracks, so
+   it stays readable where the short ones pair off.
+ 
+   Only once there is a second column to take. A span wider than the explicit
+   track count does not clamp: it creates an implicit track, which on a phone
+   turned the whole card into two ~130px columns whose labels all wrapped. */
+@media (min-width: 480px) {
+  .span2 {
+    grid-column: span 2;
+  }
+}
+
+/* A hint belonging to one field sits inside that field's cell, so a card of
+   short inputs stays two columns instead of alternating input and full-width
+   explanation down a single column. */
+.hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  opacity: 0.7;
+}
+
+.status {
+  align-self: center;
+  font-size: 0.85rem;
+  opacity: 0.75;
 }
 
 /* The id doubles as the entry's title, so it reads as a heading rather than
@@ -105,18 +139,32 @@
   font-size: 0.9rem;
 }
 
-.advanced {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
 .advanced > summary {
   cursor: pointer;
   min-height: 2.25rem;
   display: flex;
   align-items: center;
   font-size: 0.9rem;
+}
+
+/* The same grid as the card, on a wrapper rather than on the <details> itself:
+   a browser with a `::details-content` box lays every child after the summary
+   out inside one anonymous block, so a grid on the <details> reaches exactly
+   one item and everything inside it stacks. */
+.advancedBody {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  /* Fields align at the top of their row. Bottom alignment let a short field
+     drop to the foot of a row whose height came from a neighbour's hint, which
+     left a hole above it and put two labels in the same row at different
+     heights. */
+  align-items: start;
+  gap: 0.5rem 1rem;
+}
+
+.advancedBody > button {
+  grid-column: 1 / -1;
+  justify-self: start;
 }
 
 /* The exact commands, one per line, selectable and never wrapped mid-token. */

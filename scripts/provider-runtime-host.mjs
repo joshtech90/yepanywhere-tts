@@ -80,7 +80,10 @@ const REPLACED_AGENT_LAUNCH_ENV_NAMES = [
 
 const AGENT_LAUNCHER_NAME = "yepanywhere";
 
-function agentHarness(providerName) {
+// Copy of `agentHarness` in packages/shared/src/types.ts, which owns the
+// mapping: this host runs under plain `node` and cannot import TypeScript.
+// packages/server/test/sdk/providers/agent-harness.test.ts fails if they part.
+export function agentHarness(providerName) {
   switch (providerName) {
     case "claude-gateway":
     case "claude-ollama":

@@ -7,7 +7,6 @@ import {
 import {
   getCollapsedSearchPreviewText,
   normalizeSearchPreviewText,
-  providerSupportsBoundedTurnSearch,
   type SessionContentSearchBatch,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
@@ -121,14 +120,6 @@ export function createSessionContentSearchRoutes(
       )
         return c.json({ error: "Transcript changed; restart search" }, 409);
       const provider = session.provider ?? session.catalogFamily;
-      if (!providerSupportsBoundedTurnSearch(provider))
-        return c.json({
-          matches: [],
-          done: true,
-          partial: true,
-          bytesRead: 0,
-          unavailable: `Bounded turn search is unavailable for ${provider}`,
-        } satisfies SessionContentSearchBatch);
       const project = await deps.scanner.getProject(session.projectId);
       if (!project) return c.json({ error: "Project unavailable" }, 404);
       const sources = getSessionSources(
@@ -137,6 +128,8 @@ export function createSessionContentSearchRoutes(
         provider,
       );
       const reader = sources[0]?.reader;
+      // The resolved reader answers availability; `providerSupportsBoundedTurnSearch`
+      // is the advertised hint clients pre-exclude with, not a second server guard.
       if (!reader?.readIssueTextBatch) {
         return c.json({
           matches: [],

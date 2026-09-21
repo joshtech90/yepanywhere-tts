@@ -214,6 +214,12 @@ export interface StartSessionOptions {
    */
   resumeSessionAt?: string;
   /**
+   * With `resumeSessionAt`: prompt UUID of the one turn the truncation is
+   * meant to drop; the Claude CLI refuses when the discarded range holds
+   * anything else. Providers without the guard ignore it.
+   */
+  resumeDropsTurn?: string;
+  /**
    * Optional provider-visible client identity, used by providers that expose
    * launcher identity in session metadata (currently Codex).
    */

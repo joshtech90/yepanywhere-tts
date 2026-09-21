@@ -1,6 +1,8 @@
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import type {
   AppSessionSummary,
   RetainedSessionCollectionState,
+  ProjectCaption,
   AgentActivity,
   AgentContextHints,
   AutoSessionTitleSettings,
@@ -48,6 +50,7 @@ import type {
   PromptSuggestionMode,
   PromptCacheKeepaliveSettings,
   PostCompactReplaySettings,
+  LongContextEffortWarningSettings,
   ProviderInfo,
   ProviderChildSessionSummary,
   ProviderName,
@@ -58,12 +61,15 @@ import type {
   RevokePublicSessionSharesResponse,
   RevokeAllPublicSharesResponse,
   RevokePublicShareResponse,
+  SessionClearloopJob,
   SessionQueuedMessageSummary,
+  SessionRewindRecord,
   SessionSandboxEnforcement,
   SessionSandboxLevel,
   ShowThinking,
   ThinkingOption,
   TranscriptDisplayObject,
+  UpdateClearloopRequest,
   UpdateProjectQueueItemRequest,
   UpdateProjectSessionDefaultsRequest,
   EffortLevel,
@@ -84,6 +90,7 @@ import type {
   SessionStatus,
 } from "../types";
 import { authApi } from "./authClient";
+import { usersApi } from "./usersClient";
 import { browserProfilesApi } from "./browserProfilesClient";
 import { fileApi } from "./fileClient";
 import { gitApi } from "./gitClient";
@@ -171,6 +178,8 @@ export interface GlobalSessionItem {
   parentSessionKind?: "btw-aside";
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
+  /** Iterations a running `/clearloop` still has to do; absent when none runs. */
+  clearloop?: SessionClearloopBadge;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** SSH host alias for remote execution (undefined = local) */
@@ -477,11 +486,32 @@ export const api = {
    * Validates the path exists on disk and returns project info.
    * Supports ~ for home directory and normalizes trailing slashes.
    */
-  addProject: (path: string) =>
-    fetchJSON<{ project: Project }>("/projects", {
+  addProject: (
+    path: string,
+    options?: { create?: boolean; name?: string; codeName?: string },
+  ) =>
+    fetchJSON<{ project: Project; created?: boolean }>("/projects", {
       method: "POST",
-      body: JSON.stringify({ path }),
+      // `create` is the caller's confirmed answer to a path that does not
+      // exist yet; without it the server refuses a missing directory.
+      // `name` and `codeName` are the user's choices when they differ from
+      // what the server would derive; gated by `project-names`.
+      body: JSON.stringify({
+        path,
+        ...(options?.create ? { create: true } : {}),
+        ...(options?.name ? { name: options.name } : {}),
+        ...(options?.codeName ? { codeName: options.codeName } : {}),
+      }),
     }),
+
+  updateProjectName: (projectId: string, name: string | null) =>
+    fetchJSON<{ name: string }>(
+      `/projects/${encodeURIComponent(projectId)}/name`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ name }),
+      },
+    ),
 
   getProject: (projectId: string) =>
     fetchJSON<{ project: Project }>(`/projects/${projectId}`),
@@ -493,6 +523,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify({ codeName }),
     }),
+
+  updateProjectCaption: (projectId: string, caption: string | null) =>
+    fetchJSON<{ caption?: ProjectCaption }>(
+      `/projects/${encodeURIComponent(projectId)}/caption`,
+      {
+        method: "PATCH",
+        body: JSON.stringify({ caption }),
+      },
+    ),
 
   getProjectSessionDefaults: (projectId: string) =>
     fetchJSON<ProjectSessionDefaultsResponse>(
@@ -911,6 +950,8 @@ export const api = {
       | { upToMessageId?: string }
       | {
           forkKind: "clone-latest-complete";
+          /** Launch thinking/effort for the fork instead of the source's. */
+          thinking?: ThinkingOption;
         }
       | {
           forkKind: "before-user-turn" | "after-user-turn";
@@ -1112,6 +1153,72 @@ export const api = {
   cancelDeferredMessage: (sessionId: string, tempId: string) =>
     fetchJSON<{ cancelled: boolean }>(
       `/sessions/${sessionId}/deferred/${encodeURIComponent(tempId)}`,
+      { method: "DELETE" },
+    ),
+
+  /**
+   * Same-session rewind: drop everything after the cut while keeping the
+   * session id; the dropped turns stay in history as a collapsed group.
+   * See topics/session-rewind.md.
+   */
+  rewindSession: (
+    projectId: string,
+    sessionId: string,
+    body: {
+      cut: {
+        kind: "after-user-turn" | "before-user-turn";
+        sourceMessageId: string;
+      };
+      cutTurnIndex?: number;
+    },
+  ) =>
+    fetchJSON<{
+      record: SessionRewindRecord | null;
+      cutMessageId: string;
+      noop: boolean;
+      processAborted: boolean;
+    }>(`/projects/${projectId}/sessions/${sessionId}/rewind`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  startClearloop: (
+    projectId: string,
+    sessionId: string,
+    body: {
+      cut: {
+        kind: "after-user-turn" | "before-user-turn";
+        sourceMessageId: string;
+      };
+      cutTurnIndex?: number;
+      prompt: string;
+      total: number;
+      commandText: string;
+    },
+  ) =>
+    fetchJSON<{ job: SessionClearloopJob }>(
+      `/projects/${projectId}/sessions/${sessionId}/clearloop`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  /**
+   * Runtime controls on a running /clearloop: whether it waits for project
+   * idleness at each boundary, and ending the current iteration now.
+   */
+  updateClearloop: (
+    projectId: string,
+    sessionId: string,
+    body: UpdateClearloopRequest,
+  ) =>
+    fetchJSON<{ job: SessionClearloopJob }>(
+      `/projects/${projectId}/sessions/${sessionId}/clearloop`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+
+  /** Cancel a running /clearloop without stopping in-flight work. */
+  cancelClearloop: (projectId: string, sessionId: string) =>
+    fetchJSON<{ job: SessionClearloopJob }>(
+      `/projects/${projectId}/sessions/${sessionId}/clearloop`,
       { method: "DELETE" },
     ),
 
@@ -1361,6 +1468,7 @@ export const api = {
 
   // Auth API
   ...authApi,
+  ...usersApi,
 
   // Recents API
   ...recentsApi,
@@ -1420,6 +1528,10 @@ export const api = {
           modelId: string;
           levels: EffortLevel[];
           noThinking: boolean;
+          /** Present only when the endpoint named the level it applies by
+              default, which its chat template states and its request schema
+              does not. */
+          defaultLevel?: EffortLevel;
         }
       | { detected: false; reason: "unreachable" | "no-models" | "undescribed" }
     >("/settings/gateway-services/effort", {
@@ -1699,6 +1811,8 @@ export interface ServerSettings {
   approvalAuditLogEnabled?: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled?: boolean;
+  /** Whether limited users exist beside the superuser (topics/limited-users.md) */
+  limitedUsersEnabled?: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
   /** Whether experimental live Source Control filesystem monitoring is enabled. */
@@ -1789,6 +1903,11 @@ export interface ServerSettings {
    * Absent on older servers; default off.
    */
   postCompactReplay?: PostCompactReplaySettings;
+  /**
+   * Warn before a mid-session effort change on a long-context session and
+   * offer a fork instead. Absent on older servers, which then never warn.
+   */
+  longContextEffortWarning?: LongContextEffortWarningSettings;
   /** Usage-accounting monitor for suspected prompt-cache billing misses */
   cacheMissBilling?: CacheMissBillingSettings;
   /** Browser-client defaults used when local storage has no explicit value */
@@ -1834,6 +1953,8 @@ export interface ServerSettings {
   turnTimestamps?: "off" | "before" | "after";
   /** Seconds Project Queue waits after whole-project idle before promotion. */
   projectQueueQuietSeconds?: number;
+  /** Seconds of session inactivity that end one /clearloop iteration. */
+  clearloopInactivitySeconds?: number;
   /** Optional server-wide executable gate; null disables it. */
   projectQueueReadinessCheck?: ProjectQueueReadinessCommand | null;
   /**

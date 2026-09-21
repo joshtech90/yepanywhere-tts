@@ -7,6 +7,8 @@ import { DiscoverySqliteService } from "../../src/storage/discovery-sqlite.js";
 import { IssueStore } from "../../src/services/issues/IssueStore.js";
 import { IssueConfirmer } from "../../src/services/issues/confirm.js";
 import { IssueCredentials } from "../../src/services/issues/credentials.js";
+import type { SqliteDatabase, SqliteValue } from "../../src/storage/sqlite.js";
+import { storedRows } from "./sqlite-rows.js";
 
 const directories: string[] = [];
 afterEach(() => {
@@ -49,9 +51,10 @@ function harness(overrides: Partial<IssueSettings> = {}) {
         { id: `${sessionId}-${text.length}`, text },
       ),
     pending: () =>
-      store
-        .rows("SELECT ref_key,state FROM issue_confirmations ORDER BY ref_key")
-        .map((row) => [String(row.ref_key), String(row.state)]),
+      storedRows(
+        store.database,
+        "SELECT ref_key,state FROM issue_confirmations ORDER BY ref_key",
+      ).map((row) => [String(row.ref_key), String(row.state)]),
   };
 }
 
@@ -132,6 +135,47 @@ describe("tracker confirmation", () => {
     h.db.close();
   });
 
+  it("asks once per reference when a recheck overlaps a drain in flight", async () => {
+    const h = harness();
+    const asked: string[] = [];
+    let release = () => {};
+    const inFlight = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn(async (url: string | URL | Request) => {
+      asked.push(String(url));
+      await inFlight;
+      return new Response(
+        JSON.stringify({ title: "A pull", fields: { summary: "A ticket" } }),
+        { status: 200 },
+      );
+    });
+    const confirmer = new IssueConfirmer(h.store, {
+      settings: h.settings,
+      credentials: h.credentials,
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    h.capture("PROJ-7 and https://github.com/Owner/Repo/issues/3");
+
+    // A capture starts a drain; the user rechecks while its first lookup is
+    // still out. Both references must be asked about once, not once per drain.
+    confirmer.schedule();
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    confirmer.recheck("p", "jira", "PROJ-7");
+    const recheck = confirmer.drain();
+    release();
+    await recheck;
+
+    expect(asked).toHaveLength(2);
+    expect(new Set(asked).size).toBe(2);
+    expect(h.pending()).toEqual([
+      ["PROJ-7", "confirmed"],
+      ["owner/repo#3", "confirmed"],
+    ]);
+    await confirmer.close();
+    h.db.close();
+  });
+
   it("queues nothing while confirmation is off, including a backlog", async () => {
     const h = harness({ confirmation: undefined });
     const fetcher = vi.fn(async () => new Response("{}", { status: 200 }));
@@ -159,6 +203,42 @@ describe("tracker confirmation", () => {
     h.db.close();
   });
 
+  it("answers an explicit recheck for a reference captured while it was off", async () => {
+    const h = harness({ confirmation: undefined });
+    const fetcher = vi.fn(
+      async () =>
+        new Response(JSON.stringify({ fields: { summary: "A ticket" } }), {
+          status: 200,
+        }),
+    );
+    const confirmer = new IssueConfirmer(h.store, {
+      settings: h.settings,
+      credentials: h.credentials,
+      fetch: fetcher as unknown as typeof fetch,
+    });
+    h.capture("PROJ-7 is the ticket");
+    expect(h.pending()).toEqual([]);
+
+    // The reference holds no row at all, so the user's one way to ask must
+    // write one rather than silently updating nothing.
+    h.set({
+      confirmation: {
+        enabled: true,
+        jiraSite: "https://example.atlassian.net",
+        jiraEmail: "someone@example.com",
+      },
+    });
+    confirmer.recheck("p", "jira", "PROJ-7");
+    await confirmer.drain();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(h.pending()).toEqual([["PROJ-7", "confirmed"]]);
+    expect(
+      h.store.list().find((item) => item.key === "PROJ-7")?.confirmation,
+    ).toEqual({ state: "confirmed", title: "A ticket" });
+    await confirmer.close();
+    h.db.close();
+  });
+
   it("reports a missing credential or Jira site without contacting anything", async () => {
     const h = harness({
       confirmation: {
@@ -181,10 +261,76 @@ describe("tracker confirmation", () => {
     expect(h.pending()).toEqual([["PROJ-7", "unreachable"]]);
     expect(fetcher).not.toHaveBeenCalled();
     expect(
-      h.store.rows("SELECT detail FROM issue_confirmations")[0]!.detail,
+      storedRows(h.store.database, "SELECT detail FROM issue_confirmations")[0]!
+        .detail,
     ).toContain("No jira credential");
     await confirmer.close();
     h.db.close();
+  });
+
+  it("registers a bare Jira key once, not once per question asked about it", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ya-issue-confirm-"));
+    directories.push(dir);
+    const service = new DiscoverySqliteService({ dataDir: dir, mode: "auto" });
+    const database = service.getDatabase()!;
+    let registrations = 0;
+    // Resolving a bare key to a canonical identity registers that identity, so
+    // asking the question writes a row. Count those writes: deciding whether a
+    // reference is confirmable must not be what pays for one, and a single
+    // sighting must not pay twice.
+    const counted: SqliteDatabase = {
+      ...database,
+      prepare(sql: string) {
+        const statement = database.prepare(sql);
+        if (!/INSERT OR IGNORE INTO external_issues/i.test(sql))
+          return statement;
+        return {
+          ...statement,
+          run: (...values: SqliteValue[]) => {
+            registrations += 1;
+            return statement.run(...values);
+          },
+        };
+      },
+    };
+    const store = new IssueStore(counted, () => ({
+      enabled: true,
+      scope: "viewed",
+      recentDays: 7,
+      // Aggressive matching would answer the confirmation question without
+      // consulting the registry at all; off is where both callers resolve.
+      aggressiveMatching: false,
+      confirmation: {
+        enabled: true,
+        jiraSite: "https://example.atlassian.net",
+        jiraEmail: "someone@example.com",
+      },
+    }));
+    const source = { sessionId: "s", projectId: "p" };
+    // One site for the prefix, so a later bare key resolves unambiguously.
+    store.capture(source, {
+      id: "url",
+      text: "https://tracker.test/browse/PROJ-1",
+    });
+    while (store.processResolutions()) {
+      /* Settle namespace learning before measuring the bare key. */
+    }
+
+    registrations = 0;
+    store.capture(source, { id: "key", text: "PROJ-7 needs a fix" });
+    expect(registrations).toBe(1);
+    // Paying once still buys the same answer: the resolved key is confirmable,
+    // alongside the URL sighting that taught the registry its site.
+    expect(
+      storedRows(
+        store.database,
+        "SELECT ref_key,state FROM issue_confirmations ORDER BY ref_key",
+      ).map((row) => [String(row.ref_key), String(row.state)]),
+    ).toEqual([
+      ["PROJ-1", "pending"],
+      ["PROJ-7", "pending"],
+    ]);
+    service.close();
   });
 
   it("sends Jira basic auth to the configured site and GitHub a bearer token", async () => {

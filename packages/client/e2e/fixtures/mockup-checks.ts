@@ -24,5 +24,7 @@ export async function checkMockup(page: Page | Frame, state: string) {
         icons: document.querySelectorAll("svg").length,
       };
     }),
-  ).toEqual({ font: true, scrollable: true, overflow: false, icons: 32 });
+    // Three per card: the settings gear, the removal trash, and the new-session
+    // plus. The caption and code-name editors use text controls, not icons.
+  ).toEqual({ font: true, scrollable: true, overflow: false, icons: 48 });
 }

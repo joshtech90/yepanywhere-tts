@@ -20,6 +20,7 @@ import {
   replaceSpeechTranscriptBefore,
   replaceSpeechTranscriptInRange,
   removeTextRange,
+  textBeforeSpeechCursor,
 } from "../speechRecognition";
 
 describe("processSpeechResults", () => {
@@ -504,5 +505,36 @@ describe("speech transcript text edits", () => {
     expect(mapped.start).toBe("prefix first.".length);
     expect(mapped.end).toBe("prefix first.".length);
     expect(mapped.replaceEnd).toBeUndefined();
+  });
+});
+
+describe("textBeforeSpeechCursor", () => {
+  const draft = "before after";
+
+  const caretAt = (index: number): HTMLTextAreaElement => {
+    const textarea = document.createElement("textarea");
+    textarea.value = draft;
+    textarea.setSelectionRange(index, index);
+    return textarea;
+  };
+
+  it("takes the recording's own insertion point over the live caret", () => {
+    expect(
+      textBeforeSpeechCursor(
+        draft,
+        createSpeechInsertionRange("before".length, "before".length),
+        caretAt(0),
+      ),
+    ).toBe("before");
+  });
+
+  it("takes the caret when no recording owns an insertion point", () => {
+    expect(textBeforeSpeechCursor(draft, null, caretAt("before".length))).toBe(
+      "before",
+    );
+  });
+
+  it("takes the whole draft when no composer textarea is focused", () => {
+    expect(textBeforeSpeechCursor(draft, null, null)).toBe(draft);
   });
 });

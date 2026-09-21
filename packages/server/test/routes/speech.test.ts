@@ -476,6 +476,37 @@ describe("speech routes", () => {
     });
   });
 
+  it("keeps session hint terms out of retained batch metadata", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-speech-"));
+    tempDirs.push(dataDir);
+    const { app } = await createSpeechApp(dataDir);
+
+    const res = await app.request("/api/speech/transcribe", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        backendId: "ya-dummy",
+        mimeType: "audio/webm",
+        audioBase64: Buffer.from("audio").toString("base64"),
+        context: {
+          sessionId: "session-1",
+          sessionTerms: ["parakeet"],
+        },
+      }),
+    });
+
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { transcriptionId: string };
+    const metadataPath = await findRetainedMetadata(
+      dataDir,
+      json.transcriptionId,
+    );
+    const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8")) as {
+      context?: Record<string, unknown>;
+    };
+    expect(metadata.context).toEqual({ sessionId: "session-1" });
+  });
+
   it("transcribes buffered WebSocket audio through the dummy backend", async () => {
     const { app, wss } = await createSpeechApp();
     let serverPort = 0;
@@ -511,6 +542,61 @@ describe("speech routes", () => {
         text: DUMMY_TRANSCRIPT,
         transcriptionId: expect.any(String),
       });
+    } finally {
+      ws.close();
+    }
+  });
+
+  it("keeps session hint terms out of retained WebSocket metadata", async () => {
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-speech-"));
+    tempDirs.push(dataDir);
+    const { app, wss } = await createSpeechApp(dataDir);
+    let serverPort = 0;
+    server = serve({ fetch: app.fetch, port: 0 }, (info) => {
+      serverPort = info.port;
+    });
+    attachUnifiedUpgradeHandler(server, {
+      frontendProxy: undefined,
+      isApiPath: (urlPath) => urlPath.startsWith("/api"),
+      app,
+      wss,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const ws = await connectWebSocket(
+      `ws://127.0.0.1:${serverPort}/api/speech/ws`,
+    );
+    try {
+      expect(await ws.nextJson()).toEqual({ type: "ready" });
+
+      ws.send(
+        JSON.stringify({
+          type: "start",
+          backendId: "ya-dummy",
+          mimeType: "audio/webm",
+          context: {
+            sessionId: "session-1",
+            sessionTerms: ["parakeet"],
+          },
+        }),
+      );
+      ws.send(Buffer.from("fake audio bytes"));
+      ws.send(JSON.stringify({ type: "stop" }));
+
+      const final = (await ws.nextJson()) as { transcriptionId: string };
+      expect(final).toEqual({
+        type: "final",
+        text: DUMMY_TRANSCRIPT,
+        transcriptionId: expect.any(String),
+      });
+      const metadataPath = await findRetainedMetadata(
+        dataDir,
+        final.transcriptionId,
+      );
+      const metadata = JSON.parse(await fs.readFile(metadataPath, "utf8")) as {
+        context?: Record<string, unknown>;
+      };
+      expect(metadata.context).toEqual({ sessionId: "session-1" });
     } finally {
       ws.close();
     }

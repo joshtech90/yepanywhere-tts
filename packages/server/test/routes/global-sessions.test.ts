@@ -9,6 +9,7 @@ import {
   type GlobalSessionsResponse,
   createGlobalSessionsRoutes,
 } from "../../src/routes/global-sessions.js";
+import type { SessionCatalogRow } from "../../src/sessions/catalog-types.js";
 import type { GeminiSessionReader } from "../../src/sessions/gemini-reader.js";
 import type { ISessionReader } from "../../src/sessions/types.js";
 import type { ExternalSessionTracker } from "../../src/supervisor/ExternalSessionTracker.js";
@@ -87,6 +88,7 @@ describe("Global Sessions Routes", () => {
     string,
     {
       customTitle?: string;
+      initialPrompt?: string;
       isArchived?: boolean;
       isStarred?: boolean;
       autoResumeDisabled?: boolean;
@@ -620,6 +622,122 @@ describe("Global Sessions Routes", () => {
       const result = await makeRequest("?q=login");
 
       expect(result.sessions).toHaveLength(1);
+    });
+  });
+
+  describe("retained summary mode", () => {
+    function createCatalogRow(
+      sessionId: string,
+      projectId: string,
+      updatedAt: string,
+      overrides: Partial<SessionCatalogRow> = {},
+    ): SessionCatalogRow {
+      return {
+        catalogFamily: "claude",
+        storeKey: "store",
+        sessionId,
+        projectId: projectId as UrlProjectId,
+        projectPath: `/home/user/${projectId}`,
+        projectIdentityKey: `/home/user/${projectId}`,
+        projectName: projectId,
+        updatedAt,
+        title: `Session ${sessionId}`,
+        provider: "claude",
+        fidelity: "head",
+        sourceVersion: "v1",
+        location: { kind: "provider", recordId: sessionId },
+        ...overrides,
+      };
+    }
+
+    function retainedCollections(
+      rows: SessionCatalogRow[],
+    ): GlobalSessionsDeps["retainedCollections"] {
+      return {
+        read: async () => ({
+          rows,
+          catalog: {
+            catalogEpoch: "epoch",
+            catalogGeneration: 1,
+            complete: true,
+            refreshing: false,
+          },
+        }),
+      } as unknown as GlobalSessionsDeps["retainedCollections"];
+    }
+
+    it("matches a word carried only by the initial prompt", async () => {
+      const rows = [
+        createCatalogRow("sess1", "proj1", minutesAgo(5)),
+        createCatalogRow("sess2", "proj1", minutesAgo(10)),
+      ];
+      metadataMap.set("sess1", {
+        initialPrompt: "Rewrite the payment webhook retry",
+      });
+
+      const result = await makeRequest("?summaryMode=retained&q=webhook", {
+        retainedCollections: retainedCollections(rows),
+      });
+
+      expect(result.sessions.map((session) => session.id)).toEqual(["sess1"]);
+    });
+
+    it("admits the same rows the complete walk admits for one query", async () => {
+      const project = createProject("proj1", "proj1", "/sessions/proj1");
+      const session = createSession("sess1", "proj1", minutesAgo(5), {
+        title: "Session sess1",
+      });
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [session]);
+      metadataMap.set("sess1", { initialPrompt: "Trace the flaky sweep" });
+
+      const complete = await makeRequest("?q=flaky");
+      const retained = await makeRequest("?summaryMode=retained&q=flaky", {
+        retainedCollections: retainedCollections([
+          createCatalogRow("sess1", "proj1", minutesAgo(5)),
+        ]),
+      });
+
+      expect(complete.sessions.map((s) => s.id)).toEqual(["sess1"]);
+      expect(retained.sessions.map((s) => s.id)).toEqual(
+        complete.sessions.map((s) => s.id),
+      );
+    });
+
+    it("keeps the archived, project, and cursor filters", async () => {
+      const rows = [
+        createCatalogRow("recent", "proj1", minutesAgo(5)),
+        createCatalogRow("older", "proj1", minutesAgo(30)),
+        createCatalogRow("archived", "proj1", minutesAgo(10)),
+        createCatalogRow("elsewhere", "proj2", minutesAgo(10)),
+      ];
+      metadataMap.set("archived", { isArchived: true });
+      const deps = { retainedCollections: retainedCollections(rows) };
+
+      const defaults = await makeRequest("?summaryMode=retained", deps);
+      expect(defaults.sessions.map((s) => s.id)).toEqual([
+        "recent",
+        "elsewhere",
+        "older",
+      ]);
+
+      const archived = await makeRequest(
+        "?summaryMode=retained&includeArchived=true",
+        deps,
+      );
+      expect(archived.sessions.map((s) => s.id)).toContain("archived");
+
+      const scoped = await makeRequest(
+        "?summaryMode=retained&project=proj1",
+        deps,
+      );
+      expect(scoped.sessions.map((s) => s.id)).toEqual(["recent", "older"]);
+
+      const page = await makeRequest(
+        `?summaryMode=retained&after=${encodeURIComponent(minutesAgo(20))}`,
+        deps,
+      );
+      expect(page.sessions.map((s) => s.id)).toEqual(["older"]);
     });
   });
 

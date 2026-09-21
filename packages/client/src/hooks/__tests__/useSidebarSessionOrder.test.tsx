@@ -78,8 +78,8 @@ describe("sidebar user chronology", () => {
     expect(result.current.older.map((row) => row.id)).toEqual(["untouched"]);
   });
 
-  it("keeps a local visit ahead of an older turn from elsewhere", () => {
-    const source = createClientSummaryHostSourceKey("local-visit");
+  it("keeps a local send ahead of an older turn from elsewhere", () => {
+    const source = createClientSummaryHostSourceKey("local-send");
     setCurrentClientSummarySourceKey(source);
     const rows: SessionCollectionRecord[] = [
       {
@@ -89,15 +89,15 @@ describe("sidebar user chronology", () => {
         observedAt: 0,
       },
       {
-        id: "opened-here",
+        id: "sent-here",
         createdAt: new Date(Date.now() - 86400000).toISOString(),
         observedAt: 0,
       },
     ];
     const { result } = renderHook(() => useSidebarSessionOrder(rows, []));
-    act(() => recordSessionInteraction(source, "opened-here"));
+    act(() => recordSessionInteraction(source, "sent-here"));
     expect(result.current.recent.map((row) => row.id)).toEqual([
-      "opened-here",
+      "sent-here",
       "answered-elsewhere",
     ]);
   });

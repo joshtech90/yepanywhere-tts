@@ -195,8 +195,9 @@ describe("MessageList scroll and follow", () => {
       fireEvent.click(summary);
 
       await waitFor(() => {
+        // Expanded, the summary drops "hidden" and counts the activity only.
         const expandedSummary = screen.getByRole("button", {
-          name: /activity hidden/,
+          name: /1 activity$/,
         });
         expect(expandedSummary.getAttribute("aria-expanded")).toBe("true");
         expect(
@@ -208,7 +209,7 @@ describe("MessageList scroll and follow", () => {
 
       fireEvent.click(
         screen.getByRole("button", {
-          name: /activity hidden/,
+          name: /1 activity$/,
         }),
       );
       await waitFor(() => {

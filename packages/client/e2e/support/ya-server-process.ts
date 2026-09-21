@@ -12,6 +12,7 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { providerHostRuntimeDir } from "./provider-host-runtime.js";
 import { getE2ERunDirectory } from "./run-directory.js";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -31,12 +32,6 @@ function signalServerProcess(pid: number): void {
   } else {
     process.kill(-pid, "SIGTERM");
   }
-}
-
-/** The run-wide provider-host directory, falling back to this server's own. */
-function providerHostRuntimeDir(serverTempDir: string): string {
-  const base = getE2ERunDirectory() ?? serverTempDir;
-  return join(base, "provider-host");
 }
 
 export interface MockClaudeSession {
@@ -250,7 +245,9 @@ export async function startYaServerProcess(
     // run every test in degraded mode. Share the run's directory so these
     // servers attach to the host global setup already started, and global
     // teardown has a single host to stop.
-    YEP_PROVIDER_HOST_RUNTIME_DIR: providerHostRuntimeDir(tempDir),
+    YEP_PROVIDER_HOST_RUNTIME_DIR: providerHostRuntimeDir(
+      getE2ERunDirectory() ?? tempDir,
+    ),
     ...options.env,
   };
   if (childEnv.FORCE_COLOR) {

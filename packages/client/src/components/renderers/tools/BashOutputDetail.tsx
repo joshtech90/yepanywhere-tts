@@ -184,7 +184,3 @@ export function BashResultMetaBadges({
     </div>
   );
 }
-
-/**
- * Bash tool use - shows command in code block with collapse for long commands
- */

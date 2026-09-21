@@ -1,10 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toUrlProjectId, type UrlProjectId } from "@yep-anywhere/shared";
 import { describe, expect, it, vi } from "vitest";
 import { ProjectMetadataService } from "../../src/metadata/index.js";
-import type { ProjectScanner } from "../../src/projects/scanner.js";
+import { clearProjectCaptionCache } from "../../src/projects/projectCaption.js";
+import { ProjectScanner } from "../../src/projects/scanner.js";
 import { createProjectsRoutes } from "../../src/routes/projects.js";
 import type { CodexSessionReader } from "../../src/sessions/codex-reader.js";
 import type { ISessionReader } from "../../src/sessions/types.js";
@@ -109,6 +110,32 @@ describe("Projects Routes", () => {
     });
   });
 
+  it("shows retained provider background work as session activity", async () => {
+    const project = createProject();
+    const summary = createSummary();
+    const process = createProcess(project.id, {
+      state: { type: "idle" },
+      retainingProviderWork: true,
+    });
+    const routes = createProjectsRoutes({
+      scanner: {
+        getOrCreateProject: async () => project,
+      } as unknown as ProjectScanner,
+      readerFactory: () =>
+        ({ listSessions: async () => [summary] }) as unknown as ISessionReader,
+      supervisor: {
+        getProcessForSession: () => process,
+        getAllProcesses: () => [],
+      } as unknown as Parameters<typeof createProjectsRoutes>[0]["supervisor"],
+    });
+
+    const response = await routes.request("/proj-1/sessions");
+    expect(response.status).toBe(200);
+    expect((await response.json()).sessions[0]).toMatchObject({
+      activity: "in-turn",
+    });
+  });
+
   it("enriches project list responses with Project Queue counts", async () => {
     const project = createProject();
     const routes = createProjectsRoutes({
@@ -161,6 +188,7 @@ describe("Projects Routes", () => {
           assignments: [{ projectId: project.id, codeName: "prj" }],
           changedProjectIds: [],
         })),
+        getProjectCaptionOverride: () => undefined,
       } as unknown as ProjectMetadataService,
     });
 
@@ -173,6 +201,172 @@ describe("Projects Routes", () => {
       codeName: "prj",
       projectQueueCount: 2,
     });
+  });
+
+  it("derives a caption from the project README and honors an override", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "ya-caption-route-"));
+    const projectDir = await mkdtemp(join(tmpdir(), "ya-caption-project-"));
+    try {
+      await writeFile(
+        join(projectDir, "README.md"),
+        "# tiny\n\nA project whose README opens with a real sentence for YA.\n",
+      );
+      const metadata = new ProjectMetadataService({ dataDir });
+      await metadata.initialize();
+      const project = {
+        ...createProject(),
+        id: toUrlProjectId(projectDir),
+        path: projectDir,
+        name: "captioned",
+      };
+      const emit = vi.fn();
+      const routes = createProjectsRoutes({
+        scanner: {
+          listProjects: vi.fn(async () => [project]),
+          getOrCreateProject: vi.fn(async () => project),
+        } as unknown as ProjectScanner,
+        readerFactory: vi.fn(),
+        projectMetadataService: metadata,
+        eventBus: { emit } as unknown as NonNullable<
+          Parameters<typeof createProjectsRoutes>[0]["eventBus"]
+        >,
+      });
+
+      const listed = await routes.request("/");
+      expect(listed.status).toBe(200);
+      expect((await listed.json()).projects[0].caption).toEqual({
+        text: "A project whose README opens with a real sentence for YA.",
+        source: "readme",
+      });
+
+      const patched = await routes.request(`/${project.id}/caption`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ caption: "  Custom   text " }),
+      });
+      expect(patched.status).toBe(200);
+      await expect(patched.json()).resolves.toEqual({
+        caption: { text: "Custom text", source: "override" },
+      });
+      expect(emit).toHaveBeenCalledWith({
+        type: "project-captions-changed",
+        projectIds: [project.id],
+        timestamp: expect.any(String),
+      });
+      expect(
+        (await (await routes.request("/")).json()).projects[0].caption,
+      ).toMatchObject({ source: "override" });
+
+      const cleared = await routes.request(`/${project.id}/caption`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ caption: "" }),
+      });
+      expect(cleared.status).toBe(200);
+      await expect(cleared.json()).resolves.toMatchObject({
+        caption: { source: "readme" },
+      });
+
+      const tooLong = await routes.request(`/${project.id}/caption`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ caption: "x".repeat(301) }),
+      });
+      expect(tooLong.status).toBe(400);
+    } finally {
+      clearProjectCaptionCache();
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("adds a project under a chosen name and code, then announces the change", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "ya-named-route-"));
+    const projectDir = await mkdtemp(join(tmpdir(), "ya-named-project-"));
+    try {
+      const metadata = new ProjectMetadataService({ dataDir });
+      await metadata.initialize();
+      const scanner = new ProjectScanner({
+        projectsDir: join(dataDir, "claude-projects"),
+        projectMetadataService: metadata,
+        enableCodex: false,
+        enableGemini: false,
+      });
+      const emit = vi.fn();
+      const routes = createProjectsRoutes({
+        scanner,
+        readerFactory: vi.fn(),
+        projectMetadataService: metadata,
+        eventBus: { emit } as unknown as NonNullable<
+          Parameters<typeof createProjectsRoutes>[0]["eventBus"]
+        >,
+      });
+      const projectId = toUrlProjectId(projectDir);
+      const post = (body: unknown) =>
+        routes.request("/", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+
+      // A rejected name adds nothing.
+      const tooLong = await post({ path: projectDir, name: "x".repeat(81) });
+      expect(tooLong.status).toBe(400);
+      expect(metadata.isAddedProject(projectId)).toBe(false);
+
+      const added = await post({
+        path: projectDir,
+        name: "  Chosen   Name ",
+        codeName: "chs",
+      });
+      expect(added.status).toBe(200);
+      expect((await added.json()).project).toMatchObject({
+        id: projectId,
+        name: "Chosen Name",
+        codeName: "chs",
+      });
+      expect(emit).toHaveBeenCalledWith({
+        type: "projects-changed",
+        projectIds: [projectId],
+        timestamp: expect.any(String),
+      });
+
+      // Every later read carries the chosen name.
+      const listed = (await (await routes.request("/")).json()).projects;
+      expect(
+        listed.find((p: { id: string }) => p.id === projectId),
+      ).toMatchObject({ name: "Chosen Name", codeName: "chs" });
+
+      const patch = (name: string | null) =>
+        routes.request(`/${projectId}/name`, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ name }),
+        });
+      expect((await patch("x".repeat(81))).status).toBe(400);
+      const renamed = await patch("Renamed");
+      expect(renamed.status).toBe(200);
+      await expect(renamed.json()).resolves.toEqual({ name: "Renamed" });
+      const cleared = await patch(null);
+      expect(cleared.status).toBe(200);
+      await expect(cleared.json()).resolves.toEqual({
+        name: projectDir.slice(projectDir.lastIndexOf("/") + 1),
+      });
+
+      emit.mockClear();
+      const removed = await routes.request(`/${projectId}`, {
+        method: "DELETE",
+      });
+      expect(removed.status).toBe(200);
+      expect(emit).toHaveBeenCalledWith({
+        type: "projects-changed",
+        projectIds: [projectId],
+        timestamp: expect.any(String),
+      });
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(projectDir, { recursive: true, force: true });
+    }
   });
 
   it("publishes automatic code-name collision reassignments", async () => {
@@ -202,6 +396,7 @@ describe("Projects Routes", () => {
           ],
           changedProjectIds: [alpha.id, alpine.id],
         })),
+        getProjectCaptionOverride: () => undefined,
       } as unknown as ProjectMetadataService,
       eventBus: { emit } as unknown as NonNullable<
         Parameters<typeof createProjectsRoutes>[0]["eventBus"]
@@ -446,6 +641,7 @@ describe("Projects Routes", () => {
           changedProjectIds: [],
         })),
         setProjectCodeName,
+        getProjectCaptionOverride: () => undefined,
       } as unknown as ProjectMetadataService,
       eventBus: { emit } as unknown as NonNullable<
         Parameters<typeof createProjectsRoutes>[0]["eventBus"]

@@ -10,6 +10,7 @@ import {
   isCompactBoundary,
   isIdeMetadata,
   isSyntheticNoResponseTurn,
+  sanitizeSessionTitle,
   stripIdeMetadata,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
@@ -182,7 +183,9 @@ function getFirstUserTitleCandidate(
   return extractTitleContent(objectBlocks);
 }
 
-/** Collection discovery never parses past this prefix to obtain a title. */
+/** Collection discovery never parses past this prefix to obtain a title.
+ * The text is returned whole: search matches the session's own words, and a
+ * display-width truncation belongs at the surface that renders them. */
 export async function readClaudeCatalogTitle(
   filePath: string,
 ): Promise<string | undefined> {
@@ -203,7 +206,7 @@ export async function readClaudeCatalogTitle(
       }
       if (!entry || typeof entry !== "object") continue;
       const title = getFirstUserTitleCandidate(entry);
-      if (title !== undefined) return truncateSessionTitle(title) || undefined;
+      if (title !== undefined) return sanitizeSessionTitle(title) || undefined;
     }
     return undefined;
   } finally {

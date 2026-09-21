@@ -134,19 +134,26 @@ it("delivers explicit cross-session input, surfaces Inbox attention, and acknowl
         nonHumanUserTurn: turn,
       }),
     ]);
-    await post("/sessions/receiver/mark-seen", {});
+    const plainSeen = await post("/sessions/receiver/mark-seen", {});
+    expect(await plainSeen.json()).toEqual({ marked: true });
     expect(metadata.getPendingNonHumanUserTurn("receiver")).toEqual(turn);
-    await post("/sessions/receiver/mark-seen", {
+    const staleSeen = await post("/sessions/receiver/mark-seen", {
       nonHumanUserTurnMessageId: "older-turn",
     });
+    // A stale id leaves the receipt pending, and the client is told so.
+    expect(await staleSeen.json()).toEqual({
+      marked: true,
+      acknowledged: false,
+    });
     expect(metadata.getPendingNonHumanUserTurn("receiver")).toEqual(turn);
-    expect(
-      (
-        await post("/sessions/receiver/mark-seen", {
-          nonHumanUserTurnMessageId: turn.messageId,
-        })
-      ).status,
-    ).toBe(200);
+    const visitedSeen = await post("/sessions/receiver/mark-seen", {
+      nonHumanUserTurnMessageId: turn.messageId,
+    });
+    expect(visitedSeen.status).toBe(200);
+    expect(await visitedSeen.json()).toEqual({
+      marked: true,
+      acknowledged: true,
+    });
     expect((await (await inbox.request("/")).json()).needsAttention).toEqual(
       [],
     );

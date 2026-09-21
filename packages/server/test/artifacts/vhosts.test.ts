@@ -56,10 +56,10 @@ describe("artifact vhosts", () => {
   it("keeps prior vhosts when a PUT omits the field", () => {
     const previous = parseVhosts([{ name: "plan", port: 19432 }]);
     expect(
-      validateArtifactConfig({ port: 4402 }, 7, false, { vhosts: previous }),
+      validateArtifactConfig({ port: 4402 }, 7, { vhosts: previous }),
     ).toMatchObject({ vhosts: previous });
     expect(
-      validateArtifactConfig({ port: 4402, vhosts: [] }, 7, false, {
+      validateArtifactConfig({ port: 4402, vhosts: [] }, 7, {
         vhosts: previous,
       }).vhosts,
     ).toEqual([]);

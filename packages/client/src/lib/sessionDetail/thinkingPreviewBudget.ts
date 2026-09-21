@@ -100,11 +100,10 @@ export const CONVERSATION_LAYOUT_HYSTERESIS_PX = 2;
 /**
  * Same-line vs wrapped decision for the current and previous thinking cards.
  *
- * The previous comparison was a 1px ceiling with no deadband, so a 2px
- * subpixel/baseline wobble classified the pair as stacked, the stacked cap
- * moved a card, and the next measure classified them as sharing a line again.
- * Enter "same line" at 1px (the original slack); leave it only once the
- * previous card is more than 4px below — a real wrap, not measurement noise.
+ * Enter "same line" at 1px; leave it only once the previous card is more than
+ * 4px below — a real wrap, not measurement noise. The deadband between the two
+ * thresholds keeps a 2px subpixel/baseline wobble from flapping the pair
+ * between stacked and side-by-side.
  */
 export const SHARE_FLEX_LINE_AT_OR_BELOW_PX = 1;
 export const STACK_FLEX_LINE_ABOVE_PX = 4;

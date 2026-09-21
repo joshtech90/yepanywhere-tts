@@ -297,6 +297,43 @@ describe("SessionIndexService", () => {
       expect(persisted.sessions[sessionId].isEmpty).toBeUndefined();
     });
 
+    it("keeps an empty Claude summary this version indexed itself", async () => {
+      const sessionId = "unreadable";
+      await createSession(sessionId, "Cannot be summarized");
+      const firstRun = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await firstRun.initialize();
+      const firstReader = new SessionReader({ sessionDir });
+      vi.spyOn(firstReader, "getSessionSummary").mockResolvedValue(null);
+      expect(
+        await firstRun.getSessionsWithCache(sessionDir, projectId, firstReader),
+      ).toEqual([]);
+      const persisted = JSON.parse(
+        await readFile(firstRun.getIndexPath(sessionDir), "utf8"),
+      );
+      expect(persisted.sessions[sessionId].isEmpty).toBe(true);
+
+      const secondRun = new SessionIndexService({
+        dataDir,
+        projectsDir,
+        fullValidationIntervalMs: 60000,
+      });
+      await secondRun.initialize();
+      const secondReader = new SessionReader({ sessionDir });
+      const parseSpy = vi
+        .spyOn(secondReader, "getSessionSummary")
+        .mockResolvedValue(null);
+
+      await secondRun.getSessionsWithCache(sessionDir, projectId, secondReader);
+
+      // The entry the first run wrote means what it says, so loading it again
+      // must not delete it and re-parse the transcript.
+      expect(parseSpy).not.toHaveBeenCalled();
+    });
+
     it("repairs persisted Claude titles captured from meta rows", async () => {
       const sessionId = "meta-command";
       const filePath = join(sessionDir, `${sessionId}.jsonl`);

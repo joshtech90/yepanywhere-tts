@@ -58,6 +58,26 @@ describe("advisory runtime notices", () => {
       notices({ kind: "node", version: "20.12.2" })[0]?.dismissKey,
     );
   });
+  it("carries its own presentation rules rather than being recognized by id", () => {
+    const notice = notices({ kind: "node", version: "20.20.0" })[0];
+    expect(notice?.dismissal).toBe("snooze-only");
+    expect(notice?.floatingPlacement).toBe("below-header");
+  });
+  it("sorts ahead of a version update notice of the same severity", () => {
+    const result = getRemoteCompatibilityNotices({
+      currentVersion: "0.4.28",
+      latestVersion: "0.4.29",
+      updateAvailable: true,
+      relayUsername: "host",
+      resumeProtocolVersion: 3,
+      remoteCompatibilityLevel: 10,
+      runtimeNotice: { sourceKey: "relay:host", t },
+    });
+    expect(result.map((notice) => notice.id)).toEqual([
+      "server-runtime-node22",
+      "backend-api-compat-0.4.29",
+    ]);
+  });
   it("preserves security priority and existing update commands", () => {
     const result = getRemoteCompatibilityNotices({
       currentVersion: "0.5.0",

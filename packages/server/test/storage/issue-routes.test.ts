@@ -5,12 +5,12 @@ import { expect, it } from "vitest";
 import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { DiscoverySqliteService } from "../../src/storage/discovery-sqlite.js";
 import { IssueStore } from "../../src/services/issues/IssueStore.js";
-import {
-  IssueIndexer,
-  DEFAULT_ISSUE_SETTINGS,
-} from "../../src/services/issues/IssueIndexer.js";
+import { IssueIndexer } from "../../src/services/issues/IssueIndexer.js";
+import { DEFAULT_ISSUE_SETTINGS } from "@yep-anywhere/shared";
 import { createIssueRoutes } from "../../src/routes/issues.js";
 import { getServerCapabilities } from "../../src/routes/version.js";
+import type { SqliteDatabase, SqliteValue } from "../../src/storage/sqlite.js";
+import { storedRows } from "./sqlite-rows.js";
 
 it("gates all data routes, validates settings, saves through the shared settings service, and resolves Jira references", async () => {
   const dataDir = mkdtempSync(join(tmpdir(), "ya-issue-routes-"));
@@ -95,7 +95,10 @@ it("gates all data routes, validates settings, saves through the shared settings
     const resolved = await (await request("/?q=ABC-123")).json();
     expect(resolved.items).toHaveLength(1);
     expect(
-      store.rows("SELECT 1 FROM session_issue_evidence WHERE link_id IS NULL"),
+      storedRows(
+        store.database,
+        "SELECT 1 FROM session_issue_evidence WHERE link_id IS NULL",
+      ),
     ).toHaveLength(0);
     expect(resolved.items[0].unresolved).toBe(false);
     const proof = await (
@@ -367,6 +370,74 @@ it("sorts issues across pages by session activity, source mention time, and name
     ).toEqual(["a/b#9", "a/b#10", "a/b#100", "a/c#9", "a/c#10", "a/c#100"]);
     expect((await app.request("/issues?sort=garbage")).status).toBe(400);
     expect(sourceReads).toBe(0);
+  } finally {
+    await indexer.close();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+it("attaches a hand-resolved reference in one write, with the note as its excerpt", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "ya-issue-manual-"));
+  const settings = new ServerSettingsService({ dataDir });
+  await settings.initialize();
+  await settings.updateSettings({
+    issueAssociations: { enabled: true, scope: "viewed", recentDays: 7 },
+  });
+  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
+  const database = db.getDatabase()!;
+  // The route used to insert the evidence row and then rewrite its kind and
+  // excerpt, which is why it knew the column names. Count what this reference
+  // pays for: the store writes it as manual evidence in the one insert.
+  let writes = 0;
+  const counted: SqliteDatabase = {
+    ...database,
+    prepare(sql: string) {
+      const statement = database.prepare(sql);
+      if (!/^\s*(INSERT|UPDATE)[\s\S]*session_issue_evidence/i.test(sql))
+        return statement;
+      return {
+        ...statement,
+        run: (...values: SqliteValue[]) => {
+          writes += 1;
+          return statement.run(...values);
+        },
+      };
+    },
+  };
+  const store = new IssueStore(
+    counted,
+    () => settings.getSetting("issueAssociations")!,
+  );
+  const indexer = new IssueIndexer(store, {
+    settings: () => settings.getSetting("issueAssociations")!,
+    candidates: async function* () {},
+    read: async () => null,
+  });
+  const app = createIssueRoutes(indexer, settings, async () => ({
+    available: true,
+  }));
+  try {
+    expect(
+      (
+        await app.request("/issues/resolve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            url: "https://github.com/a/b/issues/7",
+            projectId: "p",
+            sessionId: "s",
+            note: "Filed from this session",
+          }),
+        })
+      ).status,
+    ).toBe(200);
+    await indexer.settled();
+    const item = store.list("a/b#7")[0]!;
+    expect(store.evidence(item.id)).toMatchObject([
+      { sessionId: "s", kind: "manual", excerpt: "Filed from this session" },
+    ]);
+    expect(writes).toBe(1);
   } finally {
     await indexer.close();
     db.close();

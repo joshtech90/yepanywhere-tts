@@ -17,7 +17,10 @@ import {
 } from "@yep-anywhere/shared/experimental/conversation-protocol";
 import { decodeSnapshot } from "@yep-anywhere/shared/experimental/simple-client.generated";
 import { ConversationSubscriptions } from "../src/experimental/conversation-subscriptions.js";
-import { createExperimentalConversationRoutes } from "../src/routes/experimental-conversation.js";
+import {
+  CONVERSATION_SNAPSHOT_DEADLINE_MS,
+  createExperimentalConversationRoutes,
+} from "../src/routes/experimental-conversation.js";
 import { subscribeConversationRelay } from "../src/experimental/conversation-relay.js";
 import type { RelaySubscribe } from "@yep-anywhere/shared";
 
@@ -185,6 +188,28 @@ describe("experimental Conversation bindings", () => {
       "conversation",
     );
     expect(h.close).toHaveBeenCalledTimes(1);
+  });
+  it("refuses a one-shot read whose source never publishes", async () => {
+    const close = vi.fn();
+    const open = vi.fn(
+      () => new Promise<never>(() => {}) as unknown as Promise<never>,
+    );
+    const service = new ConversationSubscriptions(open);
+    services.push(service);
+    const app = new Hono().route(
+      "/api/experimental/conversation",
+      createExperimentalConversationRoutes(service),
+    );
+    vi.useFakeTimers();
+    try {
+      const pending = app.request(url());
+      await vi.advanceTimersByTimeAsync(CONVERSATION_SNAPSHOT_DEADLINE_MS);
+      expect((await pending).status).toBe(503);
+      expect(open).toHaveBeenCalledTimes(1);
+      expect(close).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
   it("releases SSE demand on response cancellation", async () => {
     const h = harness();

@@ -1,7 +1,8 @@
 # Sidebar Session Ordering
 
-> Sidebar rows follow the user's visits and submissions. Background output
-> and agent activity changes update row content without changing chronology.
+> Sidebar rows follow the user's written turns. Opening a session, background
+> output, and agent activity changes update row content without changing
+> chronology.
 
 Topic: sidebar-session-ordering
 
@@ -13,18 +14,21 @@ See also: [ui-architecture](ui-architecture.md),
 ## User chronology
 
 The sidebar's **Starred**, **Last 24 Hours**, and **Older** sections order loaded
-sessions by the most recent explicit session visit or composer submission in
-this browser. Direct sends and deferred queue submissions count, including a
-submission whose delivery fails. Passive assistant output, tools, heartbeat
-turns, metadata refreshes, and active/idle transitions do not count.
+sessions by the later of the most recent composer submission in this browser
+and the last human turn the server reports for the session. Direct sends and
+deferred queue submissions count, including a submission whose delivery fails.
+Opening a session does not count: reading is not activity, so tapping a row
+leaves the order alone. Passive assistant output, tools, heartbeat turns,
+metadata refreshes, and active/idle transitions do not count either.
 
-Opening a session records a visit. A parked session page does not record visits
-while another route is foreground. Sending to or queueing text for a session
-records the interaction before delivery, so upload or provider delays cannot
-change its relative time. New sessions enter through normal navigation.
+Sending to or queueing text for a session records the interaction before
+delivery, so upload or provider delays cannot change its relative time. New
+sessions enter through normal navigation and sort by creation time until
+someone writes into them.
 
-For sessions without recorded interaction, creation time supplies a stable
-initial order. Missing creation times sort last; session ID breaks ties.
+For sessions with neither a recorded submission nor a reported human turn,
+creation time supplies a stable initial order. Missing creation times sort
+last; session ID breaks ties.
 General `updatedAt` is never used as evidence of user activity. Last 24 Hours
 and Older use the same user/creation timestamp, so background work cannot move
 a session between them. Active and queued sessions keep their badges and
@@ -49,7 +53,7 @@ or collapsing the sidebar, or switching connected sources, clears the hold.
 ## Storage and ownership
 
 `sessionInteractionOrder.ts` keeps up to 1,000 latest distinct session
-interactions per connected source in browser-local storage. Same-tab consumers
+submissions per connected source in browser-local storage. Same-tab consumers
 share the existing local-storage store; other tabs receive storage events.
 Invalid persisted entries are ignored. If persistence is unavailable, the
 existing storage helper retains coherent in-memory state. Clearing browser
@@ -78,10 +82,11 @@ no server demand.
 - **User activity owns chronology** (vs. active-first partitioning or general
   update recency): even a stable order within an active block jumps when a turn
   finishes. Activity is a badge, not a ranking signal.
-- **Browser-local visits and submissions with creation-time fallback** (vs.
-  inferring human activity from transcript timestamps): this uses known user
-  actions without a new server contract. Cross-device history is deliberately
-  outside this implementation.
+- **Submissions only, never visits**: opening a session initially recorded a
+  visit and moved the row to the top. The user found a tap indistinguishable
+  from activity confusing, so only writing into a session moves it. The
+  browser-local record keeps a send's effect immediate; the server's last
+  human turn lets every device agree afterwards.
 - **Hold identities while refreshing data** (vs. freezing whole row objects):
   click targets stay stable while status and title changes remain visible.
 
@@ -93,7 +98,8 @@ updates the title. Component and hook coverage checks interaction holds,
 arrivals, duplicate protection, persistence, source isolation, malformed
 storage, and bounded retention. The browser test drives actual navigation and
 composer submission, injects activity through the WebSocket boundary, checks
-the target's position and navigation, and captures desktop and phone layouts.
+that navigation leaves the target's position and stored history unchanged
+while a send moves it, and captures desktop and phone layouts.
 
 ## Historical active-first ordering (superseded)
 

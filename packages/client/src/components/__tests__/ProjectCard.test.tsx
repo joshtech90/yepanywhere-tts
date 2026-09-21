@@ -43,40 +43,50 @@ describe("ProjectCard", () => {
     cleanup();
   });
 
-  it("offers a project removal action", () => {
+  it("removes the project straight from the trash button", () => {
     const onDeleteProject = vi.fn();
     renderProjectCard(onDeleteProject);
 
-    fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Remove project" }));
+    fireEvent.click(screen.getByRole("button", { name: "Remove project" }));
 
     expect(onDeleteProject).toHaveBeenCalledWith(project);
   });
 
-  it("opens project settings from the ellipsis and context menu", () => {
-    const onOpenSettings = vi.fn();
-    const { container } = render(
+  it("offers no removal control without a delete handler", () => {
+    render(
       <I18nProvider>
         <MemoryRouter>
           <ProjectCard
             project={project}
             needsAttentionCount={0}
             thinkingCount={0}
-            onOpenSettings={onOpenSettings}
           />
         </MemoryRouter>
       </I18nProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "Project settings" }));
-    expect(onOpenSettings).toHaveBeenCalledWith(project);
+    expect(screen.queryByRole("button", { name: "Remove project" })).toBeNull();
+  });
 
-    fireEvent.contextMenu(
-      container.querySelector("[data-project-card-link]") as Element,
+  it("keeps the removal control inert while a removal is in flight", () => {
+    const onDeleteProject = vi.fn();
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={project}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onDeleteProject={onDeleteProject}
+            isDeleting
+          />
+        </MemoryRouter>
+      </I18nProvider>,
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Project settings" }));
-    expect(onOpenSettings).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole("button", { name: "Remove project" }));
+
+    expect(onDeleteProject).not.toHaveBeenCalled();
   });
 
   it("commits a longer inline code name on blur", async () => {
@@ -133,6 +143,130 @@ describe("ProjectCard", () => {
 
     expect(onUpdateCodeName).not.toHaveBeenCalled();
     expect(screen.getByText("tst")).toBeTruthy();
+  });
+
+  it("opens project settings directly from the gear button", () => {
+    const onOpenSettings = vi.fn();
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={project}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onOpenSettings={onOpenSettings}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open project settings" }),
+    );
+    expect(onOpenSettings).toHaveBeenCalledWith(project);
+  });
+
+  it("shows the derived caption and saves an override with the check", async () => {
+    const onUpdateCaption = vi.fn().mockResolvedValue(undefined);
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{
+              ...project,
+              caption: { text: "From the readme.", source: "readme" },
+            }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCaption={onUpdateCaption}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption" }));
+    const input = screen.getByRole("textbox", { name: "Project caption" });
+    expect((input as HTMLInputElement).value).toBe("From the readme.");
+    fireEvent.change(input, { target: { value: "  Custom  caption " } });
+    fireEvent.click(screen.getByRole("button", { name: "Save caption" }));
+
+    await waitFor(() => {
+      expect(onUpdateCaption).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "proj-1" }),
+        "Custom caption",
+      );
+    });
+  });
+
+  it("clears an override by saving an empty caption, and cancels with x", async () => {
+    const onUpdateCaption = vi.fn().mockResolvedValue(undefined);
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{
+              ...project,
+              caption: { text: "Custom", source: "override" },
+            }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCaption={onUpdateCaption}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project caption" }), {
+      target: { value: "discard me" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cancel caption edit" }),
+    );
+    expect(onUpdateCaption).not.toHaveBeenCalled();
+    expect(screen.getByText("Custom")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project caption" }), {
+      target: { value: "" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save caption" }));
+    await waitFor(() => {
+      expect(onUpdateCaption).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "proj-1" }),
+        null,
+      );
+    });
+  });
+
+  it("offers an add-caption placeholder only when editable", () => {
+    const { unmount } = render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={project}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCaption={vi.fn()}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+    expect(screen.getByText("Add a caption")).toBeTruthy();
+    unmount();
+
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={project}
+            needsAttentionCount={0}
+            thinkingCount={0}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+    expect(screen.queryByText("Add a caption")).toBeNull();
   });
 
   it("shows a project queue count badge", () => {

@@ -35,6 +35,15 @@ the storage policy applies.
 
 ## Default Contract
 
+**Approved narrow exception, not implemented (2026-09-21):** an explicit
+post-creation name/caption edit must write `.project-identity.json` in that
+project, including in App data only mode. The user chose a portable identity
+record that redoc can read, even for non-template projects. Creation-time
+values create no marker. Git exclusion is optional and does not substitute for
+writing the record. This does not authorize other YA-managed project storage.
+The [identity contract](project-captions.md#approved-project-local-identity-extension-not-implemented)
+and [gap](../gaps/project-local-identity.md) own its safe implementation.
+
 The default global mode is **App data only**. In that mode:
 
 - opening, adding, scanning, rendering, replaying, or indexing a project or

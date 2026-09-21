@@ -10,6 +10,14 @@ export type SessionCatalogLocation =
   | { kind: "provider"; recordId: string };
 
 /**
+ * A catalog title is stored whole, up to this bound: All Sessions matches
+ * these rows in the browser, so a row that kept only a display-length title
+ * would silently make anything past that length unsearchable. The bound is
+ * the one the catalog already validates every row title against.
+ */
+export const SESSION_CATALOG_TITLE_MAX_LENGTH = 16_384;
+
+/**
  * Compact provider-native facts retained independently of transcript detail.
  * Adapters must yield at most one row per (family, store, native session id).
  */
@@ -24,6 +32,7 @@ export interface SessionCatalogRow {
   projectIdentityKey: string;
   updatedAt: string;
   createdAt?: string;
+  /** Untruncated; surfaces truncate for display. */
   title?: string | null;
   provider?: ProviderName;
   projectName?: string;

@@ -98,12 +98,17 @@ describe("ProjectQueueReadinessCheck", () => {
         directory,
       ),
     ).toBe("Readiness check timed out or was stopped");
+    // The subject is that the killed child freed its slot, so assert exactly
+    // that. Asserting null here instead put the 100ms budget above around a
+    // process spawn: 14-18ms on this host, and past 100ms on a loaded CI
+    // runner, where it failed. "clears on zero exit" owns the success path at
+    // the default budget.
     expect(
       await check.run(
         { executable: process.execPath, args: ["-e", "process.exit(0)"] },
         directory,
       ),
-    ).toBeNull();
+    ).not.toBe("Waiting for readiness check capacity");
   });
 
   it("stops live checks on disposal", async () => {

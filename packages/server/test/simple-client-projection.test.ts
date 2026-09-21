@@ -405,6 +405,26 @@ describe("server-owned condensed conversation projection", () => {
     });
   });
 
+  it("reports a content-row ceiling as truncation without claiming byte pressure", () => {
+    const result = view([
+      user("u"),
+      ...Array.from({ length: 70 }, (_, i) =>
+        call(`call${i}`, "boom", true),
+      ).flat(),
+    ]);
+    const reply = result.messages[1]!;
+    expect(reply.truncated).toBe(true);
+    expect(reply.content.at(-1)).toMatchObject({
+      kind: "failure",
+      toolName: "Transcript",
+      message: "Additional content, including failures, omitted",
+    });
+    expect(result.coverage).toMatchObject({
+      completeForRequest: false,
+      limitedBy: [],
+    });
+  });
+
   it("caps snapshot bytes by dropping older rows while retaining the anchor", () => {
     const messages = Array.from({ length: 30 }, (_, i) => [
       user(`u${i}`),

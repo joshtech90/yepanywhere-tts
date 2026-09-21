@@ -64,8 +64,3 @@ export function Spinner() {
     </svg>
   );
 }
-
-/**
- * Task tool result - shows agent response with nested content
- * (Legacy - used when expanded in standard tool row)
- */

@@ -38,6 +38,11 @@ export interface TextItem extends RenderItemBase {
   type: "text";
   id: string;
   text: string;
+  /**
+   * Position of this block inside its source message's content array, so a
+   * consumer orders blocks without parsing the composed `id`.
+   */
+  sourceBlockIndex?: number;
   /** True if this text is still being streamed */
   isStreaming?: boolean;
   /**
@@ -56,6 +61,8 @@ export interface ThinkingItem extends RenderItemBase {
   type: "thinking";
   id: string;
   thinking: string;
+  /** Position of this block inside its source message's content array. */
+  sourceBlockIndex?: number;
   signature?: string;
   status: "streaming" | "complete";
 }

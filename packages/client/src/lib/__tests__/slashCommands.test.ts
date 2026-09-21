@@ -374,3 +374,33 @@ describe("slashCommands", () => {
     );
   });
 });
+
+describe("same-session rewind commands", () => {
+  it("routes /clear, /fork, and /clearloop to the custom handler", () => {
+    expect(parseComposerSlashCommand("/clear 3")).toEqual({
+      kind: "custom",
+      command: "clear",
+      argument: "3",
+    });
+    expect(parseComposerSlashCommand("/clear")).toEqual({
+      kind: "custom",
+      command: "clear",
+      argument: "",
+    });
+    expect(parseComposerSlashCommand("/fork 2")).toEqual({
+      kind: "custom",
+      command: "fork",
+      argument: "2",
+    });
+    expect(parseComposerSlashCommand("/clearloop 3 2: again")).toEqual({
+      kind: "custom",
+      command: "clearloop",
+      argument: "3 2: again",
+    });
+    expect(resolveComposerSlashTurn("/clearloop 2: again")).toEqual({
+      kind: "custom",
+      command: "clearloop",
+      argument: "2: again",
+    });
+  });
+});

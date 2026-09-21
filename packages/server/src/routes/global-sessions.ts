@@ -5,6 +5,7 @@
  * this returns a flat list suitable for navigation/sidebar use.
  */
 
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import {
   isUrlProjectId,
   type ProviderChildSessionSummary,
@@ -13,7 +14,7 @@ import {
   type WorkstreamId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
-import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
+import { nonHumanUserTurnField } from "../metadata/SessionMetadataService.js";
 import type { RetainedSessionCollectionState } from "@yep-anywhere/shared";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
 import { readRetainedSessionItems } from "./retained-session-collections.js";
@@ -38,6 +39,7 @@ import {
   applyRecapOverlayToSummary,
   getEffectiveProviderUpdatedAt,
   hasUnreadProviderContent,
+  sessionRowRuntimeOverlay,
 } from "../sessions/recap-overlays.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
@@ -56,6 +58,7 @@ import {
   getActiveSessionIndexOptions,
   isSessionAutoArchived,
 } from "./session-list-options.js";
+import { clearloopBadgeFromJob } from "../services/ClearloopService.js";
 
 export interface GlobalSessionsDeps {
   retainedCollections?: RetainedSessionCollections;
@@ -112,6 +115,8 @@ export interface GlobalSessionItem {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  /** Iterations a running `/clearloop` still has to do; absent when none runs. */
+  clearloop?: SessionClearloopBadge;
   /** True when an explicit manual termination disabled automatic resume. */
   autoResumeDisabled?: boolean;
   /** Interactive Mother session for a YA-owned `/btw` aside. */
@@ -203,6 +208,50 @@ interface CollectionRequest {
   limit: number;
   /** The generation observed before the walk; stamped on the response. */
   generation: number;
+}
+
+/**
+ * Which rows a `GET /api/sessions` query admits.
+ *
+ * The retained read and the full walk answer the same contract, so the fields
+ * a `q` matches — and the archived/starred/project rules around it — are
+ * decided here once. Divergence here is invisible to a client: it just gets
+ * fewer rows in one summary mode than the other for the same query.
+ *
+ * `searchQuery` is already lowercased by the route.
+ */
+function matchesGlobalSessionQuery(
+  row: Pick<
+    GlobalSessionItem,
+    | "title"
+    | "customTitle"
+    | "projectName"
+    | "initialPrompt"
+    | "projectId"
+    | "isArchived"
+    | "isStarred"
+  >,
+  query: Pick<
+    CollectionRequest,
+    "filterProjectId" | "searchQuery" | "includeArchived" | "starredOnly"
+  >,
+): boolean {
+  if (row.isArchived && !query.includeArchived) return false;
+  if (query.starredOnly && !row.isStarred) return false;
+  if (query.filterProjectId && row.projectId !== query.filterProjectId) {
+    return false;
+  }
+  const needle = query.searchQuery;
+  if (!needle) return true;
+  return [row.title, row.customTitle, row.projectName, row.initialPrompt].some(
+    (text) => text?.toLowerCase().includes(needle),
+  );
+}
+
+/** Cursor pagination: a page holds rows strictly older than the client's last. */
+function isBeforeCursor(updatedAt: string, afterCursor?: string): boolean {
+  if (!afterCursor) return true;
+  return Date.parse(updatedAt) < Date.parse(afterCursor);
 }
 
 function createEmptyStats(): GlobalSessionStats {
@@ -422,14 +471,12 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
       );
       const rows = retained.sessions.filter(
         (row) =>
-          (includeArchived || !row.isArchived) &&
-          (!starredOnly || row.isStarred) &&
-          (!filterProjectId || row.projectId === filterProjectId) &&
-          (!searchQuery ||
-            [row.title, row.customTitle, row.projectName].some((text) =>
-              text?.toLowerCase().includes(searchQuery),
-            )) &&
-          (!afterCursor || Date.parse(row.updatedAt) < Date.parse(afterCursor)),
+          matchesGlobalSessionQuery(row, {
+            filterProjectId,
+            searchQuery,
+            includeArchived,
+            starredOnly,
+          }) && isBeforeCursor(row.updatedAt, afterCursor),
       );
       return c.json({
         ...retained,
@@ -514,10 +561,8 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
   ): Promise<GlobalSessionsResponse> {
     const {
       filterProjectId,
-      searchQuery,
       afterCursor,
       includeArchived,
-      starredOnly,
       includeStats,
       limit,
       generation,
@@ -568,9 +613,6 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           : session;
         const effectiveProjectId =
           metadata?.workingProjectId ?? session.projectId;
-        if (filterProjectId && effectiveProjectId !== filterProjectId) {
-          continue;
-        }
         const effectiveProject =
           projectsById.get(effectiveProjectId) ?? project;
 
@@ -592,12 +634,6 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           metadata?.initialPrompt ?? overlaidSession.fullTitle;
         const executor = metadata?.executor;
 
-        // Skip archived sessions unless explicitly requested
-        if (isArchived && !includeArchived) continue;
-
-        // Skip non-starred sessions if starred filter is active
-        if (starredOnly && !isStarred) continue;
-
         // Compute status
         const process = deps.supervisor?.getProcessForSession(session.id);
         const effectiveProviderUpdatedAt = getEffectiveProviderUpdatedAt(
@@ -608,74 +644,20 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           overlaidSession.updatedAt,
           process,
         );
-        const hasUnread = hasUnreadProviderContent(
-          deps.notificationService,
-          session.id,
-          effectiveProviderUpdatedAt,
-        );
-        const isExternal =
-          deps.externalTracker?.isExternal(session.id) ?? false;
+        const { ownership, pendingInputType, activity, hasUnread } =
+          sessionRowRuntimeOverlay(process, {
+            sessionId: session.id,
+            providerUpdatedAt: effectiveProviderUpdatedAt,
+            notificationService: deps.notificationService,
+            externalTracker: deps.externalTracker,
+            fallbackOwnership: session.ownership,
+          });
 
-        const ownership: SessionOwnership = process
-          ? {
-              owner: "self",
-              processId: process.id,
-              permissionMode: process.permissionMode,
-              appliedPermissionMode: process.appliedPermissionMode,
-              modeVersion: process.modeVersion,
-              recapAfterSeconds: process.recapAfterSeconds,
-            }
-          : isExternal
-            ? { owner: "external" }
-            : (session.ownership ?? { owner: "none" });
-
-        // Get agent activity
-        let pendingInputType: PendingInputType | undefined;
-        let activity: AgentActivity | undefined;
-        if (process) {
-          const pendingRequest = process.getPendingInputRequest();
-          if (pendingRequest) {
-            pendingInputType =
-              pendingRequest.type === "tool-approval"
-                ? "tool-approval"
-                : "user-question";
-          }
-          const state = process.state.type;
-          if (state === "in-turn" || state === "waiting-input") {
-            activity = state;
-          } else if (state === "idle" && process.isRetainingProviderWork()) {
-            // Idle but the provider still has background tasks/crons running —
-            // surface as active so the sidebar shows the activity indicator.
-            activity = "in-turn";
-          }
-        }
-
-        // Apply search filter
-        if (searchQuery) {
-          const titleMatch = overlaidSession.title
-            ?.toLowerCase()
-            .includes(searchQuery);
-          const customTitleMatch = customTitle
-            ?.toLowerCase()
-            .includes(searchQuery);
-          const projectNameMatch = effectiveProject.name
-            .toLowerCase()
-            .includes(searchQuery);
-          const initialPromptMatch = initialPrompt
-            ?.toLowerCase()
-            .includes(searchQuery);
-
-          if (
-            !titleMatch &&
-            !customTitleMatch &&
-            !projectNameMatch &&
-            !initialPromptMatch
-          ) {
-            continue;
-          }
-        }
-
-        allSessions.push({
+        // Admission is decided on the finished row, by the same predicate the
+        // retained read uses, so neither mode can match fields the other does
+        // not. Enriching a row we then discard costs only in-memory lookups;
+        // every project is walked either way.
+        const item: GlobalSessionItem = {
           id: overlaidSession.id,
           title: overlaidSession.title,
           fullTitle: overlaidSession.fullTitle,
@@ -697,17 +679,21 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           parentSessionId,
           parentSessionKind,
           forkedFromSessionId,
+          clearloop: clearloopBadgeFromJob(metadata?.clearloop, true),
           workstreamId: metadata?.workstreamId,
           initialPrompt: initialPrompt ?? undefined,
           executor,
           lastAgentText: overlaidSession.lastAgentText,
           lastHumanTurnAt: overlaidSession.lastHumanTurnAt,
           asyncQuestions: overlaidSession.asyncQuestions,
-          nonHumanUserTurn:
-            pendingNonHumanUserTurn(
-              deps.sessionMetadataService?.getMetadata(overlaidSession.id),
-            ) ?? null,
-        });
+          nonHumanUserTurn: nonHumanUserTurnField(
+            deps.sessionMetadataService,
+            overlaidSession.id,
+          ),
+        };
+
+        if (!matchesGlobalSessionQuery(item, request)) continue;
+        allSessions.push(item);
       }
     }
 
@@ -750,13 +736,9 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     );
 
     // Apply cursor pagination
-    let filteredSessions = allSessions;
-    if (afterCursor) {
-      const afterTime = new Date(afterCursor).getTime();
-      filteredSessions = allSessions.filter(
-        (s) => new Date(s.updatedAt).getTime() < afterTime,
-      );
-    }
+    const filteredSessions = allSessions.filter((s) =>
+      isBeforeCursor(s.updatedAt, afterCursor),
+    );
 
     // Get one extra to determine hasMore
     const sessionsWithExtra = filteredSessions.slice(0, limit + 1);

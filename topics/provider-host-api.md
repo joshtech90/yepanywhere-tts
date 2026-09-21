@@ -405,14 +405,17 @@ targeted worker relaunch updates one session; a full wrapper/host reboot
 guarantees adoption across all hosted sessions. UI and operator documentation
 must not equate `Server changed` or `Reload` with provider-runtime refresh.
 
-Shared provider hosting is automatic when its launch capability is present. It
-has no user-facing enable setting. Supported server boot attaches to a compatible
-host or starts one (`scripts/attach-or-start-provider-host.mjs`). SSH remote
-executor sessions still launch from this YA server and are not a reason to skip
-the local host. If a supported launch still has no host after that attempt, local sessions
-continue in-process and the UI shows a non-dismissible warning banner.
-Unsupported platforms and runtime distributions keep ordinary in-Hono ownership without that
-banner; headless session control then reports unavailable.
+Shared provider hosting requires both launch capability and operator policy.
+`YEP_PROVIDER_HOST_ENABLED=true|false` is authoritative; when unset, Linux
+defaults enabled and macOS defaults disabled. Enabled supported server boot
+attaches to a compatible host or starts one
+(`scripts/attach-or-start-provider-host.mjs`). SSH remote executor sessions
+still launch from this YA server and are not a reason to skip the local host.
+If an enabled supported launch still has no host after that attempt, local
+sessions continue in-process and the UI shows a non-dismissible warning banner.
+Intentional disablement, unsupported platforms, and unsupported runtime
+distributions keep ordinary in-Hono ownership without that banner; headless
+session control then reports unavailable.
 
 The `codexReloadSafeSessions` setting remains in the server schema and storage
 for old-client compatibility, but is ignored for routing. New clients hide the

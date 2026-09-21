@@ -34,11 +34,13 @@ real desktop and phone renders under [UI testing](ui-testing.md).
 The retained example is `packages/client/mockups/projects/`: an HTML entry,
 React source importing the actual `ProjectCard`, and a fixture-owned CSS
 Module. Sixteen sample projects exercise attention/queue counts, long content,
-responsive columns, and the card menu. `I18nProvider` uses English, and
-`MemoryRouter` keeps card/new-session navigation inside the fixture. Selecting
-Project settings changes local feedback; navigation displays its destination.
-Neither action contacts a provider, changes project settings, or starts a
-session. The fixture's explanatory copy and sample data are fixed English.
+responsive columns, code-name chips, captions, and the card's gear/trash/plus
+controls; every third project omits its caption and code name so the sparse
+card is covered too. `I18nProvider` uses English, and `MemoryRouter` keeps
+card/new-session navigation inside the fixture. The gear, trash, and inline
+code-name/caption editors change local feedback or preview state only;
+navigation displays its destination. No action contacts a provider, changes or
+removes a project, or starts a session. The fixture's explanatory copy and sample data are fixed English.
 
 From the checkout root:
 
@@ -369,11 +371,12 @@ The automated export check compares source and relocated production output
 pixel-for-pixel at equal fonts, theme, state, and viewport, after waiting for
 fonts. It verifies every declared file's served bytes, rejects undeclared or
 external runtime requests, and checks font loading, SVG icons, scrolling,
-overflow, and project-menu behavior. The source server is closed before the
-export is viewed. The direct test embeds it through the existing same-port
+overflow, and the card's settings control. The source server is closed before
+the export is viewed. The direct test embeds it through the existing same-port
 artifact-host route; the relay test uses real encrypted authentication/grants
-and a separate disposable HTTPS gateway, exercises menu/navigation at desktop
-and phone sizes, checks credential separation, and revokes the grant.
+and a separate disposable HTTPS gateway, exercises the card controls and
+navigation at desktop and phone sizes, checks credential separation, and
+revokes the grant.
 
 Chromium on Linux is verified. The tests use portable Node filesystem/server
 APIs; macOS, Windows, and WebKit remain unverified. The relay gateway explicitly

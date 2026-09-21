@@ -177,6 +177,42 @@ describe("CodexOSS gateway services", () => {
     ]);
   });
 
+  it("underscores a hyphenated service id into the provider key", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => vllmCatalog(["deepseek-v4-flash"])),
+    );
+    const provider = new ExposedCodexOSSProvider();
+    provider.setGatewayServices([service({ id: "local-vllm" })]);
+    await provider.getAvailableModels();
+
+    // The same key the export writes into ya-local-vllm.config.toml, which is
+    // why both spell it through the shared `codexProviderKey`.
+    expect(provider.firstTurnArgs("deepseek-v4-flash")).toContain(
+      'model_provider="ya_local_vllm"',
+    );
+  });
+
+  it("quotes a label and a model id that carry TOML metacharacters", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => vllmCatalog(['deepseek\\v4 "flash"'])),
+    );
+    const provider = new ExposedCodexOSSProvider();
+    // Both are values the user or the endpoint can supply: a label only has to
+    // be trimmed and free of control characters, and a model id is whatever
+    // the catalog row says.
+    provider.setGatewayServices([service({ label: 'My "vLLM" \\ box' })]);
+    await provider.getAvailableModels();
+
+    expect(provider.firstTurnArgs('deepseek\\v4 "flash"')).toContain(
+      'model_providers.ya_vllm.name="My \\"vLLM\\" \\\\ box"',
+    );
+    expect(
+      provider.resumeTurnArgs('deepseek\\v4 "flash"', "thread-1"),
+    ).toContain('model="deepseek\\\\v4 \\"flash\\""');
+  });
+
   it("carries the selected effort to the endpoint, and nothing when unset", async () => {
     vi.stubGlobal(
       "fetch",

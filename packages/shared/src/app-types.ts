@@ -8,6 +8,7 @@
  * App types extend these with runtime fields that are computed or added during processing.
  */
 
+import type { SessionClearloopBadge } from "./session-rewind.js";
 import type {
   AssistantEntry,
   SessionEntry,
@@ -145,6 +146,29 @@ export interface AppMessageExtensions {
    * Used for UI grouping and lazy-loading of subagent content.
    */
   isSubagent?: boolean;
+
+  /**
+   * 1-based ordinal of this real user turn over the full session sequence,
+   * counting turns a same-session rewind later grouped. Stamped by server
+   * normalization; the turn menu's `[N]` and `/clear N` share it. See
+   * topics/session-rewind.md.
+   */
+  turnIndex?: number;
+
+  /**
+   * Set on rows a same-session rewind dropped. The value is the rewind
+   * record id; the UI renders these rows as one collapsed group headed by a
+   * `rewound_group` system row carrying the same id. See
+   * topics/session-rewind.md.
+   */
+  rewoundGroupId?: string;
+
+  /**
+   * For a rewound group nested inside an earlier one (its cut lies inside
+   * that group's span): the enclosing group's record id, on the header and
+   * every member row. Collapsing the enclosing group hides the whole span.
+   */
+  rewoundParentGroupId?: string;
 
   /**
    * Allow any additional fields from JSONL.
@@ -574,6 +598,14 @@ export interface AppSessionSummary {
   parentSessionKind?: "btw-aside";
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
+  /** Iterations a running `/clearloop` still has to do; absent when none runs. */
+  clearloop?: SessionClearloopBadge;
+  /**
+   * Ids of the same-session rewinds the transcript projection applied, in
+   * order. A cached transcript whose ids differ predates a rewind and must be
+   * reloaded rather than caught up incrementally. See topics/session-rewind.md.
+   */
+  rewindRecordIds?: string[];
   /** Saved viewer-only objects placed in the transcript, never provider context. */
   transcriptDisplayObjects?: TranscriptDisplayObject[];
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
@@ -653,7 +685,28 @@ export interface SessionMetadataPayload
   workstreamId?: WorkstreamId;
 }
 
-export type SessionQueuedYaCommand = "done";
+export type SessionQueuedYaCommand = "done" | "clearloop";
+
+/** Progress of a running `/clearloop`, carried on its queued-entry chip. */
+export interface SessionQueuedClearloopProgress {
+  completed: number;
+  total: number;
+  state: "running" | "completed" | "cancelled" | "interrupted";
+  /**
+   * ISO time the session was last active, published once the server has
+   * observed inactivity; the next rewind is due `windowSeconds` after it.
+   * Absent while the provider is still working.
+   */
+  quietSince?: string;
+  windowSeconds?: number;
+  /** The loop also waits for the project idle predicate at each boundary. */
+  patient?: boolean;
+  /**
+   * Raw project blocker strings from the last patient check, in the same form
+   * Project Queue publishes. Empty or absent means nothing held the loop.
+   */
+  projectBlockers?: string[];
+}
 
 export type SessionQueuedMessageKind = "deferred" | "patient" | "ya-command";
 
@@ -676,6 +729,8 @@ export interface SessionQueuedMessageSummary {
   kind?: SessionQueuedMessageKind;
   /** YA-local command projected through queue UI without provider delivery. */
   yaCommand?: SessionQueuedYaCommand;
+  /** Present on the `clearloop` YA-command entry. */
+  clearloop?: SessionQueuedClearloopProgress;
   status?: SessionQueuedMessageStatus;
   sessionId?: string;
   projectId?: UrlProjectId;

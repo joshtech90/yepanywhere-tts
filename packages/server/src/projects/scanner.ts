@@ -635,9 +635,21 @@ export class ProjectScanner {
     return value.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
   }
 
+  /**
+   * A user-chosen name replaces the path-derived one on every project read,
+   * so the snapshot keeps the path name and the override applies at once.
+   */
+  private displayName(project: Pick<Project, "id" | "name">): string {
+    return (
+      this.projectMetadataService?.getProjectNameOverride(project.id) ??
+      project.name
+    );
+  }
+
   private cloneProject(project: Project): Project {
     return {
       ...project,
+      name: this.displayName(project),
       mergedSessionDirs: project.mergedSessionDirs
         ? [...project.mergedSessionDirs]
         : undefined,
@@ -980,6 +992,31 @@ export class ProjectScanner {
       });
     }
 
+    // One pass over the finished list rather than per discovery branch: a
+    // project a limited user added is also found by the session-directory
+    // scans once it has sessions, and its owner must survive that.
+    // topics/limited-users.md § Delivery v1 — Project creation.
+    if (this.projectMetadataService) {
+      const ownerByIdentity = new Map<string, string>();
+      for (const metadata of Object.values(
+        this.projectMetadataService.getAllProjects(),
+      )) {
+        if (!metadata.ownerUsername) continue;
+        ownerByIdentity.set(
+          getProjectIdentityKey(canonicalizeProjectPath(metadata.path)),
+          metadata.ownerUsername,
+        );
+      }
+      if (ownerByIdentity.size > 0) {
+        for (const project of projects) {
+          const owner = ownerByIdentity.get(
+            getProjectIdentityKey(project.path),
+          );
+          if (owner) project.ownerUsername = owner;
+        }
+      }
+    }
+
     return projects;
   }
 
@@ -1103,7 +1140,10 @@ export class ProjectScanner {
     return {
       id: resolvedProjectId as UrlProjectId,
       path: projectPath,
-      name: getProjectName(projectPath),
+      name: this.displayName({
+        id: resolvedProjectId as UrlProjectId,
+        name: getProjectName(projectPath),
+      }),
       sessionCount: 0,
       sessionCountsByProvider: { [provider]: 0 },
       sessionDir,

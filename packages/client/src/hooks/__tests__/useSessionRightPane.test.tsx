@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { ArtifactViewerStatus } from "@yep-anywhere/shared";
 import type { Message } from "../../types";
 import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
+import {
+  invalidateSessionApps,
+  SESSION_APPS_KEY_PREFIX,
+} from "../../lib/sessionApps";
 import { UI_KEYS } from "../../lib/storageKeys";
 import { useSessionRightPane } from "../useSessionRightPane";
 import { clearCurrentSessionViewer } from "../../lib/sessionViewerController";
@@ -130,5 +134,50 @@ describe("session right pane lifecycle", () => {
     expect(result.current.selected).toBeUndefined();
     rerender({ key: "other", messages: [], active: true, config });
     expect(result.current.apps).toHaveLength(0);
+  });
+});
+
+describe("session right pane app persistence", () => {
+  const sessionKey = "/project-1/session-1";
+  const storageKey = `${SESSION_APPS_KEY_PREFIX}${sessionKey}`;
+  const noMessages: readonly Message[] = [];
+
+  beforeEach(() => {
+    clearCurrentSessionViewer();
+    localStorage.clear();
+    invalidateLocalStorageValues();
+    invalidateSessionApps();
+  });
+
+  const mount = () =>
+    renderHook(() =>
+      useSessionRightPane(sessionKey, noMessages, undefined, true, "session-1"),
+    );
+
+  it("leaves storage untouched for a session with no app URLs", () => {
+    localStorage.setItem("unrelated-key", "unrelated");
+    const before = localStorage.length;
+
+    mount();
+
+    expect(localStorage.length).toBe(before);
+    expect(localStorage.getItem(storageKey)).toBeNull();
+  });
+
+  it("removes a stored entry that has decayed to the default", () => {
+    localStorage.setItem(storageKey, '{"dismissed":[]}');
+
+    mount();
+
+    expect(localStorage.getItem(storageKey)).toBeNull();
+  });
+
+  it("keeps a stored entry that still carries dismissals", () => {
+    const stored = '{"dismissed":["vhost:announcement-1"]}';
+    localStorage.setItem(storageKey, stored);
+
+    mount();
+
+    expect(localStorage.getItem(storageKey)).toBe(stored);
   });
 });

@@ -97,6 +97,10 @@ test("search result and transcript clicks keep their own actions", async ({
   });
   await expect(activityToggle).toHaveAttribute("aria-expanded", "false");
   await activityToggle.click();
-  await expect(activityToggle).toHaveAttribute("aria-expanded", "true");
+  // Expanded, the summary drops "hidden": the rows it counts are on screen.
+  const expandedToggle = page.getByRole("button", {
+    name: /\d+ activities$/,
+  });
+  await expect(expandedToggle).toHaveAttribute("aria-expanded", "true");
   await expect(fullSessionInput).toBeVisible();
 });

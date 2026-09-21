@@ -153,7 +153,14 @@ export function createConversationSource(
         readSignal.throwIfAborted();
         signal.throwIfAborted();
         attachProcess();
-        if (failed) throw new Error("Unreconciled live conversation");
+        // A live record YA could not keep is recoverable, not terminal: once the
+        // turn ends the provider file holds it, so force reconciliation and only
+        // refuse when the durable read still leaves memory unusable.
+        if (failed) {
+          if (process?.state.type === "in-turn")
+            throw new Error("Unreconciled live conversation");
+          dirty = true;
+        }
         if (!row) {
           row = await deps.resolve(sessionId);
           readSignal.throwIfAborted();
@@ -196,7 +203,19 @@ export function createConversationSource(
               live.delete(id);
             }
           }
+          if (failed) {
+            // Dropped records left no byte accounting behind; re-derive it from
+            // what memory still holds before deciding the source is usable.
+            liveBytes = [...live.values()].reduce(
+              (total, entry) => total + entry.bytes,
+              0,
+            );
+            failed =
+              liveBytes > MAX_PROJECTION_INPUT_BYTES ||
+              live.size >= MAX_PROJECTION_RECORDS;
+          }
         }
+        if (failed) throw new Error("Unreconciled live conversation");
         // A durable record wins over its replay echo. Unpersisted records retain
         // arrival order and stable IDs; the bounded producer detects collisions.
         const known = new Set(baseline.messages.map(getMessageId));

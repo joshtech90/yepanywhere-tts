@@ -319,7 +319,16 @@ function SessionSearchPage() {
     viewportRows,
   );
   const discoveryOrder = useRef(new Map<string, number>());
+  const orderedNeedle = useRef(query);
   const results = useMemo(() => {
+    // Rank is first sighting under the current needle: rows stay put while a
+    // scan streams in, and a new needle starts ranking again from catalog
+    // order instead of replaying where each session happened to appear first
+    // under some earlier search.
+    if (orderedNeedle.current !== query) {
+      orderedNeedle.current = query;
+      discoveryOrder.current = new Map();
+    }
     const found = invalidRange
       ? []
       : candidates.flatMap((session) => {
@@ -489,6 +498,7 @@ function SessionSearchPage() {
   const scanRunning = useRef(scan.running);
   scanRunning.current = scan.running;
   useEffect(() => {
+    scanRunning.current = scan.running;
     if (!hasTurnFields || compactedSearch === layoutKey) return;
     let timer: ReturnType<typeof setTimeout>;
     const settle = () => {
@@ -574,6 +584,7 @@ function SessionSearchPage() {
             fields={effectiveFields}
             onFields={updateFields}
             supported={supported}
+            supportKnown={version !== null && version !== undefined}
             sessionCount={
               effectiveFields.includes("title")
                 ? candidates.length
@@ -616,10 +627,16 @@ function SessionSearchPage() {
               className={styles.dropdownContainer}
               placeholder={t("sessionSearchProjects")}
               triggerClassName={styles.dropdown}
-              options={feed.projects.map((p) => ({
-                value: p.id,
-                label: p.name,
-              }))}
+              options={[
+                // An explicit first row, so returning to every project is a
+                // visible choice rather than a re-click on the current one.
+                {
+                  value: "",
+                  label: t("globalSessionsFilterProjectPlaceholder"),
+                  clearSelection: true,
+                },
+                ...feed.projects.map((p) => ({ value: p.id, label: p.name })),
+              ]}
               selected={project ? [project] : []}
               onChange={(value) => changeParam("project", value[0] ?? "")}
               multiSelect={false}
@@ -814,8 +831,13 @@ function SessionSearchPage() {
               >
                 <strong>{t("sessionSearchManage")}</strong>
                 {sessions
-                  .filter((session) =>
-                    turnSearchProviders.has(session.provider),
+                  .filter(
+                    (session) =>
+                      // A selected session is always listed, whatever its
+                      // provider: this list is the only place a selection made
+                      // on a title-search row can be removed.
+                      selected.has(session.id) ||
+                      turnSearchProviders.has(session.provider),
                   )
                   .map((session) => (
                     <label key={session.id}>

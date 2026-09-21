@@ -669,6 +669,12 @@ export const ENV_VAR_REGISTRY: EnvVarDescriptor[] = [
     description: "Disable automatic backend reload in dev.",
   },
   {
+    name: "YEP_PROVIDER_HOST_ENABLED",
+    group: "Diagnostics & development",
+    description:
+      "Enable shared provider hosting (default: disabled on macOS, enabled on Linux).",
+  },
+  {
     name: "NO_FRONTEND_RELOAD",
     group: "Diagnostics & development",
     description: "Disable automatic frontend reload in dev.",

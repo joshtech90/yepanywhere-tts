@@ -159,9 +159,12 @@ function safeIssues(
 
 type Contract =
   (typeof toolDisplayContracts)[keyof typeof toolDisplayContracts];
+type ContractFailure = NonNullable<
+  Extract<Contract, { failure: unknown }>["failure"]
+>;
 const contracts: Record<
   string,
-  DisplayContract<Contract["input"], Contract["result"]>
+  DisplayContract<Contract["input"], Contract["result"], ContractFailure>
 > = toolDisplayContracts;
 
 export function auditRows(

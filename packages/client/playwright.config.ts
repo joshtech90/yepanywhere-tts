@@ -27,6 +27,12 @@ export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
   use: {
     // baseURL provided by fixtures.ts (reads port from global-setup)
+    // Not `retain-on-failure`, which records every test and whose injected
+    // recorder script is blocked in a sandboxed `srcdoc` frame — the mockup
+    // export spec counts that as a console problem and fails. CI retries
+    // twice, so a failure there still produces a trace, which is what carries
+    // the requests, responses and DOM snapshots a screenshot cannot. A local
+    // failure has no retry: rerun the spec with `--trace on` to get one.
     trace: "on-first-retry",
     screenshot: "only-on-failure",
     actionTimeout: 5000,

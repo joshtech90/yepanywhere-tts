@@ -15,7 +15,9 @@
 
 import {
   gatewayEffortProbeRequest,
+  gatewayTemplateEffortProbeRequest,
   parseGatewayEffortProbe,
+  parseGatewayTemplateEffortRejection,
   probeModelIdFromCatalog,
   type GatewayEndpointEffortProbe,
   type GatewayService,
@@ -152,11 +154,56 @@ export class GatewayEffortProbeCache {
         { baseUrl, modelId, status: response.status, probe },
         "Endpoint effort probe answered",
       );
-      return probe;
+      if (!probe) return undefined;
+      return (await this.askTemplate(baseUrl, modelId, probe)) ?? probe;
     } catch (error) {
       log.debug({ error, baseUrl, modelId }, "Endpoint effort probe failed");
       return undefined;
     }
+  }
+
+  /**
+   * Narrow a schema answer to what the model's chat template actually takes.
+   *
+   * Request validation and the chat template disagree on a vLLM server serving
+   * a model whose template distinguishes fewer levels than the schema admits:
+   * the schema accepted all seven while the template took only low, medium and
+   * xhigh, so every menu entry the schema stage produced above xhigh failed the
+   * user's turn. Asking with the schema's highest level settles it, and the
+   * rejection names the default too.
+   *
+   * Returns undefined when the template said nothing — which includes
+   * accepting the value, since a template that takes the top level is not
+   * narrowing from the top and the schema answer stands.
+   */
+  private async askTemplate(
+    baseUrl: string,
+    modelId: string,
+    schema: GatewayEndpointEffortProbe,
+  ): Promise<GatewayEndpointEffortProbe | undefined> {
+    const highest = schema.levels.at(-1);
+    if (!highest) return undefined;
+    const response = await this.fetchImpl(`${baseUrl}/v1/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer dummy",
+      },
+      body: JSON.stringify(gatewayTemplateEffortProbeRequest(modelId, highest)),
+      signal: AbortSignal.timeout(PROBE_TIMEOUT_MS),
+    });
+    if (response.ok) return undefined;
+    const narrowed = parseGatewayTemplateEffortRejection(await response.text());
+    if (!narrowed) return undefined;
+    log.debug(
+      { baseUrl, modelId, asked: highest, narrowed },
+      "Chat template narrowed the endpoint's effort vocabulary",
+    );
+    // The template describes the model YA is about to run, so its answer
+    // replaces the schema's entirely, "none" included: a schema that validates
+    // "none" against a template that does not list it would only buy a turn
+    // that fails the same way the levels above xhigh did.
+    return narrowed;
   }
 }
 

@@ -312,6 +312,26 @@ describe("ProjectMetadataService", () => {
     });
   });
 
+  describe("project names", () => {
+    it("persists a chosen name, clears it, and drops it on hide", async () => {
+      const projectId = encodeProjectId("/repos/alpha");
+      await service.addProject(projectId, "/repos/alpha");
+      expect(service.getProjectNameOverride(projectId)).toBeUndefined();
+
+      await service.setProjectNameOverride(projectId, "Alpha Service");
+      const reloaded = new ProjectMetadataService({ dataDir: tempDir });
+      await reloaded.initialize();
+      expect(reloaded.getProjectNameOverride(projectId)).toBe("Alpha Service");
+
+      await reloaded.setProjectNameOverride(projectId, null);
+      expect(reloaded.getProjectNameOverride(projectId)).toBeUndefined();
+
+      await reloaded.setProjectNameOverride(projectId, "Again");
+      await reloaded.hideProject(projectId, "/repos/alpha");
+      expect(reloaded.getProjectNameOverride(projectId)).toBeUndefined();
+    });
+  });
+
   describe("hideProject", () => {
     it("hides a project and removes it from the added list", async () => {
       const projectId = encodeProjectId("/path1");

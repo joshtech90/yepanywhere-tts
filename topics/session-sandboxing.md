@@ -18,6 +18,15 @@ relaxed while a project-write sandbox is launching or active. Other providers,
 remote executors, and non-Linux hosts still fail an enabled launch before
 provider work begins.
 
+**Pending limited-user extension:** the approved
+[personal workspace direction](limited-users.md#approved-workspace-direction-2026-09-21-not-implemented)
+uses a limited user's configured Create in directory (default `~/username`)
+as the default writable root, with project-only confinement as a stricter
+choice. Outside reads keep the existing policy. This is not implemented by
+the project-write mechanism described below; the
+[stand-up integration gap](../gaps/project-template-standup.md) includes its
+launch, resume/join and enforcement work.
+
 See also:
 
 - [session-defaults](session-defaults.md) — the saved all-provider value that

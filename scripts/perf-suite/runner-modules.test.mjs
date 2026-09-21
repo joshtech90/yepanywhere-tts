@@ -12,6 +12,7 @@ import {
 import { measureServerUsefulReadiness } from "./built-client-driver.mjs";
 import { deterministicPayload, validateScenario } from "./core.mjs";
 import {
+  MEASURED_SERVER_LOG_LEVEL,
   assertLiveCohortParent,
   harnessSourceFiles,
   stopServer,
@@ -21,7 +22,10 @@ import {
   evaluateRatchets,
 } from "./ratchet-evaluation.mjs";
 import { repetitionOwner } from "./server-driver.mjs";
-import { renderedAssistantHtml } from "./specialized-driver.mjs";
+import {
+  ownedProviderLogLevel,
+  renderedAssistantHtml,
+} from "./specialized-driver.mjs";
 import { requestProfile } from "./telemetry.mjs";
 
 test("core validates scenario shape and creates exact-size fixture text", () => {
@@ -324,6 +328,19 @@ test("specialized driver reads top-level and block-level enriched HTML", () => {
     "<p>block</p>",
   );
   assert.equal(renderedAssistantHtml({ message: { content: [] } }), null);
+});
+
+test("owned-provider leg measures at the shared server log level", () => {
+  assert.equal(ownedProviderLogLevel({}), MEASURED_SERVER_LOG_LEVEL);
+  assert.equal(
+    ownedProviderLogLevel({ YA_PERF_OWNED_PROVIDER_LOG_LEVEL: "debug" }),
+    "debug",
+  );
+  assert.throws(
+    () =>
+      ownedProviderLogLevel({ YA_PERF_OWNED_PROVIDER_LOG_LEVEL: "verbose" }),
+    /must name a server log level/,
+  );
 });
 
 test("server orchestrator selects one explicit repetition owner", () => {

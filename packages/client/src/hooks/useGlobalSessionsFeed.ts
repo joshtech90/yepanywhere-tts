@@ -8,7 +8,6 @@ import {
 } from "react";
 import {
   PROGRESSIVE_SESSION_CATALOG_CAPABILITY,
-  RETAINED_SESSION_COLLECTIONS_CAPABILITY,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import {
@@ -40,7 +39,11 @@ import {
   useSessionCollectionQueryRecords,
   useSessionCollectionQueryState,
 } from "../lib/clientSummaryStore";
-import type { SessionCollectionQueryDescriptor } from "../lib/clientSummaryCollections";
+import {
+  catalogLoadState,
+  type SessionCollectionQueryDescriptor,
+} from "../lib/clientSummaryCollections";
+import { resolveCollectionRequestMode } from "../lib/collectionRequestMode";
 import { createGlobalSessionsCollectionQueryDescriptor } from "../lib/clientSummaryQueries";
 import {
   type ProcessStateEvent,
@@ -48,7 +51,7 @@ import {
   type SessionMetadataChangedEvent,
   useFileActivity,
 } from "./useFileActivity";
-import { ensureVersionInfo, useRetainedVersionInfo } from "./useVersion";
+import { useRetainedVersionInfo } from "./useVersion";
 
 const REFETCH_DEBOUNCE_MS = 500;
 /**
@@ -430,15 +433,11 @@ export function useGlobalSessionsFeed(
           staleTimeMs: GLOBAL_SESSIONS_STALE_TIME_MS,
           force: fetchOptions.force,
           fetcher: async () => {
-            const version = await ensureVersionInfo(requestSourceKey);
-            if (sourceKeyRef.current !== requestSourceKey)
-              throw new Error("Session source changed");
             const retained =
-              !searchQuery &&
-              serverHasCapability(
-                version,
-                RETAINED_SESSION_COLLECTIONS_CAPABILITY,
-              );
+              (await resolveCollectionRequestMode(requestSourceKey, {
+                searchQuery,
+                currentSourceKey: () => sourceKeyRef.current,
+              })) === "retained";
             const request: GlobalSessionsRequest = {
               ...(retained ? { summaryMode: "retained" as const } : {}),
               project: projectId ?? undefined,
@@ -518,18 +517,17 @@ export function useGlobalSessionsFeed(
             }
           },
         });
-        const version =
+        // Retained rows carry their own stats, so only a complete read needs
+        // the separate stats request.
+        const statsMode =
           includeStats && !projectId
-            ? await ensureVersionInfo(requestSourceKey)
+            ? await resolveCollectionRequestMode(requestSourceKey, {
+                searchQuery,
+                currentSourceKey: () => sourceKeyRef.current,
+              })
             : null;
         const statsPromise =
-          includeStats &&
-          !projectId &&
-          (searchQuery ||
-            !serverHasCapability(
-              version,
-              RETAINED_SESSION_COLLECTIONS_CAPABILITY,
-            ))
+          statsMode === "complete"
             ? ensureClientQuery<{ stats: GlobalSessionStats }>({
                 sourceKey: requestSourceKey,
                 key: GLOBAL_SESSION_STATS_QUERY_KEY,
@@ -593,13 +591,12 @@ export function useGlobalSessionsFeed(
     try {
       setError(null);
       const requestStartedAt = Date.now();
-      const version = await ensureVersionInfo(requestSourceKey);
-      if (sourceKeyRef.current !== requestSourceKey) return;
+      const mode = await resolveCollectionRequestMode(requestSourceKey, {
+        searchQuery,
+        currentSourceKey: () => sourceKeyRef.current,
+      });
       const data = await api.getGlobalSessions({
-        ...(!searchQuery &&
-        serverHasCapability(version, RETAINED_SESSION_COLLECTIONS_CAPABILITY)
-          ? { summaryMode: "retained" as const }
-          : {}),
+        ...(mode === "retained" ? { summaryMode: "retained" as const } : {}),
         project: projectId ?? undefined,
         q: searchQuery || undefined,
         limit,
@@ -784,21 +781,18 @@ export function useGlobalSessionsFeed(
     };
   }, [fetch, ready, sourceKey]);
 
+  const catalogState = catalogLoadState(
+    queryState?.catalog,
+    queryState?.ids.length ?? 0,
+  );
+
   return {
     query,
     ready,
     loading:
       enabled &&
-      (loading ||
-        (!ready && !queryState) ||
-        (queryState?.ids.length === 0 &&
-          queryState.catalog?.complete === false &&
-          queryState.catalog.refreshing)),
-    error:
-      error ??
-      (queryState?.catalog?.refreshError
-        ? new Error(queryState.catalog.refreshError)
-        : null),
+      (loading || (!ready && !queryState) || catalogState.awaitingFirstRows),
+    error: error ?? catalogState.refreshError,
     hasMore: queryState?.hasMore ?? false,
     loadMore,
     // An explicit refresh is a fidelity request, not a freshness one: a user

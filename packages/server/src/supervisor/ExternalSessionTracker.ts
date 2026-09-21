@@ -49,6 +49,13 @@ interface ExternalSessionInfo {
 /** Default grace period after abort before external detection resumes (30 seconds) */
 const DEFAULT_ABORT_GRACE_MS = 30000;
 
+/**
+ * Default grace period after this server forks a session. The fork's transcript
+ * is written by us, so the file activity it produces is not another program
+ * writing the session and must not raise the external-writer warning.
+ */
+const DEFAULT_FORK_GRACE_MS = 30000;
+
 function getProjectNameForProjectId(projectId: UrlProjectId): string {
   return getProjectName(decodeProjectId(projectId));
 }
@@ -65,6 +72,8 @@ export interface ExternalSessionTrackerOptions {
   decayMs?: number;
   /** Grace period in ms after abort before external detection resumes (default: 30000) */
   abortGraceMs?: number;
+  /** Grace period in ms after our own fork writes a transcript (default: 30000) */
+  forkGraceMs?: number;
   /** Optional callback to get session summary for new external sessions */
   getSessionSummary?: (
     sessionId: string,
@@ -92,11 +101,14 @@ export class ExternalSessionTracker {
   private externalSessions: Map<string, ExternalSessionInfo> = new Map();
   /** Sessions recently aborted by this server - grace period before external detection */
   private recentlyAborted: Map<string, number> = new Map(); // sessionId -> timestamp
+  /** Sessions this server just forked - their transcript writes are our own */
+  private recentlyForked: Map<string, number> = new Map(); // sessionId -> timestamp
   private eventBus: EventBus;
   private supervisor: Supervisor;
   private scanner: ProjectScanner;
   private decayMs: number;
   private abortGraceMs: number;
+  private forkGraceMs: number;
   private unsubscribe: (() => void) | null = null;
   private getSessionSummary?: (
     sessionId: string,
@@ -130,6 +142,7 @@ export class ExternalSessionTracker {
     this.scanner = options.scanner;
     this.decayMs = options.decayMs ?? 30000;
     this.abortGraceMs = options.abortGraceMs ?? DEFAULT_ABORT_GRACE_MS;
+    this.forkGraceMs = options.forkGraceMs ?? DEFAULT_FORK_GRACE_MS;
     this.getSessionSummary = options.getSessionSummary;
     this.getSessionListSummary = options.getSessionListSummary;
 
@@ -203,7 +216,7 @@ export class ExternalSessionTracker {
               type: "session-created",
               session: {
                 ...observed.summary,
-                ownership: { owner: "external" },
+                ownership: this.detectedOwnership(sessionId),
                 projectName:
                   observed.summary.projectName ??
                   getProjectNameForProjectId(projectId),
@@ -286,6 +299,8 @@ export class ExternalSessionTracker {
         void this.handleFileChange(event);
       } else if (event.type === "session-aborted") {
         this.handleSessionAborted(event);
+      } else if (event.type === "session-forked") {
+        this.markForked(event.sessionId);
       }
     });
   }
@@ -356,6 +371,41 @@ export class ExternalSessionTracker {
   }
 
   /**
+   * Mark a session as just forked by this server. Its first transcript writes
+   * are ours, so they must not be read as another program owning the session:
+   * the fork is still discovered, but never reported as externally active.
+   * Called by Supervisor after a successful fork.
+   */
+  markForked(sessionId: string): void {
+    this.recentlyForked.set(sessionId, Date.now());
+    this.removeExternal(sessionId);
+  }
+
+  /**
+   * Check if a session is within the grace period after our own fork wrote it.
+   */
+  private isInForkGracePeriod(sessionId: string): boolean {
+    const forkedAt = this.recentlyForked.get(sessionId);
+    if (!forkedAt) return false;
+
+    if (Date.now() - forkedAt >= this.forkGraceMs) {
+      this.recentlyForked.delete(sessionId);
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Ownership to report for a session we do not run a process for. A session
+   * we just forked is unowned, not externally driven.
+   */
+  private detectedOwnership(sessionId: string): SessionOwnership {
+    return this.isInForkGracePeriod(sessionId)
+      ? { owner: "none" }
+      : { owner: "external" };
+  }
+
+  /**
    * Check if a session is within the abort grace period.
    */
   private isInAbortGracePeriod(sessionId: string): boolean {
@@ -402,6 +452,7 @@ export class ExternalSessionTracker {
     }
     this.externalSessions.clear();
     this.recentlyAborted.clear();
+    this.recentlyForked.clear();
   }
 
   private async loadTrackedSummary(
@@ -472,6 +523,16 @@ export class ExternalSessionTracker {
       return;
     }
 
+    // We just forked it: the writes are ours, so discover the session without
+    // calling anyone an external writer.
+    if (this.isInForkGracePeriod(sessionId)) {
+      this.enqueueDetectedSummary(sessionId, {
+        provider: event.provider,
+        dirProjectId,
+      });
+      return;
+    }
+
     // We don't own it and it's not in grace period - mark as external
     this.markExternal(sessionId, { provider: event.provider, dirProjectId });
   }
@@ -533,7 +594,15 @@ export class ExternalSessionTracker {
     const projectId = await this.readCodexProjectIdFromFile(event.path);
     if (!projectId) return;
 
-    this.markExternal(sessionId, { provider: event.provider, projectId });
+    // A session we just forked is still discovered, but the writes are ours.
+    if (this.isInForkGracePeriod(sessionId)) {
+      this.enqueueDetectedSummary(sessionId, {
+        provider: event.provider,
+        projectId,
+      });
+    } else {
+      this.markExternal(sessionId, { provider: event.provider, projectId });
+    }
     await this.ensureCodexSessionCreated(sessionId, event.path, projectId);
   }
 
@@ -605,7 +674,7 @@ export class ExternalSessionTracker {
           getCodexRolloutActivityTimeMs(filePath, stats),
         ).toISOString(),
         messageCount: 0,
-        ownership: { owner: "external" },
+        ownership: this.detectedOwnership(sessionId),
         provider: "codex",
         model: meta.model,
       };
@@ -638,7 +707,15 @@ export class ExternalSessionTracker {
     }
 
     const projectId = encodeProjectId(meta.cwd);
-    this.markExternal(meta.id, { provider: event.provider, projectId });
+    // A session we just forked is still discovered, but the writes are ours.
+    if (this.isInForkGracePeriod(meta.id)) {
+      this.enqueueDetectedSummary(meta.id, {
+        provider: event.provider,
+        projectId,
+      });
+    } else {
+      this.markExternal(meta.id, { provider: event.provider, projectId });
+    }
     await this.ensurePiSessionCreated(meta, event.path, projectId);
   }
 
@@ -695,7 +772,7 @@ export class ExternalSessionTracker {
         createdAt: meta.timestamp,
         updatedAt: stats.mtime.toISOString(),
         messageCount: 0,
-        ownership: { owner: "external" },
+        ownership: this.detectedOwnership(meta.id),
         provider: "pi",
         model: meta.model,
       };
@@ -754,23 +831,38 @@ export class ExternalSessionTracker {
       this.externalSessions.set(sessionId, externalInfo);
 
       // Queue session parsing - batched to prevent OOM from bulk file operations
-      if (this.getSessionSummary || this.getSessionListSummary) {
-        this.sessionParser.enqueue(sessionId, async () => {
-          const project = await this.resolveProjectForSession(externalInfo);
-          if (!project) return null;
-          return this.loadTrackedSummary(
-            sessionId,
-            project.id as UrlProjectId,
-            externalInfo.provider === "codex" ? "list" : "complete",
-          );
-        });
-      }
+      this.enqueueDetectedSummary(sessionId, externalInfo);
 
       // Emit ownership change event
       void this.emitOwnershipChangeByInfo(sessionId, externalInfo, {
         owner: "external",
       });
     }
+  }
+
+  /**
+   * Read a detected session's summary off the batch queue. Shared by external
+   * detection and by sessions we forked ourselves, which are discovered the
+   * same way but never reported as externally owned.
+   */
+  private enqueueDetectedSummary(
+    sessionId: string,
+    info: {
+      provider: FileChangeEvent["provider"];
+      dirProjectId?: DirProjectId;
+      projectId?: UrlProjectId;
+    },
+  ): void {
+    if (!this.getSessionSummary && !this.getSessionListSummary) return;
+    this.sessionParser.enqueue(sessionId, async () => {
+      const project = await this.resolveProjectForSession(info);
+      if (!project) return null;
+      return this.loadTrackedSummary(
+        sessionId,
+        project.id as UrlProjectId,
+        info.provider === "codex" ? "list" : "complete",
+      );
+    });
   }
 
   private removeExternal(sessionId: string): void {

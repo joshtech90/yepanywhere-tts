@@ -2,6 +2,7 @@
 
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import { taskCreateRenderer, taskUpdateRenderer } from "../TaskListRenderer";
 
 const renderContext = {
@@ -25,19 +26,22 @@ describe("TaskListRenderer", () => {
       ],
     };
 
-    if (!taskUpdateRenderer.renderInline) {
+    if (!taskUpdateRenderer.operations.includes("renderInline")) {
       throw new Error("TaskUpdate renderer must provide inline rendering");
     }
 
     render(
       <div>
-        {taskUpdateRenderer.renderInline(
-          { taskId: "2", status: "in_progress" },
-          { success: true, _taskSnapshot: snapshot },
-          false,
-          "complete",
-          renderContext,
-        )}
+        {taskUpdateRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { taskId: "2", status: "in_progress" },
+              { success: true, _taskSnapshot: snapshot },
+              false,
+              "complete",
+            ),
+          )
+          .renderInline(renderContext)}
       </div>,
     );
 
@@ -47,19 +51,22 @@ describe("TaskListRenderer", () => {
   });
 
   it("falls back to a concise create event without a snapshot", () => {
-    if (!taskCreateRenderer.renderInline) {
+    if (!taskCreateRenderer.operations.includes("renderInline")) {
       throw new Error("TaskCreate renderer must provide inline rendering");
     }
 
     render(
       <div>
-        {taskCreateRenderer.renderInline(
-          { subject: "Check current task state" },
-          "Task #1 created successfully: Check current task state",
-          false,
-          "complete",
-          renderContext,
-        )}
+        {taskCreateRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { subject: "Check current task state" },
+              "Task #1 created successfully: Check current task state",
+              false,
+              "complete",
+            ),
+          )
+          .renderInline(renderContext)}
       </div>,
     );
 

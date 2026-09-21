@@ -5,10 +5,7 @@ import { createComputerControlReleaseRoutes } from "./routes/computer-control-re
 import { createConversationSource } from "./experimental/conversation-source.js";
 import { createExperimentalConversationRoutes } from "./routes/experimental-conversation.js";
 import { IssueStore } from "./services/issues/IssueStore.js";
-import {
-  IssueIndexer,
-  DEFAULT_ISSUE_SETTINGS,
-} from "./services/issues/IssueIndexer.js";
+import { IssueIndexer } from "./services/issues/IssueIndexer.js";
 import { createIssueRoutes } from "./routes/issues.js";
 import { IssueCredentials } from "./services/issues/credentials.js";
 import { IssueConfirmer } from "./services/issues/confirm.js";
@@ -45,7 +42,12 @@ import type {
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import {
+  DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
+  clampClearloopInactivitySeconds,
+} from "@yep-anywhere/shared";
+import {
   DEFAULT_HEARTBEAT_TURN_TEXT,
+  DEFAULT_ISSUE_SETTINGS,
   DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
@@ -63,6 +65,16 @@ import { compress } from "hono/compress";
 import { join } from "node:path";
 import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
+import type { UserUsageService } from "./auth/UserUsageService.js";
+import type { LimitedUsersService } from "./auth/LimitedUsersService.js";
+import { SessionAccessResolver } from "./auth/sessionAccess.js";
+import type { SrpLimitedUserLookup } from "./routes/ws-srp-handlers.js";
+import { createLimitedUsersMiddleware } from "./middleware/limited-users.js";
+import { createUsersRoutes } from "./routes/users.js";
+import { createProjectTemplateSourceRoutes } from "./routes/project-template-source.js";
+import { SESSION_COOKIE_NAME } from "./auth/routes.js";
+import { getCookie as getRequestCookie } from "hono/cookie";
+import { levelFor } from "./auth/limitedUserPolicy.js";
 import type { DesktopBootstrapService } from "./desktop/DesktopBootstrapService.js";
 import type { DeviceBridgeService } from "./device/DeviceBridgeService.js";
 import type { FrontendProxy } from "./frontend/index.js";
@@ -141,6 +153,7 @@ import { createFilesRoutes } from "./routes/files.js";
 import { canonicalizeManagedAttachmentPath } from "./uploads/attachmentAccess.js";
 import { createBangCommandsRoutes } from "./routes/bang-commands.js";
 import { BangCommandService } from "./services/BangCommandService.js";
+import { ClearloopService } from "./services/ClearloopService.js";
 import { createGitBrowseRoutes } from "./routes/git-browse.js";
 import { createGitFileRevisionRoutes } from "./routes/git-file-revision.js";
 import { createGitFileProjectionRoutes } from "./routes/git-file-projections.js";
@@ -300,6 +313,7 @@ import { PiSessionReader } from "./sessions/pi-reader.js";
 import {
   findSessionListSummaryAcrossProviders,
   findSessionSummaryAcrossProviders,
+  getSessionSourceForProvider,
 } from "./sessions/provider-resolution.js";
 import { applyRecapOverlayToSummary } from "./sessions/recap-overlays.js";
 import { normalizeSession } from "./sessions/normalization.js";
@@ -390,6 +404,9 @@ export interface AppOptions {
   maxQueueSize?: number;
   /** AuthService for cookie-based auth (optional) */
   authService?: AuthService;
+  /** Limited-user records; absent disables the second principal class. */
+  limitedUsersService?: LimitedUsersService;
+  userUsageService?: UserUsageService;
   /** Whether auth is disabled by env var (--auth-disable). Bypasses all auth. */
   authDisabled?: boolean;
   /** Desktop auth token for Tauri app. Requests with matching X-Desktop-Token header bypass auth. */
@@ -524,6 +541,23 @@ export interface AppResult {
   resolveAbsoluteFilePaths: (
     paths: readonly string[],
   ) => Promise<ReadonlySet<string>>;
+  /** Limited-user SRP verifier lookup for the relay handshake. */
+  limitedUsers?: SrpLimitedUserLookup;
+  /**
+   * Whether an authenticated websocket identity may open a subscription.
+   * See topics/limited-users.md § Delivery v1 — Authorization.
+   */
+  authorizeSubscription: (params: {
+    username: string | null;
+    channel: string;
+    sessionId?: string;
+    projectId?: string;
+  }) => Promise<boolean>;
+  /** Whether one activity event is visible to an authenticated identity. */
+  isActivityEventVisible: (
+    username: string | null,
+    event: { projectId?: string },
+  ) => boolean;
 }
 
 function getMessageContentBlocks(message: Message): AppContentBlock[] {
@@ -636,6 +670,9 @@ export function createApp(options: AppOptions): AppResult {
       defaultGatewayServiceId: options.serverSettingsService?.getSetting(
         "defaultGatewayServiceId",
       ),
+      gatewayServiceEffortDetection: options.serverSettingsService?.getSetting(
+        "gatewayServiceEffortDetection",
+      ),
       subagentMaxDepth: getConfiguredSubagentMaxDepth(),
       ollamaUrl: options.serverSettingsService?.getSetting("ollamaUrl"),
       ollamaSystemPrompt:
@@ -658,7 +695,10 @@ export function createApp(options: AppOptions): AppResult {
   app.use("*", async (c, next) => {
     const host = c.req.header("Host") ?? new URL(c.req.url).host;
     const dispatched = artifactServer
-      ? await artifactServer.dispatchHost(c.req.raw)
+      ? await artifactServer.dispatchHost(
+          c.req.raw,
+          c.env?.incoming?.socket?.remoteAddress,
+        )
       : null;
     if (dispatched) return dispatched;
     if (
@@ -752,6 +792,66 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
 
+  /*
+   * Limited users (topics/limited-users.md § Delivery v1). The middleware
+   * resolves the acting principal for every request and, when that is a
+   * limited user, refuses anything outside their grants — by default, so a
+   * route added later is unreachable for them until it is listed.
+   */
+  const limitedUsersService = options.limitedUsersService;
+  const isLimitedUsersEnabled = (): boolean =>
+    limitedUsersService !== undefined &&
+    options.serverSettingsService?.getSetting("limitedUsersEnabled") === true;
+  const sessionAccessResolver = new SessionAccessResolver({
+    getLiveSession: (sessionId) => {
+      const process = supervisor?.getProcessForSession(sessionId);
+      if (!process) return undefined;
+      return {
+        projectId: process.projectId,
+        provider: process.provider,
+        lastActivityMs: Date.now(),
+      };
+    },
+    readCatalogRows: async () => [],
+    getSessionMetadata: (sessionId) =>
+      options.sessionMetadataService?.getMetadata(sessionId),
+  });
+  if (limitedUsersService && options.authService) {
+    const authService = options.authService;
+    app.use(
+      "/api/*",
+      createLimitedUsersMiddleware({
+        limitedUsers: limitedUsersService,
+        sessionAccess: sessionAccessResolver,
+        isEnabled: isLimitedUsersEnabled,
+        getSuperuserIdentity: () =>
+          options.remoteAccessService?.getUsername() ?? null,
+        getCookieSessionUsername: async (c) =>
+          authService.getSessionUsername(
+            getRequestCookie(c, SESSION_COOKIE_NAME),
+          ),
+        getCookieSecret: () => authService.getCookieSecret(),
+      }),
+    );
+    app.route(
+      "/api/users",
+      createUsersRoutes({
+        limitedUsers: limitedUsersService,
+        authService,
+        isEnabled: isLimitedUsersEnabled,
+        setEnabled: async (enabled) => {
+          await options.serverSettingsService?.updateSettings({
+            limitedUsersEnabled: enabled,
+          });
+        },
+        ...(options.userUsageService
+          ? { userUsage: options.userUsageService }
+          : {}),
+      }),
+    );
+  }
+
+  app.route("/api", createProjectTemplateSourceRoutes(effectiveDataDir));
   // Auth routes (always mounted if authService is provided)
   // This allows checking auth status and enabling/disabling from settings
   if (options.authService) {
@@ -763,6 +863,8 @@ export function createApp(options: AppOptions): AppResult {
         desktopAuthToken: options.desktopAuthToken,
         desktopBootstrapService: options.desktopBootstrapService,
         isAuthenticationRelaxationBlocked,
+        limitedUsers: limitedUsersService,
+        isLimitedUsersEnabled,
       }),
     );
   }
@@ -839,9 +941,7 @@ export function createApp(options: AppOptions): AppResult {
       port: 4402,
     };
   artifactServer = new ArtifactServer(
-    // The mechanism borrows by default; YA's own product default is to let a
-    // link clean up the directory it was created for.
-    validateArtifactConfig(artifactConfig, undefined, true),
+    validateArtifactConfig(artifactConfig),
     localResourcePathPolicy,
     {
       stateDir: join(effectiveDataDir, "artifacts"),
@@ -1402,9 +1502,35 @@ export function createApp(options: AppOptions): AppResult {
     inactivityPushNotifier?.dispose();
   };
 
+  const clearloopService = options.sessionMetadataService
+    ? new ClearloopService({
+        getSupervisor: () => supervisor,
+        sessionMetadataService: options.sessionMetadataService,
+        eventBus: options.eventBus,
+        getInactivitySeconds: () =>
+          clampClearloopInactivitySeconds(
+            options.serverSettingsService?.getSetting(
+              "clearloopInactivitySeconds",
+            ),
+          ) ?? DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
+        // The scheduler is constructed below; a loop reads this only once a
+        // user has started one, long after startup.
+        getProjectIdleStatus:
+          options.eventBus && options.projectQueueService
+            ? (projectId) =>
+                projectQueueScheduler?.getProjectWorkStatus(projectId) ??
+                Promise.resolve({
+                  idle: false,
+                  blockers: ["project-scheduler-unavailable"],
+                })
+            : undefined,
+      })
+    : undefined;
+  // Session metadata is initialized before createApp; loops left running by
+  // a previous server process are closed out here.
+  void clearloopService?.reconcileAfterRestart();
+
   supervisor = new Supervisor({
-    onSessionStopRequested: (sessionId) =>
-      pushNotifier?.suppressSession(sessionId),
     onProcessInventoryChanged: () => {
       // Gateway services that opted into auto-stop need to know when their
       // last session goes away; the live process list is that answer.
@@ -2028,6 +2154,7 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
+      userUsageService: options.userUsageService,
       projectMetadataService: options.projectMetadataService,
       projectQueueScheduler,
       eventBus: options.eventBus,
@@ -2048,6 +2175,7 @@ export function createApp(options: AppOptions): AppResult {
       toolResultMediaStore,
       dataDir: options.dataDir,
       persistedAugmentDelayMs: options.persistedAugmentDelayMs,
+      clearloopService,
       resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
     }),
   );
@@ -2222,16 +2350,12 @@ export function createApp(options: AppOptions): AppResult {
     ) => {
       const project = await scanner.getProject(projectId);
       if (!project) return null;
-      const sources = getSessionSources(
-        project,
-        heartbeatProviderResolutionDeps(),
-        provider,
-      );
-      return (
-        sources.find((source) => source.provider === provider)?.reader ??
-        sources[0]?.reader ??
-        null
-      );
+      const deps = heartbeatProviderResolutionDeps();
+      if (provider)
+        return (
+          getSessionSourceForProvider(project, deps, provider)?.reader ?? null
+        );
+      return getSessionSources(project, deps)[0]?.reader ?? null;
     };
     const issueCredentials = new IssueCredentials({
       dataDir: effectiveDataDir,
@@ -2327,8 +2451,12 @@ export function createApp(options: AppOptions): AppResult {
     );
     indexer.configure();
   }
-  const vocabularyDatabase = discoverySqlite.getDatabase();
-  if (vocabularyDatabase) {
+  // The learned vocabulary keeps its own SQLite file beside discovery's, so it
+  // needs the three facts discovery readiness already establishes: this runtime
+  // has a SQLite driver, the owner did not set `YEP_SQLITE=off`, and the data
+  // directory is local disk rather than a share
+  // (topics/pluggable-speech-recognition.md § Keyterm Biasing).
+  if (discoverySqlite.getStatus().state === "ready") {
     const catalog = retainedCollections;
     const store = new VocabularyStore(effectiveDataDir);
     const keyterms = new VocabularyKeyterms(store, effectiveDataDir);
@@ -3169,6 +3297,48 @@ export function createApp(options: AppOptions): AppResult {
     glossaryIndexService,
     externalTracker,
     resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
+    limitedUsers: limitedUsersService
+      ? {
+          getSrpChallengeInputs: (username) =>
+            isLimitedUsersEnabled()
+              ? limitedUsersService.getSrpChallengeInputs(username)
+              : undefined,
+        }
+      : undefined,
+    isActivityEventVisible: (username, event) => {
+      if (!isLimitedUsersEnabled() || !username) return true;
+      if (username === options.remoteAccessService?.getUsername()) return true;
+      const grants = limitedUsersService?.getActiveGrants(username);
+      if (!grants) return false;
+      return (
+        typeof event.projectId !== "string" ||
+        levelFor(grants, event.projectId) !== "none"
+      );
+    },
+    authorizeSubscription: async ({
+      username,
+      channel,
+      sessionId,
+      projectId,
+    }) => {
+      // The superuser (no limited identity on the socket) subscribes freely.
+      if (!isLimitedUsersEnabled() || !username) return true;
+      if (username === options.remoteAccessService?.getUsername()) return true;
+      const grants = limitedUsersService?.getActiveGrants(username);
+      if (!grants) return false;
+      if (projectId) return levelFor(grants, projectId) !== "none";
+      if (sessionId) {
+        const facts = await sessionAccessResolver.resolve(sessionId);
+        if (!facts) return false;
+        return (
+          facts.createdByUser === username ||
+          levelFor(grants, facts.projectId) !== "none"
+        );
+      }
+      // Channels with no id of their own (activity) carry events for every
+      // project; their rows are filtered by the same grants downstream.
+      return channel === "activity";
+    },
   };
 }
 

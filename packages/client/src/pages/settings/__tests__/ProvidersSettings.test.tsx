@@ -695,16 +695,26 @@ describe("ProvidersSettings additional models", () => {
       }),
     ).toBeNull();
 
-    fireEvent.change(
-      screen.getByRole("spinbutton", {
-        name: "providersGatewayServiceContextAria",
-      }),
-      { target: { value: "252000" } },
-    );
+    // There is no Save button here: a typed field writes itself when it loses
+    // focus and a checkbox writes itself as it is clicked.
+    const contextInput = screen.getByRole("spinbutton", {
+      name: "providersGatewayServiceContextAria",
+    });
+    fireEvent.change(contextInput, { target: { value: "252000" } });
+    fireEvent.blur(contextInput);
+
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        gatewayServices: [
+          expect.objectContaining({ id: "vllm", contextWindowTokens: 252000 }),
+        ],
+        defaultGatewayServiceId: "vllm",
+      });
+    });
+
     fireEvent.click(
       screen.getByRole("checkbox", { name: /providersGatewayServiceCodex/u }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
 
     await waitFor(() => {
       expect(mockUpdateSettings).toHaveBeenCalledWith({
@@ -717,11 +727,11 @@ describe("ProvidersSettings additional models", () => {
         ],
         defaultGatewayServiceId: "vllm",
       });
-      expect(mockReloadProviders).toHaveBeenCalledTimes(1);
+      expect(mockReloadProviders).toHaveBeenCalled();
     });
   });
 
-  it("saves a reordered services list, which is the order pickers show", () => {
+  it("saves a reordered services list, which is the order pickers show", async () => {
     versionState.capabilities = [
       CLAUDE_GATEWAY_CAPABILITY,
       CLAUDE_GATEWAY_SERVICES_CAPABILITY,
@@ -757,15 +767,17 @@ describe("ProvidersSettings additional models", () => {
     // Two entries, so the first entry's control is disabled and the second's
     // is the one that can act.
     expect(moveUp[0]).toHaveProperty("disabled", true);
+    // Reordering saves itself; there is no Save button to reach for.
     fireEvent.click(moveUp[1]!);
-    fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
 
-    expect(mockUpdateSettings).toHaveBeenCalledWith({
-      gatewayServices: [
-        expect.objectContaining({ id: "vllm" }),
-        expect.objectContaining({ id: "copilot" }),
-      ],
-      defaultGatewayServiceId: "copilot",
+    await waitFor(() => {
+      expect(mockUpdateSettings).toHaveBeenCalledWith({
+        gatewayServices: [
+          expect.objectContaining({ id: "vllm" }),
+          expect.objectContaining({ id: "copilot" }),
+        ],
+        defaultGatewayServiceId: "copilot",
+      });
     });
   });
 
@@ -858,7 +870,6 @@ describe("ProvidersSettings additional models", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "providersGatewayServiceAdd" }),
     );
-    fireEvent.click(screen.getByRole("button", { name: "providersSave" }));
 
     await waitFor(() => {
       expect(mockUpdateSettings).toHaveBeenCalledWith({

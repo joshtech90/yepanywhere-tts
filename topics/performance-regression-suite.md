@@ -316,6 +316,12 @@ settings API, verifies the remaining raw subscriber retains the idle provider
 past that deadline, then measures release after its final unsubscribe. Failures
 include the owned-server diagnostic tail rather than discarding that evidence.
 
+Every measured server, including this leg's, runs at one console log level, so
+no leg pays logging cost the others and production do not. A diagnostic rerun
+may raise the owned-provider leg's level for a richer failure tail; the level
+it ran at is recorded beside its numbers, and a raised level makes that
+repetition diagnostic rather than comparable.
+
 The owned fixture creates its session with explicit `thinking: "off"`,
 matching the browser's initial setting for the simulated model. An unspecified
 launch value followed by the browser's explicit off value is a real

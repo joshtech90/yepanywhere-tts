@@ -82,6 +82,15 @@ These run unconditionally and are not user-configurable:
   every setting.
 - **ANSI escape stripping** — applied before all rendering so raw escape codes
   never appear as literal characters. (`stripAnsiEscapes` inside `renderFixedFontRichContent`)
+- **Bare URLs in fixed-font text are links** — terminal output, fenced and
+  indented blocks, and inline code render a bare `http(s)` URL with a dotted
+  host as an anchor around the unchanged text; other schemes stay plain. One
+  renderer answers this for every such surface (`linkifyToHtml` in
+  `packages/shared/src/linkify.ts`). Terminal output opens the link in a new
+  tab, since that markup reaches the page unsanitized. A Markdown anchor stays
+  in the same document like every other link the Markdown renderer emits: the
+  shared sanitizer allows neither `target` nor `rel` on an anchor, so asking
+  for a new tab there would only produce markup it drops.
 - **Shiki syntax highlighting** — server-side, keyed on file extension, stored as
   `_highlightedContentHtml` on `ReadResultWithAugment`. Applied only to files the
   server recognises as source code.
@@ -514,14 +523,28 @@ all registered variants; `tools/index.tsx` enforces exact registration coverage.
 Types derive from schema output. Public callers receive safe prepared operations
 or inert metadata, never unchecked callbacks. Summaries and dynamic names use
 the same boundary as collapsed, expanded, inline, standalone and nested views.
+A registration's only display entry point is `prepare(record)`. The registry's
+positional `(input, result, isError)` dispatch becomes that record in one place,
+where a call carrying no result is still running unless it failed; the
+tool_result path states its own settled status because that block exists only
+after the call ended.
 
 Preparation is data-only, bounded to the displayed record and shared across row
 operations after commentary transforms its input/output. There is no transcript
 scan or unbounded cache. The prepared record carries parsed values, execution
 status and rich/partial/raw classification. Rejections use an explicit failure
-schema or raw inspection, never a success parser. The effective error flag is
+schema or raw inspection, never a success parser. A failure schema whose shape
+is not the success shape reaches its own `renderFailure`, with an optional
+`getFailureSummary` for the collapsed row; the registration type requires that
+renderer, so failure data can never arrive at a result callback that cannot
+describe it. One `PlainFailureSchema` owns the shape most tools reject with —
+a bare message string or a `{content}` envelope — so no renderer re-derives
+that extraction. The effective error flag is
 `isError ?? status === "error"` for every operation; pending, incomplete and
-aborted remain distinct states. Standalone support is declared per tool.
+aborted remain distinct states. One exported pair decides it — `prepareDisplay`
+exports `effectiveToolError(record)` and, for a transcript invocation whose flag
+sits on the result, `effectiveInvocationError(item)` — so no surface outside it
+restates the expression. Standalone support is declared per tool.
 
 Known consumed augments (highlights, Markdown, diffs, media, project links and
 task snapshots) are checked explicitly. Nested Task content checks its block
@@ -605,8 +628,10 @@ Supported Edit and Task rejections retain their specialized failure views and
 original error detail. A declined Edit with a checked proposed patch still
 shows that patch. Edit acknowledgements remain visible text rather than an
 invented empty before/after diff. Goal failures retain string, content, and
-nested message/detail forms. Other failures without an explicit checked failure
-contract remain inspectable raw records. Failure eligibility is independent of
+nested message/detail forms. A tool that declares the shared plain-failure
+contract shows the provider's message in its own error styling instead of a raw
+record. A rejection matching neither the tool's failure contract nor any
+declared one remains an inspectable raw record. Failure eligibility is independent of
 success schemas; commentary must retain an absent error flag's status fallback,
 including when status changes without replacing the output object.
 

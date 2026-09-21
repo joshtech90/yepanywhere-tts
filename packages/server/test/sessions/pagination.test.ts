@@ -373,6 +373,37 @@ describe("sliceAtCompactBoundaries", () => {
 });
 
 describe("sliceAtUserTurnBoundary", () => {
+  it("measures the window in live turns, not turns a rewind dropped", () => {
+    const rewound = (m: Message): Message =>
+      ({ ...m, rewoundGroupId: "rw-1" }) as Message;
+    const messages = [
+      msg("user", "u1"),
+      msg("assistant", "a1"),
+      msg("user", "u2"),
+      msg("assistant", "a2"),
+      msg("system", "rewound-group-rw-1", "rewound_group"),
+      rewound(msg("user", "u3")),
+      rewound(msg("assistant", "a3")),
+      rewound(msg("user", "u4")),
+      rewound(msg("assistant", "a4")),
+    ];
+
+    const result = sliceAtUserTurnBoundary(messages, 1);
+
+    // One live turn back is u2; the two dropped turns after it come along as
+    // its grouped history rather than consuming the window.
+    expect(result.messages.map((m) => m.uuid)).toEqual([
+      "u2",
+      "a2",
+      "rewound-group-rw-1",
+      "u3",
+      "a3",
+      "u4",
+      "a4",
+    ]);
+    expect(result.pagination.totalUserTurns).toBe(2);
+  });
+
   it("returns only the requested recent user-turn tail", () => {
     const messages = [
       msg("user", "u1"),

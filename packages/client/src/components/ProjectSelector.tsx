@@ -1,3 +1,4 @@
+import { projectDisplayName } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
@@ -41,8 +42,9 @@ export function ProjectSelector({
 
   // Find current project name
   const currentProject = projects.find((p) => p.id === currentProjectId);
-  const displayName =
-    currentProject?.name ?? currentProjectName ?? t("projectSelectorFallback");
+  const displayName = currentProject
+    ? projectDisplayName(currentProject)
+    : (currentProjectName ?? t("projectSelectorFallback"));
 
   const handleButtonClick = () => {
     buttonRef.current?.blur();
@@ -149,7 +151,7 @@ export function ProjectSelector({
             className={`${styles.option} ${isSelected ? styles.selected : ""}`}
             onClick={() => handleProjectSelect(project)}
           >
-            <span className={styles.name}>{project.name}</span>
+            <span className={styles.name}>{projectDisplayName(project)}</span>
             <span className={styles.meta}>
               {t("projectSelectorSessionsCount", {
                 count: project.sessionCount,

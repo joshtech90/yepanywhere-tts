@@ -180,6 +180,23 @@ export interface SpeechInsertionRange {
   chunks: SpeechOwnedChunk[];
 }
 
+/**
+ * Composed text preceding the speech insertion cursor, snapshotted for one
+ * capture. A recording already holding an insertion range keeps its own
+ * transaction point; otherwise the native caret decides, and a composer with
+ * no focused textarea takes the whole draft.
+ */
+export function textBeforeSpeechCursor(
+  draft: string,
+  insertionRange: SpeechInsertionRange | null,
+  textarea: HTMLTextAreaElement | null,
+): string {
+  return draft.slice(
+    0,
+    insertionRange?.end ?? textarea?.selectionStart ?? draft.length,
+  );
+}
+
 export interface SpeechTranscriptInsertionParts {
   before: string;
   separatorBefore: "" | " ";

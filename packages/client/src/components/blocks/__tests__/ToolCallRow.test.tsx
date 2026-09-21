@@ -2,10 +2,13 @@ import {
   act,
   cleanup,
   fireEvent,
-  render,
+  type RenderOptions,
+  type RenderResult,
+  render as renderWithoutI18n,
   screen,
   waitFor,
 } from "@testing-library/react";
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContext";
 import { setStableToolPreviewRenderingPreference } from "../../../hooks/useStableToolPreviewRendering";
@@ -32,6 +35,15 @@ vi.mock("../../../contexts/SchemaValidationContext", () => ({
     isToolIgnored: vi.fn(() => false),
   }),
 }));
+
+/** Every tool row reads its own copy through i18n, which needs the provider.
+ * Tests that supply their own providers may nest a second one harmlessly. */
+function render(
+  ui: ReactElement,
+  options?: Omit<RenderOptions, "wrapper">,
+): RenderResult {
+  return renderWithoutI18n(ui, { wrapper: I18nProvider, ...options });
+}
 
 function selectElementText(element: Element) {
   const textNode = document
@@ -1138,6 +1150,33 @@ describe("ToolCallRow", () => {
       expect(container.querySelector(".tool-row-content")).toBeNull();
     },
   );
+
+  it("shows a wait outcome reported on stderr alone as a waiting row", () => {
+    // agentctl writes the timeout to stderr, so a normalized Bash result
+    // carries it there with an empty stdout.
+    render(
+      <ToolCallRow
+        id="tool-wait-stderr"
+        toolName="Bash"
+        toolInput={{ command: "agentctl wait example" }}
+        toolResult={{
+          content:
+            "timeout waiting for example to reach not-running; current status=running",
+          structured: {
+            stdout: "",
+            stderr:
+              "timeout waiting for example to reach not-running; current status=running",
+            exitCode: 1,
+          },
+          isError: true,
+        }}
+        status="error"
+      />,
+    );
+    expect(screen.getByText("Waiting")).toBeDefined();
+    expect(screen.getByText("example · running")).toBeDefined();
+    expect(screen.queryByText("rc=1")).toBeNull();
+  });
 
   it("keeps an ordinary exit-code-1 failure visible in a compact poll", () => {
     render(

@@ -53,6 +53,38 @@ const SRP_USERNAME_LIMITER_TTL_MS = 30 * 60 * 1000;
 /** Soft cap to prevent unbounded growth from random identity spam */
 const SRP_USERNAME_LIMITER_MAX_ENTRIES = 1024;
 
+/**
+ * Floor every `srp_hello` response takes, in milliseconds. It hides the
+ * difference between a known and an unknown identity at the resolution
+ * network timing through a relay can observe; microsecond differences are
+ * already lost in the relay hop.
+ */
+const SRP_HELLO_RESPONSE_FLOOR_MS = 250;
+
+/**
+ * Salt and verifier for an identity, real or decoy, never distinguishable.
+ *
+ * Returns undefined when limited users are disabled, which is the default:
+ * an install with a single principal keeps answering an unknown identity
+ * exactly as it did before (topics/limited-users.md § Delivery v1).
+ */
+export interface SrpLimitedUserLookup {
+  getSrpChallengeInputs: (username: string) =>
+    | {
+        salt: string;
+        verifier: string;
+        known: boolean;
+      }
+    | undefined;
+}
+
+/** Wait until the hello response has taken at least the fixed floor. */
+async function padSrpHelloResponse(startedAt: number): Promise<void> {
+  const remaining = SRP_HELLO_RESPONSE_FLOOR_MS - (Date.now() - startedAt);
+  if (remaining <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, remaining));
+}
+
 interface SrpTokenBucket {
   capacity: number;
   refillPerMs: number;
@@ -508,8 +540,10 @@ export async function handleSrpHello(
   connState: ConnectionState,
   msg: SrpClientHello,
   remoteAccessService: RemoteAccessService | undefined,
+  limitedUsers?: SrpLimitedUserLookup,
 ): Promise<void> {
-  const now = Date.now();
+  const helloStartedAt = Date.now();
+  const now = helloStartedAt;
   cleanupUsernameSrpLimiters(now);
 
   if (isSrpProofPending(connState)) {
@@ -553,15 +587,27 @@ export async function handleSrpHello(
   }
 
   const configuredUsername = remoteAccessService.getUsername();
-  const usernameLimiter =
-    configuredUsername && msg.identity === configuredUsername
-      ? getUsernameLimiter(configuredUsername, now)
-      : null;
+  const usernameLimiter = msg.identity
+    ? getUsernameLimiter(msg.identity, now)
+    : null;
   if (!enforceSrpHelloRateLimit(ws, connState, usernameLimiter, now)) {
     return;
   }
 
-  if (msg.identity !== configuredUsername) {
+  /*
+   * Identity selection (topics/limited-users.md § Login, switching, logout):
+   * the superuser's configured relay name, else a limited user of that name,
+   * else a fixed decoy credential. The decoy path runs the same challenge
+   * computation and fails only at the proof step, and every response below is
+   * padded to a fixed floor, so response timing does not disclose which
+   * usernames this install knows.
+   */
+  const limitedCredentials =
+    msg.identity !== configuredUsername
+      ? limitedUsers?.getSrpChallengeInputs(msg.identity)
+      : undefined;
+  if (msg.identity !== configuredUsername && !limitedCredentials) {
+    await padSrpHelloResponse(helloStartedAt);
     sendSrpMessage(ws, {
       type: "srp_error",
       code: "invalid_identity",
@@ -569,6 +615,7 @@ export async function handleSrpHello(
     });
     return;
   }
+  const helloCredentials = limitedCredentials ?? credentials;
 
   try {
     cleanupSrpHandshakeState(connState);
@@ -581,15 +628,16 @@ export async function handleSrpHello(
 
     const { B } = await connState.srpSession.generateChallenge(
       msg.identity,
-      credentials.salt,
-      credentials.verifier,
+      helloCredentials.salt,
+      helloCredentials.verifier,
     );
 
     const challenge: SrpServerChallenge = {
       type: "srp_challenge",
-      salt: credentials.salt,
+      salt: helloCredentials.salt,
       B,
     };
+    await padSrpHelloResponse(helloStartedAt);
     sendSrpMessage(ws, challenge);
     connState.authState = "srp_waiting_proof";
     startSrpHandshakeTimeout(ws, connState);
@@ -598,6 +646,7 @@ export async function handleSrpHello(
   } catch (err) {
     console.error("[WS Relay] SRP hello error:", err);
     cleanupSrpHandshakeState(connState);
+    await padSrpHelloResponse(helloStartedAt);
     sendSrpMessage(ws, {
       type: "srp_error",
       code: "server_error",

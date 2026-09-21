@@ -33,6 +33,14 @@ ownership, recap, and notification overlays. Recaps may advance display order
 but do not make provider content unread. Counts describe the accepted catalog,
 so they may change when reconciliation discovers additional sessions.
 
+Both summary modes admit a row by the same query rules: the archived, starred,
+project, and cursor filters, and a `q` matched against title, custom title,
+project name, and initial prompt. A row either mode holds is therefore admitted
+by both. What still differs is the row: a retained row carries the initial
+prompt YA recorded in metadata and no transcript-derived full title, so prompt
+text that exists only in the provider transcript is found through the complete
+path, which is where a capable client sends full-prompt search.
+
 Each response includes `catalogEpoch`, `catalogGeneration`, `complete`, and
 `refreshing` inside `catalog`, plus `refreshError` after a failed refresh.
 `complete` means a complete enumeration has been accepted in this lineage;
@@ -388,8 +396,11 @@ costs the routes a first read of every project.
 ## YA-owned provider cache storage
 
 Gemini's YA-owned hash-to-project map lives at
-`<YEP_DATA_DIR>/gemini-project-map.json`, outside the recursively watched native
-session tree. On first use, an existing `<GEMINI_SESSIONS_DIR>/project-map.json`
+`gemini-project-map.json` in the server's data directory, outside the
+recursively watched native session tree. That directory is the one
+`getDataDir()` resolves — `YEP_DATA_DIR`, else `~/.yep-anywhere-<YEP_PROFILE>`,
+else `~/.yep-anywhere` — so two profiles keep two maps rather than overwriting
+one. On first use, an existing `<GEMINI_SESSIONS_DIR>/project-map.json`
 is copied into that location; subsequent reads and atomic writes use only the
 new map. The legacy file is retained for older installs. Besides avoiding
 spurious provider events, this keeps short-lived atomic-write files away from
@@ -455,6 +466,9 @@ relocated session visibly grouped under its former project.
   move it back.
 - A write to one project leaves every other shard's generation, retained rows,
   and delta comparison untouched.
+- A `q` naming a word only the initial prompt carries returns that session in
+  retained mode, and the retained and complete modes return the same rows for
+  one query.
 - One adapter pass over a provider-global store yields the same rows every
   per-project reader would, grouped by canonical host path, without the store
   being walked once per project.

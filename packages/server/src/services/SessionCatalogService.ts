@@ -19,6 +19,7 @@ import {
   type SessionCatalogRow,
   type SessionCatalogRowKey,
   type SessionCatalogScanMode,
+  SESSION_CATALOG_TITLE_MAX_LENGTH,
   sessionCatalogRowKey,
 } from "../sessions/catalog-types.js";
 
@@ -1076,7 +1077,12 @@ function normalizeRow(
   if (row.createdAt !== undefined)
     requireTimestamp(row.createdAt, "row createdAt");
   if (row.title !== undefined && row.title !== null) {
-    requireBoundedString(row.title, "row title", 16_384, true);
+    requireBoundedString(
+      row.title,
+      "row title",
+      SESSION_CATALOG_TITLE_MAX_LENGTH,
+      true,
+    );
   }
   if (!(["identity", "head", "tail"] as const).includes(row.fidelity)) {
     throw new Error(

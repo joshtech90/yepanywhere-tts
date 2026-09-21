@@ -2,6 +2,7 @@ import {
   EFFORT_LEVEL_ORDER,
   getModelEffortLevels,
   nativeModelEffort,
+  nearestGatewayEffortLevel,
   type EffortLevel,
   type ModelInfo,
   type ProviderInfo,
@@ -92,6 +93,12 @@ function getFallbackEffortLevels(providerName?: ProviderName): EffortLevel[] {
       return [];
     case "codex":
       return CODEX_EFFORT_LEVELS;
+    // pi's own thinking levels are off, minimal, low, medium, high, xhigh and
+    // max (verified against installed Pi 0.85.1). Its RPC takes every one YA
+    // names, so leaving xhigh out of the generic list made Extra unreachable
+    // for a pi session that could use it.
+    case "pi":
+      return EFFORT_LEVEL_ORDER;
     default:
       return GENERIC_EFFORT_LEVELS;
   }
@@ -181,13 +188,27 @@ export function getFallbackEffortLevel(
   return options.at(-1)?.value ?? "high";
 }
 
+/**
+ * The offered level to use for one this provider or model does not offer.
+ *
+ * Snaps *down*, the same rule the gateway services follow: a session carrying
+ * an effort from elsewhere must not silently buy more thinking than was asked
+ * for. Choosing the highest offered level instead made every unoffered choice
+ * land on Max — a picker showing Low/Medium/High/Max could not be moved off Max
+ * while a stored Extra was in play, because each attempt resolved straight back
+ * to it.
+ */
 export function resolveSupportedEffortLevel(
   effort: EffortLevel,
   options: EffortLevelOption[],
 ): EffortLevel {
-  return options.some((option) => option.value === effort)
-    ? effort
-    : getFallbackEffortLevel(options);
+  if (options.length === 0) return getFallbackEffortLevel(options);
+  return (
+    nearestGatewayEffortLevel(
+      { levels: options.map((option) => option.value) },
+      effort,
+    ) ?? getFallbackEffortLevel(options)
+  );
 }
 
 export function getThinkingModeOptions(params: {

@@ -3,6 +3,7 @@ import {
   GATEWAY_EFFORT_PROBE_VALUE,
   gatewayEffortProbeRequest,
   parseGatewayEffortProbe,
+  parseGatewayTemplateEffortRejection,
   probeModelIdFromCatalog,
 } from "../src/gateway-effort-probe.js";
 
@@ -103,5 +104,60 @@ describe("probeModelIdFromCatalog", () => {
     expect(probeModelIdFromCatalog({ data: [] })).toBeUndefined();
     expect(probeModelIdFromCatalog({})).toBeUndefined();
     expect(probeModelIdFromCatalog(null)).toBeUndefined();
+  });
+});
+
+/**
+ * Captured verbatim from vLLM 0.29 serving Qwen3.8-Flash-Next, in response to
+ * `reasoning_effort: "high"` — a value that same server's request schema
+ * accepts. The chat template is the second gatekeeper, and the only one whose
+ * answer describes the model rather than the server.
+ */
+const TEMPLATE_REJECTION = JSON.stringify({
+  error: {
+    message:
+      "Unexpected reasoning effort high. Supported types are xhigh " +
+      "(default), medium, and low.",
+    type: "BadRequestError",
+    param: null,
+    code: 400,
+  },
+});
+
+describe("parseGatewayTemplateEffortRejection", () => {
+  it("reads the supported set and the default out of the rejection", () => {
+    expect(parseGatewayTemplateEffortRejection(TEMPLATE_REJECTION)).toEqual({
+      levels: ["low", "medium", "xhigh"],
+      defaultLevel: "xhigh",
+      noThinking: false,
+    });
+  });
+
+  it("reports thinking-off only when the template lists none", () => {
+    expect(
+      parseGatewayTemplateEffortRejection(
+        "Unexpected reasoning effort max. Supported types are none, low, " +
+          "and high (default).",
+      ),
+    ).toEqual({
+      levels: ["low", "high"],
+      defaultLevel: "high",
+      noThinking: true,
+    });
+  });
+
+  it("says nothing for a rejection that is not about the accepted set", () => {
+    // The schema stage's own rejection reaches this parser too, and listing
+    // the literals it validates against is not the template speaking.
+    expect(parseGatewayTemplateEffortRejection(VLLM_REJECTION)).toBeUndefined();
+    expect(
+      parseGatewayTemplateEffortRejection("context length exceeded"),
+    ).toBeUndefined();
+    // A supported set naming nothing YA has a word for is not an answer.
+    expect(
+      parseGatewayTemplateEffortRejection(
+        "Unexpected reasoning effort high. Supported types are fast and slow.",
+      ),
+    ).toBeUndefined();
   });
 });

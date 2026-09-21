@@ -1,12 +1,29 @@
 import type { ReactNode, RefObject } from "react";
 import { useSyncExternalStore } from "react";
+import type { MessageKey } from "../i18n";
 import { sessionViewerUsesRightPane } from "./sessionViewerPlacement";
+
+/**
+ * What the viewer toolbar's trailing button does, whatever the viewer is.
+ *
+ * A viewer that dismisses itself gets the default below; one whose dismissal
+ * costs something — stopping an app, say — installs its own descriptor with
+ * `setSessionViewerCloseAction`. Readers render this and never ask what kind
+ * of viewer they are showing.
+ */
+export interface SessionViewerCloseAction {
+  label: MessageKey;
+  destructive?: boolean;
+  busy?: boolean;
+  run: () => void;
+}
 
 interface SessionViewerBase {
   id: string;
   sessionId: string;
   label: string;
   briefLabel?: string;
+  closeAction?: SessionViewerCloseAction;
 }
 
 export interface PanelViewerRegistration extends SessionViewerBase {
@@ -40,8 +57,6 @@ export type SessionViewerRegistration =
       kind: "vhost";
       url: string;
       onClose?: never;
-      kill?: () => void;
-      killing?: boolean;
       artifactToken?: string;
     })
   | (SessionViewerBase & { kind: "artifact"; url: string; onClose?: never })
@@ -100,14 +115,34 @@ export function restoreSessionViewer(id: string): void {
   setMinimized(id, false);
 }
 
+/**
+ * A viewer that has said nothing about dismissal simply closes. A vhost is the
+ * exception: stopping the app it shows is the owning session's decision, so its
+ * button stays absent until that owner installs one.
+ */
+function defaultCloseAction(
+  registration: SessionViewerRegistration,
+  close: () => void,
+): SessionViewerCloseAction | undefined {
+  if (registration.kind === "vhost") return undefined;
+  return {
+    label:
+      registration.kind === "file" ? "fileViewerClose" : "sessionViewerClose",
+    run: close,
+  };
+}
+
 function toController(
   registration: SessionViewerRegistration,
   minimized: boolean,
 ): SessionViewerControllerState {
   const { id } = registration;
+  const close = () => closeSessionViewer(id);
   return {
     ...registration,
-    close: () => closeSessionViewer(id),
+    closeAction:
+      registration.closeAction ?? defaultCloseAction(registration, close),
+    close,
     minimize: () => setMinimized(id, true),
     minimized,
     restore: () => setMinimized(id, false),
@@ -134,14 +169,33 @@ export function clearSessionViewer(id: string): void {
   replaceCurrent(null);
 }
 
-export function setSessionViewerKillAction(
+function sameCloseAction(
+  a: SessionViewerCloseAction | undefined,
+  b: SessionViewerCloseAction | undefined,
+): boolean {
+  if (!a || !b) return a === b;
+  return (
+    a.run === b.run &&
+    a.label === b.label &&
+    !!a.destructive === !!b.destructive &&
+    !!a.busy === !!b.busy
+  );
+}
+
+/**
+ * Install the open viewer's dismissal descriptor.
+ *
+ * Owners rebuild the descriptor on every render, so an unchanged one must not
+ * publish: field equality is what keeps a caller's effect from re-entering the
+ * store it just changed.
+ */
+export function setSessionViewerCloseAction(
   id: string,
-  kill: (() => void) | undefined,
-  killing: boolean,
+  closeAction: SessionViewerCloseAction | undefined,
 ): void {
-  if (current?.id !== id || current.kind !== "vhost") return;
-  if (current.kill === kill && current.killing === killing) return;
-  replaceCurrent({ ...current, kill, killing });
+  if (current?.id !== id) return;
+  if (sameCloseAction(current.closeAction, closeAction)) return;
+  replaceCurrent({ ...current, closeAction });
 }
 
 export function clearCurrentSessionViewer(): void {

@@ -53,6 +53,21 @@ window the trim dot controls).
   guidance, and the client makes no fork request. Providers without a real
   fork primitive and servers without the unified intent contract retain the
   older hidden-surface fallback.
+- Repeated forks of one source session are numbered so they can be told apart
+  in a session list: the first is `Fork: <source>`, the next `Fork 2: <source>`,
+  and so on. The ordinal comes from `SessionMetadataService.nextForkOrdinal`,
+  which counts forks *created* in the lineage and persists that count on the
+  lineage root's metadata (`forksCreated`), so deleting a fork never reissues
+  its number, and Clone shares the same count. Every fork target records its
+  root in `forkLineageRootId`, so forking a fork continues the original
+  session's sequence instead of restarting at `Fork:`; the whole tree therefore
+  numbers `Fork:`, `Fork 2:`, `Fork 3:` with no repeats. A source title that
+  already carries a `Fork`/`Clone` prefix has it replaced, not stacked, so a
+  fork of `Fork 2: X` is `Fork 3: X`, never `Fork 3: Fork 2: X`.
+  Fork-after-summary titles from the generated summary line and only claims an
+  ordinal when that summary yields no title.
+- A fork target is never reported as externally active for YA's own creation
+  write — see [session-ownership](session-ownership.md) § The ownership model.
 - Clone copies through the latest completed response, titles the target
   `Clone: <source>`, records the source in `forkedFromSessionId`, navigates in
   the same tab, and opens cold with an empty target composer. It does not
@@ -95,6 +110,12 @@ window the trim dot controls).
   provider, model, thinking/effort, permission mode, and executor. Caret
   starts at the top of the prefill. See
   [conversation-view](conversation-view.md).
+- A new-tab handoff hands its text over through a one-shot token the opened
+  tab consumes. The text is stored only once that tab exists, so a browser
+  that blocks the popup carries the prefill into the current tab and leaves
+  nothing stored. A stash no tab ever claims stops being offered an hour
+  after it was written, and is deleted the next time any tab stashes or
+  consumes a handoff.
 - Older servers without `session-fork-turn-intents` expose none of this unified
   surface and receive no fork request. The server continues to parse legacy
   empty and `{ upToMessageId }` bodies for older clients.

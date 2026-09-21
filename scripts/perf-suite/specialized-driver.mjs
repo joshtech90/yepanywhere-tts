@@ -13,6 +13,8 @@ import {
   summarize,
 } from "./core.mjs";
 import {
+  MEASURED_SERVER_LOG_LEVEL,
+  SERVER_LOG_LEVELS,
   connectEventSocket,
   createFixture,
   findPortPair,
@@ -27,6 +29,26 @@ import {
 } from "./process-fixture.mjs";
 import { runClientBatch } from "./request-clients.mjs";
 import { memoryView, selectedFixtureTarget } from "./telemetry.mjs";
+
+/**
+ * Console log level for the owned-provider leg's server. Defaults to the level
+ * every other measured server runs at, so its latency and memory numbers stay
+ * comparable; `YA_PERF_OWNED_PROVIDER_LOG_LEVEL` raises it for a diagnostic
+ * rerun whose failure tail needs more than errors, and the resolved level is
+ * recorded with the leg's numbers.
+ */
+export function ownedProviderLogLevel(env) {
+  const requested = env.YA_PERF_OWNED_PROVIDER_LOG_LEVEL;
+  if (requested === undefined) return MEASURED_SERVER_LOG_LEVEL;
+  if (!SERVER_LOG_LEVELS.includes(requested)) {
+    throw new Error(
+      `YA_PERF_OWNED_PROVIDER_LOG_LEVEL must name a server log level (${SERVER_LOG_LEVELS.join(
+        ", ",
+      )}), received ${JSON.stringify(requested)}`,
+    );
+  }
+  return requested;
+}
 
 export function renderedAssistantHtml(message) {
   const inner = message?.message;
@@ -552,6 +574,7 @@ export async function measureOwnedProviderLifecycle({
 }) {
   const root = path.join(repetitionRoot, "owned-provider");
   await mkdir(root, { recursive: true });
+  const logLevel = ownedProviderLogLevel(process.env);
   const server = await startServer({
     checkout,
     driver: "specialized",
@@ -559,7 +582,7 @@ export async function measureOwnedProviderLifecycle({
       ENABLED_PROVIDERS: "claude",
       // Browser setup/replay is independent of the accelerated reap clock.
       IDLE_TIMEOUT: "-1",
-      LOG_LEVEL: "debug",
+      LOG_LEVEL: logLevel,
       USE_MOCK_SDK: "false",
       YEP_PERF_TRANSCRIPT_DIR: path.dirname(fixture.sessionFiles[0].file),
       YEP_PERF_SIM_STREAM_CHUNKS: String(scenario.streamChunks),
@@ -814,6 +837,7 @@ export async function measureOwnedProviderLifecycle({
       },
       processManifest: await readProcessManifest(server.processManifestPath),
       serverLog: server.logPath,
+      serverLogLevel: logLevel,
       serverStartupMs: round(server.startupMs),
     };
   } catch (error) {
@@ -1110,6 +1134,7 @@ export async function measureSpecializedRepetition({
       },
       ownedProviderProcessManifest: ownedProvider.processManifest,
       ownedProviderServerLog: ownedProvider.serverLog,
+      ownedProviderServerLogLevel: ownedProvider.serverLogLevel,
       ownedProviderServerStartupMs: ownedProvider.serverStartupMs,
       publicShareProcessManifest: publicShare.processManifest,
       publicShareServerLog: publicShare.serverLog,

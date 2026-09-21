@@ -463,6 +463,10 @@ type FileViewerModalProps = {
     }
 );
 
+function PublishedFileViewerModal(props: FileViewerModalProps) {
+  return <FileViewerModal {...props} />;
+}
+
 export function FileViewerModal({
   projectId,
   filePath,
@@ -542,7 +546,7 @@ export function FileViewerModal({
         ? {
             supportsRightPane: true,
             renderContent: (inactive: boolean, rightPane?: boolean) => (
-              <FileViewerModal
+              <PublishedFileViewerModal
                 managedViewerId={minimizedViewerId}
                 inactive={inactive}
                 rightPane={rightPane}

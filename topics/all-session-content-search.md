@@ -11,12 +11,31 @@ The sidebar's All Sessions view owns these controls; in-session search keeps
 its existing bindings and behavior. Title is enabled by default. Ass. and User
 are opt-in, independent checkboxes whose matches form a union. Title searches
 the displayed title and the original opening prompt retained in hot metadata.
-A rename does not replace that retained prompt. Unchecking the last enabled
+A rename does not replace that retained prompt.
+
+Matching is against the session's whole opening text, never a display-length
+form of it. Truncation is a rendering decision made last, at the width the
+reader actually has, so every row a client matches in the browser must carry
+the untruncated text: a row reduced to its display title silently makes a
+needle past that title unfindable, and the reader cannot tell a search that
+found nothing from a search that could not look. This binds the retained
+collection as much as the unretained one — see `SESSION_CATALOG_TITLE_MAX_LENGTH`
+for the one bound the stored text does obey. Unchecking the last enabled
 User/Ass. role selects Title when no other field remains enabled.
 
 Fresh visits select the non-archived filter, narrowing both title results and
 Ctrl+R/Ctrl+S turn acquisition. Explicit URL status filters remain authoritative;
 an empty `status=` preserves a deliberately cleared filter across navigation.
+
+The Projects filter lists every project the server currently lists, sorted by
+name, under an explicit first row, All projects, that clears the project
+filter; it is highlighted while no project is selected, so returning to every
+project is a visible choice rather than a second click on the current one.
+Removed projects are not listed: removal hides a project and its sessions from
+the server's lists. The list stays current because adding, removing, or
+renaming a project advances the session collection generation
+([project names](project-names.md)); before that, a removed project could
+linger and a new one go missing until an unrelated session event.
 
 User and Ass. currently search visible prose. Command strings and tool inputs,
 edit additions, removed/context lines, baseline/read file contents, tool output,
@@ -40,7 +59,13 @@ completed sessions require no new disk read until their source changes.
 When a third generation starts, it displaces the second unless that second
 has enough matching rows for the measured viewport, or is already complete;
 then the first is retired. Retired work cannot publish into the current source.
-Rows keep a stable order across updates. Initial streaming uses a shared
+Rows keep a stable order across updates: a result holds the rank it took when
+it first appeared under the current needle, so arriving matches, later catalog
+pages and live sessions append rather than reshuffle what is being read. That
+ranking belongs to one needle. Changing the needle starts it again from catalog
+order, so no session carries a position earned under an earlier search.
+Changing fields, filters or time criteria keeps the current ranking.
+Initial streaming uses a shared
 reservation within the preview limit; actual arrivals can grow the row. Once
 search completes, 500 ms without pointer, keyboard or scroll activity permits
 expansion to the requested preview count. Later live updates do not collapse
@@ -70,11 +95,18 @@ reordering or revalidation does not dismiss it.
 
 Ctrl+S selects assistant search and Ctrl+R selects user search, focusing the
 search box. On a server without turn-search support they only focus title
-search. Desktop typing outside an actual text entry returns to the search's end
-and applies the typed character. Clicking, selecting, right-clicking and copying
-do not steal focus; other text inputs and dialogs retain their interaction. Mobile never
-autofocuses search. The header has no redundant All Sessions caption. Search in
-appears only when the field checkboxes occupy their own row.
+search. Whether the server supports turn search is a fetched answer, so a press
+arriving before it is held rather than dropped: it applies when support is
+confirmed, and is discarded once the answer says unsupported. A reader who opens
+the page and immediately presses Ctrl+R gets user search, not silence. Desktop typing outside an actual text entry returns to the search's end
+and applies the typed character. A focused control keeps the keys it acts on:
+Space presses the focused button or toggles the focused checkbox instead of
+reaching the needle, while characters that control ignores still reach it, so
+clicking a filter and continuing to type loses nothing. Clicking, selecting,
+right-clicking and copying do not steal focus; other text inputs and dialogs
+retain their interaction. Mobile never autofocuses search. The header has no
+redundant All Sessions caption. Search in appears only when the field
+checkboxes occupy their own row.
 
 ## Time and result limits
 
@@ -190,9 +222,11 @@ M can exceed N; there is no separate hidden count.
 Selection management appears after results, before the diagnostic log. At wide
 desktop widths they occupy adjacent columns and the management list uses page
 scrolling; narrower layouts bound its own scroll area. The list is labelled
-and identifies each provider. Providers without bounded turn search are hidden
-from this management list for now; this does not clear their selections or
-exclude their title hits from ordinary results. It explains each excluded session's applicable project,
+and identifies each provider. Unselected sessions of providers without bounded
+turn search are hidden from this management list for now; this does not clear
+their selections or exclude their title hits from ordinary results. A selected
+session is always listed, whatever its provider, because this list is the only
+place a selection taken from a title-search row can be removed. It explains each excluded session's applicable project,
 provider, executor, status, time, or selection restriction. For eligible
 sessions without text matches it distinguishes ongoing search, incomplete
 coverage, errors, and completed nonmatches. All fields unchecked produces an
@@ -309,7 +343,10 @@ valid continuation after replacement, truncation, layout or boundary changes.
 Normal appends continue quietly; unfinished final JSON awaits its next append
 without a malformed-record warning. Legacy requests retain their original
 source-version checks and 409 restart response. Expired cursors restart only the
-affected session; acquisition errors do not stop the remaining traversal.
+affected session; acquisition errors do not stop the remaining traversal. A
+session whose read failed keeps showing that reason, but it is neither resumed
+from its tail nor adopted as cached text by a stricter needle: the next needle
+reads it again.
 
 Provider metadata advertises `supportsBoundedTurnSearch`, independently of
 installation or authentication. The Providers menu explains which providers
@@ -346,8 +383,13 @@ eligible sessions after each batch so a long transcript cannot starve later
 matches. The server admits at most four concurrent
 requests; identical in-flight native reads join one computation. There is no
 persistent search job or transcript cache between requests. Legacy or manual
-requests for unsupported providers return an explicit unavailable result before
-project or native-reader access, never a complete empty transcript result.
+requests for unsupported providers return an explicit unavailable result rather
+than a complete empty transcript result. The server decides that from the
+reader it resolves for the session, so a session whose provider is absent from
+the advertised list is still searched when its resolved reader reads bounded
+turns; `supportsBoundedTurnSearch` stays the advertised hint clients pre-exclude
+with. Resolving the reader needs the session's project, so an unresolvable
+project answers 404 as it does for any other request on that session.
 A stopped client produces no further batches; a shared in-flight batch is
 bounded by its record/byte limits and timeout.
 

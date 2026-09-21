@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { UI_KEYS } from "../../../../lib/storageKeys";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import { writeRenderer } from "../WriteRenderer";
 
 vi.mock("../../../../contexts/SchemaValidationContext", () => ({
@@ -32,12 +33,15 @@ describe("WriteRenderer", () => {
     );
     const { container } = render(
       <div>
-        {writeRenderer.renderCollapsedPreview?.(
-          { file_path: "notes.txt", content },
-          undefined,
-          false,
-          renderContext,
-        )}
+        {writeRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { file_path: "notes.txt", content },
+              undefined,
+              false,
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
 
@@ -52,12 +56,15 @@ describe("WriteRenderer", () => {
     const content = "one short line";
     const { container } = render(
       <div>
-        {writeRenderer.renderCollapsedPreview?.(
-          { file_path: "notes.txt", content },
-          undefined,
-          false,
-          renderContext,
-        )}
+        {writeRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { file_path: "notes.txt", content },
+              undefined,
+              false,
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
 

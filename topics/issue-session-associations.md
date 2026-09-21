@@ -163,7 +163,11 @@ default, maximum 100). It loads source summaries only for the returned page and
 returns one initial mention per session. Mentions sort by source-message time,
 then occurrence ID; unknown source times follow dated mentions in occurrence
 order. Expand loads further mentions through session-filtered
-`GET /api/issues/evidence`, in bounded pages. Collapsing preserves loaded mentions.
+`GET /api/issues/evidence`, in bounded pages. Collapsing preserves loaded mentions,
+and so does a refresh: a confirm, dismiss, title save, or the Refresh button
+reloads the rows in place, leaving every row expanded over the mentions it has
+already loaded, with the initial mention replaced by the reloaded one. Only
+choosing a different issue empties the pane back to its loading state.
 Dismissed evidence stays hidden unless the filter includes it. Unavailable source
 sessions keep historical excerpts but have no navigation or preview request.
 Selections, expansions and asynchronous responses belong to the selected source;
@@ -194,7 +198,14 @@ when a reference is first captured, and only while confirmation is on, so
 enabling the feature never sets a backlog loose. The insert ignores conflicts,
 so a reference holding any verdict, unreachable included, is never asked about
 again by itself. Nothing polls. `POST /api/issues/confirm` is the only second
-question and belongs to an explicit user action. Verdicts are per project, and
+question and belongs to an explicit user action. It also asks the first
+question for a reference that has no row, because it was captured while
+confirmation was off: the automatic path leaves that backlog alone, and the
+explicit request is what authorizes the one lookup. Overlapping drains coalesce:
+a recheck arriving while a capture-triggered lookup is still out joins that
+work instead of starting a second pass over the same pending references, so
+one reference costs one request however many drains overlap, and the recheck
+answers only once a pass has settled its own row. Verdicts are per project, and
 the most decisive one wins across projects: one project confirming a key
 settles it even if another recorded only an outage.
 
@@ -215,6 +226,12 @@ browser-native password-saving prompts remain under browser control. The
 source inventory, rather than password dots, indicates configured credentials.
 
 ## Identity and evidence
+
+Which message text the index may see is not the feature's decision: the visible
+user/assistant projection (`sessions/message-text.ts`) and the Codex source id
+(the normalizer's `getCodexMessageSourceId`) are owned by the shared transcript
+path, and the issue index consumes both. Nothing under `sessions/` imports
+`services/issues`, so a change to this feature cannot alter a session read.
 
 `services/issues/extract.ts` recognizes Jira browse URLs and uppercase Jira keys,
 GitHub issue/PR URLs, and repository-qualified `owner/repo#123` references.
@@ -246,7 +263,10 @@ Three domain tables in `{dataDir}/discovery.sqlite` own durable state:
 - `session_issue_evidence`: source/project, stable occurrence, reference, source
   locator, bounded excerpt, observed/source times and extractor version. Its
   link may be null until identity resolves. Evidence kinds distinguish URL,
-  ticket key, contextual number and manual correction.
+  ticket key, contextual number and manual correction. The extractor version
+  names the extraction rules that produced the row's reference and excerpt, so
+  rows written before a rules change stay distinguishable; redelivering the
+  same occurrence updates identity and project, not the text or its version.
 
 Distinct repeated mentions survive. Redelivering the same persisted occurrence
 does not duplicate it. Codex source locators use rollout ordinal/byte provenance
@@ -284,15 +304,25 @@ its own reason to sweep — a settings change, a session-id remap — is not key
 and always runs, and only a sweep that ran to completion retires its mark, so
 an aborted one is repeated rather than assumed.
 
-A catalog sweep costs write transactions only for sessions whose working
-project actually moved. Ownership can change only for a session that already
-has a job or evidence row, so one read names that set before the sweep begins
-and every other candidate is skipped without opening a transaction. The
-observable requirement is that admitting an unchanged catalog of any size
-performs no writes: SQLite takes a file lock per transaction, and an idle
-server was previously taking roughly one lock per known session per catalog
-publication, which is fatal on the network filesystems
-[optional SQLite](optional-sqlite.md) now refuses.
+A catalog sweep writes only for sessions that actually changed, in every
+scope. The observable requirement is that admitting an unchanged catalog of
+any size performs no writes at all: SQLite takes a file lock per write, and an
+idle server was previously taking roughly one lock per known session per
+catalog publication, which is fatal on the network filesystems
+[optional SQLite](optional-sqlite.md) now refuses. Recent scope is the case
+that makes this visible, because it re-admits every session inside the window
+on every publication, and an active server republishes every few seconds.
+
+Two reads before the sweep replace all of those writes. Ownership can change
+only for a session that already has a job or evidence row, so one read names
+those sessions and the project each of their rows currently holds; a candidate
+with no row, or whose rows all hold its current project, is skipped without
+opening a transaction. The other read names what each queued job already
+holds, so a candidate whose project, priority and serialized catalog row all
+match the stored job is admitted without a write — the upsert would otherwise
+rewrite the row with its own bytes. A paused job is the exception and is
+always written, because returning it to the queue is exactly what the upsert
+does when a widened recent window or a reopened session admits it again.
 
 Provider-owned acquisition uses 64 KiB reads, an 8 MiB/2,000-record batch budget,
 a 30-second acquisition deadline and a 1 MiB individual JSONL record limit.
@@ -302,12 +332,23 @@ file identity, modification and a boundary hash. Appends resume; detected rewrit
 reset acquisition without erasing historical evidence. Batch limits yield and
 requeue automatically. Provider readers never fall back to full-transcript reads.
 
+Both text acquisition and the associated-session availability probe read a
+session with the reader belonging to the provider that recorded it. When that
+provider has no reader in the project, the session yields no text and reports
+unavailable; neither read substitutes another provider's reader, whose answer
+would be an empty or unsupported result with the real reason hidden.
+
 Viewed windows add no file read. Their retained text budget is 8 MiB across up to
 16 pending windows, inspecting at most 16,000 normalized records per admission;
-overflow reports partial coverage. Extraction yields between 32 KiB text windows
-with 4 KiB overlap. Transactions handle at most 25 observations or resolution rows
+overflow reports partial coverage. Both viewed windows and background batches
+extract through the same loop: it yields between 32 KiB text windows read with
+4 KiB of overlap on either side, and each window records only the references
+starting inside its own range, so a reference crossing a window boundary is read
+whole and recorded once. Transactions handle at most 25 observations or resolution rows
 per batch; large project-key resolution runs through a durable continuation queue.
-Settings changes, deletion, remaps and shutdown abort stale generations. Closing
+Settings changes, deletion, remaps and shutdown abort stale generations, and the
+same fence returns a session interrupted mid-acquisition to the queue, so no
+session is left indexing by a generation that no longer exists. Closing
 the final view releases the existing session-view demand; this feature adds no
 independent tail watcher or recurring per-session task.
 
@@ -317,6 +358,22 @@ resolution continuations, deletion fences and tracker verdicts. `issue_registry_
 owns the bounded mapping/candidate reconciliation pass. SQL statements finalize; startup migrations do no provider acquisition.
 Storage errors do not acknowledge unsaved writes or become successful empty lists.
 The server owns disposal and awaits indexing before closing its database.
+
+`IssueStore` owns every statement against those tables. It answers its callers
+through methods named for the decision being recorded — admit this candidate,
+move this job to this state, record this acquisition batch against the source
+version it read, store this tracker verdict — and exposes no general-purpose
+SQL entry point, so no column name, state string or upsert rule is spelled in
+a route, the index worker or the confirmation worker. The workers keep the
+policy: which state a job earns, and the wording of the reason stored with it.
+
+A hand-attached reference is one such decision and costs one write. The HTTP
+route supplies the session and the URL the user chose; the store mints the
+message identity, records the reference as `manual` evidence and stores the
+user's note as its excerpt in the same insert an extracted reference pays for.
+Manual evidence is authoritative for namespace learning and identity
+resolution even where the extractor would have read the same URL as an
+ordinary mention.
 
 ## Compatibility and migrations
 

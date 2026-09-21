@@ -471,6 +471,16 @@ export const ConversationQuerySchema: z.ZodType<ConversationQuery> = z.object({
   maxMessages: z.number().int().min(1).max(100),
   anchorMessageId: IdSchema.nullable(),
 });
+export const CONVERSATION_API_REVISION = "simple-client-spike-1";
+export const MAX_MESSAGE_CONTENT_ITEMS = 64;
+export const MAX_TEXT_LENGTH = 16000;
+export const MAX_FAILURE_MESSAGE_LENGTH = 2048;
+export const MAX_TOOL_NAME_LENGTH = 128;
+export const MAX_MEDIA_DESCRIPTION_LENGTH = 512;
+export const MAX_ID_LENGTH = 256;
+export const MIN_FAILURE_EXIT_CODE = -2147483648;
+export const MAX_FAILURE_EXIT_CODE = 2147483647;
+export const MAX_UNKNOWN_KIND_LENGTH = 128;
 export const MAX_SNAPSHOT_BYTES = 262144;
 export function decodeSnapshot(encoded: string): SnapshotEnvelope {
   if (new TextEncoder().encode(encoded).length > MAX_SNAPSHOT_BYTES)

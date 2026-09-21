@@ -20,7 +20,11 @@ import {
   type UserMessageMetadata,
   type UrlProjectId,
   type WorkstreamId,
+  type EffortLevel,
+  EFFORT_LEVEL_ORDER,
   GOAL_COMMAND_NAME,
+  SESSION_UNREAD_TIMESTAMP,
+  agentHarness,
   buildEffectiveAgentContext,
   getModelContextWindow,
   readGoalDetails,
@@ -29,8 +33,18 @@ import {
   mainWorkstreamId,
   truncateSessionTitle,
   isPostCompactReplayText,
+  parseClearloopArguments,
+  parseTurnIndexArgument,
+  type SessionRewindReason,
+  type SessionRewindRecord,
+  type UpdateClearloopRequest,
 } from "@yep-anywhere/shared";
 import { randomUUID } from "node:crypto";
+import {
+  ClearloopConflictError,
+  type ClearloopService,
+} from "../services/ClearloopService.js";
+import { turnIndexOf } from "../sessions/turn-index.js";
 import { mkdir } from "node:fs/promises";
 import { hostname } from "node:os";
 import { performance } from "node:perf_hooks";
@@ -43,7 +57,10 @@ import type {
   SessionMetadataService,
 } from "../metadata/index.js";
 import type { ProjectMetadataService } from "../metadata/index.js";
-import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
+import {
+  goalCommandOf,
+  nonHumanUserTurnField,
+} from "../metadata/SessionMetadataService.js";
 import type { NotificationService } from "../notifications/index.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
@@ -89,6 +106,7 @@ import {
   latestRecapMessage,
   mergeSessionOverlayMessages,
   mergeLocalCommandMessages,
+  sessionOwnershipFromProcess,
 } from "../sessions/recap-overlays.js";
 import { isAutomaticSessionResumeAllowed } from "../sessions/resume-exemption.js";
 import {
@@ -174,6 +192,11 @@ import {
   resumeRecoveredGroup,
 } from "./session-recovered-queue.js";
 import { buildThinkingOptions } from "./session-thinking-options.js";
+import {
+  actingUsername,
+  applyLimitedLaunchPolicy,
+} from "./limited-session-launch.js";
+import type { UserUsageService } from "../auth/UserUsageService.js";
 import type { EventBus } from "../watcher/index.js";
 import { resolveExistingSessionIdentity } from "./session-existing-identity.js";
 
@@ -192,6 +215,14 @@ function effectiveModelSettingsFromMetadata(
     thinking: settings.thinking,
     effort: settings.effort,
   };
+}
+
+/** A fork body's optional launch thinking: `off`, `auto`, or `on:<level>`. */
+function isForkThinkingOption(value: unknown): value is ThinkingOption {
+  if (typeof value !== "string") return false;
+  if (value === "off" || value === "auto") return true;
+  const level = value.startsWith("on:") ? value.slice(3) : value;
+  return EFFORT_LEVEL_ORDER.includes(level as EffortLevel);
 }
 
 function permissionModeError(mode: unknown): string | undefined {
@@ -228,12 +259,17 @@ async function getSessionSlashCommands(
   }
   // A stopped session has no provider to ask, so the last observed goal stands
   // in for live state. A live inventory that already reports goal state wins;
-  // unknown goal state is not evidence that the goal was cleared.
-  const savedGoal = metadata?.goalCommand ?? metadata?.codexGoalCommand;
+  // unknown goal state is not evidence that the goal was cleared. An emulated
+  // entry — YA's `/loop wish` alias for a Claude build with no native `/goal` —
+  // carries no goal state by design, and replacing it would drop the provider
+  // text YA has to send (topics/emulated-slash-commands.md § Claude goal
+  // commands).
+  const savedGoal = goalCommandOf(metadata);
   if (!savedGoal) return commands ?? null;
   const merged =
     commands?.map((command) =>
       command.name === GOAL_COMMAND_NAME &&
+      command.invocation?.kind !== "emulated" &&
       readGoalDetails(command)?.goalObjective === undefined
         ? savedGoal
         : command,
@@ -278,10 +314,12 @@ export interface SessionsDeps {
   notificationService?: NotificationService;
   sessionIndexService?: ISessionIndexService;
   sessionMetadataService?: SessionMetadataService;
+  /** Records who started each session and who sent each turn. */
+  userUsageService?: UserUsageService;
   projectMetadataService?: ProjectMetadataService;
   projectQueueScheduler?: Pick<
     ProjectQueueScheduler,
-    "reserveUserSessionStart" | "sessionProjectChanged"
+    "reserveUserSessionStart" | "sessionProjectChanged" | "setYaCommandRunner"
   >;
   eventBus?: EventBus;
   codexScanner?: CodexSessionScanner;
@@ -308,6 +346,8 @@ export interface SessionsDeps {
   modelInfoService?: ModelInfoService;
   /** Durable store for recovered patient queued messages */
   sessionQueuePersistenceService?: SessionQueuePersistenceService;
+  /** Same-session `/clearloop` jobs; this module supplies its runner. */
+  clearloopService?: ClearloopService;
   /** Materializes image-bearing tool results for authenticated session reads. */
   toolResultMediaStore?: ToolResultMediaStore;
   /** Data directory for local security/audit logs */
@@ -1601,10 +1641,7 @@ function resolveForkBeforeBoundary(
   };
 }
 
-function forkSummaryTitle(
-  summary: string,
-  fallback: string | undefined,
-): string {
+function forkSummaryTitleCandidate(summary: string): string | undefined {
   const firstLine = summary
     .split("\n")
     .map((line) => line.trim())
@@ -1614,7 +1651,27 @@ function forkSummaryTitle(
     .replace(/^title:\s*/iu, "")
     .trim()
     .replace(/[.!?]+$/u, "");
-  return truncateSessionTitle(candidate || fallback || "Forked session");
+  return candidate || undefined;
+}
+
+/** An existing fork/clone prefix is replaced by the new one, never stacked. */
+const FORK_TITLE_PREFIX_PATTERN = /^(?:fork|clone)(?:\s+\d+)?:\s*/iu;
+
+/**
+ * Title a fork so repeated forks of one session are told apart: the first is
+ * `Fork: <source>`, the next `Fork 2: <source>`. `ordinal` is the source
+ * session's fork count from `nextForkOrdinal`, which counts forks created, so
+ * deleting a fork does not hand its number to a later one.
+ */
+function forkTitleWithOrdinal(
+  base: string,
+  ordinal: number,
+  prefix: "Fork" | "Clone" = "Fork",
+): string {
+  const core = base.replace(FORK_TITLE_PREFIX_PATTERN, "").trim() || base;
+  return truncateSessionTitle(
+    ordinal > 1 ? `${prefix} ${ordinal}: ${core}` : `${prefix}: ${core}`,
+  );
 }
 
 function generatedRetitleCandidate(title: string): string | undefined {
@@ -1696,6 +1753,7 @@ function deriveRestartTitle(params: {
 function deriveForkTitle(params: {
   preferredTitle?: string | null;
   sourceSession: Session;
+  ordinal: number;
 }): string {
   const candidates = [
     params.preferredTitle,
@@ -1706,8 +1764,7 @@ function deriveForkTitle(params: {
   const base =
     candidates.map(normalizeRestartTitleCandidate).find(Boolean) ??
     "forked session";
-  const title = /^Fork:/i.test(base) ? base : `Fork: ${base}`;
-  return truncateRestartTitle(title);
+  return forkTitleWithOrdinal(base, params.ordinal);
 }
 
 function buildRestartHandoff(params: {
@@ -1827,13 +1884,8 @@ function formatRestartSessionTurnHint(params: {
   provider: string | undefined;
   sessionId: string;
 }): string | undefined {
-  const provider = params.provider ?? "";
-  const harness = provider.startsWith("claude")
-    ? "claude"
-    : provider.startsWith("codex")
-      ? "codex"
-      : undefined;
-  if (!harness) {
+  const harness = agentHarness(params.provider ?? "");
+  if (harness !== "claude" && harness !== "codex") {
     return undefined;
   }
   return `- Ask the source session itself (non-forking; needs the optional session-turn helper on PATH): echo '<question>' | session-turn ${harness} ${compactRestartLine(params.sessionId, 200)}`;
@@ -2020,11 +2072,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     sourceSessionId: string,
     title: string,
     archived: boolean,
+    forkLineageRootId?: string,
   ): Promise<void> => {
     await deps.sessionMetadataService?.updateMetadata(childSessionId, {
       title,
       archived,
       forkedFromSessionId: sourceSessionId,
+      ...(forkLineageRootId ? { forkLineageRootId } : {}),
     });
     deps.eventBus?.emit({
       type: "session-metadata-changed",
@@ -2343,6 +2397,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     return null;
   };
 
+  /**
+   * Ids of the rewinds a detail response's projection applied, so a client
+   * holding a cached transcript can tell whether it predates a rewind
+   * (topics/session-rewind.md). Absent when the session has none.
+   */
+  const rewindRecordIdsFor = (sessionId: string): string[] | undefined => {
+    const records = deps.sessionMetadataService?.getRewindRecords?.(sessionId);
+    return records?.length ? records.map((record) => record.id) : undefined;
+  };
+
   const loadRestartSourceSession = async (
     project: Project,
     sessionId: string,
@@ -2366,7 +2430,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         { includeOrphans: false },
       );
       if (loaded) {
-        return normalizeSession(loaded);
+        return normalizeSession(loaded, {
+          rewindRecords:
+            deps.sessionMetadataService?.getRewindRecords?.(sessionId),
+        });
       }
     }
 
@@ -2380,14 +2447,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
         messageCount: messages.length,
-        ownership: {
-          owner: "self",
-          processId: process.id,
-          permissionMode: process.permissionMode,
-          appliedPermissionMode: process.appliedPermissionMode,
-          modeVersion: process.modeVersion,
-          recapAfterSeconds: process.recapAfterSeconds,
-        },
+        ownership: sessionOwnershipFromProcess(process),
         provider: process.provider,
         model: process.resolvedModel ?? process.model,
         messages,
@@ -2617,18 +2677,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const isExternal = deps.externalTracker?.isExternal(sessionId) ?? false;
 
     // Determine the session ownership
-    const ownership: SessionOwnership = process
-      ? {
-          owner: "self" as const,
-          processId: process.id,
-          permissionMode: process.permissionMode,
-          appliedPermissionMode: process.appliedPermissionMode,
-          modeVersion: process.modeVersion,
-          recapAfterSeconds: process.recapAfterSeconds,
-        }
-      : isExternal
-        ? { owner: "external" as const }
-        : { owner: "none" as const };
+    const ownership: SessionOwnership = sessionOwnershipFromProcess(process, {
+      isExternal,
+    });
 
     // Get session metadata (custom title, archived, starred)
     const metadata = deps.sessionMetadataService?.getMetadata(sessionId);
@@ -2739,13 +2790,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         sandboxPolicy: sessionSummary?.sandboxPolicy,
         contextUsage: sessionSummary?.contextUsage,
         effectiveModelSettings: effectiveModelSettingsFromMetadata(metadata),
-        nonHumanUserTurn:
-          pendingNonHumanUserTurn(
-            deps.sessionMetadataService?.getMetadata(sessionId),
-          ) ?? null,
+        nonHumanUserTurn: nonHumanUserTurnField(
+          deps.sessionMetadataService,
+          sessionId,
+        ),
         customTitle: metadata?.customTitle,
         isArchived: metadata?.isArchived,
         isStarred: metadata?.isStarred,
+        clearloop: deps.clearloopService?.getBadge(sessionId),
+        rewindRecordIds: rewindRecordIdsFor(sessionId),
         parentSessionId:
           metadata?.parentSessionId ?? sessionSummary?.parentSessionId,
         parentSessionKind:
@@ -3087,7 +3140,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     const readEndMs = performance.now();
 
-    let session = loadedSession ? normalizeSession(loadedSession) : null;
+    let session = loadedSession
+      ? normalizeSession(loadedSession, {
+          rewindRecords:
+            deps.sessionMetadataService?.getRewindRecords?.(sessionId),
+        })
+      : null;
     const explicitProvider = metadataProvider ?? process?.provider;
     if (session && explicitProvider) {
       session = { ...session, provider: explicitProvider };
@@ -3114,18 +3172,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
 
     // Determine the session ownership
-    const ownership = process
-      ? {
-          owner: "self" as const,
-          processId: process.id,
-          permissionMode: process.permissionMode,
-          appliedPermissionMode: process.appliedPermissionMode,
-          modeVersion: process.modeVersion,
-          recapAfterSeconds: process.recapAfterSeconds,
-        }
-      : isExternal
-        ? { owner: "external" as const }
-        : (session?.ownership ?? { owner: "none" as const });
+    const ownership = sessionOwnershipFromProcess(process, {
+      isExternal,
+      fallback: session?.ownership,
+    });
 
     // Get pending input request from active process (for tool approval prompts)
     // This ensures clients get pending requests immediately without waiting for SSE
@@ -3250,13 +3300,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             updatedAt: newSessionUpdatedAt,
             messageCount: processMessages.length,
             ownership,
-            nonHumanUserTurn:
-              pendingNonHumanUserTurn(
-                deps.sessionMetadataService?.getMetadata(sessionId),
-              ) ?? null,
+            nonHumanUserTurn: nonHumanUserTurnField(
+              deps.sessionMetadataService,
+              sessionId,
+            ),
             customTitle: metadata?.customTitle,
             isArchived: metadata?.isArchived,
             isStarred: metadata?.isStarred,
+            clearloop: deps.clearloopService?.getBadge(sessionId),
+            rewindRecordIds: rewindRecordIdsFor(sessionId),
             parentSessionId: metadata?.parentSessionId,
             parentSessionKind: metadata?.parentSessionKind,
             forkedFromSessionId: metadata?.forkedFromSessionId,
@@ -3673,15 +3725,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       session: {
         ...sessionMetadata,
         projectId: effectiveProjectId,
-        nonHumanUserTurn:
-          pendingNonHumanUserTurn(
-            deps.sessionMetadataService?.getMetadata(sessionId),
-          ) ?? null,
+        nonHumanUserTurn: nonHumanUserTurnField(
+          deps.sessionMetadataService,
+          sessionId,
+        ),
         ownership,
         contextUsage,
         customTitle: metadata?.customTitle,
         isArchived: metadata?.isArchived,
         isStarred: metadata?.isStarred,
+        clearloop: deps.clearloopService?.getBadge(sessionId),
+        rewindRecordIds: rewindRecordIdsFor(sessionId),
         parentSessionId: metadata?.parentSessionId ?? session.parentSessionId,
         parentSessionKind:
           metadata?.parentSessionKind ?? session.parentSessionKind,
@@ -3760,6 +3814,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if (executorError) {
       return c.json({ error: executorError }, 400);
     }
+    // A limited user's session is sandboxed and obeys their lock, decided
+    // here rather than in the form (topics/limited-users.md § Delivery v1).
+    const limitedLaunch = applyLimitedLaunchPolicy(c, body);
+    if (limitedLaunch.kind === "error") {
+      return c.json({ error: limitedLaunch.error }, 403);
+    }
     const sandboxSelection = parseSessionSandboxLevel(
       body.sandboxLevel,
       body.sandboxNetworkFirewall,
@@ -3794,7 +3854,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       attachments: body.attachments,
       mode: body.mode,
       tempId: body.tempId,
-      metadata: buildUserMessageMetadata(body, serverTimestamp, "direct"),
+      metadata: buildUserMessageMetadata(
+        body,
+        serverTimestamp,
+        "direct",
+        actingUsername(c),
+      ),
     };
 
     const { thinking, effort } = buildThinkingOptions(body);
@@ -3860,6 +3925,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ ...result, serverTimestamp }, 202); // 202 Accepted - queued for processing
     }
 
+    if (limitedLaunch.kind === "applied") {
+      // Ownership survives a later grant change: a limited user can always
+      // read a session they started (topics/limited-users.md § Delivery v1).
+      await deps.sessionMetadataService?.recordSessionCreator(
+        result.sessionId,
+        limitedLaunch.username,
+      );
+    }
+    void deps.userUsageService?.recordSession(actingUsername(c));
+    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
+
     await persistLaunchMetadata(
       result.sessionId,
       body.provider,
@@ -3924,6 +4000,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     );
     if (executorError) {
       return c.json({ error: executorError }, 400);
+    }
+    // A limited user's session is sandboxed and obeys their lock, decided
+    // here rather than in the form (topics/limited-users.md § Delivery v1).
+    const limitedLaunch = applyLimitedLaunchPolicy(c, body);
+    if (limitedLaunch.kind === "error") {
+      return c.json({ error: limitedLaunch.error }, 403);
     }
     const sandboxSelection = parseSessionSandboxLevel(
       body.sandboxLevel,
@@ -4007,6 +4089,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     await initializeProjectHeartbeatDefaults(result.sessionId, project.id);
 
+    if (limitedLaunch.kind === "applied") {
+      // Ownership survives a later grant change: a limited user can always
+      // read a session they started (topics/limited-users.md § Delivery v1).
+      await deps.sessionMetadataService?.recordSessionCreator(
+        result.sessionId,
+        limitedLaunch.username,
+      );
+    }
+    void deps.userUsageService?.recordSession(actingUsername(c));
+
     await persistLaunchMetadata(
       result.sessionId,
       body.provider,
@@ -4089,7 +4181,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       attachments: body.attachments,
       mode: body.mode,
       tempId: body.tempId,
-      metadata: buildUserMessageMetadata(body, serverTimestamp, "direct"),
+      metadata: buildUserMessageMetadata(
+        body,
+        serverTimestamp,
+        "direct",
+        actingUsername(c),
+      ),
     };
 
     const { thinking, effort } = buildThinkingOptions(body);
@@ -4381,7 +4478,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       attachments: body.attachments,
       mode: body.mode,
       tempId: body.tempId,
-      metadata: buildUserMessageMetadata(body, serverTimestamp, "direct"),
+      metadata: buildUserMessageMetadata(
+        body,
+        serverTimestamp,
+        "direct",
+        actingUsername(c),
+      ),
     };
 
     const { thinking, effort } = buildThinkingOptions(body);
@@ -4450,7 +4552,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     };
 
     let resumeSessionAt: string | undefined;
-    if (isClaudeSdkProviderName(providerName)) {
+    // A recorded same-session rewind is applied by the supervisor at process
+    // launch, whichever path starts the process (topics/session-rewind.md);
+    // it wins over the API-error truncation below, whose blocker check is
+    // skipped here because the dropped tail is already accounted for.
+    const pendingRewind =
+      deps.sessionMetadataService?.getPendingRewind?.(sessionId);
+    if (!pendingRewind && isClaudeSdkProviderName(providerName)) {
       let blocker: ClaudeResumeApiErrorBlocker | null = null;
       try {
         blocker = await getClaudeResumeBlockerFromReader(
@@ -4610,6 +4718,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
     // Check if request was queued
     if (isQueuedResponse(result)) {
+      void deps.userUsageService?.recordTurn(
+        actingUsername(c),
+        userMessage.text,
+      );
       return c.json(
         {
           ...result,
@@ -4619,6 +4731,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         202,
       ); // 202 Accepted - queued for processing
     }
+    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
 
     return c.json({
       processId: result.id,
@@ -5345,9 +5458,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.mode ?? sourceLaunchSettings?.permissionMode;
 
     if (restartMode === "fork") {
+      const { ordinal, lineageRootId } =
+        (await deps.sessionMetadataService?.nextForkOrdinal(sessionId)) ?? {
+          ordinal: 1,
+          lineageRootId: sessionId,
+        };
       const forkTitle = deriveForkTitle({
         preferredTitle: originalMetadata?.customTitle,
         sourceSession,
+        ordinal,
       });
       let fork: Awaited<ReturnType<Supervisor["forkSession"]>>;
       try {
@@ -5465,6 +5584,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       if (deps.sessionMetadataService) {
         await deps.sessionMetadataService.updateMetadata(result.sessionId, {
           title: forkTitle,
+          forkLineageRootId: lineageRootId,
         });
         deps.eventBus?.emit({
           type: "session-metadata-changed",
@@ -5639,6 +5759,761 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   // Fork the provider transcript into a new resumable session without
   // starting a process or sending any message ("fork from here" / rewind).
   // The forked session opens cold; the next user send resumes it normally.
+  // ---------------------------------------------------------------------
+  // Same-session rewind, /clear N, and /clearloop (topics/session-rewind.md)
+  // ---------------------------------------------------------------------
+
+  type RewindCut = {
+    kind: "after-user-turn" | "before-user-turn";
+    sourceMessageId: string;
+  };
+
+  type RewindFailure = { ok: false; error: string; status: 400 | 404 | 409 };
+  type RewindSuccess = {
+    ok: true;
+    /** Null when the cut was already the tail and nothing was dropped. */
+    record: SessionRewindRecord | null;
+    cutMessageId: string;
+    processAborted: boolean;
+  };
+
+  const isRewindProvider = (providerName: ProviderName): boolean =>
+    isClaudeSdkProviderName(providerName);
+
+  const resolveRewindProvider = async (
+    project: Project,
+    projectId: UrlProjectId,
+    sessionId: string,
+  ): Promise<{ providerName: ProviderName; process: Process | undefined }> => {
+    const process = deps.supervisor.getProcessForSession(sessionId);
+    const metadataProvider = deps.sessionMetadataService?.getProvider(
+      sessionId,
+    ) as ProviderName | undefined;
+    let providerName = process?.provider ?? metadataProvider;
+    if (!providerName) {
+      const summary = await findSessionListSummaryAcrossProviders(
+        project,
+        sessionId,
+        projectId,
+        providerResolutionDeps(deps),
+        undefined,
+      );
+      providerName = summary?.source.provider ?? project.provider;
+    }
+    return { providerName, process };
+  };
+
+  /**
+   * Drop everything after `cutMessageId` from the live conversation: record
+   * the rewind, arm it for the next resume, and stop the live process so that
+   * resume happens. The transcript file is untouched; the reader groups the
+   * dropped rows from the record.
+   */
+  const rewindSessionToCut = async (input: {
+    project: Project;
+    projectId: UrlProjectId;
+    sessionId: string;
+    cutMessageId: string;
+    cutTurnIndex: number;
+    reason: SessionRewindReason;
+    clearloopId?: string;
+    clearloopIteration?: number;
+    clearloopTotal?: number;
+    clearloopPrompt?: string;
+  }): Promise<RewindFailure | RewindSuccess> => {
+    const { project, projectId, sessionId } = input;
+    const { providerName, process } = await resolveRewindProvider(
+      project,
+      projectId,
+      sessionId,
+    );
+    if (!isRewindProvider(providerName)) {
+      return {
+        ok: false,
+        error: `${providerName} does not support same-session rewind`,
+        status: 409,
+      };
+    }
+    if (deps.externalTracker?.isExternal(sessionId)) {
+      return {
+        ok: false,
+        error: "The session is being written by another process",
+        status: 409,
+      };
+    }
+    if (
+      process &&
+      (process.state.type === "in-turn" ||
+        process.state.type === "waiting-input")
+    ) {
+      return {
+        ok: false,
+        error:
+          "Rewind is available after the current response completes. Nothing was changed.",
+        status: 409,
+      };
+    }
+    if (process && process.getDeferredQueueSummary().length > 0) {
+      return {
+        ok: false,
+        error:
+          "Cancel or deliver the queued messages before rewinding. Nothing was changed.",
+        status: 409,
+      };
+    }
+    const session = await loadRestartSourceSession(
+      project,
+      sessionId,
+      projectId,
+      providerName,
+      process,
+    );
+    if (!session) {
+      return { ok: false, error: "Session not found", status: 404 };
+    }
+    const cutIndex = session.messages.findIndex(
+      (message) =>
+        messageId(message) === input.cutMessageId && !message.rewoundGroupId,
+    );
+    if (cutIndex < 0) {
+      return {
+        ok: false,
+        error: "The rewind cut is no longer in the session",
+        status: 409,
+      };
+    }
+    let droppedTurnCount = 0;
+    let droppedFromMessageId: string | undefined;
+    let droppedPromptIds: string[] = [];
+    for (let index = cutIndex + 1; index < session.messages.length; index++) {
+      const message = session.messages[index];
+      if (!message || message.rewoundGroupId) continue;
+      if (isUserAuthoredRequest(message)) {
+        droppedTurnCount += 1;
+        const id = messageId(message);
+        if (id) {
+          droppedFromMessageId ??= id;
+          droppedPromptIds.push(id);
+        }
+      }
+    }
+    const hasTail = session.messages
+      .slice(cutIndex + 1)
+      .some(
+        (message) => !message.rewoundGroupId && Boolean(messageId(message)),
+      );
+    if (!hasTail) {
+      return {
+        ok: true,
+        record: null,
+        cutMessageId: input.cutMessageId,
+        processAborted: false,
+      };
+    }
+    if (droppedTurnCount > 1) droppedPromptIds = [];
+
+    let processAborted = false;
+    if (process) {
+      // A mid-session effort/model/mode change lives only on the process;
+      // persist it so the resume after this rewind (and every clearloop
+      // iteration) launches with the current settings.
+      await deps.supervisor.persistLiveLaunchSettings(sessionId);
+      await deps.supervisor.abortSessionWithVerification(sessionId);
+      processAborted = true;
+    }
+    const record: SessionRewindRecord = {
+      id: randomUUID(),
+      at: new Date().toISOString(),
+      cutMessageId: input.cutMessageId,
+      cutTurnIndex: input.cutTurnIndex,
+      ...(droppedFromMessageId ? { droppedFromMessageId } : {}),
+      droppedTurnCount,
+      reason: input.reason,
+      ...(input.clearloopId ? { clearloopId: input.clearloopId } : {}),
+      ...(input.clearloopIteration !== undefined
+        ? { clearloopIteration: input.clearloopIteration }
+        : {}),
+      ...(input.clearloopTotal !== undefined
+        ? { clearloopTotal: input.clearloopTotal }
+        : {}),
+      ...(input.clearloopPrompt
+        ? { clearloopPrompt: input.clearloopPrompt }
+        : {}),
+    };
+    await deps.sessionMetadataService?.addRewindRecord(sessionId, record, {
+      recordId: record.id,
+      cutMessageId: input.cutMessageId,
+      ...(droppedPromptIds.length === 1
+        ? { dropsTurnPromptId: droppedPromptIds[0] }
+        : {}),
+    });
+    deps.eventBus?.emit({
+      type: "session-metadata-changed",
+      sessionId,
+      projectId,
+      rewindRecord: record,
+      timestamp: new Date().toISOString(),
+    });
+    return {
+      ok: true,
+      record,
+      cutMessageId: input.cutMessageId,
+      processAborted,
+    };
+  };
+
+  /** Resolve a turn-relative cut to the provider chain entry it keeps. */
+  const resolveRewindCut = async (input: {
+    project: Project;
+    projectId: UrlProjectId;
+    sessionId: string;
+    cut: RewindCut;
+  }): Promise<
+    RewindFailure | { ok: true; cutMessageId: string; cutTurnIndex: number }
+  > => {
+    const { providerName, process } = await resolveRewindProvider(
+      input.project,
+      input.projectId,
+      input.sessionId,
+    );
+    const session = await loadRestartSourceSession(
+      input.project,
+      input.sessionId,
+      input.projectId,
+      providerName,
+      process,
+    );
+    if (!session) {
+      return { ok: false, error: "Session not found", status: 404 };
+    }
+    // Numbering spans the full sequence, cleared turns included, but a cut
+    // inside a cleared span is a tree hop whose UI is unspecified; refuse it
+    // (topics/session-rewind.md § Vocabulary).
+    const sourceMessage = session.messages.find(
+      (message) => messageId(message) === input.cut.sourceMessageId,
+    );
+    if (sourceMessage?.rewoundGroupId) {
+      return {
+        ok: false,
+        error:
+          "That turn is inside a cleared span; rewinding into cleared history is not supported yet",
+        status: 409,
+      };
+    }
+    const messages = session.messages.filter(
+      (message) =>
+        (message as { subtype?: unknown }).subtype !== "rewound_group",
+    );
+    const sourceIsBusy = Boolean(
+      deps.externalTracker?.isExternal(input.sessionId) ||
+        process?.state.type === "in-turn" ||
+        process?.state.type === "waiting-input",
+    );
+    const boundary =
+      input.cut.kind === "before-user-turn"
+        ? resolveForkBeforeBoundary(
+            messages,
+            input.cut.sourceMessageId,
+            providerName,
+          )
+        : resolveForkAfterBoundary(
+            messages,
+            input.cut.sourceMessageId,
+            sourceIsBusy,
+            providerName,
+          );
+    if ("error" in boundary) {
+      return { ok: false, error: boundary.error, status: boundary.status };
+    }
+    if (boundary.providerBoundary?.kind !== "message") {
+      return {
+        ok: false,
+        error: "Same-session rewind needs a Claude transcript boundary",
+        status: 409,
+      };
+    }
+    // The kept turn's stamped ordinal is the record's N: the same number the
+    // turn menu shows, so `/clear N` and the label agree by construction.
+    const sourceIndex = turnIndexOf(sourceMessage);
+    const cutTurnIndex =
+      sourceIndex === undefined
+        ? 0
+        : input.cut.kind === "before-user-turn"
+          ? Math.max(0, sourceIndex - 1)
+          : sourceIndex;
+    return {
+      ok: true,
+      cutMessageId: boundary.providerBoundary.messageId,
+      cutTurnIndex,
+    };
+  };
+
+  const parseRewindCut = (body: unknown): RewindCut | { error: string } => {
+    if (!body || typeof body !== "object") return { error: "Invalid body" };
+    const cut = (body as { cut?: unknown }).cut;
+    if (!cut || typeof cut !== "object") return { error: "cut is required" };
+    const kind = (cut as { kind?: unknown }).kind;
+    const sourceMessageId = (cut as { sourceMessageId?: unknown })
+      .sourceMessageId;
+    if (kind !== "after-user-turn" && kind !== "before-user-turn") {
+      return { error: "cut.kind must be after-user-turn or before-user-turn" };
+    }
+    if (typeof sourceMessageId !== "string" || !sourceMessageId.trim()) {
+      return { error: "cut.sourceMessageId is required" };
+    }
+    return { kind, sourceMessageId: sourceMessageId.trim() };
+  };
+
+  /** Resume the session with one direct prompt using its saved launch settings. */
+  const sendClearloopPrompt = async (input: {
+    project: Project;
+    projectId: UrlProjectId;
+    sessionId: string;
+    prompt: string;
+  }): Promise<void> => {
+    const { project, projectId, sessionId } = input;
+    const { providerName } = await resolveRewindProvider(
+      project,
+      projectId,
+      sessionId,
+    );
+    const persistedMetadata =
+      deps.sessionMetadataService?.getMetadata?.(sessionId);
+    const launch = persistedMetadata?.effectiveLaunchSettings;
+    const requestedModel =
+      deps.sessionMetadataService?.getRequestedModel(sessionId);
+    const model =
+      requestedModel && requestedModel !== "default"
+        ? requestedModel
+        : undefined;
+    const parsedExecutor = parseOptionalExecutor(
+      deps.sessionMetadataService?.getExecutor(sessionId),
+    );
+    if (parsedExecutor.error) throw new Error(parsedExecutor.error);
+    const settledSandboxLevel = persistedMetadata?.sandboxLevel ?? "none";
+    const resumeProjectPath =
+      settledSandboxLevel === "project-write"
+        ? (persistedMetadata?.sandboxProjectPath ?? project.path)
+        : project.path;
+    const serverTimestamp = Date.now();
+    const userMessage: UserMessage = {
+      text: input.prompt,
+      // YA-injected, not a principal's turn: no sender and no usage record.
+      metadata: buildUserMessageMetadata({}, serverTimestamp, "direct"),
+    };
+    const result = await deps.supervisor.resumeSession(
+      sessionId,
+      resumeProjectPath,
+      userMessage,
+      launch?.permissionMode,
+      {
+        model,
+        requestedModel: requestedModel ?? undefined,
+        serviceTier: launch?.serviceTier ?? undefined,
+        thinking: launch?.thinking ?? undefined,
+        effort: launch?.effort ?? undefined,
+        providerName,
+        executor: parsedExecutor.executor,
+        sandboxLevel: settledSandboxLevel,
+        sandboxNetworkFirewall:
+          settledSandboxLevel === "project-write" &&
+          persistedMetadata?.sandboxNetworkFirewall !== false,
+        sandboxStateKey: persistedMetadata?.sandboxStateKey,
+        globalInstructions: getGlobalInstructions(),
+        recapAfterSeconds:
+          deps.sessionMetadataService?.getRecapAfterSeconds?.(sessionId),
+        promptSuggestionMode:
+          deps.sessionMetadataService?.getPromptSuggestionMode?.(sessionId),
+        // The iteration's rewind is armed as the session's pending rewind;
+        // the supervisor applies it when this resume launches the process.
+        resumeMode: "full",
+        ...resolveCompactModelSettings(deps, {
+          provider: providerName,
+          yaModelId: requestedModel,
+          modelCandidates: [requestedModel, model],
+        }),
+      },
+      { requireProviderSessionId: true },
+    );
+    if (isQueueFullResponse(result)) {
+      throw new Error("Queue is full");
+    }
+  };
+
+  deps.clearloopService?.setRunner({
+    rewind: async ({ sessionId, projectId, job, iteration }) => {
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) throw new Error("Project not found");
+      const result = await rewindSessionToCut({
+        project,
+        projectId,
+        sessionId,
+        cutMessageId: job.cutMessageId,
+        cutTurnIndex: job.cutTurnIndex,
+        reason: "clearloop",
+        clearloopId: job.id,
+        clearloopIteration: iteration,
+        clearloopTotal: job.total,
+        clearloopPrompt: job.prompt,
+      });
+      if (!result.ok) throw new Error(result.error);
+      return result.record ? "rewound" : "noop";
+    },
+    send: async ({ sessionId, projectId, job }) => {
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) throw new Error("Project not found");
+      await sendClearloopPrompt({
+        project,
+        projectId,
+        sessionId,
+        prompt: job.prompt,
+      });
+    },
+  });
+
+  /**
+   * The user turn a queued rewind command names: turn `N`, or the session's
+   * last real turn when the command gave no number. Queued commands resolve
+   * this at dispatch, so `/clearloop 3: p` queued now loops over whatever the
+   * tail is when the project finally goes quiet.
+   */
+  const resolveQueuedTurnSource = async (input: {
+    project: Project;
+    projectId: UrlProjectId;
+    sessionId: string;
+    turnIndex?: number;
+  }): Promise<RewindFailure | { ok: true; sourceMessageId: string }> => {
+    const { providerName, process } = await resolveRewindProvider(
+      input.project,
+      input.projectId,
+      input.sessionId,
+    );
+    const session = await loadRestartSourceSession(
+      input.project,
+      input.sessionId,
+      input.projectId,
+      providerName,
+      process,
+    );
+    if (!session) {
+      return { ok: false, error: "Session not found", status: 404 };
+    }
+    const turns = session.messages.filter(
+      (message) =>
+        !message.rewoundGroupId && turnIndexOf(message) !== undefined,
+    );
+    const target =
+      input.turnIndex === undefined
+        ? turns[turns.length - 1]
+        : turns.find((message) => turnIndexOf(message) === input.turnIndex);
+    if (!target) {
+      return {
+        ok: false,
+        error:
+          input.turnIndex === undefined
+            ? "The session has no turns to rewind to"
+            : `Turn ${input.turnIndex} is not in the session`,
+        status: 409,
+      };
+    }
+    const id = messageId(target);
+    if (!id) {
+      return { ok: false, error: "That turn has no id", status: 409 };
+    }
+    return { ok: true, sourceMessageId: id };
+  };
+
+  // Route tests supply a partial scheduler; the runner is optional like the
+  // other scheduler hooks this module calls.
+  deps.projectQueueScheduler?.setYaCommandRunner?.({
+    run: async ({ sessionId, projectId, command, commandText }) => {
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) throw new Error("Project not found");
+      // The interactive routes refuse these two cases; a queued command has
+      // the same session in the same states, so it refuses them identically
+      // and keeps its text for Retry.
+      const { providerName } = await resolveRewindProvider(
+        project,
+        projectId,
+        sessionId,
+      );
+      if (!isRewindProvider(providerName)) {
+        throw new Error(`${providerName} does not support same-session rewind`);
+      }
+      if (deps.clearloopService?.isRunning(sessionId)) {
+        throw new Error(
+          `Cancel the running /clearloop before ${commandText} runs`,
+        );
+      }
+      const parsed =
+        command.name === "clearloop"
+          ? parseClearloopArguments(command.argument)
+          : null;
+      if (command.name === "clearloop" && !parsed) {
+        throw new Error(`Cannot read the arguments of ${commandText}`);
+      }
+      const turnArgument =
+        command.name === "clearloop"
+          ? parsed?.turnIndex
+          : (parseTurnIndexArgument(command.argument, { allowEmpty: true }) ??
+            undefined);
+      if (command.name === "clear" && turnArgument === undefined) {
+        throw new Error(`Cannot read the turn number of ${commandText}`);
+      }
+      if (command.name === "clear" && turnArgument === 0) {
+        // `/clear 0` is the composer's "start a new session" navigation, not a
+        // session operation the scheduler can perform.
+        throw new Error("/clear 0 has no queued meaning; queue a new session");
+      }
+      const source = await resolveQueuedTurnSource({
+        project,
+        projectId,
+        sessionId,
+        ...(turnArgument === undefined ? {} : { turnIndex: turnArgument }),
+      });
+      if (!source.ok) throw new Error(source.error);
+      const resolved = await resolveRewindCut({
+        project,
+        projectId,
+        sessionId,
+        cut: {
+          kind: "after-user-turn",
+          sourceMessageId: source.sourceMessageId,
+        },
+      });
+      if (!resolved.ok) throw new Error(resolved.error);
+      if (command.name === "clear") {
+        const result = await rewindSessionToCut({
+          project,
+          projectId,
+          sessionId,
+          cutMessageId: resolved.cutMessageId,
+          cutTurnIndex: resolved.cutTurnIndex,
+          reason: "clear",
+        });
+        if (!result.ok) throw new Error(result.error);
+        return;
+      }
+      if (!deps.clearloopService) {
+        throw new Error("clearloop is not available");
+      }
+      if (!parsed)
+        throw new Error(`Cannot read the arguments of ${commandText}`);
+      await deps.clearloopService.start(sessionId, projectId, {
+        cutMessageId: resolved.cutMessageId,
+        cutTurnIndex: resolved.cutTurnIndex,
+        prompt: parsed.prompt,
+        total: parsed.total,
+        commandText,
+        // The user chose a lane that waits for the project; the loop it starts
+        // keeps waiting (topics/project-queue.md § Queued YA commands).
+        patient: true,
+      });
+    },
+  });
+
+  // POST /api/projects/:projectId/sessions/:sessionId/rewind
+  routes.post("/projects/:projectId/sessions/:sessionId/rewind", async (c) => {
+    const projectId = c.req.param("projectId");
+    const sessionId = c.req.param("sessionId");
+    if (!isUrlProjectId(projectId)) {
+      return c.json({ error: "Invalid project ID format" }, 400);
+    }
+    const project = await deps.scanner.getOrCreateProject(projectId);
+    if (!project) {
+      return c.json({ error: "Project not found or path does not exist" }, 404);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json<unknown>();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    const cut = parseRewindCut(body);
+    if ("error" in cut) return c.json({ error: cut.error }, 400);
+    if (deps.clearloopService?.isRunning(sessionId)) {
+      return c.json(
+        { error: "Cancel the running /clearloop before rewinding" },
+        409,
+      );
+    }
+    const resolved = await resolveRewindCut({
+      project,
+      projectId,
+      sessionId,
+      cut,
+    });
+    if (!resolved.ok) {
+      return c.json({ error: resolved.error }, resolved.status);
+    }
+    const result = await rewindSessionToCut({
+      project,
+      projectId,
+      sessionId,
+      cutMessageId: resolved.cutMessageId,
+      cutTurnIndex: resolved.cutTurnIndex,
+      reason: "clear",
+    });
+    if (!result.ok) {
+      return c.json({ error: result.error }, result.status);
+    }
+    return c.json({
+      record: result.record,
+      cutMessageId: result.cutMessageId,
+      noop: result.record === null,
+      processAborted: result.processAborted,
+    });
+  });
+
+  // POST /api/projects/:projectId/sessions/:sessionId/clearloop
+  routes.post(
+    "/projects/:projectId/sessions/:sessionId/clearloop",
+    async (c) => {
+      const projectId = c.req.param("projectId");
+      const sessionId = c.req.param("sessionId");
+      if (!isUrlProjectId(projectId)) {
+        return c.json({ error: "Invalid project ID format" }, 400);
+      }
+      if (!deps.clearloopService) {
+        return c.json({ error: "clearloop is not available" }, 404);
+      }
+      const project = await deps.scanner.getOrCreateProject(projectId);
+      if (!project) {
+        return c.json(
+          { error: "Project not found or path does not exist" },
+          404,
+        );
+      }
+      let body: unknown;
+      try {
+        body = await c.req.json<unknown>();
+      } catch {
+        return c.json({ error: "Invalid JSON body" }, 400);
+      }
+      const cut = parseRewindCut(body);
+      if ("error" in cut) return c.json({ error: cut.error }, 400);
+      const record = body as {
+        prompt?: unknown;
+        total?: unknown;
+        commandText?: unknown;
+        patient?: unknown;
+      };
+      const prompt =
+        typeof record.prompt === "string" ? record.prompt.trim() : "";
+      const total = record.total;
+      if (!prompt) return c.json({ error: "prompt is required" }, 400);
+      if (
+        typeof total !== "number" ||
+        !Number.isInteger(total) ||
+        total < 1 ||
+        total > 10_000
+      ) {
+        return c.json({ error: "total must be an integer from 1" }, 400);
+      }
+      const commandText =
+        typeof record.commandText === "string" && record.commandText.trim()
+          ? record.commandText.trim()
+          : `/clearloop ${total}: ${prompt}`;
+      const { providerName } = await resolveRewindProvider(
+        project,
+        projectId,
+        sessionId,
+      );
+      if (!isRewindProvider(providerName)) {
+        return c.json(
+          { error: `${providerName} does not support same-session rewind` },
+          409,
+        );
+      }
+      const resolved = await resolveRewindCut({
+        project,
+        projectId,
+        sessionId,
+        cut,
+      });
+      if (!resolved.ok) {
+        return c.json({ error: resolved.error }, resolved.status);
+      }
+      try {
+        const job = await deps.clearloopService.start(sessionId, projectId, {
+          cutMessageId: resolved.cutMessageId,
+          cutTurnIndex: resolved.cutTurnIndex,
+          prompt,
+          total,
+          commandText,
+          ...(record.patient === true ? { patient: true } : {}),
+        });
+        return c.json({ job }, 202);
+      } catch (error) {
+        if (error instanceof ClearloopConflictError) {
+          return c.json({ error: error.message }, 409);
+        }
+        throw error;
+      }
+    },
+  );
+
+  // PATCH /api/projects/:projectId/sessions/:sessionId/clearloop
+  // Runtime controls on a running loop: the project-idle wait, and Start now.
+  routes.patch(
+    "/projects/:projectId/sessions/:sessionId/clearloop",
+    async (c) => {
+      const sessionId = c.req.param("sessionId");
+      if (!deps.clearloopService) {
+        return c.json({ error: "clearloop is not available" }, 404);
+      }
+      let body: unknown;
+      try {
+        body = await c.req.json<unknown>();
+      } catch {
+        return c.json({ error: "Invalid JSON body" }, 400);
+      }
+      const request = (body ?? {}) as UpdateClearloopRequest;
+      if (
+        request.patient !== undefined &&
+        typeof request.patient !== "boolean"
+      ) {
+        return c.json({ error: "patient must be a boolean" }, 400);
+      }
+      if (request.patient === undefined && request.startNow !== true) {
+        return c.json({ error: "patient or startNow is required" }, 400);
+      }
+      try {
+        let job =
+          request.patient === undefined
+            ? deps.clearloopService.getRunningJob(sessionId)
+            : await deps.clearloopService.setPatience(
+                sessionId,
+                request.patient,
+              );
+        if (job && request.startNow === true) {
+          job = await deps.clearloopService.startNow(sessionId);
+        }
+        if (!job) return c.json({ error: "No running /clearloop" }, 404);
+        return c.json({ job });
+      } catch (error) {
+        if (error instanceof ClearloopConflictError) {
+          return c.json({ error: error.message }, 409);
+        }
+        throw error;
+      }
+    },
+  );
+
+  // DELETE /api/projects/:projectId/sessions/:sessionId/clearloop
+  // Cancels without stopping in-flight work or starting a turn.
+  routes.delete(
+    "/projects/:projectId/sessions/:sessionId/clearloop",
+    async (c) => {
+      const sessionId = c.req.param("sessionId");
+      const job = await deps.clearloopService?.cancel(sessionId);
+      if (!job) {
+        return c.json({ error: "No running /clearloop" }, 404);
+      }
+      return c.json({ job });
+    },
+  );
+
   routes.post("/projects/:projectId/sessions/:sessionId/fork", async (c) => {
     const projectId = c.req.param("projectId");
     const sessionId = c.req.param("sessionId");
@@ -5655,6 +6530,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       forkKind?: unknown;
       sourceMessageId?: unknown;
       upToMessageId?: unknown;
+      thinking?: unknown;
     } = {};
     try {
       const parsed = await c.req.json<unknown>();
@@ -5664,6 +6540,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body = parsed as typeof body;
     } catch {
       // Body is optional; full-transcript fork.
+    }
+    let forkThinking: ThinkingOption | undefined;
+    if (body.thinking !== undefined) {
+      if (!isForkThinkingOption(body.thinking)) {
+        return c.json(
+          { error: "thinking must be off, auto, or on:<effort level>" },
+          400,
+        );
+      }
+      forkThinking = body.thinking;
     }
     const hasIntentFields =
       body.forkKind !== undefined || body.sourceMessageId !== undefined;
@@ -5799,12 +6685,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       baseTitle = normalizeRestartTitleCandidate(sessionSummary?.title);
     }
     const titlePrefix = forkKind === "clone-latest-complete" ? "Clone" : "Fork";
+    const claimed = baseTitle
+      ? await deps.sessionMetadataService?.nextForkOrdinal(sessionId)
+      : undefined;
+    const forkLineageRootId =
+      claimed?.lineageRootId ??
+      deps.sessionMetadataService?.forkLineageRoot(sessionId) ??
+      sessionId;
     const forkTitle = baseTitle
-      ? truncateSessionTitle(
-          new RegExp(`^${titlePrefix}:`, "i").test(baseTitle)
-            ? baseTitle
-            : `${titlePrefix}: ${baseTitle}`,
-        )
+      ? forkTitleWithOrdinal(baseTitle, claimed?.ordinal ?? 1, titlePrefix)
       : undefined;
 
     let fork: Awaited<ReturnType<Supervisor["forkSession"]>>;
@@ -5892,10 +6781,32 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           originalMetadata?.workingProjectId ?? (projectId as UrlProjectId),
       },
     );
+    if (deps.sessionMetadataService && forkThinking !== undefined) {
+      // A fork asked to start at a different effort (the long-context
+      // effort-change warning's "fork instead" path) records that choice as
+      // the fork's launch settings, so its first send and every later
+      // server-side turn use it rather than the browser's per-model default.
+      // See topics/mid-session-effort-change.md.
+      const sourceLaunch = originalMetadata?.effectiveLaunchSettings;
+      const { thinking, effort } = buildThinkingOptions({
+        thinking: forkThinking,
+      });
+      await deps.sessionMetadataService.recordEffectiveLaunchSettings(
+        fork.sessionId,
+        {
+          permissionMode: sourceLaunch?.permissionMode ?? "default",
+          requestedModel: inheritedModel ?? null,
+          serviceTier: sourceLaunch?.serviceTier ?? null,
+          thinking: thinking ?? null,
+          effort: effort ?? null,
+        },
+      );
+    }
     if (deps.sessionMetadataService) {
       await deps.sessionMetadataService.updateMetadata(fork.sessionId, {
         title: forkTitle,
         forkedFromSessionId: sessionId,
+        forkLineageRootId,
       });
       deps.eventBus?.emit({
         type: "session-metadata-changed",
@@ -6271,11 +7182,17 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const baseTitle = normalizeRestartTitleCandidate(
         originalMetadata?.customTitle ?? sourceSession.title,
       );
-      const fallbackTitle = baseTitle
-        ? truncateSessionTitle(
-            /^Fork:/i.test(baseTitle) ? baseTitle : `Fork: ${baseTitle}`,
-          )
-        : undefined;
+      // Claim a fork ordinal only when the generated summary yields no title,
+      // so an unused number is not burned on every fork-after-summary. The
+      // lineage the target belongs to is recorded either way.
+      const forkLineageRootId =
+        deps.sessionMetadataService.forkLineageRoot(sessionId);
+      const fallbackTitle = async (): Promise<string | undefined> => {
+        if (!baseTitle) return undefined;
+        const claimed =
+          await deps.sessionMetadataService?.nextForkOrdinal(sessionId);
+        return forkTitleWithOrdinal(baseTitle, claimed?.ordinal ?? 1);
+      };
       const savedExecutor = parseOptionalExecutor(
         deps.sessionMetadataService.getExecutor(sessionId),
       ).executor;
@@ -6351,7 +7268,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             throw new DOMException("Fork summary cancelled", "AbortError");
           }
 
-          const title = forkSummaryTitle(generated.text, fallbackTitle);
+          const summaryTitle = forkSummaryTitleCandidate(generated.text);
+          const title = summaryTitle
+            ? truncateSessionTitle(summaryTitle)
+            : ((await fallbackTitle()) ?? "Forked session");
           targetTitle = title;
           const target = await deps.supervisor.forkSession({
             sessionId,
@@ -6369,6 +7289,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             sessionId,
             title,
             true,
+            forkLineageRootId,
           );
           await persistLaunchMetadata(
             target.sessionId,
@@ -6459,6 +7380,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             sessionId,
             title,
             false,
+            forkLineageRootId,
           );
           await deps.sessionMetadataService?.updateTranscriptDisplayObject(
             sessionId,
@@ -6719,6 +7641,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         body,
         serverTimestamp,
         body.deferred ? "deferred" : "direct",
+        actingUsername(c),
       ),
     };
 
@@ -6747,6 +7670,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // Invalidate speculative idle work before any provider-native command or
     // delivery preparation can await.
     process.noteInputIntent();
+
+    // Past the request-shape guards this turn is delivered or queued, so it
+    // counts here rather than at each of the branches below.
+    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
 
     // Provider-native slash commands (e.g. Codex `/compact`) are dispatched
     // through the provider's own protocol rather than delivered as turn text the
@@ -7324,6 +8251,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // Body is optional
     }
 
+    let acknowledged: boolean | undefined;
     if (body.nonHumanUserTurnMessageId !== undefined) {
       if (
         typeof body.nonHumanUserTurnMessageId !== "string" ||
@@ -7334,17 +8262,18 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       if (!deps.sessionMetadataService) {
         return c.json({ error: "Session metadata service not available" }, 503);
       }
-      await deps.sessionMetadataService.acknowledgeNonHumanUserTurn(
-        sessionId,
-        body.nonHumanUserTurnMessageId,
-      );
+      acknowledged =
+        await deps.sessionMetadataService.acknowledgeNonHumanUserTurn(
+          sessionId,
+          body.nonHumanUserTurnMessageId,
+        );
       deps.eventBus?.emit({
         type: "session-metadata-changed",
         sessionId,
-        nonHumanUserTurn:
-          pendingNonHumanUserTurn(
-            deps.sessionMetadataService?.getMetadata(sessionId),
-          ) ?? null,
+        nonHumanUserTurn: nonHumanUserTurnField(
+          deps.sessionMetadataService,
+          sessionId,
+        ),
         timestamp: new Date().toISOString(),
       });
     }
@@ -7355,7 +8284,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.messageId,
     );
 
-    return c.json({ marked: true });
+    // A stale or unknown delivered-turn id leaves the receipt pending; the
+    // client needs that answer to report the failed acknowledgement.
+    return c.json(
+      acknowledged === undefined
+        ? { marked: true }
+        : { marked: true, acknowledged },
+    );
   });
 
   // DELETE /api/sessions/:sessionId/mark-seen - Mark session as unread
@@ -7373,7 +8308,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       deps.eventBus.emit({
         type: "session-seen",
         sessionId,
-        timestamp: "", // Empty timestamp signals "unread"
+        timestamp: SESSION_UNREAD_TIMESTAMP,
       });
     }
 
@@ -7618,6 +8553,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         };
       } else {
         result = await cloneClaudeSession(sessionDir, sessionId);
+        // The verbatim copy keeps every uuid, so the source's rewound groups
+        // and any still-pending rewind mean the same rows in the clone
+        // (topics/session-rewind.md).
+        await deps.sessionMetadataService?.copyRewindState?.(
+          sessionId,
+          result.newSessionId,
+        );
       }
 
       // Set clone metadata. /btw asides pass parentSessionId so the child

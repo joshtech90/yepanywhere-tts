@@ -1,10 +1,11 @@
 import {
+  CONVERSATION_API_REVISION,
   ConversationQuerySchema,
   IdSchema,
   type ConversationQuery,
 } from "./simple-client.generated.js";
 
-export const CONVERSATION_API_REVISION = "simple-client-spike-1";
+export { CONVERSATION_API_REVISION };
 export const CONVERSATION_CHANNEL = "/api/experimental/conversation/subscribe";
 
 export function parseConversationBinding(value: {

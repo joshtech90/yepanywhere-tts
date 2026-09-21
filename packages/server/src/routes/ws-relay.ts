@@ -45,6 +45,10 @@ import {
 type UpgradeWebSocketFn = (createEvents: (c: Context) => WSEvents) => any;
 
 export interface WsRelayDeps {
+  /** Limited-user SRP verifiers and subscription authorization. */
+  limitedUsers?: RelayHandlerDeps["limitedUsers"];
+  authorizeSubscription?: RelayHandlerDeps["authorizeSubscription"];
+  isActivityEventVisible?: RelayHandlerDeps["isActivityEventVisible"];
   conversationSubscriptions?: ConversationSubscriptions;
   upgradeWebSocket: UpgradeWebSocketFn;
   /** The main Hono app to route requests through */
@@ -96,6 +100,10 @@ export interface WsRelayDeps {
  * Subset of WsRelayDeps without upgradeWebSocket since the connection is already established.
  */
 export interface AcceptRelayConnectionDeps {
+  /** Limited-user SRP verifiers and subscription authorization. */
+  limitedUsers?: RelayHandlerDeps["limitedUsers"];
+  authorizeSubscription?: RelayHandlerDeps["authorizeSubscription"];
+  isActivityEventVisible?: RelayHandlerDeps["isActivityEventVisible"];
   conversationSubscriptions?: ConversationSubscriptions;
   /** The main Hono app to route requests through */
   app: Hono<{ Bindings: HttpBindings }>;
@@ -258,6 +266,9 @@ export function createWsRelayRoutes(
     serverSettingsService,
     resolveAbsoluteFilePaths,
     conversationSubscriptions,
+    limitedUsers,
+    authorizeSubscription,
+    isActivityEventVisible,
   } = deps;
 
   // Build handler dependencies
@@ -283,6 +294,9 @@ export function createWsRelayRoutes(
     serverSettingsService,
     resolveAbsoluteFilePaths,
     conversationSubscriptions,
+    limitedUsers,
+    authorizeSubscription,
+    isActivityEventVisible,
   };
 
   // Return the WebSocket handler with origin validation
@@ -472,6 +486,9 @@ export function createAcceptRelayConnection(
     serverSettingsService,
     resolveAbsoluteFilePaths,
     conversationSubscriptions,
+    limitedUsers,
+    authorizeSubscription,
+    isActivityEventVisible,
   } = deps;
 
   // Build handler dependencies
@@ -497,6 +514,9 @@ export function createAcceptRelayConnection(
     serverSettingsService,
     resolveAbsoluteFilePaths,
     conversationSubscriptions,
+    limitedUsers,
+    authorizeSubscription,
+    isActivityEventVisible,
   };
 
   // Return the accept relay connection handler

@@ -419,10 +419,21 @@ recognizer does not reinterpret other exit-code-1 failures or other timeout
 messages as harmless waiting. The original result remains intact in provider
 data; only this display is simplified.
 
-The timeout sentence comes from `agentctl`, rather than from Codex itself.
-Recognition follows envelope decoding and applies to normalized Bash commands
-and WriteStdin polls alike. Other provider envelopes can feed this same
-interpretation without introducing provider-specific message types.
+The timeout sentence comes from `agentctl`, rather than from Codex itself,
+which reports it on stderr, so recognition reads a result's combined
+stdout/stderr rather than stdout alone. Recognition follows envelope decoding
+and applies to normalized Bash commands and WriteStdin polls alike. Other
+provider envelopes can feed this same interpretation without introducing
+provider-specific message types.
+
+One recognizer decides both presentations: `shellPollOutcome` in the shell
+renderer module classifies a result as the recognized wait outcome, an
+ordinary compact line, or neither. Its callers own only what a *call* can
+hold — which tools and call states can carry a poll, and whether the call
+submitted input or read a file — so a change to the line's length bound,
+envelope handling, or the recognized sentence lands once. A renderer or row
+that displays this outcome translates its own labels; the recognizer returns
+data, never display copy.
 
 File-backed reads, submitted input, multiple output blocks, multiline output,
 and longer lines keep their existing detailed presentation. Recognized

@@ -236,6 +236,32 @@ it("coalesces queued needles and keeps only two query generations", async () => 
   unmount();
 });
 
+it("republishes its maps only when a scan publishes", async () => {
+  const session = { id: "a", updatedAt: "1" } as GlobalSessionItem;
+  runtime.transport.fetch.mockResolvedValue({
+    matches: [{ id: "turn", role: "user", ordinal: 1, preview: "needle" }],
+    done: true,
+    partial: false,
+    bytesRead: 20,
+  });
+  const sessions = [session];
+  const { result, rerender } = renderHook(
+    ({ sessions }) => useContentSearch(sessions, "needle", ["user"], true),
+    { initialProps: { sessions } },
+  );
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(200);
+  });
+  const published = result.current;
+  expect(published.matches.get("a")).toHaveLength(1);
+  rerender({ sessions });
+  rerender({ sessions });
+  expect(result.current.matches).toBe(published.matches);
+  expect(result.current.partial).toBe(published.partial);
+  expect(result.current.diagnostics).toBe(published.diagnostics);
+  expect(result.current.limitedSessions).toBe(published.limitedSessions);
+});
+
 it("keeps discovered matches through empty revalidation batches after metadata changes", async () => {
   const match = {
     id: "turn",

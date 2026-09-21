@@ -1,6 +1,7 @@
 import type {
   MarkdownAugment,
   ProjectQueueItemStatus,
+  SessionQueuedClearloopProgress,
   SessionQueuedMessageSummary,
   TranscriptDisplayObject,
   UploadedFile,
@@ -21,6 +22,10 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { useAsyncQuestions } from "../contexts/AsyncQuestionsContext";
+import {
+  SessionRewindProvider,
+  useSessionRewind,
+} from "../contexts/SessionRewindContext";
 import { getShowThinkingSetting } from "../hooks/useModelSettings";
 import {
   QueuedEffortBadge,
@@ -814,6 +819,8 @@ interface Props {
   quoteClearSignal?: number;
   /** Callback to cancel a deferred message */
   onCancelDeferred?: (tempId: string) => void;
+  /** Cancel the running /clearloop without stopping in-flight work. */
+  onCancelClearloop?: () => void;
   /** Move a live deferred message back into an empty composer. */
   onEditDeferred?: (tempId: string) => void;
   /** Callback to cancel an optimistic steering send before the provider acts. */
@@ -1085,6 +1092,44 @@ interface QueuedMessageActionsProps {
   onSteer?: () => void;
   steerLabel?: string;
   onCancel?: () => void;
+  /** Overrides the default cancel label (used by the /clearloop entry). */
+  cancelLabel?: string;
+}
+
+/**
+ * Client-side countdown to the next /clearloop rewind: the server publishes
+ * the quiet anchor and window (topics/session-rewind.md), and this ticks once
+ * a second locally; no server update drives the seconds.
+ */
+function ClearloopCountdown({
+  progress,
+}: {
+  progress: SessionQueuedClearloopProgress;
+}) {
+  const { t } = useI18n();
+  const nowMs = useRelativeNow(1000);
+  const quietSinceMs = progress.quietSince
+    ? Date.parse(progress.quietSince)
+    : Number.NaN;
+  // A patient loop has already waited out its window; what it is waiting for
+  // now is the rest of the project (topics/session-rewind.md § Patience).
+  if (progress.projectBlockers?.length) {
+    return (
+      <>
+        {t("clearloopWaitingForProject", {
+          blockers: progress.projectBlockers.join(", "),
+        })}
+      </>
+    );
+  }
+  if (Number.isNaN(quietSinceMs) || progress.windowSeconds === undefined) {
+    return <>{t("clearloopWorking")}</>;
+  }
+  const remaining = Math.max(
+    0,
+    Math.ceil((quietSinceMs + progress.windowSeconds * 1000 - nowMs) / 1000),
+  );
+  return <>{t("clearloopCountdown", { seconds: String(remaining) })}</>;
 }
 
 const subscribeComposerEditAvailable = () => () => {};
@@ -1101,6 +1146,7 @@ function QueuedMessageActions({
   onSteer,
   steerLabel,
   onCancel,
+  cancelLabel: cancelLabelOverride,
 }: QueuedMessageActionsProps) {
   const { t } = useI18n();
   const composerCanEdit = useSyncExternalStore(
@@ -1113,9 +1159,9 @@ function QueuedMessageActions({
   const editLabel = isProject
     ? t("projectQueueInlineEdit")
     : t("sessionQueuedEdit");
-  const cancelLabel = isProject
-    ? t("projectQueueInlineCancel")
-    : t("sessionQueuedCancel");
+  const cancelLabel =
+    cancelLabelOverride ??
+    (isProject ? t("projectQueueInlineCancel") : t("sessionQueuedCancel"));
 
   return (
     <div className="deferred-message-actions" data-queue-actions={variant}>
@@ -1460,6 +1506,7 @@ export const MessageList = memo(function MessageList({
   composerEditAvailabilityStore,
   quoteClearSignal = 0,
   onCancelDeferred,
+  onCancelClearloop,
   onEditDeferred,
   onCancelUnconfirmedUserMessage,
   onSteerDeferred,
@@ -2134,9 +2181,15 @@ export const MessageList = memo(function MessageList({
       thinkingLatestOnly,
     ],
   );
+  const sessionRewind = useSessionRewind();
+  const { expandedRewoundGroups } = sessionRewind;
   const fullDisplayRenderItems = useMemo(
-    () => getDisplayRenderItems(renderItems, { thinkingItemsVisible }),
-    [renderItems, thinkingItemsVisible],
+    () =>
+      getDisplayRenderItems(renderItems, {
+        thinkingItemsVisible,
+        expandedRewoundGroups,
+      }),
+    [expandedRewoundGroups, renderItems, thinkingItemsVisible],
   );
   const conversationWindow = useMemo(
     () =>
@@ -3158,6 +3211,75 @@ export const MessageList = memo(function MessageList({
         });
       }),
     [conversationViewStateKey, preserveScrollAfterTranscriptHeightChange],
+  );
+
+  // Expanding a rewound group inserts rows below its header; keep the header
+  // fixed under the pointer instead of letting the list follow the tail.
+  const toggleRewoundGroup = useCallback(
+    (groupId: string) => {
+      stopFollowingForUserScroll(containerRef.current?.parentElement);
+      preserveScrollAfterTranscriptHeightChange(
+        () => sessionRewind.toggleRewoundGroup(groupId),
+        `rewound-group-${groupId}`,
+        true,
+      );
+    },
+    [
+      preserveScrollAfterTranscriptHeightChange,
+      sessionRewind.toggleRewoundGroup,
+      stopFollowingForUserScroll,
+    ],
+  );
+  const rewindContextValue = useMemo(
+    () => ({ ...sessionRewind, toggleRewoundGroup }),
+    [sessionRewind, toggleRewoundGroup],
+  );
+
+  /**
+   * Margin navigation (topics/session-rewind.md): a click on a row's margin,
+   * not on its content or controls, scrolls so the next row at the same
+   * outline level lands under the pointer; right-click goes to the previous
+   * one. Repeated clicks without moving the mouse therefore step through the
+   * outline. Outline levels are the top level and each rewound group.
+   */
+  const navigateFromMargin = useCallback(
+    (event: React.MouseEvent<HTMLElement>, direction: 1 | -1): boolean => {
+      const target = event.target as HTMLElement;
+      const row = target.closest<HTMLElement>(".message-render-row");
+      if (!row || target !== row) return false;
+      const messageList = containerRef.current;
+      const scrollContainer = messageList?.parentElement;
+      if (!messageList || !scrollContainer) return false;
+      const level = row.dataset.rewoundGroup ?? "";
+      const rows = Array.from(
+        messageList.querySelectorAll<HTMLElement>(".message-render-row"),
+      ).filter((candidate) => (candidate.dataset.rewoundGroup ?? "") === level);
+      const next = rows[rows.indexOf(row) + direction];
+      if (!next) return false;
+      stopFollowingForUserScroll(scrollContainer);
+      isProgrammaticScrollRef.current = true;
+      // Land the next row's top just above the pointer so its margin is the
+      // click target for the following step.
+      scrollContainer.scrollTop +=
+        next.getBoundingClientRect().top - (event.clientY - 12);
+      requestAnimationFrame(() => {
+        isProgrammaticScrollRef.current = false;
+      });
+      return true;
+    },
+    [stopFollowingForUserScroll],
+  );
+  const handleMarginClick = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      if (navigateFromMargin(event, 1)) event.preventDefault();
+    },
+    [navigateFromMargin],
+  );
+  const handleMarginContextMenu = useCallback(
+    (event: React.MouseEvent<HTMLElement>) => {
+      if (navigateFromMargin(event, -1)) event.preventDefault();
+    },
+    [navigateFromMargin],
   );
 
   const toggleConversationActivity = useCallback(
@@ -4533,195 +4655,228 @@ export const MessageList = memo(function MessageList({
   return createElement(
     RememberedDisclosureStateProvider,
     { registry: rememberedDisclosureStateRegistry },
-    <QuoteReplyProvider onQuoteTextBlock={handleQuoteTextBlock}>
-      <UserTurnNavigator
-        getAnchors={getNavigatorAnchors}
-        messageListRef={containerRef}
-        motionCue={navMotionCue}
-        onNavigateStart={beginTurnNavigation}
-        onSearchMatchSelect={handleSearchMatchSelect}
-        onTrimAnchor={onTrimBeforeUserMessage}
-        canTrimAnchor={canTrimHistoryAnchor}
-        onForkBeforeAnchor={onForkBeforeUserMessage}
-        onForkAfterAnchor={onForkAfterUserMessage}
-        canForkAfterAnchor={canTrimHistoryAnchor}
-        canForkBeforeAnchor={canForkBeforePrompt}
-        forkAfterDisabled={forkAfterUserMessageDisabled}
-        onCopyAnchor={onCopyUserMessage}
-        canCopyAnchor={canTrimHistoryAnchor}
-        onHandoffFromAnchor={onHandoffFromUserMessage}
-        onPreviewTimestampChange={handlePreviewTimestampChange}
-        getRenderIdTop={transcriptRenderWindow.getRenderIdTop}
-        revealRenderId={transcriptRenderWindow.revealRenderId}
-        searchState={userTurnNavSearchState}
-      />
-      {renderSearchPanel(handleSearchMatchSelect)}
-      {followButtonTarget && followButton
-        ? createPortal(followButton, followButtonTarget)
-        : followButton}
-      {mobileSelectionActions}
-      {selectionContextMenu}
-      <div
-        className={[
-          "message-list",
-          progressiveRevealActive ? "message-list-progressive-hydrating" : "",
-        ]
-          .filter(Boolean)
-          .join(" ")}
-        ref={containerRef}
-        aria-busy={progressiveRevealActive ? true : undefined}
-        data-transcript-render-weight={transcriptRenderWindow.totalWeight}
-        onPointerOver={handleTranscriptPointerOver}
-        onPointerLeave={handleTranscriptPointerLeave}
-      >
-        {floatingSelectionActions}
-        {progressiveRevealActive && (
-          <div className="session-render-progress loading" role="status">
-            <div>{t("sessionLoading")}</div>
-            {progressiveRenderStatusVisible && (
-              <>
-                <div className="loading-detail session-render-progress-label">
-                  {t("sessionProgressiveRenderingStatus", {
-                    percent: progressiveRenderPercent,
-                  })}
-                </div>
-                <div
-                  className="session-render-progress-bar"
-                  role="progressbar"
-                  aria-valuemin={0}
-                  aria-valuemax={100}
-                  aria-valuenow={progressiveRenderPercent}
-                  aria-label={t("sessionProgressiveRenderingAriaLabel")}
-                >
+    <SessionRewindProvider value={rewindContextValue}>
+      <QuoteReplyProvider onQuoteTextBlock={handleQuoteTextBlock}>
+        <UserTurnNavigator
+          getAnchors={getNavigatorAnchors}
+          messageListRef={containerRef}
+          motionCue={navMotionCue}
+          onNavigateStart={beginTurnNavigation}
+          onSearchMatchSelect={handleSearchMatchSelect}
+          onTrimAnchor={onTrimBeforeUserMessage}
+          canTrimAnchor={canTrimHistoryAnchor}
+          onForkBeforeAnchor={onForkBeforeUserMessage}
+          onForkAfterAnchor={onForkAfterUserMessage}
+          canForkAfterAnchor={canTrimHistoryAnchor}
+          canForkBeforeAnchor={canForkBeforePrompt}
+          forkAfterDisabled={forkAfterUserMessageDisabled}
+          onCopyAnchor={onCopyUserMessage}
+          canCopyAnchor={canTrimHistoryAnchor}
+          onHandoffFromAnchor={onHandoffFromUserMessage}
+          onPreviewTimestampChange={handlePreviewTimestampChange}
+          getRenderIdTop={transcriptRenderWindow.getRenderIdTop}
+          revealRenderId={transcriptRenderWindow.revealRenderId}
+          searchState={userTurnNavSearchState}
+        />
+        {renderSearchPanel(handleSearchMatchSelect)}
+        {followButtonTarget && followButton
+          ? createPortal(followButton, followButtonTarget)
+          : followButton}
+        {mobileSelectionActions}
+        {selectionContextMenu}
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: margin clicks step the outline; rows keep their own controls */}
+        {/* biome-ignore lint/a11y/useKeyWithClickEvents: pointer-only outline stepping; keyboard users have the turn navigator */}
+        <div
+          className={[
+            "message-list",
+            progressiveRevealActive ? "message-list-progressive-hydrating" : "",
+          ]
+            .filter(Boolean)
+            .join(" ")}
+          ref={containerRef}
+          aria-busy={progressiveRevealActive ? true : undefined}
+          data-transcript-render-weight={transcriptRenderWindow.totalWeight}
+          onPointerOver={handleTranscriptPointerOver}
+          onPointerLeave={handleTranscriptPointerLeave}
+          onClick={handleMarginClick}
+          onContextMenu={handleMarginContextMenu}
+        >
+          {floatingSelectionActions}
+          {progressiveRevealActive && (
+            <div className="session-render-progress loading" role="status">
+              <div>{t("sessionLoading")}</div>
+              {progressiveRenderStatusVisible && (
+                <>
+                  <div className="loading-detail session-render-progress-label">
+                    {t("sessionProgressiveRenderingStatus", {
+                      percent: progressiveRenderPercent,
+                    })}
+                  </div>
                   <div
-                    className="session-render-progress-fill"
-                    style={{ width: `${progressiveRenderPercent}%` }}
-                  />
-                </div>
-              </>
-            )}
-          </div>
-        )}
-        {!searchActive &&
-          !historySearchWindow &&
-          (hasOlderMessages ||
-            clientTailActive ||
-            conversationWindow.hiddenTurnCount > 0) && (
-            <div className="load-older-messages" ref={loadOlderBoundaryRef}>
-              {effectiveConversationViewEnabled &&
-              conversationWindow.hiddenTurnCount > 0 ? (
-                <span className="load-older-status">
-                  {t("sessionConversationLatestTurns", {
-                    count: conversationWindow.visibleTurnCount,
-                  })}
-                </span>
-              ) : clientTailActive ? (
-                <span className="load-older-status">
-                  {t("sessionRecentTranscriptLoaded")}
-                </span>
-              ) : null}
-              {olderLoadContinuationRequired && !loadingOlder ? (
-                <span className="load-older-status" role="status">
-                  {t("sessionOlderLoadContinuationRequired")}
-                </span>
-              ) : null}
-              {(hasOlderMessages || conversationWindow.hiddenTurnCount > 0) && (
-                <button
-                  type="button"
-                  className="load-older-button"
-                  onClick={handleLoadOlder}
-                  disabled={
-                    loadingOlder && conversationWindow.hiddenTurnCount === 0
-                  }
-                >
-                  {loadingOlder && conversationWindow.hiddenTurnCount === 0 ? (
-                    <>
-                      <span className="spinning">&#x21BB;</span>{" "}
-                      {t("sessionLoadingOlderMessages")}
-                    </>
-                  ) : conversationWindow.hiddenTurnCount > 0 ? (
-                    t("sessionConversationLoadEarlierTurns", {
-                      count: Math.min(
-                        conversationViewTurnLimit,
-                        conversationWindow.hiddenTurnCount,
-                      ),
-                    })
-                  ) : (
-                    t("sessionLoadOlderMessages")
-                  )}
-                </button>
+                    className="session-render-progress-bar"
+                    role="progressbar"
+                    aria-valuemin={0}
+                    aria-valuemax={100}
+                    aria-valuenow={progressiveRenderPercent}
+                    aria-label={t("sessionProgressiveRenderingAriaLabel")}
+                  >
+                    <div
+                      className="session-render-progress-fill"
+                      style={{ width: `${progressiveRenderPercent}%` }}
+                    />
+                  </div>
+                </>
               )}
             </div>
           )}
-        {transcriptRenderWindow.active && (
-          <span
-            ref={transcriptRenderWindow.registerListStart}
-            aria-hidden="true"
-            data-transcript-render-boundary="start"
-            style={TRANSCRIPT_RENDER_MARKER_STYLE}
-          />
-        )}
-        {transcriptRenderWindow.beforeHeightPx > 0 && (
-          <div
-            aria-hidden="true"
-            data-transcript-render-spacer="before"
-            style={{ height: transcriptRenderWindow.beforeHeightPx }}
-          />
-        )}
-        {transcriptRenderWindow.rows.map((timelineRow) => {
-          const renderedRow = (() => {
-            if (timelineRow.kind === "btw") {
-              return (
-                <BtwAsideTimelineCard
-                  key={timelineRow.key}
-                  aside={timelineRow.aside}
-                  onFocus={onFocusBtwAside}
-                  onDone={onDoneBtwAside}
-                  onStop={onStopBtwAside}
-                  onToggleExpanded={onToggleBtwAsideExpanded}
-                  onTransferTurn={onTransferBtwAsideTurn}
-                />
-              );
-            }
+          {!searchActive &&
+            !historySearchWindow &&
+            (hasOlderMessages ||
+              clientTailActive ||
+              conversationWindow.hiddenTurnCount > 0) && (
+              <div className="load-older-messages" ref={loadOlderBoundaryRef}>
+                {effectiveConversationViewEnabled &&
+                conversationWindow.hiddenTurnCount > 0 ? (
+                  <span className="load-older-status">
+                    {t("sessionConversationLatestTurns", {
+                      count: conversationWindow.visibleTurnCount,
+                    })}
+                  </span>
+                ) : clientTailActive ? (
+                  <span className="load-older-status">
+                    {t("sessionRecentTranscriptLoaded")}
+                  </span>
+                ) : null}
+                {olderLoadContinuationRequired && !loadingOlder ? (
+                  <span className="load-older-status" role="status">
+                    {t("sessionOlderLoadContinuationRequired")}
+                  </span>
+                ) : null}
+                {(hasOlderMessages ||
+                  conversationWindow.hiddenTurnCount > 0) && (
+                  <button
+                    type="button"
+                    className="load-older-button"
+                    onClick={handleLoadOlder}
+                    disabled={
+                      loadingOlder && conversationWindow.hiddenTurnCount === 0
+                    }
+                  >
+                    {loadingOlder &&
+                    conversationWindow.hiddenTurnCount === 0 ? (
+                      <>
+                        <span className="spinning">&#x21BB;</span>{" "}
+                        {t("sessionLoadingOlderMessages")}
+                      </>
+                    ) : conversationWindow.hiddenTurnCount > 0 ? (
+                      t("sessionConversationLoadEarlierTurns", {
+                        count: Math.min(
+                          conversationViewTurnLimit,
+                          conversationWindow.hiddenTurnCount,
+                        ),
+                      })
+                    ) : (
+                      t("sessionLoadOlderMessages")
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+          {transcriptRenderWindow.active && (
+            <span
+              ref={transcriptRenderWindow.registerListStart}
+              aria-hidden="true"
+              data-transcript-render-boundary="start"
+              style={TRANSCRIPT_RENDER_MARKER_STYLE}
+            />
+          )}
+          {transcriptRenderWindow.beforeHeightPx > 0 && (
+            <div
+              aria-hidden="true"
+              data-transcript-render-spacer="before"
+              style={{ height: transcriptRenderWindow.beforeHeightPx }}
+            />
+          )}
+          {transcriptRenderWindow.rows.map((timelineRow) => {
+            const renderedRow = (() => {
+              if (timelineRow.kind === "btw") {
+                return (
+                  <BtwAsideTimelineCard
+                    key={timelineRow.key}
+                    aside={timelineRow.aside}
+                    onFocus={onFocusBtwAside}
+                    onDone={onDoneBtwAside}
+                    onStop={onStopBtwAside}
+                    onToggleExpanded={onToggleBtwAsideExpanded}
+                    onTransferTurn={onTransferBtwAsideTurn}
+                  />
+                );
+              }
 
-            if (timelineRow.kind === "empty") {
-              return null;
-            }
+              if (timelineRow.kind === "empty") {
+                return null;
+              }
 
-            if (timelineRow.kind === "standalone") {
-              const { item } = timelineRow;
-              return (
-                <RenderItemComponent
-                  key={timelineRow.key}
-                  item={item}
-                  isStreaming={isStreaming}
-                  thinkingExpanded={false}
-                  toggleThinkingExpanded={noopToggleThinkingExpanded}
-                  sessionProvider={provider}
-                  getForkSummaryTargetHref={getForkSummaryTargetHref}
-                  onCancelForkSummary={onCancelForkSummary}
-                  onToggleForkSummaryAutoOpen={onToggleForkSummaryAutoOpen}
-                  onFollowForkSummary={onFollowForkSummary}
-                  bangCommandHandlers={bangCommandHandlers}
-                />
-              );
-            }
+              if (timelineRow.kind === "standalone") {
+                const { item } = timelineRow;
+                return (
+                  <RenderItemComponent
+                    key={timelineRow.key}
+                    item={item}
+                    isStreaming={isStreaming}
+                    thinkingExpanded={false}
+                    toggleThinkingExpanded={noopToggleThinkingExpanded}
+                    sessionProvider={provider}
+                    getForkSummaryTargetHref={getForkSummaryTargetHref}
+                    onCancelForkSummary={onCancelForkSummary}
+                    onToggleForkSummaryAutoOpen={onToggleForkSummaryAutoOpen}
+                    onFollowForkSummary={onFollowForkSummary}
+                    bangCommandHandlers={bangCommandHandlers}
+                  />
+                );
+              }
 
-            if (timelineRow.kind === "user") {
+              if (timelineRow.kind === "user") {
+                return (
+                  <UserTimelineEntry
+                    key={timelineRow.key}
+                    row={timelineRow}
+                    isStreaming={isStreaming}
+                    sessionProvider={provider}
+                    latestCorrectablePromptId={latestCorrectablePrompt?.id}
+                    latestCorrectablePromptContent={
+                      latestCorrectablePrompt?.content
+                    }
+                    onCorrectLatestUserMessage={onCorrectLatestUserMessage}
+                    onCancelUnconfirmedUserMessage={
+                      onCancelUnconfirmedUserMessage
+                    }
+                    onTrimBeforeUserMessage={onTrimBeforeUserMessage}
+                    onForkBeforeUserMessage={onForkBeforeUserMessage}
+                    onForkAfterUserMessage={onForkAfterUserMessage}
+                    onForkAfterSummaryUserMessage={
+                      onForkAfterSummaryUserMessage
+                    }
+                    canForkBeforePrompt={canForkBeforePrompt}
+                    forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
+                    forkUnavailableMessage={forkUnavailableMessage}
+                    noopToggleThinkingExpanded={noopToggleThinkingExpanded}
+                    promptActionsDisabled={historySearchRenderIds.has(
+                      timelineRow.item.id,
+                    )}
+                  />
+                );
+              }
+
               return (
-                <UserTimelineEntry
+                <AssistantTimelineEntry
                   key={timelineRow.key}
                   row={timelineRow}
                   isStreaming={isStreaming}
                   sessionProvider={provider}
-                  latestCorrectablePromptId={latestCorrectablePrompt?.id}
-                  latestCorrectablePromptContent={
-                    latestCorrectablePrompt?.content
-                  }
-                  onCorrectLatestUserMessage={onCorrectLatestUserMessage}
-                  onCancelUnconfirmedUserMessage={
-                    onCancelUnconfirmedUserMessage
-                  }
+                  getThinkingItemExpanded={getThinkingItemExpanded}
+                  toggleThinkingItemExpanded={toggleThinkingItemExpanded}
+                  noopToggleThinkingExpanded={noopToggleThinkingExpanded}
                   onTrimBeforeUserMessage={onTrimBeforeUserMessage}
                   onForkBeforeUserMessage={onForkBeforeUserMessage}
                   onForkAfterUserMessage={onForkAfterUserMessage}
@@ -4729,180 +4884,305 @@ export const MessageList = memo(function MessageList({
                   canForkBeforePrompt={canForkBeforePrompt}
                   forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
                   forkUnavailableMessage={forkUnavailableMessage}
-                  noopToggleThinkingExpanded={noopToggleThinkingExpanded}
-                  promptActionsDisabled={historySearchRenderIds.has(
-                    timelineRow.item.id,
-                  )}
+                  handleQuoteTextBlock={handleQuoteTextBlock}
+                  alwaysShowQuoteCircles={alwaysShowQuoteCircles}
+                  paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+                  onToggleConversationActivity={toggleConversationActivity}
+                  widerConversationActivityPreviews={
+                    widerConversationActivityPreviews
+                  }
+                  collapsedConversationThinkingPreviewSlots={
+                    collapsedConversationThinkingPreviewSlots
+                  }
+                  onToggleConversationThinkingPreview={
+                    toggleConversationThinkingPreview
+                  }
+                  onDismissConversationThinkingPreview={
+                    dismissConversationThinkingPreview
+                  }
+                  promptActionDisabledIds={historySearchRenderIds}
                 />
+              );
+            })();
+            if (!transcriptRenderWindow.active) {
+              return renderedRow;
+            }
+            const spacerBefore = transcriptRenderWindow.getRowSpacerBefore(
+              timelineRow.key,
+            );
+            return (
+              <Fragment key={timelineRow.key}>
+                {spacerBefore > 0 && (
+                  <div
+                    aria-hidden="true"
+                    data-transcript-render-spacer="between"
+                    style={{ height: spacerBefore }}
+                  />
+                )}
+                <span
+                  ref={(element) =>
+                    transcriptRenderWindow.registerRowStart(
+                      timelineRow.key,
+                      element,
+                    )
+                  }
+                  aria-hidden="true"
+                  data-transcript-render-boundary="row-start"
+                  style={TRANSCRIPT_RENDER_MARKER_STYLE}
+                />
+                {renderedRow}
+                <span
+                  ref={(element) =>
+                    transcriptRenderWindow.registerRowEnd(
+                      timelineRow.key,
+                      element,
+                    )
+                  }
+                  aria-hidden="true"
+                  data-transcript-render-boundary="row-end"
+                  style={TRANSCRIPT_RENDER_MARKER_STYLE}
+                />
+              </Fragment>
+            );
+          })}
+          {transcriptRenderWindow.afterHeightPx > 0 && (
+            <div
+              aria-hidden="true"
+              data-transcript-render-spacer="after"
+              style={{ height: transcriptRenderWindow.afterHeightPx }}
+            />
+          )}
+          {composerTailRows.map((tailRow) => {
+            const { hasMessageAge, showAgeByDefault, timestampMs } = tailRow;
+
+            if (tailRow.kind === "pending") {
+              const pending = tailRow.message;
+              return (
+                <div
+                  key={tailRow.key}
+                  className={`pending-message message-render-row ${
+                    hasMessageAge ? "has-message-age" : ""
+                  } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
+                >
+                  <div className="message-render-content">
+                    <div className="message-user-prompt pending-message-bubble">
+                      <LinkifiedText text={pending.content} />
+                    </div>
+                    {pending.attachments?.length ? (
+                      <div className="attachment-list pending-message-attachments">
+                        {pending.attachments.map((file) => (
+                          <AttachmentChip
+                            key={file.id}
+                            attachmentId={file.id}
+                            originalName={file.originalName}
+                            path={file.path}
+                            mimeType={file.mimeType}
+                            sizeLabel={formatFileSize(file.size)}
+                            imageWidth={file.width}
+                            imageHeight={file.height}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="pending-message-footer">
+                      <div className="pending-message-status">
+                        {pending.status || "Sending..."}
+                      </div>
+                      <div className="deferred-message-actions">
+                        <CopyTextButton
+                          text={pending.content}
+                          label="Copy message text"
+                          className="deferred-message-action deferred-message-action-copy"
+                          showTextLabel
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                  <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
+                </div>
               );
             }
 
-            return (
-              <AssistantTimelineEntry
-                key={timelineRow.key}
-                row={timelineRow}
-                isStreaming={isStreaming}
-                sessionProvider={provider}
-                getThinkingItemExpanded={getThinkingItemExpanded}
-                toggleThinkingItemExpanded={toggleThinkingItemExpanded}
-                noopToggleThinkingExpanded={noopToggleThinkingExpanded}
-                onTrimBeforeUserMessage={onTrimBeforeUserMessage}
-                onForkBeforeUserMessage={onForkBeforeUserMessage}
-                onForkAfterUserMessage={onForkAfterUserMessage}
-                onForkAfterSummaryUserMessage={onForkAfterSummaryUserMessage}
-                canForkBeforePrompt={canForkBeforePrompt}
-                forkAfterUserMessageDisabled={forkAfterUserMessageDisabled}
-                forkUnavailableMessage={forkUnavailableMessage}
-                handleQuoteTextBlock={handleQuoteTextBlock}
-                alwaysShowQuoteCircles={alwaysShowQuoteCircles}
-                paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
-                onToggleConversationActivity={toggleConversationActivity}
-                widerConversationActivityPreviews={
-                  widerConversationActivityPreviews
-                }
-                collapsedConversationThinkingPreviewSlots={
-                  collapsedConversationThinkingPreviewSlots
-                }
-                onToggleConversationThinkingPreview={
-                  toggleConversationThinkingPreview
-                }
-                onDismissConversationThinkingPreview={
-                  dismissConversationThinkingPreview
-                }
-                promptActionDisabledIds={historySearchRenderIds}
-              />
-            );
-          })();
-          if (!transcriptRenderWindow.active) {
-            return renderedRow;
-          }
-          const spacerBefore = transcriptRenderWindow.getRowSpacerBefore(
-            timelineRow.key,
-          );
-          return (
-            <Fragment key={timelineRow.key}>
-              {spacerBefore > 0 && (
+            if (tailRow.kind === "project-queue") {
+              const projectQueue = tailRow.message;
+              const projectQueueStatus =
+                tailRow.projectQueueStatusKind === "dispatching"
+                  ? t("projectQueueInlineStatusDispatching", {
+                      position: projectQueue.projectPosition,
+                    })
+                  : tailRow.projectQueueStatusKind === "failed"
+                    ? t("projectQueueInlineStatusFailed", {
+                        position: projectQueue.projectPosition,
+                      })
+                    : t("projectQueueInlineStatusQueued", {
+                        position: projectQueue.projectPosition,
+                      });
+              return (
                 <div
-                  aria-hidden="true"
-                  data-transcript-render-spacer="between"
-                  style={{ height: spacerBefore }}
-                />
-              )}
-              <span
-                ref={(element) =>
-                  transcriptRenderWindow.registerRowStart(
-                    timelineRow.key,
-                    element,
-                  )
-                }
-                aria-hidden="true"
-                data-transcript-render-boundary="row-start"
-                style={TRANSCRIPT_RENDER_MARKER_STYLE}
-              />
-              {renderedRow}
-              <span
-                ref={(element) =>
-                  transcriptRenderWindow.registerRowEnd(
-                    timelineRow.key,
-                    element,
-                  )
-                }
-                aria-hidden="true"
-                data-transcript-render-boundary="row-end"
-                style={TRANSCRIPT_RENDER_MARKER_STYLE}
-              />
-            </Fragment>
-          );
-        })}
-        {transcriptRenderWindow.afterHeightPx > 0 && (
-          <div
-            aria-hidden="true"
-            data-transcript-render-spacer="after"
-            style={{ height: transcriptRenderWindow.afterHeightPx }}
-          />
-        )}
-        {composerTailRows.map((tailRow) => {
-          const { hasMessageAge, showAgeByDefault, timestampMs } = tailRow;
-
-          if (tailRow.kind === "pending") {
-            const pending = tailRow.message;
-            return (
-              <div
-                key={tailRow.key}
-                className={`pending-message message-render-row ${
-                  hasMessageAge ? "has-message-age" : ""
-                } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
-              >
-                <div className="message-render-content">
-                  <div className="message-user-prompt pending-message-bubble">
-                    <LinkifiedText text={pending.content} />
-                  </div>
-                  {pending.attachments?.length ? (
-                    <div className="attachment-list pending-message-attachments">
-                      {pending.attachments.map((file) => (
-                        <AttachmentChip
-                          key={file.id}
-                          attachmentId={file.id}
-                          originalName={file.originalName}
-                          path={file.path}
-                          mimeType={file.mimeType}
-                          sizeLabel={formatFileSize(file.size)}
-                          imageWidth={file.width}
-                          imageHeight={file.height}
-                        />
-                      ))}
+                  key={tailRow.key}
+                  className={`deferred-message project-queue-inline-message message-render-row ${
+                    hasMessageAge ? "has-message-age" : ""
+                  } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
+                >
+                  <div className="message-render-content">
+                    <div
+                      className={`message-user-prompt ${styles.queuedBubble} ${styles.projectQueueBubble}`}
+                    >
+                      <LinkifiedText text={projectQueue.content} />
                     </div>
-                  ) : null}
-                  <div className="pending-message-footer">
-                    <div className="pending-message-status">
-                      {pending.status || "Sending..."}
-                    </div>
-                    <div className="deferred-message-actions">
-                      <CopyTextButton
-                        text={pending.content}
-                        label="Copy message text"
-                        className="deferred-message-action deferred-message-action-copy"
-                        showTextLabel
-                        onClick={(event) => event.stopPropagation()}
+                    {projectQueue.attachments?.length ? (
+                      <div className="attachment-list deferred-message-attachments-list">
+                        {projectQueue.attachments.map((file) => (
+                          <AttachmentChip
+                            key={file.id}
+                            attachmentId={file.id}
+                            originalName={file.originalName}
+                            path={file.path}
+                            mimeType={file.mimeType}
+                            sizeLabel={formatFileSize(file.size)}
+                            imageWidth={file.width}
+                            imageHeight={file.height}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
+                    <div className="deferred-message-footer">
+                      <span className="deferred-message-status project-queue-inline-message-status">
+                        {projectQueueStatus}
+                      </span>
+                      {tailRow.showAttachmentCountBadge ? (
+                        <span
+                          className="deferred-message-attachments"
+                          title={`${projectQueue.attachmentCount} attachment${
+                            projectQueue.attachmentCount === 1 ? "" : "s"
+                          } queued`}
+                          role="img"
+                          aria-label={`${projectQueue.attachmentCount} attachment${
+                            projectQueue.attachmentCount === 1 ? "" : "s"
+                          } queued`}
+                        >
+                          <svg
+                            width="12"
+                            height="12"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="2"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            aria-hidden="true"
+                          >
+                            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                          </svg>
+                          <span>{projectQueue.attachmentCount}</span>
+                        </span>
+                      ) : null}
+                      {projectQueue.lastError && (
+                        <span className="project-queue-inline-message-error">
+                          {projectQueue.lastError}
+                        </span>
+                      )}
+                      <QueuedMessageActions
+                        variant="project"
+                        text={projectQueue.content}
+                        composerEditAvailabilityStore={
+                          composerEditAvailabilityStore
+                        }
+                        itemCanEdit={projectQueue.canEdit !== false}
+                        disabled={
+                          projectQueue.isMutating ||
+                          projectQueueDispatchMutating
+                        }
+                        onResume={
+                          projectQueueDispatchPaused
+                            ? onResumeProjectQueueDispatch
+                            : undefined
+                        }
+                        onEdit={
+                          tailRow.allowsCancel && onEditProjectQueueMessage
+                            ? () => onEditProjectQueueMessage(projectQueue.id)
+                            : undefined
+                        }
+                        onSteer={
+                          tailRow.projectQueueStatusKind === "queued" &&
+                          onSteerProjectQueueMessage
+                            ? () => onSteerProjectQueueMessage(projectQueue.id)
+                            : undefined
+                        }
+                        steerLabel={t("projectQueueInlineSteer")}
+                        onCancel={
+                          tailRow.allowsCancel && onCancelProjectQueueMessage
+                            ? () => onCancelProjectQueueMessage(projectQueue.id)
+                            : undefined
+                        }
                       />
                     </div>
                   </div>
+                  <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
                 </div>
-                <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
-              </div>
-            );
-          }
+              );
+            }
 
-          if (tailRow.kind === "project-queue") {
-            const projectQueue = tailRow.message;
-            const projectQueueStatus =
-              tailRow.projectQueueStatusKind === "dispatching"
-                ? t("projectQueueInlineStatusDispatching", {
-                    position: projectQueue.projectPosition,
-                  })
-                : tailRow.projectQueueStatusKind === "failed"
-                  ? t("projectQueueInlineStatusFailed", {
-                      position: projectQueue.projectPosition,
-                    })
-                  : t("projectQueueInlineStatusQueued", {
-                      position: projectQueue.projectPosition,
+            const deferred = tailRow.message;
+            const recoveredQueueId = tailRow.recoveredQueueId;
+            const isClearloop = deferred.yaCommand === "clearloop";
+            const deferredStatus = tailRow.isRecovered
+              ? t("sessionRecoveredQueuedPaused")
+              : isClearloop
+                ? deferred.clearloop && (
+                    <ClearloopCountdown progress={deferred.clearloop} />
+                  )
+                : tailRow.isYaCommand
+                  ? t("sessionQueuedYaCommandAfterTurn")
+                  : getDeferredMessageStatus({
+                      isPatient: tailRow.isPatient,
+                      lanePosition: tailRow.lanePosition,
+                      timestampMs,
+                      nowMs,
                     });
+            const earlierPatientCount = tailRow.lanePosition?.patientIndex ?? 0;
+            const steerQueuedLabel =
+              earlierPatientCount > 0
+                ? t("sessionSteerQueuedMessageThrough", {
+                    count: String(earlierPatientCount),
+                    suffix: earlierPatientCount === 1 ? "" : "s",
+                  })
+                : t("sessionSteerQueuedMessageNow");
             return (
               <div
                 key={tailRow.key}
-                className={`deferred-message project-queue-inline-message message-render-row ${
+                className={`deferred-message message-render-row ${
                   hasMessageAge ? "has-message-age" : ""
                 } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
               >
                 <div className="message-render-content">
                   <div
-                    className={`message-user-prompt ${styles.queuedBubble} ${styles.projectQueueBubble}`}
+                    className={`message-user-prompt ${styles.queuedBubble}`}
+                    title={isClearloop ? deferred.content : undefined}
                   >
-                    <LinkifiedText text={projectQueue.content} />
+                    {isClearloop && deferred.clearloop ? (
+                      <span
+                        className={styles.clearloopBadge}
+                        role="img"
+                        aria-label={t("clearloopProgress", {
+                          completed: String(deferred.clearloop.completed),
+                          total: String(deferred.clearloop.total),
+                        })}
+                        title={t("clearloopIterationBadgeTitle", {
+                          completed: String(deferred.clearloop.completed),
+                          total: String(deferred.clearloop.total),
+                        })}
+                      >
+                        {deferred.clearloop.completed}/
+                        {deferred.clearloop.total}
+                      </span>
+                    ) : null}
+                    <LinkifiedText text={deferred.content} />
                   </div>
-                  {projectQueue.attachments?.length ? (
+                  {deferred.attachments?.length ? (
                     <div className="attachment-list deferred-message-attachments-list">
-                      {projectQueue.attachments.map((file) => (
+                      {deferred.attachments.map((file) => (
                         <AttachmentChip
                           key={file.id}
                           attachmentId={file.id}
@@ -4917,18 +5197,31 @@ export const MessageList = memo(function MessageList({
                     </div>
                   ) : null}
                   <div className="deferred-message-footer">
-                    <span className="deferred-message-status project-queue-inline-message-status">
-                      {projectQueueStatus}
+                    <span
+                      className="deferred-message-status"
+                      title={
+                        tailRow.isRecovered
+                          ? t("sessionRecoveredQueuedPausedTitle")
+                          : tailRow.isPatient
+                            ? "Patient queue waits for verified quiet. Regular queued messages may pass it."
+                            : undefined
+                      }
+                    >
+                      {deferredStatus}
                     </span>
+                    <QueuedEffortBadge
+                      modifier={deferred.metadata?.turnEffort}
+                      context={queuedEffortContext}
+                    />
                     {tailRow.showAttachmentCountBadge ? (
                       <span
                         className="deferred-message-attachments"
-                        title={`${projectQueue.attachmentCount} attachment${
-                          projectQueue.attachmentCount === 1 ? "" : "s"
+                        title={`${deferred.attachmentCount} attachment${
+                          deferred.attachmentCount === 1 ? "" : "s"
                         } queued`}
                         role="img"
-                        aria-label={`${projectQueue.attachmentCount} attachment${
-                          projectQueue.attachmentCount === 1 ? "" : "s"
+                        aria-label={`${deferred.attachmentCount} attachment${
+                          deferred.attachmentCount === 1 ? "" : "s"
                         } queued`}
                       >
                         <svg
@@ -4944,255 +5237,129 @@ export const MessageList = memo(function MessageList({
                         >
                           <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
                         </svg>
-                        <span>{projectQueue.attachmentCount}</span>
+                        <span>{deferred.attachmentCount}</span>
                       </span>
                     ) : null}
-                    {projectQueue.lastError && (
-                      <span className="project-queue-inline-message-error">
-                        {projectQueue.lastError}
-                      </span>
+                    {tailRow.isRecovered ? (
+                      <div className="deferred-message-actions">
+                        <CopyTextButton
+                          text={deferred.content}
+                          label={t("sessionQueuedCopy")}
+                          className="deferred-message-action deferred-message-action-copy"
+                          showTextLabel
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                        {recoveredQueueId &&
+                        onSteerRecoveredDeferred &&
+                        !deferred.metadata?.turnEffort ? (
+                          <button
+                            type="button"
+                            className="deferred-message-action deferred-message-action-steer"
+                            onClick={() =>
+                              onSteerRecoveredDeferred(recoveredQueueId)
+                            }
+                            aria-label={steerQueuedLabel}
+                            title={steerQueuedLabel}
+                          >
+                            <PlayIcon />
+                            <span>{t("sessionSteerNow")}</span>
+                          </button>
+                        ) : null}
+                        {tailRow.allowsRecoveredResume &&
+                        recoveredQueueId &&
+                        onResumeRecoveredDeferred ? (
+                          <button
+                            type="button"
+                            className="deferred-message-action deferred-message-action-resume"
+                            onClick={() =>
+                              onResumeRecoveredDeferred(recoveredQueueId)
+                            }
+                            aria-label={t("sessionRecoveredQueuedResume")}
+                            title={t("sessionRecoveredQueuedResume")}
+                          >
+                            <PlayIcon />
+                            <span>
+                              {t("sessionRecoveredQueuedResumeShort")}
+                            </span>
+                          </button>
+                        ) : null}
+                        {tailRow.allowsRecoveredDelete &&
+                        recoveredQueueId &&
+                        onDeleteRecoveredDeferred ? (
+                          <button
+                            type="button"
+                            className="deferred-message-action deferred-message-action-cancel"
+                            onClick={() =>
+                              onDeleteRecoveredDeferred(recoveredQueueId)
+                            }
+                            aria-label={t("sessionRecoveredQueuedDelete")}
+                            title={t("sessionRecoveredQueuedDelete")}
+                          >
+                            <XIcon />
+                            <span>
+                              {t("sessionRecoveredQueuedDeleteShort")}
+                            </span>
+                          </button>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <QueuedMessageActions
+                        variant="session"
+                        text={deferred.content}
+                        composerEditAvailabilityStore={
+                          composerEditAvailabilityStore
+                        }
+                        onEdit={
+                          !tailRow.isYaCommand &&
+                          deferred.tempId &&
+                          onEditDeferred
+                            ? () => onEditDeferred(deferred.tempId as string)
+                            : undefined
+                        }
+                        onSteer={
+                          tailRow.isPatient &&
+                          deferred.tempId &&
+                          onSteerDeferred &&
+                          !deferred.metadata?.turnEffort
+                            ? () => onSteerDeferred(deferred.tempId as string)
+                            : undefined
+                        }
+                        steerLabel={steerQueuedLabel}
+                        onCancel={
+                          tailRow.allowsDeferredCancel && onCancelDeferred
+                            ? () => onCancelDeferred(deferred.tempId as string)
+                            : isClearloop && onCancelClearloop
+                              ? onCancelClearloop
+                              : undefined
+                        }
+                        cancelLabel={
+                          isClearloop ? t("clearloopCancel") : undefined
+                        }
+                      />
                     )}
-                    <QueuedMessageActions
-                      variant="project"
-                      text={projectQueue.content}
-                      composerEditAvailabilityStore={
-                        composerEditAvailabilityStore
-                      }
-                      itemCanEdit={projectQueue.canEdit !== false}
-                      disabled={
-                        projectQueue.isMutating || projectQueueDispatchMutating
-                      }
-                      onResume={
-                        projectQueueDispatchPaused
-                          ? onResumeProjectQueueDispatch
-                          : undefined
-                      }
-                      onEdit={
-                        tailRow.allowsCancel && onEditProjectQueueMessage
-                          ? () => onEditProjectQueueMessage(projectQueue.id)
-                          : undefined
-                      }
-                      onSteer={
-                        tailRow.projectQueueStatusKind === "queued" &&
-                        onSteerProjectQueueMessage
-                          ? () => onSteerProjectQueueMessage(projectQueue.id)
-                          : undefined
-                      }
-                      steerLabel={t("projectQueueInlineSteer")}
-                      onCancel={
-                        tailRow.allowsCancel && onCancelProjectQueueMessage
-                          ? () => onCancelProjectQueueMessage(projectQueue.id)
-                          : undefined
-                      }
-                    />
                   </div>
                 </div>
                 <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
               </div>
             );
-          }
-
-          const deferred = tailRow.message;
-          const recoveredQueueId = tailRow.recoveredQueueId;
-          const deferredStatus = tailRow.isRecovered
-            ? t("sessionRecoveredQueuedPaused")
-            : tailRow.isYaCommand
-              ? t("sessionQueuedYaCommandAfterTurn")
-              : getDeferredMessageStatus({
-                  isPatient: tailRow.isPatient,
-                  lanePosition: tailRow.lanePosition,
-                  timestampMs,
-                  nowMs,
-                });
-          const earlierPatientCount = tailRow.lanePosition?.patientIndex ?? 0;
-          const steerQueuedLabel =
-            earlierPatientCount > 0
-              ? t("sessionSteerQueuedMessageThrough", {
-                  count: String(earlierPatientCount),
-                  suffix: earlierPatientCount === 1 ? "" : "s",
-                })
-              : t("sessionSteerQueuedMessageNow");
-          return (
-            <div
-              key={tailRow.key}
-              className={`deferred-message message-render-row ${
-                hasMessageAge ? "has-message-age" : ""
-              } ${showAgeByDefault ? "is-message-age-visible" : ""}`}
-            >
-              <div className="message-render-content">
-                <div className={`message-user-prompt ${styles.queuedBubble}`}>
-                  <LinkifiedText text={deferred.content} />
-                </div>
-                {deferred.attachments?.length ? (
-                  <div className="attachment-list deferred-message-attachments-list">
-                    {deferred.attachments.map((file) => (
-                      <AttachmentChip
-                        key={file.id}
-                        attachmentId={file.id}
-                        originalName={file.originalName}
-                        path={file.path}
-                        mimeType={file.mimeType}
-                        sizeLabel={formatFileSize(file.size)}
-                        imageWidth={file.width}
-                        imageHeight={file.height}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-                <div className="deferred-message-footer">
-                  <span
-                    className="deferred-message-status"
-                    title={
-                      tailRow.isRecovered
-                        ? t("sessionRecoveredQueuedPausedTitle")
-                        : tailRow.isPatient
-                          ? "Patient queue waits for verified quiet. Regular queued messages may pass it."
-                          : undefined
-                    }
-                  >
-                    {deferredStatus}
-                  </span>
-                  <QueuedEffortBadge
-                    modifier={deferred.metadata?.turnEffort}
-                    context={queuedEffortContext}
-                  />
-                  {tailRow.showAttachmentCountBadge ? (
-                    <span
-                      className="deferred-message-attachments"
-                      title={`${deferred.attachmentCount} attachment${
-                        deferred.attachmentCount === 1 ? "" : "s"
-                      } queued`}
-                      role="img"
-                      aria-label={`${deferred.attachmentCount} attachment${
-                        deferred.attachmentCount === 1 ? "" : "s"
-                      } queued`}
-                    >
-                      <svg
-                        width="12"
-                        height="12"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        aria-hidden="true"
-                      >
-                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                      </svg>
-                      <span>{deferred.attachmentCount}</span>
-                    </span>
-                  ) : null}
-                  {tailRow.isRecovered ? (
-                    <div className="deferred-message-actions">
-                      <CopyTextButton
-                        text={deferred.content}
-                        label={t("sessionQueuedCopy")}
-                        className="deferred-message-action deferred-message-action-copy"
-                        showTextLabel
-                        onClick={(event) => event.stopPropagation()}
-                      />
-                      {recoveredQueueId &&
-                      onSteerRecoveredDeferred &&
-                      !deferred.metadata?.turnEffort ? (
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-steer"
-                          onClick={() =>
-                            onSteerRecoveredDeferred(recoveredQueueId)
-                          }
-                          aria-label={steerQueuedLabel}
-                          title={steerQueuedLabel}
-                        >
-                          <PlayIcon />
-                          <span>{t("sessionSteerNow")}</span>
-                        </button>
-                      ) : null}
-                      {tailRow.allowsRecoveredResume &&
-                      recoveredQueueId &&
-                      onResumeRecoveredDeferred ? (
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-resume"
-                          onClick={() =>
-                            onResumeRecoveredDeferred(recoveredQueueId)
-                          }
-                          aria-label={t("sessionRecoveredQueuedResume")}
-                          title={t("sessionRecoveredQueuedResume")}
-                        >
-                          <PlayIcon />
-                          <span>{t("sessionRecoveredQueuedResumeShort")}</span>
-                        </button>
-                      ) : null}
-                      {tailRow.allowsRecoveredDelete &&
-                      recoveredQueueId &&
-                      onDeleteRecoveredDeferred ? (
-                        <button
-                          type="button"
-                          className="deferred-message-action deferred-message-action-cancel"
-                          onClick={() =>
-                            onDeleteRecoveredDeferred(recoveredQueueId)
-                          }
-                          aria-label={t("sessionRecoveredQueuedDelete")}
-                          title={t("sessionRecoveredQueuedDelete")}
-                        >
-                          <XIcon />
-                          <span>{t("sessionRecoveredQueuedDeleteShort")}</span>
-                        </button>
-                      ) : null}
-                    </div>
-                  ) : (
-                    <QueuedMessageActions
-                      variant="session"
-                      text={deferred.content}
-                      composerEditAvailabilityStore={
-                        composerEditAvailabilityStore
-                      }
-                      onEdit={
-                        !tailRow.isYaCommand &&
-                        deferred.tempId &&
-                        onEditDeferred
-                          ? () => onEditDeferred(deferred.tempId as string)
-                          : undefined
-                      }
-                      onSteer={
-                        tailRow.isPatient &&
-                        deferred.tempId &&
-                        onSteerDeferred &&
-                        !deferred.metadata?.turnEffort
-                          ? () => onSteerDeferred(deferred.tempId as string)
-                          : undefined
-                      }
-                      steerLabel={steerQueuedLabel}
-                      onCancel={
-                        tailRow.allowsDeferredCancel && onCancelDeferred
-                          ? () => onCancelDeferred(deferred.tempId as string)
-                          : undefined
-                      }
-                    />
-                  )}
-                </div>
-              </div>
-              <MessageAge timestampMs={timestampMs} nowMs={nowMs} />
+          })}
+          {/* Compacting indicator - shown when context is being compressed */}
+          {isCompacting && (
+            <div className="system-message system-message-compacting">
+              <span className="system-message-icon spinning">⟳</span>
+              <span className="system-message-text">Compacting context...</span>
             </div>
-          );
-        })}
-        {/* Compacting indicator - shown when context is being compressed */}
-        {isCompacting && (
-          <div className="system-message system-message-compacting">
-            <span className="system-message-icon spinning">⟳</span>
-            <span className="system-message-text">Compacting context...</span>
-          </div>
-        )}
-        <ProcessingIndicator
-          isProcessing={isProcessing}
-          thinkingItemsVisible={thinkingItemsVisible}
-          hasThinkingItems={hasThinkingItems}
-          onToggleThinkingItemsVisible={toggleThinkingItemsVisible}
-          thinkingLatestOnly={thinkingLatestOnly}
-          onToggleThinkingLatestOnly={toggleThinkingLatestOnly}
-        />
-      </div>
-    </QuoteReplyProvider>,
+          )}
+          <ProcessingIndicator
+            isProcessing={isProcessing}
+            thinkingItemsVisible={thinkingItemsVisible}
+            hasThinkingItems={hasThinkingItems}
+            onToggleThinkingItemsVisible={toggleThinkingItemsVisible}
+            thinkingLatestOnly={thinkingLatestOnly}
+            onToggleThinkingLatestOnly={toggleThinkingLatestOnly}
+          />
+        </div>
+      </QuoteReplyProvider>
+    </SessionRewindProvider>,
   );
 });

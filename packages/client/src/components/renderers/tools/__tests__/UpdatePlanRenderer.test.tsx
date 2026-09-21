@@ -1,5 +1,6 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import { updatePlanRenderer } from "../UpdatePlanRenderer";
 
 const renderContext = {
@@ -13,26 +14,32 @@ describe("UpdatePlanRenderer", () => {
   });
 
   it("renders plan checklist inline with progress counts", () => {
-    if (!updatePlanRenderer.renderInline) {
+    if (!updatePlanRenderer.operations.includes("renderInline")) {
       throw new Error("UpdatePlan renderer must provide inline rendering");
     }
 
     render(
       <div>
-        {updatePlanRenderer.renderInline(
-          {
-            explanation: "Resuming from previous checkpoint",
-            plan: [
-              { step: "Investigate renderer mismatch", status: "completed" },
-              { step: "Add compatibility aliases", status: "in_progress" },
-              { step: "Add regression tests", status: "pending" },
-            ],
-          },
-          "Plan updated",
-          false,
-          "complete",
-          renderContext,
-        )}
+        {updatePlanRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              {
+                explanation: "Resuming from previous checkpoint",
+                plan: [
+                  {
+                    step: "Investigate renderer mismatch",
+                    status: "completed",
+                  },
+                  { step: "Add compatibility aliases", status: "in_progress" },
+                  { step: "Add regression tests", status: "pending" },
+                ],
+              },
+              "Plan updated",
+              false,
+              "complete",
+            ),
+          )
+          .renderInline(renderContext)}
       </div>,
     );
 
@@ -44,19 +51,22 @@ describe("UpdatePlanRenderer", () => {
   });
 
   it("renders an inline error message when tool call fails", () => {
-    if (!updatePlanRenderer.renderInline) {
+    if (!updatePlanRenderer.operations.includes("renderInline")) {
       throw new Error("UpdatePlan renderer must provide inline rendering");
     }
 
     render(
       <div>
-        {updatePlanRenderer.renderInline(
-          { plan: [{ step: "Do thing", status: "pending" }] },
-          "Could not persist plan",
-          true,
-          "error",
-          renderContext,
-        )}
+        {updatePlanRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { plan: [{ step: "Do thing", status: "pending" }] },
+              "Could not persist plan",
+              true,
+              "error",
+            ),
+          )
+          .renderInline(renderContext)}
       </div>,
     );
 

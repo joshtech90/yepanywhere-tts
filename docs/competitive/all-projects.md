@@ -25,6 +25,7 @@ Everything in the AI coding agent supervisor/wrapper space, in one table. For de
 | **Claude-Code-Remote** | Control Claude Code via email, Discord, or Telegram — reply to continue | [JessyTsui/Claude-Code-Remote](https://github.com/JessyTsui/Claude-Code-Remote) | MIT | JessyTsui | 1,067 |
 | **Gemini-CLI-UI** | Web UI for Google's Gemini CLI with chat, terminal, file explorer, git | [cruzyjapan/Gemini-CLI-UI](https://github.com/cruzyjapan/Gemini-CLI-UI) | — | cruzyjapan | 599 |
 | **Paseo** | Mobile-first agent supervisor (Claude/Codex/OpenCode) with on-device voice (Sherpa ONNX), E2E encrypted relay (NaCl, same primitives as us), MCP sub-agents, CLI, desktop (Tauri), mobile (Expo) ([deep dive](paseo.md)) | [getpaseo/paseo](https://github.com/getpaseo/paseo) | AGPL-3.0 | Mohamed Boudra | 215 |
+| **CosmoRemote** | Native iOS/Android remote for Claude, Codex, Cursor, and terminal sessions on Macs, with a multi-Mac fleet and interactive simulator/emulator streaming ([deep dive](cosmoremote.md)) | [site-only repo](https://github.com/maththedev42/cosmoremote) / [npm bridge](https://www.npmjs.com/package/cosmoremote) | Partial: bridge package MIT; apps/relay closed | Matheus Weber | N/A |
 | **Yep Anywhere** | Mobile-first supervisor with E2E encryption, tiered inbox, fork/clone, multi-agent (Claude/Codex/Gemini) | [kzahel/yepanywhere](https://github.com/kzahel/yepanywhere) | MIT | Kyle Graehl | 206 |
 | **HAPI** | Local-first hub for Claude/Codex/Gemini/OpenCode with terminal page and file browser | — | Open source | — | — |
 | **Vicoa** | "Vibe Code Anywhere" — mobile-first remote supervisor for Claude Code, Codex, OpenCode, Google/OpenRouter. Native iOS app + web + CLI. Freemium: free (50 msgs/mo), Pro $9.99/mo | [vicoa.ai](https://vicoa.ai/) | Proprietary | — | N/A |
@@ -100,4 +101,4 @@ Already listed above: emdash, claudecodeui.
 
 ## Last Updated
 
-2026-09-13 (bb added; other entries and counts were not refreshed)
+2026-09-20 (CosmoRemote added; other entries and counts were not refreshed)

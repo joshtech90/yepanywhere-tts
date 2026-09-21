@@ -196,7 +196,9 @@ relationship for the same peer.
 Grants should be explicit, inspectable, and revocable from the server that
 enforces them. Likely scope includes which projects and providers may be used,
 a permission ceiling, concurrency bounds, and which session-control actions
-are permitted. Exact fields are not decided.
+are permitted. Exact fields are not decided. [[principals-and-grants]] records
+the shared proposal vocabulary connecting these peer grants to local principals
+and optional hosted issuance without selecting a common protocol.
 
 Effective authority can only narrow as a request crosses layers: it is the
 intersection of the agent/session enablement, the controller's outgoing grant,

@@ -67,6 +67,14 @@ stable component identity, and lower update cadence.
   one message block, one tool result, one file, or one preview.
 - High-rate events must be coalesced before they reach React state unless they
   are user-visible acknowledgements or controls that need sub-second latency.
+- The session stream entry point itself is coalesced, not only the token
+  paths behind it: `useSession` dispatches events through
+  `createStreamDispatchCoalescer`, immediate while quiet and one batch per
+  adaptive gap under a burst. React 19 counts every commit that leaves more
+  work pending as a nested update and throws "Maximum update depth exceeded"
+  after 50 in a row, so a replay or busy turn that commits once per event
+  freezes the tab and can blank it; no effect loop is needed. See
+  [`topics/client-stream-dispatch-coalescing.md`](../../topics/client-stream-dispatch-coalescing.md).
 - Light-load queue/ack/status UI should remain immediate. Backpressure belongs
   on token/render/freshness paths, not on user message acceptance.
 - Transcript projection and DOM commits are non-urgent work. They consume a

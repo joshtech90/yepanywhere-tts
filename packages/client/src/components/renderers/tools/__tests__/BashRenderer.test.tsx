@@ -5,6 +5,7 @@ import { SessionMetadataProvider } from "../../../../contexts/SessionMetadataCon
 import { I18nProvider } from "../../../../i18n";
 import { UI_KEYS } from "../../../../lib/storageKeys";
 import { bashRenderer } from "../BashRenderer";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import type { BashResult } from "../types";
 
 vi.mock("../../../../contexts/SchemaValidationContext", () => ({
@@ -53,12 +54,15 @@ describe("BashRenderer", () => {
     const { container } = render(
       <MemoryRouter>
         <I18nProvider>
-          {bashRenderer.renderCollapsedPreview?.(
-            { command: "printf '...'" },
-            output as unknown as BashResult,
-            false,
-            renderContext,
-          )}
+          {bashRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                { command: "printf '...'" },
+                output as unknown as BashResult,
+                false,
+              ),
+            )
+            .renderCollapsedPreview(renderContext)}
         </I18nProvider>
       </MemoryRouter>,
     );
@@ -88,17 +92,20 @@ describe("BashRenderer", () => {
 
     render(
       <div>
-        {bashRenderer.renderCollapsedPreview?.(
-          { command: "printf lines" },
-          {
-            stdout: output,
-            stderr: "",
-            interrupted: false,
-            isImage: false,
-          } as BashResult,
-          false,
-          renderContext,
-        )}
+        {bashRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { command: "printf lines" },
+              {
+                stdout: output,
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              } as BashResult,
+              false,
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
 
@@ -112,18 +119,21 @@ describe("BashRenderer", () => {
   it("uses red only when the collapsed preview is showing stderr", () => {
     const { container } = render(
       <div>
-        {bashRenderer.renderCollapsedPreview?.(
-          { command: "writes both channels" },
-          {
-            stdout: "ordinary stdout",
-            stderr: "authenticated stderr",
-            interrupted: false,
-            isImage: false,
-            exitCode: 1,
-          } as BashResult,
-          true,
-          renderContext,
-        )}
+        {bashRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { command: "writes both channels" },
+              {
+                stdout: "ordinary stdout",
+                stderr: "authenticated stderr",
+                interrupted: false,
+                isImage: false,
+                exitCode: 1,
+              } as BashResult,
+              true,
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
 
@@ -145,16 +155,21 @@ describe("BashRenderer", () => {
 
     const { container } = render(
       <div>
-        {bashRenderer.renderToolResult(
-          {
-            stdout: output,
-            stderr: "",
-            interrupted: false,
-            isImage: false,
-          },
-          false,
-          renderContext,
-        )}
+        {bashRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                stdout: output,
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -178,17 +193,20 @@ describe("BashRenderer", () => {
 
     const { container } = render(
       <div>
-        {bashRenderer.renderCollapsedPreview?.(
-          { command: "git diff -- notes.md" },
-          {
-            stdout: output,
-            stderr: "",
-            interrupted: false,
-            isImage: false,
-          } as unknown as BashResult,
-          false,
-          { ...renderContext, provider: "claude" },
-        )}
+        {bashRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { command: "git diff -- notes.md" },
+              {
+                stdout: output,
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              } as unknown as BashResult,
+              false,
+            ),
+          )
+          .renderCollapsedPreview({ ...renderContext, provider: "claude" })}
       </div>,
     );
 
@@ -223,16 +241,21 @@ describe("BashRenderer", () => {
 
     const { container } = render(
       <div>
-        {bashRenderer.renderToolResult(
-          {
-            stdout: output,
-            stderr: "",
-            interrupted: false,
-            isImage: false,
-          },
-          false,
-          renderContext,
-        )}
+        {bashRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                stdout: output,
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -260,17 +283,21 @@ describe("BashRenderer", () => {
             projectPath="/repo"
             sessionId="session-1"
           >
-            {bashRenderer.renderToolResult(
-              {
-                stdout: output,
-                stderr: "",
-                interrupted: false,
-                isImage: false,
-              },
-              false,
-              renderContext,
-              { command: "git diff -- research/conditioned-diversity.md" },
-            )}
+            {bashRenderer
+              .prepare(
+                recordFromLegacyArgs(
+                  { command: "git diff -- research/conditioned-diversity.md" },
+                  {
+                    stdout: output,
+                    stderr: "",
+                    interrupted: false,
+                    isImage: false,
+                  },
+                  false,
+                  "complete",
+                ),
+              )
+              .renderToolResult(renderContext)}
           </SessionMetadataProvider>
         </I18nProvider>
       </MemoryRouter>,
@@ -298,7 +325,9 @@ describe("BashRenderer nested harness launch link", () => {
             projectPath="/repo"
             sessionId="9f073ea3-fc47-459e-bf7b-46e04fd5a094"
           >
-            {bashRenderer.renderToolUse?.({ command }, renderContext)}
+            {bashRenderer
+              .prepare({ input: { command }, status: "pending" })
+              .renderToolUse(renderContext)}
           </SessionMetadataProvider>
         </I18nProvider>
       </MemoryRouter>,

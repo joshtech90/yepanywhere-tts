@@ -404,6 +404,59 @@ describe("RelayProtocol hooks", () => {
     await expect(pending).resolves.toEqual({ files: [] });
   });
 
+  it("re-issues a blob read the transport rejected to replace its socket", async () => {
+    const sent: RemoteClientMessage[] = [];
+    const ensureConnected = vi.fn(async () => undefined);
+    const protocol = new RelayProtocol({
+      sendMessage: (message) => sent.push(message),
+      sendUploadChunk: vi.fn(),
+      ensureConnected,
+      isConnected: () => true,
+    });
+
+    const pending = protocol.fetchBlob("/sessions/s1/media/asset");
+    await flushUntil(() => sent.length === 1);
+    protocol.rejectAllPending(new ConnectionReconnectingError());
+
+    await flushUntil(() => sent.length === 2);
+    const retried = sent[1] as RelayRequest;
+    expect(retried.path).toBe("/api/sessions/s1/media/asset");
+    protocol.routeMessage({
+      type: "response",
+      id: retried.id,
+      status: 200,
+      headers: { "content-type": "image/png" },
+      body: { _binary: true, data: btoa("png bytes") },
+    });
+
+    const blob = await pending;
+    expect(blob.type).toBe("image/png");
+    // One connect per attempt: the read itself joins the reconnect, so the
+    // retry must not ask a second time on its way in.
+    expect(ensureConnected).toHaveBeenCalledTimes(2);
+  });
+
+  it("abandons a read whose caller aborted during the reconnect", async () => {
+    const sent: RemoteClientMessage[] = [];
+    const protocol = new RelayProtocol({
+      sendMessage: (message) => sent.push(message),
+      sendUploadChunk: vi.fn(),
+      ensureConnected: vi.fn(async () => undefined),
+      isConnected: () => true,
+    });
+    const controller = new AbortController();
+
+    const pending = protocol.fetch("/projects/p/git/status", {
+      signal: controller.signal,
+    });
+    await flushUntil(() => sent.length === 1);
+    protocol.rejectAllPending(new ConnectionReconnectingError());
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: "AbortError" });
+    expect(sent).toHaveLength(1);
+  });
+
   it("does not replay a mutation across a transport reconnect", async () => {
     const sent: RemoteClientMessage[] = [];
     const protocol = new RelayProtocol({

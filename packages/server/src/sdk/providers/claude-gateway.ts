@@ -8,20 +8,22 @@
 
 import type { Settings } from "@anthropic-ai/claude-agent-sdk";
 import {
-  DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
   DEFAULT_GATEWAY_SERVICE_ID,
   DEFAULT_GATEWAY_SERVICE_MODEL_LIMIT,
   advertisedGatewayEffortLevels,
   gatewayModelEffort,
+  legacyGatewayServiceEntry,
   parseGatewayModelId,
-  qualifiedGatewayModelId,
+  unionModelCatalogs,
   type EffortLevel,
   type GatewayEndpointEffortProbe,
   type GatewayService,
+  type ModelCatalogRoute,
   type ModelInfo,
   type PromptCacheKeepaliveProviderInfo,
 } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
+import { refreshPiModelExport } from "./piModelExport.js";
 import {
   gatewayEffortProbeCache,
   probeServiceEffort,
@@ -80,13 +82,18 @@ interface GatewayServiceCatalog {
   disableAgent: boolean;
   disablePlanMode: boolean;
   launchMetadata: Map<string, GatewayModelLaunchMetadata>;
+  /**
+   * What this service advertised, as this service names it.
+   *
+   * Retained rather than only unioned because an export to another CLI's model
+   * registry has to say which endpoint serves which model, and the union
+   * deliberately loses that by qualifying ids only when two services collide.
+   */
+  models: ModelInfo[];
 }
 
 /** Which service serves an exposed model id, and under what name it knows it. */
-interface GatewayModelRoute {
-  serviceId: string;
-  modelId: string;
-}
+type GatewayModelRoute = ModelCatalogRoute;
 
 interface GatewayCatalogSnapshot {
   configurationGeneration: number;
@@ -306,11 +313,7 @@ function parseClaudeGatewayCatalog(
   }
 
   const isVllm = data.some(
-    (item) =>
-      item &&
-      typeof item === "object" &&
-      (item.owned_by === "vllm" ||
-        (typeof item.max_model_len === "number" && item.max_model_len > 0)),
+    (item) => item && typeof item === "object" && item.owned_by === "vllm",
   );
   const seen = new Set<string>();
   const models: ModelInfo[] = [];
@@ -418,43 +421,6 @@ function gatewayServicesKey(services: readonly GatewayService[]): string {
 }
 
 /**
- * Merge per-service catalogs into one list.
- *
- * A model id stays exactly as its service advertises it while only one service
- * offers it. When two do, both sides gain a service prefix, because leaving one
- * of them bare would make the same id mean different things depending on which
- * service answered first.
- */
-function unionGatewayCatalogs(reads: readonly ServiceCatalogRead[]): {
-  models: ModelInfo[];
-  routes: Map<string, GatewayModelRoute>;
-} {
-  const providers = new Map<string, number>();
-  for (const read of reads) {
-    for (const model of read.models) {
-      providers.set(model.id, (providers.get(model.id) ?? 0) + 1);
-    }
-  }
-
-  const models: ModelInfo[] = [];
-  const routes = new Map<string, GatewayModelRoute>();
-  for (const read of reads) {
-    for (const model of read.models) {
-      const collides = (providers.get(model.id) ?? 0) > 1;
-      const exposedId = collides
-        ? qualifiedGatewayModelId(read.catalog.serviceId, model.id)
-        : model.id;
-      routes.set(exposedId, {
-        serviceId: read.catalog.serviceId,
-        modelId: model.id,
-      });
-      models.push(collides ? { ...model, id: exposedId } : model);
-    }
-  }
-  return { models, routes };
-}
-
-/**
  * One launcher per configured service.
  *
  * Each owns its own readiness attempt, foreground child, and stop schedule, so
@@ -519,6 +485,15 @@ function relinquishGatewayProcessGroup(processGroupId: number): boolean {
     if (launcher.relinquishOwnedProcessGroup(processGroupId)) return true;
   }
   return false;
+}
+
+/** What became of one owned service child during a handoff. */
+export interface GatewayProcessGroupRetention {
+  processGroupId: number;
+  /** Whatever the handoff threw; the launcher still owns this child. */
+  error?: unknown;
+  /** True once the launcher handed this child to the retainer. */
+  relinquished: boolean;
 }
 
 /**
@@ -619,18 +594,7 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
       return;
     }
     ClaudeGatewayProvider.services = [
-      {
-        id: existing?.id ?? DEFAULT_GATEWAY_SERVICE_ID,
-        label: existing?.label ?? "",
-        shortName: existing?.shortName ?? "",
-        url,
-        enabled: true,
-        ...(startCommand ? { serviceCommand: startCommand } : {}),
-        autoStop: false,
-        autoStopAfterSeconds: 0,
-        codexEnabled: false,
-        codexWireApi: DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
-      },
+      legacyGatewayServiceEntry(url, startCommand, existing),
     ];
     ClaudeGatewayProvider.defaultServiceId =
       ClaudeGatewayProvider.services[0]!.id;
@@ -664,22 +628,7 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
   }): Promise<void> {
     await ClaudeGatewayProvider.configureGatewayServices({
       services: options.url
-        ? [
-            {
-              id: DEFAULT_GATEWAY_SERVICE_ID,
-              label: "",
-              shortName: "",
-              url: options.url,
-              enabled: true,
-              ...(options.startCommand
-                ? { serviceCommand: options.startCommand }
-                : {}),
-              autoStop: false,
-              autoStopAfterSeconds: 0,
-              codexEnabled: false,
-              codexWireApi: DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
-            },
-          ]
+        ? [legacyGatewayServiceEntry(options.url, options.startCommand)]
         : [],
       defaultServiceId: DEFAULT_GATEWAY_SERVICE_ID,
       ...(options.disableAgent === undefined
@@ -758,16 +707,35 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     await shutdownGatewayServiceLaunchers();
   }
 
-  static getOwnedGatewayProcessGroupId(): number | undefined {
-    return ownedGatewayProcessGroupIds()[0];
-  }
-
-  static getOwnedGatewayProcessGroupIds(): number[] {
-    return ownedGatewayProcessGroupIds();
-  }
-
-  static relinquishOwnedGatewayProcessGroup(processGroupId: number): boolean {
-    return relinquishGatewayProcessGroup(processGroupId);
+  /**
+   * Hand every owned service child to something that outlives this process.
+   *
+   * Each configured service owns its own foreground child, so a restart has to
+   * walk all of them: handing over only the first left every other service's
+   * child to die with the server that spawned it. `retain` runs before the
+   * launcher gives a child up, so a child whose `retain` throws stays owned
+   * here and the caller's ordinary stop path still reaches it. One service's
+   * failure does not end the walk — a caller that treats a failure as fatal
+   * reports it from the returned records, once the remaining children are
+   * safe.
+   */
+  static async retainOwnedGatewayProcessGroups(
+    retain: (processGroupId: number) => void | Promise<void>,
+  ): Promise<GatewayProcessGroupRetention[]> {
+    const retentions: GatewayProcessGroupRetention[] = [];
+    for (const processGroupId of ownedGatewayProcessGroupIds()) {
+      try {
+        await retain(processGroupId);
+      } catch (error) {
+        retentions.push({ processGroupId, error, relinquished: false });
+        continue;
+      }
+      retentions.push({
+        processGroupId,
+        relinquished: relinquishGatewayProcessGroup(processGroupId),
+      });
+    }
+    return retentions;
   }
 
   static getGatewayUrl(): string | undefined {
@@ -857,7 +825,12 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     const read = results.filter(
       (result): result is ServiceCatalogRead => result !== undefined,
     );
-    const { models, routes } = unionGatewayCatalogs(read);
+    const { models, routes } = unionModelCatalogs(
+      read.map((entry) => ({
+        serviceId: entry.catalog.serviceId,
+        models: entry.models,
+      })),
+    );
 
     // A service that could not be read this time keeps its last good catalog:
     // an unavailable endpoint must not strip the launch windows and routing of
@@ -885,6 +858,11 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     ) {
       return [];
     }
+    // pi's registry can only name models an endpoint has actually advertised,
+    // which is known here and nowhere earlier.
+    void refreshPiModelExport(
+      ClaudeGatewayProvider.advertisedModelsByService(),
+    );
     return models;
   }
 
@@ -947,6 +925,7 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
             service.disablePlanMode ??
             ClaudeGatewayProvider.gatewayDisablePlanMode,
           launchMetadata: parsed.launchMetadata,
+          models: parsed.models,
         },
       };
     } catch (error) {
@@ -993,6 +972,21 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     const snapshot = ClaudeGatewayProvider.currentSnapshot();
     const catalog = snapshot?.services.get(service.id);
     if (catalog) catalog.baseUrl = listeningUrl;
+  }
+
+  /**
+   * What each configured service most recently advertised, by service id.
+   *
+   * For exports to other CLIs' registries, which need the endpoint-by-endpoint
+   * view rather than the union YA's own picker shows.
+   */
+  static advertisedModelsByService(): Map<string, ModelInfo[]> {
+    const snapshot = ClaudeGatewayProvider.currentSnapshot();
+    const byService = new Map<string, ModelInfo[]>();
+    for (const [serviceId, catalog] of snapshot?.services ?? []) {
+      byService.set(serviceId, catalog.models);
+    }
+    return byService;
   }
 
   private static currentSnapshot(): GatewayCatalogSnapshot | undefined {

@@ -40,9 +40,11 @@ directory on local disk and is what the refusal message and the client banner
 recommend.
 
 Classification is positive evidence only. `packages/server/src/lib/filesystemKind.ts`
-owns the one table of filesystem identities, shared with scratch-space
-selection, and names a category — network, memory-backed or a userspace FUSE
-driver — because those callers fear different things. Only the network category
+owns the one table of filesystem identities and names a category — network,
+memory-backed or a userspace FUSE driver. The placement check is the only
+caller that reads the category; speech vocabulary uses the same probe for free
+space alone, since both its files now live in the data directory and inherit
+this decision rather than making their own. Only the network category
 refuses SQLite: a FUSE mount names who implements the filesystem rather than
 where the bytes live, and a memory-backed one takes locks locally. A filesystem
 the table does not name, an uninspectable directory, and every platform whose

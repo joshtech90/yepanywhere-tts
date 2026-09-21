@@ -26,6 +26,15 @@ export interface RemoteCompatibilityNotice {
   versionSummary?: string;
   action?: RemoteCompatibilityNoticeAction;
   dismissKey: string;
+  /** Sort rank among notices of the same severity; lower shows first. */
+  priority: number;
+  /** "snooze-only" offers Remind me later but no Dismiss. */
+  dismissal: "dismiss" | "snooze-only";
+  /**
+   * Where a floating card sits: a notice the user cannot dismiss must leave
+   * the navigation header reachable. Ignored by inline cards.
+   */
+  floatingPlacement: "over-header" | "below-header";
 }
 
 export type RemoteInstallSource =
@@ -128,6 +137,9 @@ export function getRemoteCompatibilityNotices(
     notices.push({
       id: "relay-resume-security",
       severity: "blocking",
+      priority: 0,
+      dismissal: "dismiss",
+      floatingPlacement: "over-header",
       title: "Server update required",
       body: "This hosted client requires current relay session-resume server verification. Update the local server, or use localhost, a tunnel, or a VPN with the old server.",
       guidance: guidance.text,
@@ -157,6 +169,9 @@ export function getRemoteCompatibilityNotices(
     notices.push({
       id: "relay-resume-v3-grace",
       severity: "security",
+      priority: 0,
+      dismissal: "dismiss",
+      floatingPlacement: "over-header",
       title: "Server update required soon",
       body: "This server uses the older relay session-resume protocol. Remote login still works during the compatibility window, but update the YA server soon; future hosted clients will require the newer server-verification protocol for security.",
       guidance: guidance.text,
@@ -183,6 +198,9 @@ export function getRemoteCompatibilityNotices(
     notices.push({
       id,
       severity: "blocking",
+      priority: 10,
+      dismissal: "dismiss",
+      floatingPlacement: "over-header",
       title: "Server update required",
       body: "This hosted client requires a newer YA server compatibility level for basic remote use. Update the local server, or use localhost, a tunnel, or a VPN with the old server.",
       guidance: guidance.text,
@@ -207,6 +225,9 @@ export function getRemoteCompatibilityNotices(
     notices.push({
       id,
       severity: "recommended",
+      priority: 10,
+      dismissal: "dismiss",
+      floatingPlacement: "over-header",
       title: "Update local server soon",
       body: "This hosted client is newer than your local YA server. Basic remote use should still work, but update the server soon to avoid missing or unstable newer remote features.",
       guidance: guidance.text,
@@ -232,6 +253,9 @@ export function getRemoteCompatibilityNotices(
     notices.push({
       id,
       severity: "recommended",
+      priority: 20,
+      dismissal: "dismiss",
+      floatingPlacement: "over-header",
       title: "Update recommended",
       body: "This hosted client includes backend/API compatibility changes. Basic remote use should still work, but updating the local server is recommended for this release.",
       guidance: guidance.text,
@@ -266,6 +290,9 @@ export function getRemoteCompatibilityNotices(
     notices.push({
       id: "remote-update-available",
       severity: "recommended",
+      priority: 30,
+      dismissal: "dismiss",
+      floatingPlacement: "over-header",
       title: "Update available",
       body: `Yep Anywhere ${target} is available for this server.`,
       guidance: guidance.text,
@@ -289,20 +316,9 @@ export function getRemoteCompatibilityNotices(
   return notices.sort((a, b) => {
     const severity = SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity];
     if (severity !== 0) return severity;
-    const priority = getNoticePriority(a.id) - getNoticePriority(b.id);
+    const priority = a.priority - b.priority;
     return priority !== 0 ? priority : a.id.localeCompare(b.id);
   });
-}
-
-function getNoticePriority(id: string): number {
-  if (id === "relay-resume-security" || id === "relay-resume-v3-grace") {
-    return 0;
-  }
-  if (id === "server-runtime-node22") return 0.5;
-  if (id.startsWith("remote-compat-")) return 1;
-  if (id.startsWith("backend-api-compat-")) return 2;
-  if (id === "remote-update-available") return 3;
-  return 4;
 }
 
 function getRemoteCompatibilityLevel(input: RemoteCompatibilityInput): number {
@@ -501,6 +517,11 @@ function getRuntimeNotice(
   return {
     id,
     severity: "recommended",
+    priority: 5,
+    // The runtime advisory stays until the runtime changes, so it offers a
+    // reminder rather than a dismissal and keeps the header reachable.
+    dismissal: "snooze-only",
+    floatingPlacement: "below-header",
     title: t(
       kind === "node"
         ? "runtimeNoticeNodeTitle"

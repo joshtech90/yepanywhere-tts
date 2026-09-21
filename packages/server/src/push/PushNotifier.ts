@@ -18,7 +18,6 @@ import type {
   EventBus,
   ProcessStateEvent,
   ProcessTerminatedEvent,
-  SessionAbortedEvent,
 } from "../watcher/EventBus.js";
 import type { PushService } from "./PushService.js";
 import type {
@@ -63,8 +62,11 @@ export class PushNotifier {
         void this.handleProcessStateChange(event);
       } else if (event.type === "process-terminated") {
         void this.handleProcessTerminated(event);
-      } else if (event.type === "session-aborted") {
-        this.handleSessionAborted(event);
+      } else if (
+        event.type === "session-aborted" ||
+        event.type === "session-stop-requested"
+      ) {
+        this.suppressSession(event.sessionId);
       }
     });
   }
@@ -203,12 +205,12 @@ export class PushNotifier {
     });
   }
 
-  private handleSessionAborted(event: SessionAbortedEvent): void {
-    this.suppressSession(event.sessionId);
-  }
-
-  /** Called before an intentional Stop/Kill can emit provider cleanup events. */
-  suppressSession(sessionId: string): void {
+  /**
+   * An intentional Stop/Kill was requested, before it can emit provider
+   * cleanup events. Reached only from the bus, so nothing can suppress a
+   * session without announcing the stop to the rest of the server.
+   */
+  private suppressSession(sessionId: string): void {
     const process = this.supervisor.getProcessForSession(sessionId);
     if (process) {
       this.getNotificationState(process).stoppedAtUserTurn =

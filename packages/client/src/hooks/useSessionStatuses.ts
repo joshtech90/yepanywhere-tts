@@ -1,3 +1,4 @@
+import { isSessionUnreadEvent } from "@yep-anywhere/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { activityBus } from "../lib/activityBus";
 import type { AgentActivity, SessionSummary } from "../types";
@@ -135,7 +136,7 @@ export function useSessionStatuses(
           const current = next.get(event.sessionId) ?? {};
           next.set(event.sessionId, {
             ...current,
-            hasUnread: event.timestamp === "",
+            hasUnread: isSessionUnreadEvent(event),
           });
           return next;
         });

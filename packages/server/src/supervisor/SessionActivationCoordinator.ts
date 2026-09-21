@@ -59,6 +59,12 @@ export interface ModelSettings {
   resumeMode?: "full" | "compact-first";
   /** Resume only through this transcript message UUID. */
   resumeSessionAt?: string;
+  /**
+   * With `resumeSessionAt`: the prompt UUID of the single turn being
+   * dropped, so the provider refuses a truncation that would discard
+   * anything else. See topics/session-rewind.md.
+   */
+  resumeDropsTurn?: string;
   /** Per-model preemptive compaction threshold percentage. */
   compactAtContextPercent?: number;
   /** Effective context window used by the compaction threshold. */
@@ -382,6 +388,16 @@ export class SessionActivationCoordinator {
       thinking: process.thinking ?? null,
       effort: process.appliedEffort ?? null,
     };
+  }
+
+  /**
+   * Snapshot a live process's current settings (model, effort, thinking,
+   * mode) as the session's durable launch settings, so a restart that follows
+   * — a same-session rewind, for example — resumes with what the user last
+   * applied rather than what the process was launched with.
+   */
+  async persistLiveProcessLaunchSettings(process: Process): Promise<void> {
+    await this.persistProcessLaunchSettings(process);
   }
 
   private async persistProcessLaunchSettings(process: Process): Promise<void> {

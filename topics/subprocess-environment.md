@@ -53,6 +53,23 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
   still chain their own bridges. A resume may also set `AGENTCTL_SESSION_ID`
   on the worker environment; a new session receives it through the bridge
   file once the provider reports its canonical id.
+- The bridge owns `AGENTCTL_SESSION_ID` outright: it is stripped from every
+  spawn environment the bridge extends, and the bridge file clears the
+  variable before sourcing the canonical session-id file. An inherited id is
+  worse than no id. YA may be started from an agent's own shell, so the server
+  — and any provider worker forked from it — can carry that session's id;
+  handing it to a tool shell makes `agentctl` confidently maintain a live
+  peer's coordination entry instead of this session's, and refuse-on-missing
+  is the safe failure. For the same reason a *seeded* resume id is replaced,
+  not merged, when the provider reports its canonical id: a forked session is
+  launched from a copy of another session's transcript, so the id it started
+  with is not the one it is running under. `copyAgentctlBashEnvInto` publishes
+  any id it copies for the same reason — an id present only on the spawn
+  overlay would be cleared by the bridge file and never restored. The overlay
+  copy still matters for shells that never source `BASH_ENV` (codex's sandbox
+  can strip it). The agent-side half of this contract — the environment
+  outranking an id an agent passes or remembers — is `topics/agentctl.md`
+  § Own id: the environment wins, in the `~/agents` helper repo.
 - Publish agent-facing markers under the unprefixed `AGENT_` namespace. The
   shared child filter strips arbitrary inherited `YEP_*` / `YA_*` values as YA
   configuration; current wake, browser-debug, Gateway-route, and Copilot-backend

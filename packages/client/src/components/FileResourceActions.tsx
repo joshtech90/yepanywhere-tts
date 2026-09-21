@@ -7,6 +7,7 @@ import { useI18n } from "../i18n";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
 import {
+  createNewSessionPrefillToken,
   setNewSessionPrefill,
   stashNewSessionPrefillToken,
   type NewSessionPrefillCaret,
@@ -93,11 +94,7 @@ export function useStartNewSessionWithPrefillAction() {
       const params = new URLSearchParams({ projectId });
       appendNewSessionOptionParams(params, options);
       if (options.newTab) {
-        const token = stashNewSessionPrefillToken(
-          clientSummarySourceKey,
-          trimmed,
-          { caret: options.caret },
-        );
+        const token = createNewSessionPrefillToken();
         params.set("prefillToken", token);
         const opened = window.open(
           `${basePath}/new-session?${params.toString()}`,
@@ -105,6 +102,9 @@ export function useStartNewSessionWithPrefillAction() {
         );
         if (opened) {
           opened.opener = null;
+          stashNewSessionPrefillToken(token, clientSummarySourceKey, trimmed, {
+            caret: options.caret,
+          });
           return;
         }
         params.delete("prefillToken");

@@ -9,6 +9,10 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  type EarlyTypingHandoff,
+  startEarlyTypingHandoff,
+} from "../lib/earlyTypingHandoff";
 import { useI18n } from "../i18n";
 import { useSessionPerformanceSettings } from "./useSessionPerformanceSettings";
 import {
@@ -167,6 +171,9 @@ export function useMessageListIsearch({
   >(null);
   const [boundaryPulse, setBoundaryPulse] = useState(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const searchInputWantsFocusRef = useRef(false);
+  const searchQueryRef = useRef("");
+  const earlySearchHandoffRef = useRef<EarlyTypingHandoff | null>(null);
   const searchRestoreFocusRef = useRef<HTMLElement | null>(null);
   const searchOriginalScrollTopRef = useRef<number | null>(null);
   const committedSearchTargetIdRef = useRef<string | null>(null);
@@ -211,6 +218,63 @@ export function useMessageListIsearch({
     setHydratingSearchId(null);
   }, []);
 
+  // Reverse search is typeable from the keystroke that opens it, which is
+  // before the panel exists, so the handoff holds those keys and writes them
+  // into the query state the input will render. Retirement, its evidence and
+  // its bound live in the shared mechanism; see lib/earlyTypingHandoff.
+  const stopEarlySearchKeys = useCallback(() => {
+    earlySearchHandoffRef.current?.cancel();
+    earlySearchHandoffRef.current = null;
+  }, []);
+  const startEarlySearchKeys = useCallback(() => {
+    stopEarlySearchKeys();
+    earlySearchHandoffRef.current = startEarlyTypingHandoff({
+      hasFocus: () =>
+        searchInputRef.current !== null &&
+        document.activeElement === searchInputRef.current,
+      shows: () => searchInputRef.current?.value ?? "",
+      expects: () => searchQueryRef.current,
+      applyKey: (key) => {
+        setBoundary(null);
+        committedSearchTargetIdRef.current = null;
+        setUserTurnSearch((previous) =>
+          previous.active
+            ? {
+                ...previous,
+                query:
+                  "backspace" in key
+                    ? previous.query.slice(0, -1)
+                    : previous.query + key.insert,
+                selectedId: null,
+              }
+            : previous,
+        );
+      },
+      repairCaret: () => {
+        const input = searchInputRef.current;
+        if (!input) return;
+        const caret = input.value.length;
+        input.setSelectionRange(caret, caret);
+      },
+    });
+  }, [stopEarlySearchKeys]);
+  // Focus lands in the commit that creates the input, not a frame later. The
+  // focus event fires inside focus() below, so the handoff retires in that
+  // same call rather than waiting for a key to prove focus arrived; without
+  // it, a click elsewhere would leave the handoff still intercepting. A focus
+  // this call cannot land keeps it armed, and its per-key check retires it.
+  const attachSearchInput = useCallback((input: HTMLInputElement | null) => {
+    searchInputRef.current = input;
+    if (!input || !searchInputWantsFocusRef.current) return;
+    searchInputWantsFocusRef.current = false;
+    input.addEventListener("focus", () =>
+      earlySearchHandoffRef.current?.retireWhenReady(),
+    );
+    input.focus({ preventScroll: true });
+    const caret = input.value.length;
+    input.setSelectionRange(caret, caret);
+  }, []);
+
   const hasUserSearchableTurn = useMemo(
     () => hasSearchableUserTurn(displayRenderItems),
     [displayRenderItems],
@@ -219,6 +283,10 @@ export function useMessageListIsearch({
     (): UserTurnNavAnchor[] => getUserTurnNavAnchors(displayRenderItems),
     [displayRenderItems],
   );
+  // What the input is expected to show; the early-key receiver compares
+  // against it to know whether the input has caught up with what was typed
+  // before it existed.
+  searchQueryRef.current = userTurnSearch.query;
   const searchReady = getSearchReady({
     active: userTurnSearch.active,
     query: userTurnSearch.query,
@@ -787,8 +855,9 @@ export function useMessageListIsearch({
   useEffect(
     () => () => {
       stopSearchArrowRepeat();
+      stopEarlySearchKeys();
     },
-    [stopSearchArrowRepeat],
+    [stopEarlySearchKeys, stopSearchArrowRepeat],
   );
   const startSearchArrowRepeat = useCallback(
     (direction: "previous" | "next") => {
@@ -905,6 +974,8 @@ export function useMessageListIsearch({
   );
   const closeSearch = useCallback(
     (restoreScroll: boolean) => {
+      searchInputWantsFocusRef.current = false;
+      stopEarlySearchKeys();
       setBoundary(null);
       const committedTargetId = committedSearchTargetIdRef.current;
       committedSearchTargetIdRef.current = null;
@@ -944,7 +1015,12 @@ export function useMessageListIsearch({
         };
       });
     },
-    [cancelSearchTargetPreparation, containerRef, disposeHistorySearchWorker],
+    [
+      cancelSearchTargetPreparation,
+      containerRef,
+      disposeHistorySearchWorker,
+      stopEarlySearchKeys,
+    ],
   );
   const openSearch = useCallback(
     (scope: SessionIsearchScope) => {
@@ -977,16 +1053,19 @@ export function useMessageListIsearch({
         selectedId: null,
         originalScrollTop: searchOriginalScrollTopRef.current,
       });
-      requestAnimationFrame(() => {
-        searchInputRef.current?.focus({ preventScroll: true });
-        searchInputRef.current?.select();
-      });
+      // The panel mounts with focus (attachSearchInput), so no frame passes
+      // before the input can take keys. Until that mount happens the query
+      // still has nowhere to land, so collect keystrokes at the window and
+      // let the input render what was typed while it did not exist.
+      searchInputWantsFocusRef.current = true;
+      startEarlySearchKeys();
     },
     [
       containerRef,
       displayRenderItems.length,
       hasOlderMessages,
       hasUserSearchableTurn,
+      startEarlySearchKeys,
       userTurnSearch.active,
     ],
   );
@@ -1110,7 +1189,7 @@ export function useMessageListIsearch({
               {searchPanelProjection.scopeLabel}
             </span>
             <input
-              ref={searchInputRef}
+              ref={attachSearchInput}
               className={styles.input}
               value={userTurnSearch.query}
               onChange={(event) => handleQueryChange(event.target.value)}

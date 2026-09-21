@@ -1,3 +1,5 @@
+import { isSessionUnreadEvent } from "@yep-anywhere/shared";
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import type {
   AgentActivity,
   PendingInputType,
@@ -183,6 +185,7 @@ const REMAP_MERGE_GROUPS = {
     "parentSessionId",
     "parentSessionKind",
     "forkedFromSessionId",
+    "clearloop",
     "executor",
   ],
   projectObservedAt: ["projectId", "projectName"],
@@ -1255,6 +1258,7 @@ function withMetadataFields(
     parentSessionId?: string | null;
     parentSessionKind?: "btw-aside" | null;
     forkedFromSessionId?: string | null;
+    clearloop?: SessionClearloopBadge | null;
     executor?: string;
   },
   observation: SessionCollectionObservation,
@@ -1321,6 +1325,13 @@ function withMetadataFields(
             isFresh,
           )
         ? { forkedFromSessionId: fields.forkedFromSessionId }
+        : {}),
+    ...(fields.clearloop === null
+      ? isFresh
+        ? { clearloop: undefined }
+        : {}
+      : canApplyObservedField(record.clearloop, fields.clearloop, isFresh)
+        ? { clearloop: fields.clearloop }
         : {}),
     ...(canApplyObservedField(record.executor, fields.executor, isFresh)
       ? { executor: fields.executor }
@@ -1504,6 +1515,7 @@ function upsertSnapshotRecord(
       nonHumanUserTurn: row.nonHumanUserTurn,
       isArchived: row.isArchived,
       isStarred: row.isStarred,
+      clearloop: row.clearloop,
       autoResumeDisabled: row.autoResumeDisabled,
       parentSessionId: row.parentSessionId,
       parentSessionKind: row.parentSessionKind,
@@ -2051,6 +2063,7 @@ export function applySessionCollectionCreated(
       nonHumanUserTurn: session.nonHumanUserTurn,
       isArchived: session.isArchived,
       isStarred: session.isStarred,
+      clearloop: session.clearloop,
       parentSessionId: session.parentSessionId,
       parentSessionKind: session.parentSessionKind,
       forkedFromSessionId: session.forkedFromSessionId,
@@ -2131,6 +2144,7 @@ export function applySessionCollectionMetadataChanged(
       parentSessionId: event.parentSessionId,
       parentSessionKind: event.parentSessionKind,
       forkedFromSessionId: event.forkedFromSessionId,
+      clearloop: event.clearloop,
     },
     observation,
   );
@@ -2207,7 +2221,7 @@ export function applySessionCollectionSeen(
   );
   const record = withUnreadField(
     getRecord(state, event.sessionId),
-    event.timestamp === "",
+    isSessionUnreadEvent(event),
     observation,
   );
   return putRecord(state, record);

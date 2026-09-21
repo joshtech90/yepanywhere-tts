@@ -91,6 +91,7 @@ const claudeTools = [
   "BashOutput",
   "TaskOutput",
   "KillShell",
+  "Skill",
   "TaskCreate",
   "TaskUpdate",
 ] as const;
@@ -677,6 +678,7 @@ async function runPiPair(fixture: NativeDisplayCase) {
     lastUsage: null,
     lastCostUsd: null,
     terminalEvent: "agent_settled",
+    turnError: null,
     toolStates: new Map(),
   };
   const output = {

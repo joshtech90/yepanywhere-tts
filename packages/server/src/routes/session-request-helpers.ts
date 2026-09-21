@@ -252,6 +252,8 @@ export function buildUserMessageMetadata(
   body: UserMessageMetadataBody,
   serverTimestamp: number,
   fallbackIntent: UserMessageDeliveryIntent,
+  /** Acting limited user, from the principal; undefined means the superuser. */
+  sentByUser?: string,
 ): UserMessageMetadata {
   const rawMetadata = isRecord(body.messageMetadata)
     ? body.messageMetadata
@@ -330,5 +332,8 @@ export function buildUserMessageMetadata(
     ...(speech ? { speech } : {}),
     ...(clientTimestamp !== undefined ? { clientTimestamp } : {}),
     serverReceivedAt: new Date(serverTimestamp).toISOString(),
+    // Stamped from the principal, never from the body: a client cannot
+    // attribute its turn to somebody else.
+    ...(sentByUser ? { sentByUser } : {}),
   };
 }

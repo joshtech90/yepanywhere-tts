@@ -9,7 +9,9 @@ import {
 import type { PaginationInfo } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
+import type { SessionRewindRecord } from "@yep-anywhere/shared";
 import { createFinalMarkdownAugmentAction } from "../lib/sessionDetail/actionAdapters";
+import { applyRewindToMessages } from "../lib/sessionDetail/transcriptReducer";
 import type { SessionDetailRevealSnapshotResult } from "../lib/sessionDetail/revealSnapshot";
 import {
   buildReturnedToolUseToAgent,
@@ -225,6 +227,13 @@ export interface UseSessionMessagesResult {
   updateActiveWindowFollowingBottom: (followingBottom: boolean) => void;
   /** True when the initial render was hydrated from a retained route snapshot */
   restoredFromSnapshot: boolean;
+  /** Discard cached transcript state and fetch the session again in place. */
+  reloadSession: () => void;
+  /**
+   * Restructure the loaded transcript for a same-session rewind without a
+   * refetch. False when the cut is outside the loaded window.
+   */
+  applyRewindLocally: (record: SessionRewindRecord) => boolean;
 }
 
 function readSessionLoadCache(
@@ -510,6 +519,32 @@ export function useSessionMessages(
     },
     [coordinator],
   );
+  const [reloadGeneration, setReloadGeneration] = useState(0);
+  const forceFreshLoadRef = useRef(false);
+  const reloadSession = useCallback(() => {
+    forceFreshLoadRef.current = true;
+    coordinator.resetEntryState();
+    setReloadGeneration((generation) => generation + 1);
+  }, [coordinator]);
+  const applyRewindLocally = useCallback(
+    (record: SessionRewindRecord): boolean => {
+      const current =
+        coordinator.readSelected(selectSessionDetailMessages) ?? [];
+      // Already applied (this tab issued the rewind, or the event repeated).
+      if (
+        current.some(
+          (message) => getMessageId(message) === `rewound-group-${record.id}`,
+        )
+      ) {
+        return true;
+      }
+      const next = applyRewindToMessages(current, record);
+      if (next === current) return false;
+      dispatchSessionDetailAction({ type: "applyRewind", record });
+      return true;
+    },
+    [coordinator, dispatchSessionDetailAction],
+  );
 
   // Hold the store entry for the mounted session: retention protects it from
   // TTL/LRU eviction, so incremental dispatches always land on real state.
@@ -701,8 +736,15 @@ export function useSessionMessages(
     markReloadPerfPhase("session_snapshot_lookup_start", {
       projectId,
       sessionId,
+      reloadGeneration,
     });
-    const warmLoad = readSessionLoadCache(coordinator);
+    // A requested reload discards every cached view of the transcript so the
+    // server's current projection (for example after a same-session rewind)
+    // replaces it rather than being appended to.
+    const warmLoad = forceFreshLoadRef.current
+      ? undefined
+      : readSessionLoadCache(coordinator);
+    forceFreshLoadRef.current = false;
     markReloadPerfPhase("session_snapshot_lookup_complete", {
       projectId,
       sessionId,
@@ -821,8 +863,26 @@ export function useSessionMessages(
       return reveal;
     };
 
+    // A cached transcript whose applied rewinds differ from the server's was
+    // projected before a rewind (or before a refused one was deleted); an
+    // incremental catch-up can only append, never regroup older rows, so the
+    // cache is discarded and the current projection loaded whole.
+    const warmSnapshotPredatesRewind = (data: GetSessionResult): boolean => {
+      if (!warmLoad) return false;
+      const cached = warmLoad.session.rewindRecordIds ?? [];
+      const current = data.session.rewindRecordIds ?? [];
+      return (
+        cached.length !== current.length ||
+        cached.some((id, index) => id !== current[index])
+      );
+    };
+
     const applyWarmDataBeforeHydration = (data: GetSessionResult) => {
       if (!warmLoad) return;
+      if (warmSnapshotPredatesRewind(data)) {
+        reloadSession();
+        return;
+      }
       markReloadPerfPhase(
         "session_initial_load_data_ready",
         coordinator.buildInitialLoadDataReadyPerfDetail(data, {
@@ -849,6 +909,10 @@ export function useSessionMessages(
 
     const applyWarmDeltaAfterHydration = (data: GetSessionResult) => {
       if (!warmLoad) return;
+      if (warmSnapshotPredatesRewind(data)) {
+        reloadSession();
+        return;
+      }
       markReloadPerfPhase(
         "session_initial_load_data_ready",
         coordinator.buildInitialLoadDataReadyPerfDetail(data, {
@@ -1018,6 +1082,7 @@ export function useSessionMessages(
   }, [
     projectId,
     sessionId,
+    reloadGeneration,
     effectiveTailTurns,
     initialHistoryCompactions,
     tailFrom,
@@ -1030,6 +1095,7 @@ export function useSessionMessages(
     processStreamMessage,
     processStreamSubagentMessage,
     readStoreLastMessageId,
+    reloadSession,
     snapshotKeyString,
     sourceApi,
     warnSessionDetailStore,
@@ -1626,5 +1692,7 @@ export function useSessionMessages(
     updateRouteScrollSnapshot,
     updateActiveWindowFollowingBottom,
     restoredFromSnapshot: Boolean(cachedLoad),
+    reloadSession,
+    applyRewindLocally,
   };
 }

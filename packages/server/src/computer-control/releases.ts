@@ -46,6 +46,12 @@ export interface ReleaseProgress {
   total?: number;
 }
 
+/** Persisted and hand-edited version text is not necessarily comparable;
+ * `compareVersions` and the release feed accept only `x.y.z`. */
+export function isReleaseVersion(value: unknown): value is string {
+  return typeof value === "string" && versionPattern.test(value);
+}
+
 export function compareVersions(left: string, right: string): number {
   if (!versionPattern.test(left) || !versionPattern.test(right))
     throw new Error("Invalid release version");
@@ -222,7 +228,11 @@ export async function stageComputerRelease(
         if (received > artifact.size)
           throw new Error("Package exceeds its signed size");
         hash.update(chunk);
-        await file.writeFile(chunk);
+        // Size and hash are taken from the stream, so a chunk that only
+        // partly reaches the file would pass verification as a short archive.
+        const { bytesWritten } = await file.write(chunk);
+        if (bytesWritten !== chunk.length)
+          throw new Error("Downloaded package could not be written in full");
         progress({ phase: "downloading", received, total: artifact.size });
       }
     } finally {

@@ -39,9 +39,6 @@ function ArtifactSettingsForm({
   const [port, setPort] = useState(String(status.port));
   const [expiryHours, setExpiryHours] = useState(status.expiryHours);
   const [expiryDays, setExpiryDays] = useState(status.expiryDays);
-  const [deleteOnExpiry, setDeleteOnExpiry] = useState(
-    status.deleteOnExpiry === true,
-  );
   const [vhostPublicRoot, setVhostPublicRoot] = useState(
     status.vhostPublicRoot ?? "",
   );
@@ -60,7 +57,6 @@ function ArtifactSettingsForm({
       localEnabled: boolean;
       expiryDays: number;
       expiryHours: number;
-      deleteOnExpiry: boolean;
       vhosts: ArtifactVhost[];
     }> = {},
   ) {
@@ -69,7 +65,6 @@ function ArtifactSettingsForm({
       localEnabled,
       expiryDays,
       expiryHours,
-      deleteOnExpiry,
       vhosts,
       ...overrides,
     };
@@ -93,10 +88,7 @@ function ArtifactSettingsForm({
         // A server that reports days takes days; an older one keeps hours.
         ...(draft.expiryDays === undefined
           ? { expiryHours: draft.expiryHours }
-          : {
-              expiryDays: draft.expiryDays,
-              deleteOnExpiry: draft.deleteOnExpiry,
-            }),
+          : { expiryDays: draft.expiryDays }),
         ...(vhostsSupported
           ? {
               vhostPublicRoot: vhostPublicRoot.trim(),
@@ -207,17 +199,8 @@ function ArtifactSettingsForm({
               />
             </div>
             <p>{t("artifactExpiryDaysHint")}</p>
-            <label className={styles.toggle}>
-              <input
-                type="checkbox"
-                checked={deleteOnExpiry}
-                onChange={(e) => {
-                  setDeleteOnExpiry(e.target.checked);
-                  void save({ deleteOnExpiry: e.target.checked });
-                }}
-              />
-              {t("artifactDeleteOnExpiry")}
-            </label>
+            {/* No control: expiry deletion is what a capture asks for when it
+                creates its link, so there is nothing here to set. */}
             <p>{t("artifactDeleteOnExpiryHint")}</p>
           </>
         ) : (

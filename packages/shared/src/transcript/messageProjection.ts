@@ -406,6 +406,19 @@ function processMessage(
       return;
     }
 
+    // Header of a same-session rewound group (topics/session-rewind.md). The
+    // group details ride on the source message; the header carries no text.
+    if (subtype === "rewound_group") {
+      items.push({
+        type: "system",
+        id: msgId,
+        subtype,
+        content: typeof msg.content === "string" ? msg.content : "",
+        sourceMessages: [msg],
+      });
+      return;
+    }
+
     if (subtype === "tool_output") {
       const toolName =
         typeof msg.codexToolName === "string" ? msg.codexToolName : "";
@@ -588,6 +601,7 @@ function processMessage(
         type: "text",
         id: msgId,
         text: content,
+        sourceBlockIndex: 0,
         sourceMessages: [msg],
         isSubagent: msg.isSubagent,
         augmentHtml: messageHtml ?? augments?.markdown?.[msgId]?.html,
@@ -666,6 +680,7 @@ function processMessage(
           type: "text",
           id: blockId,
           text: block.text,
+          sourceBlockIndex: i,
           sourceMessages: [msg],
           isSubagent: msg.isSubagent,
           // Only show streaming cursor on the last text block
@@ -682,6 +697,7 @@ function processMessage(
           type: "thinking",
           id: blockId,
           thinking,
+          sourceBlockIndex: i,
           signature: undefined,
           status: msg._isStreaming ? "streaming" : "complete",
           sourceMessages: [msg],

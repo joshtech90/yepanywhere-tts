@@ -20,6 +20,78 @@ afterEach(async () => {
   if (directory) await rm(directory, { recursive: true });
 });
 
+it("answers availability from the resolved reader, not the advertised provider list", async () => {
+  directory = await mkdtemp(join(tmpdir(), "session-content-reader-"));
+  const cwd = join(directory, "project");
+  await mkdir(cwd);
+  const projectsDir = join(directory, "projects");
+  const sessionDir = join(projectsDir, hostname(), cwd.replace(/[/\\]/g, "-"));
+  await mkdir(sessionDir, { recursive: true });
+  const sessionId = "reader-capability";
+  const timestamp = "2026-09-14T12:00:00.000Z";
+  const file = join(sessionDir, `${sessionId}.jsonl`);
+  await writeFile(
+    file,
+    `${JSON.stringify({
+      type: "user",
+      uuid: "turn-0",
+      cwd,
+      sessionId,
+      timestamp,
+      message: { role: "user", content: "Find the needle here" },
+    })}\n`,
+  );
+  const row: SessionCatalogRow = {
+    catalogFamily: "claude",
+    storeKey: projectsDir,
+    sessionId,
+    projectId: toUrlProjectId(cwd),
+    projectPath: cwd,
+    projectIdentityKey: cwd,
+    updatedAt: timestamp,
+    createdAt: timestamp,
+    title: "Opening title",
+    // Not on the advertised bounded-turn-search list, yet this fixture resolves
+    // a reader that can read bounded turns.
+    provider: "opencode",
+    fidelity: "head",
+    sourceVersion: "fixture-1",
+    location: { kind: "file", path: file },
+  };
+  collections = new RetainedSessionCollections({
+    dataDir: join(directory, "data"),
+    adapters: async () => [
+      {
+        catalogFamily: "claude",
+        storeKey: projectsDir,
+        scan: async () => ({ sourceVersion: "fixture-1", rows: [row] }),
+      },
+    ],
+  });
+  await collections.refresh();
+  const app = new Hono().route(
+    "/api/sessions",
+    createGlobalSessionsRoutes({
+      retainedCollections: collections,
+      scanner: new ProjectScanner({
+        projectsDir,
+        enableCodex: false,
+        enableGemini: false,
+      }),
+      readerFactory: () => new ClaudeSessionReader({ sessionDir }),
+    }),
+  );
+  const response = await app.request("/api/sessions/content-search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ sessionId, query: "needle", roles: ["user"] }),
+  });
+  expect(response.status).toBe(200);
+  const batch = (await response.json()) as SessionContentSearchBatch;
+  expect(batch.unavailable).toBeUndefined();
+  expect(batch.matches.map((match) => match.id)).toEqual(["turn-0"]);
+});
+
 it("searches cold turns in bounded batches through the mounted route, with role/time filtering and sealed continuations", async () => {
   directory = await mkdtemp(join(tmpdir(), "session-content-search-"));
   const cwd = join(directory, "project");

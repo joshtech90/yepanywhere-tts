@@ -430,6 +430,51 @@ row remains until a server-confirmed collection read removes it. The session
 link remains the surface for full context and Steer now. There is no
 project-wide Resume all action.
 
+## Queued YA commands
+
+A YA-emulated slash command is not provider text: the composer normally
+consumes it and performs the operation immediately. That is exactly wrong on
+a delayed lane, where the point of choosing Project Queue is to run the
+command later. So composer text bound for Project Queue is classified before
+anything runs, and a queueable command is carried to the scheduler as a
+`yaCommand` tag on the item while `message.text` stays the verbatim command
+line every queue surface displays. This is the same routing-at-ingress rule
+[`emulated-slash-commands`](emulated-slash-commands.md) states for the
+per-session YA-command lane; the tag decides routing, and no queue surface
+ever reinterprets slash-shaped text by content.
+
+Three outcomes, all decided at enqueue so the user learns immediately:
+
+- **Queueable** — `/clear N` and `/clearloop [N] M: <prompt>`. The server runs
+  them against the target session at dispatch. A `/clearloop` promoted this
+  way starts **patient** ([session-rewind](session-rewind.md#clearloop)): the
+  user chose a lane that waits for the project, so the loop it starts keeps
+  waiting.
+- **Composer-only** — `/model`, `/btw`, `/done`, `/archive`, `/terminate`,
+  `/title`, `/compact`. These act on composer or client state, so queueing
+  one would have to either run it now or run it later against a composer that
+  no longer exists. They are refused with a visible reason and the draft is
+  restored.
+- **Not yet queueable** — `/fork N`. It creates a *new* session, so a queued
+  fork would have to change its own item's target; that remains a separate
+  design. Refused with its own reason, not silently run.
+
+Anything else — ordinary prose, a provider command, a skill line, an effort
+modifier such as `/fast …` — queues as text exactly as before.
+
+A queued command resolves its turn at **dispatch**, not at enqueue. `/clearloop
+3: p` queued now loops over turn 3 as it stands when the project finally goes
+quiet, and a command with no number uses the tail then. A queued command takes
+no attachments, targets an existing session only, and `/clear 0` is refused
+because it is the composer's navigate-to-a-new-session action rather than a
+session operation a scheduler can perform.
+
+Dispatching a YA command starts no provider work, so it settles the item
+without a session launch. A refusal from the session — a provider that does
+not support rewind, a turn still running, a turn number that is gone — fails
+the item with that message and keeps the command text for Retry, like any
+other dispatch failure.
+
 ## Attachments
 
 Existing-session Project Queue items may contain already uploaded attachment

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, join, sep } from "node:path";
+import { getDataDir } from "../config.js";
 
 export const GEMINI_TMP_DIR =
   process.env.GEMINI_SESSIONS_DIR ?? join(homedir(), ".gemini", "tmp");
@@ -12,10 +13,9 @@ export const GEMINI_DIR = GEMINI_TMP_DIR.replace(
 const LEGACY_PROJECT_MAP_FILE = join(GEMINI_TMP_DIR, "project-map.json");
 // YA-owned lookup state must not generate atomic-write events inside the
 // provider's recursively watched store (Node 20 can race a removed temp file).
-export const PROJECT_MAP_FILE = join(
-  process.env.YEP_DATA_DIR ?? join(homedir(), ".yep-anywhere"),
-  "gemini-project-map.json",
-);
+// The data directory comes from `getDataDir()`, which owns the profile rules;
+// resolving the default path here would give two profiles one shared map.
+export const PROJECT_MAP_FILE = join(getDataDir(), "gemini-project-map.json");
 
 /**
  * Compute SHA-256 hash of a path (how Gemini creates projectHash).

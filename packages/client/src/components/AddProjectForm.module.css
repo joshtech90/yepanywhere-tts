@@ -1,0 +1,105 @@
+/* The Projects page's add-project form: path, optional chosen name and
+ * code, and the submit/cancel row. It fills the toolbar it sits in. */
+
+.form {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 1rem;
+  box-sizing: border-box;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+}
+
+.input {
+  width: 100%;
+  padding: 0.75rem;
+  box-sizing: border-box;
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  color: inherit;
+  font-family: var(--font-mono);
+  font-size: var(--font-size-base);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--accent-color);
+}
+
+.text {
+  font-family: inherit;
+}
+
+.fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.field {
+  display: flex;
+  flex: 1 1 14rem;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+
+.codeField {
+  flex: 0 1 13rem;
+}
+
+.label {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+
+.hint {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.actions button {
+  padding: 0.5rem 1rem;
+  border-radius: 6px;
+  font-size: var(--font-size-base);
+  cursor: pointer;
+}
+
+/* The legacy rule named an undefined --color-primary, which left the Add
+ * button as pale text on the panel; --accent-color is the button color the
+ * rest of the client uses. */
+.actions button[type="submit"] {
+  background: var(--accent-color);
+  color: white;
+  border: none;
+}
+
+.actions button[type="submit"]:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.actions button[type="button"] {
+  background: transparent;
+  border: 1px solid var(--border-input);
+  color: var(--text-muted);
+}
+
+.error {
+  padding: 0.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border-radius: 4px;
+  color: var(--color-error, #ef4444);
+  font-size: var(--font-size-sm);
+}

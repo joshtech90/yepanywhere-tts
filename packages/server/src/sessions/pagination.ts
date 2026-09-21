@@ -245,7 +245,13 @@ function isUserTurn(m: Message): boolean {
       : typeof record.message?.role === "string"
         ? record.message.role
         : undefined;
-  return (m.type === "user" || role === "user") && !isSyntheticUserTurn(m);
+  return (
+    (m.type === "user" || role === "user") &&
+    !isSyntheticUserTurn(m) &&
+    // A turn a same-session rewind dropped is history, not a window unit:
+    // the tail window is measured in live turns (topics/session-rewind.md).
+    typeof (m as { rewoundGroupId?: unknown }).rewoundGroupId !== "string"
+  );
 }
 
 /**
@@ -371,6 +377,17 @@ export function sliceAtUserTurnBoundary(
     }
   } else if (totalUserTurns > tailTurns) {
     sliceFromIdx = userTurnIndices[totalUserTurns - tailTurns] ?? 0;
+  }
+  // A window must not start inside a rewound group: the group's header row
+  // precedes its rows, and a headerless partial group has nothing to expand
+  // from. Back up to the header (topics/session-rewind.md).
+  const startGroup = (messages[sliceFromIdx] as { rewoundGroupId?: unknown })
+    ?.rewoundGroupId;
+  if (typeof startGroup === "string") {
+    const headerIdx = messages.findIndex(
+      (m) => (m as { rewoundGroupId?: unknown }).rewoundGroupId === startGroup,
+    );
+    if (headerIdx >= 0 && headerIdx < sliceFromIdx) sliceFromIdx = headerIdx;
   }
 
   const slicedMessages = messages.slice(sliceFromIdx);

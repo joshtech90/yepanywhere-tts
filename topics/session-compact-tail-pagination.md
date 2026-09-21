@@ -150,8 +150,11 @@ unchanged file reuses its normalized projection without a reverse scan;
 appends parse only new bytes. A new compaction or a changed requested boundary
 count selects a new suffix, releasing the prior cache. A complete read and a
 bounded read share the existing per-session read owner but cannot reuse each
-other's differently scoped entries. Retained source-byte accounting measures
-the suffix rather than charging the entire file.
+other's differently scoped entries. Only a complete read may cache the
+session's subagent mappings: a suffix describes the spawns inside it alone, so
+caching from one would report a session with earlier subagents as having none.
+Retained source-byte accounting measures the suffix rather than charging the
+entire file.
 
 An id outside the candidate window, an unknown id, or a tool result whose call
 precedes the window uses the complete reader. This preserves catch-up across

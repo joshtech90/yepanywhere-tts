@@ -10,6 +10,9 @@ export type {
 } from "./retained-session-collections.js";
 
 export * from "./session-content-search.js";
+export * from "./limited-users.js";
+export * from "./project-template-source.js";
+export * from "./user-usage.js";
 export {
   ACLI_COMMENTARY_MAX_TEXTS,
   ACLI_COMMENTARY_MAX_BODY_BYTES,
@@ -44,6 +47,7 @@ export {
   POST_COMPACT_REPLAY_PREAMBLE,
   buildPostCompactReplayPrompt,
   buildPostCompactReplayText,
+  capTurnText,
   formatPostCompactReplayPrompt,
   clampPostCompactReplayTurnCount,
   isPostCompactReplayEnabledForProvider,
@@ -54,6 +58,18 @@ export {
   type PostCompactReplayPrompt,
   type PostCompactReplayTurn,
 } from "./postCompactReplay.js";
+export {
+  DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS,
+  DEFAULT_LONG_CONTEXT_EFFORT_WARNING_TOKENS,
+  LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS,
+  LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS,
+  effortChangeKeepsPromptCache,
+  effortOfThinkingOption,
+  parseLongContextEffortWarningSettings,
+  shouldWarnLongContextEffortChange,
+  type LongContextEffortChangeQuery,
+  type LongContextEffortWarningSettings,
+} from "./long-context-effort-warning.js";
 
 export {
   EFFORT_LEVEL_ORDER,
@@ -207,6 +223,7 @@ export {
   claudeSettingsPath,
   codexProfileName,
   codexProfilePath,
+  codexProviderKey,
   gatewayServiceCliInvocations,
   gatewayServiceDisplayName,
   gatewayServiceShortName,
@@ -215,14 +232,20 @@ export {
   isValidGatewayServiceLabel,
   isValidGatewayServiceShortName,
   isLoopbackGatewayUrl,
+  legacyGatewayServiceEntry,
   loopbackGatewayHostname,
   normalizeGatewayServiceUrl,
   parseGatewayModelId,
   parseGatewayServices,
+  piProviderName,
   qualifiedGatewayModelId,
+  tomlString,
+  unionModelCatalogs,
   type GatewayService,
   type GatewayServiceCodexWireApi,
   type GatewayServiceExportPaths,
+  type ModelCatalogRead,
+  type ModelCatalogRoute,
 } from "./gateway-services.js";
 
 export {
@@ -238,7 +261,9 @@ export {
 export {
   GATEWAY_EFFORT_PROBE_VALUE,
   gatewayEffortProbeRequest,
+  gatewayTemplateEffortProbeRequest,
   parseGatewayEffortProbe,
+  parseGatewayTemplateEffortRejection,
   probeModelIdFromCatalog,
   type GatewayEndpointEffortProbe,
 } from "./gateway-effort-probe.js";
@@ -467,6 +492,7 @@ export {
   CODEX_REASONING_SUMMARIES,
   DEFAULT_CODEX_REASONING_SUMMARY,
   SESSION_SANDBOX_LEVELS,
+  agentHarness,
   isClaudeProviderName,
   isCodexReasoningSummary,
   HELPER_SIDE_MODEL_CHEAPEST,
@@ -580,6 +606,11 @@ export type {
   SessionWakeReasonSnapshot,
 } from "./session-liveness.js";
 
+export {
+  SESSION_UNREAD_TIMESTAMP,
+  isSessionUnreadEvent,
+} from "./session-seen.js";
+
 export type {
   UserMessageCompositionMetadata,
   NonHumanUserTurn,
@@ -667,6 +698,36 @@ export {
   clampProjectQueueQuietSeconds,
 } from "./project-queue.js";
 export {
+  COMPOSER_ONLY_YA_COMMANDS,
+  QUEUEABLE_YA_COMMANDS,
+  UNSUPPORTED_QUEUED_YA_COMMANDS,
+  type ComposerOnlyYaCommandName,
+  type UnsupportedQueuedYaCommandName,
+  type QueuedYaCommand,
+  type QueuedYaCommandClassification,
+  type QueuedYaCommandName,
+  classifyQueuedYaCommand,
+} from "./queued-ya-commands.js";
+export {
+  type ClearloopCommandArguments,
+  DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
+  MAX_CLEARLOOP_INACTIVITY_SECONDS,
+  MIN_CLEARLOOP_INACTIVITY_SECONDS,
+  REWOUND_GROUP_SUBTYPE,
+  type SessionClearloopBadge,
+  type SessionClearloopJob,
+  type SessionClearloopState,
+  type SessionPendingRewind,
+  type SessionRewindReason,
+  type SessionRewindRecord,
+  type UpdateClearloopRequest,
+  clampClearloopInactivitySeconds,
+  formatDurationSeconds,
+  parseClearloopArguments,
+  parseDurationSeconds,
+  parseTurnIndexArgument,
+} from "./session-rewind.js";
+export {
   DEFAULT_HEARTBEAT_TURN_TEXT,
   DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
@@ -684,6 +745,19 @@ export {
   type ProjectCodeNameAssignment,
   type ProjectCodeNameChangedEvent,
 } from "./project-code-names.js";
+export {
+  MAX_PROJECT_CAPTION_LENGTH,
+  normalizeProjectCaption,
+  type ProjectCaption,
+  type ProjectCaptionSource,
+  type ProjectCaptionsChangedEvent,
+} from "./project-captions.js";
+export {
+  MAX_PROJECT_NAME_LENGTH,
+  defaultProjectNameForPath,
+  normalizeProjectName,
+  type ProjectsChangedEvent,
+} from "./project-names.js";
 export {
   getApplicableSubscriptionUsageWindows,
   getMostUsedSubscriptionUsageWindow,
@@ -732,6 +806,7 @@ export {
   PROJECT_FILE_COMPLETION_CAPABILITY,
   SESSION_CONVERSATION_CONTEXT_CAPABILITY,
   SESSION_ASYNC_QUESTIONS_CAPABILITY,
+  SESSION_REWIND_CAPABILITY,
   NON_HUMAN_USER_TURN_CAPABILITY,
   SESSION_CONTENT_SEARCH_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
@@ -752,7 +827,9 @@ export {
   PROJECT_QUEUE_READINESS_CHECK_CAPABILITY,
   ATTACHMENT_ONLY_SESSION_MESSAGES_CAPABILITY,
   PROJECT_QUEUE_NEW_SESSION_SHORTCUT_SETTING_CAPABILITY,
+  PROJECT_CAPTIONS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
+  PROJECT_NAMES_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   SIDEBAR_SESSION_RESUME_CAPABILITY,
   SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
@@ -946,6 +1023,7 @@ export type {
   SessionMetadataResponse,
   SessionQueuedMessageKind,
   SessionQueuedMessageStatus,
+  SessionQueuedClearloopProgress,
   SessionQueuedMessageSummary,
   SessionQueuedYaCommand,
   // Agent session types
@@ -1440,7 +1518,10 @@ export {
   VOCABULARY_FLUSH_COUNTS,
 } from "./speech-vocabulary.js";
 
-export { DEFAULT_JIRA_KEY_BLOCKLIST } from "./issues.js";
+export {
+  DEFAULT_ISSUE_SETTINGS,
+  DEFAULT_JIRA_KEY_BLOCKLIST,
+} from "./issues.js";
 export type {
   IssueSettings,
   IssueConfirmationSettings,
@@ -1461,7 +1542,11 @@ export type {
 
 export {
   containsLinkifiableUrl,
+  linkifyToHtml,
   splitUrlSegments,
   type LinkifySegment,
+  type LinkifyToHtmlOptions,
   type SplitUrlSegmentsOptions,
 } from "./linkify.js";
+
+export { asRecord, isRecord } from "./plain-record.js";

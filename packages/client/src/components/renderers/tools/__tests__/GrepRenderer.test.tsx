@@ -1,3 +1,4 @@
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import {
   cleanup,
   fireEvent,
@@ -35,32 +36,36 @@ describe("GrepRenderer", () => {
   it("opens parsed content matches as a highlighted table", () => {
     render(
       <I18nProvider>
-        {grepRenderer.renderToolResult(
-          {
-            mode: "content",
-            filenames: [],
-            numFiles: 2,
-            content:
-              "src/a.ts:12:const needle = true;\nsrc/b.ts:7:3:another needle",
-            matches: [
+        {grepRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { pattern: "needle", output_mode: "content" },
               {
-                filePath: "src/a.ts",
-                lineNumber: 12,
-                text: "const needle = true;",
-                ranges: [{ start: 6, end: 12 }],
+                mode: "content",
+                filenames: [],
+                numFiles: 2,
+                content:
+                  "src/a.ts:12:const needle = true;\nsrc/b.ts:7:3:another needle",
+                matches: [
+                  {
+                    filePath: "src/a.ts",
+                    lineNumber: 12,
+                    text: "const needle = true;",
+                    ranges: [{ start: 6, end: 12 }],
+                  },
+                  {
+                    columnNumber: 3,
+                    filePath: "src/b.ts",
+                    lineNumber: 7,
+                    text: "another needle",
+                  },
+                ],
               },
-              {
-                columnNumber: 3,
-                filePath: "src/b.ts",
-                lineNumber: 7,
-                text: "another needle",
-              },
-            ],
-          },
-          false,
-          renderContext,
-          { pattern: "needle", output_mode: "content" },
-        )}
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </I18nProvider>,
     );
 
@@ -84,23 +89,27 @@ describe("GrepRenderer", () => {
     }));
     render(
       <I18nProvider>
-        {grepRenderer.renderToolResult(
-          {
-            mode: "content",
-            filenames: [],
-            numFiles: 1,
-            content: matches
-              .map(
-                (match) =>
-                  `${match.filePath}:${match.lineNumber}:${match.text}`,
-              )
-              .join("\n"),
-            matches,
-          },
-          false,
-          renderContext,
-          { pattern: "needle", output_mode: "content" },
-        )}
+        {grepRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { pattern: "needle", output_mode: "content" },
+              {
+                mode: "content",
+                filenames: [],
+                numFiles: 1,
+                content: matches
+                  .map(
+                    (match) =>
+                      `${match.filePath}:${match.lineNumber}:${match.text}`,
+                  )
+                  .join("\n"),
+                matches,
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </I18nProvider>,
     );
 
@@ -119,29 +128,33 @@ describe("GrepRenderer", () => {
   it("omits the repeated file column for single-file match tables", () => {
     render(
       <I18nProvider>
-        {grepRenderer.renderToolResult(
-          {
-            mode: "content",
-            filenames: [],
-            numFiles: 1,
-            content: "src/a.ts:12:needle one\nsrc/a.ts:13:needle two",
-            matches: [
+        {grepRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { pattern: "needle", output_mode: "content", path: "src/a.ts" },
               {
-                filePath: "src/a.ts",
-                lineNumber: 12,
-                text: "needle one",
+                mode: "content",
+                filenames: [],
+                numFiles: 1,
+                content: "src/a.ts:12:needle one\nsrc/a.ts:13:needle two",
+                matches: [
+                  {
+                    filePath: "src/a.ts",
+                    lineNumber: 12,
+                    text: "needle one",
+                  },
+                  {
+                    filePath: "src/a.ts",
+                    lineNumber: 13,
+                    text: "needle two",
+                  },
+                ],
               },
-              {
-                filePath: "src/a.ts",
-                lineNumber: 13,
-                text: "needle two",
-              },
-            ],
-          },
-          false,
-          renderContext,
-          { pattern: "needle", output_mode: "content", path: "src/a.ts" },
-        )}
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </I18nProvider>,
     );
 
@@ -162,29 +175,32 @@ describe("GrepRenderer", () => {
     window.localStorage.setItem(UI_KEYS.outputToolPreviewLineCount, "2");
     const { container } = render(
       <div>
-        {grepRenderer.renderCollapsedPreview?.(
-          { pattern: "needle", output_mode: "content", path: "src/a.ts" },
-          {
-            mode: "content",
-            filenames: [],
-            numFiles: 1,
-            content: "src/a.ts:1:needle one\nsrc/a.ts:2:needle two",
-            matches: [
+        {grepRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { pattern: "needle", output_mode: "content", path: "src/a.ts" },
               {
-                filePath: "src/a.ts",
-                lineNumber: 1,
-                text: "needle one",
+                mode: "content",
+                filenames: [],
+                numFiles: 1,
+                content: "src/a.ts:1:needle one\nsrc/a.ts:2:needle two",
+                matches: [
+                  {
+                    filePath: "src/a.ts",
+                    lineNumber: 1,
+                    text: "needle one",
+                  },
+                  {
+                    filePath: "src/a.ts",
+                    lineNumber: 2,
+                    text: "needle two",
+                  },
+                ],
               },
-              {
-                filePath: "src/a.ts",
-                lineNumber: 2,
-                text: "needle two",
-              },
-            ],
-          },
-          false,
-          renderContext,
-        )}
+              false,
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
       </div>,
     );
 
@@ -214,16 +230,19 @@ describe("GrepRenderer", () => {
 
     const { container, rerender } = render(
       <div>
-        {grepRenderer.renderInteractiveSummary?.(
-          { pattern: longPattern, output_mode: "content" },
-          result,
-          false,
-          {
+        {grepRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { pattern: longPattern, output_mode: "content" },
+              result,
+              false,
+            ),
+          )
+          .renderInteractiveSummary({
             ...renderContext,
             summaryExpanded: false,
             toggleSummaryExpanded: vi.fn(),
-          },
-        )}
+          })}
       </div>,
     );
 
@@ -235,16 +254,19 @@ describe("GrepRenderer", () => {
 
     rerender(
       <div>
-        {grepRenderer.renderInteractiveSummary?.(
-          { pattern: longPattern, output_mode: "content" },
-          result,
-          false,
-          {
+        {grepRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { pattern: longPattern, output_mode: "content" },
+              result,
+              false,
+            ),
+          )
+          .renderInteractiveSummary({
             ...renderContext,
             summaryExpanded: true,
             toggleSummaryExpanded: vi.fn(),
-          },
-        )}
+          })}
       </div>,
     );
 
@@ -289,32 +311,35 @@ describe("GrepRenderer", () => {
           sessionId="session-1"
         >
           <I18nProvider>
-            {grepRenderer.renderInteractiveSummary?.(
-              {
-                output_mode: "content",
-                path: "/repo/packages/client/src/target-file.ts",
-                pattern: longPattern,
-              },
-              {
-                mode: "content",
-                filenames: [],
-                numFiles: 1,
-                content: "target-file.ts:3:targetIdentifier",
-                matches: [
+            {grepRenderer
+              .prepare(
+                recordFromLegacyArgs(
                   {
-                    filePath: "packages/client/src/target-file.ts",
-                    lineNumber: 3,
-                    text: "targetIdentifier",
+                    output_mode: "content",
+                    path: "/repo/packages/client/src/target-file.ts",
+                    pattern: longPattern,
                   },
-                ],
-              },
-              false,
-              {
+                  {
+                    mode: "content",
+                    filenames: [],
+                    numFiles: 1,
+                    content: "target-file.ts:3:targetIdentifier",
+                    matches: [
+                      {
+                        filePath: "packages/client/src/target-file.ts",
+                        lineNumber: 3,
+                        text: "targetIdentifier",
+                      },
+                    ],
+                  },
+                  false,
+                ),
+              )
+              .renderInteractiveSummary({
                 ...renderContext,
                 summaryExpanded: false,
                 toggleSummaryExpanded: vi.fn(),
-              },
-            )}
+              })}
           </I18nProvider>
         </SessionMetadataProvider>,
       );
@@ -348,53 +373,60 @@ describe("GrepRenderer", () => {
         sessionId="session-1"
       >
         <I18nProvider>
-          {grepRenderer.renderInteractiveSummary?.(
-            {
-              output_mode: "content",
-              path: `${projectPath}\\src\\renderer\\Tool.tsx`,
-              pattern: "needle",
-            },
-            {
-              mode: "content",
-              filenames: [],
-              numFiles: 2,
-              content:
-                `${projectPath}\\src\\a.ts:3:needle one\n` +
-                `${projectPath}\\src\\b.ts:7:needle two`,
-              matches: [
+          {grepRenderer
+            .prepare(
+              recordFromLegacyArgs(
                 {
-                  filePath: `${projectPath}\\src\\a.ts`,
-                  lineNumber: 3,
-                  text: "needle one",
+                  output_mode: "content",
+                  path: `${projectPath}\\src\\renderer\\Tool.tsx`,
+                  pattern: "needle",
                 },
                 {
-                  filePath: `${projectPath}\\src\\b.ts`,
-                  lineNumber: 7,
-                  text: "needle two",
+                  mode: "content",
+                  filenames: [],
+                  numFiles: 2,
+                  content:
+                    `${projectPath}\\src\\a.ts:3:needle one\n` +
+                    `${projectPath}\\src\\b.ts:7:needle two`,
+                  matches: [
+                    {
+                      filePath: `${projectPath}\\src\\a.ts`,
+                      lineNumber: 3,
+                      text: "needle one",
+                    },
+                    {
+                      filePath: `${projectPath}\\src\\b.ts`,
+                      lineNumber: 7,
+                      text: "needle two",
+                    },
+                  ],
                 },
-              ],
-            },
-            false,
-            {
+                false,
+              ),
+            )
+            .renderInteractiveSummary({
               ...renderContext,
               projectPath,
               summaryExpanded: true,
               toggleSummaryExpanded: vi.fn(),
-            },
-          )}
-          {grepRenderer.renderToolResult(
-            {
-              mode: "files_with_matches",
-              filenames: [
-                `${projectPath}\\src\\a.ts`,
-                `${projectPath}\\src\\nested\\b.ts`,
-              ],
-              numFiles: 2,
-            },
-            false,
-            { ...renderContext, projectPath },
-            { pattern: "needle", path: `${projectPath}\\src` },
-          )}
+            })}
+          {grepRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                { pattern: "needle", path: `${projectPath}\\src` },
+                {
+                  mode: "files_with_matches",
+                  filenames: [
+                    `${projectPath}\\src\\a.ts`,
+                    `${projectPath}\\src\\nested\\b.ts`,
+                  ],
+                  numFiles: 2,
+                },
+                false,
+                "complete",
+              ),
+            )
+            .renderToolResult({ ...renderContext, projectPath })}
         </I18nProvider>
       </SessionMetadataProvider>,
     );

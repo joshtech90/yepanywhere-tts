@@ -1,11 +1,12 @@
 import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { toUrlProjectId } from "@yep-anywhere/shared";
+import { toUrlProjectId, truncateSessionTitle } from "@yep-anywhere/shared";
 import { afterEach, expect, it, vi } from "vitest";
 import { SessionCatalogService } from "../../src/services/SessionCatalogService.js";
 import { RetainedSessionCollections } from "../../src/services/RetainedSessionCollections.js";
 import { createGlobalSessionsRoutes } from "../../src/routes/global-sessions.js";
+import { readRetainedSessionItems } from "../../src/routes/retained-session-collections.js";
 import { createInboxRoutes } from "../../src/routes/inbox.js";
 import type {
   NativeSessionCatalogAdapter,
@@ -118,7 +119,13 @@ it("serves a durable generation through both routes while one shared refresh is 
     const item = response.sessions?.[0] ?? response.recentActivity[0];
     expect(item.title ?? item.sessionTitle).toBe("Saved title");
     expect(item).not.toHaveProperty("messageCount");
-    expect(item).not.toHaveProperty("initialPrompt");
+    // Transcript detail stays out, but the session's own words come along:
+    // All Sessions matches these rows in the browser, so a row reduced to its
+    // display title makes anything past that title unfindable.
+    if (response.sessions) {
+      expect(item.fullTitle).toBe("Saved title");
+      expect(item.initialPrompt).toBe("Saved title");
+    }
   }
   const starred = await global.request("/?summaryMode=retained&starred=true");
   expect((await starred.json()).sessions).toEqual([]);
@@ -269,6 +276,53 @@ it("bounds Claude title discovery and uses the canonical command title", async (
     `${JSON.stringify({ type: "system", content: "x".repeat(300 * 1024) })}\n${user}\n`,
   );
   expect(await readClaudeCatalogTitle(file)).toBeUndefined();
+
+  // Whole, not display-length: All Sessions matches these words in the browser.
+  const long = `${"Context before ".repeat(30)}quasarneedle`;
+  await writeFile(
+    file,
+    `${JSON.stringify({ type: "user", message: { content: long } })}\n`,
+  );
+  expect(await readClaudeCatalogTitle(file)).toBe(long);
+});
+
+it("keeps a retained row's whole title searchable and truncates for display", async () => {
+  const long = `${"Context before ".repeat(30)}quasarneedle ${"context after ".repeat(30)}`;
+  dataDir = await mkdtemp(join(tmpdir(), "retained-title-"));
+  const projectPath = join(dataDir, "project");
+  const service = {
+    read: async () => ({
+      rows: [
+        {
+          catalogFamily: "claude" as const,
+          storeKey: "store",
+          sessionId: "session",
+          ...catalogProjectIdentity(projectPath),
+          projectId: catalogProjectIdentity(projectPath).projectId,
+          updatedAt: "2026-09-08T00:00:00.000Z",
+          title: long,
+          fidelity: "head" as const,
+          sourceVersion: "v1",
+          location: {
+            kind: "file" as const,
+            path: join(projectPath, "session.jsonl"),
+          },
+        } satisfies SessionCatalogRow,
+      ],
+      catalog: {},
+    }),
+  } as unknown as RetainedSessionCollections;
+
+  const { sessions } = await readRetainedSessionItems(
+    service,
+    {} as Parameters<typeof readRetainedSessionItems>[1],
+  );
+
+  const [row] = sessions;
+  expect(row?.fullTitle).toBe(long);
+  expect(row?.initialPrompt).toBe(long);
+  expect(row?.title).toBe(truncateSessionTitle(long));
+  expect(row?.title).not.toContain("quasarneedle");
 });
 
 it("bounds Claude recency discovery to the latest conversation row", async () => {

@@ -14,8 +14,6 @@ export interface ArtifactConfig {
   expiryDays?: number;
   /** Derived from days, so an older client keeps its hours control. */
   expiryHours?: number;
-  /** Default ownership for a grant that does not state one. */
-  deleteOnExpiry?: boolean;
   /** Static loopback Host maps; empty means none. */
   vhosts?: ArtifactVhost[];
   /** Optional apex such as graehl.org; unset means name.localhost only. */
@@ -28,10 +26,12 @@ export const MAX_ARTIFACT_EXPIRY_DAYS = 30;
 /** An earlier install stored hours; its ceiling was a week. */
 const MAX_LEGACY_EXPIRY_HOURS = 168;
 
+// A `deleteOnExpiry` field from a settings file or a hosted client that
+// predates its removal is accepted and dropped: ownership has only ever come
+// from the grant request, so the field never decided anything.
 export function validateArtifactConfig(
   value: unknown,
   defaultExpiryDays = DEFAULT_ARTIFACT_EXPIRY_DAYS,
-  defaultDeleteOnExpiry = false,
   previous?: Pick<ArtifactConfig, "vhosts" | "vhostPublicRoot">,
 ): ArtifactConfig {
   if (!value || typeof value !== "object")
@@ -62,12 +62,6 @@ export function validateArtifactConfig(
     throw new Error(
       `Artifact expiry must be whole days from 1 to ${MAX_ARTIFACT_EXPIRY_DAYS}`,
     );
-  const deleteOnExpiry =
-    input.deleteOnExpiry === undefined
-      ? defaultDeleteOnExpiry
-      : input.deleteOnExpiry;
-  if (typeof deleteOnExpiry !== "boolean")
-    throw new Error("Artifact deleteOnExpiry must be true or false");
   if (
     typeof input.port !== "number" ||
     !Number.isInteger(input.port) ||
@@ -97,7 +91,6 @@ export function validateArtifactConfig(
     ...config,
     expiryDays,
     expiryHours: expiryDays * 24,
-    deleteOnExpiry,
     vhosts,
     ...(vhostPublicRoot ? { vhostPublicRoot } : {}),
   };

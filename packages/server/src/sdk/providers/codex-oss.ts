@@ -17,15 +17,19 @@ import { promisify } from "node:util";
 import {
   DEFAULT_GATEWAY_SERVICE_MODEL_LIMIT,
   advertisedGatewayEffortLevels,
+  codexProviderKey,
   gatewayModelEffort,
   gatewayServiceDisplayName,
   nearestGatewayEffortLevel,
   parseGatewayModelId,
   qualifiedGatewayModelId,
+  tomlString,
+  unionModelCatalogs,
   type EffortLevel,
   type GatewayEndpointEffortProbe,
   type GatewayModelEffort,
   type GatewayService,
+  type ModelCatalogRoute,
   type ModelInfo,
 } from "@yep-anywhere/shared";
 import {
@@ -55,10 +59,7 @@ import { inactiveProviderSessionOptionsResult } from "./types.js";
 const log = getLogger().child({ component: "codex-oss-provider" });
 
 /** Where a chosen model lives: a configured endpoint, or Ollama when absent. */
-interface CodexModelRoute {
-  serviceId?: string;
-  modelId: string;
-}
+type CodexModelRoute = ModelCatalogRoute<string | undefined>;
 const execAsync = promisify(exec);
 
 /**
@@ -323,9 +324,8 @@ export class CodexOSSProvider implements AgentProvider {
   /**
    * Models from every configured endpoint, plus Ollama's when it is in use.
    *
-   * A model id stays exactly as its source advertises it unless two sources
-   * offer the same one, in which case both gain their service prefix — the
-   * same rule Claude Gateway follows, so a launch can always name its source.
+   * `unionModelCatalogs` owns how colliding ids are qualified, so a CodexOSS
+   * launch and a Claude Gateway launch name their source the same way.
    */
   async getAvailableModels(): Promise<ModelInfo[]> {
     const services = this.codexServices();
@@ -344,29 +344,7 @@ export class CodexOSSProvider implements AgentProvider {
         : []),
     ]);
 
-    const counts = new Map<string, number>();
-    for (const source of perSource) {
-      for (const model of source.models) {
-        counts.set(model.id, (counts.get(model.id) ?? 0) + 1);
-      }
-    }
-
-    const routes = new Map<string, CodexModelRoute>();
-    const models: ModelInfo[] = [];
-    for (const source of perSource) {
-      for (const model of source.models) {
-        const collides = (counts.get(model.id) ?? 0) > 1;
-        const exposedId =
-          collides && source.serviceId
-            ? qualifiedGatewayModelId(source.serviceId, model.id)
-            : model.id;
-        routes.set(exposedId, {
-          ...(source.serviceId ? { serviceId: source.serviceId } : {}),
-          modelId: model.id,
-        });
-        models.push(collides ? { ...model, id: exposedId } : model);
-      }
-    }
+    const { models, routes } = unionModelCatalogs(perSource);
     this.modelRoutes = routes;
     return models;
   }
@@ -461,15 +439,34 @@ export class CodexOSSProvider implements AgentProvider {
     }
   }
 
+  /**
+   * Which configured endpoint a launch with this model would use.
+   *
+   * Public so that auto-stop can attribute a live CodexOSS process the same way
+   * its launch did — `gatewayServiceUsage` asks this the way it asks
+   * `ClaudeGatewayProvider.resolveServiceForModel`. Nothing comes back for a
+   * model no configured endpoint serves, which is the honest answer: that
+   * launch went to the local provider and holds no service open.
+   */
+  resolveServiceForModel(
+    model: string | undefined,
+  ): { serviceId: string; modelId: string } | undefined {
+    const route = this.resolveModelRoute(model);
+    const service = this.serviceById(route.serviceId);
+    return service
+      ? { serviceId: service.id, modelId: route.modelId }
+      : undefined;
+  }
+
   /** Which configured endpoint serves a model, if any. */
   private resolveModelRoute(model: string | undefined): CodexModelRoute {
-    if (!model) return { modelId: model ?? "" };
+    if (!model) return { serviceId: undefined, modelId: model ?? "" };
     const known = this.modelRoutes.get(model);
     if (known) return known;
     const qualified = parseGatewayModelId(model, (serviceId) =>
       this.codexServices().some((service) => service.id === serviceId),
     );
-    return qualified ?? { modelId: model };
+    return qualified ?? { serviceId: undefined, modelId: model };
   }
 
   private serviceById(serviceId: string | undefined) {
@@ -533,11 +530,11 @@ export class CodexOSSProvider implements AgentProvider {
     if (!effort) return [];
     if (options.thinking?.type === "disabled") {
       const level = effort.noThinking ? "none" : effort.levels[0];
-      return level ? ["-c", `model_reasoning_effort="${level}"`] : [];
+      return level ? ["-c", `model_reasoning_effort=${tomlString(level)}`] : [];
     }
     if (!options.effort) return [];
     const level = nearestGatewayEffortLevel(effort, options.effort);
-    return level ? ["-c", `model_reasoning_effort="${level}"`] : [];
+    return level ? ["-c", `model_reasoning_effort=${tomlString(level)}`] : [];
   }
 
   /**
@@ -545,18 +542,22 @@ export class CodexOSSProvider implements AgentProvider {
    *
    * These are command-line overrides rather than edits to the user's
    * `~/.codex/config.toml`: YA never rewrites a CLI's own settings files.
+   *
+   * Each value is a TOML string, so a display name carrying a quote or a
+   * backslash reaches Codex as the name the user typed instead of breaking
+   * the override.
    */
   private serviceLaunchArgs(service: GatewayService): string[] {
-    const key = `ya_${service.id.replace(/-/gu, "_")}`;
+    const key = codexProviderKey(service);
     return [
       "-c",
-      `model_providers.${key}.name="${gatewayServiceDisplayName(service)}"`,
+      `model_providers.${key}.name=${tomlString(gatewayServiceDisplayName(service))}`,
       "-c",
-      `model_providers.${key}.base_url="${service.url}/v1"`,
+      `model_providers.${key}.base_url=${tomlString(`${service.url}/v1`)}`,
       "-c",
-      `model_providers.${key}.wire_api="${service.codexWireApi}"`,
+      `model_providers.${key}.wire_api=${tomlString(service.codexWireApi)}`,
       "-c",
-      `model_provider="${key}"`,
+      `model_provider=${tomlString(key)}`,
     ];
   }
 
@@ -1016,11 +1017,11 @@ export class CodexOSSProvider implements AgentProvider {
       prompt,
       ...(service
         ? this.serviceLaunchArgs(service)
-        : ["-c", `model_provider="${this.localProvider}"`]),
+        : ["-c", `model_provider=${tomlString(this.localProvider)}`]),
     ];
 
     if (options.model) {
-      args.push("-c", `model="${route.modelId}"`);
+      args.push("-c", `model=${tomlString(route.modelId)}`);
     }
     args.push(...this.reasoningEffortArgs(options, route));
 

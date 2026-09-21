@@ -1,12 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import SpeechVocabularyChart, {
-  rankVocabulary,
-} from "../SpeechVocabularyChart";
 import {
   parseVocabularyBaseline,
+  rankVocabulary,
   VOCABULARY_BASELINE_URL,
-} from "../vocabulary-baseline";
+} from "@yep-anywhere/shared";
+import SpeechVocabularyChart from "../SpeechVocabularyChart";
 import { I18nProvider } from "../../../i18n";
 
 afterEach(() => vi.unstubAllGlobals());

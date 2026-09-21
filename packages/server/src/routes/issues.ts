@@ -9,7 +9,6 @@ import type { IssueIndexer } from "../services/issues/IssueIndexer.js";
 import type { IssueCredentials } from "../services/issues/credentials.js";
 import type { IssueConfirmer } from "../services/issues/confirm.js";
 import { issueUrl } from "../services/issues/extract.js";
-import { randomUUID } from "node:crypto";
 
 /** Rejects a confirmation block rather than storing a half-configured one. */
 function confirmation(
@@ -372,15 +371,10 @@ export function createIssueRoutes(
     // Authorization/settings may have changed while the session was resolved.
     if (!indexer.settings().enabled)
       return c.json({ error: "Issue associations are disabled" }, 403);
-    const id = `manual-${randomUUID()}`;
-    indexer.store.capture(
+    indexer.store.captureManual(
       { projectId: body.projectId, sessionId: body.sessionId },
-      { id, text: body.url },
-    );
-    indexer.store.run(
-      "UPDATE session_issue_evidence SET kind='manual',excerpt=? WHERE message_id=?",
+      body.url,
       body.note ?? "",
-      id,
     );
     indexer.resumePendingWork();
     return c.json({ ok: true });

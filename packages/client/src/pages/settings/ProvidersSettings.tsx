@@ -20,8 +20,11 @@ import {
   CODEX_REASONING_SUMMARY_SETTING_CAPABILITY,
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_IDLE_REAP_HOURS,
+  DEFAULT_LONG_CONTEXT_EFFORT_WARNING_TOKENS,
   DEFAULT_SUBAGENT_MAX_DEPTH,
   IDLE_REAP_HOURS_SETTING_CAPABILITY,
+  LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS,
+  LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS,
   MAX_IDLE_REAP_HOURS,
   MAX_POST_COMPACT_REPLAY_TURNS,
   MAX_SUBAGENT_MAX_DEPTH,
@@ -40,6 +43,7 @@ import {
   type CodexPlanToolMode,
   type CodexReasoningSummary,
   type HelperTargetConfig,
+  type LongContextEffortWarningSettings,
   type ModelInfo,
   type PostCompactReplaySettings,
   type ProviderInfo,
@@ -704,7 +708,6 @@ function CodexUpdatePanel() {
           className="settings-button"
           onClick={() => void refresh(true)}
           disabled={isChecking}
-          style={{ marginLeft: "auto" }}
         >
           {isChecking
             ? t("providersCodexUpdateChecking")
@@ -720,6 +723,61 @@ function CodexUpdatePanel() {
             {t("providersCodexUpdateReleaseNotes")}
           </a>
         )}
+        {/* A div rather than a fieldset: a <legend> is laid out in the border
+            area whatever the fieldset's display is, so it always took a line of
+            its own above radios that fit beside it. */}
+        <div
+          role="radiogroup"
+          aria-label={t("providersCodexUpdatePolicyTitle")}
+          style={{
+            display: "flex",
+            gap: "var(--space-3)",
+            alignItems: "center",
+            flexWrap: "wrap",
+          }}
+        >
+          <span className="settings-hint">
+            {t("providersCodexUpdatePolicyTitle")}
+          </span>
+          {(["auto", "notify", "off"] as const).map((value) => {
+            const disabled = value === "auto" && !canAuto;
+            return (
+              <label
+                key={value}
+                style={{
+                  display: "inline-flex",
+                  gap: 4,
+                  alignItems: "center",
+                  opacity: disabled ? 0.55 : 1,
+                  cursor: disabled ? "not-allowed" : "pointer",
+                }}
+                title={
+                  disabled
+                    ? t("providersCodexUpdatePolicyAutoUnavailable")
+                    : undefined
+                }
+              >
+                <input
+                  type="radio"
+                  name="codex-update-policy"
+                  value={value}
+                  checked={policy === value}
+                  disabled={disabled}
+                  onChange={() =>
+                    void updateSetting("codexUpdatePolicy", value)
+                  }
+                />
+                <span>
+                  {value === "auto"
+                    ? t("commonAuto")
+                    : value === "notify"
+                      ? t("providersCodexUpdatePolicyNotify")
+                      : t("commonOff")}
+                </span>
+              </label>
+            );
+          })}
+        </div>
       </div>
 
       {updateAvailable && (
@@ -798,57 +856,6 @@ function CodexUpdatePanel() {
           </pre>
         </details>
       )}
-
-      <fieldset
-        style={{
-          border: "none",
-          padding: 0,
-          marginTop: "var(--space-3)",
-          display: "flex",
-          gap: "var(--space-3)",
-          flexWrap: "wrap",
-        }}
-      >
-        <legend className="settings-hint" style={{ marginBottom: 4 }}>
-          {t("providersCodexUpdatePolicyTitle")}
-        </legend>
-        {(["auto", "notify", "off"] as const).map((value) => {
-          const disabled = value === "auto" && !canAuto;
-          return (
-            <label
-              key={value}
-              style={{
-                display: "inline-flex",
-                gap: 4,
-                alignItems: "center",
-                opacity: disabled ? 0.55 : 1,
-                cursor: disabled ? "not-allowed" : "pointer",
-              }}
-              title={
-                disabled
-                  ? t("providersCodexUpdatePolicyAutoUnavailable")
-                  : undefined
-              }
-            >
-              <input
-                type="radio"
-                name="codex-update-policy"
-                value={value}
-                checked={policy === value}
-                disabled={disabled}
-                onChange={() => void updateSetting("codexUpdatePolicy", value)}
-              />
-              <span>
-                {value === "auto"
-                  ? t("commonAuto")
-                  : value === "notify"
-                    ? t("providersCodexUpdatePolicyNotify")
-                    : t("commonOff")}
-              </span>
-            </label>
-          );
-        })}
-      </fieldset>
     </div>
   );
 }
@@ -1567,6 +1574,115 @@ function PostCompactReplayControl({
   );
 }
 
+/**
+ * Long-context effort-change warning: threshold slider plus per-provider
+ * checkboxes. Contract: topics/mid-session-effort-change.md.
+ */
+function LongContextEffortWarningControl({
+  value,
+  providers,
+  updateSetting,
+}: {
+  value: LongContextEffortWarningSettings;
+  providers: readonly { id: string; displayName: string }[];
+  updateSetting: UpdateServerSetting;
+}) {
+  const { t } = useI18n();
+  const { showToast } = useToastContext();
+  const thresholdTokens =
+    value.thresholdTokens ?? DEFAULT_LONG_CONTEXT_EFFORT_WARNING_TOKENS;
+  const enabledCount = providers.filter(
+    (provider) => value.providers?.[provider.id as ProviderName] === true,
+  ).length;
+
+  const save = useCallback(
+    async (next: LongContextEffortWarningSettings) => {
+      try {
+        await updateSetting("longContextEffortWarning", next);
+        showToast(t("providersLongContextEffortWarningSaved"), "success");
+      } catch (error) {
+        showToast(
+          error instanceof Error
+            ? error.message
+            : t("providersLongContextEffortWarningSaveError"),
+          "error",
+        );
+      }
+    },
+    [showToast, t, updateSetting],
+  );
+
+  return (
+    <SettingsItem
+      id="providers-long-context-effort-warning"
+      label={t("providersLongContextEffortWarningTitle")}
+      description={t("providersLongContextEffortWarningDescription")}
+      keywords={[
+        "effort",
+        "reasoning",
+        "prompt cache",
+        "cache",
+        "long context",
+        "fork",
+        "warning",
+      ]}
+      className="settings-item--wide-control"
+      valueText={
+        enabledCount === 0
+          ? t("providersLongContextEffortWarningOff")
+          : t("providersLongContextEffortWarningValue", {
+              tokens: thresholdTokens.toLocaleString(),
+              count: String(enabledCount),
+            })
+      }
+    >
+      <div className={styles.limitControls}>
+        <CommittedRangeNumberInput
+          id="providers-long-context-effort-warning-threshold"
+          min={0}
+          max={LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS}
+          numberMax={Number.MAX_SAFE_INTEGER}
+          step={LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS}
+          snapTextToStep={false}
+          value={thresholdTokens}
+          unit="tokens"
+          ariaLabel={t("providersLongContextEffortWarningThresholdAria")}
+          onCommit={(tokens) => {
+            void save({ ...value, thresholdTokens: Math.round(tokens) });
+          }}
+        />
+        <p className="settings-hint">
+          {t("providersLongContextEffortWarningThresholdHint")}
+        </p>
+        <div className={styles.providerToggles}>
+          {providers.map((provider) => {
+            const providerId = provider.id as ProviderName;
+            const enabled = value.providers?.[providerId] === true;
+            return (
+              <label key={provider.id} className={styles.providerToggle}>
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(event) => {
+                    const providersMap = { ...value.providers };
+                    if (event.target.checked) {
+                      providersMap[providerId] = true;
+                    } else {
+                      delete providersMap[providerId];
+                    }
+                    void save({ ...value, providers: providersMap });
+                  }}
+                />
+                <span>{provider.displayName}</span>
+              </label>
+            );
+          })}
+        </div>
+      </div>
+    </SettingsItem>
+  );
+}
+
 export function ProvidersSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("providersSectionTitle"));
@@ -1787,6 +1903,13 @@ export function ProvidersSettings() {
         {settings?.postCompactReplay !== undefined && (
           <PostCompactReplayControl
             value={settings.postCompactReplay}
+            providers={providerDisplayList}
+            updateSetting={updateSetting}
+          />
+        )}
+        {settings?.longContextEffortWarning !== undefined && (
+          <LongContextEffortWarningControl
+            value={settings.longContextEffortWarning}
             providers={providerDisplayList}
             updateSetting={updateSetting}
           />

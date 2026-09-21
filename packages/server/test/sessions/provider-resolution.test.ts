@@ -3,11 +3,14 @@ import { describe, expect, it, vi } from "vitest";
 import {
   findSessionListSummaryAcrossProviders,
   findSessionSummaryAcrossProviders,
+  getSessionSourceForProvider,
+  getSessionSources,
   listSessionListSummariesAcrossProviders,
   listSessionsAcrossProviders,
 } from "../../src/sessions/provider-resolution.js";
 import type { ISessionIndexService } from "../../src/indexes/types.js";
 import type { CodexSessionReader } from "../../src/sessions/codex-reader.js";
+import { MergedSessionReader } from "../../src/sessions/merged-reader.js";
 import type { ISessionReader } from "../../src/sessions/types.js";
 import type { Project, SessionSummary } from "../../src/supervisor/types.js";
 
@@ -268,6 +271,83 @@ describe("provider resolution", () => {
     expect(sessions[1]).not.toHaveProperty("lastAgentText");
   });
 
+  it("carries the indexed hint through a merged reader's roots", async () => {
+    const projectId = "proj-merged" as UrlProjectId;
+    // A sandboxed Codex project reads through MergedSessionReader, so the hint
+    // the index supplies has to survive the extra hop.
+    const cachedSummary: SessionSummary = {
+      id: "session-sandboxed",
+      projectId,
+      title: "Cached title",
+      fullTitle: "Cached full title",
+      createdAt: "2026-06-01T00:00:00.000Z",
+      updatedAt: "2026-06-01T00:02:00.000Z",
+      messageCount: 7,
+      ownership: { owner: "none" },
+      provider: "codex",
+    };
+    const inner = makeReader(null);
+    inner.getSessionListSummary = vi.fn(
+      async (sessionId, resolvedProjectId) => ({
+        id: sessionId,
+        projectId: resolvedProjectId,
+        title: "Bounded title",
+        fullTitle: "Bounded full title",
+        updatedAt: "2026-06-01T00:03:00.000Z",
+        provider: "codex" as const,
+      }),
+    );
+    const merged = new MergedSessionReader([inner]);
+    const sessionIndexService = makeSessionIndexService(cachedSummary);
+
+    const resolved = await findSessionListSummaryAcrossProviders(
+      {
+        id: projectId,
+        path: "/tmp/sandboxed",
+        name: "sandboxed",
+        sessionCount: 1,
+        sessionDir: "/tmp/sandboxed/.codex-sessions",
+        activeOwnedCount: 0,
+        activeExternalCount: 0,
+        lastActivity: null,
+        provider: "codex",
+      },
+      "session-sandboxed",
+      projectId,
+      {
+        readerFactory: vi.fn(() => merged),
+        codexSessionsDir: "/tmp/sandboxed/.codex-sessions",
+        codexReaderFactory: vi.fn(
+          () => merged as unknown as CodexSessionReader,
+        ),
+        sessionIndexService,
+      },
+      "codex",
+    );
+
+    expect(resolved?.summary).toEqual({
+      id: "session-sandboxed",
+      projectId,
+      title: "Bounded title",
+      fullTitle: "Bounded full title",
+      updatedAt: "2026-06-01T00:03:00.000Z",
+      provider: "codex",
+    });
+    expect(inner.getSessionListSummary).toHaveBeenCalledWith(
+      "session-sandboxed",
+      projectId,
+      {
+        id: "session-sandboxed",
+        projectId,
+        title: "Cached title",
+        fullTitle: "Cached full title",
+        updatedAt: "2026-06-01T00:02:00.000Z",
+        provider: "codex",
+      },
+      undefined,
+    );
+  });
+
   it("lists OpenCode sessions for a project whose primary provider is Claude", async () => {
     const projectId = "proj-2" as UrlProjectId;
     const opencodeSummary: SessionSummary = {
@@ -314,6 +394,68 @@ describe("provider resolution", () => {
     expect(readerFactory).toHaveBeenCalledWith(
       expect.objectContaining({ provider: "opencode" }),
     );
+  });
+});
+
+describe("session source for one provider", () => {
+  const claudeProject: Project = {
+    id: "proj-one-provider" as UrlProjectId,
+    path: "/tmp/one-provider",
+    name: "one-provider",
+    sessionCount: 0,
+    sessionDir: "/tmp/one-provider/.claude-sessions",
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: null,
+    provider: "claude",
+  };
+
+  function claudeOnlyDeps(reader: ISessionReader) {
+    // No Codex sessions dir or factory, so the Codex group has no reader here.
+    // Grok and pi are stubbed to keep the source list off the real home dir.
+    return {
+      readerFactory: vi.fn(() => reader),
+      grokReaderFactory: () => reader,
+      piReaderFactory: () => reader,
+    } as unknown as Parameters<typeof getSessionSourceForProvider>[1];
+  }
+
+  it("reads a Claude-family session with the project's own reader", () => {
+    const claudeReader = makeReader(null);
+
+    const source = getSessionSourceForProvider(
+      claudeProject,
+      claudeOnlyDeps(claudeReader),
+      "claude-gateway",
+    );
+
+    expect(source?.reader).toBe(claudeReader);
+  });
+
+  it("returns no source when the provider has no reader in this project", () => {
+    const claudeReader = makeReader(null);
+    const deps = claudeOnlyDeps(claudeReader);
+
+    expect(
+      getSessionSourceForProvider(claudeProject, deps, "codex"),
+    ).toBeNull();
+    // The ordered candidate list still answers with another provider's reader,
+    // which is why asking for one provider may not read from that list.
+    expect(getSessionSources(claudeProject, deps, "codex")[0]?.reader).toBe(
+      claudeReader,
+    );
+  });
+
+  it("returns no source for a name that belongs to no provider", () => {
+    const claudeReader = makeReader(null);
+
+    expect(
+      getSessionSourceForProvider(
+        claudeProject,
+        claudeOnlyDeps(claudeReader),
+        "not-a-provider",
+      ),
+    ).toBeNull();
   });
 });
 

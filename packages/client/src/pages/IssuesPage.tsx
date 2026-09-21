@@ -117,7 +117,6 @@ function IssueBrowser() {
   ]);
   useEffect(() => {
     let disposed = false;
-    setDetail(undefined);
     if (selected)
       void transport
         .fetch<IssueSessionsResult>(
@@ -162,6 +161,10 @@ function IssueBrowser() {
     setEditing(undefined);
     setSelected(item);
     setSessionOffset(0);
+    // Only picking an issue empties the pane. A refresh leaves the rows mounted
+    // until the new answer arrives, so an expanded row keeps the mentions it
+    // has already loaded.
+    if (item.id !== selected?.id) setDetail(undefined);
   };
   const edit = (item: IssueItem, kind: "title" | "url" | "delete") => {
     if (kind === "url") select(item);
@@ -503,7 +506,7 @@ function IssueBrowser() {
             )}
             {detail?.sessions.map((session) => (
               <IssueSessionRow
-                key={`${selected.id}:${session.sessionId}:${revision}`}
+                key={`${selected.id}:${session.sessionId}`}
                 issueId={selected.id}
                 session={session}
                 unresolved={selected.unresolved}

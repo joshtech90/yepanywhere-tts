@@ -90,6 +90,13 @@ browser. Discovery state is persisted per session/source; no background scan
 of unopened session transcripts is needed. Replay restores link availability,
 not an expanded pane.
 
+Only a session with something to remember — a discovered app or a dismissal —
+occupies browser storage. Visiting an ordinary session writes nothing, and a
+session whose state returns to the default releases its entry, including one
+left by an earlier release. Every reader shares one store over that key family,
+so sidebar cost does not grow with the session count and one session's
+discovery does not re-render unrelated rows.
+
 Minimize parks the pane at the existing bottom viewer controller, returning
 its width to the transcript. The iframe stays mounted so restore does not
 reload it. App toggle dismissal destroys the pane content and removes the

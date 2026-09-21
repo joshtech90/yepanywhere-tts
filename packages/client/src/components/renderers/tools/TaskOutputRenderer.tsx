@@ -55,13 +55,7 @@ function TaskOutputToolUse({ input }: { input: TaskOutputInput }) {
 /**
  * TaskOutput tool result - shows async task result
  */
-function TaskOutputToolResult({
-  result,
-  isError,
-}: {
-  result: TaskOutputResult;
-  isError: boolean;
-}) {
+function TaskOutputToolResult({ result }: { result: TaskOutputResult }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
@@ -83,23 +77,6 @@ function TaskOutputToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("TaskOutput");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className="taskoutput-error">
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="TaskOutput" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Failed to get task output"}
-      </div>
-    );
-  }
 
   if (!result) {
     return <div className="taskoutput-empty">No output</div>;
@@ -170,16 +147,27 @@ export const taskOutputRenderer = defineTool(toolDisplayContracts.TaskOutput, {
     return <TaskOutputToolUse input={input} />;
   },
 
-  renderToolResult(result, isError, _context) {
-    return <TaskOutputToolResult result={result} isError={isError} />;
+  renderToolResult(result, _isError, _context) {
+    return <TaskOutputToolResult result={result} />;
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className="taskoutput-error">
+        {failure.content || "Failed to get task output"}
+      </div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input) {
     return input.task_id;
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     if (!r) return "Pending";
     return r.retrieval_status;

@@ -1,5 +1,8 @@
 import {
+  projectDisplayName,
+  PROJECT_CAPTIONS_CAPABILITY,
   PROJECT_CODE_NAMES_CAPABILITY,
+  PROJECT_NAMES_CAPABILITY,
   PROJECT_QUEUE_ATTACHMENT_EDITING_CAPABILITY,
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   type ProjectQueueMessage,
@@ -8,6 +11,11 @@ import {
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
+import {
+  AddProjectForm,
+  type AddProjectRequest,
+} from "../components/AddProjectForm";
+import formStyles from "../components/AddProjectForm.module.css";
 import { PageHeader } from "../components/PageHeader";
 import { ProjectCard } from "../components/ProjectCard";
 import { ProjectQueueSection } from "../components/ProjectQueueSection";
@@ -42,10 +50,17 @@ export function ProjectsPage() {
     version,
     PROJECT_CODE_NAMES_CAPABILITY,
   );
+  const supportsProjectCaptions = serverHasCapability(
+    version,
+    PROJECT_CAPTIONS_CAPABILITY,
+  );
+  const supportsProjectNames = serverHasCapability(
+    version,
+    PROJECT_NAMES_CAPABILITY,
+  );
   const { projectCodeNamesEnabled } = useProjectCodeNamePreferences();
   const inboxCountsByProject = useInboxCountsByProject();
   const [showAddForm, setShowAddForm] = useState(false);
-  const [newProjectPath, setNewProjectPath] = useState("");
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -106,21 +121,53 @@ export function ProjectsPage() {
     });
   }, [projects, inboxCountsByProject]);
 
-  const handleAddProject = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!newProjectPath.trim()) return;
-
+  const handleAddProject = async ({
+    path,
+    name,
+    codeName,
+  }: AddProjectRequest) => {
     setAdding(true);
     setAddError(null);
 
-    try {
-      const { project } = await api.addProject(newProjectPath.trim());
-      await refetch();
-      setNewProjectPath("");
+    const finish = (project: Project) => {
+      void refetch();
       setShowAddForm(false);
-      // Navigate to sessions filtered by the new project
-      navigate(`${basePath}/sessions?project=${project.id}`);
+      // A just-added project has no sessions to list, so confirming the
+      // form goes straight to starting its first session.
+      navigate(
+        `${basePath}/new-session?projectId=${encodeURIComponent(project.id)}`,
+      );
+    };
+
+    try {
+      const { project } = await api.addProject(path, { name, codeName });
+      finish(project);
     } catch (err) {
+      // A path that does not exist yet is offered rather than refused: YA
+      // creates the directory as a Git repository with one empty commit,
+      // but only after the user says so.
+      if ((err as { status?: number }).status === 404) {
+        if (confirm(t("projectsCreateConfirm", { path }))) {
+          try {
+            const { project } = await api.addProject(path, {
+              create: true,
+              name,
+              codeName,
+            });
+            finish(project);
+            return;
+          } catch (createErr) {
+            setAddError(
+              createErr instanceof Error
+                ? createErr.message
+                : t("projectsAddFailed"),
+            );
+            return;
+          } finally {
+            setAdding(false);
+          }
+        }
+      }
       setAddError(err instanceof Error ? err.message : t("projectsAddFailed"));
     } finally {
       setAdding(false);
@@ -128,7 +175,11 @@ export function ProjectsPage() {
   };
 
   const handleDeleteProject = async (project: Project) => {
-    if (!confirm(t("projectsDeleteConfirm", { name: project.name }))) {
+    if (
+      !confirm(
+        t("projectsDeleteConfirm", { name: projectDisplayName(project) }),
+      )
+    ) {
       return;
     }
 
@@ -152,6 +203,14 @@ export function ProjectsPage() {
     codeName: string,
   ) => {
     await api.updateProjectCodeName(project.id, codeName);
+    await refetch();
+  };
+
+  const handleUpdateProjectCaption = async (
+    project: Project,
+    caption: string | null,
+  ) => {
+    await api.updateProjectCaption(project.id, caption);
     await refetch();
   };
 
@@ -286,42 +345,25 @@ export function ProjectsPage() {
                 {t("projectsAdd")}
               </button>
             ) : (
-              <form onSubmit={handleAddProject} className="add-project-form">
-                <input
-                  type="text"
-                  value={newProjectPath}
-                  onChange={(e) => setNewProjectPath(e.target.value)}
-                  placeholder={t("projectsAddPlaceholder")}
-                  disabled={adding}
-                />
-                <div className="add-project-actions">
-                  <button
-                    type="submit"
-                    disabled={adding || !newProjectPath.trim()}
-                  >
-                    {adding ? t("projectsAdding") : t("projectsAddConfirm")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAddForm(false);
-                      setNewProjectPath("");
-                      setAddError(null);
-                    }}
-                    disabled={adding}
-                  >
-                    {t("projectsCancel")}
-                  </button>
-                </div>
-                {addError && (
-                  <div className="add-project-error">{addError}</div>
-                )}
-              </form>
+              <AddProjectForm
+                projects={projects}
+                chooseName={supportsProjectNames}
+                chooseCodeName={
+                  supportsProjectNames &&
+                  supportsProjectCodeNames &&
+                  projectCodeNamesEnabled
+                }
+                adding={adding}
+                error={addError}
+                onSubmit={(request) => void handleAddProject(request)}
+                onCancel={() => {
+                  setShowAddForm(false);
+                  setAddError(null);
+                }}
+              />
             )}
           </div>
-          {deleteError && (
-            <div className="add-project-error">{deleteError}</div>
-          )}
+          {deleteError && <div className={formStyles.error}>{deleteError}</div>}
 
           {supportsProjectQueue && (
             <ProjectQueueSection
@@ -395,6 +437,11 @@ export function ProjectsPage() {
                   onUpdateCodeName={
                     supportsProjectCodeNames && projectCodeNamesEnabled
                       ? handleUpdateProjectCodeName
+                      : undefined
+                  }
+                  onUpdateCaption={
+                    supportsProjectCaptions
+                      ? handleUpdateProjectCaption
                       : undefined
                   }
                   isDeleting={deletingProjectId === project.id}

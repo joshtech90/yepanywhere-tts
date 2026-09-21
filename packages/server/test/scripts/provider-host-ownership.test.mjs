@@ -56,6 +56,7 @@ describe.skipIf(!["linux", "darwin"].includes(process.platform))(
           PATH: `${bin}${delimiter}${process.env.PATH}`,
           PORT: "3498",
           YA_TEST_WRAPPER_EVENTS: events,
+          YEP_PROVIDER_HOST_ENABLED: "true",
           YEP_PROVIDER_HOST_RUNTIME_DIR: runtime,
           YEP_PROVIDER_RUNTIME_WORKER_PATH: join(
             here,

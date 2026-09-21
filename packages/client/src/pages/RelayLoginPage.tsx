@@ -60,14 +60,23 @@ export function RelayLoginPage() {
   const [searchParams] = useSearchParams();
   const defaultRelayUrl = getDefaultRelayUrl();
 
-  // Form state - relay username is also used as SRP identity
-  // Pre-fill from query parameters: ?u=username&r=relay-url
+  // Form state. The relay username names the *server* to route to; the SRP
+  // identity names *who is logging in*. They are the same for the superuser,
+  // which is why one field served until limited users existed — a limited
+  // user connects to somebody else's server name under their own name.
+  // topics/limited-users.md § Delivery v1 — Login, switching, and logout.
+  // Pre-fill from query parameters: ?u=username&r=relay-url&as=limited-user
   const initialRelayUrl = searchParams.get("r") ?? "";
   const [relayUsername, setRelayUsername] = useState(
     () => searchParams.get("u") ?? "",
   );
+  const [limitedUsername, setLimitedUsername] = useState(
+    () => searchParams.get("as") ?? "",
+  );
   const [srpPassword, setSrpPassword] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(!!initialRelayUrl);
+  const [showAdvanced, setShowAdvanced] = useState(
+    !!initialRelayUrl || !!searchParams.get("as"),
+  );
   const [customRelayUrl, setCustomRelayUrl] = useState(initialRelayUrl);
   const [rememberMe, setRememberMe] = useState(true);
 
@@ -200,11 +209,15 @@ export function RelayLoginPage() {
 
     // Save the current relay URL before connecting so session callbacks and
     // later relay routes do not reuse a stale relay endpoint.
+    // Blank means "this server's owner", which is the identity the server
+    // name already implies.
+    const srpUsername = limitedUsername.trim().toLowerCase() || username;
+
     if (rememberMe) {
       const host = upsertRelayHost({
         relayUrl,
         relayUsername: username,
-        srpUsername: username,
+        srpUsername,
       });
       // Set currentHostId before connect so the session callback can use it
       setCurrentHostId(host.id);
@@ -214,8 +227,7 @@ export function RelayLoginPage() {
       await connectViaRelay({
         relayUrl,
         relayUsername: username,
-        // Use relay username as SRP identity
-        srpUsername: username,
+        srpUsername,
         srpPassword,
         rememberMe,
         onStatusChange: setStatus,
@@ -304,6 +316,29 @@ export function RelayLoginPage() {
               ? t("relayLoginHideAdvanced")
               : t("relayLoginShowAdvanced")}
           </button>
+
+          {showAdvanced && (
+            <div className="login-field">
+              <label htmlFor="limitedUsername">
+                {t("relayLoginLimitedUsername")}
+              </label>
+              <input
+                id="limitedUsername"
+                type="text"
+                value={limitedUsername}
+                onChange={(e) => setLimitedUsername(e.target.value)}
+                placeholder={t("relayLoginLimitedUsernamePlaceholder")}
+                disabled={isConnecting}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                data-testid="relay-limited-username-input"
+              />
+              <p className="login-field-hint">
+                {t("relayLoginLimitedUsernameHint")}
+              </p>
+            </div>
+          )}
 
           {showAdvanced && (
             <div className="login-field">

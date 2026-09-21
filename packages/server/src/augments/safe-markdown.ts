@@ -1,11 +1,7 @@
 import { statSync } from "node:fs";
 import { isAbsolute, normalize, posix, win32 } from "node:path";
 import { katex as markdownItKatex } from "@mdit/plugin-katex";
-import {
-  containsLinkifiableUrl,
-  parseLineColumn,
-  splitUrlSegments,
-} from "@yep-anywhere/shared";
+import { linkifyToHtml, parseLineColumn } from "@yep-anywhere/shared";
 import MarkdownIt, {
   type Env,
   type Renderer,
@@ -1067,16 +1063,13 @@ function renderLinkClose(
  * code was the one thing on screen that had to be selected and copied. The
  * text still reads exactly as written; only the anchor is added, and only for
  * a URL the shared linkifier accepts.
+ *
+ * The anchor stays in the same document, like every other link this renderer
+ * emits: `MARKDOWN_SANITIZE_OPTIONS` allows neither `target` nor `rel` on an
+ * anchor, so asking for a new tab here would be markup the sanitizer drops.
  */
 function escapeCodeWithLinks(text: string): string {
-  if (!containsLinkifiableUrl(text)) return escapeHtml(text);
-  return splitUrlSegments(text)
-    .map((segment) =>
-      segment.type === "url" && segment.href
-        ? `<a href="${escapeHtml(segment.href)}">${escapeHtml(segment.text)}</a>`
-        : escapeHtml(segment.text),
-    )
-    .join("");
+  return linkifyToHtml(text, { external: false }, escapeHtml);
 }
 
 function renderCodeInline(tokens: Token[], index: number): string {

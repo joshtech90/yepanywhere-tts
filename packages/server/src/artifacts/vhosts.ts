@@ -147,6 +147,16 @@ export function matchVhost(
   return undefined;
 }
 
+/**
+ * Scheme the visitor's browser used to reach this vhost. A `name.localhost`
+ * host is reached directly over the listener's plain HTTP; any other match is
+ * a public-root host, which only arrives through the operator's tunnel, and
+ * that tunnel terminates HTTPS before YA sees the request.
+ */
+export function vhostExternalProtocol(hostname: string): "http" | "https" {
+  return hostname.endsWith(".localhost") ? "http" : "https";
+}
+
 export function vhostSessionEnvironment(
   vhosts: readonly Pick<ArtifactVhost, "env" | "port">[],
 ): Record<string, string> {

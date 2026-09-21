@@ -252,14 +252,9 @@ export class ErrorBoundary extends Component<Props, State> {
   /**
    * Whether the frontend and server are actually running different versions.
    *
-   * This used to guess from the error message: any "cannot read properties of
-   * undefined" or "is not a function" was reported as a probable version
-   * mismatch. Those are the two most ordinary JavaScript faults there are, so
-   * the notice fired on plain bugs and sent the reader to update an
-   * installation that was already current. Both versions are known here — the
-   * client's is compiled in and the server's was just fetched — so compare
-   * them and say nothing when they agree. A server that did not answer leaves
-   * `serverVersion` null, which the diagnostic below already reports as
+   * Both versions are known here: the client's is compiled in and the
+   * server's was fetched when the error was caught. A server that did not
+   * answer leaves `serverVersion` null, which the diagnostic below reports as
    * unknown; an unanswered request is not evidence of a mismatch.
    */
   isLikelyVersionMismatch(): boolean {

@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+import { projectDisplayName } from "@yep-anywhere/shared";
 import { Link, useNavigate } from "react-router-dom";
 import { useI18n } from "../i18n";
 import { shortenPath } from "../lib/text";
 import type { Project } from "../types";
 import styles from "./ProjectCard.module.css";
+import { ProjectCaptionEditor } from "./ProjectCaptionEditor";
 import { ProjectCodeNameEditor } from "./ProjectCodeNameEditor";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 
@@ -25,6 +26,8 @@ interface ProjectCardProps {
   onOpenSettings?: (project: Project) => void;
   /** Persists an inline edit to this project's short code name. */
   onUpdateCodeName?: (project: Project, codeName: string) => Promise<void>;
+  /** Persists an inline caption override; `null` restores the derived caption. */
+  onUpdateCaption?: (project: Project, caption: string | null) => Promise<void>;
   /** Whether this project is currently being removed */
   isDeleting?: boolean;
 }
@@ -61,23 +64,11 @@ export function ProjectCard({
   onDeleteProject,
   onOpenSettings,
   onUpdateCodeName,
+  onUpdateCaption,
   isDeleting = false,
 }: ProjectCardProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
-  const [menuOpen, setMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const closeIfOutside = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    document.addEventListener("mousedown", closeIfOutside);
-    return () => document.removeEventListener("mousedown", closeIfOutside);
-  }, [menuOpen]);
 
   const handleNewSession = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -88,14 +79,12 @@ export function ProjectCard({
   const handleDeleteProject = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenuOpen(false);
     onDeleteProject?.(project);
   };
 
   const handleOpenSettings = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setMenuOpen(false);
     onOpenSettings?.(project);
   };
 
@@ -105,65 +94,59 @@ export function ProjectCard({
         to={`${basePath}/sessions?project=${project.id}&source=projects`}
         className={styles.link}
         data-project-card-link=""
-        onContextMenu={(event) => {
-          if (!onOpenSettings && !onDeleteProject) return;
-          event.preventDefault();
-          setMenuOpen(true);
-        }}
       >
         <div className={styles.header}>
-          {(onOpenSettings || onDeleteProject) && (
-            <div className={styles.menu} ref={menuRef}>
-              <button
-                type="button"
-                className={styles.menuTrigger}
-                onClick={(event) => {
-                  event.preventDefault();
-                  event.stopPropagation();
-                  setMenuOpen((open) => !open);
-                }}
-                title={t("projectCardSettings")}
-                aria-label={t("projectCardSettings")}
-                aria-haspopup="menu"
-                aria-expanded={menuOpen}
+          {onOpenSettings && (
+            <button
+              type="button"
+              className={styles.settingsTrigger}
+              onClick={handleOpenSettings}
+              title={t("projectCardOpenSettings")}
+              aria-label={t("projectCardOpenSettings")}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
               >
-                <svg
-                  width="16"
-                  height="16"
-                  viewBox="0 0 24 24"
-                  fill="currentColor"
-                  aria-hidden="true"
-                >
-                  <circle cx="5" cy="12" r="1.75" />
-                  <circle cx="12" cy="12" r="1.75" />
-                  <circle cx="19" cy="12" r="1.75" />
-                </svg>
-              </button>
-              {menuOpen && (
-                <div className={styles.menuDropdown} role="menu">
-                  {onOpenSettings && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      onClick={handleOpenSettings}
-                    >
-                      {t("projectCardSettings")}
-                    </button>
-                  )}
-                  {onDeleteProject && (
-                    <button
-                      type="button"
-                      role="menuitem"
-                      className={styles.deleteMenuItem}
-                      onClick={handleDeleteProject}
-                      disabled={isDeleting}
-                    >
-                      {t("projectsDelete")}
-                    </button>
-                  )}
-                </div>
-              )}
-            </div>
+                <circle cx="12" cy="12" r="3" />
+                <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z" />
+              </svg>
+            </button>
+          )}
+          {onDeleteProject && (
+            <button
+              type="button"
+              className={styles.deleteTrigger}
+              onClick={handleDeleteProject}
+              disabled={isDeleting}
+              title={t("projectsDelete")}
+              aria-label={t("projectsDelete")}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M3 6h18" />
+                <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+                <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+                <path d="M10 11v6" />
+                <path d="M14 11v6" />
+              </svg>
+            </button>
           )}
           <div className={styles.identity}>
             <strong className={styles.name}>
@@ -190,14 +173,20 @@ export function ProjectCard({
                   !
                 </span>
               )}
-              {project.name}
+              <span className={styles.nameText}>
+                {projectDisplayName(project)}
+              </span>
+              {onUpdateCodeName && (
+                <ProjectCodeNameEditor
+                  project={project}
+                  onUpdateCodeName={onUpdateCodeName}
+                />
+              )}
             </strong>
-            {onUpdateCodeName && (
-              <ProjectCodeNameEditor
-                project={project}
-                onUpdateCodeName={onUpdateCodeName}
-              />
-            )}
+            <ProjectCaptionEditor
+              project={project}
+              onUpdateCaption={onUpdateCaption}
+            />
           </div>
           <button
             type="button"
@@ -224,7 +213,7 @@ export function ProjectCard({
         </div>
         <div className={styles.meta}>
           <span className={styles.path} title={project.path}>
-            {shortenPath(project.path)}
+            <bdi>{shortenPath(project.path)}</bdi>
           </span>
           <span className={styles.stats}>
             <span className={styles.sessions}>

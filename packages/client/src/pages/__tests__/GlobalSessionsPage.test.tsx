@@ -104,8 +104,20 @@ vi.mock("../../components/BulkActionBar", () => ({
   BulkActionBar: () => null,
 }));
 
+const filterDropdowns = vi.hoisted(
+  () =>
+    [] as Array<{
+      label: string;
+      options: Array<{ value: string; label: string; clearSelection?: true }>;
+      onChange: (selected: string[]) => void;
+    }>,
+);
+
 vi.mock("../../components/FilterDropdown", () => ({
-  FilterDropdown: () => <div data-testid="filter-dropdown" />,
+  FilterDropdown: (props: (typeof filterDropdowns)[number]) => {
+    filterDropdowns.push(props);
+    return <div data-testid="filter-dropdown" />;
+  },
 }));
 
 vi.mock("../../components/PageHeader", () => ({
@@ -564,6 +576,58 @@ describe("GlobalSessionsPage", () => {
     expect(runtime.transport.fetch).not.toHaveBeenCalled();
   });
 
+  it("ranks results from catalog order again when the needle changes", async () => {
+    sessionCollectionState.records = [
+      makeSessionRecord("yankee"),
+      makeSessionRecord("xray"),
+    ];
+    renderPage("/sessions?q=xray");
+    expect(screen.queryByTestId("session-yankee")).toBeNull();
+    await act(async () => {
+      fireEvent.change(screen.getByRole("searchbox"), {
+        target: { value: "" },
+      });
+    });
+    const yankee = screen.getByTestId("session-yankee");
+    const xray = screen.getByTestId("session-xray");
+    expect(
+      yankee.compareDocumentPosition(xray) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("manages a selected session whose provider has no turn search", async () => {
+    versionState.version = {
+      capabilities: [SESSION_CONTENT_SEARCH_CAPABILITY],
+    };
+    sessionCollectionState.records = [
+      makeSessionRecord("supported"),
+      makeSessionRecord("unsupported", { provider: "grok" }),
+    ];
+    renderPage("/sessions");
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Keep just 2 matching sessions selected",
+        }),
+      );
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByTitle(/Click to manage selection/));
+    });
+    const row = screen.getByRole("checkbox", { name: /Session unsupported/ });
+    expect((row as HTMLInputElement).checked).toBe(true);
+    await act(async () => {
+      fireEvent.click(row);
+    });
+    expect(
+      screen.queryByRole("checkbox", { name: /Session unsupported/ }),
+    ).toBeNull();
+    expect(
+      screen.getByRole("checkbox", { name: /Session supported/ }),
+    ).toBeDefined();
+    expect(runtime.transport.fetch).not.toHaveBeenCalled();
+  });
+
   it("shows the project CTA when arriving from the projects list", () => {
     renderPage("/sessions?project=project-1&source=projects");
 
@@ -578,6 +642,29 @@ describe("GlobalSessionsPage", () => {
     expect(mockNavigate).toHaveBeenCalledWith(
       "/new-session?projectId=project-1",
     );
+  });
+
+  it("offers every project as the first choice in the project filter", () => {
+    filterDropdowns.length = 0;
+    renderPage("/sessions?project=project-1");
+    expect(screen.getByText("Open session for")).toBeDefined();
+
+    const projectFilter = filterDropdowns.find(
+      (dropdown) => dropdown.label === "Projects",
+    );
+    expect(projectFilter?.options[0]).toEqual({
+      value: "",
+      label: "All projects",
+      clearSelection: true,
+    });
+    expect(projectFilter?.options[1]).toEqual({
+      value: "project-1",
+      label: "Alpha",
+    });
+
+    // Choosing it clears the project filter, so the project CTA goes away.
+    act(() => projectFilter?.onChange([]));
+    expect(screen.queryByText("Open session for")).toBe(null);
   });
 
   it("shows the project CTA for project-filtered views without a source hint", () => {

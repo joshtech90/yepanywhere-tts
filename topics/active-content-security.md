@@ -369,6 +369,16 @@ its access query/cookie, YA session cookies, Authorization, desktop token and
 Referer before forwarding. Responses prohibit caching and referrer disclosure.
 Applications can see their own shared URL; it is intentionally transferable.
 
+A proxied request tells the app how it was actually reached.
+`x-forwarded-host` is the Host the visitor used, and `x-forwarded-proto` is
+`https` for a public-root host, whose HTTPS the operator's tunnel terminates,
+and `http` for a `name.localhost` visit. `x-forwarded-for` carries whatever
+chain arrived — the tunnel names the visitor — with the peer YA answered
+appended; YA claims no hop when that peer is unknown, so every address in the
+chain is one a proxy on the path really saw. An app may therefore distinguish
+a public visitor from a local one, subject to the usual caveat that the
+leftmost entry is only as trustworthy as the proxy that wrote it.
+
 **Copy app link** and **Revoke existing links** live beside each saved vhost.
 Revocation durably increments that app's generation and rejects old URLs and
 cookies on subsequent requests. It does not stop the app or erase already
@@ -533,18 +543,28 @@ ownership only to a request that asks for it with `owned`; everything else
 borrows. That asymmetry is deliberate: an interactive preview of a file the
 user already had must not delete it when the viewer closes, and only the
 caller that produced a directory can know it is disposable. YA's capture
-command asks, because it wrote the directory it is publishing. The setting
-**Delete captured artifacts when their link expires**, on by default, is what
-that caller consults. Changing it is not retroactive in either direction:
-existing grants keep the mode they were created with.
+command asks, because it wrote the directory it is publishing; a caller that
+wants its capture to outlive the link passes `ownArtifact: false` and borrows
+instead. No setting governs this: the request is the whole decision, so the
+settings page states the resulting behaviour instead of offering a control
+that could only contradict the caller.
 
 A pending deletion is part of the persisted state, so a server that stops
 between expiry and deletion still deletes on its next start. Deletion is
 refused, and the grant is created as borrowing instead, when the directory is
-a Git working tree, a home directory, the checkout root, or the YA data
-directory; a directory that holds a repository or an operator's home is not a
-disposable artifact bundle, whatever a caller claims. A deletion that fails is
-recorded and dropped rather than retried forever.
+a working tree's own root, a home directory, or a directory holding YA's data
+directory, and — outside any working tree, where nothing else distinguishes a
+bundle from ordinary content — when it sits under a home directory or under
+YA's state. `~/Downloads` is the case that decides that rule.
+
+Inside a working tree, location is not the evidence: a capture written to
+`<checkout>/.artifacts/` is still the caller's to clean up. There the frozen
+fileset excludes Git's own metadata and every path Git tracks under the root,
+staged-but-uncommitted included, so a capture beside a checkout's own files may
+take itself away and leaves them. Tracked-ness is read once, when the grant is
+created. A root whose files are all the working tree's own leaves nothing to
+own, so it borrows; so does a root where Git will not answer. A deletion that
+fails is recorded and dropped rather than retried forever.
 
 The frame remains in the existing viewer owner while parked; no cooperative
 suspension or CPU/memory containment is claimed. Dedicated HTML viewport,

@@ -72,6 +72,29 @@ A fork's first turn appends nothing, so its expectation is zero and any
 uncached input is waste. Session boot has no previous observation, so it has
 no expectation and is never judged.
 
+## One judgment per provider response, top-level only
+
+The growth measure is only valid between consecutive requests of one
+conversation, so two SDK message shapes are excluded before judging:
+
+- **Repeated frames of one response.** While a Claude response streams, the
+  Agent SDK emits one `assistant` message per completed content block, and
+  every frame repeats the same `message.usage` under the same `message.id`.
+  The monitor judges the first frame of a response id and ignores the rest;
+  a second judgment would see zero growth and count the response's ordinary
+  cache write as waste. Codex `token_usage` messages carry no response id and
+  are judged as they arrive.
+- **Subagent frames.** A frame with `parent_tool_use_id` set was produced
+  inside a Task subagent and reports that subagent's prompt, not the
+  session's. It neither creates evidence nor advances the baseline; letting
+  it through flips the baseline between two conversations of different size,
+  so the next top-level frame reads as a whole-prefix recompute.
+
+Fixed 2026-09-18 after Opus and Fable sessions with a 2,000-token waste floor
+showed a miss on most turns: each duplicate frame was judged against a
+zero-growth baseline, and interleaved subagent frames produced expectations
+such as 75,621 tokens (the parent context minus the subagent context).
+
 ## Recorded versus flagged
 
 A continuing-turn sample's idle gap starts at the previous usage-bearing

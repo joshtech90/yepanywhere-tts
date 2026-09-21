@@ -479,6 +479,33 @@ override or it will unknowingly exercise that override instead. The initial
 probe encountered exactly this with a local 0.80.2 build; the recorded 0.82.1
 coverage explicitly removed `PI_EXECUTABLE`.
 
+## Thinking levels and refused turns
+
+pi's own `THINKING_LEVELS` are `off`, `minimal`, `low`, `medium`, `high`,
+`xhigh` and `max` (installed Pi 0.85.1; `--thinking` states the same set), so
+every effort level YA names maps straight through. YA used to fold `max` onto
+`xhigh` from when xhigh was pi's top level, and the client's generic level list
+omitted `xhigh` entirely, which left Extra unreachable for pi sessions.
+
+A failed turn arrives as an ordinary assistant `message_end` (and `turn_end`)
+carrying `stopReason: "error"` and `errorMessage` — pi has no error event of its
+own — so reading only the terminal event ended the turn with nothing said. That
+message now reaches the YA turn result, and a turn the model server refused over
+the thinking level is retried lower: the refusal usually names the accepted set,
+and the retry takes the highest of those at or below the level asked for,
+stepping down one level when the server says only that the level is wrong.
+Capped at three retries per turn, with the refusal and the new level stated in
+the transcript. Observed refusal, pi 0.85.1 over vLLM 0.29 serving
+Qwen3.8-Flash-Next: `400: {"message":"Unexpected reasoning effort high.
+Supported types are xhigh (default), medium, and low."…}`.
+
+## Model registry export
+
+YA's configured gateway services can be published into pi's registry; see
+[gateway-services](gateway-services.md) § Terminal export. pi is the one CLI
+whose own file YA merges into, because `PI_CODING_AGENT_DIR` moves the whole
+agent directory rather than the registry alone.
+
 ## Capability flags (initial `AgentProvider`)
 
 `supportsSteering=true`, `supportsSteerNow=true` (steer lands before next LLM

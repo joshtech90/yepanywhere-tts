@@ -1,5 +1,5 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { GeminiProjectMap } from "../../src/projects/gemini-project-map.js";
@@ -50,5 +50,20 @@ it("defaults to YA data storage outside the configured Gemini session tree", asy
   );
   expect(relative(GEMINI_TMP_DIR, PROJECT_MAP_FILE).startsWith("..")).toBe(
     true,
+  );
+});
+
+it("keeps each profile's map in that profile's data directory", async () => {
+  // No YEP_DATA_DIR: the profile suffix is the only thing separating two
+  // instances, so a map that resolves the default path itself instead of
+  // asking config gives both profiles the same file.
+  vi.stubEnv("YEP_DATA_DIR", undefined);
+  vi.stubEnv("YEP_PROFILE", "storage-test");
+  vi.resetModules();
+  const { PROJECT_MAP_FILE } = await import(
+    "../../src/projects/gemini-project-map.js"
+  );
+  expect(PROJECT_MAP_FILE).toBe(
+    join(homedir(), ".yep-anywhere-storage-test", "gemini-project-map.json"),
   );
 });

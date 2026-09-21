@@ -23,8 +23,13 @@ import {
   readGoalDetails,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
+import type { ComputerSession } from "../computer-control/contract.js";
 import type { ClaudeGoalSnapshot } from "../sdk/providers/claude-goal.js";
 import { registerForkedSessionFile } from "../sessions/fork-discovery.js";
+import {
+  isResumeDropsTurnRefusal,
+  resolveResumeTruncation,
+} from "./resume-truncation.js";
 import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
 import { DEFAULT_IDLE_TIMEOUT_MS } from "../defaults.js";
 import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
@@ -80,8 +85,10 @@ import type {
   ProviderRuntimeStatusChangedEvent,
   SessionAbortedEvent,
   SessionCreatedEvent,
+  SessionForkedEvent,
   SessionIdRemappedEvent,
   SessionStatusEvent,
+  SessionStopRequestedEvent,
   SessionUpdatedEvent,
   WorkerActivityEvent,
 } from "../watcher/EventBus.js";
@@ -565,8 +572,6 @@ export interface SupervisorOptions {
   onProcessInventoryChanged?: () => void;
   /** Callback to fetch session summary for initial metadata reconciliation */
   onSessionSummary?: OnSessionSummaryCallback;
-  /** Notification policy only; called before a supported manual turn stop. */
-  onSessionStopRequested?: (sessionId: string) => void;
   /** Best-effort transcript recovery for sessions without a launch snapshot. */
   recoverSessionLaunchSettings?: RecoverSessionLaunchSettingsCallback;
   /** Callback to read the current heartbeat-turn settings for a session */
@@ -658,7 +663,6 @@ export class Supervisor {
     };
   }
   private onSessionSummary?: OnSessionSummaryCallback;
-  private onSessionStopRequested?: (sessionId: string) => void;
   private recoverSessionLaunchSettings?: RecoverSessionLaunchSettingsCallback;
   private staleCheckTimer: ReturnType<typeof setInterval>;
   private getHeartbeatTurnSettings?: (
@@ -759,7 +763,6 @@ export class Supervisor {
     this.getSessionChildEnv = options.getSessionChildEnv;
     this.onContextWindowObserved = options.onContextWindowObserved;
     this.onSessionSummary = options.onSessionSummary;
-    this.onSessionStopRequested = options.onSessionStopRequested;
     this.recoverSessionLaunchSettings = options.recoverSessionLaunchSettings;
     this.getHeartbeatTurnSettings = options.getHeartbeatTurnSettings;
     this.getHeartbeatTurnCandidates = options.getHeartbeatTurnCandidates;
@@ -1418,13 +1421,30 @@ export class Supervisor {
     return { objective: goal.goalObjective, status: "paused" };
   }
 
+  /** Claims a computer-control grant for a launch that asked for one. */
+  private selectComputerControl(
+    tempSessionId: string,
+    modelSettings: ModelSettings | undefined,
+    activeProvider: AgentProvider,
+  ): ComputerSession | undefined {
+    return this.computerControl?.select(
+      tempSessionId,
+      modelSettings?.computerControl,
+      activeProvider.name,
+      modelSettings?.executor,
+      modelSettings?.sandboxLevel,
+    );
+  }
+
   private async settleProviderStart<T>(
     start: Promise<T>,
     required: boolean,
+    computerControl?: ComputerSession,
   ): Promise<T> {
     try {
       return await start;
     } catch (error) {
+      await computerControl?.close();
       if (required) {
         throw new RetryableSessionLaunchError(error);
       }
@@ -2296,18 +2316,26 @@ export class Supervisor {
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     // Start session WITHOUT an initial message - agent will wait
-    const computerControl = this.computerControl?.select(
+    const computerControl = this.selectComputerControl(
       tempSessionId,
-      modelSettings?.computerControl,
-      activeProvider.name,
-      modelSettings?.executor,
-      modelSettings?.sandboxLevel,
+      modelSettings,
+      activeProvider,
     );
+    const truncation = resolveResumeTruncation({
+      resumeSessionId,
+      providerName: activeProvider.name,
+      pendingRewind: resumeSessionId
+        ? this.sessionMetadataService?.getPendingRewind?.(resumeSessionId)
+        : undefined,
+      requested: modelSettings,
+    });
     const start = activeProvider.startSession({
       computerControl,
       cwd: projectPath,
       // No initialMessage - queue will block until one is pushed
       resumeSessionId,
+      resumeSessionAt: truncation.resumeSessionAt,
+      resumeDropsTurn: truncation.resumeDropsTurn,
       permissionMode: effectiveMode,
       model: modelSettings?.model,
       serviceTier: modelSettings?.serviceTier,
@@ -2345,11 +2373,9 @@ export class Supervisor {
       },
     });
     const result = await this.settleProviderStart(
-      start.catch(async (error: unknown) => {
-        await computerControl?.close();
-        throw error;
-      }),
+      start,
       retryProviderStartupFailure || requireProviderSessionId,
+      computerControl,
     );
 
     const {
@@ -2453,6 +2479,7 @@ export class Supervisor {
     processHolder.process = process;
     this.observeProcessEvents(process);
     activateCallbacks?.();
+    await this.consumePendingRewind(process, resumeSessionId, truncation);
 
     // Wait for the real session ID from the provider
     if (!resumeSessionId) {
@@ -2566,20 +2593,25 @@ export class Supervisor {
     });
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
-    const computerControl = this.computerControl?.select(
+    const computerControl = this.selectComputerControl(
       tempSessionId,
-      modelSettings?.computerControl,
-      activeProvider.name,
-      modelSettings?.executor,
-      modelSettings?.sandboxLevel,
+      modelSettings,
+      activeProvider,
     );
+    const truncation = resolveResumeTruncation({
+      resumeSessionId,
+      providerName: activeProvider.name,
+      pendingRewind: resumeSessionId
+        ? this.sessionMetadataService?.getPendingRewind?.(resumeSessionId)
+        : undefined,
+      requested: modelSettings,
+    });
     const start = activeProvider.startSession({
       computerControl,
       cwd: projectPath,
       resumeSessionId,
-      resumeSessionAt: resumeSessionId
-        ? modelSettings?.resumeSessionAt
-        : undefined,
+      resumeSessionAt: truncation.resumeSessionAt,
+      resumeDropsTurn: truncation.resumeDropsTurn,
       permissionMode: effectiveMode,
       model: modelSettings?.model,
       serviceTier: modelSettings?.serviceTier,
@@ -2616,11 +2648,9 @@ export class Supervisor {
       },
     });
     const result = await this.settleProviderStart(
-      start.catch(async (error: unknown) => {
-        await computerControl?.close();
-        throw error;
-      }),
+      start,
       retryProviderStartupFailure || requireProviderSessionId,
+      computerControl,
     );
 
     const {
@@ -2724,6 +2754,7 @@ export class Supervisor {
     processHolder.process = process;
     this.observeProcessEvents(process);
     activateCallbacks?.();
+    await this.consumePendingRewind(process, resumeSessionId, truncation);
 
     const queueBeforeProviderSettlement =
       !resumeSessionId && requireProviderSessionId;
@@ -3171,15 +3202,31 @@ export class Supervisor {
         stateRoot: this.sandboxStateRoot,
       }),
     );
+    // A full copy of a session whose rewind has not yet been applied would
+    // carry the dropped tail as its own tip and resume the dropped branch.
+    // The SDK fork slices by file position and remaps uuids, so the rewind
+    // records cannot travel with it; slicing at the cut yields exactly the
+    // kept prefix instead (topics/session-rewind.md).
+    const pendingCut =
+      !options.upToMessageId && !options.boundary
+        ? this.sessionMetadataService?.getPendingRewind?.(options.sessionId)
+            ?.cutMessageId
+        : undefined;
     const fork = await provider.forkSession({
       sessionId: options.sessionId,
       cwd: options.projectPath,
-      upToMessageId: options.upToMessageId,
+      upToMessageId: options.upToMessageId ?? pendingCut,
       boundary: options.boundary,
       title: options.title,
       sessionSandbox,
     });
     registerForkedSessionFile(provider.name, fork.sessionId, fork.filePath);
+    // The new transcript is written by us. Announce it so file-activity
+    // watchers do not read our own write as another program owning the
+    // session (the amber external-writer warning).
+    this.emitSessionForked(fork.sessionId, options.sessionId, {
+      projectPath: options.projectPath,
+    });
     return {
       sessionId: fork.sessionId,
       sandboxStateKey: sessionSandbox?.stateKey,
@@ -4743,6 +4790,61 @@ export class Supervisor {
     return result;
   }
 
+  /**
+   * A launch that passed a pending rewind's truncation has applied it: the
+   * record stops being pending and the process remembers which record, so a
+   * later drop-guard refusal from the provider can delete exactly that one.
+   */
+  private async consumePendingRewind(
+    process: Process,
+    resumeSessionId: string | undefined,
+    truncation: { rewindRecordId?: string },
+  ): Promise<void> {
+    if (!resumeSessionId || !truncation.rewindRecordId) return;
+    process.appliedRewindRecordId = truncation.rewindRecordId;
+    await this.sessionMetadataService?.clearPendingRewind?.(resumeSessionId);
+  }
+
+  /**
+   * The provider refused the guarded truncation. The refusal is deterministic
+   * (topics/session-rewind.md), so the record is deleted rather than retried:
+   * the rows it grouped are live again, every viewer reloads, and the next
+   * send resumes the full chain.
+   */
+  private async discardRefusedRewind(process: Process): Promise<void> {
+    const recordId = process.appliedRewindRecordId;
+    if (!recordId) return;
+    process.appliedRewindRecordId = undefined;
+    getLogger().warn(
+      {
+        event: "session_rewind_refused",
+        sessionId: process.sessionId,
+        processId: process.id,
+        projectId: process.projectId,
+        rewindRecordId: recordId,
+      },
+      "Provider refused the same-session rewind; record deleted",
+    );
+    await this.sessionMetadataService?.removeRewindRecord?.(
+      process.sessionId,
+      recordId,
+    );
+    this.eventBus?.emit({
+      type: "session-metadata-changed",
+      sessionId: process.sessionId,
+      projectId: process.projectId,
+      rewindRecordRemoved: recordId,
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /** Persist the live process's current settings before a planned restart. */
+  async persistLiveLaunchSettings(sessionId: string): Promise<void> {
+    const process = this.getProcessForSession(sessionId);
+    if (!process || process.isTerminated) return;
+    await this.activationCoordinator.persistLiveProcessLaunchSettings(process);
+  }
+
   async abortSessionWithVerification(
     sessionId: string,
   ): Promise<ProcessAbortResult | null> {
@@ -4763,7 +4865,7 @@ export class Supervisor {
     if (!process) return { success: false, supported: false };
 
     if (process.supportsInterrupt) {
-      this.onSessionStopRequested?.(process.sessionId);
+      this.emitSessionStopRequested(process.sessionId, process.projectId);
     }
 
     await this.pauseRecapsUntilUserTurn(processId);
@@ -5038,11 +5140,52 @@ export class Supervisor {
     }
   }
 
-  private emitSessionAborted(sessionId: string, projectId: UrlProjectId): void {
+  private emitSessionForked(
+    sessionId: string,
+    sourceSessionId: string,
+    location: { projectPath: string },
+  ): void {
+    if (!this.eventBus) return;
+
+    const event: SessionForkedEvent = {
+      type: "session-forked",
+      sessionId,
+      sourceSessionId,
+      projectId: encodeProjectId(location.projectPath),
+      timestamp: new Date().toISOString(),
+    };
+    this.eventBus.emit(event);
+  }
+
+  private emitSessionAborted(
+    sessionId: string,
+    projectId: UrlProjectId,
+    reason?: "idle-reap",
+  ): void {
     if (!this.eventBus) return;
 
     const event: SessionAbortedEvent = {
       type: "session-aborted",
+      sessionId,
+      projectId,
+      ...(reason ? { reason } : {}),
+      timestamp: new Date().toISOString(),
+    };
+    this.eventBus.emit(event);
+  }
+
+  /**
+   * Announce an intentional stop of the current turn before the interrupt is
+   * attempted, so a listener sees it ahead of the idle report the stop causes.
+   */
+  private emitSessionStopRequested(
+    sessionId: string,
+    projectId: UrlProjectId,
+  ): void {
+    if (!this.eventBus) return;
+
+    const event: SessionStopRequestedEvent = {
+      type: "session-stop-requested",
       sessionId,
       projectId,
       timestamp: new Date().toISOString(),
@@ -5102,7 +5245,11 @@ export class Supervisor {
           event.type === "mode-change" ? "permissionMode" : event.setting,
         );
       } else if (event.type === "idle-reap") {
-        this.emitSessionAborted(process.sessionId, process.projectId);
+        this.emitSessionAborted(
+          process.sessionId,
+          process.projectId,
+          "idle-reap",
+        );
       } else if (event.type === "complete") {
         this.dirtyFileEditorService?.forgetProcess(process.id);
         this.unregisterProcess(process);
@@ -5126,6 +5273,14 @@ export class Supervisor {
             process.sessionId,
             process.projectId,
           );
+        }
+        if (process.appliedRewindRecordId) {
+          if (isResumeDropsTurnRefusal(event.message)) {
+            void this.discardRefusedRewind(process);
+          } else if (event.message.type === "result") {
+            // The truncating resume was accepted; the record is history now.
+            process.appliedRewindRecordId = undefined;
+          }
         }
         this.cacheMissBillingMonitor.observeMessage(process, event.message);
         if (

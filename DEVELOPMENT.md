@@ -151,10 +151,12 @@ are not a requirement to read every neighboring document.
 | --- | --- |
 | Source edits or OS-sensitive behavior | [Testing](docs/development/testing.md): required checks, Linux/macOS/Windows coverage, and platform limitations. |
 | Source formatting, warning cleanup, or a commit | [Code quality](docs/development/code-quality.md): warning-free checks, exact-file formatting, and no routine import/export reordering. |
+| Authentication, named principals, project/session access grants, hosted issuer trust, or peer authorization | [Security](topics/security.md) and [principals and grants](topics/principals-and-grants.md): state how the proposed slice relates to the shared vocabulary before choosing a feature-local identity or authorization shape. |
 | Any change in `packages/client`, UI copy, or a chatty client console | [Client development](docs/development/client.md): English-only i18n additions and `pnpm console:scan`. |
 | Client styles, a legacy stylesheet, or a React component emitting legacy global classes | [CSS architecture](topics/css-architecture.md): CSS Modules, containment, and the `css:touched` ownership check. Run `pnpm css:check` for style changes. |
 | UI appearance/interaction proposals or mockup authoring/export | [UI design](topics/ui-design.md), before choosing fixtures or rendering/export commands. Prose-only requests remain prose-only. |
 | UI tweaks or browser verification | [UI testing](topics/ui-testing.md): final desktop/phone captures by default, produced through the repository's artifact capture facility so the images are presented rather than only archived; browser fallback and explicit user-owned visual verification. |
+| A test timeout, or a CI-only test failure | [Test time budgets](topics/test-time-budgets.md): budgets come from measured runs at 2-4x the observed maximum, counting a limit a run timed out at; rewrite an assertion whose subject was never the clock. |
 | UI rendering boundaries or shared views | [UI architecture](topics/ui-architecture.md). |
 | Rendering or rich-renderer changes | [Rendering performance](packages/client/RENDERING_PERFORMANCE.md). |
 | Benchmark/regression evidence or measurement-host selection | [Performance regression suite](topics/performance-regression-suite.md#performance-measurement-hosts), before treating measurements as regression evidence. |

@@ -1,10 +1,11 @@
 import { basename } from "node:path";
-import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
+import { truncateSessionTitle } from "@yep-anywhere/shared";
+import { nonHumanUserTurnField } from "../metadata/SessionMetadataService.js";
 import type { RetainedSessionCollections } from "../services/RetainedSessionCollections.js";
 import {
   getEffectiveProviderUpdatedAt,
-  hasUnreadProviderContent,
   latestRecapMessage,
+  sessionRowRuntimeOverlay,
 } from "../sessions/recap-overlays.js";
 import type {
   GlobalSessionItem,
@@ -67,18 +68,31 @@ export async function readRetainedSessionItems(
       recap && Date.parse(recap.timestamp) > Date.parse(providerUpdatedAt)
         ? recap.timestamp
         : providerUpdatedAt;
-    const pendingRequest = process?.getPendingInputRequest();
     const isArchived =
       metadata?.isArchived ?? isSessionAutoArchived({ updatedAt }, cutoff);
-    const hasUnread = hasUnreadProviderContent(
-      deps.notificationService,
-      row.sessionId,
+    const runtime = sessionRowRuntimeOverlay(process, {
+      sessionId: row.sessionId,
       providerUpdatedAt,
-    );
+      notificationService: deps.notificationService,
+      externalTracker: deps.externalTracker,
+    });
+    const hasUnread = runtime.hasUnread;
     const provider = metadata?.provider ?? row.provider ?? row.catalogFamily;
+    // All Sessions matches these rows in the browser, so the row carries the
+    // session's own words as `fullTitle`/`initialPrompt` and a display-length
+    // `title` beside them — the same pair the unretained collection sends.
+    // Without it a client-side search can only see the display title, and a
+    // match living deeper in the first message is unreachable without a
+    // server-side search the client would have to direct.
+    const fullTitle = row.title ?? undefined;
     const item: GlobalSessionItem = {
       id: row.sessionId,
-      ...(row.title !== undefined ? { title: row.title } : {}),
+      ...(row.title !== undefined
+        ? {
+            title: row.title === null ? null : truncateSessionTitle(row.title),
+            fullTitle,
+          }
+        : {}),
       updatedAt,
       ...(row.createdAt ? { createdAt: row.createdAt } : {}),
       provider,
@@ -87,38 +101,18 @@ export async function readRetainedSessionItems(
         projects.get(projectId)?.name ??
         row.projectName ??
         basename(row.projectPath),
-      ownership: process
-        ? {
-            owner: "self",
-            processId: process.id,
-            permissionMode: process.permissionMode,
-            appliedPermissionMode: process.appliedPermissionMode,
-            modeVersion: process.modeVersion,
-            recapAfterSeconds: process.recapAfterSeconds,
-          }
-        : {
-            owner: deps.externalTracker?.isExternal(row.sessionId)
-              ? "external"
-              : "none",
-          },
-      pendingInputType: pendingRequest
-        ? pendingRequest.type === "tool-approval"
-          ? "tool-approval"
-          : "user-question"
-        : undefined,
-      activity:
-        process?.state.type === "in-turn" ||
-        process?.state.type === "waiting-input"
-          ? process.state.type
-          : process?.state.type === "idle" && process.isRetainingProviderWork()
-            ? "in-turn"
-            : undefined,
+      ownership: runtime.ownership,
+      pendingInputType: runtime.pendingInputType,
+      activity: runtime.activity,
       hasUnread,
       isArchived,
       isStarred: metadata?.isStarred ?? false,
       customTitle: metadata?.customTitle,
-      initialPrompt: metadata?.initialPrompt,
-      nonHumanUserTurn: pendingNonHumanUserTurn(metadata) ?? null,
+      initialPrompt: metadata?.initialPrompt ?? fullTitle,
+      nonHumanUserTurn: nonHumanUserTurnField(
+        deps.sessionMetadataService,
+        row.sessionId,
+      ),
       autoResumeDisabled: metadata?.autoResumeDisabled === true,
       parentSessionId: metadata?.parentSessionId,
       parentSessionKind: metadata?.parentSessionKind,

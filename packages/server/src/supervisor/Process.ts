@@ -27,6 +27,7 @@ import {
   DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
+  capTurnText,
   clampPatientPatienceSeconds,
   hasInvocationCandidate,
   isClaudeProviderName,
@@ -34,7 +35,6 @@ import {
   isLocalCommandEchoTurn,
   isPostCompactReplayText,
   MAX_POST_COMPACT_REPLAY_TURNS,
-  MAX_POST_COMPACT_REPLAY_TURN_CHARS,
   normalizeRecapAfterSeconds,
   stripPatientQueuePrefix,
   type PostCompactReplayTurn,
@@ -131,7 +131,6 @@ type RecentAssistantRecapEntry = {
   completedAtMs: number;
   text: string;
 };
-type RecentProseTurn = PostCompactReplayTurn;
 type NativeRecapRecord = {
   receivedAtMs: number;
   text: string;
@@ -908,10 +907,11 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   /** Function to change max thinking tokens at runtime (SDK 0.2.7+) */
   setMaxThinkingTokensFn?: (tokens: number | null) => Promise<void>;
   /** Function to change effort without restarting the provider process. */
+  setEffortFn?: (effort?: EffortLevel) => Promise<void>;
+  /** Publish selected/pending settings to the optional owning-session projection. */
   publishAgentSelfSelectionFn?: (
     selection: import("../agent-tools/protocol.js").AgentSelfSelection,
   ) => void | Promise<void>;
-  setEffortFn?: (effort?: EffortLevel) => Promise<void>;
   /** Whether effort changes can be published into an active provider turn. */
   effortUpdatesActiveTurn?: boolean;
   /** Function to interrupt current turn gracefully (SDK 0.2.7+) */
@@ -989,6 +989,12 @@ export class Process {
   readonly sandboxEnforcement: SessionSandboxEnforcement | undefined;
   readonly sandboxStateKey: string | undefined;
   readonly sandboxProjectPath: string | undefined;
+  /**
+   * The same-session rewind record this launch's truncating resume applied,
+   * until the provider either accepts it (first successful turn) or refuses
+   * it (topics/session-rewind.md). Set by the supervisor at launch.
+   */
+  appliedRewindRecordId: string | undefined;
 
   private legacyQueue: UserMessage[] = [];
   private messageQueue: AgentMessageQueue | null;
@@ -1051,7 +1057,7 @@ export class Process {
    * buffer is bounded; older entries are dropped as new ones arrive.
    */
   private recentAssistantRecapEntries: RecentAssistantRecapEntry[] = [];
-  private recentProseTurns: RecentProseTurn[] = [];
+  private recentProseTurns: PostCompactReplayTurn[] = [];
   private static readonly RECENT_TEXT_MAX_ENTRIES = 15;
   private static readonly RECENT_TEXT_MAX_CHARS_PER_ENTRY = 1500;
   /**
@@ -1104,8 +1110,9 @@ export class Process {
     | ((tokens: number | null) => Promise<void>)
     | null;
   /** Function to change effort without restarting the provider process. */
-  private publishAgentSelfSelectionFn: ProcessConstructorOptions["publishAgentSelfSelectionFn"];
   private setEffortFn: ((effort?: EffortLevel) => Promise<void>) | null;
+  /** Publish selected/pending settings to the optional owning-session projection. */
+  private publishAgentSelfSelectionFn: ProcessConstructorOptions["publishAgentSelfSelectionFn"];
   private effortUpdatesActiveTurn: boolean;
 
   /** Function to interrupt current turn gracefully (SDK 0.2.7+) */
@@ -1272,8 +1279,8 @@ export class Process {
     this._thinking = options.thinking;
     this._effort = options.effort;
     this.setMaxThinkingTokensFn = options.setMaxThinkingTokensFn ?? null;
-    this.publishAgentSelfSelectionFn = options.publishAgentSelfSelectionFn;
     this.setEffortFn = options.setEffortFn ?? null;
+    this.publishAgentSelfSelectionFn = options.publishAgentSelfSelectionFn;
     this.effortUpdatesActiveTurn = options.effortUpdatesActiveTurn === true;
     this.interruptFn = options.interruptFn ?? null;
     this.steerFn = options.steerFn ?? null;
@@ -2985,12 +2992,12 @@ export class Process {
   ): void {
     const trimmed = text.trim();
     if (!trimmed) return;
+    // The provider echoes YA's own continuation back as an ordinary user row;
+    // admitting it would spend a window slot the next replay wants for real
+    // prose, which the selector's later skip can no longer recover.
     if (isPostCompactReplayText(trimmed)) return;
     if (role === "user" && trimmed.startsWith("/")) return;
-    const capped =
-      trimmed.length > MAX_POST_COMPACT_REPLAY_TURN_CHARS
-        ? `${trimmed.slice(0, MAX_POST_COMPACT_REPLAY_TURN_CHARS)} …[truncated]`
-        : trimmed;
+    const capped = capTurnText(trimmed);
     const last = this.recentProseTurns[this.recentProseTurns.length - 1];
     if (last && last.role === role && last.text === capped) {
       return;
@@ -3718,8 +3725,7 @@ export class Process {
     }
 
     // Legacy behavior for mock SDK
-    this.legacyQueue.push(providerMessage);
-    this.emitNonHumanUserTurn(messageWithUuid, uuid);
+    this.legacyQueue.push(messageWithUuid);
     if (this._state.type === "idle") {
       this.processNextInQueue();
     }
@@ -4011,7 +4017,7 @@ export class Process {
    * deliberately separate from both deferred and patient provider input.
    */
   queueYaCommand(
-    command: SessionQueuedYaCommand,
+    command: Extract<SessionQueuedYaCommand, "done">,
     options?: {
       content?: SyntheticSessionBoundaryCommand;
       tempId?: string;
@@ -4268,6 +4274,15 @@ export class Process {
   /**
    * Signal that subscribers should publish the canonical deferred queue state.
    */
+  /**
+   * Re-publish the queue projection to live subscribers. Used when a
+   * server-owned entry outside this process (the `/clearloop` job) changes,
+   * since the transport re-queries the canonical projection on this event.
+   */
+  notifyQueueProjectionChanged(yaCommand?: SessionQueuedYaCommand): void {
+    this.emitDeferredQueueChange("queued", undefined, yaCommand);
+  }
+
   private emitDeferredQueueChange(
     reason?: "queued" | "cancelled" | "promoted",
     tempId?: string,
@@ -5648,6 +5663,11 @@ export class Process {
 
     const nextMessage = this.legacyQueue.shift();
     if (nextMessage) {
+      // The delivery receipt belongs to consumption, not to enqueue, so a
+      // cancelled entry leaves none.
+      if (nextMessage.uuid) {
+        this.emitNonHumanUserTurn(nextMessage, nextMessage.uuid);
+      }
       // In real implementation with MessageQueue, this happens automatically
       // For mock SDK, we just transition back to running
       this.transitionToInTurnForWake("user-message");

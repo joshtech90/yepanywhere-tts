@@ -1,4 +1,13 @@
 /** Deterministic references; no tracker calls, registry prerequisite or Git access. */
+
+/**
+ * Version of the extraction rules in this file. Every evidence row records the
+ * version that produced it, so rows written before a rules change can be told
+ * apart from rows a later reader would produce from the same text. Bump it when
+ * a change here would give a different answer for text already captured.
+ */
+export const EXTRACTOR_VERSION = 1;
+
 export interface IssueReference {
   key: string;
   identity: string | null;
@@ -175,62 +184,6 @@ export function extractIssueReferences(
           text.slice(ref.end, other.start).match(/^\]\($/),
       ),
   );
-}
-
-export interface IssueText {
-  id: string;
-  role?: "user" | "assistant";
-  sourceId?: string;
-  text: string;
-  timestamp?: string;
-}
-
-/** Accept only visible text blocks; tool output, reasoning and setup never enter SQLite. */
-export function visibleIssueText(message: {
-  uuid?: string;
-  id?: unknown;
-  type: string;
-  content?: unknown;
-  message?: { content?: unknown };
-  isMeta?: boolean;
-  isSynthetic?: boolean;
-  timestamp?: string;
-}): IssueText | null {
-  if (
-    !["user", "assistant"].includes(message.type) ||
-    message.isMeta ||
-    message.isSynthetic
-  )
-    return null;
-  const id =
-    message.uuid ?? (typeof message.id === "string" ? message.id : undefined);
-  if (!id) return null;
-  const content = message.message?.content ?? message.content;
-  const text =
-    typeof content === "string"
-      ? content
-      : Array.isArray(content)
-        ? content
-            .flatMap((block) =>
-              block && block.type === "text" && typeof block.text === "string"
-                ? [block.text]
-                : [],
-            )
-            .join("\n")
-        : "";
-  if (
-    !text ||
-    /^(?:# AGENTS\.md instructions|<environment_context>|<INSTRUCTIONS>)/.test(
-      text.trim(),
-    )
-  )
-    return null;
-  return {
-    id,
-    text,
-    timestamp: message.timestamp,
-    role: message.type as "user" | "assistant",
-  };
 }
 
 /** Evidence never retains URL credentials, query tokens or fragment payloads. */

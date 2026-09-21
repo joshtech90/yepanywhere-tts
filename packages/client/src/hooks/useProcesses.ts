@@ -1,3 +1,4 @@
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import type { SessionSandboxEnforcement } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useSyncExternalStore } from "react";
 import { fetchJSON } from "../api/client";
@@ -37,6 +38,8 @@ export interface ProcessInfo {
   pid?: number;
   /** Session title from first user message */
   sessionTitle: string | null;
+  /** Iterations a running `/clearloop` still has to do; absent when none runs. */
+  clearloop?: SessionClearloopBadge;
   /** Only present for terminated processes */
   terminatedAt?: string;
   terminationReason?: string;

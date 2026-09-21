@@ -4,11 +4,15 @@
   overflow-wrap: anywhere;
 }
 
+/* One column on a phone, and up to three once the row is wide enough for a
+   provider name to sit beside its checkbox without wrapping: the list is a
+   dozen short labels, which read as a block rather than as a tall stack. */
 .providerToggles {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
+  gap: var(--space-1) var(--space-4);
   margin-top: var(--space-2);
+  max-width: 42rem;
 }
 
 .providerToggle {

@@ -10,6 +10,7 @@ import {
   processGroupAlive,
   processIdentityState,
   providerHostCapability,
+  providerHostEnabled,
   readProcessStartTime,
 } from "../../../../scripts/provider-process-identity.mjs";
 import {
@@ -32,6 +33,31 @@ it("keeps unsupported platforms and Mac Bun on the ordinary provider path", () =
       .supported,
   ).toBe(false);
   expect(resolveProviderHostPaths({}, { platform: "win32" })).toBeNull();
+});
+it("defaults the provider host off on Mac and on for Linux", () => {
+  expect(providerHostEnabled({ env: {}, platform: "darwin" })).toBe(false);
+  expect(providerHostEnabled({ env: {}, platform: "linux" })).toBe(true);
+  expect(providerHostEnabled({ env: {}, platform: "win32" })).toBe(false);
+});
+it("lets explicit provider-host configuration override platform defaults", () => {
+  expect(
+    providerHostEnabled({
+      env: { YEP_PROVIDER_HOST_ENABLED: "true" },
+      platform: "darwin",
+    }),
+  ).toBe(true);
+  expect(
+    providerHostEnabled({
+      env: { YEP_PROVIDER_HOST_ENABLED: "false" },
+      platform: "linux",
+    }),
+  ).toBe(false);
+  expect(() =>
+    providerHostEnabled({
+      env: { YEP_PROVIDER_HOST_ENABLED: "sometimes" },
+      platform: "linux",
+    }),
+  ).toThrow("must be true or false");
 });
 it("uses a short private Mac default and respects explicit directory overrides", () => {
   expect(

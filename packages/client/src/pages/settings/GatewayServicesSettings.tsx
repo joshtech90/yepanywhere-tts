@@ -21,7 +21,7 @@ import {
   type EffortLevel,
   type GatewayService,
 } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { useServerSettings } from "../../hooks/useServerSettings";
@@ -158,6 +158,17 @@ export function GatewayServicesSettings({
     Record<string, EffortDetection | undefined>
   >({});
 
+  /**
+   * The draft as it stands right now, for the handlers that save it.
+   *
+   * There is no Save button to read the finished draft off the screen, so a
+   * blur or a toggle saves whatever is current at that instant. React state is
+   * a render behind inside the same handler that changed it, which would make a
+   * toggle save the value it just replaced.
+   */
+  const draft = useRef({ services, defaultId });
+  draft.current = { services, defaultId };
+
   useEffect(() => {
     setServices(savedServices);
   }, [savedServices]);
@@ -169,15 +180,70 @@ export function GatewayServicesSettings({
   const hasChanges =
     !sameServices(services, savedServices) || defaultId !== savedDefaultId;
 
+  /**
+   * Write the current draft, on blur or on a toggle.
+   *
+   * Every field saves itself, so the list is never left holding a change the
+   * user believes is configured. Saving an unchanged draft is skipped rather
+   * than sent, since a blur that changed nothing should not restart the
+   * providers.
+   */
+  const save = useCallback(async () => {
+    const { services: next, defaultId: nextDefaultId } = draft.current;
+    if (sameServices(next, savedServices) && nextDefaultId === savedDefaultId) {
+      return;
+    }
+    setIsSaving(true);
+    try {
+      await updateSettings({
+        gatewayServices: next,
+        defaultGatewayServiceId: next.some(
+          (service) => service.id === nextDefaultId,
+        )
+          ? nextDefaultId
+          : next[0]?.id,
+      });
+      await reloadProviders();
+    } catch {
+      // Error handled by useServerSettings.
+    } finally {
+      setIsSaving(false);
+    }
+  }, [reloadProviders, savedDefaultId, savedServices, updateSettings]);
+
   const updateService = useCallback(
-    (index: number, changes: Partial<GatewayService>) => {
-      setServices((current) =>
-        current.map((service, position) =>
-          position === index ? { ...service, ...changes } : service,
-        ),
+    (
+      index: number,
+      changes: Partial<GatewayService>,
+      options?: { save?: boolean },
+    ) => {
+      const next = draft.current.services.map((service, position) =>
+        position === index ? { ...service, ...changes } : service,
       );
+      draft.current = { ...draft.current, services: next };
+      setServices(next);
+      if (options?.save) void save();
     },
-    [],
+    [save],
+  );
+
+  /** Replace the whole list — adding, removing, or reordering — and save it. */
+  const replaceServices = useCallback(
+    (next: GatewayService[]) => {
+      draft.current = { ...draft.current, services: next };
+      setServices(next);
+      void save();
+    },
+    [save],
+  );
+
+  const chooseDefault = useCallback(
+    (id: string) => {
+      draft.current = { ...draft.current, defaultId: id };
+      setDefaultId(id);
+      void save();
+    },
+    [save],
   );
 
   /**
@@ -187,16 +253,18 @@ export function GatewayServicesSettings({
    * set: a deliberately configured local endpoint should be able to lead
    * without having to become the default service, which means something else.
    */
-  const moveService = useCallback((index: number, delta: number) => {
-    setServices((current) => {
+  const moveService = useCallback(
+    (index: number, delta: number) => {
+      const current = draft.current.services;
       const target = index + delta;
-      if (target < 0 || target >= current.length) return current;
+      if (target < 0 || target >= current.length) return;
       const next = [...current];
       const [moved] = next.splice(index, 1);
       next.splice(target, 0, moved!);
-      return next;
-    });
-  }, []);
+      replaceServices(next);
+    },
+    [replaceServices],
+  );
 
   /**
    * Ask one endpoint what it accepts and tick what it answers.
@@ -211,7 +279,7 @@ export function GatewayServicesSettings({
    */
   const detectEffort = useCallback(
     async (index: number) => {
-      const service = services[index];
+      const service = draft.current.services[index];
       if (!service) return;
       setDetections((current) => ({
         ...current,
@@ -234,13 +302,21 @@ export function GatewayServicesSettings({
             modelId: answer.modelId,
           },
         }));
-        updateService(index, {
-          effortLevels: answer.levels.length ? answer.levels : undefined,
-          ...(service.defaultEffortLevel !== undefined &&
-          answer.levels.includes(service.defaultEffortLevel)
-            ? {}
-            : { defaultEffortLevel: undefined }),
-        });
+        updateService(
+          index,
+          {
+            effortLevels: answer.levels.length ? answer.levels : undefined,
+            // The endpoint's own default is worth keeping when it named one,
+            // but never over a default the user already stated and the answer
+            // still lists.
+            defaultEffortLevel:
+              service.defaultEffortLevel !== undefined &&
+              answer.levels.includes(service.defaultEffortLevel)
+                ? service.defaultEffortLevel
+                : answer.defaultLevel,
+          },
+          { save: true },
+        );
         return answer.levels.length > 0;
       } catch {
         setDetections((current) => ({
@@ -250,7 +326,7 @@ export function GatewayServicesSettings({
       }
       return false;
     },
-    [services, updateService],
+    [updateService],
   );
 
   /**
@@ -263,10 +339,11 @@ export function GatewayServicesSettings({
    */
   const chooseAskedEffort = useCallback(
     async (index: number) => {
-      updateService(index, {
-        effortLevels: undefined,
-        defaultEffortLevel: undefined,
-      });
+      updateService(
+        index,
+        { effortLevels: undefined, defaultEffortLevel: undefined },
+        { save: true },
+      );
       if (!effortDetectionEnabled) {
         await updateSetting("gatewayServiceEffortDetection", true);
       }
@@ -286,32 +363,17 @@ export function GatewayServicesSettings({
   const chooseStatedEffort = useCallback(
     async (index: number) => {
       if (await detectEffort(index)) return;
-      updateService(index, {
-        effortLevels: [...EFFORT_LEVEL_ORDER],
-        defaultEffortLevel: undefined,
-      });
+      updateService(
+        index,
+        {
+          effortLevels: [...EFFORT_LEVEL_ORDER],
+          defaultEffortLevel: undefined,
+        },
+        { save: true },
+      );
     },
     [detectEffort, updateService],
   );
-
-  const handleSave = useCallback(async () => {
-    setIsSaving(true);
-    try {
-      await updateSettings({
-        gatewayServices: services,
-        defaultGatewayServiceId: services.some(
-          (service) => service.id === defaultId,
-        )
-          ? defaultId
-          : services[0]?.id,
-      });
-      await reloadProviders();
-    } catch {
-      // Error handled by useServerSettings.
-    } finally {
-      setIsSaving(false);
-    }
-  }, [defaultId, reloadProviders, services, updateSettings]);
 
   return (
     <div id="provider-gateway-services" className="settings-subsection">
@@ -362,8 +424,10 @@ export function GatewayServicesSettings({
       <form
         className={styles.form}
         onSubmit={(event) => {
+          // Nothing here needs submitting — every field saves itself on blur —
+          // but Enter in a text field would otherwise reload the page.
           event.preventDefault();
-          if (hasChanges && !isSaving) void handleSave();
+          void save();
         }}
       >
         {services.map((service, index) => {
@@ -392,6 +456,7 @@ export function GatewayServicesSettings({
                         .replace(/[^a-z0-9-]/gu, "-"),
                     })
                   }
+                  onBlur={() => void save()}
                   aria-label={t("providersGatewayServiceIdAria")}
                 />
                 <span className={styles.reorder}>
@@ -416,7 +481,11 @@ export function GatewayServicesSettings({
                 </span>
               </legend>
 
-              <label className={styles.field}>
+              {/* The endpoint keeps its own row — a URL is the one long value
+                  here — and the short fields after it pair off. Each hint sits
+                  under its own field rather than as a full-width band between
+                  rows, which is what made two services fill a phone screen. */}
+              <label className={`${styles.field} ${styles.span2}`}>
                 <span>{t("providersGatewayServiceUrlLabel")}</span>
                 <input
                   type="url"
@@ -426,51 +495,10 @@ export function GatewayServicesSettings({
                   onChange={(event) =>
                     updateService(index, { url: event.target.value })
                   }
+                  onBlur={() => void save()}
                   aria-label={t("providersGatewayServiceUrlAria")}
                 />
               </label>
-
-              <div className={`${styles.row} ${styles.wide}`}>
-                <label className={styles.check}>
-                  <input
-                    type="radio"
-                    name="gateway-default-service"
-                    checked={defaultId === service.id}
-                    onChange={() => setDefaultId(service.id)}
-                  />{" "}
-                  {t("providersGatewayServiceDefault")}
-                </label>
-                <label className={styles.check}>
-                  <input
-                    type="checkbox"
-                    checked={service.enabled}
-                    onChange={(event) =>
-                      updateService(index, { enabled: event.target.checked })
-                    }
-                  />{" "}
-                  {t("providersGatewayServiceEnabled")}
-                </label>
-                <label className={styles.check}>
-                  <input
-                    type="checkbox"
-                    checked={service.codexEnabled}
-                    onChange={(event) =>
-                      updateService(index, {
-                        codexEnabled: event.target.checked,
-                      })
-                    }
-                  />{" "}
-                  {t("providersGatewayServiceCodex")}
-                </label>
-              </div>
-
-              {invocations && (
-                <div className={`${styles.commands} ${styles.wide}`}>
-                  <span>{t("providersGatewayServiceCliLabel")}</span>
-                  <code>{invocations.claude}</code>
-                  {invocations.codex && <code>{invocations.codex}</code>}
-                </div>
-              )}
 
               <label className={styles.field}>
                 <span>{t("providersGatewayServiceShortNameLabel")}</span>
@@ -485,12 +513,56 @@ export function GatewayServicesSettings({
                       shortName: event.target.value.trim(),
                     })
                   }
+                  onBlur={() => void save()}
                   aria-label={t("providersGatewayServiceShortNameAria")}
                 />
+                <p className={styles.hint}>
+                  {t("providersGatewayServiceShortNameHint")}
+                </p>
               </label>
-              <p className={`settings-hint ${styles.wide}`}>
-                {t("providersGatewayServiceShortNameHint")}
-              </p>
+
+              {/* Not a full-width band: three short checkboxes wrap to about
+                  the height of the short-name hint beside them, so they fill
+                  the cell that hint would otherwise leave empty. */}
+              <div className={styles.row}>
+                <label className={styles.check}>
+                  <input
+                    type="radio"
+                    name="gateway-default-service"
+                    checked={defaultId === service.id}
+                    onChange={() => chooseDefault(service.id)}
+                  />{" "}
+                  {t("providersGatewayServiceDefault")}
+                </label>
+                <label className={styles.check}>
+                  <input
+                    type="checkbox"
+                    checked={service.enabled}
+                    onChange={(event) =>
+                      updateService(
+                        index,
+                        { enabled: event.target.checked },
+                        { save: true },
+                      )
+                    }
+                  />{" "}
+                  {t("providersGatewayServiceEnabled")}
+                </label>
+                <label className={styles.check}>
+                  <input
+                    type="checkbox"
+                    checked={service.codexEnabled}
+                    onChange={(event) =>
+                      updateService(
+                        index,
+                        { codexEnabled: event.target.checked },
+                        { save: true },
+                      )
+                    }
+                  />{" "}
+                  {t("providersGatewayServiceCodex")}
+                </label>
+              </div>
 
               <label className={styles.field}>
                 <span>{t("providersGatewayServiceContextLabel")}</span>
@@ -504,6 +576,7 @@ export function GatewayServicesSettings({
                       contextWindowTokens: parseNumberField(event.target.value),
                     })
                   }
+                  onBlur={() => void save()}
                   aria-label={t("providersGatewayServiceContextAria")}
                 />
               </label>
@@ -519,283 +592,336 @@ export function GatewayServicesSettings({
                       maxOutputTokens: parseNumberField(event.target.value),
                     })
                   }
+                  onBlur={() => void save()}
                   aria-label={t("providersGatewayServiceOutputAria")}
                 />
               </label>
-              <p className={`settings-hint ${styles.wide}`}>
+              <p className={`${styles.hint} ${styles.wide}`}>
                 {t("providersGatewayServiceSizesHint")}
               </p>
 
+              {invocations && (
+                <div className={`${styles.commands} ${styles.wide}`}>
+                  <span>{t("providersGatewayServiceCliLabel")}</span>
+                  <code>{invocations.claude}</code>
+                  {invocations.codex && <code>{invocations.codex}</code>}
+                  <code>{invocations.pi}</code>
+                </div>
+              )}
+
               <details className={`${styles.advanced} ${styles.wide}`}>
                 <summary>{t("providersGatewayServiceAdvanced")}</summary>
-
-                <label className={styles.field}>
-                  <span>{t("providersGatewayServiceLabelLabel")}</span>
-                  <input
-                    type="text"
-                    className="settings-input"
-                    value={service.label}
-                    maxLength={MAX_GATEWAY_SERVICE_LABEL_LENGTH}
-                    onChange={(event) =>
-                      updateService(index, { label: event.target.value.trim() })
-                    }
-                    aria-label={t("providersGatewayServiceLabelAria")}
-                  />
-                </label>
-
-                <label className={styles.field}>
-                  <span>{t("providersGatewayServiceCommandLabel")}</span>
-                  <input
-                    type="text"
-                    className="settings-input"
-                    value={service.serviceCommand ?? ""}
-                    maxLength={MAX_GATEWAY_SERVICE_COMMAND_LENGTH}
-                    disabled={!loopback}
-                    placeholder={t("providersGatewayServiceCommandPlaceholder")}
-                    onChange={(event) =>
-                      updateService(index, {
-                        serviceCommand: event.target.value.trim() || undefined,
-                      })
-                    }
-                    aria-label={t("providersGatewayServiceCommandAria")}
-                  />
-                </label>
-                <p className="settings-hint">
-                  {loopback
-                    ? t("providersGatewayServiceCommandHint")
-                    : t("providersGatewayServiceCommandRemoteHint")}
-                </p>
-
-                <div className={`${styles.row} ${styles.wide}`}>
-                  <label className={styles.check}>
+                <div className={styles.advancedBody}>
+                  <label className={styles.field}>
+                    <span>{t("providersGatewayServiceLabelLabel")}</span>
                     <input
-                      type="checkbox"
-                      checked={service.autoStop}
-                      disabled={!loopback || !service.serviceCommand}
-                      onChange={(event) =>
-                        updateService(index, { autoStop: event.target.checked })
-                      }
-                    />{" "}
-                    {t("providersGatewayServiceAutoStop")}
-                  </label>
-                  <label className={`${styles.field} ${styles.inline}`}>
-                    <span>{t("providersGatewayServiceAutoStopAfter")}</span>
-                    <input
-                      type="number"
-                      min={0}
+                      type="text"
                       className="settings-input"
-                      value={service.autoStopAfterSeconds}
-                      disabled={!service.autoStop}
+                      value={service.label}
+                      maxLength={MAX_GATEWAY_SERVICE_LABEL_LENGTH}
                       onChange={(event) =>
                         updateService(index, {
-                          autoStopAfterSeconds:
-                            parseNumberField(event.target.value) ?? 0,
+                          label: event.target.value.trim(),
                         })
                       }
-                      aria-label={t("providersGatewayServiceAutoStopAfterAria")}
+                      onBlur={() => void save()}
+                      aria-label={t("providersGatewayServiceLabelAria")}
                     />
                   </label>
-                </div>
-                <p className="settings-hint">
-                  {t("providersGatewayServiceAutoStopHint")}
-                </p>
 
-                <label className={styles.field}>
-                  <span>{t("providersGatewayServiceMaxModelsLabel")}</span>
-                  <input
-                    type="number"
-                    min={1}
-                    className="settings-input"
-                    value={numberFieldValue(service.maxModels)}
-                    onChange={(event) =>
-                      updateService(index, {
-                        maxModels: parseNumberField(event.target.value),
-                      })
-                    }
-                    aria-label={t("providersGatewayServiceMaxModelsAria")}
-                  />
-                </label>
+                  <label className={`${styles.field} ${styles.span2}`}>
+                    <span>{t("providersGatewayServiceCommandLabel")}</span>
+                    <input
+                      type="text"
+                      className="settings-input"
+                      value={service.serviceCommand ?? ""}
+                      maxLength={MAX_GATEWAY_SERVICE_COMMAND_LENGTH}
+                      disabled={!loopback}
+                      placeholder={t(
+                        "providersGatewayServiceCommandPlaceholder",
+                      )}
+                      onChange={(event) =>
+                        updateService(index, {
+                          serviceCommand:
+                            event.target.value.trim() || undefined,
+                        })
+                      }
+                      onBlur={() => void save()}
+                      aria-label={t("providersGatewayServiceCommandAria")}
+                    />
+                    <p className={styles.hint}>
+                      {loopback
+                        ? t("providersGatewayServiceCommandHint")
+                        : t("providersGatewayServiceCommandRemoteHint")}
+                    </p>
+                  </label>
 
-                <label className={styles.field}>
-                  <span>{t("providersGatewayServiceWireApiLabel")}</span>
-                  <select
-                    className="settings-input"
-                    value={service.codexWireApi}
-                    onChange={(event) =>
-                      updateService(index, {
-                        codexWireApi:
-                          event.target.value === "responses"
-                            ? "responses"
-                            : "chat",
-                      })
-                    }
-                    aria-label={t("providersGatewayServiceWireApiLabel")}
-                  >
-                    <option value="chat">chat/completions</option>
-                    <option value="responses">responses</option>
-                  </select>
-                </label>
-
-                <div className={`${styles.field} ${styles.wide}`}>
-                  <span>{t("providersGatewayServiceEffortLabel")}</span>
-                  <div className={styles.row}>
+                  <div className={`${styles.row} ${styles.wide}`}>
                     <label className={styles.check}>
                       <input
-                        type="radio"
-                        name={`gateway-effort-mode-${service.id}`}
-                        checked={!statesEffortLevels}
-                        onChange={() => void chooseAskedEffort(index)}
+                        type="checkbox"
+                        checked={service.autoStop}
+                        disabled={!loopback || !service.serviceCommand}
+                        onChange={(event) =>
+                          updateService(
+                            index,
+                            { autoStop: event.target.checked },
+                            { save: true },
+                          )
+                        }
                       />{" "}
-                      {t("providersGatewayServiceEffortModeAsk")}
+                      {t("providersGatewayServiceAutoStop")}
                     </label>
-                    <label className={styles.check}>
+                    <label className={`${styles.field} ${styles.inline}`}>
+                      <span>{t("providersGatewayServiceAutoStopAfter")}</span>
                       <input
-                        type="radio"
-                        name={`gateway-effort-mode-${service.id}`}
-                        checked={statesEffortLevels}
-                        onChange={() => void chooseStatedEffort(index)}
-                      />{" "}
-                      {t("providersGatewayServiceEffortModeStated")}
-                    </label>
-                  </div>
-                  <div className={styles.row}>
-                    {EFFORT_LEVEL_ORDER.map((level) => (
-                      <label className={styles.check} key={level}>
-                        <input
-                          type="checkbox"
-                          // Greyed out under "ask": the ticks are what "stated"
-                          // means, so an editable tick there would be a second
-                          // way to say the opposite of the chosen mode.
-                          disabled={!statesEffortLevels}
-                          checked={
-                            service.effortLevels?.includes(level) ?? false
-                          }
-                          onChange={(event) =>
-                            updateService(
-                              index,
-                              toggledEffortLevel(service, level, {
-                                checked: event.target.checked,
-                              }),
-                            )
-                          }
-                        />{" "}
-                        {level}
-                      </label>
-                    ))}
-                  </div>
-                </div>
-                <label className={styles.field}>
-                  <span>{t("providersGatewayServiceEffortDefaultLabel")}</span>
-                  <select
-                    className="settings-input"
-                    value={service.defaultEffortLevel ?? ""}
-                    disabled={!service.effortLevels?.length}
-                    onChange={(event) =>
-                      updateService(index, {
-                        defaultEffortLevel: isEffortLevel(event.target.value)
-                          ? event.target.value
-                          : undefined,
-                      })
-                    }
-                    aria-label={t("providersGatewayServiceEffortDefaultLabel")}
-                  >
-                    <option value="">
-                      {t("providersGatewayServiceEffortDefaultUnknown")}
-                    </option>
-                    {(service.effortLevels ?? []).map((level) => (
-                      <option value={level} key={level}>
-                        {level}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                {detection && (
-                  <p className={`settings-hint ${styles.wide}`}>
-                    {detection.state === "asking"
-                      ? t("providersGatewayServiceEffortDetecting")
-                      : detection.state === "answered"
-                        ? t("providersGatewayServiceEffortDetected", {
-                            model: detection.modelId,
-                            levels: detection.levels.join(", "),
+                        type="number"
+                        min={0}
+                        className="settings-input"
+                        value={service.autoStopAfterSeconds}
+                        disabled={!service.autoStop}
+                        onChange={(event) =>
+                          updateService(index, {
+                            autoStopAfterSeconds:
+                              parseNumberField(event.target.value) ?? 0,
                           })
-                        : t(
-                            EFFORT_DETECTION_FAILURE_MESSAGES[detection.reason],
-                          )}
+                        }
+                        onBlur={() => void save()}
+                        aria-label={t(
+                          "providersGatewayServiceAutoStopAfterAria",
+                        )}
+                      />
+                    </label>
+                    <p className={styles.hint}>
+                      {t("providersGatewayServiceAutoStopHint")}
+                    </p>
+                  </div>
+
+                  <label className={styles.field}>
+                    <span>{t("providersGatewayServiceMaxModelsLabel")}</span>
+                    <input
+                      type="number"
+                      min={1}
+                      className="settings-input"
+                      value={numberFieldValue(service.maxModels)}
+                      onChange={(event) =>
+                        updateService(index, {
+                          maxModels: parseNumberField(event.target.value),
+                        })
+                      }
+                      onBlur={() => void save()}
+                      aria-label={t("providersGatewayServiceMaxModelsAria")}
+                    />
+                  </label>
+
+                  <label className={styles.field}>
+                    <span>{t("providersGatewayServiceWireApiLabel")}</span>
+                    <select
+                      className="settings-input"
+                      value={service.codexWireApi}
+                      onChange={(event) =>
+                        updateService(
+                          index,
+                          {
+                            codexWireApi:
+                              event.target.value === "responses"
+                                ? "responses"
+                                : "chat",
+                          },
+                          { save: true },
+                        )
+                      }
+                      aria-label={t("providersGatewayServiceWireApiLabel")}
+                    >
+                      <option value="chat">chat/completions</option>
+                      <option value="responses">responses</option>
+                    </select>
+                  </label>
+
+                  <div className={`${styles.field} ${styles.wide}`}>
+                    <span>{t("providersGatewayServiceEffortLabel")}</span>
+                    <div className={styles.row}>
+                      <label className={styles.check}>
+                        <input
+                          type="radio"
+                          name={`gateway-effort-mode-${service.id}`}
+                          checked={!statesEffortLevels}
+                          onChange={() => void chooseAskedEffort(index)}
+                        />{" "}
+                        {t("providersGatewayServiceEffortModeAsk")}
+                      </label>
+                      <label className={styles.check}>
+                        <input
+                          type="radio"
+                          name={`gateway-effort-mode-${service.id}`}
+                          checked={statesEffortLevels}
+                          onChange={() => void chooseStatedEffort(index)}
+                        />{" "}
+                        {t("providersGatewayServiceEffortModeStated")}
+                      </label>
+                    </div>
+                    <div className={styles.row}>
+                      {EFFORT_LEVEL_ORDER.map((level) => (
+                        <label className={styles.check} key={level}>
+                          <input
+                            type="checkbox"
+                            // Greyed out under "ask": the ticks are what "stated"
+                            // means, so an editable tick there would be a second
+                            // way to say the opposite of the chosen mode.
+                            disabled={!statesEffortLevels}
+                            checked={
+                              service.effortLevels?.includes(level) ?? false
+                            }
+                            onChange={(event) =>
+                              updateService(
+                                index,
+                                toggledEffortLevel(service, level, {
+                                  checked: event.target.checked,
+                                }),
+                                { save: true },
+                              )
+                            }
+                          />{" "}
+                          {level}
+                        </label>
+                      ))}
+                    </div>
+                  </div>
+                  <label className={styles.field}>
+                    <span>
+                      {t("providersGatewayServiceEffortDefaultLabel")}
+                    </span>
+                    <select
+                      className="settings-input"
+                      value={service.defaultEffortLevel ?? ""}
+                      disabled={!service.effortLevels?.length}
+                      onChange={(event) =>
+                        updateService(
+                          index,
+                          {
+                            defaultEffortLevel: isEffortLevel(
+                              event.target.value,
+                            )
+                              ? event.target.value
+                              : undefined,
+                          },
+                          { save: true },
+                        )
+                      }
+                      aria-label={t(
+                        "providersGatewayServiceEffortDefaultLabel",
+                      )}
+                    >
+                      <option value="">
+                        {t("providersGatewayServiceEffortDefaultUnknown")}
+                      </option>
+                      {(service.effortLevels ?? []).map((level) => (
+                        <option value={level} key={level}>
+                          {level}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {detection && (
+                    <p className={`${styles.hint} ${styles.wide}`}>
+                      {detection.state === "asking"
+                        ? t("providersGatewayServiceEffortDetecting")
+                        : detection.state === "answered"
+                          ? t("providersGatewayServiceEffortDetected", {
+                              model: detection.modelId,
+                              levels: detection.levels.join(", "),
+                            })
+                          : t(
+                              EFFORT_DETECTION_FAILURE_MESSAGES[
+                                detection.reason
+                              ],
+                            )}
+                    </p>
+                  )}
+                  <p className={`${styles.hint} ${styles.wide}`}>
+                    {t("providersGatewayServiceEffortHint")}
                   </p>
-                )}
-                <p className="settings-hint">
-                  {t("providersGatewayServiceEffortHint")}
-                </p>
 
-                <label className={styles.field}>
-                  <span>{t("providersGatewayServiceDisableAgentLabel")}</span>
-                  <select
-                    className="settings-input"
-                    value={overrideValue(service.disableAgent)}
-                    onChange={(event) =>
-                      updateService(index, {
-                        disableAgent:
-                          event.target.value === "inherit"
-                            ? undefined
-                            : event.target.value === "on",
-                      })
+                  <label className={styles.field}>
+                    <span>{t("providersGatewayServiceDisableAgentLabel")}</span>
+                    <select
+                      className="settings-input"
+                      value={overrideValue(service.disableAgent)}
+                      onChange={(event) =>
+                        updateService(
+                          index,
+                          {
+                            disableAgent:
+                              event.target.value === "inherit"
+                                ? undefined
+                                : event.target.value === "on",
+                          },
+                          { save: true },
+                        )
+                      }
+                      aria-label={t("providersGatewayServiceDisableAgentLabel")}
+                    >
+                      <option value="inherit">
+                        {t("providersGatewayServiceOverrideInherit")}
+                      </option>
+                      <option value="on">
+                        {t("providersGatewayServiceOverrideOn")}
+                      </option>
+                      <option value="off">
+                        {t("providersGatewayServiceOverrideOff")}
+                      </option>
+                    </select>
+                  </label>
+
+                  <label className={styles.field}>
+                    <span>
+                      {t("providersGatewayServiceDisablePlanModeLabel")}
+                    </span>
+                    <select
+                      className="settings-input"
+                      value={overrideValue(service.disablePlanMode)}
+                      onChange={(event) =>
+                        updateService(
+                          index,
+                          {
+                            disablePlanMode:
+                              event.target.value === "inherit"
+                                ? undefined
+                                : event.target.value === "on",
+                          },
+                          { save: true },
+                        )
+                      }
+                      aria-label={t(
+                        "providersGatewayServiceDisablePlanModeLabel",
+                      )}
+                    >
+                      <option value="inherit">
+                        {t("providersGatewayServiceOverrideInherit")}
+                      </option>
+                      <option value="on">
+                        {t("providersGatewayServiceOverrideOn")}
+                      </option>
+                      <option value="off">
+                        {t("providersGatewayServiceOverrideOff")}
+                      </option>
+                    </select>
+                  </label>
+
+                  <button
+                    type="button"
+                    className="settings-button"
+                    onClick={() =>
+                      replaceServices(
+                        draft.current.services.filter(
+                          (_, position) => position !== index,
+                        ),
+                      )
                     }
-                    aria-label={t("providersGatewayServiceDisableAgentLabel")}
                   >
-                    <option value="inherit">
-                      {t("providersGatewayServiceOverrideInherit")}
-                    </option>
-                    <option value="on">
-                      {t("providersGatewayServiceOverrideOn")}
-                    </option>
-                    <option value="off">
-                      {t("providersGatewayServiceOverrideOff")}
-                    </option>
-                  </select>
-                </label>
-
-                <label className={styles.field}>
-                  <span>
-                    {t("providersGatewayServiceDisablePlanModeLabel")}
-                  </span>
-                  <select
-                    className="settings-input"
-                    value={overrideValue(service.disablePlanMode)}
-                    onChange={(event) =>
-                      updateService(index, {
-                        disablePlanMode:
-                          event.target.value === "inherit"
-                            ? undefined
-                            : event.target.value === "on",
-                      })
-                    }
-                    aria-label={t(
-                      "providersGatewayServiceDisablePlanModeLabel",
-                    )}
-                  >
-                    <option value="inherit">
-                      {t("providersGatewayServiceOverrideInherit")}
-                    </option>
-                    <option value="on">
-                      {t("providersGatewayServiceOverrideOn")}
-                    </option>
-                    <option value="off">
-                      {t("providersGatewayServiceOverrideOff")}
-                    </option>
-                  </select>
-                </label>
-
-                <button
-                  type="button"
-                  className="settings-button"
-                  onClick={() =>
-                    setServices((current) =>
-                      current.filter((_, position) => position !== index),
-                    )
-                  }
-                >
-                  {t("providersGatewayServiceRemove")}
-                </button>
+                    {t("providersGatewayServiceRemove")}
+                  </button>
+                </div>
               </details>
             </fieldset>
           );
@@ -807,23 +933,28 @@ export function GatewayServicesSettings({
             className="settings-button"
             disabled={services.length >= MAX_GATEWAY_SERVICES}
             onClick={() =>
-              setServices((current) => [
-                ...current,
-                newService(new Set(current.map((service) => service.id))),
+              replaceServices([
+                ...draft.current.services,
+                newService(
+                  new Set(draft.current.services.map((service) => service.id)),
+                ),
               ])
             }
           >
             {t("providersGatewayServiceAdd")}
           </button>
-          <button
-            type="submit"
-            className="settings-button"
-            disabled={!hasChanges || isSaving}
-          >
-            {isSaving ? t("providersSaving") : t("providersSave")}
-          </button>
+          {/* Each field writes itself when it loses focus, so this reports
+              rather than commands: a Save button at the foot of a list this
+              tall is scrolled out of sight exactly when it matters. */}
+          <span className={styles.status} aria-live="polite">
+            {isSaving
+              ? t("providersSaving")
+              : hasChanges
+                ? t("providersGatewayServicePendingBlur")
+                : t("providersGatewayServiceAutoSaved")}
+          </span>
         </div>
-        <p className="settings-hint">
+        <p className={styles.hint}>
           {t("providersClaudeGatewayIsolationHint")}
         </p>
       </form>

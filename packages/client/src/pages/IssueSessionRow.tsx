@@ -35,12 +35,20 @@ export function IssueSessionRow({
     dismiss: t("issuesCancel"),
   });
   const [expanded, setExpanded] = useState(false);
-  const [evidence, setEvidence] = useState(session.evidence);
-  const [nextOffset, setNextOffset] = useState<number | null>(
-    session.evidence.length < session.evidenceCount
+  // Only the pages this row fetched are held here: the first mention stays a
+  // prop, so a parent refresh updates it without discarding what is loaded.
+  const [loaded, setLoaded] = useState<{
+    entries: IssueEvidence[];
+    nextOffset: number | null;
+  }>({ entries: [], nextOffset: null });
+  const evidence = loaded.entries.length
+    ? [...session.evidence, ...loaded.entries]
+    : session.evidence;
+  const nextOffset = loaded.entries.length
+    ? loaded.nextOffset
+    : session.evidence.length < session.evidenceCount
       ? session.evidence.length
-      : null,
-  );
+      : null;
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const alive = useRef(true);
@@ -58,10 +66,11 @@ export function IssueSessionRow({
       const next = await transport.fetch<IssueEvidenceResult>(
         `/issues/evidence?${new URLSearchParams({ id: issueId, sessionId: session.sessionId, offset: String(nextOffset), dismissed: includeDismissed ? "1" : "0" })}`,
       );
-      if (alive.current) {
-        setEvidence((previous) => [...previous, ...next.evidence]);
-        setNextOffset(next.nextOffset);
-      }
+      if (alive.current)
+        setLoaded((previous) => ({
+          entries: [...previous.entries, ...next.evidence],
+          nextOffset: next.nextOffset,
+        }));
     } catch {
       if (alive.current) setError(t("issuesLoadError"));
     } finally {

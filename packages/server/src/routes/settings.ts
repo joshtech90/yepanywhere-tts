@@ -8,6 +8,10 @@ import {
   CODEX_PLAN_TOOL_MODES,
   CODEX_CYBER_ACCESS_PROGRAMS,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
+  DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
+  MAX_CLEARLOOP_INACTIVITY_SECONDS,
+  MIN_CLEARLOOP_INACTIVITY_SECONDS,
+  clampClearloopInactivitySeconds,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
@@ -28,11 +32,13 @@ import {
   isValidGatewayServiceId,
   type GatewayService,
   parseGatewayServices,
+  normalizeGatewayServiceUrl,
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
   normalizeIdleReapHours,
   parseClaudeAdditionalModelSelections,
   parseClaudeSteerBackgroundBashSettings,
+  parseLongContextEffortWarningSettings,
   parsePostCompactReplaySettings,
   parseSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
@@ -276,6 +282,9 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       if (typeof body.workstreamsEnabled === "boolean") {
         updates.workstreamsEnabled = body.workstreamsEnabled;
       }
+      if (typeof body.limitedUsersEnabled === "boolean") {
+        updates.limitedUsersEnabled = body.limitedUsersEnabled;
+      }
       if ("liveWorktreeMonitoringEnabled" in body) {
         if (typeof body.liveWorktreeMonitoringEnabled !== "boolean") {
           return c.json(
@@ -464,6 +473,32 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
           );
         } else {
           return c.json({ error: "autoSessionTitle must be an object" }, 400);
+        }
+      }
+
+      if ("clearloopInactivitySeconds" in body) {
+        if (
+          body.clearloopInactivitySeconds === undefined ||
+          body.clearloopInactivitySeconds === null
+        ) {
+          updates.clearloopInactivitySeconds =
+            DEFAULT_CLEARLOOP_INACTIVITY_SECONDS;
+        } else if (
+          typeof body.clearloopInactivitySeconds === "number" &&
+          Number.isFinite(body.clearloopInactivitySeconds) &&
+          body.clearloopInactivitySeconds >= MIN_CLEARLOOP_INACTIVITY_SECONDS &&
+          body.clearloopInactivitySeconds <= MAX_CLEARLOOP_INACTIVITY_SECONDS
+        ) {
+          updates.clearloopInactivitySeconds =
+            clampClearloopInactivitySeconds(body.clearloopInactivitySeconds) ??
+            DEFAULT_CLEARLOOP_INACTIVITY_SECONDS;
+        } else {
+          return c.json(
+            {
+              error: `clearloopInactivitySeconds must be a number of seconds from ${MIN_CLEARLOOP_INACTIVITY_SECONDS} to ${MAX_CLEARLOOP_INACTIVITY_SECONDS}`,
+            },
+            400,
+          );
         }
       }
 
@@ -928,6 +963,22 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
         updates.postCompactReplay = parsedReplay;
       }
 
+      if ("longContextEffortWarning" in body) {
+        const parsedWarning = parseLongContextEffortWarningSettings(
+          body.longContextEffortWarning,
+        );
+        if (parsedWarning === null) {
+          return c.json(
+            {
+              error:
+                "longContextEffortWarning must use known provider checkboxes and a non-negative integer thresholdTokens",
+            },
+            400,
+          );
+        }
+        updates.longContextEffortWarning = parsedWarning;
+      }
+
       if ("promptCacheKeepalive" in body) {
         const parsedKeepalive = parsePromptCacheKeepalive(
           body.promptCacheKeepalive,
@@ -1277,7 +1328,13 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
    */
   app.post("/gateway-services/effort", async (c) => {
     const body = await c.req.json<{ url?: unknown }>();
-    const url = typeof body.url === "string" ? body.url.trim() : "";
+    // Normalized before the comparison below, because a stored service URL is
+    // normalized too: the same endpoint typed with a trailing slash or a
+    // default port is the configured one.
+    const url =
+      typeof body.url === "string"
+        ? normalizeGatewayServiceUrl(body.url)
+        : null;
     if (!url) {
       return c.json({ error: "url must be an http(s) URL" }, 400);
     }
@@ -1303,6 +1360,7 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps): Hono {
       modelId: detection.modelId,
       levels: detection.probe.levels,
       noThinking: detection.probe.noThinking,
+      defaultLevel: detection.probe.defaultLevel,
     });
   });
 

@@ -98,6 +98,11 @@ control, shown only where no full-replay emulation would be hidden
 behind it. Cost semantics in
 [provider-context-economics](provider-context-economics.md).
 
+The composer's `/clear N` is a different operation: an in-place rewind that
+keeps the session id and groups the dropped turns, owned by
+[session-rewind](session-rewind.md). Only its `/clear 0` form falls back to
+the new-session Clear described here.
+
 UI placement: a `Clear` entry in the session kebab menu
 (`SessionMenu.tsx`, next to star/archive), not a bottom-bar control —
 the composer bar is contested space and kzahel has disabled speculative

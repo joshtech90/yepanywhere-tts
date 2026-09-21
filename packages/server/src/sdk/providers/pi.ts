@@ -19,9 +19,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import type { SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { EffortLevel, ModelInfo } from "@yep-anywhere/shared";
+import {
+  EFFORT_LEVEL_ORDER,
+  nearestGatewayEffortLevel,
+  parseGatewayTemplateEffortRejection,
+  type EffortLevel,
+  type ModelInfo,
+} from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
-import { whichCommand } from "../cli-detection.js";
+import { whichCommand } from "../which-command.js";
 import { MessageQueue } from "../messageQueue.js";
 import { forkPiSessionFile } from "../../sessions/pi-fork.js";
 import { PiSessionReader } from "../../sessions/pi-reader.js";
@@ -102,6 +108,15 @@ interface PiStreamState {
   lastCostUsd: number | null;
   /** Version-selected event that ends one YA provider turn. */
   terminalEvent: "agent_end" | "agent_settled";
+  /**
+   * What the model server said when this turn failed.
+   *
+   * pi reports a failed turn as an ordinary assistant `message_end` carrying
+   * `stopReason: "error"` and an `errorMessage`, not as an event of its own.
+   * Reading only the terminal event therefore ended the turn silently, which is
+   * how an unusable thinking level looked like nothing happening at all.
+   */
+  turnError: string | null;
   /** Canonical tool inputs by pi toolCallId, updated by live partial/final events. */
   toolStates: Map<string, PiToolState>;
 }
@@ -137,9 +152,55 @@ export function piVersionUsesAgentSettled(rawVersion: string): boolean | null {
   return true;
 }
 
-/** YA EffortLevel → pi ThinkingLevel (pi has no "max"; map it to "xhigh"). */
+/**
+ * YA EffortLevel → pi ThinkingLevel.
+ *
+ * Every level YA names is one of pi's own: its `THINKING_LEVELS` are off,
+ * minimal, low, medium, high, xhigh and max (verified against installed Pi
+ * 0.85.1, whose `--thinking` help states the same set). "max" used to be folded
+ * onto "xhigh", from when xhigh was pi's top level; that quietly delivered one
+ * level less thinking than the user chose.
+ */
 function effortToThinkingLevel(effort: EffortLevel): string {
-  return effort === "max" ? "xhigh" : effort;
+  return effort;
+}
+
+/**
+ * How many times one turn may be retried at a lower thinking level.
+ *
+ * A rejection normally names the whole accepted set, so the first retry lands
+ * on a usable level; the cap is there for a server that refuses one level at a
+ * time, and it stops well short of resending the same prompt indefinitely.
+ */
+const MAX_EFFORT_RETRIES_PER_TURN = 3;
+
+/**
+ * The level to retry at after a model server refused the current one.
+ *
+ * vLLM names the whole accepted set — "Supported types are xhigh (default),
+ * medium, and low." — so the answer is the highest of those at or below what
+ * was asked for. A server that only says the level is unusable gets one step
+ * down YA's own order. Returns undefined when the failure is about something
+ * else entirely, or when there is nothing lower left to try.
+ */
+export function loweredEffortForRejection(
+  errorMessage: string,
+  current: EffortLevel | undefined,
+): EffortLevel | undefined {
+  if (!current) return undefined;
+  const narrowed = parseGatewayTemplateEffortRejection(errorMessage);
+  if (narrowed) {
+    const next = nearestGatewayEffortLevel(
+      { levels: narrowed.levels },
+      current,
+    );
+    return next && next !== current ? next : undefined;
+  }
+  if (!/reasoning[_ ]?effort|thinking level/iu.test(errorMessage)) {
+    return undefined;
+  }
+  const below = EFFORT_LEVEL_ORDER.indexOf(current) - 1;
+  return below >= 0 ? EFFORT_LEVEL_ORDER[below] : undefined;
 }
 
 function parsePiModelSelection(
@@ -556,8 +617,18 @@ export class PiProvider implements AgentProvider {
       lastUsage: null,
       lastCostUsd: null,
       terminalEvent,
+      turnError: null,
       toolStates: new Map(),
     };
+
+    /**
+     * The thinking level this session is currently asking for.
+     *
+     * Kept here rather than read from `options` because a turn rejected for an
+     * unusable effort lowers it, and the next turn must start from the level
+     * that worked instead of walking back up into the same rejection.
+     */
+    let effort = options.effort;
 
     const unsubscribe = client.subscribe((event) => {
       runtime.lastRawProviderEventAt = new Date();
@@ -609,21 +680,50 @@ export class PiProvider implements AgentProvider {
         // `agent_settled` flips this true after retries, compaction, and queued
         // continuations finish; the drain loop stops only at that boundary.
         let turnComplete = false;
+        let effortRetries = 0;
         stream.currentAssistantId = null;
         stream.text = "";
         stream.thinking = "";
         stream.toolStates.clear();
-        client.notify({
-          type: "prompt",
-          message: text,
-          ...(images.length > 0 ? { images } : {}),
-        });
+        const sendPrompt = () => {
+          client.notify({
+            type: "prompt",
+            message: text,
+            ...(images.length > 0 ? { images } : {}),
+          });
+        };
+        sendPrompt();
 
         while (!turnComplete && !signal.aborted) {
           while (events.length > 0) {
             const sdk = events.shift();
             if (!sdk) continue;
             if (sdk.type === "result") {
+              // A turn the model server refused because of the thinking level
+              // is retried lower rather than handed back as a failure: the
+              // level came from a picker that offered it, so the user has no
+              // way to know which of the offered levels this model takes.
+              const lowered =
+                sdk.error && effortRetries < MAX_EFFORT_RETRIES_PER_TURN
+                  ? loweredEffortForRejection(String(sdk.error), effort)
+                  : undefined;
+              if (lowered) {
+                effortRetries += 1;
+                effort = lowered;
+                await client
+                  .request({ type: "set_thinking_level", level: lowered })
+                  .catch(() => {});
+                yield this.effortDowngradeNotice(
+                  sessionId,
+                  String(sdk.error),
+                  lowered,
+                );
+                stream.currentAssistantId = null;
+                stream.text = "";
+                stream.thinking = "";
+                sendPrompt();
+                continue;
+              }
               turnComplete = true;
             }
             yield sdk;
@@ -726,6 +826,15 @@ export class PiProvider implements AgentProvider {
       }
 
       case "message_end": {
+        const message = event.message as
+          | { stopReason?: unknown; errorMessage?: unknown }
+          | undefined;
+        if (message?.stopReason === "error") {
+          stream.turnError =
+            typeof message.errorMessage === "string" && message.errorMessage
+              ? message.errorMessage
+              : "pi reported a failed turn";
+        }
         stream.currentAssistantId = null;
         stream.text = "";
         stream.thinking = "";
@@ -819,7 +928,9 @@ export class PiProvider implements AgentProvider {
         const result: SDKMessage = {
           type: "result",
           session_id: sessionId,
+          ...(stream.turnError ? { error: stream.turnError } : {}),
         } as SDKMessage;
+        stream.turnError = null;
         if (stream.lastUsage) {
           result.usage = stream.lastUsage;
         }
@@ -834,6 +945,31 @@ export class PiProvider implements AgentProvider {
       default:
         return [];
     }
+  }
+
+  /**
+   * Say that the turn is being retried lower, and why.
+   *
+   * An assistant message rather than a transient status: the user chose a level
+   * the picker offered, and the record of the model refusing it belongs in the
+   * transcript beside the answer that level did not produce.
+   */
+  private effortDowngradeNotice(
+    sessionId: string,
+    errorMessage: string,
+    lowered: EffortLevel,
+  ): SDKMessage {
+    return {
+      type: "assistant",
+      session_id: sessionId,
+      uuid: `pi-effort-retry-${Date.now()}`,
+      message: {
+        role: "assistant",
+        content:
+          `_This model refused the requested thinking level, so the turn is ` +
+          `being retried at **${lowered}**._\n\n> ${errorMessage.trim()}`,
+      },
+    } as SDKMessage;
   }
 
   private makeToolUseMessage(

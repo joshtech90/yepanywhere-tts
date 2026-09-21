@@ -93,13 +93,29 @@ describe("reconcileGatewaySettings", () => {
         enabled: true,
         serviceCommand: "copilot-api start",
         autoStop: false,
-        autoStopAfterSeconds: 0,
+        autoStopAfterSeconds: 300,
         codexEnabled: false,
         codexWireApi: "responses",
       },
     ]);
     expect(result.defaultServiceId).toBe("default");
     expect(result.claudeGatewayUrl).toBe("http://localhost:4141");
+  });
+
+  it("migrates to the entry a services list would have held", () => {
+    const result = reconcileGatewaySettings([], undefined, {
+      claudeGatewayUrl: "http://localhost:4141",
+      claudeGatewayStartCommand: "copilot-api start",
+    });
+    expect(result.services).toEqual(
+      parseGatewayServices([
+        {
+          id: "default",
+          url: "http://localhost:4141",
+          serviceCommand: "copilot-api start",
+        },
+      ]),
+    );
   });
 
   it("keeps a start command that has no URL yet", () => {

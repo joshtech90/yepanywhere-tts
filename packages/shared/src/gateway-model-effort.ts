@@ -176,11 +176,15 @@ export function gatewayModelEffort(
     levels.includes(sources.configuredDefaultLevel)
       ? sources.configuredDefaultLevel
       : undefined;
+  const probedDefault =
+    sources.probed?.defaultLevel && levels.includes(sources.probed.defaultLevel)
+      ? sources.probed.defaultLevel
+      : undefined;
   const defaultLevel =
     configuredDefault ??
     (builtIn?.defaultLevel && levels.includes(builtIn.defaultLevel)
       ? builtIn.defaultLevel
-      : undefined);
+      : probedDefault);
 
   // Whether thinking can be switched off is its own question, answerable by
   // either source regardless of which one supplied the levels: a configured

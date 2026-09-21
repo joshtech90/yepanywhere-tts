@@ -513,6 +513,8 @@ export function RemoteAccessSettings() {
         </label>
       </SettingsItem>
 
+      {/* Limited users live in Settings → Users, beside the list they govern. */}
+
       {publicShareManagementSupported && (
         <SettingsItem
           id="manage-public-shares"

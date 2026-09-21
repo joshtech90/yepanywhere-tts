@@ -682,6 +682,44 @@ def hello():
       });
     });
 
+    it("does not treat a leading inline code span as a code fence", () => {
+      const detector = new BlockDetector();
+      const blocks = detector.feed("```code``` starts this line\n\nNext\n\n");
+
+      expect(blocks).toHaveLength(2);
+      expect(blocks[0]).toMatchObject({
+        type: "paragraph",
+        content: "```code``` starts this line",
+      });
+      expect(blocks[1]).toMatchObject({
+        type: "paragraph",
+        content: "Next",
+      });
+    });
+
+    it("flushes a leading inline code span as a paragraph", () => {
+      const detector = new BlockDetector();
+      detector.feed("```code``` starts this line");
+      const blocks = detector.flush();
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({
+        type: "paragraph",
+        content: "```code``` starts this line",
+      });
+    });
+
+    it("keeps backticks in a tilde fence's info string", () => {
+      const detector = new BlockDetector();
+      const blocks = detector.feed("~~~js `inline`\ncode\n~~~\n");
+
+      expect(blocks).toHaveLength(1);
+      expect(blocks[0]).toMatchObject({
+        type: "code",
+        lang: "js",
+      });
+    });
+
     it("handles longer closing fence than opening", () => {
       const detector = new BlockDetector();
       const blocks = detector.feed("```\ncode\n`````\n");

@@ -34,14 +34,19 @@ export function createSessionApi(fetchJSON: typeof FetchJson) {
       messageId?: string,
       nonHumanUserTurnMessageId?: string,
     ) =>
-      fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
-        method: "POST",
-        body: JSON.stringify({
-          timestamp,
-          messageId,
-          nonHumanUserTurnMessageId,
-        }),
-      }),
+      // `acknowledged` is absent on servers older than the delivered-turn
+      // capability, and false when the named turn was stale or unknown.
+      fetchJSON<{ marked: boolean; acknowledged?: boolean }>(
+        `/sessions/${sessionId}/mark-seen`,
+        {
+          method: "POST",
+          body: JSON.stringify({
+            timestamp,
+            messageId,
+            nonHumanUserTurnMessageId,
+          }),
+        },
+      ),
     markSessionUnread: (sessionId: string) =>
       fetchJSON<{ marked: boolean }>(`/sessions/${sessionId}/mark-seen`, {
         method: "DELETE",

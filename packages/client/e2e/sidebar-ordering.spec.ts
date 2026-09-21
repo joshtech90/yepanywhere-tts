@@ -14,7 +14,7 @@ import {
 
 test.use({ serviceWorkers: "block" });
 
-test("sidebar follows user visits and sends while background work stays put", async ({
+test("sidebar follows user sends while visits and background work stay put", async ({
   page,
 }) => {
   test.setTimeout(180_000);
@@ -135,6 +135,13 @@ test("sidebar follows user visits and sends while background work stays put", as
       await page.goto(`${origin}/projects/${projectId}/sessions/sidebar-a`);
       const composer = page.locator("[data-composer-input]");
       await expect(composer).toBeVisible({ timeout: 30_000 });
+      // Sends from the previous viewport persist; start each from the
+      // creation-time order the assertions below expect.
+      await page.evaluate(() =>
+        localStorage.removeItem("yep-sidebar-interactions:local"),
+      );
+      await page.reload();
+      await expect(composer).toBeVisible({ timeout: 30_000 });
       await page
         .getByRole("button", { name: "Open sidebar", exact: true })
         .click();
@@ -184,6 +191,8 @@ test("sidebar follows user visits and sends while background work stays put", as
           localStorage.getItem("yep-sidebar-interactions:local"),
         ),
       ).toBe(visitsBeforeActivity);
+      // Opening a session is reading, not activity: the row stays where it
+      // was and nothing is recorded for it.
       await target.click();
       await expect(page).toHaveURL(/\/sessions\/sidebar-b$/);
       await expect(composer).toBeVisible();
@@ -193,10 +202,15 @@ test("sidebar follows user visits and sends while background work stays put", as
         .getByRole("button", { name: "Open sidebar", exact: true })
         .click();
       await expect(titles).toHaveText([
-        "Session B",
         "Session A",
+        "Session B",
         "Session C updated",
       ]);
+      expect(
+        await page.evaluate(() =>
+          localStorage.getItem("yep-sidebar-interactions:local"),
+        ),
+      ).toBe(visitsBeforeActivity);
       await expect(
         page.getByText("Server changed", { exact: false }),
       ).toHaveCount(0);
@@ -205,8 +219,9 @@ test("sidebar follows user visits and sends while background work stays put", as
           animations: "disabled",
           path: join(captures, `sidebar-order-${viewport.name}.png`),
         });
-      // A visit elsewhere in this browser must not hide a subsequent send's
-      // user activity. No provider is invoked: the test endpoint rejects it.
+      // An earlier send elsewhere in this browser must not hide a subsequent
+      // send's user activity. No provider is invoked: the test endpoint
+      // rejects it.
       await page.keyboard.press("Escape");
       const activityModule = "/src/lib/sessionInteractionOrder.ts";
       await page.evaluate(async (modulePath) => {

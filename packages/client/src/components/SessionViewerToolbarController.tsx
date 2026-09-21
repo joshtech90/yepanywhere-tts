@@ -131,7 +131,10 @@ export function SessionViewerToolbarController({
     controller.minimized,
   );
   const location = controller.label;
-  const destructive = controller.kind === "vhost" && !controller.artifactToken;
+  const closeAction = controller.closeAction;
+  const closeLabel = closeAction
+    ? t(closeAction.label, { name: location })
+    : "";
   const fullLocation =
     controller.kind === "file" ? controller.filePath : location;
   const briefLocation =
@@ -210,30 +213,14 @@ export function SessionViewerToolbarController({
           )}
         </span>
       </button>
-      {(controller.kind !== "vhost" || controller.kill) && (
+      {closeAction && (
         <button
           type="button"
-          className={`${styles.close} ${destructive ? styles.kill : ""}`}
-          disabled={controller.kind === "vhost" && controller.killing}
-          onClick={
-            controller.kind === "vhost" ? controller.kill : controller.close
-          }
-          title={t(
-            destructive
-              ? "sessionRightPaneKill"
-              : controller.kind === "file"
-                ? "fileViewerClose"
-                : "sessionViewerClose",
-            { name: location },
-          )}
-          aria-label={t(
-            destructive
-              ? "sessionRightPaneKill"
-              : controller.kind === "file"
-                ? "fileViewerClose"
-                : "sessionViewerClose",
-            { name: location },
-          )}
+          className={`${styles.close} ${closeAction.destructive ? styles.kill : ""}`}
+          disabled={closeAction.busy}
+          onClick={closeAction.run}
+          title={closeLabel}
+          aria-label={closeLabel}
         >
           <FileViewerCloseIcon />
         </button>

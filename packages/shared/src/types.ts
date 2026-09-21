@@ -62,6 +62,30 @@ export function isClaudeProviderName(
 }
 
 /**
+ * The harness family a provider name belongs to, as published in
+ * `AGENT_LAUNCH_HARNESS` and reported by own-session inspection: a provider
+ * variant answers with the harness that runs it, and every other name is
+ * already its own harness. Contract: topics/ya-env-vars.md.
+ *
+ * `scripts/provider-runtime-host.mjs` keeps a copy because the host runs under
+ * plain `node` and cannot import TypeScript; the two are pinned together by
+ * `packages/server/test/sdk/providers/agent-harness.test.ts`.
+ */
+export function agentHarness(provider: string): string {
+  switch (provider) {
+    case "claude-gateway":
+    case "claude-ollama":
+      return "claude";
+    case "codex-oss":
+      return "codex";
+    case "gemini-acp":
+      return "gemini";
+    default:
+      return provider;
+  }
+}
+
+/**
  * The default provider when none is specified.
  * Used for backward compatibility with existing sessions that don't have provider set.
  */

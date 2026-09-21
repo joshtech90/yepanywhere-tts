@@ -1025,30 +1025,34 @@ export class CodexSessionReader implements ISessionReader {
     }
   }
 
-  private cacheAgentMappingsFromEntries(
-    sessionId: string,
-    filePath: string,
-    mtimeMs: number,
-    size: number,
-    entries: readonly CodexSessionEntry[],
-  ): CodexAgentMapping[] {
+  /** Caches the agent mappings a complete read of the session file describes. */
+  private cacheAgentMappingsFromEntries(options: {
+    sessionId: string;
+    filePath: string;
+    /** Byte the read began at; a windowed read describes only its own tail. */
+    startByte: number;
+    mtimeMs: number;
+    size: number;
+    entries: readonly CodexSessionEntry[];
+  }): void {
+    const { sessionId, filePath, startByte, mtimeMs, size, entries } = options;
+    if (startByte !== 0) return;
+
     const cached = this.agentMappingCache.get(sessionId);
     if (
       cached?.filePath === filePath &&
       cached.mtimeMs === mtimeMs &&
       cached.size === size
     ) {
-      return cached.mappings.map((mapping) => ({ ...mapping }));
+      return;
     }
 
-    const mappings = collectCodexAgentMappings(entries);
     this.agentMappingCache.set(sessionId, {
       filePath,
       mtimeMs,
       size,
-      mappings,
+      mappings: collectCodexAgentMappings(entries),
     });
-    return mappings.map((mapping) => ({ ...mapping }));
   }
 
   private async readAgentMappings(
@@ -1685,14 +1689,14 @@ export class CodexSessionReader implements ISessionReader {
         cached.mtimeMs === stats.mtimeMs &&
         cached.ctimeMs === stats.ctimeMs
       ) {
-        if (startByte === 0)
-          this.cacheAgentMappingsFromEntries(
-            sessionId,
-            filePath,
-            stats.mtimeMs,
-            stats.size,
-            cached.entries,
-          );
+        this.cacheAgentMappingsFromEntries({
+          sessionId,
+          filePath,
+          startByte,
+          mtimeMs: stats.mtimeMs,
+          size: stats.size,
+          entries: cached.entries,
+        });
         this.recordEntryReadMetrics({
           startedAt,
           memoryBefore,
@@ -1832,14 +1836,14 @@ export class CodexSessionReader implements ISessionReader {
       cached.size = stats.size;
       cached.mtimeMs = stats.mtimeMs;
       cached.ctimeMs = stats.ctimeMs;
-      if (startByte === 0)
-        this.cacheAgentMappingsFromEntries(
-          sessionId,
-          filePath,
-          stats.mtimeMs,
-          stats.size,
-          cached.entries,
-        );
+      this.cacheAgentMappingsFromEntries({
+        sessionId,
+        filePath,
+        startByte,
+        mtimeMs: stats.mtimeMs,
+        size: stats.size,
+        entries: cached.entries,
+      });
       this.recordEntryReadMetrics({
         startedAt,
         memoryBefore,
@@ -1888,14 +1892,14 @@ export class CodexSessionReader implements ISessionReader {
     };
     this.entryCache.set(sessionId, refreshed);
     const cacheStoreMs = Date.now() - cacheStoreStartedAt;
-    if (startByte === 0)
-      this.cacheAgentMappingsFromEntries(
-        sessionId,
-        filePath,
-        Number(stats.mtimeMs),
-        Number(stats.size),
-        parsed.entries,
-      );
+    this.cacheAgentMappingsFromEntries({
+      sessionId,
+      filePath,
+      startByte,
+      mtimeMs: Number(stats.mtimeMs),
+      size: Number(stats.size),
+      entries: parsed.entries,
+    });
     this.recordEntryReadMetrics({
       startedAt,
       memoryBefore,
@@ -1927,13 +1931,14 @@ export class CodexSessionReader implements ISessionReader {
     const { startedAt, memoryBefore, sessionId, filePath, purpose, stats } =
       options;
     const parsed = await this.readEntrySnapshot(sessionId, filePath, stats);
-    this.cacheAgentMappingsFromEntries(
+    this.cacheAgentMappingsFromEntries({
       sessionId,
       filePath,
-      Number(stats.mtimeMs),
-      Number(stats.size),
-      parsed.entries,
-    );
+      startByte: 0,
+      mtimeMs: Number(stats.mtimeMs),
+      size: Number(stats.size),
+      entries: parsed.entries,
+    });
     this.recordEntryReadMetrics({
       startedAt,
       memoryBefore,

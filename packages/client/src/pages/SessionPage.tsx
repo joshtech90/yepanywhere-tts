@@ -11,6 +11,7 @@ import type {
   ProjectQueueStagedAttachments,
   SlashCommand,
   ThinkingMode,
+  ThinkingOption,
   TranscriptDisplayObject,
   UploadedFile,
   UserQuestionAnswers,
@@ -25,6 +26,7 @@ import {
   SYNTHETIC_ARCHIVE_COMMAND_CAPABILITY,
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
   SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
+  classifyQueuedYaCommand,
   getCanonicalInvocationToken,
   isClaudeProviderName,
   readInventoryGoalDetails,
@@ -33,6 +35,8 @@ import {
   thinkingOptionToConfig,
   SERVER_CAPABILITIES,
   isTurnEffort,
+  parseClearloopArguments,
+  parseTurnIndexArgument,
 } from "@yep-anywhere/shared";
 import {
   type ComponentProps,
@@ -57,6 +61,10 @@ import {
 import sessionHeaderStyles from "../components/SessionHeader.module.css";
 import styles from "./SessionPage.module.css";
 import { GoalFlag } from "../components/GoalNotice";
+import {
+  type ClearloopBadgeControls,
+  ClearloopRemainingBadge,
+} from "../components/ClearloopRemainingBadge";
 import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
 import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
@@ -114,6 +122,11 @@ import { useDeveloperMode } from "../hooks/useDeveloperMode";
 import { useAutoReadAloud } from "../hooks/useAutoReadAloud";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
 import type { DraftControls } from "../hooks/useDraftPersistence";
+import { applyEarlyComposerTyping } from "../lib/earlyComposerTyping";
+import {
+  type EarlyTypingHandoff,
+  startEarlyTypingHandoff,
+} from "../lib/earlyTypingHandoff";
 import { AsyncQuestionsProvider } from "../contexts/AsyncQuestionsContext";
 import { useEngagementTracking } from "../hooks/useEngagementTracking";
 import { useBtwAsides } from "../hooks/useBtwAsides";
@@ -133,6 +146,11 @@ import { recordSessionVisit } from "../hooks/useRecentSessions";
 import { recordSessionInteraction } from "../lib/sessionInteractionOrder";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
+import {
+  forkSessionAtEffort,
+  useLongContextEffortGuard,
+} from "../hooks/useLongContextEffortGuard";
+import { LongContextEffortWarningModal } from "../components/LongContextEffortWarningModal";
 import { useSessionLoadingProgress } from "../hooks/useSessionLoadingProgress";
 import type { SessionLoadProgress } from "../hooks/useSessionMessages";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
@@ -228,7 +246,10 @@ import {
 import { createSessionDraftStorageKey } from "../lib/sessionDraftStorage";
 import {
   type ComposerTurnRecallCache,
+  type ComposerTurnRecallEntry,
+  createCommandRecallEntry,
   createComposerTurnRecallCache,
+  mergeCommandRecallEntries,
 } from "../lib/composerTurnRecall";
 import { turnContentText } from "../lib/sessionMessageText";
 import {
@@ -244,6 +265,14 @@ import {
 } from "../lib/sessionNavigationState";
 import { getPublicShareInitialPrompt } from "../lib/sessionPublicSharePrompt";
 import { getUnifiedSessionForkAvailability } from "../lib/sessionForkAvailability";
+import {
+  SessionRewindProvider,
+  type SessionRewindContextValue,
+} from "../contexts/SessionRewindContext";
+import {
+  getSessionTurnIndex,
+  supportsSessionRewind,
+} from "../lib/sessionRewind";
 import { isBtwAsideSession } from "../lib/btwAsideSessions";
 import {
   composeGeneratedRetitle,
@@ -253,7 +282,9 @@ import {
 } from "../lib/sessionTitleHelpers";
 import {
   CLIENT_SLASH_COMMANDS,
+  REWIND_SLASH_COMMANDS,
   createClientSlashCommand,
+  isRewindSlashCommand,
   normalizeSlashCommandForMatch,
   resolveComposerDoneTarget,
   resolveComposerSessionOperation,
@@ -652,6 +683,8 @@ function SessionPageContent({
   const {
     session,
     updateSession,
+    reloadSession,
+    applyRewindLocally,
     messages,
     agentContent,
     mergeLoadedAgentContent,
@@ -899,6 +932,25 @@ function SessionPageContent({
     [],
   );
   const draftControlsRef = useRef<DraftControls | null>(null);
+  const earlyComposerTypingRef = useRef<EarlyTypingHandoff | null>(null);
+  const earlyComposerTypingKeyRef = useRef<string | null>(null);
+  // undefined: nothing waiting. null: focus only. string: prefill to apply.
+  const pendingEarlyComposerPrefillRef = useRef<string | null | undefined>(
+    undefined,
+  );
+  const flushEarlyComposerTyping = useCallback(
+    (controls = draftControlsRef.current) => {
+      if (!controls || pendingEarlyComposerPrefillRef.current === undefined) {
+        return;
+      }
+      const prefill = pendingEarlyComposerPrefillRef.current;
+      pendingEarlyComposerPrefillRef.current = undefined;
+      const handoff = earlyComposerTypingRef.current;
+      earlyComposerTypingRef.current = null;
+      applyEarlyComposerTyping({ controls, handoff, prefill });
+    },
+    [],
+  );
   const [quoteClearSignal, setQuoteClearSignal] = useState(0);
   const pendingMotherComposerTransferRef = useRef<string | null>(null);
   const lastComposerSubmissionRef = useRef<LastComposerSubmission | null>(null);
@@ -1183,6 +1235,10 @@ function SessionPageContent({
       SERVER_CAPABILITIES.turnEffortModifiers.name,
     ) &&
     (effectiveProvider === "codex" || isClaudeProviderName(effectiveProvider));
+  // Same-session rewind commands work on an idle or stopped session as well
+  // as a live one, so they are offered whenever the server and provider
+  // support rewind (topics/session-rewind.md), not only for a live process.
+  const supportsRewind = supportsSessionRewind(versionInfo, effectiveProvider);
   const allSlashCommands = useMemo(() => {
     if (status.owner === "external") {
       return [];
@@ -1193,6 +1249,7 @@ function SessionPageContent({
         ? CLIENT_SLASH_COMMANDS.filter(
             (command) =>
               command !== "model" &&
+              !isRewindSlashCommand(command) &&
               (!isTurnEffort(command) || supportsTurnEffort) &&
               (command !== "btw" || supportsBtwAsides) &&
               (command !== "done" ||
@@ -1202,6 +1259,11 @@ function SessionPageContent({
                 (syntheticDoneEnabled && supportsSyntheticTerminate)),
           ).map(createClientSlashCommand)
         : [];
+    if (supportsRewind) {
+      for (const command of REWIND_SLASH_COMMANDS) {
+        orderedCommands.push(createClientSlashCommand(command));
+      }
+    }
     if (supportsManualCompact) {
       const compact = slashCommands.find(
         (command) => normalizeSlashCommandForMatch(command.name) === "compact",
@@ -1219,6 +1281,9 @@ function SessionPageContent({
       const normalized = normalizeSlashCommandForMatch(command.name);
       const providerModelSkill =
         normalized === "model" && command.invocation?.kind === "skill";
+      // YA's same-session /clear deliberately shadows the provider's native
+      // /clear on rewind-capable providers (topics/session-rewind.md).
+      if (supportsRewind && normalized === "clear") continue;
       if (
         (normalized !== "model" || providerModelSkill) &&
         !orderedCommands.some(
@@ -1243,6 +1308,7 @@ function SessionPageContent({
     status.owner,
     supportsBtwAsides,
     supportsManualCompact,
+    supportsRewind,
     supportsSyntheticTerminate,
     supportsTurnEffort,
     syntheticDoneEnabled,
@@ -1317,6 +1383,44 @@ function SessionPageContent({
     status.owner === "external" ||
     processState === "in-turn" ||
     processState === "waiting-input";
+  const forkAtEffort = useCallback(
+    async (thinking: ThinkingOption) => {
+      try {
+        const result = await forkSessionAtEffort(
+          projectId,
+          actualSessionId,
+          thinking,
+        );
+        showToast(t("forkFromTurnStarted"), "success");
+        navigate(
+          `${basePath}/projects/${projectId}/sessions/${result.sessionId}`,
+        );
+      } catch (error) {
+        showToast(
+          t("longContextEffortWarningForkFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+          "error",
+        );
+      }
+    },
+    [actualSessionId, basePath, navigate, projectId, showToast, t],
+  );
+  const {
+    guardEffortChange,
+    warning: longContextEffortWarning,
+    choose: chooseLongContextEffortWarning,
+  } = useLongContextEffortGuard({
+    provider: effectiveProvider,
+    providerInfo: currentProviderInfo,
+    model: effectiveModelConfig?.requestedModel ?? effectiveModelConfig?.model,
+    contextTokens: session?.contextUsage?.inputTokens,
+    settings: serverSettings?.longContextEffortWarning,
+    canFork: supportsForkFromTurn && !forkAfterDisabled,
+    forkWithThinking: forkAtEffort,
+    translateEffort: t,
+    noEffortLabel: t("longContextEffortWarningNoEffort"),
+  });
   const submitForkAfterSummary = useCallback(
     async (sourceMessageId: string, instructions: string) => {
       const requestSessionId = actualSessionId;
@@ -1855,6 +1959,14 @@ function SessionPageContent({
   const [generatedRetitle, setGeneratedRetitle] =
     useState<GeneratedRetitleState | null>(null);
   const renameInputRef = useRef<HTMLInputElement>(null);
+  const titleInputWantsFocusRef = useRef(false);
+  const attachTitleInput = useCallback((input: HTMLInputElement | null) => {
+    renameInputRef.current = input;
+    if (!input || !titleInputWantsFocusRef.current) return;
+    titleInputWantsFocusRef.current = false;
+    input.focus();
+    input.select();
+  }, []);
   const titleEditControlsRef = useRef<HTMLDivElement>(null);
   const isSavingTitleRef = useRef(false);
   const retitleRequestIdRef = useRef(0);
@@ -2014,18 +2126,13 @@ function SessionPageContent({
     ],
   );
 
-  // Record session visit for recents tracking
+  // Record session visit for recents tracking. Opening a session is not a
+  // sidebar interaction: only composer submissions move a row, so reading a
+  // session leaves its chronology alone.
   useEffect(() => {
     if (isDomLingerParked) return;
     recordSessionVisit(sessionId, projectId);
-    recordSessionInteraction(sourceRuntime.sourceKey, actualSessionId);
-  }, [
-    sessionId,
-    projectId,
-    actualSessionId,
-    sourceRuntime.sourceKey,
-    isDomLingerParked,
-  ]);
+  }, [sessionId, projectId, isDomLingerParked]);
 
   // Navigate to new session ID when temp ID is replaced with real SDK session ID
   // This ensures the URL stays in sync with the actual session
@@ -2853,9 +2960,52 @@ function SessionPageContent({
     composerTurnRecallCacheRef.current = createComposerTurnRecallCache();
   }
   const composerTurnRecallCache = composerTurnRecallCacheRef.current;
+  // Accepted YA commands never become turns; keep them recallable per session
+  // (browser-local, newest first) and merge them ahead of the transcript turns.
+  const commandRecallStorageKey = `ya:command-recall:${actualSessionId}`;
+  const [commandRecallEntries, setCommandRecallEntries] = useState<
+    ComposerTurnRecallEntry[]
+  >(() => {
+    try {
+      const raw = window.localStorage.getItem(commandRecallStorageKey);
+      const parsed: unknown = raw ? JSON.parse(raw) : [];
+      return Array.isArray(parsed)
+        ? parsed.filter(
+            (entry): entry is ComposerTurnRecallEntry =>
+              typeof entry?.id === "string" && typeof entry?.text === "string",
+          )
+        : [];
+    } catch {
+      return [];
+    }
+  });
+  const recordCommandRecall = useCallback(
+    (text: string) => {
+      setCommandRecallEntries((previous) => {
+        const next = [
+          createCommandRecallEntry(text),
+          ...previous.filter((entry) => entry.text !== text),
+        ].slice(0, 50);
+        try {
+          window.localStorage.setItem(
+            commandRecallStorageKey,
+            JSON.stringify(next),
+          );
+        } catch {
+          // Browser storage is best effort; the in-memory list still serves.
+        }
+        return next;
+      });
+    },
+    [commandRecallStorageKey],
+  );
   const composerTurnRecallEntries = useMemo(
-    () => composerTurnRecallCache.derive(messages),
-    [composerTurnRecallCache, messages],
+    () =>
+      mergeCommandRecallEntries(
+        commandRecallEntries,
+        composerTurnRecallCache.derive(messages),
+      ),
+    [commandRecallEntries, composerTurnRecallCache, messages],
   );
   // Go-to-turn: the recall drawer row asks to scroll the transcript to a prior
   // user turn by its render id. Mirror the isearch jump path (which reaches
@@ -2934,6 +3084,25 @@ function SessionPageContent({
   const navFocusComposer = navState?.focusComposer;
   const navScrollToRenderId = navState?.scrollToRenderId;
   const navActionsConsumedKeyRef = useRef<string | null>(null);
+  // A navigation that asks for the composer means the user may type at once,
+  // but the composer only appears when the session has loaded. Start holding
+  // keys here — before and regardless of loading — so they land in the draft
+  // in the order they were struck rather than in the transcript's shortcuts.
+  useEffect(() => {
+    if (!navComposerPrefill && !navFocusComposer) return;
+    const navigationKey = location.key ?? "keyless";
+    if (earlyComposerTypingKeyRef.current === navigationKey) return;
+    earlyComposerTypingKeyRef.current = navigationKey;
+    earlyComposerTypingRef.current?.cancel();
+    earlyComposerTypingRef.current = startEarlyTypingHandoff();
+  }, [location.key, navComposerPrefill, navFocusComposer]);
+  useEffect(
+    () => () => {
+      earlyComposerTypingRef.current?.cancel();
+      earlyComposerTypingRef.current = null;
+    },
+    [],
+  );
   useEffect(() => {
     const navigationKey = location.key ?? "keyless";
     if (navActionsConsumedKeyRef.current === navigationKey || loading) {
@@ -2944,11 +3113,9 @@ function SessionPageContent({
     }
     navActionsConsumedKeyRef.current = navigationKey;
 
-    if (navComposerPrefill) {
-      draftControlsRef.current?.setDraft(navComposerPrefill);
-      draftControlsRef.current?.focus?.();
-    } else if (navFocusComposer) {
-      draftControlsRef.current?.focus?.();
+    if (navComposerPrefill || navFocusComposer) {
+      pendingEarlyComposerPrefillRef.current = navComposerPrefill ?? null;
+      flushEarlyComposerTyping();
     }
 
     if (navScrollToRenderId) {
@@ -2982,6 +3149,7 @@ function SessionPageContent({
     initialTitle,
     initialModel,
     initialProvider,
+    flushEarlyComposerTyping,
   ]);
 
   const handleQueue = async (
@@ -3253,7 +3421,53 @@ function SessionPageContent({
     targetType: "existing-session" | "new-session",
     metadata?: MessageSubmissionMetadata,
   ) => {
-    const prepared = prepareComposerSubmission(text);
+    // Project Queue is a delayed lane, so a YA-emulated command must be
+    // carried to the scheduler rather than run now the way the composer's
+    // direct paths run it (topics/project-queue.md § Queued YA commands).
+    const classified = classifyQueuedYaCommand(text);
+    const refuseCommand = (message: string) => {
+      draftControlsRef.current?.setDraft(text);
+      showToast(message, "error");
+    };
+    if (classified.kind === "composer-only") {
+      refuseCommand(
+        t("projectQueueComposerOnlyCommand", { command: classified.name }),
+      );
+      return;
+    }
+    if (classified.kind === "unsupported") {
+      refuseCommand(
+        t("projectQueueUnsupportedCommand", { command: classified.name }),
+      );
+      return;
+    }
+    const yaCommand =
+      classified.kind === "queueable" ? classified.command : undefined;
+    if (yaCommand) {
+      if (targetType === "new-session") {
+        refuseCommand(
+          t("projectQueueCommandNeedsSession", { command: yaCommand.name }),
+        );
+        return;
+      }
+      if (!supportsRewind) {
+        refuseCommand(t("rewindUnavailable"));
+        return;
+      }
+      if (
+        attachmentsRef.current.length > 0 ||
+        pendingUploadsRef.current.size > 0
+      ) {
+        refuseCommand(
+          t("projectQueueCommandNoAttachments", { command: yaCommand.name }),
+        );
+        return;
+      }
+    }
+    const prepared: PreparedComposerSubmission | null =
+      classified.kind === "queueable"
+        ? { outgoingText: classified.commandText }
+        : prepareComposerSubmission(text);
     if (!prepared) {
       return;
     }
@@ -3325,6 +3539,7 @@ function SessionPageContent({
         message: {
           text: outgoingText,
           mode: permissionMode,
+          ...(yaCommand ? { yaCommand } : {}),
           ...(uploadedAttachments.length > 0
             ? { attachments: uploadedAttachments }
             : {}),
@@ -3808,9 +4023,20 @@ function SessionPageContent({
       if (status.owner !== "self" || !currentOwnedProcessId) {
         return;
       }
+      const nextThinking = thinkingOptionFromSelection(mode, effortLevel);
+      const verdict = await guardEffortChange(
+        nextThinking,
+        liveThinkingSelection
+          ? thinkingOptionFromSelection(
+              liveThinkingSelection.mode,
+              liveThinkingSelection.effortLevel,
+            )
+          : undefined,
+      );
+      if (verdict === "skip") return;
       try {
         const result = await api.setProcessConfig(currentOwnedProcessId, {
-          thinking: thinkingOptionFromSelection(mode, effortLevel),
+          thinking: nextThinking,
           showThinking: getShowThinkingSetting(),
         });
         setLiveModelConfigSnapshot((current) => {
@@ -3848,6 +4074,8 @@ function SessionPageContent({
     },
     [
       currentOwnedProcessId,
+      guardEffortChange,
+      liveThinkingSelection,
       reconnectStream,
       showToast,
       status.owner,
@@ -4105,12 +4333,17 @@ function SessionPageContent({
   const handleDraftControlsReady = useCallback(
     (controls: DraftControls) => {
       draftControlsRef.current = controls;
+      flushEarlyComposerTyping(controls);
       flushPendingMotherComposerTransfer(controls);
       void hydrateDraftAttachments(controls);
       // History may already have loaded before the composer mounted.
       reconcilePendingSendDraftRef.current();
     },
-    [flushPendingMotherComposerTransfer, hydrateDraftAttachments],
+    [
+      flushEarlyComposerTyping,
+      flushPendingMotherComposerTransfer,
+      hydrateDraftAttachments,
+    ],
   );
 
   useEffect(() => {
@@ -4145,6 +4378,327 @@ function SessionPageContent({
     [applyMotherComposerTransfer, mainComposerForAside, setFocusedBtwAsideId],
   );
 
+  // Same-session rewind (topics/session-rewind.md): the stable turn index N,
+  // the turn-menu Clear entries, /clear N, /fork N, and /clearloop.
+  const sessionTurnIndex = useMemo(
+    () => getSessionTurnIndex(messages),
+    [messages],
+  );
+  const [expandedRewoundGroups, setExpandedRewoundGroups] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const toggleRewoundGroup = useCallback((groupId: string) => {
+    setExpandedRewoundGroups((previous) => {
+      const next = new Set(previous);
+      if (next.has(groupId)) next.delete(groupId);
+      else next.add(groupId);
+      return next;
+    });
+  }, []);
+  const rewindToCut = useCallback(
+    async (
+      cut: {
+        kind: "after-user-turn" | "before-user-turn";
+        sourceMessageId: string;
+      },
+      cutTurnIndex: number,
+    ): Promise<boolean> => {
+      try {
+        const result = await api.rewindSession(projectId, actualSessionId, {
+          cut,
+          cutTurnIndex,
+        });
+        if (result.noop) {
+          showToast(t("rewindNoop"), "success");
+          return true;
+        }
+        showToast(
+          t("rewindDone", {
+            count: String(result.record?.droppedTurnCount ?? 0),
+          }),
+          "success",
+        );
+        // Restructure the loaded transcript in place; only a cut older than
+        // the loaded window needs the server's projection refetched.
+        if (!result.record || !applyRewindLocally(result.record)) {
+          reloadSession();
+        }
+        return true;
+      } catch (error) {
+        showToast(
+          t("rewindFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+          "error",
+        );
+        return false;
+      }
+    },
+    [
+      actualSessionId,
+      applyRewindLocally,
+      projectId,
+      reloadSession,
+      showToast,
+      t,
+    ],
+  );
+  const clearAfterUserMessage = useCallback(
+    (messageId: string) => {
+      const index = sessionTurnIndex.indexById.get(messageId) ?? 0;
+      void rewindToCut(
+        { kind: "after-user-turn", sourceMessageId: messageId },
+        index,
+      );
+    },
+    [rewindToCut, sessionTurnIndex],
+  );
+  const clearReplacingUserMessage = useCallback(
+    (messageId: string) => {
+      const index = sessionTurnIndex.indexById.get(messageId) ?? 1;
+      if (index <= 1) {
+        // Turn 1 has no earlier boundary; an empty prefix is the
+        // new-session Clear (topics/session-rewind.md § Commands).
+        showToast(t("rewindClearZero"), "error");
+        return;
+      }
+      const source = messages.find((m) => (m.uuid ?? m.id) === messageId);
+      const promptText = turnContentText(source?.message?.content).trim();
+      if (promptText) {
+        // Persist the draft before the reload that follows the rewind.
+        draftControlsRef.current?.setDraft(promptText);
+        draftControlsRef.current?.flushDraft();
+      }
+      void rewindToCut(
+        { kind: "before-user-turn", sourceMessageId: messageId },
+        index - 1,
+      );
+    },
+    [messages, rewindToCut, sessionTurnIndex, showToast, t],
+  );
+  const startClearloop = useCallback(
+    async (
+      sourceMessageId: string,
+      cutTurnIndex: number,
+      parsed: { total: number; prompt: string },
+      commandText: string,
+    ) => {
+      try {
+        await api.startClearloop(projectId, actualSessionId, {
+          cut: { kind: "after-user-turn", sourceMessageId },
+          cutTurnIndex,
+          prompt: parsed.prompt,
+          total: parsed.total,
+          commandText,
+        });
+        showToast(
+          t("clearloopStarted", {
+            total: String(parsed.total),
+            index: String(cutTurnIndex),
+          }),
+          "success",
+        );
+      } catch (error) {
+        showToast(
+          t("clearloopFailed", {
+            message: error instanceof Error ? error.message : String(error),
+          }),
+          "error",
+        );
+      }
+    },
+    [actualSessionId, projectId, showToast, t],
+  );
+  // A rewind performed elsewhere (a clearloop iteration, another tab) arrives
+  // on the metadata event; apply it to the loaded transcript in place.
+  useEffect(
+    () =>
+      activityBus.on("session-metadata-changed", (data) => {
+        if (data.sessionId !== actualSessionId) return;
+        // A refused rewind deletes its record; the grouped rows are live
+        // again and only the server projection knows the result.
+        if (data.rewindRecordRemoved) {
+          reloadSession();
+          return;
+        }
+        if (!data.rewindRecord) return;
+        if (!applyRewindLocally(data.rewindRecord)) reloadSession();
+      }),
+    [actualSessionId, applyRewindLocally, reloadSession],
+  );
+  const handleCancelClearloop = useCallback(async () => {
+    try {
+      await api.cancelClearloop(projectId, actualSessionId);
+    } catch (error) {
+      showToast(
+        t("clearloopCancelFailed", {
+          message: error instanceof Error ? error.message : String(error),
+        }),
+        "error",
+      );
+    }
+  }, [actualSessionId, projectId, showToast, t]);
+  const clearloopControls = useMemo<ClearloopBadgeControls>(
+    () => ({
+      onCancel: () => {
+        if (window.confirm(t("clearloopCancelConfirm"))) {
+          void handleCancelClearloop();
+        }
+      },
+      onSetPatient: (patient: boolean) => {
+        void (async () => {
+          try {
+            await api.updateClearloop(projectId, actualSessionId, { patient });
+          } catch (error) {
+            showToast(
+              t("clearloopPatienceFailed", {
+                message: error instanceof Error ? error.message : String(error),
+              }),
+              "error",
+            );
+          }
+        })();
+      },
+      onStartNow: () => {
+        void (async () => {
+          try {
+            await api.updateClearloop(projectId, actualSessionId, {
+              startNow: true,
+            });
+          } catch (error) {
+            showToast(
+              t("clearloopStartNowFailed", {
+                message: error instanceof Error ? error.message : String(error),
+              }),
+              "error",
+            );
+          }
+        })();
+      },
+    }),
+    [actualSessionId, handleCancelClearloop, projectId, showToast, t],
+  );
+  const clearToNewSession = useCallback(() => {
+    const params = new URLSearchParams({ projectId });
+    if (effectiveProvider) params.set("provider", effectiveProvider);
+    if (session?.model) params.set("model", session.model);
+    navigate(`${basePath}/new-session?${params.toString()}`);
+  }, [basePath, effectiveProvider, navigate, projectId, session?.model]);
+  const sessionRewindContextValue = useMemo<SessionRewindContextValue>(
+    () => ({
+      turnIndexById: sessionTurnIndex.indexById,
+      onClearAfter: supportsRewind ? clearAfterUserMessage : undefined,
+      onClearReplacing: supportsRewind ? clearReplacingUserMessage : undefined,
+      expandedRewoundGroups,
+      toggleRewoundGroup,
+    }),
+    [
+      clearAfterUserMessage,
+      clearReplacingUserMessage,
+      expandedRewoundGroups,
+      sessionTurnIndex,
+      supportsRewind,
+      toggleRewoundGroup,
+    ],
+  );
+  const handleRewindCommand = useCallback(
+    (command: "clear" | "fork" | "clearloop", argument: string): boolean => {
+      if (!supportsRewind) {
+        showToast(t("rewindUnavailable"), "error");
+        return true;
+      }
+      const { idByIndex, clearedIds, lastLiveIndex } = sessionTurnIndex;
+      const turnMissing = (index: number) => {
+        showToast(
+          lastLiveIndex === 0
+            ? t("rewindNoTurns")
+            : t("rewindTurnNotFound", { index: String(index) }),
+          "error",
+        );
+      };
+      // Turn N over the full sequence; a turn inside a cleared span is not
+      // a rewind target yet (tree hops are unspecified).
+      const resolveTurn = (index: number): string | null => {
+        const id = idByIndex.get(index);
+        if (index < 1 || !id) {
+          turnMissing(index);
+          return null;
+        }
+        if (command !== "fork" && clearedIds.has(id)) {
+          showToast(t("rewindTurnCleared", { index: String(index) }), "error");
+          return null;
+        }
+        return id;
+      };
+      // A malformed command is handed back to the composer rather than lost.
+      const restoreDraft = () => {
+        draftControlsRef.current?.setDraft(
+          `/${command}${argument ? ` ${argument}` : ""}`,
+        );
+        showToast(t("rewindCommandSyntax"), "error");
+      };
+      const commandText = `/${command}${argument ? ` ${argument.trim()}` : ""}`;
+      if (command === "clearloop") {
+        const parsed = parseClearloopArguments(argument);
+        if (!parsed) {
+          restoreDraft();
+          return true;
+        }
+        // No N means "loop from here": the last turn still in the
+        // conversation, which is the N its own Clear-after entry offers. A
+        // dropped turn holds a higher ordinal and is not a rewind target.
+        const index = parsed.turnIndex ?? lastLiveIndex;
+        const sourceMessageId = resolveTurn(index);
+        if (!sourceMessageId) return true;
+        recordCommandRecall(commandText);
+        draftControlsRef.current?.confirmInputClear();
+        void startClearloop(
+          sourceMessageId,
+          index,
+          parsed,
+          `/clearloop ${argument.trim()}`,
+        );
+        return true;
+      }
+      const index = parseTurnIndexArgument(argument, {
+        allowEmpty: command === "clear",
+      });
+      if (index === null) {
+        restoreDraft();
+        return true;
+      }
+      if (command === "clear" && index === 0) {
+        recordCommandRecall(commandText);
+        draftControlsRef.current?.confirmInputClear();
+        clearToNewSession();
+        return true;
+      }
+      const sourceMessageId = resolveTurn(index);
+      if (!sourceMessageId) return true;
+      recordCommandRecall(commandText);
+      // The command was consumed here, so the persisted draft is cleared as
+      // a sent message would be; otherwise a reload restores it.
+      draftControlsRef.current?.confirmInputClear();
+      if (command === "fork") {
+        void createDirectTurnFork(sourceMessageId, "after-user-turn");
+        return true;
+      }
+      void rewindToCut({ kind: "after-user-turn", sourceMessageId }, index);
+      return true;
+    },
+    [
+      clearToNewSession,
+      createDirectTurnFork,
+      recordCommandRecall,
+      rewindToCut,
+      sessionTurnIndex,
+      showToast,
+      startClearloop,
+      supportsRewind,
+      t,
+    ],
+  );
+
   const handleCustomCommand = useCallback(
     (command: string, argument = "") => {
       if (command === "model") {
@@ -4167,11 +4721,19 @@ function SessionPageContent({
         }
         return true;
       }
+      if (
+        command === "clear" ||
+        command === "fork" ||
+        command === "clearloop"
+      ) {
+        return handleRewindCommand(command, argument);
+      }
       return false;
     },
     [
       closeFocusedBtwAside,
       handleCompactSession,
+      handleRewindCommand,
       showToast,
       startBtwAside,
       supportsManualCompact,
@@ -4624,11 +5186,18 @@ function SessionPageContent({
     setRetitleState(null);
   };
 
+  // Asking to edit the title means the user is about to type, so focus lands
+  // in the commit that creates the input (attachTitleInput) instead of a
+  // timer hop later, during which keys reach the page's own shortcuts. When
+  // the input is already mounted this focuses it directly.
   const focusAndSelectTitleInput = () => {
-    setTimeout(() => {
-      renameInputRef.current?.focus();
-      renameInputRef.current?.select();
-    }, 0);
+    const input = renameInputRef.current;
+    if (!input) {
+      titleInputWantsFocusRef.current = true;
+      return;
+    }
+    input.focus();
+    input.select();
   };
 
   const captureGeneratedRetitleInsertion = (): GeneratedRetitleInsertion => {
@@ -5151,7 +5720,11 @@ function SessionPageContent({
                     ref={projectBreadcrumbRef}
                     to={`${basePath}/sessions?project=${projectId}`}
                     className="project-breadcrumb"
-                    title={project.name}
+                    title={
+                      project.caption
+                        ? `${project.name}\n${project.caption.text}`
+                        : project.name
+                    }
                     aria-label={project.name}
                     onContextMenu={handleProjectBreadcrumbContextMenu}
                   >
@@ -5228,7 +5801,7 @@ function SessionPageContent({
                       }
                     >
                       <input
-                        ref={renameInputRef}
+                        ref={attachTitleInput}
                         type="text"
                         className="session-title-input"
                         value={
@@ -5380,13 +5953,19 @@ function SessionPageContent({
                   <>
                     <button
                       type="button"
-                      className="session-title session-title-recent-trigger"
+                      className={`session-title session-title-recent-trigger ${sessionHeaderStyles.titleWithBadge}`}
                       onClick={() => setShowRecentSessions(!showRecentSessions)}
                       title={titleTooltip}
                       aria-haspopup="menu"
                       aria-expanded={showRecentSessions}
                     >
                       <span className="session-title-text">{displayTitle}</span>
+                      {session?.clearloop !== undefined && (
+                        <ClearloopRemainingBadge
+                          badge={session.clearloop}
+                          controls={clearloopControls}
+                        />
+                      )}
                     </button>
                     {currentGoal && (
                       <GoalFlag
@@ -5738,6 +6317,18 @@ function SessionPageContent({
           />
         )}
 
+        {longContextEffortWarning && (
+          <LongContextEffortWarningModal
+            provider={longContextEffortWarning.provider}
+            contextTokens={longContextEffortWarning.contextTokens}
+            currentEffortLabel={longContextEffortWarning.currentEffortLabel}
+            nextEffortLabel={longContextEffortWarning.nextEffortLabel}
+            canFork={longContextEffortWarning.canFork}
+            busy={longContextEffortWarning.busy}
+            onChoose={(choice) => void chooseLongContextEffortWarning(choice)}
+          />
+        )}
+
         {/* Model Switch Modal */}
         {showModelSwitchModal && (
           <ModelSwitchModal
@@ -5746,6 +6337,7 @@ function SessionPageContent({
             currentModel={session?.model}
             sessionProvider={effectiveProvider}
             onModelChanged={handleModelChanged}
+            guardEffortChange={guardEffortChange}
             initialTab={modelPanelInitialTab}
             infoPane={
               session ? (
@@ -5886,134 +6478,151 @@ function SessionPageContent({
                   projectId={projectId}
                   sessionId={sessionId}
                 >
-                  <SessionViewerProvider
-                    sessionId={actualSessionId}
-                    inactive={isDomLingerParked}
-                    onSendComment={handleSessionViewerCommentSend}
-                    onOpenApp={rightPane.enabled ? rightPane.select : undefined}
-                    appConfig={rightPane.config}
-                    rightPaneTarget={rightPaneTarget}
-                  >
-                    <MessageList
-                      messages={messages}
-                      transcriptDisplayObjects={
-                        session?.transcriptDisplayObjects
+                  <SessionRewindProvider value={sessionRewindContextValue}>
+                    <SessionViewerProvider
+                      sessionId={actualSessionId}
+                      inactive={isDomLingerParked}
+                      onSendComment={handleSessionViewerCommentSend}
+                      onOpenApp={
+                        rightPane.enabled ? rightPane.select : undefined
                       }
-                      provider={effectiveProvider}
-                      isProcessing={sessionActivityUi.showProcessingIndicator}
-                      isCompacting={isCompacting}
-                      scrollTrigger={scrollTrigger}
-                      scrollToTurnRequest={scrollToTurnRequest}
-                      pendingMessages={pendingMessages}
-                      deferredMessages={deferredMessages}
-                      queuedEffortContext={(() => {
-                        const model = currentProviderInfo?.models?.find(
-                          (candidate) =>
-                            candidate.id ===
-                            (effectiveModelConfig?.requestedModel ??
-                              liveBadgeModel),
-                        );
-                        const normal = getImplicitComposerThinking();
-                        return model && normal
-                          ? { model, normal, provider: effectiveProvider }
-                          : undefined;
-                      })()}
-                      projectQueueMessages={inlineProjectQueueMessages}
-                      projectQueueDispatchPaused={
-                        projectQueues.dispatchState.status === "paused"
-                      }
-                      projectQueueDispatchMutating={
-                        projectQueues.mutatingDispatchState
-                      }
-                      btwAsides={historyBtwAsides}
-                      onFocusBtwAside={setFocusedBtwAsideId}
-                      onDoneBtwAside={handleDoneBtwAside}
-                      onStopBtwAside={handleStopBtwAsideFromTranscript}
-                      onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
-                      onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
-                      onQuoteSelection={insertQuotedSelection}
-                      onStartNewSessionFromSelection={
-                        startNewSessionFromSelection
-                      }
-                      composerDraftSignal={composerDraftSignal}
-                      composerEditAvailabilityStore={
-                        composerEditAvailabilityStore
-                      }
-                      quoteClearSignal={quoteClearSignal}
-                      onCancelDeferred={handleCancelDeferred}
-                      onEditDeferred={handleEditDeferred}
-                      onCancelUnconfirmedUserMessage={
-                        handleCancelUnconfirmedUserMessage
-                      }
-                      onSteerDeferred={handleSteerDeferred}
-                      onResumeRecoveredDeferred={handleResumeRecoveredDeferred}
-                      onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
-                      onDeleteRecoveredDeferred={handleDeleteRecoveredDeferred}
-                      onCancelProjectQueueMessage={handleCancelProjectQueueItem}
-                      onEditProjectQueueMessage={handleEditProjectQueueItem}
-                      onSteerProjectQueueMessage={handleSteerProjectQueueItem}
-                      onResumeProjectQueueDispatch={
-                        handleResumeProjectQueueDispatch
-                      }
-                      onCorrectLatestUserMessage={
-                        handleCorrectLatestUserMessage
-                      }
-                      onTrimBeforeUserMessage={trimClientFromUserMessage}
-                      onForkBeforeUserMessage={
-                        supportsForkFromTurn ? forkBeforeUserMessage : undefined
-                      }
-                      onForkAfterUserMessage={
-                        supportsForkFromTurn ? forkAfterUserMessage : undefined
-                      }
-                      onForkAfterSummaryUserMessage={
-                        supportsForkFromTurn ? beginForkAfterSummary : undefined
-                      }
-                      forkAfterUserMessageDisabled={forkAfterDisabled}
-                      forkUnavailableMessage={forkUnavailableMessage}
-                      onCopyUserMessage={copyUserMessage}
-                      onHandoffFromUserMessage={handoffFromUserMessage}
-                      markdownAugments={markdownAugments}
-                      activeToolApproval={activeToolApproval}
-                      hasOlderMessages={pagination?.hasOlderMessages}
-                      totalMessageCount={pagination?.totalMessageCount}
-                      olderMessagesCursor={
-                        pagination?.truncatedBeforeMessageId ?? null
-                      }
-                      activeWindowTrimRevision={activeWindowTrimRevision}
-                      loadingOlder={loadingOlder}
-                      olderLoadContinuationRequired={
-                        olderLoadContinuationRequired
-                      }
-                      onLoadOlderMessages={loadOlderMessages}
-                      onReadOlderSearchPage={readOlderSearchPage}
-                      clientTailActive={clientTailActive}
-                      progressiveRenderEnabled={sessionLoadingProgressEnabled}
-                      progressiveRenderStatusVisible={
-                        sessionLoadingProgressDetailsVisible
-                      }
-                      progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                      progressiveRenderPauseSignal={
-                        progressiveRenderPauseSignal
-                      }
-                      conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
-                      initialScrollSnapshot={initialScrollSnapshot}
-                      onScrollSnapshotChange={updateRouteScrollSnapshot}
-                      onFollowingBottomChange={
-                        updateActiveWindowFollowingBottom
-                      }
-                      onFollowCurrent={handleFollowCurrent}
-                      scrollBehaviorMode={sessionScrollBehaviorMode}
-                      getForkSummaryTargetHref={getForkSummaryTargetHref}
-                      onCancelForkSummary={handleCancelForkSummary}
-                      onToggleForkSummaryAutoOpen={
-                        handleToggleForkSummaryAutoOpen
-                      }
-                      onFollowForkSummary={followForkSummary}
-                      bangCommandHandlers={bangCommandHandlers}
-                      transcriptPositionStore={transcriptPositionStore}
-                      inert={isDomLingerParked}
-                    />
-                  </SessionViewerProvider>
+                      appConfig={rightPane.config}
+                      rightPaneTarget={rightPaneTarget}
+                    >
+                      <MessageList
+                        messages={messages}
+                        transcriptDisplayObjects={
+                          session?.transcriptDisplayObjects
+                        }
+                        provider={effectiveProvider}
+                        isProcessing={sessionActivityUi.showProcessingIndicator}
+                        isCompacting={isCompacting}
+                        scrollTrigger={scrollTrigger}
+                        scrollToTurnRequest={scrollToTurnRequest}
+                        pendingMessages={pendingMessages}
+                        deferredMessages={deferredMessages}
+                        queuedEffortContext={(() => {
+                          const model = currentProviderInfo?.models?.find(
+                            (candidate) =>
+                              candidate.id ===
+                              (effectiveModelConfig?.requestedModel ??
+                                liveBadgeModel),
+                          );
+                          const normal = getImplicitComposerThinking();
+                          return model && normal
+                            ? { model, normal, provider: effectiveProvider }
+                            : undefined;
+                        })()}
+                        projectQueueMessages={inlineProjectQueueMessages}
+                        projectQueueDispatchPaused={
+                          projectQueues.dispatchState.status === "paused"
+                        }
+                        projectQueueDispatchMutating={
+                          projectQueues.mutatingDispatchState
+                        }
+                        btwAsides={historyBtwAsides}
+                        onFocusBtwAside={setFocusedBtwAsideId}
+                        onDoneBtwAside={handleDoneBtwAside}
+                        onStopBtwAside={handleStopBtwAsideFromTranscript}
+                        onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
+                        onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
+                        onQuoteSelection={insertQuotedSelection}
+                        onStartNewSessionFromSelection={
+                          startNewSessionFromSelection
+                        }
+                        composerDraftSignal={composerDraftSignal}
+                        composerEditAvailabilityStore={
+                          composerEditAvailabilityStore
+                        }
+                        quoteClearSignal={quoteClearSignal}
+                        onCancelDeferred={handleCancelDeferred}
+                        onCancelClearloop={handleCancelClearloop}
+                        onEditDeferred={handleEditDeferred}
+                        onCancelUnconfirmedUserMessage={
+                          handleCancelUnconfirmedUserMessage
+                        }
+                        onSteerDeferred={handleSteerDeferred}
+                        onResumeRecoveredDeferred={
+                          handleResumeRecoveredDeferred
+                        }
+                        onSteerRecoveredDeferred={handleSteerRecoveredDeferred}
+                        onDeleteRecoveredDeferred={
+                          handleDeleteRecoveredDeferred
+                        }
+                        onCancelProjectQueueMessage={
+                          handleCancelProjectQueueItem
+                        }
+                        onEditProjectQueueMessage={handleEditProjectQueueItem}
+                        onSteerProjectQueueMessage={handleSteerProjectQueueItem}
+                        onResumeProjectQueueDispatch={
+                          handleResumeProjectQueueDispatch
+                        }
+                        onCorrectLatestUserMessage={
+                          handleCorrectLatestUserMessage
+                        }
+                        onTrimBeforeUserMessage={trimClientFromUserMessage}
+                        onForkBeforeUserMessage={
+                          supportsForkFromTurn
+                            ? forkBeforeUserMessage
+                            : undefined
+                        }
+                        onForkAfterUserMessage={
+                          supportsForkFromTurn
+                            ? forkAfterUserMessage
+                            : undefined
+                        }
+                        onForkAfterSummaryUserMessage={
+                          supportsForkFromTurn
+                            ? beginForkAfterSummary
+                            : undefined
+                        }
+                        forkAfterUserMessageDisabled={forkAfterDisabled}
+                        forkUnavailableMessage={forkUnavailableMessage}
+                        onCopyUserMessage={copyUserMessage}
+                        onHandoffFromUserMessage={handoffFromUserMessage}
+                        markdownAugments={markdownAugments}
+                        activeToolApproval={activeToolApproval}
+                        hasOlderMessages={pagination?.hasOlderMessages}
+                        totalMessageCount={pagination?.totalMessageCount}
+                        olderMessagesCursor={
+                          pagination?.truncatedBeforeMessageId ?? null
+                        }
+                        activeWindowTrimRevision={activeWindowTrimRevision}
+                        loadingOlder={loadingOlder}
+                        olderLoadContinuationRequired={
+                          olderLoadContinuationRequired
+                        }
+                        onLoadOlderMessages={loadOlderMessages}
+                        onReadOlderSearchPage={readOlderSearchPage}
+                        clientTailActive={clientTailActive}
+                        progressiveRenderEnabled={sessionLoadingProgressEnabled}
+                        progressiveRenderStatusVisible={
+                          sessionLoadingProgressDetailsVisible
+                        }
+                        progressiveRenderKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                        progressiveRenderPauseSignal={
+                          progressiveRenderPauseSignal
+                        }
+                        conversationViewStateKey={`${clientSummarySourceKey}:${projectId}:${sessionId}:${location.search}`}
+                        initialScrollSnapshot={initialScrollSnapshot}
+                        onScrollSnapshotChange={updateRouteScrollSnapshot}
+                        onFollowingBottomChange={
+                          updateActiveWindowFollowingBottom
+                        }
+                        onFollowCurrent={handleFollowCurrent}
+                        scrollBehaviorMode={sessionScrollBehaviorMode}
+                        getForkSummaryTargetHref={getForkSummaryTargetHref}
+                        onCancelForkSummary={handleCancelForkSummary}
+                        onToggleForkSummaryAutoOpen={
+                          handleToggleForkSummaryAutoOpen
+                        }
+                        onFollowForkSummary={followForkSummary}
+                        bangCommandHandlers={bangCommandHandlers}
+                        transcriptPositionStore={transcriptPositionStore}
+                        inert={isDomLingerParked}
+                      />
+                    </SessionViewerProvider>
+                  </SessionRewindProvider>
                 </AgentContentProvider>
               </SessionMetadataProvider>
             )}

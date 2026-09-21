@@ -83,13 +83,7 @@ function BashOutputToolUse({ input }: { input: BashOutputInput }) {
 /**
  * BashOutput tool result - shows async bash result
  */
-function BashOutputToolResult({
-  result,
-  isError,
-}: {
-  result: BashOutputResult;
-  isError: boolean;
-}) {
+function BashOutputToolResult({ result }: { result: BashOutputResult }) {
   const [isExpanded, setIsExpanded] = useState(false);
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
@@ -111,23 +105,6 @@ function BashOutputToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("BashOutput");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className="bashoutput-error">
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="BashOutput" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Failed to get bash output"}
-      </div>
-    );
-  }
 
   if (!result) {
     return <div className="bashoutput-empty">No output</div>;
@@ -216,16 +193,27 @@ export const bashOutputRenderer = defineTool(toolDisplayContracts.BashOutput, {
     return <BashOutputToolUse input={input} />;
   },
 
-  renderToolResult(result, isError, _context) {
-    return <BashOutputToolResult result={result} isError={isError} />;
+  renderToolResult(result, _isError, _context) {
+    return <BashOutputToolResult result={result} />;
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className="bashoutput-error">
+        {failure.content || "Failed to get bash output"}
+      </div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input) {
     return input.bash_id;
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     if (!r) return "Pending";
     if (r.status === "running") return "Running...";

@@ -7,6 +7,7 @@ import type {
 } from "./types.js";
 import type { StagedAttachmentRef, UploadedFile } from "./upload.js";
 import type { UrlProjectId } from "./projectId.js";
+import type { QueuedYaCommand } from "./queued-ya-commands.js";
 import type { UserMessageMetadata } from "./user-message-metadata.js";
 import type { SessionQueuedMessageSummary } from "./app-types.js";
 
@@ -93,6 +94,12 @@ export interface ProjectQueueMessage {
   stagedAttachments?: ProjectQueueStagedAttachments;
   mode?: PermissionMode;
   metadata?: UserMessageMetadata;
+  /**
+   * A YA-emulated command to run against the target session at dispatch
+   * instead of sending `text` to the provider. `text` stays the verbatim
+   * command line so every queue surface shows what the user typed.
+   */
+  yaCommand?: QueuedYaCommand;
 }
 
 export interface ProjectQueueStagedAttachments {

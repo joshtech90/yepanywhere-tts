@@ -2,14 +2,18 @@
  * Simple in-memory pub/sub event bus for file change and session status events.
  */
 
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import type {
   AgentActivity,
   NonHumanUserTurn,
   CacheMissBillingRecord,
+  SessionRewindRecord,
   ContextUsage,
   PendingInputType,
+  ProjectCaptionsChangedEvent,
   ProjectCodeNameChangedEvent,
   ProjectQueueChangedEvent,
+  ProjectsChangedEvent,
   ProviderName,
   ProviderRuntimeStatus,
   PromptSuggestionMode,
@@ -92,6 +96,7 @@ export interface BackendReloadedEvent {
 export interface SessionSeenEvent {
   type: "session-seen";
   sessionId: string;
+  /** When the session was read; `SESSION_UNREAD_TIMESTAMP` means unread. */
   timestamp: string;
   messageId?: string;
 }
@@ -204,6 +209,15 @@ export interface SessionMetadataChangedEvent {
   parentSessionKind?: "btw-aside" | null;
   /** Updated provider-fork provenance link. */
   forkedFromSessionId?: string | null;
+  /** Remaining `/clearloop` iterations; null when the loop ended. */
+  clearloop?: SessionClearloopBadge | null;
+  /** A same-session rewind just recorded; viewers apply it in place. */
+  rewindRecord?: SessionRewindRecord;
+  /**
+   * A rewind record deleted because the provider refused to apply it; the
+   * rows it grouped are live again and viewers reload the transcript.
+   */
+  rewindRecordRemoved?: string;
   /** Updated heartbeat opt-in flag (if changed) */
   heartbeatTurnsEnabled?: boolean;
   /** Updated per-session heartbeat interval override (if changed) */
@@ -229,6 +243,43 @@ export interface SessionMetadataChangedEvent {
 export interface SessionAbortedEvent {
   type: "session-aborted";
   sessionId: string;
+  projectId: UrlProjectId;
+  /**
+   * `idle-reap` when the supervisor tore down an idle process for want of
+   * viewers; absent for a requested abort. A quiet session waiting out a
+   * `/clearloop` inactivity window is reaped like any other and is not
+   * thereby stopped.
+   */
+  reason?: "idle-reap";
+  timestamp: string;
+}
+
+/**
+ * Event emitted when something asks this server to stop a live session's
+ * current turn — the Stop control or a restart handoff — before the interrupt
+ * is attempted. The process stays alive and may report idle immediately after,
+ * so listeners that treat an idle report as finished work use this to tell an
+ * intentional stop from a completed turn. A hard abort emits
+ * `session-aborted` instead.
+ */
+export interface SessionStopRequestedEvent {
+  type: "session-stop-requested";
+  sessionId: string;
+  projectId: UrlProjectId;
+  timestamp: string;
+}
+
+/**
+ * Event emitted when this server forks a transcript into a new session. The
+ * new session's file is written by us, so listeners that infer "another
+ * program is writing this session" from file activity must not do so here.
+ */
+export interface SessionForkedEvent {
+  type: "session-forked";
+  /** The new session created by the fork. */
+  sessionId: string;
+  /** The session the transcript was forked from. */
+  sourceSessionId: string;
   projectId: UrlProjectId;
   timestamp: string;
 }
@@ -327,8 +378,12 @@ export type BusEvent =
   | SafeRestartChangedEvent
   | ProjectQueueChangedEvent
   | ProjectCodeNameChangedEvent
+  | ProjectCaptionsChangedEvent
+  | ProjectsChangedEvent
   | SessionMetadataChangedEvent
   | SessionAbortedEvent
+  | SessionStopRequestedEvent
+  | SessionForkedEvent
   | SessionUpdatedEvent
   | NetworkBindingChangedEvent
   | BrowserTabConnectedEvent

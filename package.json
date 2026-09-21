@@ -86,10 +86,10 @@
   "yepAnywhere": {
     "codexCli": {
       "expectedVersion": "0.154.0",
-      "compatibleThroughVersion": "0.154.0"
+      "compatibleThroughVersion": "0.155.1"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.273",
+      "compatibleThroughVersion": "2.1.276",
       "claudeAgentSdkVersion": "0.3.273"
     },
     "piCli": {

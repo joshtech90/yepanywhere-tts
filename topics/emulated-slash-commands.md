@@ -23,7 +23,15 @@ as the runtime skills directory.
 - Provider-native commands take precedence. If the provider reports `/wish`,
   `/doubt`, `/rep`, `/harsh-review`, `/goal`, or another native equivalent, YA
   must expose and send the native command unaltered unless a provider-specific
-  topic explicitly says otherwise.
+  topic explicitly says otherwise. The one standing exception is `/clear` on
+  rewind-capable providers, which [session-rewind](session-rewind.md) owns as
+  YA's same-session `/clear N`; that topic also owns `/fork N` and
+  `/clearloop`, whose progress entry is a `ya-command` chip.
+- Project Queue is a delayed lane and therefore must not run an emulated
+  command at enqueue. [`project-queue`](project-queue.md#queued-ya-commands)
+  owns which commands it carries as a tagged `yaCommand` for server execution
+  at dispatch, and which it refuses visibly because they act on composer
+  state.
 - Codex user skills activate through `$skill`, not `/skill`. For Codex-backed
   sessions, YA preserves native/system slash commands such as a leading
   `/goal`, but translates an exact `/name` token to `$name` only when the
@@ -253,8 +261,11 @@ the Stop hook and remembers the objective, and resume reissues
 `/goal <objective>`. The paused objective exists only in YA, so it is saved in
 session metadata and restored when the session is resumed or the server
 restarts; an active goal is not restored that way because Claude reports it
-itself. Clearing a paused goal needs no provider text. Reissuing the live
-objective reads it rather than spending a turn re-acknowledging it.
+itself. Because the Stop hook fires before the queued clear is delivered, a
+not-yet-met row for the same objective can arrive first; it leaves the pending
+pause in place, and only a hook carrying a different objective discards it.
+Clearing a paused goal needs no provider text. Reissuing the live objective
+reads it rather than spending a turn re-acknowledging it.
 
 A `/goal` that is a session's first message — a new session, or the first
 message after its process was reaped — is delivered as that prompt instead of
@@ -274,7 +285,10 @@ entry, plus completions for the current objective, `clear`, and whichever of
 `pause`/`resume` applies. The header flag, its tooltip, its toggle, and the
 right-click objective fill are the same controls as the Codex goal flag. When
 Claude is old enough to lack a native `/goal`, YA's `/loop wish` alias stays in
-place, carries no goal state, and offers no controls.
+place, carries no goal state, and offers no controls. A saved goal observation
+never displaces it: the stopped-session restore fills in a native entry that
+reports no objective, never an emulated one, whose provider text is the only
+way YA can send the command at all.
 
 Compatibility: Claude goal state uses the same optional inventory fields as
 Codex, so a server that omits them leaves the client with no flag and no
@@ -355,8 +369,14 @@ recap/goal implementation.
   is the one YA requested for a pause.
 - Claude `/goal pause` sends a clear and reports `paused` only once the
   transcript confirms it; `/goal resume` reissues the remembered objective.
+- A not-yet-met row for the pausing objective, arriving before the clear,
+  still yields `paused`; an installed row for another objective does not.
 - A Claude build advertising no native `/goal` keeps the `/loop wish` alias and
-  publishes no goal state.
+  publishes no goal state, including when session metadata holds a saved goal
+  observation.
+- A Claude session whose transcript gains a goal row mid-turn publishes the new
+  state in a `commands_changed` inventory at the turn boundary, and publishes
+  Claude's own auto-clear the same way.
 - Supported `/archive` projects `/archive`; an archive-incapable but done-capable
   server projects `/done` without receiving an archive request. `/title` is
   handled locally and never reaches a provider or focused aside.

@@ -378,6 +378,23 @@ export function getSessionSources(
   return sources;
 }
 
+/**
+ * Selects the session source for one named provider, so a caller that knows
+ * which provider recorded a session reads it with that provider's reader.
+ * Returns null when the name belongs to no provider group, or when the group's
+ * reader is unavailable here; never substitutes another provider's reader.
+ */
+export function getSessionSourceForProvider(
+  project: Project,
+  deps: ProviderResolutionDeps,
+  provider: ProviderName | string,
+  catalog?: ProviderProjectCatalog,
+): SessionSource | null {
+  const group = normalizeProviderGroup(provider);
+  if (!group) return null;
+  return getSourceForGroup(project, deps, group, catalog);
+}
+
 function filterActiveSessions(
   sessions: SessionSummary[],
   options?: SessionIndexListOptions,

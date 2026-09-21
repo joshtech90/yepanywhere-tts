@@ -1,7 +1,11 @@
 import { homedir } from "node:os";
 import {
   isUrlProjectId,
+  normalizeProjectCaption,
+  normalizeProjectCodeName,
+  normalizeProjectName,
   toUrlProjectId,
+  type ProjectCaption,
   type ProjectQueueItemSummary,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
@@ -12,17 +16,23 @@ import type {
   SessionMetadataService,
 } from "../metadata/index.js";
 import type { NotificationService } from "../notifications/index.js";
-import { pendingNonHumanUserTurn } from "../metadata/SessionMetadataService.js";
+import { nonHumanUserTurnField } from "../metadata/SessionMetadataService.js";
 import { warmGitAuthorPalette } from "../git/authorPalette.js";
+import {
+  decideProjectCreation,
+  ensureProjectDirectory,
+} from "./project-creation.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
 import {
   canonicalizeProjectPath,
   decodeProjectId,
   getProjectIdentityKey,
+  getProjectName,
   isAbsolutePath,
   isDetachedProjectPath,
 } from "../projects/paths.js";
+import { getDerivedProjectCaption } from "../projects/projectCaption.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
 import type { CodexSessionReader } from "../sessions/codex-reader.js";
@@ -37,18 +47,14 @@ import type { ProjectQueueService } from "../services/ProjectQueueService.js";
 import type { EventBus } from "../watcher/index.js";
 import {
   applyRecapOverlayToSummary,
-  hasUnreadProviderContent,
   getEffectiveProviderUpdatedAt,
+  sessionOwnershipFromProcess,
+  sessionRowRuntimeOverlay,
 } from "../sessions/recap-overlays.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
 import type { Process } from "../supervisor/Process.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
-import type {
-  AgentActivity,
-  PendingInputType,
-  Project,
-  SessionSummary,
-} from "../supervisor/types.js";
+import type { Project, SessionSummary } from "../supervisor/types.js";
 import { buildProviderProjectCatalog } from "./provider-catalog.js";
 import { getActiveSessionIndexOptions } from "./session-list-options.js";
 
@@ -259,6 +265,55 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
   }
 
   /**
+   * A project was added, removed, or renamed. Besides refreshing project
+   * lists, this bumps the global session collection: the All Sessions
+   * project filter is served from a generation-gated cache that otherwise
+   * keeps offering removed projects and never learns of new ones.
+   */
+  function publishProjectsChanged(projectIds: readonly string[]): void {
+    deps.eventBus?.emit({
+      type: "projects-changed",
+      projectIds: [...projectIds],
+      timestamp: new Date().toISOString(),
+    });
+  }
+
+  /** Every listed project plus `project` when it is not listed yet. */
+  async function codeNameScope(project: Project): Promise<Project[]> {
+    const visibleProjects = (await deps.scanner.listProjects()).filter(
+      (candidate) => !isDetachedProjectPath(candidate.path),
+    );
+    if (!visibleProjects.some((candidate) => candidate.id === project.id)) {
+      visibleProjects.push(project);
+    }
+    return visibleProjects;
+  }
+
+  /** User override first, else the cached README/manifest derivation. */
+  async function captionForProject(
+    project: Project,
+  ): Promise<ProjectCaption | undefined> {
+    const override = deps.projectMetadataService?.getProjectCaptionOverride(
+      project.id,
+    );
+    if (override) return { text: override, source: "override" };
+    return getDerivedProjectCaption(project.path);
+  }
+
+  async function captionsForProjects(
+    projects: readonly Project[],
+  ): Promise<Map<string, ProjectCaption>> {
+    const captions = new Map<string, ProjectCaption>();
+    await Promise.all(
+      projects.map(async (project) => {
+        const caption = await captionForProject(project);
+        if (caption) captions.set(project.id, caption);
+      }),
+    );
+    return captions;
+  }
+
+  /**
    * Get owned sessions for a project that might not be in the file list yet.
    * New sessions may not have user/assistant messages written to disk yet.
    */
@@ -279,14 +334,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
           createdAt: process.startedAt.toISOString(),
           updatedAt: now,
           messageCount: 0,
-          ownership: {
-            owner: "self",
-            processId: process.id,
-            permissionMode: process.permissionMode,
-            appliedPermissionMode: process.appliedPermissionMode,
-            modeVersion: process.modeVersion,
-            recapAfterSeconds: process.recapAfterSeconds,
-          },
+          ownership: sessionOwnershipFromProcess(process),
           provider: process.provider,
         });
       }
@@ -325,39 +373,6 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
   function enrichSessions(sessions: SessionSummary[]): SessionSummary[] {
     return sessions.map((session) => {
       const process = deps.supervisor?.getProcessForSession(session.id);
-      const isExternal = deps.externalTracker?.isExternal(session.id) ?? false;
-
-      // Enrich with ownership
-      const ownership = process
-        ? {
-            owner: "self" as const,
-            processId: process.id,
-            permissionMode: process.permissionMode,
-            appliedPermissionMode: process.appliedPermissionMode,
-            modeVersion: process.modeVersion,
-            recapAfterSeconds: process.recapAfterSeconds,
-          }
-        : isExternal
-          ? { owner: "external" as const }
-          : session.ownership;
-
-      // Enrich with notification data and agent activity
-      let pendingInputType: PendingInputType | undefined;
-      let activity: AgentActivity | undefined;
-      if (process) {
-        const pendingRequest = process.getPendingInputRequest();
-        if (pendingRequest) {
-          pendingInputType =
-            pendingRequest.type === "tool-approval"
-              ? "tool-approval"
-              : "user-question";
-        }
-        // Get the current agent activity (in-turn/waiting-input/idle)
-        const state = process.state.type;
-        if (state === "in-turn" || state === "waiting-input") {
-          activity = state;
-        }
-      }
 
       // Get session metadata (custom title, archived, starred)
       const metadata = deps.sessionMetadataService?.getMetadata(session.id);
@@ -374,11 +389,14 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
       const lastSeenEntry = deps.notificationService?.getLastSeen(session.id);
       const lastSeenAt = lastSeenEntry?.timestamp;
-      const hasUnread = hasUnreadProviderContent(
-        deps.notificationService,
-        session.id,
-        providerUpdatedAt,
-      );
+      const { ownership, pendingInputType, activity, hasUnread } =
+        sessionRowRuntimeOverlay(process, {
+          sessionId: session.id,
+          providerUpdatedAt,
+          notificationService: deps.notificationService,
+          externalTracker: deps.externalTracker,
+          fallbackOwnership: session.ownership,
+        });
 
       const customTitle = metadata?.customTitle;
       const isArchived = metadata?.isArchived;
@@ -394,10 +412,10 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
       return {
         ...overlaidSession,
-        nonHumanUserTurn:
-          pendingNonHumanUserTurn(
-            deps.sessionMetadataService?.getMetadata(session.id),
-          ) ?? null,
+        nonHumanUserTurn: nonHumanUserTurnField(
+          deps.sessionMetadataService,
+          session.id,
+        ),
         updatedAt: getEffectiveProviderUpdatedAt(
           overlaidSession.updatedAt,
           process,
@@ -429,6 +447,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       deps.externalTracker,
     );
     const codeNameByProjectId = await codeNamesForProjects(rawProjects);
+    const captionByProjectId = await captionsForProjects(rawProjects);
 
     // Enrich projects with active counts (all keyed by UrlProjectId now)
     const projects = rawProjects.map((project) => {
@@ -436,6 +455,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       return {
         ...project,
         codeName: codeNameByProjectId.get(project.id),
+        caption: captionByProjectId.get(project.id),
         activeOwnedCount: counts.activeOwnedCount,
         activeExternalCount: counts.activeExternalCount,
         projectQueueBlockingCount: counts.projectQueueBlockingCount,
@@ -489,6 +509,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       project: {
         ...project,
         codeName: codeNameByProjectId.get(project.id),
+        caption: await captionForProject(project),
         activeOwnedCount: counts.activeOwnedCount,
         activeExternalCount: counts.activeExternalCount,
         projectQueueBlockingCount: counts.projectQueueBlockingCount,
@@ -500,7 +521,12 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
   // POST /api/projects - Add a project by path
   // Validates the path exists on disk and returns project info
   routes.post("/", async (c) => {
-    let body: { path: string };
+    let body: {
+      path: string;
+      create?: boolean;
+      name?: unknown;
+      codeName?: unknown;
+    };
     try {
       body = await c.req.json();
     } catch {
@@ -509,6 +535,34 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     if (!body.path || typeof body.path !== "string") {
       return c.json({ error: "path is required" }, 400);
+    }
+
+    // The chosen name and code name are validated before anything is
+    // persisted, so a rejected request adds nothing. An omitted or blank
+    // name keeps the path's last component; an omitted code name is
+    // allocated by the server as before.
+    let chosenName: string | null = null;
+    let chosenCodeName: string | null = null;
+    try {
+      if (body.name !== undefined) {
+        if (typeof body.name !== "string") {
+          return c.json({ error: "name must be a string" }, 400);
+        }
+        chosenName = normalizeProjectName(body.name) || null;
+      }
+      if (body.codeName !== undefined) {
+        if (typeof body.codeName !== "string") {
+          return c.json({ error: "codeName must be a string" }, 400);
+        }
+        chosenCodeName = body.codeName.trim()
+          ? normalizeProjectCodeName(body.codeName)
+          : null;
+      }
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
     }
 
     // Normalize path (remove trailing slashes, expand ~)
@@ -527,9 +581,26 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       return c.json({ error: "Path must be absolute" }, 400);
     }
 
+    // A limited user may only add projects under their configured directory;
+    // the superuser may add anything (topics/limited-users.md § Delivery v1).
+    const creation = decideProjectCreation(c, normalizedPath);
+    if (creation.kind === "denied") {
+      return c.json({ error: creation.error }, 403);
+    }
+
+    // `create` is the client's confirmed answer to "this does not exist yet".
+    // Without it a missing directory is refused exactly as it always was, so
+    // no caller creates a directory by accident.
+    const directory = await ensureProjectDirectory(normalizedPath, {
+      create: body.create === true,
+    });
+    if (directory.kind === "error") {
+      return c.json({ error: directory.error }, directory.status);
+    }
+
     // Create projectId and try to get/create the project
     const projectId = toUrlProjectId(normalizedPath);
-    const project = await deps.scanner.getOrCreateProject(projectId);
+    let project = await deps.scanner.getOrCreateProject(projectId);
 
     if (!project) {
       return c.json(
@@ -541,17 +612,141 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     // Persist the project so it appears in future listings
     if (deps.projectMetadataService) {
-      await deps.projectMetadataService.addProject(projectId, normalizedPath);
+      await deps.projectMetadataService.addProject(
+        projectId,
+        normalizedPath,
+        creation.ownerUsername,
+      );
+      // A name equal to the path's own is no override at all.
+      if (
+        chosenName !== null &&
+        chosenName !== getProjectName(normalizedPath)
+      ) {
+        await deps.projectMetadataService.setProjectNameOverride(
+          project.id,
+          chosenName,
+        );
+      }
       deps.scanner.invalidateCache();
+      // Re-read so the response, and the code-name allocation below, see
+      // the chosen name.
+      project = (await deps.scanner.getOrCreateProject(projectId)) ?? project;
+      if (chosenCodeName !== null) {
+        const update = await deps.projectMetadataService.setProjectCodeName(
+          project.id,
+          chosenCodeName,
+          await codeNameScope(project),
+        );
+        publishCodeNameChanges(update.changedProjectIds);
+      }
     }
+    publishProjectsChanged([project.id]);
 
     const codeNameByProjectId = await codeNamesForProjects([project]);
     return c.json({
       project: {
         ...project,
         codeName: codeNameByProjectId.get(project.id),
+        caption: await captionForProject(project),
+        ...(creation.ownerUsername
+          ? { ownerUsername: creation.ownerUsername }
+          : {}),
       },
+      created: directory.kind === "created",
     });
+  });
+
+  // PATCH /api/projects/:projectId/caption - set or clear the caption override
+  routes.patch("/:projectId/caption", async (c) => {
+    const projectId = c.req.param("projectId");
+    if (!isUrlProjectId(projectId)) {
+      return c.json({ error: "Invalid project ID format" }, 400);
+    }
+    if (!deps.projectMetadataService) {
+      return c.json({ error: "Project caption editing is unavailable" }, 501);
+    }
+
+    let body: { caption?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (body.caption !== null && typeof body.caption !== "string") {
+      return c.json({ error: "caption must be a string or null" }, 400);
+    }
+
+    const project = await deps.scanner.getOrCreateProject(projectId);
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    let caption: string | null;
+    try {
+      caption =
+        body.caption === null ? null : normalizeProjectCaption(body.caption);
+      if (caption === "") caption = null;
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+
+    await deps.projectMetadataService.setProjectCaptionOverride(
+      project.id,
+      caption,
+    );
+    deps.eventBus?.emit({
+      type: "project-captions-changed",
+      projectIds: [project.id],
+      timestamp: new Date().toISOString(),
+    });
+    return c.json({ caption: await captionForProject(project) });
+  });
+
+  // PATCH /api/projects/:projectId/name - set or clear the chosen name
+  routes.patch("/:projectId/name", async (c) => {
+    const projectId = c.req.param("projectId");
+    if (!isUrlProjectId(projectId)) {
+      return c.json({ error: "Invalid project ID format" }, 400);
+    }
+    if (!deps.projectMetadataService) {
+      return c.json({ error: "Project renaming is unavailable" }, 501);
+    }
+
+    let body: { name?: unknown };
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: "Invalid JSON body" }, 400);
+    }
+    if (body.name !== null && typeof body.name !== "string") {
+      return c.json({ error: "name must be a string or null" }, 400);
+    }
+
+    const project = await deps.scanner.getOrCreateProject(projectId);
+    if (!project) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+
+    let name: string | null;
+    try {
+      name = body.name === null ? null : normalizeProjectName(body.name);
+      if (name === "" || name === getProjectName(project.path)) name = null;
+    } catch (error) {
+      if (error instanceof RangeError) {
+        return c.json({ error: error.message }, 400);
+      }
+      throw error;
+    }
+
+    await deps.projectMetadataService.setProjectNameOverride(project.id, name);
+    deps.scanner.invalidateCache();
+    publishProjectsChanged([project.id]);
+    const renamed =
+      (await deps.scanner.getOrCreateProject(projectId)) ?? project;
+    return c.json({ name: renamed.name });
   });
 
   routes.patch("/:projectId/code-name", async (c) => {
@@ -577,18 +772,12 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
     }
-    const visibleProjects = (await deps.scanner.listProjects()).filter(
-      (candidate) => !isDetachedProjectPath(candidate.path),
-    );
-    if (!visibleProjects.some((candidate) => candidate.id === project.id)) {
-      visibleProjects.push(project);
-    }
 
     try {
       const update = await deps.projectMetadataService.setProjectCodeName(
         project.id,
         body.codeName,
-        visibleProjects,
+        await codeNameScope(project),
       );
       publishCodeNameChanges(update.changedProjectIds);
       return c.json({ assignments: update.assignments });
@@ -620,6 +809,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     await deps.projectMetadataService.hideProject(project.id, project.path);
     deps.scanner.invalidateCache();
+    publishProjectsChanged([project.id]);
 
     return c.json({
       removed: true,

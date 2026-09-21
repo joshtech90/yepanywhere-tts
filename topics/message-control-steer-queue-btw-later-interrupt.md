@@ -119,6 +119,12 @@ tab used to inherit the last sent prompt as an unsent draft. The reconciliation
 runs on the receiving tab from its own session history
 (`lib/draftSendReconcile.ts`), not from cross-tab messaging.
 
+A tab learns that the shared copy carries the marker when it hydrates the key
+and from the browser's own `storage` event, which is what reaches a tab that
+was already open when another tab sent. Because the receiving tab reconciles
+against every transcript update, an unmarked composer must reach that answer
+without reading or parsing storage.
+
 ### Patient countdown and promotion proposal
 
 Status: promotion landed 2026-07-03; countdown still a proposal.

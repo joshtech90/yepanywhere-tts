@@ -425,10 +425,9 @@ test("runs the generated YA mockup through the hosted relay viewer", async ({
   await page.setViewportSize(viewports[0]!);
   await checkMockup(child, "default");
   await child
-    .getByRole("button", { name: "Project settings", exact: true })
+    .getByRole("button", { name: "Open project settings", exact: true })
     .first()
     .click();
-  await child.getByRole("menuitem", { name: "Project settings" }).click();
   await expect(child.getByRole("status")).toHaveText(
     "Settings selected: Yep Anywhere",
   );

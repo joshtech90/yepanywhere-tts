@@ -266,8 +266,13 @@ streaming/confidence surface exists.
   model rather than a CTC/RNNT recognizer, so `granite_worker.py` builds the
   documented `<|audio|>` chat prompt and calls `generate()` instead of the
   Transformers ASR pipeline, sizing the token budget from the utterance
-  duration. The browser sends no per-request model id for this backend;
-  `GRANITE_MODEL` and `GRANITE_DEVICE` are authoritative.
+  duration. The browser sends no per-request model id for this backend, for
+  either transcription or prewarm, so `GRANITE_MODEL` chooses the model for
+  every YA-client dictation and `GRANITE_DEVICE` chooses the device. That is a
+  client contract, not a server refusal: `WarmPixiSttBackend` honors an
+  explicit request `model` for every family it runs, so a direct authenticated
+  `POST /api/speech/transcribe` naming a `model` loads that model for Granite
+  too. Device has no per-request form at all.
 - Parakeet, NeMo, and Granite share one warm-worker implementation,
   `WarmPixiSttBackend`: pixi environment probe with auto-bootstrap, deferred
   model load, single worker, and the one-JSON-object-per-line worker protocol.
@@ -647,6 +652,20 @@ default `YEP_SQLITE=auto`). Explicit `YEP_SQLITE=off` remains authoritative.
 Ranking approximations are recorded in
 `gaps/sketches/speech-vocabulary-ranking-approximations.md`.
 
+### Design decisions
+
+- **Gate the vocabulary services and their two capabilities on discovery
+  SQLite being ready** (vs. building them whenever a SQLite driver loads):
+  readiness is the one place that already establishes all three facts this
+  feature needs. The runtime has a working SQLite driver, the owner did not
+  set `YEP_SQLITE=off`, and the data directory is local disk rather than a
+  network share. The learned table is its own database file rather than a
+  table inside `discovery.sqlite`, so dropping the gate would open SQLite for
+  an owner who turned it off and would put a written-per-scan table on exactly
+  the share the discovery refusal exists to avoid. The cost accepted is that
+  `YEP_SQLITE=off` disables a feature whose own storage would otherwise still
+  work, which is what the settings copy tells the owner.
+
 ### Where the learned table lives
 
 The learned table and its fingerprint filter live in the data directory,
@@ -700,7 +719,7 @@ that is recovered by a rescan, since each session's checkpoint is written in the
 same batch as the counts it covers. Shutdown, reset, and the adoption of the
 previous layout's files write immediately instead of waiting; the old files are
 deleted only after the adopting write lands, so a server killed inside the
-interval still has them.
+interval still has them, and so does one whose adopting write failed.
 
 The filter has two responses to filling up, and the cheap one gets the first
 chance. At a false-positive rate of a tenth of a percent — 137.6 million
@@ -726,7 +745,8 @@ through a temporary file and a rename so no reader sees a partial file. An
 unreadable settings file reverts to defaults with a logged warning rather than
 failing server construction. The previous layout's `speech-words.json`,
 `speech-word-case.json`, and `speech-seen.hash` are adopted once on first start
-and then deleted.
+and deleted once the write carrying the adopted counts commits; a write that
+fails keeps them, and the next start adopts them again.
 
 The controls live at the top of Settings → Speech backends, under Learned
 speech vocabulary. Settings search finds them by vocabulary, keyterms, lexicon,

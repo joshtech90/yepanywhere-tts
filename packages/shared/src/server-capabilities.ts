@@ -27,6 +27,11 @@ export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
     index: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
     introducedIn: "0.8.2",
   },
+  claudeGatewayServices: {
+    name: "claude-gateway-services",
+    index: CAPABILITY_ID_ALLOCATIONS.claudeGatewayServices.id,
+    introducedIn: "0.8.2",
+  },
   computerControl: {
     name: "optional-computer-control",
     index: CAPABILITY_ID_ALLOCATIONS.computerControl.id,
@@ -199,6 +204,30 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  projectTemplateSources: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectTemplateSources.id,
+    name: "project-template-sources",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Configure ordered GitHub and local template sources, retrieve pinned content, and inspect combined inventory without running setup.",
+    clientFallback:
+      "Hide Project templates settings and send no template-source requests.",
+    serverContract: {
+      routes: [
+        "GET /api/project-template-source",
+        "PUT /api/project-template-source",
+      ],
+      routeModules: ["packages/server/src/routes/project-template-source.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers have no template source retrieval or configuration surface.",
+    },
+  },
   speechBackendSetup: {
     id: CAPABILITY_ID_ALLOCATIONS.speechBackendSetup.id,
     name: "speech-backend-setup",
@@ -513,6 +542,37 @@ export const SERVER_CAPABILITIES = {
     lifecycle: {
       kind: "permanent",
       reason: "Older servers do not retain cross-session delivery provenance.",
+    },
+  },
+  sessionRewind: {
+    id: CAPABILITY_ID_ALLOCATIONS.sessionRewind.id,
+    name: "session-rewind",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Same-session rewind (/clear N), turn-menu Clear entries, rewound-group history, /clearloop with its patience controls, and queued /clear and /clearloop Project Queue items.",
+    clientFallback:
+      "Hide the Clear menu entries, mark /clear N, /fork N, and /clearloop unavailable, make no rewind or clearloop request, and queue no YA-command Project Queue item.",
+    serverContract: {
+      routes: [
+        "POST /api/projects/:projectId/sessions/:sessionId/rewind",
+        "POST /api/projects/:projectId/sessions/:sessionId/clearloop",
+        "PATCH /api/projects/:projectId/sessions/:sessionId/clearloop",
+        "DELETE /api/projects/:projectId/sessions/:sessionId/clearloop",
+      ],
+      responseFields: [
+        "deferredMessages[].clearloop",
+        "message.rewoundGroupId",
+        "settings.clearloopInactivitySeconds",
+        "projectQueue.items[].message.yaCommand",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "In-place rewind is a server-owned provider operation with durable rewind records.",
     },
   },
   sessionAsyncQuestions: {
@@ -2498,6 +2558,70 @@ export const SERVER_CAPABILITIES = {
         "Hosted clients can outpace installed servers, which neither return durable code names nor support conflict-safe edits.",
     },
   },
+  projectCaptions: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectCaptions.id,
+    name: "project-captions",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server derives a short project caption from README or manifest text, accepts a per-project override in app data, and reports the caption with its source on project responses.",
+    clientFallback:
+      "Show no caption on project cards or the session breadcrumb tooltip, hide caption editing, and make no caption request.",
+    serverContract: {
+      routes: [
+        "GET /api/projects",
+        "GET /api/projects/:projectId",
+        "POST /api/projects",
+        "PATCH /api/projects/:projectId/caption",
+      ],
+      requestFields: ["projectCaption.caption"],
+      responseFields: [
+        "projects[].caption",
+        "project.caption",
+        "projectCaption.caption",
+      ],
+      events: ["project-captions-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers, which neither derive captions nor accept caption overrides.",
+    },
+  },
+  projectNames: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectNames.id,
+    name: "project-names",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.8.2",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server accepts a chosen project name and code name when a project is added, stores a name override in app data, applies it wherever the project is named, and announces project list changes.",
+    clientFallback:
+      "Add projects by path alone, show the path's last component as the name, and make no name request.",
+    serverContract: {
+      routes: [
+        "GET /api/projects",
+        "GET /api/projects/:projectId",
+        "POST /api/projects",
+        "PATCH /api/projects/:projectId/name",
+      ],
+      requestFields: [
+        "addProject.name",
+        "addProject.codeName",
+        "projectName.name",
+      ],
+      responseFields: ["projects[].name", "project.name"],
+      events: ["projects-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Hosted clients can outpace installed servers, which ignore a chosen name and would silently add the project under its path name.",
+    },
+  },
   sidebarSessionResume: {
     id: CAPABILITY_ID_ALLOCATIONS.sidebarSessionResume.id,
     name: "sidebar-session-resume",
@@ -2813,6 +2937,7 @@ export const RETAINED_SESSION_COLLECTIONS_CAPABILITY =
   SERVER_CAPABILITIES.retainedSessionCollections.name;
 export const SESSION_ASYNC_QUESTIONS_CAPABILITY =
   SERVER_CAPABILITIES.sessionAsyncQuestions.name;
+export const SESSION_REWIND_CAPABILITY = SERVER_CAPABILITIES.sessionRewind.name;
 export const NON_HUMAN_USER_TURN_CAPABILITY =
   SERVER_CAPABILITIES.nonHumanUserTurn.name;
 export const SESSION_CONTENT_SEARCH_CAPABILITY =
@@ -2829,6 +2954,9 @@ export const PROJECT_SESSION_DEFAULTS_CAPABILITY =
   SERVER_CAPABILITIES.projectSessionDefaults.name;
 export const PROJECT_CODE_NAMES_CAPABILITY =
   SERVER_CAPABILITIES.projectCodeNames.name;
+export const PROJECT_CAPTIONS_CAPABILITY =
+  SERVER_CAPABILITIES.projectCaptions.name;
+export const PROJECT_NAMES_CAPABILITY = SERVER_CAPABILITIES.projectNames.name;
 export const SIDEBAR_SESSION_RESUME_CAPABILITY =
   SERVER_CAPABILITIES.sidebarSessionResume.name;
 export const SYNTHETIC_DONE_COMMAND_CAPABILITY =

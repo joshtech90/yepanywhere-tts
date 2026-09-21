@@ -35,7 +35,10 @@ model serving.
   entry mirrors those keys in both directions, so a client without the
   `claude-gateway-services` capability keeps editing the gateway actually in
   use. An installation that has never seen the list gets its configured gateway
-  migrated into a `default` entry.
+  migrated into a `default` entry. The older keys describe an endpoint and how
+  to start it and nothing else, so every remaining field of that entry takes
+  the same default a list entry gets for stating none — auto-stop off, at the
+  standard idle delay, with Codex opt-in off.
 - Only a non-empty legacy value overrides the entry it mirrors, except when the
   update explicitly writes the legacy key: clearing `claudeGatewayUrl` from an
   older client removes that one entry rather than resurrecting it. An absent
@@ -44,6 +47,11 @@ model serving.
   never silently loses a service they believe is configured.
 - A `serviceCommand` is accepted only for a loopback URL. A non-loopback entry
   is an endpoint YA merely talks to: never started, stopped, or signalled.
+- The editor has no Save button. A typed field writes the whole list when it
+  loses focus and a checkbox, radio, select, reorder, add, or remove writes it
+  as it is operated, which is the convention everywhere else in settings. A
+  Save at the foot of a list of endpoints is scrolled out of sight exactly when
+  there is enough configured for it to matter.
 
 ### Lifecycle
 
@@ -65,10 +73,21 @@ model serving.
   verb still ends up stopped. Signalling uses the shared port-listener control:
   a unique, same-user listener that is never YA or one of its ancestors.
 - `autoStop` schedules that stop request once no live session uses the service,
-  after the entry's idle delay; any later use cancels it.
+  after the entry's idle delay; any later use cancels it. Use counts live
+  processes from both providers that reach these endpoints, each attributed to
+  the service its launch model resolves to, so a CodexOSS session holds its
+  endpoint open exactly as a Claude Gateway one does. The two differ where a
+  model resolves to nothing: a Claude Gateway session is attributed to the
+  default service, since it must be using some service, while a CodexOSS
+  session launched against the local provider holds no service open at all.
 - Each service owns its own launcher: reconfiguring or removing one never
   disturbs another's process, and a removed entry's child and pending stop
   check are torn down with it.
+- A server restart hands over *every* service child YA owns, not one of them:
+  each is retained by the wrapper or the provider runtime host before its
+  launcher gives up ownership, so no service is stopped merely because another
+  service was handed over first. A child whose handoff fails stays owned and is
+  stopped with the server, which is also what keeps the failure visible.
 
 ### Catalogs and model identity
 
@@ -103,8 +122,9 @@ model serving.
   reserves room inside the declared context window for the compaction window.
 - Backend identity is observed from the response, never configured: copilot-api
   through its explicit `X-Copilot-API` header, vLLM through `owned_by` on its
-  model rows. Model names, ports, vendors, and generic endpoint compatibility
-  never imply either. A launch publishes `AGENT_LAUNCH_BACKEND`, and copilot-api
+  model rows. Model names, ports, vendors, advertised windows, and generic
+  endpoint compatibility never imply either: `max_model_len` sizes a model,
+  and any server free to advertise it is free to be something other than vLLM. A launch publishes `AGENT_LAUNCH_BACKEND`, and copilot-api
   additionally keeps its legacy `YEP_COPILOT_API=1` marker for out-of-repo
   readers.
 
@@ -135,27 +155,49 @@ model serving.
   chat request naming an unrecognized effort, and request validation rejects it
   with the accepted vocabulary spelled out. Observed against vLLM 0.11 serving
   DeepSeek-V4-Flash: `Input should be 'none', 'minimal', 'low', 'medium',
-  'high', 'xhigh' or 'max'`. Validation runs before scheduling, so the probe
+  'high', 'xhigh' or 'max'`. Validation runs before scheduling, so this stage
   costs no inference and no accelerator time.
 - The answer describes the *endpoint's request schema*, not the model behind it:
   a vLLM server hosting a model that ignores the field still answers with the
   full vocabulary. That is why a probe answer ranks last, and why the entry's
   own `effortLevels` — which win over everything — remain the correction for an
   endpoint that overclaims.
+- Request validation and the chat template are two gatekeepers, and only the
+  second describes the model. A second probe stage therefore asks with the
+  highest level the schema listed and reads the template's rejection, which
+  names both the set the model distinguishes and the level it applies by
+  default. Observed against vLLM 0.29 serving Qwen3.8-Flash-Next, whose schema
+  accepts all seven literals: `Unexpected reasoning effort high. Supported types
+  are xhigh (default), medium, and low.` Without it the picker offered `high`
+  and `max`, and choosing either failed the user's turn.
+- A template answer replaces the schema answer entirely rather than intersecting
+  with it, `none` included: a level the template does not list only buys a turn
+  that fails. A template that *accepts* the highest schema level is not
+  narrowing from the top, so the schema answer stands — at the cost of one
+  prefill and one token, which is the second stage's whole price and the one
+  case where asking is not free.
 - An entry stating its own `effortLevels` is never asked: configuration wins for
   every model of that service, so no answer could change the outcome.
 - Answers are cached per endpoint URL and shared between the two providers, 30
   minutes for an answer and one minute for a silence, since the usual silence is
   an endpoint that is not up yet. A reconfigured services list drops the cache,
   because the same address may now front a different server.
+- The setting governs every process that reads a catalog, not only the server's
+  own reads. A hosted session runs in a provider worker with its own module
+  state, so the launch snapshot carries the setting and the worker applies it
+  before configuring services; a worker that did not would ask the endpoint
+  while the user had switched asking off.
 - A 2xx to the probe means the endpoint validates nothing and has therefore said
   nothing; it is not read as accepting every level.
 - `POST /api/settings/gateway-services/effort` asks one endpoint on demand. It
   bypasses both the cache and the setting, and its URL must be loopback or
   already configured: unlike catalog discovery it sends a chat request, so it
-  stays pointed at endpoints the server already talks to. The answer is written
+  stays pointed at endpoints the server already talks to. The requested URL is
+  normalized the way a stored service URL is before that comparison, so the
+  configured endpoint is recognized however the address was typed — a trailing
+  slash or an explicitly spelled default port names the same service. The answer is written
   into the draft entry's level checkboxes for review rather than applied
-  invisibly.
+  invisibly, along with the default level when the template named one.
 - The editor presents an entry's two states as a choice between asking the
   endpoint and stating the levels, because that is what they are: an entry
   holding no list defers, and one holding a list decides. Nothing new is
@@ -194,9 +236,18 @@ model serving.
 ### CodexOSS
 
 - CodexOSS launches against the entries with `codexEnabled`, listing their
-  models from `/v1/models` and passing Codex `model_providers.<id>` overrides on
+  models from `/v1/models` and passing Codex `model_providers.<key>` overrides on
   the command line — base URL and `wire_api` — rather than editing the user's
   `~/.codex/config.toml`. YA never rewrites a CLI's own settings files.
+- One service has one Codex provider key, `ya_<service id>` with the id's
+  hyphens replaced by underscores. A launch override and the exported profile
+  name that same key, so a terminal session started from the profile and a YA
+  session reach the same provider entry.
+- Every value YA interpolates into an override or an exported profile is quoted
+  as a TOML string. A label only has to be trimmed and free of control
+  characters and a model id is whatever the endpoint's catalog row says, so a
+  `"` or `\` in either reaches Codex as written instead of ending the string
+  early and failing the launch.
 - The services editor checks `codexEnabled` by default on a newly added entry:
   an endpoint added to the list is usually the reason CodexOSS is being turned
   on at all. Existing entries keep whatever was saved, and the single-gateway
@@ -214,9 +265,11 @@ mirrored to the default entry.
 
 ## Launches never edit the user's provider config
 
-A launch writes nothing. Claude Gateway supplies its transport through the
-Claude SDK's per-launch flag-settings layer and the child environment; CodexOSS
-passes `-c model_providers.<id>.…` overrides on the command line. A YA session
+A launch writes nothing. (The opt-in terminal export is a separate act, and its
+pi half is the one place YA does merge into a CLI's own file — see above.)
+Claude Gateway supplies its transport through the Claude SDK's per-launch
+flag-settings layer and the child environment; CodexOSS
+passes `-c model_providers.<key>.…` overrides on the command line. A YA session
 therefore cannot disturb a concurrently running TUI.
 
 ## Terminal export
@@ -225,6 +278,20 @@ therefore cannot disturb a concurrently running TUI.
 publishes the configured services for the provider CLIs, so the same models are
 selectable from a plain terminal session.
 
+- pi is the one exception to the rule below, because pi gives no way to keep
+  it. `ModelConfig.load()` reads exactly one registry, `<agent dir>/models.json`,
+  and `PI_CODING_AGENT_DIR` relocates the whole agent directory — auth,
+  sessions and settings with it — rather than the registry alone (verified
+  against installed Pi 0.85.1). The export therefore merges into the user's own
+  file: every provider named `ya-<service id>` belongs to YA and is rewritten or
+  removed with the services list, every other key is preserved, and the file is
+  copied once to `models.json.ya-backup` before the first rewrite. A registry
+  YA cannot parse as plain JSON is left alone rather than rewritten from a
+  guess. The command is `pi --provider ya-<id>`.
+- pi's registry states each model outright, so it can only name what an
+  endpoint has advertised: it is refreshed from each catalog read, and a
+  service whose catalog has not been read yet keeps the models pi was last
+  told rather than being emptied.
 - Per enabled service, YA writes `$CLAUDE_CONFIG_DIR/ya-<id>.settings.json`
   carrying the transport environment, and — for a service CodexOSS may use —
   `$CODEX_HOME/ya-<id>.config.toml` carrying a `model_providers` entry. The

@@ -68,6 +68,13 @@ describe("server capability advertisements", () => {
     expect(serverHasCapability({ current: "0.8.2" }, name)).toBe(true);
   });
 
+  it("gates chosen project names with permanent ID 80 and release 0.8.2", () => {
+    const name = CAPABILITY_ID_ALLOCATIONS.projectNames.name;
+    expect(CAPABILITY_ID_ALLOCATIONS.projectNames.id).toBe(80);
+    expect(serverHasCapability({ current: "0.8.1" }, name)).toBe(false);
+    expect(serverHasCapability({ current: "0.8.2" }, name)).toBe(true);
+  });
+
   it("gates turn effort with permanent ID 58 and release 0.8.2", () => {
     const name = CAPABILITY_ID_ALLOCATIONS.turnEffortModifiers.name;
     expect(CAPABILITY_ID_ALLOCATIONS.turnEffortModifiers.id).toBe(58);

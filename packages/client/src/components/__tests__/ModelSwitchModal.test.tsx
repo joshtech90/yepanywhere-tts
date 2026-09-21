@@ -163,6 +163,42 @@ describe("ModelSwitchModal", () => {
     expect(mockSetProcessConfig).not.toHaveBeenCalled();
   });
 
+  it("asks the effort guard before applying and stops on skip", async () => {
+    mockGetProcessModels.mockResolvedValue({
+      models: [{ id: "latest", name: "Latest" }],
+    });
+    const guardEffortChange = vi.fn().mockResolvedValue("skip");
+
+    render(
+      <ModelSwitchModal
+        processId="process-1"
+        sessionId="session-1"
+        currentModel="latest"
+        onModelChanged={vi.fn()}
+        guardEffortChange={guardEffortChange}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(
+      await screen.findByRole("button", { name: /effortLevelMaxLabel/ }),
+    );
+    const saveButtons = await screen.findAllByRole("button", {
+      name: /modelSwitchSaveAll/,
+    });
+    const saveButton = saveButtons[0];
+    if (!saveButton) throw new Error("Expected a save button");
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      // The mocked process has no thinking config, which the modal reads as
+      // thinking off, so the guard sees off → on:max.
+      expect(guardEffortChange).toHaveBeenCalledWith("on:max", "off");
+    });
+    expect(mockSetProcessConfig).not.toHaveBeenCalled();
+    expect((saveButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
   it("dismisses while an explicit save remains pending", async () => {
     mockGetProcessModels.mockResolvedValue({
       models: [

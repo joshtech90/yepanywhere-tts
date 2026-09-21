@@ -34,6 +34,7 @@ import {
   mapSpeechInsertionRangeThroughEdit,
   retargetSpeechInsertionRange,
   type SpeechInsertionRange,
+  textBeforeSpeechCursor,
 } from "../lib/speechRecognition";
 import {
   commitSpeechTranscript,
@@ -561,11 +562,10 @@ export function FloatingActionButton() {
       return {
         draftKey: fabDraftKey,
         speechTargetId: activeSpeechTargetIdRef.current ?? undefined,
-        textBeforeCursor: draft.slice(
-          0,
-          speechInsertionRangeRef.current?.end ??
-            textareaRef.current?.selectionStart ??
-            draft.length,
+        textBeforeCursor: textBeforeSpeechCursor(
+          draft,
+          speechInsertionRangeRef.current,
+          textareaRef.current,
         ),
       };
     }, [draftControls, fabDraftKey]);

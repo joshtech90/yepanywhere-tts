@@ -10,7 +10,6 @@ import {
   writeFileSync,
 } from "node:fs";
 import { rm } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import {
@@ -20,15 +19,19 @@ import {
   projectVocabularyCase,
   speechVocabularyOccurrences,
   type VocabularyCaseForms,
+  vocabularyDistinctiveScore,
   vocabularyFrequency,
   VOCABULARY_FLUSH_COUNTS,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../../lib/coalescingSaver.js";
 import { statFilesystem } from "../../lib/filesystemKind.js";
-import { parseByteSize } from "../../lib/scratchSpace.js";
+import {
+  parseByteSize,
+  scratchSpaceDirectories,
+} from "../../lib/scratchSpace.js";
 import { getLogger } from "../../logging/logger.js";
 import { BlockedBloom, BloomFile, bloomLoadForRate } from "./blocked-bloom.js";
-import { DistinctiveTop, distinctiveScore } from "./distinctive-top.js";
+import { DistinctiveTop } from "./distinctive-top.js";
 import {
   VocabularyDatabase,
   type VocabularyTable,
@@ -112,29 +115,6 @@ const SCRATCH_PURPOSE = "speech-vocabulary";
  * the part of it worth keeping now that the placement search is gone.
  */
 const DISK_HEADROOM_BYTES = 1024 * 1024 * 1024;
-
-/**
- * Directories earlier versions could have reserved for the table and filter,
- * newest choice first. Probed read-only: unlike the reservation this replaces,
- * naming a candidate must not create it.
- */
-function reservedDirectories(
-  dataDir: string,
-  env: NodeJS.ProcessEnv,
-): string[] {
-  const leaf = `${SCRATCH_PURPOSE}-${createHash("sha256")
-    .update(dataDir)
-    .digest("hex")
-    .slice(0, 12)}`;
-  const override = env.YEP_SCRATCH_DIR?.trim();
-  const cacheHome = env.XDG_CACHE_HOME?.trim() || join(homedir(), ".cache");
-  return [
-    ...(override ? [join(override, leaf)] : []),
-    join(cacheHome, "yep-anywhere", leaf),
-    join(tmpdir(), "yep-anywhere", leaf),
-    join(dataDir, SCRATCH_PURPOSE),
-  ];
-}
 
 function affordable(dir: string, requested: number): number {
   try {
@@ -522,7 +502,7 @@ export class VocabularyStore {
 
   private considerWord(word: string): number {
     const counts = this.countsOf(word);
-    const score = distinctiveScore(
+    const score = vocabularyDistinctiveScore(
       counts.user + counts.assistant,
       this.tokenTotal(),
       this.frequency(word),
@@ -578,7 +558,11 @@ export class VocabularyStore {
    * than made fatal; the cost is relearning, and the table is the small one.
    */
   private adoptReservedFiles(): void {
-    for (const candidate of reservedDirectories(this.dataDir, this.env)) {
+    for (const candidate of scratchSpaceDirectories(
+      SCRATCH_PURPOSE,
+      this.dataDir,
+      this.env,
+    )) {
       const from = join(candidate, DATABASE_FILE);
       if (!existsSync(from) || existsSync(this.databasePath)) continue;
       try {
@@ -669,10 +653,12 @@ export class VocabularyStore {
         this.caseForms.set(word, entry);
         this.dirtyForms.add(word);
       }
-    // Deleting the old files has to wait for the adopted rows to land. The
-    // ordinary write waits for its interval, and a server killed inside that
-    // window would otherwise have removed the only copy of these counts.
-    void this.settled().then(
+    // Deleting the old files has to wait for the adopted rows to land, and
+    // landing has to mean the write succeeded: these files are the only other
+    // copy of these counts, and writer quiescence says nothing about whether
+    // the commit went through. A failure keeps them for the next start, which
+    // adopts them again because the table is still empty.
+    void this.landed().then(
       () => {
         for (const name of [
           LEGACY_WORDS_FILE,
@@ -898,12 +884,7 @@ export class VocabularyStore {
 
   private write(): void {
     this.lastWriteAt = Date.now();
-    void this.saver.save().catch((error: unknown) => {
-      getLogger().warn(
-        { component: "speech", err: error },
-        "Speech vocabulary table write failed; retrying on the next flush",
-      );
-    });
+    void this.saver.save().catch(warnWriteFailed);
   }
 
   /** Writer body. Runs one at a time, coalescing whatever arrived meanwhile. */
@@ -944,16 +925,29 @@ export class VocabularyStore {
   }
 
   /**
-   * Write anything still waiting for its interval, then wait for the writer to
-   * go quiet. Shutdown, reset, and tests; never the scan.
+   * Write anything still waiting for its interval and resolve only once it
+   * landed, rethrowing what the writer threw. A caller that is about to discard
+   * the only other copy of what the write carried needs this rather than
+   * `settled()`, which reports quiescence.
    */
-  async settled(): Promise<void> {
+  private async landed(): Promise<void> {
     if (this.writeTimer) {
       clearTimeout(this.writeTimer);
       this.writeTimer = undefined;
     }
-    if (!this.clean) this.write();
-    await this.saver.idle();
+    // Nothing of ours is waiting, but a write that is already running still has
+    // to finish before anything here counts as landed.
+    if (this.clean) return this.saver.idle();
+    this.lastWriteAt = Date.now();
+    await this.saver.flush();
+  }
+
+  /**
+   * Write anything still waiting for its interval, then wait for the writer to
+   * go quiet. Shutdown, reset, and tests; never the scan.
+   */
+  async settled(): Promise<void> {
+    await this.landed().catch(warnWriteFailed);
   }
 
   async reset(): Promise<void> {
@@ -1051,8 +1045,11 @@ export class VocabularyStore {
       if (count <= 0) continue;
       ranked.set(
         term,
-        distinctiveScore(count, total, vocabularyFrequency(baseline, term)) *
-          this.state.sessionMultiplier,
+        vocabularyDistinctiveScore(
+          count,
+          total,
+          vocabularyFrequency(baseline, term),
+        ) * this.state.sessionMultiplier,
       );
       fromSession.add(term);
     }
@@ -1105,6 +1102,14 @@ export class VocabularyStore {
     this.database?.close();
     this.database = undefined;
   }
+}
+
+/** A failed write leaves its rows dirty, so the next one carries them again. */
+function warnWriteFailed(error: unknown): void {
+  getLogger().warn(
+    { component: "speech", err: error },
+    "Speech vocabulary table write failed; retrying on the next flush",
+  );
 }
 
 function readJsonFile<T>(path: string): T | undefined {

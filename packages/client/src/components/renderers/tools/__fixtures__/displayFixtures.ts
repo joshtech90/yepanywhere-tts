@@ -542,6 +542,21 @@ export const displayFixtures = {
       provenance: claude,
     },
   },
+  Skill: {
+    "plain-text": {
+      input: { skill: "publish" },
+      result: "Contract text output",
+      text: "Contract text output",
+      provenance:
+        "Synthetic plain-text provider output; metadata unavailable, checked input remains usable.",
+    },
+    standard: {
+      input: { skill: "publish", args: "push origin and graehl" },
+      result: { success: true, commandName: "publish" },
+      text: "publish",
+      provenance: claude,
+    },
+  },
   TaskCreate: {
     event: {
       input: { subject: "Verify contracts" },

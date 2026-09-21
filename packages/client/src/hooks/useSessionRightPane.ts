@@ -11,6 +11,7 @@ import { sessionViewerUsesRightPane } from "../lib/sessionViewerPlacement";
 import type { FileViewerControllerState } from "../lib/fileViewerController";
 import { useSessionApps } from "../lib/sessionApps";
 import { useVhostAccess } from "./useVhostAccess";
+import { useVhostListener } from "./useVhostListener";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRetainedVersionInfo } from "./useVersion";
 import { serverHasCapability, SERVER_CAPABILITIES } from "@yep-anywhere/shared";
@@ -19,7 +20,7 @@ import {
   presentSessionViewer,
   restoreSessionViewer,
   useSessionViewerController,
-  setSessionViewerKillAction,
+  setSessionViewerCloseAction,
 } from "../lib/sessionViewerController";
 
 function emptyPane(key: string) {
@@ -47,7 +48,11 @@ export function useSessionRightPane(
     version,
     SERVER_CAPABILITIES.vhostAppControl.name,
   );
-  const { value: savedApps, set: saveApps } = useSessionApps(key);
+  const {
+    value: savedApps,
+    save: saveApps,
+    dismiss: dismissApps,
+  } = useSessionApps(key);
   const [killError, setKillError] = useState<string>();
   const [killing, setKilling] = useState(false);
   const initialized = useRef(new Set<string>());
@@ -114,7 +119,7 @@ export function useSessionRightPane(
   const latestId = latest ? `vhost:${key}:${latest.announcementId}` : undefined;
   useEffect(() => {
     if (!active) return;
-    saveApps(JSON.stringify({ ...savedApps, latest }));
+    saveApps({ ...savedApps, latest });
   }, [active, latest, savedApps, saveApps]);
   useEffect(() => {
     if (!active || !latest || !latestId || announced.current.has(latestId))
@@ -149,87 +154,27 @@ export function useSessionRightPane(
   const canKill = selected?.artifactToken ? true : canKillVhost;
   const viewerId = owned?.id;
   const minimized = owned?.minimized;
-  const loadedFrame = useRef<string | undefined>(undefined);
-  const [listener, setListener] = useState<{
-    viewerId: string;
-    url: string;
-    name: string;
-    token: string | null;
-    error?: string;
-  }>();
+  // An artifact has no listener to poll: its pane closes without stopping a server.
+  const vhostRow =
+    active && canKillVhost && selected && !selected.artifactToken && !minimized
+      ? config?.vhosts?.find(
+          (row) => row.port === Number(new URL(selected.sourceUrl).port),
+        )
+      : undefined;
+  const vhostName = vhostRow?.name;
+  const selectedUrl = selected?.url;
+  const listenerTarget = useMemo(
+    () =>
+      vhostName && selectedUrl
+        ? { name: vhostName, url: selectedUrl }
+        : undefined,
+    [vhostName, selectedUrl],
+  );
+  const { listener, onFrameLoad } = useVhostListener(listenerTarget, viewerId);
+  // A fresh listener to watch supersedes whatever the last stop attempt reported.
   useEffect(() => {
-    if (!viewerId) {
-      loadedFrame.current = undefined;
-      setListener(undefined);
-      return;
-    }
-    if (
-      !active ||
-      !canKillVhost ||
-      !selected ||
-      selected.artifactToken ||
-      !viewerId ||
-      minimized
-    )
-      return;
-    setKillError(undefined);
-    const row = config?.vhosts?.find(
-      (row) => row.port === Number(new URL(selected.sourceUrl).port),
-    );
-    if (!row) return;
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    let pending = false;
-    const check = () => {
-      if (cancelled || pending || document.visibilityState === "hidden") return;
-      pending = true;
-      runtime.transport
-        .fetch<{ token: string | null }>(
-          `/artifacts/vhosts/${encodeURIComponent(row.name)}/listener`,
-        )
-        .then(
-          ({ token }) => {
-            if (!cancelled) {
-              if (!token && loadedFrame.current === viewerId) {
-                clearSessionViewer(viewerId);
-                return;
-              }
-              setListener({
-                viewerId,
-                url: selected.url,
-                name: row.name,
-                token,
-              });
-              if (token) timer = setTimeout(check, 3000);
-            }
-          },
-          (error: unknown) => {
-            if (!cancelled)
-              setListener({
-                viewerId,
-                url: selected.url,
-                name: row.name,
-                token: null,
-                error: error instanceof Error ? error.message : String(error),
-              });
-          },
-        )
-        .finally(() => {
-          pending = false;
-        });
-    };
-    const visibilityChanged = () => {
-      clearTimeout(timer);
-      check();
-    };
-    check();
-    document.addEventListener("visibilitychange", visibilityChanged);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      document.removeEventListener("visibilitychange", visibilityChanged);
-    };
-  }, [active, canKillVhost, selected, config, runtime, viewerId, minimized]);
+    if (listenerTarget) setKillError(undefined);
+  }, [listenerTarget]);
   useEffect(() => {
     if (owned && !selected) clearSessionViewer(owned.id);
   }, [owned, selected]);
@@ -255,16 +200,7 @@ export function useSessionRightPane(
     if (!canKill || !selected || killing) return;
     setKilling(true);
     setKillError(undefined);
-    saveApps(
-      JSON.stringify({
-        dismissed: [
-          ...new Set([
-            ...savedApps.dismissed,
-            ...current.apps.map((app) => app.announcementId),
-          ]),
-        ],
-      }),
-    );
+    dismissApps(current.apps.map((app) => app.announcementId));
     // Dismiss immediately; a pending stop request must not hold the pane open.
     owned?.close();
     try {
@@ -295,12 +231,21 @@ export function useSessionRightPane(
     void killRef.current();
   }, []);
   useEffect(() => {
-    if (owned)
-      setSessionViewerKillAction(
-        owned.id,
-        canKill ? invokeKill : undefined,
-        killing,
-      );
+    if (!owned) return;
+    // Stopping a live app is destructive; dismissing an artifact view is not.
+    setSessionViewerCloseAction(
+      owned.id,
+      canKill
+        ? {
+            label: owned.artifactToken
+              ? "sessionViewerClose"
+              : "sessionRightPaneKill",
+            destructive: !owned.artifactToken,
+            busy: killing,
+            run: invokeKill,
+          }
+        : undefined,
+    );
   }, [owned, canKill, invokeKill, killing]);
   return {
     config,
@@ -316,10 +261,7 @@ export function useSessionRightPane(
             "public",
           )?.url ?? selected.url)
         : selected?.url,
-    onFrameLoad: () => {
-      if (listener?.viewerId === viewerId && listener?.token)
-        loadedFrame.current = viewerId;
-    },
+    onFrameLoad,
     frameKey: owned?.id,
     appStatus:
       canKillVhost && selected && !selected.artifactToken

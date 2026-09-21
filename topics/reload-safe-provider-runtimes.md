@@ -10,10 +10,15 @@
 Topic: reload-safe-provider-runtimes
 
 Status: **implemented on Linux and macOS Node source checkouts for the non-watch
-development wrapper and foreground host.** macOS live Claude, Codex, and
-simultaneous Claude/Codex continuity are verified on canonical project paths.
-See [initial macOS evidence](#macos-verification-2026-09-11) and
-[live completion evidence](#macos-live-verification-2026-09-12). Codex, Claude, Gemini, Grok, OpenCode, Pi, and
+development wrapper and foreground host.** Linux development launches enable
+the shared host by default. macOS development launches require
+`YEP_PROVIDER_HOST_ENABLED=true` while the active-turn interruption gap remains
+open. macOS live Claude, Codex, and simultaneous Claude/Codex continuity are
+verified on canonical project paths.
+The dated run evidence for both macOS validations is recorded in
+[tactical 128](../docs/tactical/128-macos-provider-host.md#macos-verification-evidence);
+the commands that reproduce it are in [macOS Verification
+Procedure](#macos-verification-procedure) below. Codex, Claude, Gemini, Grok, OpenCode, Pi, and
 Codex OSS all use the shared provider host. The former
 `codexReloadSafeSessions` setting remains accepted and stored for compatibility
 but is inert and hidden from the current client.
@@ -359,7 +364,10 @@ Each reported native process group is paired with the start time of its leader
 from `/proc`. The host and wrapper verify that identity before signaling it, so
 a stale registry entry cannot kill an unrelated process after PID reuse. If a
 leader exits while its original descendants remain in the group, the missing
-leader does not prevent cleanup of those descendants.
+leader does not prevent cleanup of those descendants. Identity is verified once
+per stage rather than re-checked immediately before the signal: a group whose
+last member exits in that window is already in the state the stage was asking
+for, so the sweep treats it as cleaned up instead of failing the shutdown.
 
 ### Routing decision
 
@@ -900,8 +908,13 @@ The server continues to accept, store, and return
 render it, and the native-host availability capability is no longer
 advertised. Its capability ids remain reserved for their original meanings.
 
-The shared host is enabled on Linux and macOS Node source checkouts under the
-non-watch development wrapper or through `pnpm provider-host`. Host capability requires:
+The shared host is enabled by default on Linux Node source checkouts under the
+non-watch development wrapper. macOS source checkouts default to ordinary
+in-Hono provider ownership and opt into the shared host with
+`YEP_PROVIDER_HOST_ENABLED=true`. An explicit false disables automatic host
+discovery and launch on either platform. The explicit `pnpm provider-host`
+foreground command remains available, but a server attaches to it only when
+its provider-host policy is enabled. Host capability requires:
 
 - a supported platform/runtime and successful native process-identity probe;
 - launch through the recognized development wrapper or foreground host;
@@ -910,10 +923,11 @@ non-watch development wrapper or through `pnpm provider-host`. Host capability r
 - wrapper-generation registration for Hono control; and
 - bounded owner-loss cleanup owned by the host and its terminal owner.
 
-Windows, macOS Bun, compiled macOS servers and Desktop retain ordinary in-Hono
-provider ownership. Supported direct source launches attach or start the host
-instead of silently skipping it. Failed or ambiguous probes on supported
-launches continue in-process with the degraded banner. An
+Windows, macOS Bun, compiled macOS servers, Desktop, and intentionally disabled
+source launches retain ordinary in-Hono provider ownership. Enabled supported
+direct source launches attach or start the host instead of silently skipping
+it. Failed or ambiguous probes on enabled supported launches continue
+in-process with the degraded banner; intentional disablement does not. An
 ambiguous stable descriptor is not removed or replaced.
 
 Any later use of `systemd-run --user`, Linux abstract sockets, `/proc`, cgroup
@@ -975,20 +989,13 @@ was stable releases `v0.7.0` and `v0.6.2`: neither knows the new field, so a new
 client hides it and makes no unsupported write. Older clients omit the field
 and retain the server's default-off behavior.
 
-## macOS verification, 2026-09-11
+## macOS Verification Procedure
 
-Tested from the uncommitted implementation based on `1b44fa073`, macOS 26.6.2
-(25G83), arm64, Node 25.8.2. The independent Linux arm64 testbed used Node
-22.16.0: 52 focused tests passed, with only the explicitly Darwin-specific
-identity-failure case skipped. The equivalent Mac suites pass all 54 cases. Final repository checks passed:
-`pnpm lint`, `pnpm format:check`, `pnpm typecheck`, `pnpm test` (11,757 tests
-passed, 29 skipped), and `pnpm test:e2e` (224 passed, 8 skipped). Lint reports
-two existing informational template-string suggestions, with no errors.
-The focused CI job in `.github/workflows/ci.yml` runs Node 22.16.0 on Linux,
-Mac arm64, Mac Intel and Windows; those hosted CI executions are pending.
-Runner labels follow the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
-Bun, compiled macOS servers and Desktop remain disabled. This does not close
-[general CI platform coverage](../gaps/ci-platform-coverage-holes.md).
+Dated run evidence for the 2026-09-11 and 2026-09-12 macOS validations —
+versions, timings, scenario tables, CI results and artifact locations — is in
+[tactical 128](../docs/tactical/128-macos-provider-host.md#macos-verification-evidence).
+This section keeps the commands that reproduce those runs and what each one
+proves. The focused native suites run on both Linux and macOS:
 
 ```bash
 pnpm --filter @yep-anywhere/server exec vitest run \
@@ -1009,106 +1016,18 @@ preload substitutes `getRawProvider("claude").startSession` with a file-barrier
 provider and native child; it does not replace the worker. An output suffix and
 approval are emitted at confirmed detach, the original callback resolves after
 attach, a second turn completes, and exactly one provider start is recorded.
-It also changes the standing mode from bypass to default before replacement,
-preventing the launch-mode regression discovered in the live test. Pure owner
-and socket tests separately assert sequence acknowledgement and replay.
+It also changes the standing mode from bypass to default before replacement.
+Pure owner and socket tests separately assert sequence acknowledgement and
+replay. This assembled test is the exact replay and pending-callback oracle:
+its provider seam is fake while wrapper, Hono, owner, worker and sockets are
+real. A live smoke proves integration and never claims acknowledgement
+cursor/byte telemetry; the native transcript and live-only lifecycle evidence
+serve different assertions.
 
-| Live Mac scenario | Result |
-| --- | --- |
-| New Codex session, API reload during numbered command | Same worker, provider group, native session and runtime; command completes |
-| Second Codex turn, wrapper HUP during command | Same retained runtime; numbered command completes |
-| Ordinary durable resume after terminal wrapper shutdown | Same native conversation, fresh hosted worker |
-| Hono-only edit, browser Server changed → Reload | New backend returns the test property; same worker; command and unsent draft survive; edit restored |
-| Native Codex approval across API reload | Request remains actionable under current default mode; answer completes original command in same worker |
-| Terminal shutdown after live runs | Host descriptor/socket absent and all recorded worker/provider groups gone |
-| Real Claude and both providers active | Blocked: native `oauth_org_not_allowed`, organization disables subscription access |
-
-Codex app-server 0.154.0 used `gpt-6-astra` with low effort. The account rejects
-`gpt-5.4-mini`; that failed launch is not counted as continuity. Claude SDK
-0.3.258 was attempted and produced the native organization error before a turn.
-The synthetic project, YA data, ports and private host directory were isolated;
-native same-user Claude/Codex authentication and transcript stores were
-intentionally shared. No credentials were copied. Only created-session evidence
-was read, and no unrelated native session was removed.
-
-Local run evidence is retained under `.artifacts/ui-testing/2026-09-11-macos-provider-host`
-and `.artifacts/ui-testing/2026-09-11-macos-provider-host-live`; compact structured
-results and test logs are archived with the latter. Browser captures at 1000×600
-and 375×812 verify the resulting transcript and the degraded banner's reachable
-navigation. `e2e/provider-host-live.spec.ts` plus
-`playwright.provider-host.config.ts` is an explicit credentialed runner: set
-`YA_LIVE_HOST_STATE` to the isolated launcher metadata and
-`YEP_E2E_UI_CAPTURE_DIR` to a capture directory. Ordinary CI skips this spec.
-The two numbered native turns each have one start and one terminal result;
-both reload intervals fall inside their original native turn. Request-to-attach
-was 2730 ms for API reload and 2556 ms for wrapper HUP on this run. The native
-conversation contains nine distinct test turns with no duplicate starts or
-terminal records across the repeated smoke attempts.
-A live smoke does not provide exact cursor/byte replay telemetry; the native
-transcript and live-only lifecycle evidence serve different assertions.
-
-## macOS live verification, 2026-09-12
-
-The account-access deferral in tactical 128 is closed. Validation used YA
-`6ef7771748797ab5ac5ffb943a54adcf609f3a43` plus the credentialed test extension,
-macOS 26.5.1 (25F80), arm64, Node 24.20.0, and the non-watch source wrapper.
-The actual Claude session used SDK 0.3.258 / bundled CLI 2.1.258 with
-`claude-sonnet-5`; the actual Codex transcript reports app-server
-`0.154.0-alpha.6.2`, `gpt-6-astra`, low effort. The shell's independently
-installed `claude` 2.1.268 and `codex` 0.153.4 were not the runtime-version
-oracle. This validation did not update providers or widen compatibility.
-
-The canonical synthetic project, YA data, private host directory and three
-ports were isolated. Same-user provider authentication and native transcript
-stores were intentionally shared; credentials were not copied or logged.
-
-| Scenario | Result |
-| --- | --- |
-| New Claude session, API reload during a numbered foreground command | Same host, worker, provider process group, YA/native session and original tool call; complete ordered progress |
-| Second Claude command, wrapper HUP | Same retained runtime and original tool call; complete ordered progress |
-| Native Claude approval across reload, then another turn | Reconstructed UI approval resolves the original SDK callback; later turn completes |
-| Claude and Codex commands active together, API and HUP | Both original workers/providers survive each replacement; both commands complete |
-| Terminal shutdown, then durable resume for each provider | Old process groups and sockets disappear; each native conversation resumes into a fresh hosted worker |
-| Hono-only edit and browser Server changed → Reload, each provider | Changed backend property appears, worker/provider identity persists, unsent draft survives, test edit is restored |
-| Browser-run native approvals, each provider | Same pending tool/input after attach; approval completes the original command and persisted history remains readable |
-| Two native approvals pending across the same reload | Both requests return; approving Claude leaves Codex pending; each command executes exactly once |
-| Final terminal cleanup | Every recorded worker/provider process group and owned socket is gone |
-
-The initial Claude API/HUP replacements attached in 1812/1264 ms; its approval
-replacement took 1531 ms. Combined API/HUP replacements took 1791/1786 ms.
-These are observed smoke timings, not performance ceilings. Wrapper-child
-snapshots show the host retained while Hono and Vite were replaced.
-The native audit pairs all eight Claude tool calls with exactly one successful
-result and records ten user turns with ten assistant end-turns. Codex has six
-unique started turns, each with one matching terminal event. Each measured
-API/HUP reload interval lies within its original Claude tool call or Codex
-turn, rather than an implicit restart/resume. After the combined approval run,
-the session-detail API returned 97 Claude and 41 Codex persisted records.
-
-The 54 focused native tests passed locally without skips. The existing
-[CI run for the tested base commit](https://github.com/kzahel/yepanywhere/actions/runs/34641697632)
-also passed native provider-host jobs on Linux, Apple Silicon Mac, Intel Mac,
-and Windows fallback, closing the previously pending CI evidence. The
-assembled production-worker test remains the exact replay/callback oracle:
-its provider seam is fake, while wrapper, Hono, owner, worker and sockets are
-real. Live smokes do not claim exact acknowledgement cursor/byte telemetry.
-Bun, compiled macOS servers and Desktop remain outside the enabled boundary.
-
-Final local checks passed: `pnpm lint` (zero warnings, two informational
-suggestions), `pnpm format:check`, `pnpm typecheck`, `pnpm test` (11,763 passed,
-29 skipped), and `pnpm test:e2e` (226 passed, eight skipped). Both explicit
-credentialed browser runs passed in addition to the ordinary suite. The console
-scan passed with unchanged budgets: 110 ungated sites, 61 warn sites and 92
-error sites; this validation adds no client console calls.
-
-Local evidence is under `.artifacts/ui-testing/2026-09-12-provider-host/`:
-`evidence/live.json`, `native-audit.json`, `dual-approval.json`, both
-`*-browser-live.json` files, and `final-cleanup.json`. Desktop 1000×600 and
-phone 375×812 captures in `canonical-captures/` show recovered transcripts,
-completed approvals and reachable composer controls, without a stale-server
-banner. The artifact capture facility presents those captures.
-
-The credentialed browser runner now selects Claude or Codex explicitly:
+`e2e/provider-host-live.spec.ts` with `playwright.provider-host.config.ts` is
+an explicit credentialed runner that ordinary CI skips. Set `YA_LIVE_HOST_STATE`
+to the isolated launcher metadata, `YEP_E2E_UI_CAPTURE_DIR` to a capture
+directory, and the provider explicitly:
 
 ```bash
 YA_LIVE_HOST_STATE=/absolute/path/to/state.json \
@@ -1129,12 +1048,12 @@ smokes use the same session REST routes and private host inventory; wait for
 actual command progress or pending input before requesting replacement.
 
 Resolve the fixture directory with `realpath` before registering the project.
-A `/tmp` alias initially appeared to pass live continuity, but Claude persisted
-under `/private/tmp` and the selected YA route lost access to history. The
-browser test now rejects noncanonical fixtures and explicitly requires
-persisted command/approval records after reload. The general alias-routing
-bug remains in [its own gap](../gaps/claude-symlink-project-transcript-routing.md);
-this test correction does not fix or hide that separate defect.
+Claude persists a `/tmp` alias under `/private/tmp`, and the selected YA route
+then loses access to that history, so a run against an alias can appear to pass
+live continuity. The browser test rejects noncanonical fixtures and requires
+persisted command/approval records after reload. The general alias-routing bug
+remains in [its own gap](../gaps/claude-symlink-project-transcript-routing.md);
+that fixture requirement neither fixes nor hides the separate defect.
 
 ## Verification Matrix
 

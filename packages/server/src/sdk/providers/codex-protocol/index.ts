@@ -7,6 +7,7 @@ export type { ThreadResumeParams } from "./generated/v2/ThreadResumeParams.js";
 export type { ThreadReadParams } from "./generated/v2/ThreadReadParams.js";
 export type { ThreadForkParams } from "./generated/v2/ThreadForkParams.js";
 export type { ThreadRollbackParams } from "./generated/v2/ThreadRollbackParams.js";
+export type { ThreadRevertParams } from "./generated/v2/ThreadRevertParams.js";
 export type { TurnStartParams } from "./generated/v2/TurnStartParams.js";
 export type { TurnSettingsUpdateParams } from "./generated/v2/TurnSettingsUpdateParams.js";
 export type { TurnSteerParams } from "./generated/v2/TurnSteerParams.js";
@@ -20,6 +21,8 @@ export type { ThreadResumeResponse } from "./generated/v2/ThreadResumeResponse.j
 export type { ThreadReadResponse } from "./generated/v2/ThreadReadResponse.js";
 export type { ThreadForkResponse } from "./generated/v2/ThreadForkResponse.js";
 export type { ThreadRollbackResponse } from "./generated/v2/ThreadRollbackResponse.js";
+export type { ThreadRevertResponse } from "./generated/v2/ThreadRevertResponse.js";
+export type { ThreadRevertedNotification } from "./generated/v2/ThreadRevertedNotification.js";
 export type { TurnStartResponse } from "./generated/v2/TurnStartResponse.js";
 export type { TurnSettingsUpdateResponse } from "./generated/v2/TurnSettingsUpdateResponse.js";
 export type { TurnSteerResponse } from "./generated/v2/TurnSteerResponse.js";

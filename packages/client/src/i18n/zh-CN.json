@@ -996,6 +996,8 @@
   "conversationActivityActiveWithoutTime": "正在工作 · {count} {activity}",
   "conversationActivityComplete": "耗时 {duration} · 已隐藏 {count} {activity}",
   "conversationActivityCompleteWithoutTime": "已隐藏 {count} {activity}",
+  "conversationActivityExpanded": "耗时 {duration} · {count} {activity}",
+  "conversationActivityExpandedWithoutTime": "{count} {activity}",
   "conversationActivityExpandTitle": "在原位置显示已隐藏的活动",
   "conversationActivityCollapseTitle": "折叠此轮次的常规活动",
   "conversationThinkingPreviewCurrent": "当前思考",

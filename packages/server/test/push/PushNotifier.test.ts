@@ -480,21 +480,17 @@ describe("PushNotifier", () => {
       expect(mockPushService.sendToAll).toHaveBeenCalledTimes(2);
     });
 
-    it.each(["manual stop", "abort event"])(
+    it.each(["session-stop-requested", "session-aborted"] as const)(
       "keeps %s quiet through repeated cleanup until fresh user work",
-      (source) => {
-        const { process, notifier, activity, terminated } = setup();
+      (type) => {
+        const { process, activity, terminated } = setup();
         activity("in-turn");
-        if (source === "abort event") {
-          eventHandler?.({
-            type: "session-aborted",
-            sessionId: "session-1",
-            projectId: testProjectId,
-            timestamp: new Date().toISOString(),
-          });
-        } else {
-          notifier.suppressSession("session-1");
-        }
+        eventHandler?.({
+          type,
+          sessionId: "session-1",
+          projectId: testProjectId,
+          timestamp: new Date().toISOString(),
+        });
         activity("idle");
         activity("idle");
         activity("in-turn"); // a late provider cleanup event is not fresh input
@@ -510,8 +506,13 @@ describe("PushNotifier", () => {
     );
 
     it("does not carry stop suppression into a replacement process", () => {
-      const { process, notifier, activity } = setup();
-      notifier.suppressSession("session-1");
+      const { process, activity } = setup();
+      eventHandler?.({
+        type: "session-stop-requested",
+        sessionId: "session-1",
+        projectId: testProjectId,
+        timestamp: new Date().toISOString(),
+      });
       vi.mocked(mockSupervisor.getProcessForSession).mockReturnValue({
         ...process,
       } as ReturnType<Supervisor["getProcessForSession"]>);
@@ -592,12 +593,9 @@ describe("PushNotifier", () => {
           stream.push({ type: "result", session_id: "lifecycle-session" });
           return true;
         });
-        let notifier: PushNotifier | undefined;
         const supervisor = new Supervisor({
           eventBus,
           providerDiscoveryEnabled: false,
-          onSessionStopRequested: (sessionId) =>
-            notifier?.suppressSession(sessionId),
           realSdk: {
             startSession: async () => ({
               iterator: stream.iterator,
@@ -607,7 +605,7 @@ describe("PushNotifier", () => {
             }),
           },
         });
-        notifier = new PushNotifier({
+        const notifier = new PushNotifier({
           eventBus,
           supervisor,
           pushService: mockPushService,

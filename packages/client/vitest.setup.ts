@@ -1,5 +1,6 @@
 import { beforeEach } from "vitest";
 import { invalidateLocalStorageValues } from "./src/lib/localStorageValue";
+import { invalidateSessionApps } from "./src/lib/sessionApps";
 
 function createTestStorage(): Storage {
   const storage = new Map<string, string>();
@@ -64,4 +65,5 @@ if (typeof window !== "undefined") {
 
 beforeEach(() => {
   invalidateLocalStorageValues();
+  invalidateSessionApps();
 });

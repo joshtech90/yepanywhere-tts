@@ -18,7 +18,7 @@ arbitrary tool arguments: select provider-normalized input fields explicitly.
 The owning paths are `packages/client/src/lib/sessionDetail/search.ts` and
 the bounded All Sessions extraction path in
 `packages/server/src/sessions/issue-text-reader.ts`. Its current
-`normalizeIssueEntries` / `visibleIssueText` projection is also used by the
+`normalizeIssueEntries` / `visibleMessageText` projection is also used by the
 issue index; do not silently broaden that index's independent contract.
 Share the eligible authored-text projection, preserve original message/tool
 IDs for navigation and Zoom, and test command-output/image exclusion as well

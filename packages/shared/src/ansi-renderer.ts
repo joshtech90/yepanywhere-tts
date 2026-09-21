@@ -1,4 +1,4 @@
-import { containsLinkifiableUrl, splitUrlSegments } from "./linkify.js";
+import { linkifyToHtml } from "./linkify.js";
 /**
  * Render terminal output with ANSI CSI SGR escape codes into safe HTML.
  *
@@ -107,17 +107,12 @@ function applySgr(state: SgrState, params: number[]): void {
  * Escape a run of terminal text, linking bare `http(s)` URLs inside it.
  *
  * Terminal output is where a URL most often arrives, and a monospace block
- * was the one place a link had to be selected and copied by hand.
+ * was the one place a link had to be selected and copied by hand. This markup
+ * reaches the page unsanitized, so a link here opens a new tab rather than
+ * navigating the transcript away.
  */
 function escapeWithLinks(text: string): string {
-  if (!containsLinkifiableUrl(text)) return escapeHtml(text);
-  return splitUrlSegments(text)
-    .map((segment) =>
-      segment.type === "url" && segment.href
-        ? `<a href="${escapeHtml(segment.href)}" target="_blank" rel="noopener noreferrer">${escapeHtml(segment.text)}</a>`
-        : escapeHtml(segment.text),
-    )
-    .join("");
+  return linkifyToHtml(text, { external: true }, escapeHtml);
 }
 
 function escapeHtml(text: string): string {

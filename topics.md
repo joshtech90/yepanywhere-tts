@@ -396,8 +396,13 @@
 - optional-sqlite - Built-in SQLite discovery storage: runtime adapters, data
   directory placement, and the transaction cost callers must respect.
 - simple-client-api - Experimental typed server views with a multi-server web
-  demo and early Kotlin/Compose and Swift/SwiftUI consumers.
+  demo and an early Kotlin/Compose consumer; iOS deferred.
 - optional-computer-control - On-demand session-scoped native control,
   local transport and Codex/Sky execution reference findings.
 - multi-machine-architecture - Discussion map for execution ownership,
   deployment, grants, machine control, delegation and session migration.
+- mid-session-effort-change - Long-context warning before a mid-session
+  effort change, per-provider threshold setting, fork at the new effort.
+- limited-users - A second class of principal beside the superuser: per-project
+  grants, join freshness, provider/model/effort lock, and default-deny
+  authorization behind a sticky sidebar Users section.

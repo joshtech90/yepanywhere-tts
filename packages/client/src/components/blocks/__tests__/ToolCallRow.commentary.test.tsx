@@ -1,4 +1,5 @@
 import { toolRegistry } from "../../renderers/tools";
+import { effectiveToolError } from "../../renderers/tools/prepareDisplay";
 import {
   act,
   fireEvent,
@@ -198,7 +199,7 @@ describe("ToolCallRow commentary integration", () => {
         );
         expect(calls.length).toBeGreaterThan(0);
         for (const [, record] of calls)
-          expect(record.isError ?? record.status === "error").toBe(true);
+          expect(effectiveToolError(record)).toBe(true);
       });
     },
   );

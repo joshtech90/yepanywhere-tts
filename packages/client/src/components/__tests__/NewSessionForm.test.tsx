@@ -11,6 +11,7 @@ import {
 } from "@testing-library/react";
 import {
   PROJECT_QUEUE_CAPABILITY,
+  SERVER_CAPABILITIES,
   SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
@@ -269,6 +270,28 @@ vi.mock("../../lib/deviceDetection", () => ({
   hasCoarsePointer: () => coarsePointerState.current,
 }));
 
+/** Who the server says this client acts as; superuser unless a test says otherwise. */
+const actingPrincipalState = vi.hoisted(() => ({
+  principal: {
+    superuser: true,
+    username: null as string | null,
+    switched: false,
+    locked: false,
+    enabled: false,
+    logoutRedirect: "stay",
+  } as import("@yep-anywhere/shared").ActingPrincipal,
+}));
+
+vi.mock("../../hooks/useActingPrincipal", () => ({
+  useActingPrincipal: () => ({
+    principal: actingPrincipalState.principal,
+    loading: false,
+    refresh: vi.fn(),
+  }),
+  isLimitedPrincipal: (principal: { username: string | null }) =>
+    principal.username !== null,
+}));
+
 vi.mock("react-router-dom", async () => {
   const actual =
     await vi.importActual<typeof import("react-router-dom")>(
@@ -470,8 +493,10 @@ vi.mock("../../lib/clientSummaryStore", async (importOriginal) => {
   };
 });
 
-vi.mock("../../contexts/SourceRuntimeContext", () => ({
-  useCurrentSourceRuntime: () => ({
+vi.mock("../../contexts/SourceRuntimeContext", () => {
+  // One runtime object for the whole file: a fresh transport identity on every
+  // render restarts effects that depend on it, which the real context does not.
+  const runtime = {
     sourceKey: "host:test",
     transport: {
       capabilities: { sameOriginUrls: true },
@@ -483,8 +508,9 @@ vi.mock("../../contexts/SourceRuntimeContext", () => ({
       reportProjectQueueCollectionSnapshot:
         mockReportProjectQueueCollectionSnapshot,
     },
-  }),
-}));
+  };
+  return { useCurrentSourceRuntime: () => runtime };
+});
 
 vi.mock("../../hooks/useProjectQueues", () => ({
   useProjectQueues: (projectIds: string[]) => {
@@ -561,6 +587,8 @@ vi.mock("../../i18n", () => ({
         composerFullPaneRestoreTitle: "Restore composer ({shortcut})",
         speechPrefixDeliveryLabel: "{action}. Prepends {prefix}.",
         speechPrefixDeliveryTooltip: "{tooltip} Prepends {prefix}.",
+        newSessionFixedTitle: "Set by your account",
+        newSessionFixedSandboxValue: "Always on",
       };
       let translated = text[key] ?? key;
       if (!vars) return translated;
@@ -686,6 +714,15 @@ function installObjectUrlMock() {
 describe("NewSessionForm", () => {
   beforeEach(() => {
     coarsePointerState.current = false;
+    actingPrincipalState.principal = {
+      superuser: true,
+      username: null,
+      switched: false,
+      locked: false,
+      enabled: false,
+      hasLimitedUsers: false,
+      logoutRedirect: "stay",
+    };
     installObjectUrlMock();
     vi.stubGlobal(
       "matchMedia",
@@ -977,6 +1014,46 @@ describe("NewSessionForm", () => {
         "active",
       );
     });
+  });
+
+  it("keeps what was typed while a launch seed was still being fetched", async () => {
+    const submit = vi.fn(async () => {});
+    const launch = (initialMessage: string) => ({
+      draftKey: "draft-handoff:session-late",
+      initialMessage,
+      fixedProject: true,
+      allowAttachments: false,
+      allowProjectQueue: false,
+      submit,
+    });
+    // The modal renders this form while it fetches the handoff text, so the
+    // composer is focused and typeable before the seed exists.
+    const { rerender } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        launch={launch("")}
+      />,
+    );
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      "textarea.new-session-form-textarea",
+    );
+    if (!composer) throw new Error("expected the new-session composer");
+    expect(document.activeElement).toBe(composer);
+    fireEvent.change(composer, { target: { value: "and also this" } });
+
+    rerender(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        launch={launch("Prepared handoff")}
+      />,
+    );
+
+    const merged = await screen.findByDisplayValue(
+      "Prepared handoffand also this",
+    );
+    expect(merged).toBe(composer);
   });
 
   it("reuses new-session selection semantics for a seeded launch", async () => {
@@ -1514,6 +1591,129 @@ describe("NewSessionForm", () => {
     );
   });
 
+  describe("a limited user's locked launch fields", () => {
+    // Contract: topics/limited-users.md § Delivery v1 — Settings → Users.
+    const actAsLimited = (lock: Record<string, string>) => {
+      actingPrincipalState.principal = {
+        superuser: false,
+        username: "alice",
+        switched: false,
+        locked: true,
+        enabled: true,
+        hasLimitedUsers: true,
+        logoutRedirect: "direct-login",
+        grants: {
+          newSessionProjects: ["project-1"],
+          joinProjects: [],
+          viewProjects: [],
+          joinStaleOffsetMinutes: 0,
+          lock,
+        },
+      };
+    };
+
+    const renderForm = () =>
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+
+    beforeEach(() => {
+      versionState.version = {
+        capabilities: [
+          PROJECT_QUEUE_CAPABILITY,
+          SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
+          SESSION_SANDBOXING_CAPABILITY,
+          SESSION_SANDBOXING_STATUS_CAPABILITY,
+        ],
+        sessionSandboxing: {
+          state: "available",
+          platform: "linux",
+          backend: "bubblewrap",
+          version: "0.4.0",
+        },
+      };
+      // Saved defaults that disagree with the lock on every field.
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "claude",
+          model: "opus",
+          permissionMode: "default",
+          sandboxLevel: "none",
+        },
+      };
+      serverSettingsState.isLoading = false;
+    });
+
+    it("states the locked fields instead of offering them as choices", async () => {
+      actAsLimited({ provider: "codex", model: "gpt-5.4", effort: "medium" });
+      renderForm();
+
+      await waitFor(() => {
+        expect(screen.getByText("Set by your account")).toBeTruthy();
+      });
+      // No provider buttons, no model dropdown, no thinking panel, and no
+      // sandbox toggle: a limited user cannot change any of them.
+      expect(screen.queryByRole("button", { name: "Codex" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
+      expect(screen.queryAllByTestId("filter-selected")).toHaveLength(0);
+      expect(
+        screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
+      ).toBeNull();
+      expect(screen.getByText("Always on")).toBeTruthy();
+      // The firewall is still theirs — the launch route honors it.
+      expect(
+        screen.getByRole("checkbox", {
+          name: "newSessionSandboxNetworkFirewallLabel",
+        }),
+      ).toBeTruthy();
+    });
+
+    it("launches with the locked values and a forced sandbox", async () => {
+      actAsLimited({ provider: "codex", model: "gpt-5.4", effort: "medium" });
+      renderForm();
+
+      await waitFor(() => {
+        expect(screen.getByText("Set by your account")).toBeTruthy();
+      });
+      fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+        target: { value: "locked launch" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "newSessionStartAction" }),
+      );
+
+      await waitFor(() => {
+        expect(mockStartSession).toHaveBeenCalledTimes(1);
+      });
+      expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          provider: "codex",
+          model: "gpt-5.4",
+          thinking: "on:medium",
+          sandboxLevel: "project-write",
+        }),
+      );
+    });
+
+    it("keeps the pickers for fields the lock leaves free", async () => {
+      actAsLimited({ provider: "codex" });
+      renderForm();
+
+      await waitFor(() => {
+        expect(screen.getByText("Set by your account")).toBeTruthy();
+      });
+      expect(screen.queryByRole("button", { name: "Codex" })).toBeNull();
+      // Model stays choosable within the locked provider's catalog.
+      expect(screen.queryAllByTestId("filter-selected").length).toBeGreaterThan(
+        0,
+      );
+    });
+  });
+
   it("turns off side-session recaps when sandboxing is enabled", async () => {
     versionState.version = {
       capabilities: [
@@ -1802,6 +2002,101 @@ describe("NewSessionForm", () => {
     });
     expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
       expect.objectContaining({ sandboxLevel: "none" }),
+    );
+  });
+
+  it("offers computer control to an eligible Codex session and submits it", async () => {
+    versionState.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        SERVER_CAPABILITIES.computerControl.name,
+      ],
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "default",
+      },
+    };
+    serverSettingsState.isLoading = false;
+    mockConnectionFetch.mockImplementation((path: string) =>
+      path === "/computer-control"
+        ? Promise.resolve({ enabled: true, available: true })
+        : Promise.resolve({}),
+    );
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    const optIn = await screen.findByRole("checkbox", {
+      name: /computerSessionOptIn/,
+    });
+    fireEvent.click(optIn);
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "drive the computer" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+      expect.objectContaining({ computerControl: true }),
+    );
+  });
+
+  it("neither offers nor requests computer control without the capability", async () => {
+    versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
+    serverSettingsState.settings = {
+      newSessionDefaults: {
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "default",
+      },
+    };
+    serverSettingsState.isLoading = false;
+    mockConnectionFetch.mockImplementation((path: string) =>
+      path === "/computer-control"
+        ? Promise.resolve({ enabled: true, available: true })
+        : Promise.resolve({}),
+    );
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "ordinary Codex session" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockStartSession).toHaveBeenCalledTimes(1);
+    });
+    expect(
+      screen.queryByRole("checkbox", { name: /computerSessionOptIn/ }),
+    ).toBeNull();
+    expect(mockConnectionFetch).not.toHaveBeenCalledWith(
+      "/computer-control",
+      expect.anything(),
+    );
+    expect(mockConnectionFetch).not.toHaveBeenCalledWith("/computer-control");
+    expect(mockStartSession.mock.calls[0]?.[2]).not.toHaveProperty(
+      "computerControl",
     );
   });
 

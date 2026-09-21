@@ -45,11 +45,9 @@ function GlobToolUse({
  */
 function GlobToolResult({
   result,
-  isError,
   projectPath,
 }: {
   result: GlobResult;
-  isError: boolean;
   projectPath?: string | null;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -73,23 +71,6 @@ function GlobToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("Glob");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className={styles.error}>
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="Glob" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Glob search failed"}
-      </div>
-    );
-  }
 
   if (!result?.filenames || result.filenames.length === 0) {
     return (
@@ -156,14 +137,20 @@ export const globRenderer = defineTool(toolDisplayContracts.Glob, {
     return <GlobToolUse input={input} projectPath={context.projectPath} />;
   },
 
-  renderToolResult(result, isError, context) {
+  renderToolResult(result, _isError, context) {
+    return <GlobToolResult result={result} projectPath={context.projectPath} />;
+  },
+
+  renderFailure(failure) {
     return (
-      <GlobToolResult
-        result={result}
-        isError={isError}
-        projectPath={context.projectPath}
-      />
+      <div className={styles.error}>
+        {failure.content || "Glob search failed"}
+      </div>
     );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input, context) {
@@ -174,8 +161,7 @@ export const globRenderer = defineTool(toolDisplayContracts.Glob, {
       : pattern;
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     if (r?.numFiles === undefined) return "Searching...";
     if (r.numFiles === 0) return "No files found";

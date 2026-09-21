@@ -55,6 +55,72 @@ function reload({ port, token }) {
 describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
   "development wrapper reload",
   () => {
+    it("keeps provider hosting disabled when explicitly configured", async () => {
+      const directory = await mkdtemp(
+        join(
+          process.platform === "darwin" ? "/tmp" : tmpdir(),
+          "ya-dev-no-provider-host-",
+        ),
+      );
+      const bin = join(directory, "bin");
+      const runtime = join(directory, "host");
+      const eventsFile = join(directory, "events.jsonl");
+      await mkdir(bin);
+      await copyFile(
+        join(here, "fixtures/dev-wrapper-child.mjs"),
+        join(bin, "pnpm"),
+      );
+      await chmod(join(bin, "pnpm"), 0o755);
+      const wrapper = spawn(
+        process.execPath,
+        [join(root, "scripts/dev.js"), "--no-frontend-reload"],
+        {
+          cwd: root,
+          env: {
+            ...process.env,
+            PATH: `${bin}${delimiter}${process.env.PATH}`,
+            PORT: "3498",
+            YA_TEST_WRAPPER_EVENTS: eventsFile,
+            YEP_PROVIDER_HOST_ENABLED: "false",
+            YEP_PROVIDER_HOST_RUNTIME_DIR: runtime,
+          },
+          stdio: ["ignore", "pipe", "pipe"],
+        },
+      );
+      let output = "";
+      wrapper.stdout.on("data", (chunk) => {
+        output += chunk;
+      });
+      wrapper.stderr.on("data", (chunk) => {
+        output += chunk;
+      });
+      try {
+        await expect
+          .poll(async () => (await readEvents(eventsFile)).length, {
+            timeout: 10000,
+          })
+          .toBe(2);
+        expect(output).toContain("Provider host: DISABLED");
+        expect(() => process.kill(wrapper.pid, 0)).not.toThrow();
+        await expect(
+          readFile(join(runtime, "host.json"), "utf8"),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      } catch (error) {
+        throw new Error(`${error.message}\n${output}`, { cause: error });
+      } finally {
+        wrapper.kill("SIGTERM");
+        await expect
+          .poll(() => wrapper.exitCode ?? wrapper.signalCode, {
+            timeout: 10000,
+          })
+          .not.toBeNull();
+        for (const event of await readEvents(eventsFile)) {
+          expect(() => process.kill(event.pid, 0)).toThrow();
+        }
+        await rm(directory, { recursive: true });
+      }
+    }, 30000);
+
     it("replaces frontend and backend while preserving a live provider worker", async () => {
       const directory = await mkdtemp(
         join(
@@ -81,6 +147,7 @@ describe.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
             PATH: `${bin}${delimiter}${process.env.PATH}`,
             PORT: "3499",
             YA_TEST_WRAPPER_EVENTS: eventsFile,
+            YEP_PROVIDER_HOST_ENABLED: "true",
             YEP_PROVIDER_HOST_RUNTIME_DIR: runtime,
             YEP_PROVIDER_RUNTIME_WORKER_PATH: join(
               here,

@@ -263,11 +263,65 @@ export function getLatestVisibleTimestampMs({
   return latest;
 }
 
+/** The rewind group a render item belongs to, when a rewind dropped it. */
+export function getRenderItemRewoundGroupId(
+  item: RenderItem,
+): string | undefined {
+  for (const message of item.sourceMessages) {
+    const groupId = (message as { rewoundGroupId?: unknown }).rewoundGroupId;
+    if (typeof groupId === "string" && groupId) return groupId;
+  }
+  return undefined;
+}
+
 export function getDisplayRenderItems(
   items: readonly RenderItem[],
-  options: { thinkingItemsVisible: boolean },
+  options: {
+    thinkingItemsVisible: boolean;
+    /** Rewound groups whose rows are shown; others stay collapsed. */
+    expandedRewoundGroups?: ReadonlySet<string>;
+  },
 ): readonly RenderItem[] {
-  return options.thinkingItemsVisible
-    ? items
-    : items.filter((item) => item.type !== "thinking");
+  const expanded = options.expandedRewoundGroups;
+  // Nested groups: a group is enclosed by the group that owns its cut. A row
+  // shows only when every enclosing group is expanded; a header additionally
+  // needs its own group's enclosures but not its own toggle.
+  const parentByGroup = new Map<string, string>();
+  for (const item of items) {
+    const groupId = getRenderItemRewoundGroupId(item);
+    if (!groupId || parentByGroup.has(groupId)) continue;
+    for (const message of item.sourceMessages) {
+      const parent = (message as { rewoundParentGroupId?: unknown })
+        .rewoundParentGroupId;
+      if (typeof parent === "string" && parent) {
+        parentByGroup.set(groupId, parent);
+        break;
+      }
+    }
+  }
+  const enclosuresExpanded = (groupId: string | undefined): boolean => {
+    const seen = new Set<string>();
+    let current = groupId;
+    while (current && !seen.has(current)) {
+      if (!expanded?.has(current)) return false;
+      seen.add(current);
+      current = parentByGroup.get(current);
+    }
+    return true;
+  };
+  const shows = (item: RenderItem): boolean => {
+    if (!options.thinkingItemsVisible && item.type === "thinking") {
+      return false;
+    }
+    const groupId = getRenderItemRewoundGroupId(item);
+    if (!groupId) return true;
+    // The synthetic header row follows its enclosures; its body rows also
+    // follow its own toggle.
+    if (item.type === "system" && item.subtype === "rewound_group") {
+      return enclosuresExpanded(parentByGroup.get(groupId));
+    }
+    return enclosuresExpanded(groupId);
+  };
+  // Callers memoize on identity: an unchanged list must come back as-is.
+  return items.every(shows) ? items : items.filter(shows);
 }

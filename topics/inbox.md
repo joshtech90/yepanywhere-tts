@@ -99,7 +99,10 @@ acknowledges that exact ID with `nonHumanUserTurnMessageId` on the existing
 mark-seen request. Both attention surfaces disappear together. A normal
 mark-seen request does not acknowledge a delivery; an old-turn acknowledgement
 cannot erase a newer delivery. A missing/unrenderable turn or failed
-acknowledgement keeps the receipt and reports an error. There is no permanent
+acknowledgement keeps the receipt and reports an error. A request that names a
+turn is answered with `acknowledged`, true only when that exact receipt was
+cleared, so a client learns that a stale or unknown id left the flag standing;
+a request that names none omits the field, as does a server predating it. There is no permanent
 quiet flag after acknowledgement and no separate entry for every delivery.
 
 Without the capability, clients show no delivery flag and send no delivery

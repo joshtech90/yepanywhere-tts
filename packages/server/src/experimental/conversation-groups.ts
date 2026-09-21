@@ -1,8 +1,18 @@
 import { createHash } from "node:crypto";
-import type {
-  Content,
-  ConversationMessage,
-  ActivityState,
+import {
+  MAX_FAILURE_EXIT_CODE,
+  MAX_FAILURE_MESSAGE_LENGTH,
+  MAX_ID_LENGTH,
+  MAX_MEDIA_DESCRIPTION_LENGTH,
+  MAX_MESSAGE_CONTENT_ITEMS,
+  MAX_TEXT_LENGTH,
+  MAX_TOOL_NAME_LENGTH,
+  MAX_UNKNOWN_KIND_LENGTH,
+  MIN_FAILURE_EXIT_CODE,
+  TimestampSchema,
+  type Content,
+  type ConversationMessage,
+  type ActivityState,
 } from "@yep-anywhere/shared/experimental/simple-client.generated";
 import type {
   Message,
@@ -27,15 +37,14 @@ export function boundedText(text: string, count: number): string {
 
 export function derivedId(prefix: string, source: string): string {
   const id = `${prefix}:${source}`;
-  return Array.from(id).length <= 256
+  return Array.from(id).length <= MAX_ID_LENGTH
     ? id
     : `${prefix}:sha256:${createHash("sha256").update(source).digest("hex")}`;
 }
 
 function timestamp(message: Message | undefined): string | null {
   const value = message?.timestamp;
-  if (!value || !/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value))
-    return null;
+  if (!value || !TimestampSchema.safeParse(value).success) return null;
   const date = new Date(value);
   return Number.isFinite(date.getTime()) && date.toISOString() === value
     ? value
@@ -78,9 +87,11 @@ function group(id: string, role: "user" | "agent", date: string | null): Group {
 function append(target: Group, content: Content): void {
   // Reserve the last row for an honest omission notice. Never silently discard
   // a late failure after the content-count ceiling is reached.
-  if (target.message.content.length >= 63) {
+  if (target.message.content.length >= MAX_MESSAGE_CONTENT_ITEMS - 1) {
+    // A row ceiling is not byte pressure: the message reports `truncated` and
+    // carries the omission notice, and coverage stays honest without claiming
+    // a payload limit the request never approached.
     target.dropped = true;
-    target.byteLimited = true;
     target.droppedFailure ||= content.kind === "failure";
     target.message.truncated = true;
     return;
@@ -106,14 +117,14 @@ function text(
   format: "plain" | "markdown",
 ): void {
   flushActivity(target);
-  const bounded = boundedText(value, 16000);
+  const bounded = boundedText(value, MAX_TEXT_LENGTH);
   target.message.truncated ||= bounded !== value;
   target.byteLimited ||= bounded !== value;
   if (bounded) append(target, { kind: "text", format, text: bounded });
 }
 
 function failureText(target: Group, value: string): string {
-  const bounded = boundedText(value, 2048);
+  const bounded = boundedText(value, MAX_FAILURE_MESSAGE_LENGTH);
   target.message.truncated ||= bounded !== value;
   target.byteLimited ||= bounded !== value;
   return bounded;
@@ -128,7 +139,7 @@ function unsupported(target: Group, sourceType: string): void {
     originalKind: "unsupported-content",
     raw: {
       kind: "unsupported-content",
-      sourceType: boundedText(sourceType, 128),
+      sourceType: boundedText(sourceType, MAX_UNKNOWN_KIND_LENGTH),
       message: "Open the full client for this content",
     },
   });
@@ -179,10 +190,12 @@ function tool(target: Group, item: ToolCallItem): void {
     const exit = getCommandResultMeta(item.toolResult?.structured).exitCode;
     append(target, {
       kind: "failure",
-      toolName: boundedText(item.toolName, 128) || "Tool",
+      toolName: boundedText(item.toolName, MAX_TOOL_NAME_LENGTH) || "Tool",
       message,
       exitCode:
-        Number.isInteger(exit) && exit! >= -2147483648 && exit! <= 2147483647
+        Number.isInteger(exit) &&
+        exit! >= MIN_FAILURE_EXIT_CODE &&
+        exit! <= MAX_FAILURE_EXIT_CODE
           ? exit!
           : null,
     });
@@ -192,11 +205,14 @@ function tool(target: Group, item: ToolCallItem): void {
     const available =
       media.state === "stored" &&
       media.id.length > 0 &&
-      boundedText(media.id, 256) === media.id;
+      boundedText(media.id, MAX_ID_LENGTH) === media.id;
     append(target, {
       kind: "media",
       mediaId: available ? media.id : derivedId("unavailable", item.id),
-      description: boundedText(media.filename || "Tool result media", 512),
+      description: boundedText(
+        media.filename || "Tool result media",
+        MAX_MEDIA_DESCRIPTION_LENGTH,
+      ),
       availability: available ? "available" : "unavailable",
     });
   }
@@ -215,7 +231,7 @@ export interface GroupedConversation {
   byteLimitedMessageIds: ReadonlySet<string>;
 }
 
-/** A new data projection over existing semantic rows. No renderer or store. */
+/** A data projection over existing semantic rows. No renderer or store. */
 export function groupConversation(
   items: RenderItem[],
   sources: Message[],
@@ -330,7 +346,9 @@ export function groupConversation(
     const blockIndex =
       item.type === "tool_call" && Array.isArray(sourceContent)
         ? sourceContent.findIndex((block) => block.id === item.id)
-        : Number(item.id.slice(getMessageId(source).length + 1)) || 0;
+        : item.type === "text" || item.type === "thinking"
+          ? (item.sourceBlockIndex ?? 0)
+          : 0;
     while (
       extras[extraIndex] &&
       (extras[extraIndex]!.position < position ||

@@ -13,8 +13,6 @@ export interface ArtifactViewerConfig {
   expiryHours?: number;
   /** Days a new link lives; presence enables the day-unit control. */
   expiryDays?: number;
-  /** Whether a grant that states no ownership deletes its directory. */
-  deleteOnExpiry?: boolean;
   /** Presence enables the static vhost table. */
   vhosts?: ArtifactVhost[];
   /** Optional apex such as graehl.org; empty means name.localhost only. */

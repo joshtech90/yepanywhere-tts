@@ -49,13 +49,21 @@ function fakeProcess(
  * nested API message, never at the top level. A fixture that flattens it hides
  * exactly the defect this suite exists to catch.
  */
-function claudeAssistantMessage(usage: Record<string, number>): SDKMessage {
+function claudeAssistantMessage(
+  usage: Record<string, number>,
+  frame: { responseId?: string; parentToolUseId?: string } = {},
+): SDKMessage {
   return {
     type: "assistant",
     uuid: "assistant-1",
     session_id: "session-1",
-    parent_tool_use_id: null,
-    message: { role: "assistant", content: [], usage },
+    parent_tool_use_id: frame.parentToolUseId ?? null,
+    message: {
+      ...(frame.responseId ? { id: frame.responseId } : {}),
+      role: "assistant",
+      content: [],
+      usage,
+    },
   } as unknown as SDKMessage;
 }
 
@@ -827,6 +835,95 @@ describe("CacheMissBillingMonitor", () => {
     expect(addCacheMissBillingEvent.mock.calls.at(-1)?.[1]).toMatchObject({
       outcome: "expected-cache-hit",
       completeProbabilitySample: true,
+    });
+  });
+
+  it("judges a streamed multi-block response once, not per block", async () => {
+    const { monitor, addCacheMissBillingEvent } = monitorWith({
+      enabled: true,
+      minimumWastedTokens: 2000,
+      recentActivityMinutes: 0,
+    });
+    const process = fakeProcess();
+
+    monitor.observeMessage(
+      process,
+      claudeAssistantMessage(
+        { input_tokens: 32, cache_read_input_tokens: 173_141 },
+        { responseId: "msg_a" },
+      ),
+    );
+    monitor.observeUserTurnStarted(process);
+    // One API response, streamed as three content-block frames that all
+    // repeat the same usage (observed 2026-09-18: cache write 7056, 174,981
+    // read). Only the first frame carries new information.
+    const usage = {
+      input_tokens: 32,
+      cache_read_input_tokens: 174_981,
+      cache_creation_input_tokens: 7056,
+    };
+    for (let block = 0; block < 3; block++) {
+      monitor.observeMessage(
+        process,
+        claudeAssistantMessage(usage, { responseId: "msg_b" }),
+      );
+    }
+
+    await waitFor(() => expect(addCacheMissBillingEvent).toHaveBeenCalled());
+    expect(addCacheMissBillingEvent).toHaveBeenCalledTimes(1);
+    expect(addCacheMissBillingEvent.mock.calls[0]?.[1]).toMatchObject({
+      outcome: "expected-cache-hit",
+      wastedInputTokens: 0,
+    });
+  });
+
+  it("ignores subagent frames so they cannot move the session baseline", async () => {
+    const { monitor, addCacheMissBillingEvent } = monitorWith({
+      enabled: true,
+      minimumWastedTokens: 2000,
+      recentActivityMinutes: 0,
+    });
+    const process = fakeProcess();
+
+    monitor.observeMessage(
+      process,
+      claudeAssistantMessage(
+        { input_tokens: 32, cache_read_input_tokens: 153_145 },
+        { responseId: "msg_parent_1" },
+      ),
+    );
+    monitor.observeUserTurnStarted(process);
+    // A Task subagent's much smaller prompt streams through the same process
+    // between two top-level responses.
+    monitor.observeMessage(
+      process,
+      claudeAssistantMessage(
+        {
+          input_tokens: 2,
+          cache_read_input_tokens: 78_180,
+          cache_creation_input_tokens: 1262,
+        },
+        { responseId: "msg_sub_1", parentToolUseId: "toolu_task" },
+      ),
+    );
+    monitor.observeMessage(
+      process,
+      claudeAssistantMessage(
+        {
+          input_tokens: 32,
+          cache_read_input_tokens: 153_145,
+          cache_creation_input_tokens: 1888,
+        },
+        { responseId: "msg_parent_2" },
+      ),
+    );
+
+    await waitFor(() => expect(addCacheMissBillingEvent).toHaveBeenCalled());
+    expect(addCacheMissBillingEvent).toHaveBeenCalledTimes(1);
+    expect(addCacheMissBillingEvent.mock.calls[0]?.[1]).toMatchObject({
+      outcome: "expected-cache-hit",
+      wastedInputTokens: 32,
+      expectedInputCost: { expectedUncachedPrefixTokens: 1888 },
     });
   });
 });

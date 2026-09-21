@@ -110,6 +110,13 @@ identity fidelity when they have no cheap title. Unknown title/full-prompt,
 message count, and tail detail fields are omitted from retained responses.
 Known client details survive these partial observations.
 
+These bounds are per session, not per reader, so a reader that fronts several
+authoritative roots — a sandboxed Codex project's private root alongside the
+global one — hands the indexed base row and the question deferral to every root
+it asks. A wrapper that answers with fewer arguments than it received silently
+puts its own projects back on an unbounded question read while every other
+project keeps the bound.
+
 On the existing complete-request path, providers without a lightweight reader
 retain their existing complete-summary
 fallback. This preserves provider behavior while allowing providers with large

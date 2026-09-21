@@ -156,6 +156,19 @@ export function providerHostCapability({
   return { supported: true };
 }
 
+export function providerHostEnabled({
+  env = process.env,
+  platform = process.platform,
+} = {}) {
+  const configured = env.YEP_PROVIDER_HOST_ENABLED?.trim().toLowerCase();
+  if (configured === "true") return true;
+  if (configured === "false") return false;
+  if (configured) {
+    throw new Error("YEP_PROVIDER_HOST_ENABLED must be true or false");
+  }
+  return platform === "linux";
+}
+
 export function assertProviderSocketPath(path, platform = process.platform) {
   const limit = platform === "darwin" ? 103 : 107;
   if (Buffer.byteLength(path) > limit)

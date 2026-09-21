@@ -169,7 +169,12 @@ rule.
 `AGENT_LAUNCHER=yepanywhere` says which launcher started the session, and
 selects the launcher-scoped agent instruction file. `AGENT_LAUNCH_HARNESS`
 identifies the harness family launched by YA's shared provider host (`claude`,
-`codex`, `gemini`, `grok`, `opencode`, or `pi`). `AGENT_LAUNCH_MODEL` and
+`codex`, `gemini`, `grok`, `opencode`, or `pi`). A provider variant reports the
+harness that runs it, so `claude-gateway` and `claude-ollama` say `claude`,
+`codex-oss` says `codex`, and `gemini-acp` says `gemini`; the same answer is
+published whether the session was launched through the provider host or
+in-process, and whether it is read from this marker or from own-session
+inspection. `AGENT_LAUNCH_MODEL` and
 `AGENT_LAUNCH_EFFORT` record the explicit model and effort selected at that
 launch; they are omitted when YA has no explicit value and intentionally remain
 unchanged after a live model or effort switch. The host replaces inherited
@@ -274,7 +279,7 @@ value, because the child has no other way to express one.
 | `WHISPER_MODEL` / `WHISPER_DEVICE` / `WHISPER_COMPUTE_TYPE` | Local Whisper tuning. `ya-whisper` runs through the committed pixi `stt` environment; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap` if the import probe fails. |
 | `PARAKEET_MODEL` / `PARAKEET_DEVICE` | Local NVIDIA Parakeet fallback model and device policy. `ya-parakeet` uses the same pixi `stt` environment with the Transformers Parakeet requirements; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-parakeet` if the import probe fails, then loads the fallback model before advertising the backend. Authenticated browser UI may send a per-request Parakeet model id. Defaults: `nvidia/parakeet-tdt-0.6b-v3`, `auto`. |
 | `NEMO_MODEL` / `NEMO_DEVICE` | Local NeMo Parakeet fallback model and device policy. `ya-nemo` uses the same pixi `stt` environment plus the heavier NeMo add-on; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-nemo` if the import probe fails, then loads the fallback model before advertising the backend. The same browser Parakeet model selector may send a per-request model id. Defaults: `nvidia/parakeet-tdt-0.6b-v3`, `auto`. |
-| `GRANITE_MODEL` / `GRANITE_DEVICE` | Local IBM Granite Speech model and device policy. `ya-granite` uses the same pixi `stt` environment plus torchaudio and PEFT; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-granite` if the import probe fails. The browser sends no per-request model id for this backend, so these settings are authoritative. Defaults: `ibm-granite/granite-speech-4.1-2b`, `auto`. |
+| `GRANITE_MODEL` / `GRANITE_DEVICE` | Local IBM Granite Speech model and device policy. `ya-granite` uses the same pixi `stt` environment plus torchaudio and PEFT; when explicitly enabled, YA runs `pixi run -e stt stt-bootstrap-granite` if the import probe fails. The browser sends no per-request model id for this backend, so these settings choose the model for every YA-client dictation; like the other warm-worker families, a direct authenticated API request that names a `model` still overrides them for that request. `GRANITE_DEVICE` has no per-request form at all. Defaults: `ibm-granite/granite-speech-4.1-2b`, `auto`. |
 | `GRANITE_KEYWORD_BIAS` | Constant logit boost on Granite keyword-prefix tokens after the learned `Keywords:` prompt. Default `1.0`. `0` disables the processor and keeps prompt biasing only. |
 
 See [pluggable-speech-recognition.md](pluggable-speech-recognition.md) for

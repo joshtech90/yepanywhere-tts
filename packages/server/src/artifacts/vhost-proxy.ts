@@ -1,5 +1,6 @@
 import { request as httpRequest } from "node:http";
 import { Readable } from "node:stream";
+import { vhostExternalProtocol } from "./vhosts.js";
 
 const HOP_BY_HOP = new Set([
   "connection",
@@ -13,7 +14,10 @@ const HOP_BY_HOP = new Set([
   "http2-settings",
 ]);
 
-function outgoingHeaders(request: Request): Record<string, string | string[]> {
+function outgoingHeaders(
+  request: Request,
+  clientAddress: string | undefined,
+): Record<string, string | string[]> {
   const headers: Record<string, string | string[]> = {};
   request.headers.forEach((value, key) => {
     if (HOP_BY_HOP.has(key.toLowerCase())) return;
@@ -27,15 +31,30 @@ function outgoingHeaders(request: Request): Record<string, string | string[]> {
   const host = request.headers.get("host");
   if (host) headers.host = host;
   headers["x-forwarded-host"] = host ?? "";
-  headers["x-forwarded-proto"] = new URL(request.url).protocol.replace(":", "");
-  headers["x-forwarded-for"] = "127.0.0.1";
+  headers["x-forwarded-proto"] = vhostExternalProtocol(
+    new URL(request.url).hostname,
+  );
+  // The app is behind however many proxies actually carried the request: the
+  // operator's tunnel names the visitor, and YA appends the peer it answered.
+  // An unknown peer adds no hop rather than claiming loopback, so an address
+  // in this chain is always one a proxy on the path really saw.
+  const chain = [request.headers.get("x-forwarded-for"), clientAddress]
+    .filter(Boolean)
+    .join(", ");
+  if (chain) headers["x-forwarded-for"] = chain;
+  else delete headers["x-forwarded-for"];
   return headers;
 }
 
-/** Reverse-proxy `request` to loopback `port`, preserving the incoming Host. */
+/**
+ * Reverse-proxy `request` to loopback `port`, preserving the incoming Host.
+ * `clientAddress` is the peer YA answered, which the upstream sees as the last
+ * forwarded-for hop.
+ */
 export function proxyLoopbackVhost(
   incoming: Request,
   port: number,
+  clientAddress?: string,
 ): Promise<Response> {
   if (incoming.headers.get("upgrade"))
     return Promise.resolve(
@@ -49,7 +68,7 @@ export function proxyLoopbackVhost(
         port,
         path: `${url.pathname}${url.search}`,
         method: incoming.method,
-        headers: outgoingHeaders(incoming),
+        headers: outgoingHeaders(incoming, clientAddress),
       },
       (res) => {
         const headers = new Headers();

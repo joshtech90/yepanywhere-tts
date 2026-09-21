@@ -131,3 +131,38 @@ export function splitUrlSegments(
 export function containsLinkifiableUrl(text: string): boolean {
   return /https?:\/\/|www\./i.test(text);
 }
+
+export interface LinkifyToHtmlOptions extends SplitUrlSegmentsOptions {
+  /**
+   * Anchors open a new tab (`target="_blank" rel="noopener noreferrer"`).
+   * Required so each surface states its answer: terminal output does open a
+   * new tab, while the sanitized Markdown augment cannot, since its anchor
+   * allowlist carries neither attribute.
+   */
+  external: boolean;
+}
+
+/**
+ * Render text as HTML with bare `http(s)` URLs turned into anchors, escaping
+ * everything through the caller's escaper.
+ *
+ * Text and href both pass through `escapeHtml`; only the anchor markup is
+ * added, so the visible text still reads exactly as written.
+ */
+export function linkifyToHtml(
+  text: string,
+  options: LinkifyToHtmlOptions,
+  escapeHtml: (text: string) => string,
+): string {
+  if (!containsLinkifiableUrl(text)) return escapeHtml(text);
+  const anchorAttributes = options.external
+    ? ' target="_blank" rel="noopener noreferrer"'
+    : "";
+  return splitUrlSegments(text, options)
+    .map((segment) =>
+      segment.type === "url" && segment.href
+        ? `<a href="${escapeHtml(segment.href)}"${anchorAttributes}>${escapeHtml(segment.text)}</a>`
+        : escapeHtml(segment.text),
+    )
+    .join("");
+}

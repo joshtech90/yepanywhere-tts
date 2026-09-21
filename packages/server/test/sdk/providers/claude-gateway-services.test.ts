@@ -84,6 +84,36 @@ describe("Claude Gateway services", () => {
     });
   });
 
+  it("keeps the window but names no backend when only max_model_len is advertised", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        catalogResponse([
+          {
+            id: "qwen3-coder-30b",
+            object: "model",
+            owned_by: "sglang",
+            max_model_len: 161_072,
+          },
+        ]),
+      ),
+    );
+    await ClaudeGatewayProvider.configureGatewayServices({
+      services: [service()],
+      defaultServiceId: "vllm",
+    });
+    const provider = new ExposedClaudeGatewayProvider({
+      ensureReady: async () => null,
+    });
+
+    await expect(provider.getAvailableModels()).resolves.toMatchObject([
+      { id: "qwen3-coder-30b", contextWindow: 161_072 },
+    ]);
+    const env = provider.getLaunchSettings("qwen3-coder-30b")?.env;
+    expect(env).toMatchObject({ CLAUDE_CODE_MAX_CONTEXT_TOKENS: "161072" });
+    expect(env).not.toHaveProperty("AGENT_LAUNCH_BACKEND");
+  });
+
   it("prefers declared sizes over whatever the endpoint advertises", async () => {
     vi.stubGlobal(
       "fetch",

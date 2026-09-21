@@ -1,3 +1,4 @@
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import {
   type ReactNode,
   useCallback,
@@ -48,9 +49,10 @@ import { PublicShareManagerModal } from "./PublicShareManagerModal";
 import { SessionMenu } from "./SessionMenu";
 import { LegacySessionShareModal } from "./SessionShareModal";
 import { SessionStatusBadge } from "./StatusBadge";
+import { ClearloopRemainingBadge } from "./ClearloopRemainingBadge";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 import styles from "./SessionListItem.module.css";
-import { useSessionApps } from "../lib/sessionApps";
+import { useSessionHasApp } from "../lib/sessionApps";
 
 export interface SessionNavigationIntent {
   event: React.MouseEvent<HTMLAnchorElement>;
@@ -110,6 +112,8 @@ interface SessionListItemProps {
 
   // Actions (menu hidden when all undefined)
   isStarred?: boolean;
+  /** Remaining `/clearloop` iterations; shows a green count badge. */
+  clearloop?: SessionClearloopBadge;
   isArchived?: boolean;
   onToggleStar?: () => void;
   onToggleArchive?: () => void;
@@ -216,6 +220,7 @@ export function SessionListItem({
   openNonHumanUserTurn = false,
   // Actions
   isStarred: isStarredProp,
+  clearloop,
   isArchived: isArchivedProp,
   onToggleStar,
   onToggleArchive,
@@ -243,7 +248,7 @@ export function SessionListItem({
   publicShareControlsVisible = false,
 }: SessionListItemProps) {
   const { t } = useI18n();
-  const { value: sessionApps } = useSessionApps(
+  const hasSessionApp = useSessionHasApp(
     `${basePath}/${projectId}/${sessionId}`,
   );
   const navigate = useNavigate();
@@ -311,15 +316,16 @@ export function SessionListItem({
   const publicShareMenuVisible =
     publicShareManagementAvailable || publicShareCreationAvailable;
 
-  // Focus input when entering edit mode
-  useEffect(() => {
-    if (isEditing) {
-      setTimeout(() => {
-        renameInputRef.current?.focus();
-        renameInputRef.current?.select();
-      }, 0);
-    }
-  }, [isEditing]);
+  // Take focus in the commit that creates the rename input rather than a
+  // timer later: entering edit mode means the user is about to type, and a
+  // key struck before focus arrives reaches the session list instead. The
+  // select() keeps rename's replace-the-title behaviour.
+  const attachRenameInput = useCallback((input: HTMLInputElement | null) => {
+    renameInputRef.current = input;
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, []);
 
   const hasUnread = hasUnreadProp;
 
@@ -834,7 +840,7 @@ export function SessionListItem({
       <div className={styles.body}>
         {isEditing ? (
           <input
-            ref={renameInputRef}
+            ref={attachRenameInput}
             type="text"
             className="session-rename-input"
             value={renameValue}
@@ -880,6 +886,9 @@ export function SessionListItem({
                     </span>
                   )}
                   {titleContent ?? <span>{visibleTitle}</span>}
+                  {clearloop !== undefined && (
+                    <ClearloopRemainingBadge badge={clearloop} />
+                  )}
                   {hasDraft && (
                     <span className="session-draft-badge">Draft</span>
                   )}
@@ -1019,8 +1028,11 @@ export function SessionListItem({
                     </span>
                   )}
                   <span>{visibleTitle}</span>
+                  {clearloop !== undefined && (
+                    <ClearloopRemainingBadge badge={clearloop} />
+                  )}
                 </span>
-                {sessionApps.latest && (
+                {hasSessionApp && (
                   <span className={styles.appChip}>
                     {t("sessionRightPaneApps")}
                   </span>

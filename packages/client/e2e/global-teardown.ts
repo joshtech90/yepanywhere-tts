@@ -1,6 +1,9 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { stopProviderHostRuntime } from "./support/provider-host-runtime.js";
+import {
+  providerHostRuntimeDir,
+  stopProviderHostRuntime,
+} from "./support/provider-host-runtime.js";
 import { presentUiCaptures } from "./support/ui-capture.js";
 
 import { getE2ERunDirectory } from "./support/run-directory.js";
@@ -74,7 +77,7 @@ export default async function globalTeardown() {
 
   // The provider host detached into its own process group, so the signals
   // above never reached it, and nothing else owns this run's runtime directory.
-  await stopProviderHostRuntime(join(tempDir, "provider-host"));
+  await stopProviderHostRuntime(providerHostRuntimeDir(tempDir));
 
   if (keepTemp) {
     console.log(`[E2E] Keeping temp directory for debugging: ${tempDir}`);

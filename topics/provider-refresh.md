@@ -164,7 +164,67 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
-Current source refresh, 2026-09-10 (0.154.0):
+Subset extension, 2026-09-19 (still 0.154.0 source, 0.155.1 binary): the
+checked-in subset gained `ThreadRevertParams`, `ThreadRevertResponse`, and
+`ThreadRevertedNotification` for the in-place `thread/revert` rewind
+([session-rewind](session-rewind.md)). All three exist unchanged in the pinned
+`rust-v0.154.0` source (`app-server-protocol/src/protocol/v2/thread.rs`,
+`common.rs`) and in the installed 0.155.1 generator, so no other generated
+file moved and no version marker changes; `pnpm codex:protocol:check` is
+clean. Approved by graehl in the session-rewind follow-up request.
+
+Current compatibility audit, 2026-09-18 (0.155.1):
+
+- Installed Codex is `codex-cli 0.155.1`. The official `rust-v0.155.1` tag peels
+  to commit `be2951ea34f0d295ed0becf97079f92fa5f6950e`, 220 commits past
+  `rust-v0.154.0`. Only `compatibleThroughVersion` advances to `0.155.1`;
+  `expectedVersion` and the reference checkout stay at `0.154.0` because the
+  checked-in protocol source needs no refresh.
+- `pnpm codex:protocol:check` passes against the installed binary with no
+  generated subset drift: regenerating from 0.155.1's own
+  `app-server generate-ts` yields byte-identical artifacts for YA's
+  `ResponseItem`-rooted type closure.
+- Every app-server protocol change in the release is additive and outside what
+  YA consumes: a thread attachment API (`thread/attachment/{add,list,remove}`
+  plus a `thread/attachment/updated` notification), `memory/status`,
+  `userVerification/cancel`, and a `prompt_hash` field on
+  `FeedbackUploadResponse`. No request, notification, or field YA sends or reads
+  was removed or reshaped.
+- Durable transcript types gain optional fields only:
+  `SessionMeta.runtime_workspace_roots`, `TurnContextItem.disabled_plugin_ids`,
+  and the v2-only `generation_id` on image-generation items. YA's
+  `codex-schema` objects are non-strict and several are explicitly
+  `passthrough()`, so added keys neither fail parsing nor change rendering.
+  `ThreadSettingsSnapshot` and `ThreadSettingsOverrides` likewise gain
+  `runtime_workspace_roots` and `disabled_plugin_ids`.
+- The deferred 0.154.0 persisted-JSONL census now runs: 66,237 rows across 26
+  local 0.154.0 sessions parse against `CodexSessionEntrySchema` with no
+  failures and no entry or response-item payload type outside the known union.
+  No `configuration_update` item has appeared in a local rollout yet. No
+  0.155.1 session exists locally, so re-run the census once one does.
+- Security content in the release is Windows-sandbox hardening YA does not
+  exercise on this host: blocked WSL interop escapes from restricted filesystem
+  sandboxes, filesystem-root read-deny fixes, sandbox identity/runtime
+  permission fixes, and removal of the Windows `/sandbox-add-read-dir` command.
+  No Linux/macOS sandbox or approval contract YA drives changed shape.
+- The authenticated no-token `model/list` returns six models with `gpt-6-astra`
+  default at medium effort: Astra, Sol, Terra, Luna,
+  `gpt-daybreak-blue-latest`, and `gpt-5.5`. The 0.154.0 probe saw seven, and
+  the bundled catalog drops `gpt-5.4-mini` and `gpt-5.2` in this release, so the
+  shrink is upstream retirement rather than YA drift. Every returned id is
+  already ranked in `PREFERRED_MODEL_ORDER`, and the retired ids survive only in
+  version-gated discovery-failure fallback lists, which are reachable only when
+  authenticated discovery fails.
+- Response-item field set, reasoning-effort levels, service tiers, and input
+  modalities match YA's existing metadata, so no fallback constant changed.
+
+Status: no YA runtime change is needed for Codex 0.155.1. Follow-on work stays
+as recorded for 0.154.0 (honor `ordinaryUsageAllowed`; decide whether Daybreak
+deserves a YA surface), plus one new product decision: whether the
+discovery-failure fallbacks should stop offering `gpt-5.2` and `gpt-5.4-mini`
+now that upstream has dropped them from the bundled catalog.
+
+Previous source refresh, 2026-09-10 (0.154.0):
 
 - Installed Codex is `0.154.0`. The official `rust-v0.154.0` tag peels to commit
   `6b9826e3a`. Root `expectedVersion`, `compatibleThroughVersion`, and the
@@ -868,7 +928,52 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current source refresh, 2026-09-16:
+Current compatibility audit, 2026-09-18 (Claude Code 2.1.276):
+
+- The independently installed `claude` is `2.1.276`; the SDK-native executable
+  YA resolves first is still Claude Code `2.1.273` from
+  `@anthropic-ai/claude-agent-sdk` `0.3.273`. The standalone binary matters only
+  when the bundled one is absent, so this audit checks 2.1.276 as a launchable
+  executable rather than as a dependency bump. Root
+  `claudeCode.compatibleThroughVersion` advances to `2.1.276`;
+  `claudeAgentSdkVersion` stays `0.3.273`.
+- `claude --help` is byte-identical between the locally retained `2.1.273`,
+  `2.1.274`, and `2.1.276` executables, so no startup flag the SDK passes
+  changed its name, form, or accepted position.
+- A no-turn handshake driven through SDK `0.3.273` against each executable
+  (`pathToClaudeCodeExecutable` pointed at the version directory) returns
+  identical results for 2.1.273 and 2.1.276: the same five-row catalog —
+  `default`, `opus[1m]`, `claude-fable-5-1[1m]`, `sonnet`, `haiku`, with
+  `default` resolving to `claude-opus-5[1m]` — the same effort levels and
+  fast/auto-mode flags, and the same 87-command inventory. `/goal` is still
+  offered natively, which is the condition `withClaudeGoalAlias()` steps aside
+  for. No fallback constant changed.
+- The experimental usage control request returns the same key set from both
+  executables, differing only in JSON key order: `rate_limits` with `five_hour`,
+  `seven_day`, `extra_usage`, `limits[]`, `spend`, `model_scoped`,
+  `seven_day_breakdown`, `member_dashboard_available`, and the account's null
+  named buckets. Every field `normalizeClaudeSubscriptionUsage` reads is
+  present and unchanged.
+- Persisted-schema coverage holds as far as local rollouts reach: 1,300
+  transcript rows written by Claude Code `2.1.274` parse against
+  `claude-sdk-schema` with no failures and no entry type outside the known
+  union. Nothing has been written by `2.1.275` or `2.1.276` yet, so re-run the
+  census once a session exists.
+- No token-consuming turn was run; the handshake, help diff, and usage call are
+  all no-turn paths.
+- Next trigger, not taken here: `@anthropic-ai/claude-agent-sdk` `0.3.277` is
+  published. Its declared surfaces add `McpServerProvenance` (an `mcpServer`
+  `{name, source}` pair on permission requests and a `source` on
+  `McpServerStatus`, explicitly untrusted display text), a
+  `projectConfigRoot` option, `SDKStartupFailureReason`, and tool-schema
+  churn; `TaskOutputInput`/`REPLInput` leave the tool-input union. Adopting it
+  is a dependency bump plus its own audit.
+
+Status: Claude Code 2.1.276 is compatible with YA's consumed startup flags,
+model catalog, command inventory, usage response, and transcript schema. No YA
+source changed; only `claudeCode.compatibleThroughVersion` advances.
+
+Previous source refresh, 2026-09-16:
 
 - `@anthropic-ai/claude-agent-sdk` was refreshed from `0.3.258` to `0.3.273`;
   the SDK-native executable reports Claude Code `2.1.273`, the same version as

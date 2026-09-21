@@ -275,7 +275,6 @@ test("omits expiry controls and writes when older metadata lacks the field", asy
     // An older server advertises neither unit, so no expiry control appears.
     delete body.artifactViewer.expiryHours;
     delete body.artifactViewer.expiryDays;
-    delete body.artifactViewer.deleteOnExpiry;
     await route.fulfill({ response, json: body });
   });
   await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);

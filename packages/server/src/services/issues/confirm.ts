@@ -1,5 +1,5 @@
 import type { IssueSettings } from "@yep-anywhere/shared";
-import type { IssueStore } from "./IssueStore.js";
+import type { IssueStore, PendingConfirmation } from "./IssueStore.js";
 import type { IssueCredentials } from "./credentials.js";
 
 /**
@@ -36,12 +36,6 @@ export interface IssueConfirmerDeps {
   fetch?: typeof fetch;
 }
 
-interface PendingRow {
-  project_id: string;
-  provider: string;
-  ref_key: string;
-}
-
 /** The site a bare key belongs to, or null when none is configured. */
 function jiraBase(settings: IssueSettings): string | null {
   const site = settings.confirmation?.jiraSite?.trim().replace(/\/+$/, "");
@@ -67,7 +61,7 @@ export class IssueConfirmer {
   }
 
   /** Answer one reference. Never throws; an error is a verdict, not a crash. */
-  private async ask(row: PendingRow): Promise<ConfirmationVerdict> {
+  private async ask(row: PendingConfirmation): Promise<ConfirmationVerdict> {
     const settings = this.deps.settings();
     const provider = row.provider === "jira" ? "jira" : "github";
     const credential = await this.deps.credentials.resolve(provider);
@@ -103,7 +97,7 @@ export class IssueConfirmer {
 
   /** Where to ask, how to authenticate, and where the summary lives. */
   private request(
-    row: PendingRow,
+    row: PendingConfirmation,
     settings: IssueSettings,
   ): {
     url: string;
@@ -112,9 +106,9 @@ export class IssueConfirmer {
   } | null {
     if (row.provider === "jira") {
       const base = jiraBase(settings);
-      if (!base || !/^[A-Z][A-Z0-9_]+-[1-9]\d*$/.test(row.ref_key)) return null;
+      if (!base || !/^[A-Z][A-Z0-9_]+-[1-9]\d*$/.test(row.refKey)) return null;
       return {
-        url: `${base}/rest/api/3/issue/${encodeURIComponent(row.ref_key)}?fields=summary`,
+        url: `${base}/rest/api/3/issue/${encodeURIComponent(row.refKey)}?fields=summary`,
         headers: (token, current) => ({
           // Jira Cloud pairs the account email with the API token.
           Authorization: `Basic ${Buffer.from(
@@ -129,7 +123,7 @@ export class IssueConfirmer {
             : undefined,
       };
     }
-    const parts = row.ref_key.match(/^([^/\s]+)\/([^/\s#]+)#([1-9]\d*)$/);
+    const parts = row.refKey.match(/^([^/\s]+)\/([^/\s#]+)#([1-9]\d*)$/);
     if (!parts) return null;
     return {
       // The issues endpoint answers for pull requests too.
@@ -146,12 +140,7 @@ export class IssueConfirmer {
 
   /** Queue one reference to be asked about again, by explicit request only. */
   recheck(projectId: string, provider: string, refKey: string): void {
-    this.store.run(
-      "UPDATE issue_confirmations SET state='pending' WHERE project_id=? AND provider=? AND ref_key=?",
-      projectId,
-      provider,
-      refKey,
-    );
+    this.store.requeueConfirmation(projectId, provider, refKey);
   }
 
   /** Run a drain, coalescing concurrent callers into one pass. */
@@ -161,7 +150,7 @@ export class IssueConfirmer {
       this.again = true;
       return;
     }
-    this.draining = this.drain()
+    this.draining = this.pass()
       .catch(() => {})
       .finally(() => {
         this.draining = undefined;
@@ -172,27 +161,25 @@ export class IssueConfirmer {
       });
   }
 
-  /** Awaitable single pass, used by tests and by an explicit recheck. */
+  /**
+   * Awaitable drain, used by tests and by an explicit recheck. Coalesced like
+   * `schedule()` and then awaited to quiescence: a caller arriving while a
+   * pass is in flight adds a follow-up pass rather than a second loop over the
+   * same pending rows, which would ask the tracker twice about each of them.
+   */
   async drain(): Promise<void> {
+    this.schedule();
+    while (this.draining) await this.draining;
+  }
+
+  /** One pass over the pending rows, `BATCH` at a time. */
+  private async pass(): Promise<void> {
     while (!this.closed && this.enabled()) {
-      const pending = this.store.rows(
-        "SELECT project_id,provider,ref_key FROM issue_confirmations WHERE state='pending' ORDER BY ref_key LIMIT ?",
-        BATCH,
-      ) as unknown as PendingRow[];
+      const pending = this.store.pendingConfirmations(BATCH);
       if (!pending.length) return;
       for (const row of pending) {
         if (this.closed || !this.enabled()) return;
-        const verdict = await this.ask(row);
-        this.store.run(
-          "UPDATE issue_confirmations SET state=?,title=?,detail=?,checked_at=? WHERE project_id=? AND provider=? AND ref_key=?",
-          verdict.state,
-          verdict.title ?? null,
-          verdict.detail ?? null,
-          Date.now(),
-          row.project_id,
-          row.provider,
-          row.ref_key,
-        );
+        this.store.recordConfirmation(row, await this.ask(row));
       }
     }
   }

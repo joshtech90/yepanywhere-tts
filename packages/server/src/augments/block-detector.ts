@@ -29,6 +29,29 @@ export interface StreamingList {
   startOffset: number;
 }
 
+/**
+ * Match a line that opens a fenced code block, returning the fence run and its
+ * info string, or null when the line opens no fence.
+ *
+ * CommonMark forbids a backtick inside a backtick fence's info string, which is
+ * what keeps a line that is an inline code span (```like this```) from reading
+ * as the start of a code block that swallows everything after it. A tilde fence
+ * carries no such restriction.
+ */
+function codeFenceOpening(
+  line: string,
+): { fence: string; info: string } | null {
+  const backtick = line.match(/^(`{3,})([^`]*)$/);
+  if (backtick?.[1]) {
+    return { fence: backtick[1], info: backtick[2] ?? "" };
+  }
+  const tilde = line.match(/^(~{3,})(.*)$/);
+  if (tilde?.[1]) {
+    return { fence: tilde[1], info: tilde[2] ?? "" };
+  }
+  return null;
+}
+
 type BlockState =
   | { kind: "none" }
   | { kind: "paragraph"; startOffset: number }
@@ -193,13 +216,13 @@ export class BlockDetector {
 
     // Check for code fence - need complete first line to detect
     if (hasCompleteLine) {
-      const fenceMatch = firstLine.match(/^(`{3,}|~{3,})(.*)$/);
-      if (fenceMatch?.[1]) {
+      const opening = codeFenceOpening(firstLine);
+      if (opening) {
         this.state = {
           kind: "code",
           startOffset: this.offset,
-          lang: normalizeCodeBlockLanguage(fenceMatch[2]) ?? "",
-          fence: fenceMatch[1],
+          lang: normalizeCodeBlockLanguage(opening.info) ?? "",
+          fence: opening.fence,
         };
         // Try to complete in this same call
         return this.tryCompleteCodeBlock();
@@ -266,7 +289,7 @@ export class BlockDetector {
 
     // Could become a code fence
     if (/^[`~]+$/.test(line)) return true;
-    if (/^(`{3,}|~{3,})(.*)$/.test(line)) return true;
+    if (codeFenceOpening(line)) return true;
 
     // Could become a list (need to check if just the marker or with space)
     if (line === "-" || line === "*") return true;
@@ -646,7 +669,7 @@ export class BlockDetector {
     if (line === "") return false;
 
     // Code fence - check for start of fence pattern
-    if (/^(`{3,}|~{3,})(.*)$/.test(line)) return true;
+    if (codeFenceOpening(line)) return true;
 
     // Heading
     if (/^#{1,6}\s/.test(line)) return true;
@@ -687,7 +710,7 @@ export class BlockDetector {
 
   private determineBlockType(line: string): CompletedBlock["type"] {
     if (/^#{1,6}\s/.test(line)) return "heading";
-    if (/^(`{3,}|~{3,})/.test(line)) return "code";
+    if (codeFenceOpening(line)) return "code";
     if (/^[-*]\s/.test(line) || /^\d+\.\s/.test(line)) return "list";
     if (line.startsWith("> ") || line === ">") return "blockquote";
     if (this.isHorizontalRule(line)) return "hr";
@@ -695,8 +718,7 @@ export class BlockDetector {
   }
 
   private extractCodeLang(line: string): string | undefined {
-    const match = line.match(/^(`{3,}|~{3,})(.*)/);
-    return normalizeCodeBlockLanguage(match?.[2]);
+    return normalizeCodeBlockLanguage(codeFenceOpening(line)?.info);
   }
 
   private finalizeCurrentBlock(): CompletedBlock {

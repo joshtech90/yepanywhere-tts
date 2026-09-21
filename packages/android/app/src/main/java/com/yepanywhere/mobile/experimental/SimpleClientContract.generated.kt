@@ -209,6 +209,7 @@ data class ConversationQuery(
 )
 
 object SimpleClientContract {
+    const val CONVERSATION_API_REVISION = "simple-client-spike-1"
     const val MAX_SNAPSHOT_BYTES = 262144
     fun decodeSnapshot(encoded: String): SnapshotEnvelope {
         require(encoded.toByteArray(Charsets.UTF_8).size <= MAX_SNAPSHOT_BYTES) { "Snapshot byte limit exceeded" }

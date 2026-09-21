@@ -35,8 +35,8 @@ idea without turning Project Settings into a general override framework.
   project heartbeat messages, most recent first.
 - The server accepts intervals from 1 through 1,440 minutes and heartbeat
   messages up to 2,000 characters. Empty explicit messages are invalid.
-- Project Settings is reachable from the project card's ellipsis or context
-  menu and from the session header menu. A client that does not observe the
+- Project Settings is reachable from the project card's gear button and from
+  the session header menu. A client that does not observe the
   `project-session-defaults` capability hides those entries and makes no
   unsupported request.
 - The interval and message can inherit independently. The UI shows the current

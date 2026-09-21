@@ -1,3 +1,4 @@
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { writeStdinRenderer } from "../WriteStdinRenderer";
@@ -34,10 +35,12 @@ describe("WriteStdinRenderer", () => {
   it("renders poll intent for empty chars", () => {
     render(
       <div>
-        {writeStdinRenderer.renderToolUse(
-          { session_id: 90210, chars: "" },
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare({
+            input: { session_id: 90210, chars: "" },
+            status: "pending",
+          })
+          .renderToolUse(renderContext)}
       </div>,
     );
 
@@ -48,15 +51,17 @@ describe("WriteStdinRenderer", () => {
   it("shows linked command when available", () => {
     render(
       <div>
-        {writeStdinRenderer.renderToolUse(
-          {
-            session_id: 90210,
-            chars: "",
-            linked_command:
-              "pnpm vitest packages/server/test/api/sessions.test.ts",
-          },
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare({
+            input: {
+              session_id: 90210,
+              chars: "",
+              linked_command:
+                "pnpm vitest packages/server/test/api/sessions.test.ts",
+            },
+            status: "pending",
+          })
+          .renderToolUse(renderContext)}
       </div>,
     );
 
@@ -66,17 +71,20 @@ describe("WriteStdinRenderer", () => {
   it("shows linked origin label for PTY-backed reads", () => {
     render(
       <div>
-        {writeStdinRenderer.renderToolUse(
-          {
-            session_id: 37863,
-            chars: "",
-            linked_tool_name: "Read",
-            linked_file_path: "packages/client/src/hooks/useGlobalSessions.ts",
-            linked_command:
-              "sed -n '1,260p' packages/client/src/hooks/useGlobalSessions.ts",
-          },
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare({
+            input: {
+              session_id: 37863,
+              chars: "",
+              linked_tool_name: "Read",
+              linked_file_path:
+                "packages/client/src/hooks/useGlobalSessions.ts",
+              linked_command:
+                "sed -n '1,260p' packages/client/src/hooks/useGlobalSessions.ts",
+            },
+            status: "pending",
+          })
+          .renderToolUse(renderContext)}
       </div>,
     );
 
@@ -93,17 +101,21 @@ describe("WriteStdinRenderer", () => {
   it("summarizes a detached script poll as still running, not No output", () => {
     const detachEnvelope =
       "Script running with cell ID 53\nWall time 30.0 seconds\nOutput:\n";
-    expect(writeStdinRenderer.getResultSummary?.(detachEnvelope, false)).toBe(
-      "still running · 30s",
-    );
+    expect(
+      writeStdinRenderer
+        .prepare(
+          recordFromLegacyArgs(undefined, detachEnvelope, false, "complete"),
+        )
+        .getResultSummary() ?? "",
+    ).toBe("still running · 30s");
 
     render(
       <div>
-        {writeStdinRenderer.renderToolResult(
-          detachEnvelope,
-          false,
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare(
+            recordFromLegacyArgs(undefined, detachEnvelope, false, "complete"),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
     expect(
@@ -113,33 +125,59 @@ describe("WriteStdinRenderer", () => {
 
   it("puts the runtime in the summary line whenever it is known", () => {
     expect(
-      writeStdinRenderer.getResultSummary?.(
-        "Script completed\nWall time 27.0 seconds\nOutput:\nline one\nline two\n",
-        false,
-      ),
+      writeStdinRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            undefined,
+            "Script completed\nWall time 27.0 seconds\nOutput:\nline one\nline two\n",
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "",
     ).toBe("2 lines · 27s");
     expect(
-      writeStdinRenderer.getResultSummary?.(
-        "Wall time 30.0 seconds\nOutput:\n",
-        false,
-      ),
+      writeStdinRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            undefined,
+            "Wall time 30.0 seconds\nOutput:\n",
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "",
     ).toBe("No output · 30s");
   });
 
   it("suppresses exit 0 in the summary per the command-metadata contract", () => {
-    const summary = writeStdinRenderer.getResultSummary?.(
-      "Chunk ID: ff710e\nProcess exited with code 0\nOutput:\nready\n",
-      false,
-    );
+    const summary =
+      writeStdinRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            undefined,
+            "Chunk ID: ff710e\nProcess exited with code 0\nOutput:\nready\n",
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "";
 
     expect(summary).toBe("1 lines");
   });
 
   it("summarizes a nonzero envelope exit code with runtime", () => {
-    const summary = writeStdinRenderer.getResultSummary?.(
-      "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 2\nOutput:\nboom\n",
-      false,
-    );
+    const summary =
+      writeStdinRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            undefined,
+            "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 2\nOutput:\nboom\n",
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "";
 
     expect(summary).toBe("rc=2 in 0.0518 seconds");
   });
@@ -147,18 +185,23 @@ describe("WriteStdinRenderer", () => {
   it("renders a unified-exec chunk record as its output text with a meta line", () => {
     const { container } = render(
       <div>
-        {writeStdinRenderer.renderToolResult(
-          {
-            chunk_id: "d935b8",
-            wall_time_seconds: 22.4,
-            session_id: 40452,
-            exit_code: 0,
-            output: "hyp-tokens: first=85 min=42\n",
-            stdout: "hyp-tokens: first=85 min=42\n",
-          },
-          false,
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                chunk_id: "d935b8",
+                wall_time_seconds: 22.4,
+                session_id: 40452,
+                exit_code: 0,
+                output: "hyp-tokens: first=85 min=42\n",
+                stdout: "hyp-tokens: first=85 min=42\n",
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -170,16 +213,23 @@ describe("WriteStdinRenderer", () => {
   });
 
   it("summarizes a failed chunk record as rc=N with runtime", () => {
-    const summary = writeStdinRenderer.getResultSummary?.(
-      {
-        chunk_id: "aa",
-        wall_time_seconds: 30.0016,
-        exit_code: 2,
-        output: "boom\n",
-        stdout: "boom\n",
-      },
-      false,
-    );
+    const summary =
+      writeStdinRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            undefined,
+            {
+              chunk_id: "aa",
+              wall_time_seconds: 30.0016,
+              exit_code: 2,
+              output: "boom\n",
+              stdout: "boom\n",
+            },
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "";
 
     expect(summary).toBe("rc=2 in 30s");
   });
@@ -187,11 +237,16 @@ describe("WriteStdinRenderer", () => {
   it("renders output text without JSON escaping artifacts", () => {
     render(
       <div>
-        {writeStdinRenderer.renderToolResult(
-          "Chunk ID: ff710e\nWall time: 0.0518 seconds\nOutput:\nready\n",
-          false,
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              "Chunk ID: ff710e\nWall time: 0.0518 seconds\nOutput:\nready\n",
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -201,11 +256,16 @@ describe("WriteStdinRenderer", () => {
   it("extracts output section from envelope metadata", () => {
     render(
       <div>
-        {writeStdinRenderer.renderToolResult(
-          "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
-          false,
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -218,11 +278,16 @@ describe("WriteStdinRenderer", () => {
   it("renders ANSI escapes from extracted shell output", () => {
     const { container } = render(
       <div>
-        {writeStdinRenderer.renderToolResult(
-          "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nplain\n\u001b[32mgreen bold\u001b[0m\n",
-          false,
-          renderContext,
-        )}
+        {writeStdinRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nplain\n\u001b[32mgreen bold\u001b[0m\n",
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -233,16 +298,21 @@ describe("WriteStdinRenderer", () => {
   it("renders PTY-backed read output as a file modal opener", () => {
     const { container } = render(
       <div>
-        {writeStdinRenderer.renderToolResult(
-          "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
-          false,
-          renderContext,
-          {
-            session_id: 37863,
-            linked_tool_name: "Read",
-            linked_file_path: "packages/client/src/hooks/useGlobalSessions.ts",
-          },
-        )}
+        {writeStdinRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              {
+                session_id: 37863,
+                linked_tool_name: "Read",
+                linked_file_path:
+                  "packages/client/src/hooks/useGlobalSessions.ts",
+              },
+              "Chunk ID: ff710e\nWall time: 0.0518 seconds\nProcess exited with code 0\nOutput:\nline 1\nline 2\n",
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 

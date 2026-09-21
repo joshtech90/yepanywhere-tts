@@ -1,7 +1,11 @@
 import type {
+  AgentActivity,
   DurableRecapMessage,
   DurableLocalCommandMessage,
   DurableSyntheticDoneMessage,
+  PendingInputType,
+  PermissionMode,
+  SessionOwnership,
 } from "@yep-anywhere/shared";
 import type { NotificationService } from "../notifications/index.js";
 import type { SDKMessage } from "../sdk/types.js";
@@ -241,9 +245,35 @@ export function mergeLocalCommandMessages(
       });
       insertAt = later < 0 ? merged.length : later;
     }
-    merged.splice(insertAt, 0, command as Message);
+    merged.splice(insertAt, 0, {
+      ...command,
+      ...enclosingRewoundGroup(merged[insertAt - 1]),
+    } as Message);
   }
   return merged;
+}
+
+/**
+ * A receipt that lands after a row a rewind dropped was written inside that
+ * cleared span, so it belongs to the same group rather than rendering as a
+ * live row between collapsed groups (topics/session-rewind.md).
+ */
+function enclosingRewoundGroup(previous: Message | undefined): {
+  rewoundGroupId?: string;
+  rewoundParentGroupId?: string;
+} {
+  const row = previous as
+    | { rewoundGroupId?: unknown; rewoundParentGroupId?: unknown }
+    | undefined;
+  const groupId = row?.rewoundGroupId;
+  if (typeof groupId !== "string" || !groupId) return {};
+  const parentId = row?.rewoundParentGroupId;
+  return {
+    rewoundGroupId: groupId,
+    ...(typeof parentId === "string" && parentId
+      ? { rewoundParentGroupId: parentId }
+      : {}),
+  };
 }
 
 export function mergeSessionOverlayMessages(
@@ -377,4 +407,101 @@ export function getEffectiveProviderUpdatedAt(
     processUpdatedAtMs > summaryUpdatedAtMs
     ? lastProviderContentTime.toISOString()
     : summaryUpdatedAt;
+}
+
+/** The live-process state a session row reads, and nothing else. */
+export interface SessionRuntimeProcess {
+  id: string;
+  permissionMode?: PermissionMode;
+  appliedPermissionMode?: PermissionMode;
+  modeVersion?: number;
+  recapAfterSeconds?: number;
+  state: { type: string };
+  isRetainingProviderWork(): boolean;
+  getPendingInputRequest(): { type: string } | null;
+}
+
+/** Who controls the session: this server's process, an external program, or nobody. */
+export function sessionOwnershipFromProcess(
+  process: SessionRuntimeProcess | undefined,
+  options: { isExternal?: boolean; fallback?: SessionOwnership } = {},
+): SessionOwnership {
+  if (process) {
+    return {
+      owner: "self",
+      processId: process.id,
+      permissionMode: process.permissionMode,
+      appliedPermissionMode: process.appliedPermissionMode,
+      modeVersion: process.modeVersion,
+      recapAfterSeconds: process.recapAfterSeconds,
+    };
+  }
+  if (options.isExternal) {
+    return { owner: "external" };
+  }
+  return options.fallback ?? { owner: "none" };
+}
+
+function pendingInputTypeFromProcess(
+  process: SessionRuntimeProcess | undefined,
+): PendingInputType | undefined {
+  const request = process?.getPendingInputRequest();
+  if (!request) {
+    return undefined;
+  }
+  return request.type === "tool-approval" ? "tool-approval" : "user-question";
+}
+
+function activityFromProcess(
+  process: SessionRuntimeProcess | undefined,
+): AgentActivity | undefined {
+  if (!process) {
+    return undefined;
+  }
+  const state = process.state.type;
+  if (state === "in-turn" || state === "waiting-input") {
+    return state;
+  }
+  // Idle with provider-retained background work (tasks, crons) reads as active,
+  // so a row shows the activity indicator while that work runs.
+  return state === "idle" && process.isRetainingProviderWork()
+    ? "in-turn"
+    : undefined;
+}
+
+export interface SessionRowRuntimeOverlay {
+  ownership: SessionOwnership;
+  pendingInputType: PendingInputType | undefined;
+  activity: AgentActivity | undefined;
+  hasUnread: boolean | undefined;
+}
+
+/**
+ * The fields every session-row projection derives from live process state.
+ * `providerUpdatedAt` is the pre-recap-overlay provider timestamp unread
+ * compares against (see hasUnreadProviderContent).
+ */
+export function sessionRowRuntimeOverlay(
+  process: SessionRuntimeProcess | undefined,
+  options: {
+    sessionId: string;
+    providerUpdatedAt: string;
+    notificationService?: NotificationService;
+    externalTracker?: { isExternal(sessionId: string): boolean };
+    fallbackOwnership?: SessionOwnership;
+  },
+): SessionRowRuntimeOverlay {
+  return {
+    ownership: sessionOwnershipFromProcess(process, {
+      isExternal: options.externalTracker?.isExternal(options.sessionId),
+      fallback: options.fallbackOwnership,
+    }),
+    pendingInputType: pendingInputTypeFromProcess(process),
+    activity: activityFromProcess(process),
+    hasUnread: hasUnreadProviderContent(
+      options.notificationService,
+      options.sessionId,
+      options.providerUpdatedAt,
+    ),
+  };
 }

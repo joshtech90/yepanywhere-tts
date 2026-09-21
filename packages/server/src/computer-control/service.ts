@@ -18,6 +18,7 @@ import { callComputerPipe, ComputerDeliveryError } from "./pipe.js";
 import {
   compareVersions,
   discoverComputerRelease,
+  isReleaseVersion,
   stageComputerRelease,
   type ComputerRelease,
   type ReleaseProgress,
@@ -73,6 +74,8 @@ export class ComputerControlService {
   private releaseAbort?: AbortController;
   private updateTimer?: ReturnType<typeof setTimeout>;
   private closed = false;
+  /** The last dropped installed version, so a hot read path warns once. */
+  private warnedReleaseVersion?: unknown;
   constructor(
     private readonly settings: ServerSettingsService,
     private readonly dataDir: string,
@@ -101,8 +104,27 @@ export class ComputerControlService {
   private now() {
     return this.deps.now?.() ?? Date.now();
   }
+  /** Settings are hand-editable JSON, so this read is where an installed
+   * version stops being arbitrary text: an uncomparable one is dropped rather
+   * than handed to `compareVersions`, which refuses anything but `x.y.z` and
+   * would otherwise fail every release check. Dropping it reports the
+   * installation as versionless, which the next successful install repairs. */
   config(): ComputerSettings {
-    return { ...defaults, ...this.settings.getSetting("computerControl") };
+    const config = {
+      ...defaults,
+      ...this.settings.getSetting("computerControl"),
+    };
+    const stored: unknown = config.releaseVersion;
+    if (stored !== undefined && !isReleaseVersion(stored)) {
+      if (this.warnedReleaseVersion !== stored) {
+        this.warnedReleaseVersion = stored;
+        console.warn(
+          `[computer-control] Ignoring installed version ${JSON.stringify(stored)}; it is not a released x.y.z version.`,
+        );
+      }
+      config.releaseVersion = undefined;
+    }
+    return config;
   }
   status() {
     return {
@@ -508,17 +530,17 @@ export class ComputerControlService {
         throw new Error("Computer control grant revoked during startup");
       if (
         "expectedGeneration" in request &&
-        request.expectedGeneration !== this.runtime.generation
+        request.expectedGeneration !== runtime.generation
       )
         throw new Error(
           "Resident generation changed; take a fresh observation",
         );
-      this.runtime.activity();
+      runtime.activity();
       nativeResult = await (this.deps.call ?? callComputerPipe)(
-        this.runtime.owner.pipe,
+        runtime.owner.pipe,
         { ...request, requestId: randomUUID() },
       );
-      this.runtime?.activity();
+      runtime.activity();
       if (
         nativeResult.sessionId !== runtime.owner.sessionId ||
         nativeResult.generation !== runtime.generation
@@ -546,7 +568,7 @@ export class ComputerControlService {
         nativeResult.accepted &&
         ["windows", "snapshot", "screenshot"].includes(request.operation)
       ) {
-        grant.generation = this.runtime.generation;
+        grant.generation = runtime.generation;
         if (request.operation === "snapshot") grant.references.clear();
         const collect = (value: unknown, depth = 0) => {
           if (depth > 20 || !value || typeof value !== "object") return;
@@ -571,7 +593,7 @@ export class ComputerControlService {
         contentItems.push({
           type: "inputImage",
           imageUrl: await (this.deps.image ?? readComputerImage)(
-            this.runtime.owner.artifactRoot,
+            runtime.owner.artifactRoot,
             nativeResult.data as Record<string, unknown>,
           ),
         });

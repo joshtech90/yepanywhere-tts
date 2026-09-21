@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PiProvider,
+  loweredEffortForRejection,
   piVersionUsesAgentSettled,
 } from "../../../src/sdk/providers/pi.js";
 
@@ -24,6 +25,7 @@ function makeStream(terminalEvent: "agent_end" | "agent_settled") {
     lastUsage: null,
     lastCostUsd: null,
     terminalEvent,
+    turnError: null,
     toolStates: new Map(),
   };
 }
@@ -115,6 +117,67 @@ describe("PiProvider event mapping", () => {
         type: "result",
         session_id: "legacy-pi-session",
       },
+    ]);
+  });
+});
+
+describe("thinking level a rejected pi turn retries at", () => {
+  // Captured from pi 0.85.1 driving vLLM 0.29 with reasoning_effort "high":
+  // the failure arrives as an assistant message_end, not as an event of its
+  // own, and the server names the whole set it does accept.
+  const VLLM_REFUSAL =
+    '400: {"message":"Unexpected reasoning effort high. Supported types are ' +
+    'xhigh (default), medium, and low.","type":"BadRequestError",' +
+    '"param":null,"code":400}';
+
+  it("takes the highest accepted level at or below the one refused", () => {
+    expect(loweredEffortForRejection(VLLM_REFUSAL, "high")).toBe("medium");
+    expect(loweredEffortForRejection(VLLM_REFUSAL, "max")).toBe("xhigh");
+  });
+
+  it("steps down one level when the server only says the level is wrong", () => {
+    expect(
+      loweredEffortForRejection("unsupported reasoning_effort", "high"),
+    ).toBe("medium");
+    // Nothing below the lowest level, so there is no retry to make.
+    expect(
+      loweredEffortForRejection("unsupported reasoning_effort", "low"),
+    ).toBeUndefined();
+  });
+
+  it("leaves an unrelated failure alone", () => {
+    expect(
+      loweredEffortForRejection("context length exceeded", "high"),
+    ).toBeUndefined();
+    // A level the server does accept is not a reason to lower anything.
+    expect(loweredEffortForRejection(VLLM_REFUSAL, "medium")).toBeUndefined();
+    expect(loweredEffortForRejection(VLLM_REFUSAL, undefined)).toBeUndefined();
+  });
+});
+
+describe("PiProvider turn failure reporting", () => {
+  it("carries pi's error message into the turn result", () => {
+    const provider = new PiProvider();
+    const stream = makeStream("agent_settled");
+    const mapEvent = (event: PiEvent) =>
+      mapPiEvent(provider, event, "pi-session", stream);
+
+    expect(
+      mapEvent({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          stopReason: "error",
+          errorMessage: "400: nope",
+        },
+      }),
+    ).toEqual([]);
+    expect(mapEvent({ type: "agent_settled" })).toEqual([
+      expect.objectContaining({ type: "result", error: "400: nope" }),
+    ]);
+    // The next turn starts clean rather than reporting the last one's failure.
+    expect(mapEvent({ type: "agent_settled" })).toEqual([
+      expect.not.objectContaining({ error: expect.anything() }),
     ]);
   });
 });

@@ -195,6 +195,54 @@ describe("observed Conversation source", () => {
     ).toBe(true);
     source.close();
   });
+  it("recovers from an unusable live record once the durable file holds it", async () => {
+    const h = harness();
+    const source = await h.open("s", h.invalidate, h.abort.signal);
+    await source.read(h.abort.signal);
+    h.event({
+      type: "message",
+      message: {
+        type: "assistant",
+        message: { role: "assistant", content: "No identity" },
+      },
+    });
+    await expect(source.read(h.abort.signal)).rejects.toThrow(
+      "Unreconciled live conversation",
+    );
+    h.setDurable({
+      sessionId: "s",
+      messages: [
+        { type: "user", uuid: "u", content: "Hello" },
+        {
+          type: "assistant",
+          uuid: "persisted",
+          message: { role: "assistant", content: "No identity" },
+        },
+      ],
+      activity: "unknown",
+      pendingRequests: [],
+      sourceCoverage: { complete: true, earlierOutsideScope: "no" },
+    });
+    h.event({
+      type: "state-change",
+      state: { type: "idle", since: new Date() },
+    });
+    const reconciled = await source.read(h.abort.signal);
+    expect(reconciled.messages.map((m) => m.uuid)).toEqual(["u", "persisted"]);
+    h.event({
+      type: "message",
+      message: {
+        type: "user",
+        uuid: "after",
+        message: { role: "user", content: "Later" },
+      },
+    });
+    expect(
+      (await source.read(h.abort.signal)).messages.map((m) => m.uuid),
+    ).toEqual(["u", "persisted", "after"]);
+    source.close();
+  });
+
   it("does not acquire a file after cancellation during catalog resolution", async () => {
     const abort = new AbortController();
     const readFile = vi.fn();

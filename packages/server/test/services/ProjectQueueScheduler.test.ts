@@ -431,6 +431,68 @@ describe("ProjectQueueScheduler", () => {
     expect(service.listProject(projectId).items).toEqual([]);
   });
 
+  it("runs a queued YA command instead of resuming with its command line", async () => {
+    const runs: unknown[] = [];
+    scheduler.setYaCommandRunner({
+      run: async (input) => {
+        runs.push(input);
+      },
+    });
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: {
+          text: "/clearloop 3 2: keep going",
+          yaCommand: { name: "clearloop", argument: "3 2: keep going" },
+        },
+      },
+    });
+
+    await waitFor(() => expect(runs).toHaveLength(1));
+    expect(runs[0]).toMatchObject({
+      sessionId: "session-1",
+      projectId,
+      projectPath: PROJECT_PATH,
+      command: { name: "clearloop", argument: "3 2: keep going" },
+      commandText: "/clearloop 3 2: keep going",
+    });
+    // The provider is never resumed with the command line as a prompt.
+    expect(supervisor.resumeCalls).toHaveLength(0);
+    await waitFor(() =>
+      expect(service.listProject(projectId).items).toEqual([]),
+    );
+  });
+
+  it("fails a queued YA command item with the session's refusal", async () => {
+    scheduler.setYaCommandRunner({
+      run: async () => {
+        throw new Error("claude does not support same-session rewind");
+      },
+    });
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: {
+          text: "/clear 7",
+          yaCommand: { name: "clear", argument: "7" },
+        },
+      },
+    });
+
+    await waitFor(() => {
+      const [item] = service.listProject(projectId).items;
+      expect(item?.status).toBe("failed");
+      expect(item?.lastError).toContain("same-session rewind");
+      // The command text survives for Retry.
+      expect(item?.message.text).toBe("/clear 7");
+    });
+    expect(supervisor.resumeCalls).toHaveLength(0);
+  });
+
   it("holds automatic existing-session work behind a done boundary", async () => {
     await scheduler.dispose();
     scheduler = new ProjectQueueScheduler({

@@ -3,7 +3,11 @@ import {
   ContentSearchPool,
   ContentSearchScan,
   MAX_CACHED_MATCHES_PER_SESSION,
+  scanDone,
+  type SessionScan,
 } from "./ContentSearchScan";
+
+const isDone = (entry: SessionScan | undefined) => !!entry && scanDone(entry);
 
 afterEach(() => vi.useRealTimers());
 const hit = {
@@ -58,7 +62,7 @@ it("aborts hidden work without losing its cursor or accepting a late response", 
       .slice(2)
       .every(([, options]) => JSON.parse(options.body).cursor === "tail"),
   ).toBe(true);
-  expect(scan.entries.get("a")?.done).toBe(true);
+  expect(isDone(scan.entries.get("a"))).toBe(true);
   scan.stop();
 });
 
@@ -249,9 +253,7 @@ it("fans out session reads within a shared limit and never overlaps a session's 
   expect(peak).toBe(4);
   expect(fetch).toHaveBeenCalledTimes(12);
   expect(
-    [...first.entries.values(), ...second.entries.values()].every(
-      (entry) => entry.done,
-    ),
+    [...first.entries.values(), ...second.entries.values()].every(scanDone),
   ).toBe(true);
   first.stop();
   second.stop();
@@ -285,7 +287,7 @@ it("refines whole text beyond the first excerpt, then resumes the same tail for 
   second.update(new Map([["a", "1"]]));
   await vi.advanceTimersByTimeAsync(100);
   expect(fetch).toHaveBeenCalledTimes(1);
-  expect(second.entries.get("a")?.done).toBe(true);
+  expect(isDone(second.entries.get("a"))).toBe(true);
   expect(second.entries.get("a")?.matches[0]?.preview).toContain(
     "needle extended",
   );
@@ -349,7 +351,7 @@ it("stops at the match cap, drops full text, and restarts only capped sessions f
   await vi.advanceTimersByTimeAsync(100);
   const large = first.entries.get("large")!;
   expect(large.matches).toHaveLength(MAX_CACHED_MATCHES_PER_SESSION);
-  expect(large.limited).toBe(true);
+  expect(large.phase).toEqual({ kind: "limited" });
   expect(large.matches.every((m) => m.searchText === undefined)).toBe(true);
   expect(large.retainedBytes).toBe(0);
   expect(fetch).toHaveBeenCalledTimes(9);
@@ -376,7 +378,7 @@ it("stops at the match cap, drops full text, and restarts only capped sessions f
     query: "ne",
     sessionId: "large",
   });
-  expect(second.entries.get("small")?.done).toBe(true);
+  expect(isDone(second.entries.get("small"))).toBe(true);
   second.stop();
 });
 
@@ -401,9 +403,8 @@ it("enforces a text-byte cap independently of the match count", async () => {
   await vi.advanceTimersByTimeAsync(100);
   expect(fetch).toHaveBeenCalledTimes(1);
   expect(scan.entries.get("a")).toMatchObject({
-    limited: true,
+    phase: { kind: "limited" },
     retainedBytes: 0,
-    done: true,
   });
   scan.stop();
 });
@@ -444,8 +445,8 @@ it("reuses the original cache when another character interrupts pending refineme
   last.update(wanted);
   await vi.advanceTimersByTimeAsync(100);
   expect(fetch).toHaveBeenCalledTimes(1);
+  expect(isDone(last.entries.get("a"))).toBe(true);
   expect(last.entries.get("a")).toMatchObject({
-    done: true,
     matches: [{ ...hit, preview: "needle", searchText: "needle" }],
   });
   last.stop();

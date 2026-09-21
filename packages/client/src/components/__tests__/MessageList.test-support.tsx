@@ -115,6 +115,8 @@ vi.mock("../../i18n", async (importOriginal) => ({
         conversationActivityActiveWithoutTime: "Working · {count} {activity}",
         conversationActivityComplete: "{duration} · {count} {activity} hidden",
         conversationActivityCompleteWithoutTime: "{count} {activity} hidden",
+        conversationActivityExpanded: "{duration} · {count} {activity}",
+        conversationActivityExpandedWithoutTime: "{count} {activity}",
         conversationActivityExpandTitle:
           "Show hidden activity in its original positions",
         conversationActivityCollapseTitle:

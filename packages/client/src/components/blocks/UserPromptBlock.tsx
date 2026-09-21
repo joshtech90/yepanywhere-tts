@@ -26,6 +26,8 @@ const MAX_CHARS = MAX_LINES * 100;
 
 interface Props {
   content: string | ContentBlock[];
+  /** Render id of this turn, for the turn index and same-session Clear entries. */
+  messageId?: string;
   projectPathLinks?: readonly ProjectPathLinkTarget[];
   onCorrect?: () => void;
   onCancelUnconfirmed?: () => void;
@@ -358,6 +360,7 @@ function CollapsibleText({
 
 function UserPromptActionButtons({
   actionsRef,
+  messageId,
   onCorrect,
   onCancelUnconfirmed,
   onTrimBefore,
@@ -370,6 +373,7 @@ function UserPromptActionButtons({
   extraActions,
 }: {
   actionsRef: RefObject<HTMLDivElement | null>;
+  messageId?: string;
   onCorrect?: () => void;
   onCancelUnconfirmed?: () => void;
   onTrimBefore?: () => void;
@@ -454,6 +458,7 @@ function UserPromptActionButtons({
       )}
       {((onForkAfter && onForkAfterSummary) || forkUnavailableMessage) && (
         <ForkTurnMenu
+          messageId={messageId}
           onForkBefore={onForkBefore}
           onForkAfter={onForkAfter}
           onForkAfterSummary={onForkAfterSummary}
@@ -567,6 +572,7 @@ function UserPromptText({
 
 export const UserPromptBlock = memo(function UserPromptBlock({
   content,
+  messageId,
   projectPathLinks,
   onCorrect,
   onCancelUnconfirmed,
@@ -633,6 +639,7 @@ export const UserPromptBlock = memo(function UserPromptBlock({
         </div>
         <UserPromptActionButtons
           actionsRef={actionPacking.actionsRef}
+          messageId={messageId}
           onCorrect={onCorrect}
           onCancelUnconfirmed={onCancelUnconfirmed}
           onTrimBefore={onTrimBefore}
@@ -698,6 +705,7 @@ export const UserPromptBlock = memo(function UserPromptBlock({
       </div>
       <UserPromptActionButtons
         actionsRef={actionPacking.actionsRef}
+        messageId={messageId}
         onCorrect={onCorrect}
         onCancelUnconfirmed={onCancelUnconfirmed}
         onTrimBefore={onTrimBefore}

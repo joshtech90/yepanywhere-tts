@@ -1,3 +1,4 @@
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import {
   cleanup,
   fireEvent,
@@ -12,6 +13,7 @@ import { I18nProvider } from "../../../../i18n";
 import { UI_KEYS } from "../../../../lib/storageKeys";
 import { TooltipLayer } from "../../../ui/TooltipLayer";
 import { editRenderer } from "../EditRenderer";
+import type { RenderContext } from "../../types";
 
 const mocks = vi.hoisted(() => ({
   useFileVersionControl: vi.fn(),
@@ -65,10 +67,18 @@ function rect(top: number): DOMRect {
     toJSON: () => ({}),
   };
 }
-if (!editRenderer.renderCollapsedPreview) {
+if (!editRenderer.operations.includes("renderCollapsedPreview")) {
   throw new Error("Edit renderer must provide collapsed preview");
 }
-const renderCollapsedPreview = editRenderer.renderCollapsedPreview;
+const renderCollapsedPreview = (
+  input: unknown,
+  result: unknown,
+  isError: boolean,
+  context: RenderContext,
+) =>
+  editRenderer
+    .prepare(recordFromLegacyArgs(input, result, isError))
+    .renderCollapsedPreview(context);
 
 describe("EditRenderer collapsed preview fallback", () => {
   beforeEach(() => {
@@ -650,84 +660,10 @@ describe("EditRenderer collapsed preview fallback", () => {
   });
 
   it("derives filename from raw patch when file_path is missing", () => {
-    const summary = editRenderer.getUseSummary?.({
-      _rawPatch: [
-        "*** Begin Patch",
-        "*** Update File: packages/client/src/components/Foo.tsx",
-        "@@",
-        "-const x = 1;",
-        "+const x = 2;",
-        "*** End Patch",
-      ].join("\n"),
-    } as never);
-
-    expect(summary).toBe("Foo.tsx");
-  });
-
-  it("summarizes multi-file raw Codex patches without implying the previous read", () => {
-    const summary = editRenderer.getUseSummary?.(
-      [
-        "*** Begin Patch",
-        "*** Update File: RegressionTests/AwesomeAlign/regtest-awesome-chi.yml",
-        "@@",
-        "+# checked chi",
-        "*** Update File: RegressionTests/AwesomeAlign/regtest-xmt-awesomealign.yml",
-        "@@",
-        "+# checked align",
-        "*** End Patch",
-      ].join("\n") as never,
-    );
-
-    expect(summary).toBe("regtest-awesome-chi.yml +1 files");
-  });
-
-  it("summarizes Codex fileChange inputs from changed paths", () => {
-    const summary = editRenderer.getUseSummary?.({
-      changes: [
-        {
-          path: "/repo/src/a.ts",
-          kind: "update",
-          diff: "@@ -1 +1 @@\n-a\n+b\n",
-        },
-        {
-          path: "/repo/src/b.ts",
-          kind: "update",
-          diff: "@@ -1 +1 @@\n-c\n+d\n",
-        },
-      ],
-    } as never);
-
-    expect(summary).toBe("a.ts +1 files");
-  });
-
-  it("keeps completed apply_patch summaries specific before rich hydration", () => {
-    const summary = editRenderer.getResultSummary?.(
-      { ok: true } as never,
-      false,
-      [
-        "*** Begin Patch",
-        "*** Update File: src/a.ts",
-        "@@",
-        "+const a = 1;",
-        "*** Update File: src/b.ts",
-        "@@",
-        "+const b = 1;",
-        "*** End Patch",
-      ].join("\n") as never,
-    );
-
-    expect(summary).toBe("a.ts +1 files");
-  });
-
-  it("shows raw patch filename in interactive summary when file_path is missing", () => {
-    if (!editRenderer.renderInteractiveSummary) {
-      throw new Error("Edit renderer must provide interactive summary");
-    }
-
-    render(
-      <div>
-        {editRenderer.renderInteractiveSummary(
-          {
+    const summary =
+      editRenderer
+        .prepare({
+          input: {
             _rawPatch: [
               "*** Begin Patch",
               "*** Update File: packages/client/src/components/Foo.tsx",
@@ -736,20 +672,119 @@ describe("EditRenderer collapsed preview fallback", () => {
               "+const x = 2;",
               "*** End Patch",
             ].join("\n"),
-            _structuredPatch: [
+          } as never,
+          status: "pending",
+        })
+        .getUseSummary() ?? "";
+
+    expect(summary).toBe("Foo.tsx");
+  });
+
+  it("summarizes multi-file raw Codex patches without implying the previous read", () => {
+    const summary =
+      editRenderer
+        .prepare({
+          input: [
+            "*** Begin Patch",
+            "*** Update File: RegressionTests/AwesomeAlign/regtest-awesome-chi.yml",
+            "@@",
+            "+# checked chi",
+            "*** Update File: RegressionTests/AwesomeAlign/regtest-xmt-awesomealign.yml",
+            "@@",
+            "+# checked align",
+            "*** End Patch",
+          ].join("\n") as never,
+          status: "pending",
+        })
+        .getUseSummary() ?? "";
+
+    expect(summary).toBe("regtest-awesome-chi.yml +1 files");
+  });
+
+  it("summarizes Codex fileChange inputs from changed paths", () => {
+    const summary =
+      editRenderer
+        .prepare({
+          input: {
+            changes: [
               {
-                oldStart: 1,
-                oldLines: 1,
-                newStart: 1,
-                newLines: 1,
-                lines: ["-const x = 1;", "+const x = 2;"],
+                path: "/repo/src/a.ts",
+                kind: "update",
+                diff: "@@ -1 +1 @@\n-a\n+b\n",
+              },
+              {
+                path: "/repo/src/b.ts",
+                kind: "update",
+                diff: "@@ -1 +1 @@\n-c\n+d\n",
               },
             ],
           } as never,
-          undefined,
-          false,
-          renderContext,
-        )}
+          status: "pending",
+        })
+        .getUseSummary() ?? "";
+
+    expect(summary).toBe("a.ts +1 files");
+  });
+
+  it("keeps completed apply_patch summaries specific before rich hydration", () => {
+    const summary =
+      editRenderer
+        .prepare(
+          recordFromLegacyArgs(
+            [
+              "*** Begin Patch",
+              "*** Update File: src/a.ts",
+              "@@",
+              "+const a = 1;",
+              "*** Update File: src/b.ts",
+              "@@",
+              "+const b = 1;",
+              "*** End Patch",
+            ].join("\n") as never,
+            { ok: true } as never,
+            false,
+            "complete",
+          ),
+        )
+        .getResultSummary() ?? "";
+
+    expect(summary).toBe("a.ts +1 files");
+  });
+
+  it("shows raw patch filename in interactive summary when file_path is missing", () => {
+    if (!editRenderer.operations.includes("renderInteractiveSummary")) {
+      throw new Error("Edit renderer must provide interactive summary");
+    }
+
+    render(
+      <div>
+        {editRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              {
+                _rawPatch: [
+                  "*** Begin Patch",
+                  "*** Update File: packages/client/src/components/Foo.tsx",
+                  "@@",
+                  "-const x = 1;",
+                  "+const x = 2;",
+                  "*** End Patch",
+                ].join("\n"),
+                _structuredPatch: [
+                  {
+                    oldStart: 1,
+                    oldLines: 1,
+                    newStart: 1,
+                    newLines: 1,
+                    lines: ["-const x = 1;", "+const x = 2;"],
+                  },
+                ],
+              } as never,
+              undefined,
+              false,
+            ),
+          )
+          .renderInteractiveSummary(renderContext)}
       </div>,
     );
 
@@ -757,7 +792,7 @@ describe("EditRenderer collapsed preview fallback", () => {
   });
 
   it("links an Edit block to its exact worktree diff", () => {
-    if (!editRenderer.renderInteractiveSummary) {
+    if (!editRenderer.operations.includes("renderInteractiveSummary")) {
       throw new Error("Edit renderer must provide interactive summary");
     }
     const structuredPatch = [
@@ -799,15 +834,18 @@ describe("EditRenderer collapsed preview fallback", () => {
             <Routes>
               <Route
                 path="/projects/:projectId/sessions/:sessionId"
-                element={editRenderer.renderInteractiveSummary(
-                  {
-                    file_path: "/repo/src/example.ts",
-                    _structuredPatch: structuredPatch,
-                  } as never,
-                  undefined,
-                  false,
-                  renderContext,
-                )}
+                element={editRenderer
+                  .prepare(
+                    recordFromLegacyArgs(
+                      {
+                        file_path: "/repo/src/example.ts",
+                        _structuredPatch: structuredPatch,
+                      } as never,
+                      undefined,
+                      false,
+                    ),
+                  )
+                  .renderInteractiveSummary(renderContext)}
               />
             </Routes>
           </I18nProvider>
@@ -824,7 +862,7 @@ describe("EditRenderer collapsed preview fallback", () => {
   });
 
   it("puts all multi-file patch targets in the interactive summary title", () => {
-    if (!editRenderer.renderInteractiveSummary) {
+    if (!editRenderer.operations.includes("renderInteractiveSummary")) {
       throw new Error("Edit renderer must provide interactive summary");
     }
 
@@ -834,32 +872,35 @@ describe("EditRenderer collapsed preview fallback", () => {
         projectPath="/repo"
         sessionId="session-1"
       >
-        {editRenderer.renderInteractiveSummary(
-          {
-            _rawPatch: [
-              "*** Begin Patch",
-              "*** Update File: /repo/src/a.ts",
-              "@@",
-              "+const a = 1;",
-              "*** Update File: /repo/src/b.ts",
-              "@@",
-              "+const b = 1;",
-              "*** End Patch",
-            ].join("\n"),
-            _structuredPatch: [
+        {editRenderer
+          .prepare(
+            recordFromLegacyArgs(
               {
-                oldStart: 1,
-                oldLines: 0,
-                newStart: 1,
-                newLines: 1,
-                lines: ["+const a = 1;"],
-              },
-            ],
-          } as never,
-          undefined,
-          false,
-          renderContext,
-        )}
+                _rawPatch: [
+                  "*** Begin Patch",
+                  "*** Update File: /repo/src/a.ts",
+                  "@@",
+                  "+const a = 1;",
+                  "*** Update File: /repo/src/b.ts",
+                  "@@",
+                  "+const b = 1;",
+                  "*** End Patch",
+                ].join("\n"),
+                _structuredPatch: [
+                  {
+                    oldStart: 1,
+                    oldLines: 0,
+                    newStart: 1,
+                    newLines: 1,
+                    lines: ["+const a = 1;"],
+                  },
+                ],
+              } as never,
+              undefined,
+              false,
+            ),
+          )
+          .renderInteractiveSummary(renderContext)}
       </SessionMetadataProvider>,
     );
 
@@ -868,7 +909,7 @@ describe("EditRenderer collapsed preview fallback", () => {
   });
 
   it("keeps pending multi-file edit summaries title-backed and clickable", () => {
-    if (!editRenderer.renderInteractiveSummary) {
+    if (!editRenderer.operations.includes("renderInteractiveSummary")) {
       throw new Error("Edit renderer must provide interactive summary");
     }
 
@@ -879,23 +920,26 @@ describe("EditRenderer collapsed preview fallback", () => {
         sessionId="session-1"
       >
         <I18nProvider>
-          {editRenderer.renderInteractiveSummary(
-            {
-              _rawPatch: [
-                "*** Begin Patch",
-                "*** Update File: /repo/src/a.ts",
-                "@@",
-                "+const a = 1;",
-                "*** Update File: /repo/src/b.ts",
-                "@@",
-                "+const b = 1;",
-                "*** End Patch",
-              ].join("\n"),
-            } as never,
-            undefined,
-            false,
-            renderContext,
-          )}
+          {editRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                {
+                  _rawPatch: [
+                    "*** Begin Patch",
+                    "*** Update File: /repo/src/a.ts",
+                    "@@",
+                    "+const a = 1;",
+                    "*** Update File: /repo/src/b.ts",
+                    "@@",
+                    "+const b = 1;",
+                    "*** End Patch",
+                  ].join("\n"),
+                } as never,
+                undefined,
+                false,
+              ),
+            )
+            .renderInteractiveSummary(renderContext)}
         </I18nProvider>
       </SessionMetadataProvider>,
     );
@@ -1120,11 +1164,16 @@ describe("EditRenderer collapsed preview fallback", () => {
 
     render(
       <div>
-        {editRenderer.renderToolResult(
-          { filePath: "notes.md", structuredPatch } as never,
-          false,
-          renderContext,
-        )}
+        {editRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              { filePath: "notes.md", structuredPatch } as never,
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 

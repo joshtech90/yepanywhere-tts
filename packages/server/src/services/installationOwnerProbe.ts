@@ -6,7 +6,11 @@ import { promisify } from "node:util";
 export interface InstallationOwnerProbe {
   /** Whether any process currently occupies the PID. */
   aliveState(pid: number): "alive" | "missing" | "other-user";
-  /** Platform start identity for the PID; null when unavailable. */
+  /**
+   * Platform start identity for the PID; null when the platform answered but
+   * supplied no usable identity. A failed probe rejects, for every PID and on
+   * every platform, so each caller decides whether it can proceed without one.
+   */
   startId(pid: number): Promise<string | null>;
 }
 
@@ -47,53 +51,38 @@ export function createDefaultOwnerProbe(
 
     async startId(pid: number): Promise<string | null> {
       if (platform === "linux") {
-        try {
-          const statLine = await readFile(`/proc/${pid}/stat`, "utf8");
-          // Fields after the parenthesized comm: overall field 22 is the
-          // process start time in clock ticks since boot.
-          const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
-          const startTime = afterComm.split(" ")[19];
-          return startTime || null;
-        } catch {
-          return null;
-        }
+        const statLine = await readFile(`/proc/${pid}/stat`, "utf8");
+        // Fields after the parenthesized comm: overall field 22 is the
+        // process start time in clock ticks since boot.
+        const afterComm = statLine.slice(statLine.lastIndexOf(")") + 2);
+        const startTime = afterComm.split(" ")[19];
+        return startTime || null;
       }
       if (platform !== "win32") {
         // macOS and other POSIX hosts have no /proc; ps runs only on the rare
         // stale-cleanup path, never per admission.
-        try {
-          const { stdout } = await runFile(
-            "ps",
-            ["-p", String(pid), "-o", "lstart="],
-            { encoding: "utf8", timeout: 5_000 },
-          );
-          return stdout.trim() || null;
-        } catch {
-          return null;
-        }
+        const { stdout } = await runFile(
+          "ps",
+          ["-p", String(pid), "-o", "lstart="],
+          { encoding: "utf8", timeout: 5_000 },
+        );
+        return stdout.trim() || null;
       }
       // Avoid Get-Process module auto-loading during isolated Windows startup.
       // Cold PowerShell under runner load can exceed the POSIX probe budget.
-      try {
-        const { stdout } = await runFile(
-          "powershell.exe",
-          [
-            "-NoLogo",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks`,
-          ],
-          { encoding: "utf8", timeout: 15_000 },
-        );
-        const startId = stdout.trim();
-        return /^\d+$/.test(startId) ? startId : null;
-      } catch (error) {
-        // Our own process is necessarily alive. Preserve the operational
-        // failure so startup reports its cause, rather than a false stale PID.
-        if (pid === process.pid) throw error;
-        return null;
-      }
+      const { stdout } = await runFile(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `[System.Diagnostics.Process]::GetProcessById(${pid}).StartTime.ToUniversalTime().Ticks`,
+        ],
+        { encoding: "utf8", timeout: 15_000 },
+      );
+      const startId = stdout.trim();
+      return /^\d+$/.test(startId) ? startId : null;
     },
   };
 }

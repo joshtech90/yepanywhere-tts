@@ -1,10 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../../hooks/useInlineMedia";
 import { useI18n } from "../../i18n";
 import type { ExplorationParent } from "../../lib/sessionDetail/explorationProjection";
 import { getPathBasename } from "../../lib/text";
-import { useImageResourceActions } from "../ImageResourceActions";
+import { LocalImageThumbnail } from "../LocalImageThumbnail";
 import { fetchLocalMediaBlob, LocalMediaModal } from "../LocalMediaModal";
 import styles from "./ExploredImageStrip.module.css";
 
@@ -60,61 +60,26 @@ function ExploredImageThumbnail({
   image: ExploredImage;
   onOpen: () => void;
 }) {
-  const { t } = useI18n();
   const transport = useCurrentSourceRuntime().transport;
-  const [url, setUrl] = useState<string | null>(null);
-  const [failed, setFailed] = useState(false);
   const loadBlob = useCallback(
     () => fetchLocalMediaBlob(image.path, undefined, "inline", transport),
     [image.path, transport],
   );
-  const imageActions = useImageResourceActions({
-    fileName: image.name,
-    filePath: image.path,
-    loadBlob,
-    onOpen,
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setUrl(null);
-    setFailed(false);
-    void loadBlob()
-      .then((blob) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setUrl(objectUrl);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-      if (objectUrl) URL.revokeObjectURL(objectUrl);
-    };
-  }, [loadBlob]);
 
   return (
     <div className={styles.item}>
-      <button
-        type="button"
-        className={styles.thumbnail}
-        aria-label={image.name}
+      <LocalImageThumbnail
+        alt={image.name}
+        ariaLabel={image.name}
+        buttonClassName={styles.thumbnail}
+        fileName={image.name}
+        filePath={image.path}
+        loadBlob={loadBlob}
+        onOpen={onOpen}
+        placeholderClassName={styles.placeholder}
         title={image.name}
-        onClick={onOpen}
-        onContextMenu={imageActions.handleContextMenu}
-      >
-        {url ? (
-          <img src={url} alt={image.name} draggable={false} />
-        ) : (
-          <span className={styles.placeholder}>
-            {failed ? t("inlineImageUnavailable") : t("inlineImageLoading")}
-          </span>
-        )}
-      </button>
+      />
       <span className={styles.caption}>{image.name}</span>
-      {imageActions.contextMenuElement}
     </div>
   );
 }

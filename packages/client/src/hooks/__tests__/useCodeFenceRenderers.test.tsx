@@ -1,6 +1,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
+import { RenderModeGlyph } from "../../components/ui/RenderModeGlyph";
 import {
   codeFenceRootClass,
   useCodeFenceRenderers,
@@ -111,6 +112,21 @@ describe("useCodeFenceRenderers", () => {
       toggle.click();
       expect(block.dataset.yaCodeView).toBe("rendered");
       expect(toggle.getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("draws the same glyph a React render-mode toggle draws", async () => {
+      render(
+        <Harness html={codeBlock("mermaid", "graph LR\nGlyph --&gt; Me")} />,
+      );
+      const toggle = await screen.findByRole("button", {
+        name: "Show diagram source",
+      });
+
+      const { container } = render(<RenderModeGlyph />);
+
+      expect(toggle.querySelector("svg")?.outerHTML).toBe(
+        container.querySelector("svg")?.outerHTML,
+      );
     });
 
     it("leaves source in place when the diagram does not parse", async () => {

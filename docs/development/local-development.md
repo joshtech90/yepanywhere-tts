@@ -110,6 +110,12 @@ ENABLED_PROVIDERS=claude pnpm dev
 # Disable voice input (microphone button)
 VOICE_INPUT=false pnpm dev
 
+# Opt into reload-safe provider hosting on macOS
+YEP_PROVIDER_HOST_ENABLED=true pnpm dev
+
+# Keep provider sessions inside the backend process on any platform
+YEP_PROVIDER_HOST_ENABLED=false pnpm dev
+
 # Combined example: Claude-only, no voice, dev profile
 ENABLED_PROVIDERS=claude VOICE_INPUT=false PORT=4000 YEP_PROFILE=dev pnpm dev
 ```
@@ -117,3 +123,9 @@ ENABLED_PROVIDERS=claude VOICE_INPUT=false PORT=4000 YEP_PROFILE=dev pnpm dev
 Environment variables:
 - `ENABLED_PROVIDERS` - Comma-separated list of provider names to expose (default: all). Valid names: `claude`, `claude-gateway`, `claude-ollama`, `codex`, `codex-oss`, `gemini`, `gemini-acp`, `opencode`, `grok`
 - `VOICE_INPUT` - Set to `false` to disable the voice input button server-side (default: `true`)
+- `YEP_PROVIDER_HOST_ENABLED` - Set to `true` or `false` to control shared
+  provider hosting. It defaults to `false` on macOS and `true` on Linux.
+  Disabled sessions use ordinary in-backend provider ownership and are not
+  reported as a degraded host. The setting takes effect on the next full dev
+  wrapper restart and does not change the default manual-only backend reload
+  behavior of `pnpm dev`.

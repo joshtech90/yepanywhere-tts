@@ -587,32 +587,43 @@ export class RelayProtocol {
 
   /**
    * Re-issue a read that the transport rejected because it was replacing its
-   * own socket. The request never reached the server, and `ensureConnected`
-   * joins the reconnect already in progress, so the retry rides the new
-   * socket rather than surfacing transport churn as a request failure. Only
-   * the idempotent methods retry; a mutation must not be replayed blind.
+   * own socket. The request never reached the server, and every read opens by
+   * awaiting `ensureConnected`, which joins the reconnect already in progress,
+   * so the second attempt rides the new socket rather than surfacing transport
+   * churn as a request failure.
    */
-  private async fetchThroughReconnect(
-    path: string,
-    init: RequestInit | undefined,
-  ): Promise<RelayResponse> {
+  private async retryReadThroughReconnect<T>(
+    run: () => Promise<T>,
+    signal?: AbortSignal | null,
+  ): Promise<T> {
     try {
-      return await this.fetchWithRedirects(path, init, 0);
+      return await run();
     } catch (error) {
-      const method = (init?.method ?? "GET").toUpperCase();
-      if (
-        !isConnectionReconnectingError(error) ||
-        (method !== "GET" && method !== "HEAD")
-      ) {
-        throw error;
-      }
+      if (!isConnectionReconnectingError(error)) throw error;
       // A caller that abandoned the read during the reconnect does not want it
       // re-issued on the new socket; retrying would spend the round trip the
       // abort was meant to save.
-      if (init?.signal?.aborted) throw relayAbortError(init.signal);
-      await this.transport.ensureConnected();
+      if (signal?.aborted) throw relayAbortError(signal);
+      return run();
+    }
+  }
+
+  /**
+   * Send a JSON request, retrying a read across a transport reconnect. Only
+   * the idempotent methods retry; a mutation must not be replayed blind.
+   */
+  private fetchThroughReconnect(
+    path: string,
+    init: RequestInit | undefined,
+  ): Promise<RelayResponse> {
+    const method = (init?.method ?? "GET").toUpperCase();
+    if (method !== "GET" && method !== "HEAD") {
       return this.fetchWithRedirects(path, init, 0);
     }
+    return this.retryReadThroughReconnect(
+      () => this.fetchWithRedirects(path, init, 0),
+      init?.signal,
+    );
   }
 
   /**
@@ -823,13 +834,7 @@ export class RelayProtocol {
    * retries once through a transport reconnect like the JSON reads above.
    */
   async fetchBlob(path: string): Promise<Blob> {
-    try {
-      return await this.fetchBlobOnce(path);
-    } catch (error) {
-      if (!isConnectionReconnectingError(error)) throw error;
-      await this.transport.ensureConnected();
-      return this.fetchBlobOnce(path);
-    }
+    return this.retryReadThroughReconnect(() => this.fetchBlobOnce(path));
   }
 
   private async fetchBlobOnce(path: string): Promise<Blob> {

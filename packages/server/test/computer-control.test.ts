@@ -9,7 +9,10 @@ import {
   callComputerPipe,
   ComputerDeliveryError,
 } from "../src/computer-control/pipe.js";
-import { readComputerImage } from "../src/computer-control/native.js";
+import {
+  installedPreview,
+  readComputerImage,
+} from "../src/computer-control/native.js";
 import { ServerSettingsService } from "../src/services/ServerSettingsService.js";
 
 const generation = "a".repeat(32);
@@ -256,6 +259,42 @@ describe("computer-control authority and lifecycle", () => {
     expect(call).toHaveBeenCalledTimes(2);
     expect(stop).not.toHaveBeenCalled();
   });
+  it("finishes an in-flight operation against the resident it dispatched on", async () => {
+    await enable();
+    const grant = service.select("selected", true, "codex")!;
+    await grant.call("computer_control", { operation: "windows" });
+    call.mockImplementationOnce(async (_pipe, request) => {
+      await service.stop();
+      return {
+        ...request,
+        schema: "machine-control/v0",
+        accepted: true,
+        sessionId: 1,
+        generation,
+        delivery: "confirmed",
+        effect: "not_applicable",
+        actualRoute: "windows.user_session/native",
+        data: { elements: [{ reference: "owned", hwnd: 42 }] },
+      };
+    });
+    const result = await grant.call("computer_control", {
+      operation: "snapshot",
+      hwnd: 42,
+    });
+    expect(result.success).toBe(true);
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(activity).toHaveBeenCalledTimes(4);
+    expect(
+      (
+        await grant.call("computer_control", {
+          operation: "invoke",
+          reference: "owned",
+          expectedGeneration: generation,
+        })
+      ).success,
+    ).toBe(true);
+    expect(start).toHaveBeenCalledTimes(2);
+  });
   it("rejects duplicate provider call IDs and persists settings without persisting grants", async () => {
     await enable();
     const grant = service.select("selected", true, "codex")!;
@@ -403,5 +442,45 @@ describe("native transport and artifact provenance", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("installed package location", () => {
+  const preview = {
+    packageDirectory: "staged",
+    trustedPublisher: "Example Publisher",
+  };
+  const packageId = "b".repeat(64);
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("places a version under the local application data instance", () => {
+    vi.stubEnv("LOCALAPPDATA", path.join(path.sep, "local"));
+    expect(
+      installedPreview(preview, "workstation", packageId).packageDirectory,
+    ).toBe(
+      path.join(
+        path.sep,
+        "local",
+        "MachineControl",
+        "packages",
+        "workstation",
+        "versions",
+        packageId,
+      ),
+    );
+  });
+
+  it("refuses an identity it cannot place", () => {
+    vi.stubEnv("LOCALAPPDATA", path.join(path.sep, "local"));
+    for (const identity of [undefined, "", "../escape", "B".repeat(64)])
+      expect(() => installedPreview(preview, "workstation", identity)).toThrow(
+        "Invalid installed package identity",
+      );
+    vi.stubEnv("LOCALAPPDATA", "");
+    expect(() => installedPreview(preview, "workstation", packageId)).toThrow(
+      "Invalid installed package identity",
+    );
   });
 });

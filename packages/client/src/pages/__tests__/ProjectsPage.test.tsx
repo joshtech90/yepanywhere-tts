@@ -6,6 +6,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { PROJECT_SESSION_DEFAULTS_CAPABILITY } from "@yep-anywhere/shared";
 import { PROJECT_CODE_NAMES_CAPABILITY } from "@yep-anywhere/shared";
+import { PROJECT_NAMES_CAPABILITY } from "@yep-anywhere/shared";
 import {
   act,
   cleanup,
@@ -55,15 +56,25 @@ const state = vi.hoisted(() => ({
   mockUseProjectQueues: vi.fn(),
   refetch: vi.fn(),
   updateProjectCodeName: vi.fn(),
+  addProject: vi.fn(),
+  navigate: vi.fn(),
 }));
 
 vi.mock("../../api/client", () => ({
   api: {
-    addProject: vi.fn(),
+    addProject: state.addProject,
     deleteProject: vi.fn(),
     updateProjectCodeName: state.updateProjectCodeName,
   },
 }));
+
+vi.mock("react-router-dom", async () => {
+  const actual =
+    await vi.importActual<typeof import("react-router-dom")>(
+      "react-router-dom",
+    );
+  return { ...actual, useNavigate: () => state.navigate };
+});
 
 vi.mock("../../lib/clientSummaryStore", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../lib/clientSummaryStore")>()),
@@ -196,6 +207,120 @@ describe("ProjectsPage", () => {
     state.refetch.mockReset();
     state.updateProjectCodeName.mockReset();
     state.updateProjectCodeName.mockResolvedValue({ assignments: [] });
+    state.addProject.mockReset();
+    state.navigate.mockReset();
+  });
+
+  function renderProjectsPage() {
+    return render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectsPage />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+  }
+
+  it("adds a project by path alone and opens a new session in it", async () => {
+    state.addProject.mockResolvedValue({
+      project: { id: "project-2", name: "beta-repo", path: "/tmp/beta-repo" },
+    });
+    renderProjectsPage();
+    fireEvent.click(screen.getByRole("button", { name: "Add Project" }));
+    // Without the server capability the form is path-only.
+    expect(screen.queryByRole("textbox", { name: "Name" })).toBe(null);
+    fireEvent.change(screen.getByRole("textbox", { name: "Project path" }), {
+      target: { value: "/tmp/beta-repo" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+
+    await waitFor(() => {
+      expect(state.navigate).toHaveBeenCalledWith(
+        "/new-session?projectId=project-2",
+      );
+    });
+    expect(state.addProject).toHaveBeenCalledWith("/tmp/beta-repo", {
+      name: undefined,
+      codeName: undefined,
+    });
+  });
+
+  it("lets the user choose a name and code that follow the path until edited", async () => {
+    state.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        PROJECT_CODE_NAMES_CAPABILITY,
+        PROJECT_NAMES_CAPABILITY,
+      ],
+    };
+    act(() => {
+      localStorage.setItem(UI_KEYS.projectCodeNamesEnabled, "true");
+      invalidateLocalStorageValues(UI_KEYS.projectCodeNamesEnabled);
+    });
+    state.addProject.mockResolvedValue({
+      project: { id: "project-2", name: "Beta", path: "/tmp/beta-repo" },
+    });
+    renderProjectsPage();
+    fireEvent.click(screen.getByRole("button", { name: "Add Project" }));
+
+    const path = screen.getByRole("textbox", { name: "Project path" });
+    const name = screen.getByRole("textbox", { name: "Name" });
+    const code = screen.getByRole("textbox", { name: "Code" });
+    fireEvent.change(path, { target: { value: "/tmp/beta-repo/" } });
+    expect(name).toHaveProperty("value", "beta-repo");
+    expect(code).toHaveProperty("value", "bet");
+
+    // The chosen name feeds the default code; an edited code stands alone.
+    fireEvent.change(name, { target: { value: "Gamma" } });
+    expect(code).toHaveProperty("value", "gam");
+    fireEvent.change(code, { target: { value: "gm" } });
+    fireEvent.change(name, { target: { value: "Beta" } });
+    expect(code).toHaveProperty("value", "gm");
+
+    // Clearing a field hands it back to its default.
+    fireEvent.change(code, { target: { value: "" } });
+    expect(code).toHaveProperty("value", "bet");
+    fireEvent.change(code, { target: { value: "bta" } });
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => {
+      expect(state.navigate).toHaveBeenCalledWith(
+        "/new-session?projectId=project-2",
+      );
+    });
+    expect(state.addProject).toHaveBeenCalledWith("/tmp/beta-repo/", {
+      name: "Beta",
+      codeName: "bta",
+    });
+  });
+
+  it("rejects an invalid code before sending anything", () => {
+    state.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        PROJECT_CODE_NAMES_CAPABILITY,
+        PROJECT_NAMES_CAPABILITY,
+      ],
+    };
+    act(() => {
+      localStorage.setItem(UI_KEYS.projectCodeNamesEnabled, "true");
+      invalidateLocalStorageValues(UI_KEYS.projectCodeNamesEnabled);
+    });
+    renderProjectsPage();
+    fireEvent.click(screen.getByRole("button", { name: "Add Project" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project path" }), {
+      target: { value: "/tmp/beta-repo" },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Code" }), {
+      target: { value: "no spaces" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(state.addProject).not.toHaveBeenCalled();
+    expect(
+      screen
+        .getByRole("textbox", { name: "Code" })
+        .getAttribute("aria-invalid"),
+    ).toBe("true");
   });
 
   afterEach(() => {
@@ -303,7 +428,7 @@ describe("ProjectsPage", () => {
     expect(screen.queryByTitle("Project Queue items: 1")).toBe(null);
   });
 
-  it("gates the Project Settings menu item on its server capability", () => {
+  it("gates the project settings button on its server capability", () => {
     const { rerender } = render(
       <I18nProvider>
         <MemoryRouter>
@@ -312,10 +437,9 @@ describe("ProjectsPage", () => {
       </I18nProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
-    expect(screen.queryByRole("menuitem", { name: "Project settings" })).toBe(
-      null,
-    );
+    expect(
+      screen.queryByRole("button", { name: "Open project settings" }),
+    ).toBe(null);
 
     state.version = {
       capabilities: [
@@ -331,7 +455,7 @@ describe("ProjectsPage", () => {
       </I18nProvider>,
     );
     expect(
-      screen.getByRole("menuitem", { name: "Project settings" }),
+      screen.getByRole("button", { name: "Open project settings" }),
     ).toBeTruthy();
   });
 

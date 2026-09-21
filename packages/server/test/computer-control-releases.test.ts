@@ -1,5 +1,5 @@
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -156,8 +156,54 @@ describe("download and extraction boundaries", () => {
     expect(staged.preview.trustedPublisher).toBe(release.publisher);
     await staged.cleanup();
   });
+  it("assembles a streamed package whose chunks arrive separately", async () => {
+    directory = await mkdtemp(path.join(tmpdir(), "ya-release-download-"));
+    const chunks = [Buffer.alloc(4, 1), Buffer.alloc(3, 2), Buffer.alloc(3, 3)];
+    const data = Buffer.concat(chunks);
+    const candidate = {
+      ...release,
+      artifacts: release.artifacts.map((artifact) => ({
+        ...artifact,
+        sha256: createHash("sha256").update(data).digest("hex"),
+      })),
+    };
+    let staged: Buffer | undefined;
+    const extract = vi
+      .spyOn(native, "extractComputerPackage")
+      .mockImplementation(async (archive) => {
+        staged = await readFile(archive);
+      });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                for (const chunk of chunks) controller.enqueue(chunk);
+                controller.close();
+              },
+            }),
+          ),
+      ),
+    );
+    const result = await stageComputerRelease(
+      candidate,
+      directory,
+      new AbortController().signal,
+      () => {},
+    );
+    expect(extract).toHaveBeenCalledOnce();
+    expect(staged).toEqual(data);
+    await result.cleanup();
+  });
+  // Two PowerShell invocations, each loading System.IO.Compression: 3348ms and
+  // 4051ms on the Windows runs that passed, against a 5000ms default that left
+  // 1.2x of headroom and duly ran out. Budget is 4x the observed maximum,
+  // which is that 5000ms limit rather than the fastest run that beat it.
   it.runIf(process.platform === "win32")(
     "native extraction rejects traversal and handles a valid ZIP",
+    { timeout: 20_000 },
     async () => {
       directory = await mkdtemp(path.join(tmpdir(), "ya-release-zip-"));
       const fixtures = new URL("./fixtures/computer-release/", import.meta.url);
@@ -284,6 +330,42 @@ describe("managed installation lifecycle", () => {
     service.select("selected", true, "codex");
     await service.setAutoUpdate(true);
     expect(service.status().sessions).toHaveLength(1);
+  });
+  it("ignores an installed version a hand-edited settings file left unusable", async () => {
+    directory = await mkdtemp(path.join(tmpdir(), "ya-release-settings-"));
+    await writeFile(
+      path.join(directory, "server-settings.json"),
+      JSON.stringify({
+        version: 2,
+        settings: {
+          computerControl: {
+            enabled: true,
+            idleMs: 60000,
+            grantMs: 1800000,
+            releaseVersion: "0.1",
+            autoUpdate: true,
+            preview: {
+              packageDirectory: "previous-package",
+              trustedPublisher: "Test publisher",
+            },
+          },
+        },
+      }),
+    );
+    const settings = new ServerSettingsService({ dataDir: directory });
+    await settings.initialize();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    service = new ComputerControlService(settings, directory, {
+      platform: "win32",
+      discover: async () => release,
+    });
+    expect(service.config().releaseVersion).toBeUndefined();
+    expect(service.status().release.installedVersion).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('"0.1"'));
+    service.requestRelease("check");
+    await settle();
+    expect(service.status().release.error).toBeUndefined();
+    expect(service.status().release.updateAvailable).toBe(true);
   });
   it("disable cancels staging and never enables after cancellation", async () => {
     const { stage, manage } = await setup();

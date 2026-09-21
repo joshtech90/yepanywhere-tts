@@ -52,6 +52,23 @@ const HARNESS_SOURCE_URLS = [
   "specialized-driver.mjs",
   "telemetry.mjs",
 ].map((name) => new URL(name, import.meta.url));
+/**
+ * Console log level every measured server runs at, so a timed leg pays only
+ * the logging cost a production server pays. Raising it for one leg makes that
+ * leg's latency and memory numbers incomparable with the rest.
+ */
+export const MEASURED_SERVER_LOG_LEVEL = "error";
+/** Accepted `LOG_LEVEL` names; `LOG_LEVELS` in
+ * packages/server/src/logging/logger.ts owns this list. */
+export const SERVER_LOG_LEVELS = [
+  "trace",
+  "debug",
+  "info",
+  "warn",
+  "error",
+  "fatal",
+  "silent",
+];
 const REQUIRED_FIXTURE_PATHS = [
   "GLOSSARY.md",
   "README.md",
@@ -828,7 +845,7 @@ export async function startServer({
       isDevBrowser || isBuiltClient ? "perf-fixture-none" : "claude",
     GEMINI_SESSIONS_DIR: path.join(root, "empty-gemini"),
     GROK_SESSIONS_DIR: path.join(root, "empty-grok"),
-    LOG_LEVEL: "error",
+    LOG_LEVEL: MEASURED_SERVER_LOG_LEVEL,
     LOG_TO_FILE: "false",
     MAINTENANCE_PORT: String(port + 1),
     NO_BACKEND_RELOAD: "true",

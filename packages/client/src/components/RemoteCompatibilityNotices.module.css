@@ -20,8 +20,8 @@
   transform: translateX(-50%);
 }
 
-.runtimeFloating {
-  /* Keep the navigation header reachable while the advisory is visible. */
+.belowHeader {
+  /* Keep the navigation header reachable while the notice is visible. */
   top: calc(env(safe-area-inset-top, 0px) + 48px);
 }
 

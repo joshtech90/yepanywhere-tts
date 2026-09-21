@@ -1,3 +1,4 @@
+import { agentHarness } from "@yep-anywhere/shared";
 import type {
   AgentSelfReport,
   AgentSelfSelection,
@@ -125,7 +126,7 @@ export class AgentSelfState {
       sessionId: this.sessionId,
       launchId,
       launcher: "yepanywhere",
-      harness: this.provider.startsWith("claude") ? "claude" : "codex",
+      harness: agentHarness(this.provider),
       provider: this.provider,
       launch: this.launch,
       selected: this.selected,
@@ -170,7 +171,7 @@ export async function startAgentSelfSession(
   const environment = {
     ...lease.environment,
     AGENT_LAUNCHER: "yepanywhere",
-    AGENT_LAUNCH_HARNESS: provider.startsWith("claude") ? "claude" : "codex",
+    AGENT_LAUNCH_HARNESS: agentHarness(provider),
     AGENT_LAUNCH_MODEL: options.model ?? "",
     AGENT_LAUNCH_EFFORT: options.effort ?? "",
   };

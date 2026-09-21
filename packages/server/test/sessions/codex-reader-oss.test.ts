@@ -2521,6 +2521,90 @@ describe("CodexSessionReader - OSS Support", () => {
     );
   });
 
+  it("keeps the agent mappings a complete read cached when a bounded window follows", async () => {
+    const sessionId = "bounded-agent-mappings";
+    const projectId = "test-project" as UrlProjectId;
+    const sessionPath = join(testDir, `${sessionId}.jsonl`);
+    const timestamp = "2026-09-08T00:00:00.000Z";
+    const message = (id: string) => ({
+      type: "response_item",
+      timestamp,
+      payload: {
+        type: "message",
+        role: "assistant",
+        id,
+        content: [{ type: "output_text", text: id }],
+      },
+    });
+    const lines = [
+      {
+        type: "session_meta",
+        timestamp,
+        payload: { id: sessionId, cwd: "/test/project", timestamp },
+      },
+      {
+        type: "response_item",
+        timestamp,
+        payload: {
+          type: "function_call",
+          name: "spawn_agent",
+          call_id: "call-spawn",
+          arguments: JSON.stringify({ role: "reviewer", prompt: "Review" }),
+        },
+      },
+      {
+        type: "response_item",
+        timestamp,
+        payload: {
+          type: "function_call_output",
+          call_id: "call-spawn",
+          output: JSON.stringify({ agent_id: "child-thread" }),
+        },
+      },
+      // A bounded window is only located above an estimated size per
+      // compaction, so the prefix has to be large enough to earn one.
+      {
+        type: "world_state",
+        timestamp,
+        payload: { full: true, state: { filler: "x".repeat(5 * 1024 * 1024) } },
+      },
+      ...[1, 2, 3].flatMap((i) => [
+        { type: "compacted", timestamp, payload: { message: `compact ${i}` } },
+        message(`anchor-${i}`),
+      ]),
+    ];
+    await writeFile(
+      sessionPath,
+      `${lines.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+    );
+    const summary = await reader.getSessionSummary(sessionId, projectId);
+    if (!summary) throw new Error("Expected summary");
+
+    await reader.getSession(sessionId, projectId);
+    expect(reader.getAgentMappingCacheStats()).toEqual({
+      sessions: 1,
+      mappings: 1,
+    });
+
+    // The window starts at the second-from-last compaction, so its entries
+    // hold no spawn_agent call: caching from them would claim the whole file
+    // has no subagents.
+    await appendFile(sessionPath, `${JSON.stringify(message("appended"))}\n`);
+    const bounded = await reader.getSession(sessionId, projectId, "anchor-3", {
+      tailCompactions: 2,
+      summaryHint: summary,
+    });
+    if (!bounded?.readWindow) throw new Error("Expected a bounded window read");
+
+    expect(reader.getAgentMappingCacheStats()).toEqual({
+      sessions: 1,
+      mappings: 1,
+    });
+    await expect(reader.getAgentMappings(sessionId)).resolves.toEqual([
+      { toolUseId: "call-spawn", agentId: "child-thread" },
+    ]);
+  });
+
   it("keeps the compact tail when the rollout grew past its indexed summary", async () => {
     const sessionId = "growing-compact-tail";
     const sessionPath = join(testDir, `${sessionId}.jsonl`);

@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-12.
+Last updated: 2026-09-21.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -154,6 +154,14 @@ Start from these existing plans and contracts:
 
 ## Later directions
 
+The separately authorized [project-template implementation](../tactical/132-project-template-implementation.md)
+now has a native library composer and opt-in settings for ordered GitHub/local
+sources, pinned retrieval and manual updates. Production template creation,
+ready-content admission, limited-user defaults and sandbox scope, App
+reservations, and project-local identity remain pending. The current agents
+library is the YA default; its three templates remain draft until review.
+This work does not displace release delivery above.
+
 The separately authorized [optional Windows Computer Control preview](../tactical/131-optional-windows-computer-control.md)
 is implemented and accepted for source-run Windows Node/Codex: signed local
 package management, deferred tools, explicit session selection, native images
@@ -168,6 +176,7 @@ documents before defining work.
 | Direction | Existing context / decision still needed |
 | --- | --- |
 | Multi-machine experience across the full web and desktop clients | The simple-client demo above now owns the first grouping experiment; broader adoption follows evidence from that work and [source runtimes](../../topics/client-source-runtime-topology.md). |
+| Authentication and delegated access | [Principals and grants](../../topics/principals-and-grants.md) is a coordination sketch, not an approved protocol or roadmap commitment. It relates the separate [limited-users](../../topics/limited-users.md), optional hosted-issuer, session-guest and peer-delegation proposals so the first implementation does not accidentally define an incompatible feature-local authority model. |
 | Related work across repositories | [Issues & PRs](../../topics/issue-session-associations.md) now has experimental, default-off automatic ticket/URL discovery from viewed sessions and a configurable recent-session window, durable evidence, search and correction controls. Conservative URL/known-prefix matching, durable Jira project learning, and session-grouped browsing are implemented and locally validated. SQLite migrations and compatibility gating are implemented. Multi-server issue grouping enters the simple-client demo above; workstream/branch inference and tracker synchronization remain deferred. |
 | Parallel work within one repository | Follow the [workstreams proposal](../../topics/workstreams.md), which uses ordinary lane clones; do not revive the old automatic-worktree sketch as an approved design. |
 | Scheduling | Follow [yacron](../../topics/yacron.md) and its [open gap](../../gaps/sketches/yacron-scheduler.md); the first management UI remains a design prerequisite. |
@@ -175,7 +184,7 @@ documents before defining work.
 | Node 22 and built-in SQLite | Follow the approved [runtime cutover plan](../tactical/123-node-22-builtin-sqlite-cutover.md): raise the server runtime floor now, retain older-server hosted frontend support with advisory runtime warnings, and gate new SQLite-backed features by their exact capabilities before considering any separate frontend cutoff. |
 | Source workflow depth and traceability | Build on [Source Control](../../topics/source-control.md), [review handoff](../../topics/source-review-to-session.md), and [commit/session attribution](../../gaps/sketches/committed-change-session-attribution.md). Additional Git or terminal controls need a concrete user workflow. |
 | Provider maturity and other deferred work | Consult the owning provider topics and [deferred backlog](../../topics/deferred-roadmap.md); its local ordering does not override this product priority. |
-| macOS backend reload continuity | [Provider-host port](../tactical/128-macos-provider-host.md) completed for Node source checkouts: live Claude/Codex reload, approval, durable resume, concurrent sessions and terminal cleanup verified. Native CI passes on Linux, Apple Silicon/Intel Mac and Windows fallback; [evidence](../../topics/reload-safe-provider-runtimes.md#macos-live-verification-2026-09-12) records the exact runtime scope. The separate [Claude project-alias history gap](../../gaps/claude-symlink-project-transcript-routing.md) remains open. This developer iteration work does not displace release delivery. |
+| macOS backend reload continuity | [Provider-host port](../tactical/128-macos-provider-host.md) has verification evidence for live Claude/Codex reload, approval, durable resume, concurrent sessions and terminal cleanup on Node source checkouts. Subsequent test-running sessions showed active-turn interruptions correlated with provider-owner exit, so macOS now defaults to ordinary in-Hono ownership and requires `YEP_PROVIDER_HOST_ENABLED=true` to opt in while the [interruption gap](../../gaps/macos-provider-host-turn-interruptions.md) is investigated. Linux remains enabled by default. Native CI still covers Linux, Apple Silicon/Intel Mac and Windows fallback. The separate [Claude project-alias history gap](../../gaps/claude-symlink-project-transcript-routing.md) remains open. This developer iteration work does not displace release delivery. |
 
 ## What changed from the old roadmap
 

@@ -171,6 +171,76 @@ describe("MessageList reverse search", () => {
     ).toBe("true");
   });
 
+  it("focuses the query input without waiting for an animation frame", async () => {
+    const rafQueue: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      rafQueue.push(callback);
+      return rafQueue.length;
+    });
+    render(<MessageList messages={[userMessage("first", "Horizon needle")]} />);
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    const input = (await screen.findByRole("textbox", {
+      name: "Reverse search user turns",
+    })) as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
+  });
+
+  it("routes keys typed before the input takes focus into the query", async () => {
+    const focus = vi
+      .spyOn(HTMLInputElement.prototype, "focus")
+      .mockImplementation(() => {});
+    render(<MessageList messages={[userMessage("first", "Horizon needle")]} />);
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    const input = (await screen.findByRole("textbox", {
+      name: "Reverse search user turns",
+    })) as HTMLInputElement;
+    expect(document.activeElement).not.toBe(input);
+    for (const key of ["h", "o", "x"]) {
+      fireEvent.keyDown(window, { key });
+    }
+    fireEvent.keyDown(window, { key: "Backspace" });
+    expect(input.value).toBe("ho");
+    focus.mockRestore();
+  });
+
+  it("stops intercepting keys once the input holds focus", async () => {
+    render(<MessageList messages={[userMessage("first", "Horizon needle")]} />);
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    const input = (await screen.findByRole("textbox", {
+      name: "Reverse search user turns",
+    })) as HTMLInputElement;
+    expect(document.activeElement).toBe(input);
+    input.blur();
+    fireEvent.keyDown(window, { key: "x" });
+    expect(input.value).toBe("");
+  });
+
+  it("hands over to a focused input that rewrites its own text", async () => {
+    const focus = vi
+      .spyOn(HTMLInputElement.prototype, "focus")
+      .mockImplementation(() => {});
+    render(<MessageList messages={[userMessage("first", "Horizon needle")]} />);
+    fireEvent.keyDown(window, { key: "r", ctrlKey: true });
+    const input = (await screen.findByRole("textbox", {
+      name: "Reverse search user turns",
+    })) as HTMLInputElement;
+    // fireEvent returns false when a handler called preventDefault, which is
+    // how the receiver announces that it took the key instead of the field.
+    expect(fireEvent.keyDown(window, { key: "h" })).toBe(false);
+    expect(input.value).toBe("h");
+    focus.mockRestore();
+    // A field whose value never equals the query would keep the receiver in
+    // front of it forever; the attempt bound retires it instead.
+    Object.defineProperty(input, "value", {
+      configurable: true,
+      get: () => "rewritten",
+    });
+    input.focus();
+    expect(fireEvent.keyDown(window, { key: "o" })).toBe(true);
+    expect(fireEvent.keyDown(window, { key: "o" })).toBe(true);
+  });
+
   it("waits for an older page and advances to k of n+k with honest coverage", async () => {
     const pending = deferred<ReturnType<typeof historyPage>>();
     const read = vi.fn(() => pending.promise);
@@ -646,8 +716,10 @@ describe("MessageList reverse search", () => {
     fireEvent.keyDown(window, { key: "r", ctrlKey: true });
 
     await waitFor(() => expect(readOlderPage).toHaveBeenCalledTimes(2));
-    expect(screen.getByText("0/0")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "More" })).toBeTruthy();
+    // The second read having started is not the same as its result having
+    // rendered; wait for the settled panel rather than the call count.
+    expect(await screen.findByText("0/0")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "More" })).toBeTruthy();
 
     fireEvent.keyDown(window, { key: "r", ctrlKey: true });
     expect(await screen.findByText("1/1")).toBeTruthy();

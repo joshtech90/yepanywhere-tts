@@ -108,6 +108,12 @@ export interface ProviderInstallationCoordinatorOptions {
   pollMs?: number;
   /** Owner-process verification for stale cleanup (injectable for tests). */
   ownerProbe?: InstallationOwnerProbe;
+  /**
+   * Refuse to write coordination records without this process's start
+   * identity. Windows requires it because it reuses PIDs; elsewhere PID
+   * liveness alone is conclusive. Set explicitly to exercise either policy.
+   */
+  requireOwnerStartId?: boolean;
 }
 
 export class ProviderInstallationBusyError extends Error {
@@ -190,32 +196,36 @@ export class ProviderInstallationCoordinator {
     this.pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     this.ownerProbe = options.ownerProbe ?? defaultOwnerProbe;
     this.ownerStartIdRequired =
-      options.ownerProbe === undefined && process.platform === "win32";
+      options.requireOwnerStartId ??
+      (options.ownerProbe === undefined && process.platform === "win32");
   }
 
   private getOwnStartId(): Promise<string | null> {
-    if (!this.ownStartId) {
-      this.ownStartId = this.ownerProbe
-        .startId(process.pid)
-        .catch((error) => {
-          if (this.ownerStartIdRequired) {
-            throw new Error(
-              "Cannot coordinate provider installation without Windows process start identity",
-              { cause: error },
-            );
-          }
-          return null;
-        })
-        .then((startId) => {
-          if (this.ownerStartIdRequired && !startId) {
-            throw new Error(
-              "Cannot coordinate provider installation without Windows process start identity",
-            );
-          }
-          return startId;
-        });
-    }
+    this.ownStartId ??= this.resolveOwnStartId();
     return this.ownStartId;
+  }
+
+  /**
+   * Our own process is necessarily alive, so a missing start identity is a
+   * probe failure rather than a dead PID. Where the platform needs the
+   * identity that blocks admission, carrying the probe's error as the cause
+   * when it had one, so startup reports why rather than a false stale PID.
+   */
+  private async resolveOwnStartId(): Promise<string | null> {
+    let startId: string | null = null;
+    let failure: unknown;
+    try {
+      startId = await this.ownerProbe.startId(process.pid);
+    } catch (error) {
+      failure = error;
+    }
+    if (this.ownerStartIdRequired && !startId) {
+      throw new Error(
+        "Cannot coordinate provider installation without Windows process start identity",
+        failure === undefined ? undefined : { cause: failure },
+      );
+    }
+    return startId;
   }
 
   getSourceVersion(family: string): string {

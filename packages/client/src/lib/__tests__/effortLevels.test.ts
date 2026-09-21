@@ -33,6 +33,23 @@ const claudeGatewayProvider: ProviderInfo = {
   enabled: true,
 };
 
+const piProvider: ProviderInfo = {
+  name: "pi",
+  displayName: "pi",
+  installed: true,
+  authenticated: true,
+  enabled: true,
+};
+
+/** A provider with no effort vocabulary of its own, on the generic levels. */
+const genericProvider: ProviderInfo = {
+  name: "opencode",
+  displayName: "OpenCode",
+  installed: true,
+  authenticated: true,
+  enabled: true,
+};
+
 describe("effort level options", () => {
   it("defaults Claude to all five SDK effort levels", () => {
     expect(getEffortLevelOptions({ provider: claudeProvider })).toEqual([
@@ -102,6 +119,34 @@ describe("effort level options", () => {
     expect(normalizeEffortLevelForProvider("max", codexProvider)).toBe("max");
     expect(normalizeEffortLevelForProvider("ultra", codexProvider)).toBe("max");
     expect(resolveSupportedEffortLevel("max", options)).toBe("xhigh");
+  });
+
+  it("offers pi every level pi itself names, Extra included", () => {
+    expect(
+      getEffortLevelOptions({ provider: piProvider }).map(
+        (option) => option.value,
+      ),
+    ).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("snaps an unoffered level down, never up to the top one", () => {
+    // A picker offering Low/Medium/High/Max could not be moved off Max while a
+    // stored Extra was in play: every attempt resolved to the highest offered
+    // level, which was Max again.
+    const options = getEffortLevelOptions({ provider: genericProvider });
+
+    expect(options.map((option) => option.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "max",
+    ]);
+    expect(resolveSupportedEffortLevel("xhigh", options)).toBe("high");
+    // Nothing is offered below the requested level, so the lowest one stands
+    // in rather than the request being answered with more thinking.
+    expect(resolveSupportedEffortLevel("low", [options[1]!, options[2]!])).toBe(
+      "medium",
+    );
   });
 
   it("gates thinking modes from model adaptive and effort flags", () => {

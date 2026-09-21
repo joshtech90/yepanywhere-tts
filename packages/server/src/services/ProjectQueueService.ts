@@ -17,6 +17,8 @@ import {
   type ProjectQueueStagedAttachments,
   type ProjectQueueTarget,
   type ProviderName,
+  QUEUEABLE_YA_COMMANDS,
+  type QueuedYaCommand,
   type ShowThinking,
   type StagedAttachmentRef,
   type ThinkingOption,
@@ -388,13 +390,52 @@ function normalizeMessage(raw: unknown): ProjectQueueMessage {
     );
   }
 
+  const yaCommand = normalizeYaCommand(raw.yaCommand);
+  if (yaCommand && (attachments?.length || stagedAttachments?.refs.length)) {
+    throw new ProjectQueueValidationError(
+      "message.yaCommand cannot carry attachments",
+    );
+  }
+
   return {
     text,
     ...(attachments?.length ? { attachments } : {}),
     ...(stagedAttachments ? { stagedAttachments } : {}),
     ...(mode ? { mode } : {}),
     ...(isRecord(raw.metadata) ? { metadata: raw.metadata } : {}),
+    ...(yaCommand ? { yaCommand } : {}),
   };
+}
+
+/**
+ * A YA-emulated command the scheduler will run at dispatch instead of sending
+ * `text` to the provider (topics/project-queue.md § Queued YA commands). Only
+ * the names with a server execution path are accepted, so an unknown name is
+ * a rejected request rather than a command line silently delivered as prose.
+ */
+function normalizeYaCommand(raw: unknown): QueuedYaCommand | undefined {
+  if (raw === undefined) return undefined;
+  if (!isRecord(raw)) {
+    throw new ProjectQueueValidationError(
+      "message.yaCommand must be an object",
+    );
+  }
+  const name = raw.name;
+  if (
+    typeof name !== "string" ||
+    !(QUEUEABLE_YA_COMMANDS as readonly string[]).includes(name)
+  ) {
+    throw new ProjectQueueValidationError(
+      `message.yaCommand.name must be one of ${QUEUEABLE_YA_COMMANDS.join(", ")}`,
+    );
+  }
+  const argument = raw.argument;
+  if (argument !== undefined && typeof argument !== "string") {
+    throw new ProjectQueueValidationError(
+      "message.yaCommand.argument must be a string",
+    );
+  }
+  return { name: name as QueuedYaCommand["name"], argument: argument ?? "" };
 }
 
 function normalizeTarget(raw: unknown): ProjectQueueTarget {

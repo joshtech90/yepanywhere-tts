@@ -1,7 +1,10 @@
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SlashCommand } from "@yep-anywhere/shared";
+import {
+  readInventoryGoalDetails,
+  type SlashCommand,
+} from "@yep-anywhere/shared";
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   ClaudeGoalTracker,
@@ -9,13 +12,19 @@ import {
   runClaudeGoalCommand,
   withClaudeGoalDetails,
 } from "../src/sdk/providers/claude-goal.js";
+import { ClaudeProvider } from "../src/sdk/providers/claude.js";
+import type { SDKMessage } from "../src/sdk/types.js";
 
 const SESSION_ID = "session-1";
 
-/** One transcript row of each shape Claude Code writes for `/goal`. */
+/**
+ * One transcript row of each shape Claude Code writes for `/goal`. An
+ * `iteration` row is the Stop hook reporting the goal not yet met, which
+ * Claude appends on its own while the hook is installed.
+ */
 const goalRow = (
   condition: string,
-  kind: "set" | "cleared" | "met" | "impossible",
+  kind: "set" | "iteration" | "cleared" | "met" | "impossible",
 ) =>
   `${JSON.stringify({
     type: "attachment",
@@ -107,6 +116,35 @@ describe("ClaudeGoalTracker", () => {
     });
 
     // A clear of some other goal is a real clear, not a pause.
+    await append(goalRow("ship something else", "cleared"));
+    await tracker.refresh();
+    expect(tracker.snapshot).toEqual({ objective: null, status: null });
+  });
+
+  it("keeps a requested pause across a not-yet-met iteration row", async () => {
+    await append(goalRow("ship the fix", "set"));
+    await tracker.refresh();
+
+    // Claude's Stop hook fires between YA's pause request and the clear it
+    // sent, so a read can end on the iteration row rather than the clear.
+    tracker.notePauseRequested("ship the fix");
+    await append(goalRow("ship the fix", "iteration"));
+    await tracker.refresh();
+    await append(goalRow("ship the fix", "cleared"));
+    await tracker.refresh();
+    expect(tracker.snapshot).toEqual({
+      objective: "ship the fix",
+      status: "paused",
+    });
+  });
+
+  it("drops a requested pause when Claude installs a different goal", async () => {
+    await append(goalRow("ship the fix", "set"));
+    await tracker.refresh();
+
+    tracker.notePauseRequested("ship the fix");
+    await append(goalRow("ship something else", "set"));
+    await tracker.refresh();
     await append(goalRow("ship something else", "cleared"));
     await tracker.refresh();
     expect(tracker.snapshot).toEqual({ objective: null, status: null });
@@ -213,6 +251,32 @@ describe("runClaudeGoalCommand", () => {
     });
   });
 
+  it("pauses across an iteration row that precedes Claude's clear", async () => {
+    await run("ship the fix");
+    sent = [];
+
+    // The Stop hook fires before the queued `/goal clear` is delivered, so the
+    // first confirmation read sees only the not-yet-met row.
+    let polls = 0;
+    const paused = await runClaudeGoalCommand("pause", {
+      tracker,
+      send: (text) => {
+        sent.push(text);
+      },
+      confirmationTimeoutMs: 500,
+      wait: async () => {
+        polls += 1;
+        if (polls === 1) await append(goalRow("ship the fix", "iteration"));
+        if (polls === 2) await append(goalRow("ship the fix", "cleared"));
+      },
+    });
+    expect(sent).toEqual(["/goal clear"]);
+    expect(paused.output?.details).toEqual(["ship the fix", "Goal paused"]);
+
+    const resumed = await run("resume");
+    expect(resumed.output?.details).toEqual(["ship the fix", "Goal resumed"]);
+  });
+
   it("clears a paused goal without sending Claude anything", async () => {
     await run("ship the fix");
     await run("pause");
@@ -296,5 +360,134 @@ describe("withClaudeGoalDetails", () => {
     expect(
       withClaudeGoalDetails([alias], { objective: "x", status: "active" }),
     ).toEqual([alias]);
+  });
+});
+
+describe("ClaudeProvider goal observation", () => {
+  let dir: string;
+  let transcript: string;
+  let contents: string;
+
+  const append = async (line: string) => {
+    contents += line;
+    await writeFile(transcript, contents);
+  };
+
+  const goalEntry: SlashCommand = {
+    name: "goal",
+    description: "Set a goal Claude checks before stopping",
+    argumentHint: "[<condition> | clear]",
+  };
+
+  /**
+   * Drive one turn through the provider's own message wrapper, which is where
+   * goal refreshes hang. A step that is a function runs between messages, so a
+   * test can write the transcript rows Claude would append mid-turn.
+   */
+  const runTurn = async (
+    tracker: ClaudeGoalTracker,
+    steps: ReadonlyArray<SDKMessage | (() => Promise<void>)>,
+  ): Promise<SDKMessage[]> => {
+    const stream = (async function* () {
+      for (const step of steps) {
+        if (typeof step === "function") await step();
+        else yield step;
+      }
+    })();
+    const wrapped = (
+      new ClaudeProvider() as unknown as {
+        wrapIterator: (
+          iterator: AsyncIterable<unknown>,
+          options: {
+            cwd: string;
+            goalTracker: ClaudeGoalTracker;
+            getCommandInventory: () => Promise<SlashCommand[]>;
+          },
+        ) => AsyncIterableIterator<SDKMessage>;
+      }
+    ).wrapIterator(stream, {
+      cwd: dir,
+      goalTracker: tracker,
+      getCommandInventory: async () =>
+        withClaudeGoalDetails([goalEntry], tracker.snapshot),
+    });
+    const seen: SDKMessage[] = [];
+    for await (const message of wrapped) seen.push(message);
+    return seen;
+  };
+
+  const goalUpdates = (messages: SDKMessage[]) =>
+    messages
+      .filter(
+        (message) =>
+          message.type === "system" && message.subtype === "commands_changed",
+      )
+      .map((message) =>
+        readInventoryGoalDetails(
+          message.slash_command_inventory as SlashCommand[],
+        ),
+      );
+
+  const init: SDKMessage = {
+    type: "system",
+    subtype: "init",
+    session_id: SESSION_ID,
+  };
+  const result: SDKMessage = {
+    type: "result",
+    subtype: "success",
+    session_id: SESSION_ID,
+  };
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), "ya-claude-goal-observe-"));
+    transcript = join(dir, `${SESSION_ID}.jsonl`);
+    contents = "";
+    await writeFile(transcript, contents);
+  });
+
+  it("publishes a goal installed mid-turn at the next turn boundary", async () => {
+    const tracker = new ClaudeGoalTracker(dir, null, () => transcript);
+    const seen = await runTurn(tracker, [
+      init,
+      () => append(goalRow("ship the fix", "set")),
+      {
+        type: "assistant",
+        session_id: SESSION_ID,
+        message: { role: "assistant", content: "working on it" },
+      },
+      { type: "stream_event", session_id: SESSION_ID },
+      result,
+    ]);
+
+    // Streaming messages carry the turn; only the boundary pays a read, so the
+    // inventory update trails the result rather than repeating per message.
+    expect(
+      seen.map((message) => `${message.type}/${message.subtype ?? ""}`),
+    ).toEqual([
+      "system/init",
+      "assistant/",
+      "stream_event/",
+      "result/success",
+      "system/commands_changed",
+    ]);
+    expect(goalUpdates(seen)).toEqual([
+      { goalObjective: "ship the fix", goalStatus: "active" },
+    ]);
+  });
+
+  it("publishes Claude's own auto-clear once the goal is met", async () => {
+    await append(goalRow("ship the fix", "set"));
+    const tracker = new ClaudeGoalTracker(dir, null, () => transcript);
+    const seen = await runTurn(tracker, [
+      init,
+      () => append(goalRow("ship the fix", "met")),
+      result,
+    ]);
+
+    expect(goalUpdates(seen)).toEqual([
+      { goalObjective: "ship the fix", goalStatus: "active" },
+      { goalObjective: null, goalStatus: null },
+    ]);
   });
 });

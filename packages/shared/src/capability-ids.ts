@@ -481,9 +481,33 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     introducedIn: "0.8.2",
   },
   claudeGatewayServices: {
-    id: 72,
+    id: 77,
     direction: "server",
     name: "claude-gateway-services",
+    introducedIn: "0.8.2",
+  },
+  sessionRewind: {
+    id: 78,
+    direction: "server",
+    name: "session-rewind",
+    introducedIn: "0.8.2",
+  },
+  projectCaptions: {
+    id: 79,
+    direction: "server",
+    name: "project-captions",
+    introducedIn: "0.8.2",
+  },
+  projectNames: {
+    id: 80,
+    direction: "server",
+    name: "project-names",
+    introducedIn: "0.8.2",
+  },
+  projectTemplateSources: {
+    id: 81,
+    direction: "server",
+    name: "project-template-sources",
     introducedIn: "0.8.2",
   },
 } as const satisfies Record<string, CapabilityIdAllocation>;

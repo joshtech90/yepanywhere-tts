@@ -1,16 +1,12 @@
 import {
+  parseVocabularyBaseline,
   rankVocabulary,
   type SpeechVocabularyStatus,
+  VOCABULARY_BASELINE_URL,
 } from "@yep-anywhere/shared";
 import { Fragment, useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
 import styles from "./SpeechVocabularyChart.module.css";
-import {
-  parseVocabularyBaseline,
-  VOCABULARY_BASELINE_URL,
-} from "./vocabulary-baseline";
-
-export { rankVocabulary } from "@yep-anywhere/shared";
 
 export default function SpeechVocabularyChart({
   status,

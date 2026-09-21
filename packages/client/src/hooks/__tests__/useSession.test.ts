@@ -18,6 +18,7 @@ import type { SessionStatus } from "../../types";
 import { PENDING_SEND_RECONCILE_MS } from "../../lib/deliveryState";
 import { __resetAwayRecapTimersForTest, useSession } from "../useSession";
 import type { SessionLoadResult } from "../useSessionMessages";
+import { DEFAULT_STREAM_DISPATCH_MIN_GAP_MS } from "../../lib/streamDispatchCoalescer";
 import type { SessionWatchChangeEvent } from "../useSessionWatchStream";
 
 const apiMocks = vi.hoisted(() => ({
@@ -73,6 +74,13 @@ let sessionStreamHandler:
   | null = null;
 let sessionStreamSessionId: string | null | undefined;
 let sessionStreamErrorHandler: (() => void | Promise<void>) | null = null;
+
+// Stream events that arrive within the quiet gap of the previous one are
+// coalesced (lib/streamDispatchCoalescer.ts). A test that emits several
+// events at one fake instant settles the pending batch before asserting.
+function settleStreamDispatch() {
+  vi.advanceTimersByTime(DEFAULT_STREAM_DISPATCH_MIN_GAP_MS);
+}
 
 let streamingContentOptions:
   | {
@@ -328,6 +336,7 @@ describe("useSession completion reconciliation", () => {
         state: "in-turn",
         provider: "codex",
       });
+      settleStreamDispatch();
     });
     expect(fetchNewMessages).not.toHaveBeenCalled();
 
@@ -507,6 +516,7 @@ describe("useSession completion reconciliation", () => {
         subtype: "status",
         status: "compacting",
       });
+      settleStreamDispatch();
     });
 
     expect(result.current.isCompacting).toBe(true);
@@ -1373,6 +1383,7 @@ describe("useSession completion reconciliation", () => {
           },
         ],
       });
+      settleStreamDispatch();
     });
     expect(result.current.deferredMessages).toHaveLength(2);
 
@@ -1427,6 +1438,7 @@ describe("useSession completion reconciliation", () => {
           },
         ],
       });
+      settleStreamDispatch();
     });
 
     act(() => {
@@ -1441,6 +1453,7 @@ describe("useSession completion reconciliation", () => {
           content: "first queued message\n\n--------\n\nsecond queued message",
         },
       });
+      settleStreamDispatch();
     });
 
     expect(result.current.deferredMessages).toMatchObject([
@@ -1878,6 +1891,7 @@ describe("useSession completion reconciliation", () => {
           derivedStatus: "long-silent-unverified",
         }),
       });
+      settleStreamDispatch();
     });
 
     expect(result.current.sessionLiveness?.derivedStatus).toBe(
@@ -1901,7 +1915,9 @@ describe("useSession completion reconciliation", () => {
 
     expect(result.current.sessionLiveness).toMatchObject({
       derivedStatus: "verified-progressing",
-      lastVerifiedProgressAt: eventStart.toISOString(),
+      lastVerifiedProgressAt: new Date(
+        eventStart.getTime() + DEFAULT_STREAM_DISPATCH_MIN_GAP_MS,
+      ).toISOString(),
       evidence: expect.arrayContaining(["stream_event"]),
       lastRawProviderEventSource: "stream_event",
       silenceMs: 0,
@@ -1949,11 +1965,14 @@ describe("useSession completion reconciliation", () => {
     );
 
     act(() => {
+      settleStreamDispatch();
       sendVisibleDelta();
       vi.advanceTimersByTime(500);
     });
     expect(result.current.sessionLiveness?.lastVerifiedProgressAt).toBe(
-      new Date(eventStart.getTime() + 500).toISOString(),
+      new Date(
+        eventStart.getTime() + 500 + DEFAULT_STREAM_DISPATCH_MIN_GAP_MS,
+      ).toISOString(),
     );
   });
 
@@ -2035,6 +2054,7 @@ describe("useSession completion reconciliation", () => {
         messageId: "assistant-1",
         html: "<p>complete</p>",
       });
+      settleStreamDispatch();
     });
 
     expect(streamingMarkdownCallbacks.onAugment).not.toHaveBeenCalled();

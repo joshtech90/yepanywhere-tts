@@ -25,6 +25,7 @@ Official apps from AI providers:
 | [Conductor](conductor.md) | macOS app | Claude, Codex | Git worktree isolation |
 | [HAPI](hapi.md) | Web + CLI | Claude, Codex, Gemini, OpenCode | CLI-wrapper architecture, terminal page |
 | [Happy](happy.md) | Mobile + CLI | Claude, Codex | Voice commands, native mobile apps |
+| [CosmoRemote](cosmoremote.md) | Native mobile + Mac bridge | Claude, Codex, Cursor, terminal | Multi-Mac mobile fleet and interactive simulator/emulator streaming |
 
 See also [Community Projects](community-projects.md) for smaller tools shared on Reddit/forums.
 
@@ -74,7 +75,7 @@ The combination that most clearly distinguishes yepanywhere:
 - **App-data-only storage by default** — browsing and indexing do not create
   project directories or Git refs
 - **Application-layer E2E relay encryption** (Happy and Paseo also use E2E;
-  T3 Connect does not appear to)
+  T3 Connect and CosmoRemote do not appear to)
 - **Alternate/local provider variants** including Codex OSS/local, Gemini, and
   Claude gateway/Ollama configurations
 
@@ -90,7 +91,9 @@ Features competitors have that we should consider:
 
 - **Git worktree creation and exact workspace rollback** per session
 - **Integrated terminal/browser and full forge workflows** (T3 Code)
-- **Native iOS and offline mobile outbox** (T3 Code, Happy)
+- **Native mobile store distribution** (T3 Code, Happy, CosmoRemote)
+- **Offline mobile outbox** (T3 Code)
+- **Phone-driven simulator build/test loop** (CosmoRemote)
 - **Multiple provider-account instances** with explicit resume rules (T3 Code)
 - **Scheduling/automations** (Codex App, AionUi)
 - **Durable agent workflows and a general workbench plugin SDK** (bb)
@@ -102,5 +105,5 @@ See **[Ecosystem](../ecosystem/)** for adjacent projects — agent-to-agent coor
 
 ## Last Updated
 
-2026-09-15 (Zed DeltaDB/Delta added; other competitor snapshots retain their
-own dates)
+2026-09-20 (CosmoRemote added; other competitor snapshots retain their own
+dates)

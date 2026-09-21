@@ -2,6 +2,7 @@ import type {
   EffortLevel,
   ModelInfo,
   ProviderName,
+  ThinkingOption,
 } from "@yep-anywhere/shared";
 import {
   Fragment,
@@ -54,6 +55,16 @@ interface ModelSwitchModalProps {
     thinking?: { type: string };
     effort?: string;
   }) => void;
+  /**
+   * Long-context effort-change gate (topics/mid-session-effort-change.md).
+   * Called before applying a config whose effort differs from the current
+   * one; `skip` means the user cancelled or forked instead, so nothing is
+   * applied here.
+   */
+  guardEffortChange?: (
+    nextThinking: ThinkingOption,
+    currentThinking: ThinkingOption,
+  ) => Promise<"apply" | "skip">;
   /** When provided, renders an "Info" tab whose pane is this node. */
   infoPane?: ReactNode;
   /** Which tab is focused on open (default "model"). */
@@ -103,6 +114,7 @@ export function ModelSwitchModal({
   currentModel,
   sessionProvider,
   onModelChanged,
+  guardEffortChange,
   infoPane,
   initialTab,
   onActivate,
@@ -264,6 +276,16 @@ export function ModelSwitchModal({
         effectiveThinkingMode,
         effectiveEffortLevel,
       );
+      if (guardEffortChange) {
+        const verdict = await guardEffortChange(
+          thinking,
+          toThinkingOption(currentThinkingMode, currentEffortLevel),
+        );
+        if (verdict === "skip") {
+          if (!dismissedRef.current) setSwitching(false);
+          return;
+        }
+      }
       const result = await api.setProcessConfig(processId, {
         model: selectedModel,
         thinking,

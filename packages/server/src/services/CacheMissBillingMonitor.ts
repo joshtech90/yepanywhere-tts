@@ -28,6 +28,8 @@ interface ProcessUsageState {
   humanTurnUsageObserved?: boolean;
   /** Total prompt size of the previous observation, for the growth measure. */
   lastTotalContextTokens?: number;
+  /** Provider response id of the previous observation, to judge it once. */
+  lastObservedResponseId?: string;
 }
 
 type UsageFields = {
@@ -103,9 +105,35 @@ function findUsageFields(message: SDKMessage): UsageFields | undefined {
   return undefined;
 }
 
+/**
+ * A frame produced inside a subagent (Claude's Task tool) reports that
+ * subagent's own prompt, not the session's. Feeding it into the growth
+ * measure flips the baseline between two conversations of different size,
+ * so the next top-level observation reads as a whole-prefix recompute.
+ */
+function isSubagentFrame(message: SDKMessage): boolean {
+  const parent = (message as { parent_tool_use_id?: unknown })
+    .parent_tool_use_id;
+  return typeof parent === "string" && parent.length > 0;
+}
+
 function carriesUsage(message: SDKMessage): boolean {
-  if (message.type === "assistant") return true;
+  if (message.type === "assistant") return !isSubagentFrame(message);
   return message.type === "system" && message.subtype === "token_usage";
+}
+
+/**
+ * The provider's own id for the API response a frame belongs to. While a
+ * Claude response streams, the SDK emits one assistant message per completed
+ * content block, and every one of them repeats the same `message.usage`. A
+ * second observation of one response has zero prompt growth, so judging it
+ * would count the response's ordinary cache write as waste.
+ */
+function responseId(message: SDKMessage): string | undefined {
+  const candidate = (message as { message?: { id?: unknown } }).message?.id;
+  return typeof candidate === "string" && candidate.trim()
+    ? candidate
+    : undefined;
 }
 
 /**
@@ -237,6 +265,14 @@ export class CacheMissBillingMonitor {
     if (!observation) {
       return;
     }
+    const observedResponseId = responseId(message);
+    if (
+      observedResponseId !== undefined &&
+      observedResponseId === state.lastObservedResponseId
+    ) {
+      return;
+    }
+    state.lastObservedResponseId = observedResponseId;
 
     const nowMs = Date.now();
     const nowIso = new Date(nowMs).toISOString();

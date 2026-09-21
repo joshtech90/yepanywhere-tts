@@ -97,7 +97,17 @@ describe("Inbox Routes", () => {
   let codexSessionsByPath: Map<string, SessionSummary[]>;
   let metadataMap: Map<
     string,
-    { customTitle?: string; isArchived?: boolean; isStarred?: boolean }
+    {
+      customTitle?: string;
+      isArchived?: boolean;
+      isStarred?: boolean;
+      nonHumanUserTurn?: {
+        messageId: string;
+        timestamp: string;
+        sourceSessionId: string;
+        acknowledged?: boolean;
+      };
+    }
   >;
   let projectQueueItems: ProjectQueueItemSummary[];
   let processMap: Map<
@@ -233,6 +243,47 @@ describe("Inbox Routes", () => {
       expect(result.needsAttention[0].sessionId).toBe("sess1");
       expect(result.needsAttention[0].pendingInputType).toBe("tool-approval");
       expect(result.active).toHaveLength(0);
+    });
+
+    it("categorizes a pending non-human turn into needsAttention", async () => {
+      const project = createProject("proj1", "myproject", "/sessions/proj1");
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [
+        createSession("delivered", "proj1", minutesAgo(90)),
+        createSession("acknowledged", "proj1", minutesAgo(90)),
+      ]);
+      metadataMap.set("delivered", {
+        nonHumanUserTurn: {
+          messageId: "msg1",
+          timestamp: minutesAgo(90),
+          sourceSessionId: "sender",
+        },
+      });
+      metadataMap.set("acknowledged", {
+        nonHumanUserTurn: {
+          messageId: "msg2",
+          timestamp: minutesAgo(90),
+          sourceSessionId: "sender",
+          acknowledged: true,
+        },
+      });
+
+      const result = await makeRequest({
+        scanner: mockScanner,
+        readerFactory: mockReaderFactory,
+        supervisor: mockSupervisor,
+        notificationService: mockNotificationService,
+        sessionIndexService: mockSessionIndexService,
+        sessionMetadataService: mockSessionMetadataService,
+      });
+
+      expect(result.needsAttention).toHaveLength(1);
+      expect(result.needsAttention[0].sessionId).toBe("delivered");
+      expect(result.needsAttention[0].nonHumanUserTurn).toEqual({
+        messageId: "msg1",
+        timestamp: expect.any(String),
+        sourceSessionId: "sender",
+      });
     });
 
     it("categorizes session with in-turn process (no pending) into active", async () => {

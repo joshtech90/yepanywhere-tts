@@ -226,6 +226,39 @@ describe("projectConversationView", () => {
     expect(summary(projected).activityCount).toBe(1);
   });
 
+  it("keeps a question put to the user visible alongside routine activity", () => {
+    const items: RenderItem[] = [
+      tool("read-before-question", 1_000),
+      tool("question", 2_000, {
+        toolName: "AskUserQuestion",
+        toolInput: {
+          questions: [
+            {
+              question: "Which relay should the hosted client default to?",
+              header: "Relay",
+              multiSelect: false,
+              options: [
+                { label: "relay.graehl.org", description: "Personal relay" },
+                { label: "relay.yepanywhere.com", description: "Public relay" },
+              ],
+            },
+          ],
+        },
+      }),
+    ];
+
+    const projected = projectConversationView(items, {
+      active: false,
+      nowMs: 3_000,
+    });
+
+    expect(projected.map((item) => item.id)).toEqual([
+      "question",
+      "conversation-activity-read-before-question",
+    ]);
+    expect(summary(projected).activityCount).toBe(1);
+  });
+
   it("restores hidden rows in their original positions when expanded", () => {
     const items: RenderItem[] = [
       tool("read-before", 1_000),

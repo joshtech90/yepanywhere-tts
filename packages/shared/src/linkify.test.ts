@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { containsLinkifiableUrl, splitUrlSegments } from "./linkify.js";
+import {
+  containsLinkifiableUrl,
+  linkifyToHtml,
+  splitUrlSegments,
+} from "./linkify.js";
 
 describe("splitUrlSegments", () => {
   it("returns one text segment when there is no URL", () => {
@@ -78,6 +82,59 @@ describe("splitUrlSegments", () => {
     expect(splitUrlSegments(cut).filter((s) => s.type === "url")).toHaveLength(
       1,
     );
+  });
+});
+
+describe("linkifyToHtml", () => {
+  const escapeHtml = (text: string) => text.replace(/&/g, "&amp;");
+
+  it("opens a new tab only when the surface asks for one", () => {
+    const external = linkifyToHtml(
+      "see https://example.test/x",
+      { external: true },
+      escapeHtml,
+    );
+    expect(external).toBe(
+      'see <a href="https://example.test/x" target="_blank" rel="noopener noreferrer">https://example.test/x</a>',
+    );
+
+    const sameDocument = linkifyToHtml(
+      "see https://example.test/x",
+      { external: false },
+      escapeHtml,
+    );
+    expect(sameDocument).toBe(
+      'see <a href="https://example.test/x">https://example.test/x</a>',
+    );
+  });
+
+  it("escapes the href, the link text, and the text around it", () => {
+    expect(
+      linkifyToHtml(
+        "a & https://example.test/a?b=1&c=2 z",
+        { external: false },
+        escapeHtml,
+      ),
+    ).toBe(
+      'a &amp; <a href="https://example.test/a?b=1&amp;c=2">https://example.test/a?b=1&amp;c=2</a> z',
+    );
+  });
+
+  it("escapes text that holds no linkable URL", () => {
+    expect(linkifyToHtml("a & b", { external: true }, escapeHtml)).toBe(
+      "a &amp; b",
+    );
+  });
+
+  it("passes segment options through", () => {
+    const cut = "read https://example.test/very/long/pa";
+    expect(
+      linkifyToHtml(
+        cut,
+        { external: true, suppressTrailingUrl: true },
+        escapeHtml,
+      ),
+    ).toBe(cut);
   });
 });
 

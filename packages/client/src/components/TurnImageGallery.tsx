@@ -32,7 +32,7 @@ import {
   LocalMediaModal,
   type LocalMediaSource,
 } from "./LocalMediaModal";
-import { useImageResourceActions } from "./ImageResourceActions";
+import { LocalImageThumbnail } from "./LocalImageThumbnail";
 import styles from "./TurnImageGallery.module.css";
 
 interface TurnImageGalleryNavigation {
@@ -100,44 +100,10 @@ function GalleryThumbnail({
 }: GalleryThumbnailProps) {
   const { t } = useI18n();
   const transport = useCurrentSourceRuntime().transport;
-  const [imageUrl, setImageUrl] = useState<string | null>(null);
-  const [error, setError] = useState(false);
   const loadBlob = useCallback(
     () => fetchLocalMediaBlob(candidate.path, mediaSource, "inline", transport),
     [candidate.path, mediaSource, transport],
   );
-  const imageActions = useImageResourceActions({
-    fileName: candidate.basename,
-    filePath: candidate.path,
-    loadBlob,
-    onOpen: () => onOpen(candidate),
-  });
-
-  useEffect(() => {
-    let cancelled = false;
-    let objectUrl: string | null = null;
-    setImageUrl(null);
-    setError(false);
-    void loadBlob()
-      .then((blob) => {
-        if (cancelled) {
-          return;
-        }
-        objectUrl = URL.createObjectURL(blob);
-        setImageUrl(objectUrl);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setError(true);
-        }
-      });
-    return () => {
-      cancelled = true;
-      if (objectUrl) {
-        URL.revokeObjectURL(objectUrl);
-      }
-    };
-  }, [loadBlob]);
 
   return (
     <div
@@ -151,33 +117,23 @@ function GalleryThumbnail({
       onFocus={() => onFeature(candidate.id)}
       onPointerEnter={() => onFeature(candidate.id)}
     >
-      <button
-        type="button"
-        className={styles.thumbnail}
-        aria-label={t("turnImageGalleryOpen", { label: candidate.label })}
-        onClick={() => onOpen(candidate)}
-        onContextMenu={imageActions.handleContextMenu}
-      >
-        {imageUrl ? (
-          <img
-            src={imageUrl}
-            alt={candidate.label}
-            draggable={false}
-            onLoad={(event) => {
-              const { naturalHeight, naturalWidth } = event.currentTarget;
-              onDimensions(candidate.id, {
-                height: naturalHeight,
-                width: naturalWidth,
-              });
-            }}
-          />
-        ) : (
-          <span className={styles.placeholder}>
-            {error ? t("inlineImageUnavailable") : t("inlineImageLoading")}
-          </span>
-        )}
-      </button>
-      {imageActions.contextMenuElement}
+      <LocalImageThumbnail
+        alt={candidate.label}
+        ariaLabel={t("turnImageGalleryOpen", { label: candidate.label })}
+        buttonClassName={styles.thumbnail}
+        fileName={candidate.basename}
+        filePath={candidate.path}
+        loadBlob={loadBlob}
+        onImageLoad={(event) => {
+          const { naturalHeight, naturalWidth } = event.currentTarget;
+          onDimensions(candidate.id, {
+            height: naturalHeight,
+            width: naturalWidth,
+          });
+        }}
+        onOpen={() => onOpen(candidate)}
+        placeholderClassName={styles.placeholder}
+      />
     </div>
   );
 }

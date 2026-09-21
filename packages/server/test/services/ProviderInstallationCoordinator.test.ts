@@ -435,21 +435,98 @@ describe("ProviderInstallationCoordinator", () => {
     );
   });
 
-  it("keeps Windows probe failures conservative while preserving our own startup cause", async () => {
+  it("reports a probe failure the same way for any PID", async () => {
     const failure = new Error("PowerShell timed out");
-    const ownerProbe = createDefaultOwnerProbe({
+    const windowsProbe = createDefaultOwnerProbe({
       platform: "win32",
       execFile: vi.fn(async () => {
         throw failure;
       }),
     });
-    await expect(ownerProbe.startId(4242)).resolves.toBeNull();
-    await expect(ownerProbe.startId(process.pid)).rejects.toBe(failure);
+    await expect(windowsProbe.startId(4242)).rejects.toBe(failure);
+    await expect(windowsProbe.startId(process.pid)).rejects.toBe(failure);
+
+    const posixFailure = new Error("ps is unavailable");
+    const posixProbe = createDefaultOwnerProbe({
+      platform: "darwin",
+      execFile: vi.fn(async () => {
+        throw posixFailure;
+      }),
+    });
+    await expect(posixProbe.startId(4242)).rejects.toBe(posixFailure);
+    await expect(posixProbe.startId(process.pid)).rejects.toBe(posixFailure);
+  });
+
+  it("reports an unusable probe answer as an unknown start identity", async () => {
     const invalidProbe = createDefaultOwnerProbe({
       platform: "win32",
       execFile: vi.fn(async () => ({ stdout: "unexpected output" })),
     });
     await expect(invalidProbe.startId(4242)).resolves.toBeNull();
+
+    const emptyProbe = createDefaultOwnerProbe({
+      platform: "darwin",
+      execFile: vi.fn(async () => ({ stdout: "  \n" })),
+    });
+    await expect(emptyProbe.startId(4242)).resolves.toBeNull();
+  });
+
+  it("blocks admission and names the probe failure when a start identity is required", async () => {
+    const failure = new Error("PowerShell timed out");
+    const coordinator = new ProviderInstallationCoordinator({
+      rootDir,
+      heartbeatMs: 10,
+      leaseStaleMs: 100,
+      pollMs: 5,
+      requireOwnerStartId: true,
+      ownerProbe: {
+        aliveState: () => "missing",
+        startId: async () => {
+          throw failure;
+        },
+      },
+    });
+
+    await expect(
+      coordinator.runExclusiveUpdate(FAMILY, async () => "updated"),
+    ).rejects.toMatchObject({
+      message: expect.stringContaining("process start identity"),
+      cause: failure,
+    });
+  });
+
+  it("blocks admission when a required start identity is simply unknown", async () => {
+    const coordinator = new ProviderInstallationCoordinator({
+      rootDir,
+      heartbeatMs: 10,
+      leaseStaleMs: 100,
+      pollMs: 5,
+      requireOwnerStartId: true,
+      ownerProbe: probe("missing", null),
+    });
+
+    const rejection = await coordinator
+      .runExclusiveUpdate(FAMILY, async () => "updated")
+      .then(
+        () => null,
+        (error: unknown) => error as Error,
+      );
+    expect(rejection).toBeInstanceOf(Error);
+    expect(rejection?.message).toContain("process start identity");
+    expect(rejection?.cause).toBeUndefined();
+  });
+
+  it("admits without a start identity when the platform does not require one", async () => {
+    const coordinator = createCoordinator({
+      aliveState: () => "missing",
+      startId: async () => {
+        throw new Error("ps is unavailable");
+      },
+    });
+
+    await expect(
+      coordinator.runExclusiveUpdate(FAMILY, async () => "updated"),
+    ).resolves.toBe("updated");
   });
 
   it("publishes a cross-process source generation after failure", async () => {

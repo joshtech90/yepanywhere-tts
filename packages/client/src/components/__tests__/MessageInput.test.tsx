@@ -5718,6 +5718,7 @@ describe("MessageInput", () => {
         }}
         fileViewerController={{
           close,
+          closeAction: { label: "fileViewerClose", run: close },
           filePath: "/workspace/docs/guide.md",
           id: "viewer-1",
           kind: "file",
@@ -5891,6 +5892,7 @@ describe("MessageInput", () => {
         visibility={toolbarVisibility}
         fileViewerController={{
           close,
+          closeAction: { label: "sessionViewerClose", run: close },
           content: "output",
           id: "activity-1",
           kind: "panel",

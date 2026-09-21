@@ -105,7 +105,11 @@ export function conversationViewSurfaceReason(
   if (item.status === "error" || item.status === "incomplete") {
     return "error";
   }
-  if (toolRegistry.metadata(item.toolName).tool === "UpdatePlan") {
+  // A plan update is conversation, and so is a question the agent stopped to
+  // put to the user: the options offered and the answer chosen are the user's
+  // own decision, not routine work to fold away.
+  const canonicalTool = toolRegistry.metadata(item.toolName).tool;
+  if (canonicalTool === "UpdatePlan" || canonicalTool === "AskUserQuestion") {
     return "importance";
   }
   if (

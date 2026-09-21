@@ -106,6 +106,108 @@ describe("ExternalSessionTracker", () => {
     }
   });
 
+  it("does not call a session we just forked externally active", async () => {
+    const eventBus = new EventBus();
+    const events: BusEvent[] = [];
+    eventBus.subscribe((event) => events.push(event));
+    const projectId = encodeProjectId("/tmp/test");
+    const supervisor = {
+      // A cold fork has no process yet, which is exactly the case that used to
+      // read as an external writer.
+      getProcessForSession: vi.fn(() => undefined),
+    } as unknown as Supervisor;
+    const scanner = {
+      getProjectBySessionDirSuffix: vi.fn(),
+    } as unknown as ProjectScanner;
+
+    const tracker = new ExternalSessionTracker({
+      eventBus,
+      supervisor,
+      scanner,
+      decayMs: 100,
+      forkGraceMs: 1000,
+    });
+
+    try {
+      eventBus.emit({
+        type: "session-forked",
+        sessionId: "fresh-fork-session",
+        sourceSessionId: "source-session",
+        projectId,
+        timestamp: new Date().toISOString(),
+      });
+      eventBus.emit({
+        type: "file-change",
+        provider: "claude",
+        path: "/tmp/projects/-tmp-test/fresh-fork-session.jsonl",
+        relativePath: "-tmp-test/fresh-fork-session.jsonl",
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+
+      await Promise.resolve();
+
+      expect(tracker.isExternal("fresh-fork-session")).toBe(false);
+      expect(
+        events.some(
+          (event) =>
+            event.type === "session-status-changed" &&
+            event.sessionId === "fresh-fork-session" &&
+            event.ownership.owner === "external",
+        ),
+      ).toBe(false);
+    } finally {
+      tracker.dispose();
+    }
+  });
+
+  it("marks a forked session external once the fork grace has passed", async () => {
+    const eventBus = new EventBus();
+    const projectId = encodeProjectId("/tmp/test");
+    const supervisor = {
+      getProcessForSession: vi.fn(() => undefined),
+    } as unknown as Supervisor;
+    const scanner = {
+      getProjectBySessionDirSuffix: vi.fn(),
+    } as unknown as ProjectScanner;
+
+    const tracker = new ExternalSessionTracker({
+      eventBus,
+      supervisor,
+      scanner,
+      decayMs: 100,
+      // Expired before the file change arrives: a later writer is external
+      // again, exactly as for a session we never forked.
+      forkGraceMs: 0,
+    });
+
+    try {
+      eventBus.emit({
+        type: "session-forked",
+        sessionId: "stale-fork-session",
+        sourceSessionId: "source-session",
+        projectId,
+        timestamp: new Date().toISOString(),
+      });
+      eventBus.emit({
+        type: "file-change",
+        provider: "claude",
+        path: "/tmp/projects/-tmp-test/stale-fork-session.jsonl",
+        relativePath: "-tmp-test/stale-fork-session.jsonl",
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+
+      await Promise.resolve();
+
+      expect(tracker.isExternal("stale-fork-session")).toBe(true);
+    } finally {
+      tracker.dispose();
+    }
+  });
+
   it("emits only bounded fields for owned Codex file changes", async () => {
     const eventBus = new EventBus();
     const events: BusEvent[] = [];

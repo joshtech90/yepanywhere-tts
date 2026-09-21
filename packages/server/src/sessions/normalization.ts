@@ -1,6 +1,6 @@
-import { visibleIssueText } from "../services/issues/extract.js";
 import type {
   ClaudeSessionEntry,
+  SessionRewindRecord,
   CodexAsyncUserInputQuestion,
   CodexCompactedEntry,
   CodexCustomToolCallPayload,
@@ -52,6 +52,8 @@ import {
 } from "../sdk/providers/opencode-tools.js";
 import type { ContentBlock, Message, Session } from "../supervisor/types.js";
 import { collectVisibleClaudeEntries } from "./claude-messages.js";
+import { type VisibleMessageText, visibleMessageText } from "./message-text.js";
+import { stampTurnIndexes } from "./turn-index.js";
 import {
   type CodexUserResponseKind,
   classifyCodexUserResponse,
@@ -69,12 +71,12 @@ interface CodexToolUseConversion {
   context: CodexToolCallContext;
 }
 
-const issueSourceIds = new WeakMap<Message, string>();
 const CODEX_CONTEXT_COMPACTED_DEDUPE_WINDOW_MS = 5000;
 const CODEX_PROVIDER_FORK_TURN_ID = Symbol("codexProviderForkTurnId");
 const CODEX_NORMALIZATION_SOURCE = Symbol("codexNormalizationSource");
 const CODEX_SOURCE_BYTE_OFFSET = Symbol("codexSourceByteOffset");
 const CODEX_MESSAGE_SOURCE_BYTE_OFFSET = Symbol("codexMessageSourceByteOffset");
+const CODEX_MESSAGE_SOURCE_ID = Symbol("codexMessageSourceId");
 
 type CodexEntryWithSourceByteOffset = CodexSessionEntry & {
   [CODEX_SOURCE_BYTE_OFFSET]?: number;
@@ -82,6 +84,10 @@ type CodexEntryWithSourceByteOffset = CodexSessionEntry & {
 
 type MessageWithCodexSourceByteOffset = Message & {
   [CODEX_MESSAGE_SOURCE_BYTE_OFFSET]?: number;
+};
+
+type MessageWithCodexSourceId = Message & {
+  [CODEX_MESSAGE_SOURCE_ID]?: string;
 };
 
 /** Keep plain-rollout message identities stable across bounded and full reads. */
@@ -98,6 +104,24 @@ export function tagCodexEntrySourceByteOffset(
   return entry;
 }
 
+function tagCodexMessageSourceId(message: Message, sourceId: string): void {
+  Object.defineProperty(message, CODEX_MESSAGE_SOURCE_ID, {
+    configurable: false,
+    enumerable: false,
+    value: sourceId,
+    writable: false,
+  });
+}
+
+/**
+ * Identify a Codex message by where it was read from, for a consumer that
+ * re-reads the same rollout and must recognize a message it already has.
+ * Plain-rollout reads carry a byte offset, ordinal reads their ordinal.
+ */
+export function getCodexMessageSourceId(message: Message): string | undefined {
+  return (message as MessageWithCodexSourceId)[CODEX_MESSAGE_SOURCE_ID];
+}
+
 function tagCodexMessageSourceByteOffset(
   message: Message,
   entry: CodexSessionEntry,
@@ -107,9 +131,9 @@ function tagCodexMessageSourceByteOffset(
   ];
   const ordinal = (entry as { ordinal?: unknown }).ordinal;
   if (Number.isSafeInteger(ordinal))
-    issueSourceIds.set(message, `codex-ordinal-${ordinal}`);
+    tagCodexMessageSourceId(message, `codex-ordinal-${ordinal}`);
   else if (sourceByteOffset !== undefined)
-    issueSourceIds.set(message, `codex-byte-${sourceByteOffset}`);
+    tagCodexMessageSourceId(message, `codex-byte-${sourceByteOffset}`);
   if (sourceByteOffset === undefined) return message;
   Object.defineProperty(message, CODEX_MESSAGE_SOURCE_BYTE_OFFSET, {
     configurable: false,
@@ -257,9 +281,15 @@ const claudeMessageCache = new WeakMap<
   {
     length: number;
     lastEntry: ClaudeSessionEntry | undefined;
+    /** The rewind records the projection applied; a different set re-projects. */
+    rewindKey: string;
     messages: Message[];
   }
 >();
+
+function rewindCacheKey(records: readonly SessionRewindRecord[]): string {
+  return records.map((record) => record.id).join("\n");
+}
 
 function normalizeClaudeQueueOperationContent(content: unknown): string {
   if (content === undefined) {
@@ -318,7 +348,15 @@ export function normalizeConversationEntries(
 /**
  * Normalize a UnifiedSession into the generic Session format expected by the frontend.
  */
-export function normalizeSession(loaded: LoadedSession): Session {
+export interface NormalizeSessionOptions {
+  /** YA same-session rewinds; Claude rows they dropped render as groups. */
+  rewindRecords?: readonly SessionRewindRecord[];
+}
+
+export function normalizeSession(
+  loaded: LoadedSession,
+  options: NormalizeSessionOptions = {},
+): Session {
   const { summary, data } = loaded;
 
   switch (data.provider) {
@@ -327,11 +365,17 @@ export function normalizeSession(loaded: LoadedSession): Session {
     case "claude-ollama": {
       const rawMessages = data.session.messages;
       const lastEntry = rawMessages[rawMessages.length - 1];
+      const rewindRecords = options.rewindRecords ?? [];
+      // One projection per (transcript, rewind record set): a new rewind
+      // changes the projection of an unchanged file, so the record ids are
+      // part of the cache identity.
+      const rewindKey = rewindCacheKey(rewindRecords);
       const cached = claudeMessageCache.get(rawMessages);
       if (
         cached &&
         cached.length === rawMessages.length &&
-        cached.lastEntry === lastEntry
+        cached.lastEntry === lastEntry &&
+        cached.rewindKey === rewindKey
       ) {
         return {
           ...summary,
@@ -339,15 +383,20 @@ export function normalizeSession(loaded: LoadedSession): Session {
         };
       }
 
-      const { entries, orphanedToolUses } =
-        collectVisibleClaudeEntries(rawMessages);
-      const messages: Message[] = entries.map((raw, index) =>
-        convertClaudeMessage(raw, index, orphanedToolUses),
+      const { entries, orphanedToolUses } = collectVisibleClaudeEntries(
+        rawMessages,
+        rewindRecords.length > 0 ? { rewindRecords } : {},
+      );
+      const messages: Message[] = stampTurnIndexes(
+        entries.map((raw, index) =>
+          convertClaudeMessage(raw, index, orphanedToolUses),
+        ),
       );
 
       claudeMessageCache.set(rawMessages, {
         length: rawMessages.length,
         lastEntry,
+        rewindKey,
         messages,
       });
       return {
@@ -359,29 +408,35 @@ export function normalizeSession(loaded: LoadedSession): Session {
     case "codex-oss":
       return {
         ...summary,
-        messages: convertCodexEntries(data.session.entries, summary.id),
+        messages: stampTurnIndexes(
+          convertCodexEntries(data.session.entries, summary.id),
+        ),
       };
     case "gemini":
       return {
         ...summary,
-        messages: convertGeminiMessages(data.session.messages),
+        messages: stampTurnIndexes(
+          convertGeminiMessages(data.session.messages),
+        ),
       };
     case "grok":
       return {
         ...summary,
-        messages: data.session.messages as Message[],
+        messages: stampTurnIndexes(data.session.messages as Message[]),
       };
     case "pi":
       // pi messages are already normalized YA messages (PiSessionReader maps
       // the v3 JSONL tree), like grok — pass through.
       return {
         ...summary,
-        messages: data.session.messages as Message[],
+        messages: stampTurnIndexes(data.session.messages as Message[]),
       };
     case "opencode":
       return {
         ...summary,
-        messages: convertOpenCodeEntries(data.session.messages),
+        messages: stampTurnIndexes(
+          convertOpenCodeEntries(data.session.messages),
+        ),
       };
   }
 }
@@ -2234,7 +2289,7 @@ function convertOpenCodeToolResultPart(
 export function normalizeIssueEntries(
   provider: "claude" | "codex",
   entries: Array<ClaudeSessionEntry | CodexSessionEntry>,
-): import("../services/issues/extract.js").IssueText[] {
+): VisibleMessageText[] {
   const messages =
     provider === "claude"
       ? (entries as ClaudeSessionEntry[]).map((entry, index) =>
@@ -2242,14 +2297,16 @@ export function normalizeIssueEntries(
         )
       : convertCodexEntries(entries as CodexSessionEntry[], "issue-index");
   return messages.flatMap((message) => {
-    const text = issueMessageText(message);
+    const text = visibleMessageTextWithSourceId(message);
     return text ? [text] : [];
   });
 }
 
-export function issueMessageText(
+/** The normalized message's visible text, carrying the source id the normalizer
+ * attached, so a re-read can be matched against what a consumer already stored. */
+export function visibleMessageTextWithSourceId(
   message: Message,
-): import("../services/issues/extract.js").IssueText | null {
-  const text = visibleIssueText(message);
-  return text ? { ...text, sourceId: issueSourceIds.get(message) } : null;
+): VisibleMessageText | null {
+  const text = visibleMessageText(message);
+  return text ? { ...text, sourceId: getCodexMessageSourceId(message) } : null;
 }

@@ -243,6 +243,14 @@ provider-update architecture.
 
 The Windows owner-generation probe reads process creation ticks directly through
 `System.Diagnostics.Process`, avoiding `Get-Process` module auto-loading. Its
-15-second cold-start deadline is bounded; failure to verify the current process
-still blocks admission and retains the PowerShell error as the startup cause.
-Other unavailable process generations remain unknown, never proof of stale ownership.
+15-second cold-start deadline is bounded.
+
+The probe reports a failed lookup the same way for every PID and on every
+platform: it raises the underlying failure, and answers "no identity" only when
+the platform replied without a usable one. Which of those two outcomes is
+tolerable belongs to the caller, not the probe. For this process, where the
+platform requires an identity, either outcome blocks admission, and the report
+retains the probe's own error as the startup cause when there was one — the
+running process is alive by definition, so a missing identity is a broken probe
+rather than a dead PID. For a recorded owner's PID, an unavailable process
+generation remains unknown, never proof of stale ownership.

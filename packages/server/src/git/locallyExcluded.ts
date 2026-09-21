@@ -1,3 +1,4 @@
+import { compareWorktreePaths } from "../projects/projectWorktreeCoverage.js";
 import { GIT_DECODE_PATHS_ARGS, runGit } from "./gitExec.js";
 
 const LOCAL_EXCLUDE_SOURCE_SUFFIX = "info/exclude";
@@ -28,7 +29,7 @@ export async function listLocallyExcludedPaths(
 
   const directories = locallyExcluded.filter((entry) => entry.endsWith("/"));
   const files = locallyExcluded.filter((entry) => !entry.endsWith("/"));
-  if (directories.length === 0) return files.sort(comparePaths);
+  if (directories.length === 0) return files.sort(compareWorktreePaths);
 
   const expanded = splitNullPaths(
     (
@@ -48,7 +49,7 @@ export async function listLocallyExcludedPaths(
       )
     ).stdout,
   );
-  return [...new Set([...files, ...expanded])].sort(comparePaths);
+  return [...new Set([...files, ...expanded])].sort(compareWorktreePaths);
 }
 
 /** Ignored paths with whole ignored directories collapsed to one entry. */
@@ -112,10 +113,6 @@ function splitNullPaths(stdout: string): string[] {
   const parts = stdout.split("\0");
   if (parts.at(-1) === "") parts.pop();
   return parts;
-}
-
-function comparePaths(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isExitCode(error: unknown, code: number): boolean {

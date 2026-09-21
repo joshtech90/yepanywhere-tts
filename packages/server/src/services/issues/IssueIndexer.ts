@@ -4,22 +4,33 @@ import type {
   IssueReadOptions,
   IssueTextBatch,
 } from "../../sessions/issue-text-reader.js";
+import type { VisibleMessageText } from "../../sessions/message-text.js";
 import type { Message } from "../../supervisor/types.js";
-import { issueMessageText } from "../../sessions/normalization.js";
-import type { IssueStore, IssueSource } from "./IssueStore.js";
+import { visibleMessageTextWithSourceId } from "../../sessions/normalization.js";
+import type { AdmittedJob, IssueStore, IssueSource } from "./IssueStore.js";
 
 import type { IssueSettings } from "@yep-anywhere/shared";
 export type { IssueSettings } from "@yep-anywhere/shared";
-export const DEFAULT_ISSUE_SETTINGS: IssueSettings = {
-  enabled: false,
-  scope: "viewed",
-  recentDays: 7,
-};
 /** Identifies one published catalog generation, so a sweep can skip a repeat. */
 export interface CatalogMark {
   catalogEpoch: string;
   catalogGeneration: number;
 }
+
+/** Bytes of one capture chunk; a message longer than this is captured in several. */
+const CAPTURE_CHUNK = 32 * 1024;
+/**
+ * Bytes each chunk reads beyond its own range, so a reference crossing a chunk
+ * boundary is still read whole. Ownership stays with the chunk the reference
+ * starts in, so the overlap adds context without a second sighting.
+ */
+const CAPTURE_OVERLAP = 4096;
+/**
+ * Queue rank a catalog sweep admits at. A window the user is looking at is
+ * recorded by `IssueStore` at a higher rank, so background sweeping never gets
+ * in front of it.
+ */
+const SWEEP_PRIORITY = 0;
 
 export interface IssueIndexerDeps {
   settings: () => IssueSettings;
@@ -28,7 +39,6 @@ export interface IssueIndexerDeps {
     row: SessionCatalogRow,
     options: IssueReadOptions,
   ) => Promise<IssueTextBatch | null>;
-  viewed?: (sessionId: string) => boolean;
   projectForSession?: (sessionId: string) => string | undefined;
   /** Called after captures land, so freshly seen references can be asked about. */
   confirm?: () => void;
@@ -52,23 +62,28 @@ export class IssueIndexer {
     readonly store: IssueStore,
     private readonly deps: IssueIndexerDeps,
   ) {
-    store.run(
-      "UPDATE issue_index_jobs SET state='queued' WHERE state='indexing'",
-    );
+    this.fence();
   }
   settings(): IssueSettings {
     return this.deps.settings();
   }
-  configure(): void {
+  /**
+   * Abandon in-flight acquisition and return the jobs it was mid-way through
+   * to the queue, so what a caller does next cannot land beside writes from
+   * the state it just invalidated. Work started after this reads the new
+   * signal; work already running sees its own aborted one.
+   */
+  private fence(): void {
     this.controller.abort();
     this.controller = new AbortController();
+    this.store.requeueIndexing();
+  }
+  configure(): void {
+    this.fence();
     this.lastError = null;
     this.store.reconcileJira();
     // Settings decide what a sweep admits, so a change invalidates the mark.
     this.sweptMark = undefined;
-    this.store.run(
-      "UPDATE issue_index_jobs SET state='queued' WHERE state='indexing'",
-    );
     if (!this.settings().enabled || this.closed) return;
     this.refresh();
   }
@@ -105,23 +120,29 @@ export class IssueIndexer {
       // server, none of which can change a row. Only a session that already
       // has a row can move, and a row created later during this sweep carries
       // its own project, so one read up front replaces all of them.
-      const owned = this.store.ownedSessions();
+      const owned = this.store.ownedProjects();
+      // Read once, and only if something is actually admitted: a sweep in
+      // viewed scope admits nothing and must not pay for a queue it will not
+      // touch.
+      let queue: Map<string, AdmittedJob> | undefined;
+      const admitted = () => (queue ??= this.store.admittedJobs());
       let count = 0;
       for await (const row of this.deps.candidates()) {
         if (signal.aborted) return;
-        // Current project ownership updates independently of scan eligibility.
-        if (owned.has(row.sessionId))
-          this.store.updateProject(
-            row.sessionId,
-            this.deps.projectForSession?.(row.sessionId) ?? row.projectId,
-          );
+        const projectId =
+          this.deps.projectForSession?.(row.sessionId) ?? row.projectId;
+        // Current project ownership updates independently of scan eligibility,
+        // and only for a session some stored row still files elsewhere: the
+        // update statements are no-ops otherwise, but their transaction is a
+        // file lock either way.
+        const stored = owned.get(row.sessionId);
+        if (stored && [...stored].some((held) => held !== projectId))
+          this.store.updateProject(row.sessionId, projectId);
         if (
-          (this.settings().scope === "recent" &&
-            Date.parse(row.updatedAt) >= cutoff) ||
-          this.deps.viewed?.(row.sessionId)
-        ) {
-          this.enqueue(row, this.deps.viewed?.(row.sessionId) ? 1 : 0);
-        }
+          this.settings().scope === "recent" &&
+          Date.parse(row.updatedAt) >= cutoff
+        )
+          this.enqueue(row, projectId, admitted());
         if (++count % 100 === 0) await yieldTurn();
       }
     })()
@@ -146,19 +167,78 @@ export class IssueIndexer {
       });
   }
   private lastError: string | null = null;
-  private enqueue(row: Readonly<SessionCatalogRow>, priority: number): void {
-    this.store.run(
-      `INSERT INTO issue_index_jobs(session_id,project_id,source_version,cursor,state,updated_at,source_json,priority)
-      VALUES (?,?,?,NULL,'queued',?,?,?) ON CONFLICT(session_id) DO UPDATE SET
-      state=CASE WHEN issue_index_jobs.source_version!=excluded.source_version OR issue_index_jobs.state='paused' THEN 'queued' ELSE issue_index_jobs.state END,
-      project_id=excluded.project_id,source_json=excluded.source_json,source_version=excluded.source_version,priority=excluded.priority`,
-      row.sessionId,
-      this.deps.projectForSession?.(row.sessionId) ?? row.projectId,
-      row.sourceVersion,
-      Date.now(),
-      JSON.stringify(row),
-      priority,
-    );
+  /**
+   * Admit one candidate, writing only when the queue would actually change.
+   * The upsert below assigns project, source, version and priority whatever
+   * the stored row holds, so a job that already holds all four would be
+   * rewritten with its own bytes — thousands of locks a minute in recent
+   * scope, where every publication re-admits every recent session. A paused
+   * job is the exception: the upsert's `CASE` is what returns it to the queue
+   * when a widened recent window admits it again.
+   *
+   * `queued` is this sweep's opening snapshot, so a job the running worker
+   * pauses mid-sweep can be skipped here and stays paused until the next
+   * publication reads it as paused and re-queues it. The unconditional write
+   * had the same one-publication delay with the outcome reversed: whichever
+   * of the pause and the upsert landed second decided the state.
+   */
+  private enqueue(
+    row: Readonly<SessionCatalogRow>,
+    projectId: string,
+    queued: ReadonlyMap<string, AdmittedJob>,
+  ): void {
+    const source = JSON.stringify(row);
+    const current = queued.get(row.sessionId);
+    if (
+      current &&
+      current.state !== "paused" &&
+      current.priority === SWEEP_PRIORITY &&
+      current.projectId === projectId &&
+      current.source === source
+    )
+      return;
+    this.store.admitJob({
+      sessionId: row.sessionId,
+      projectId,
+      sourceVersion: row.sourceVersion,
+      source,
+      priority: SWEEP_PRIORITY,
+    });
+  }
+  /**
+   * Capture one message in chunks, yielding between them so a long message
+   * cannot hold the loop. Each chunk reads `CAPTURE_OVERLAP` bytes on either
+   * side but owns only its own range, so a reference crossing a boundary is
+   * read whole and recorded once, at the offset it holds in the source.
+   * Returns early on abort; the caller decides what an unfinished message
+   * means at its own seam.
+   */
+  private async captureChunked(
+    source: IssueSource,
+    message: VisibleMessageText,
+    signal: AbortSignal,
+  ): Promise<void> {
+    for (
+      let offset = 0;
+      offset < message.text.length;
+      offset += CAPTURE_CHUNK
+    ) {
+      if (signal.aborted) return;
+      this.store.capture(
+        source,
+        {
+          ...message,
+          text: message.text.slice(
+            Math.max(0, offset - CAPTURE_OVERLAP),
+            offset + CAPTURE_CHUNK + CAPTURE_OVERLAP,
+          ),
+        },
+        Math.max(0, offset - CAPTURE_OVERLAP),
+        offset,
+        offset + CAPTURE_CHUNK,
+      );
+      await yieldTurn();
+    }
   }
   /** Only already-authorized persisted windows enter here; public shares never call it. */
   observe(source: IssueSource, messages: readonly Message[]): void {
@@ -167,12 +247,10 @@ export class IssueIndexer {
     if (this.viewTasks.size >= 16) {
       // Do not allocate another pending task merely to report saturation.
       try {
-        this.store.run(
-          `INSERT INTO issue_index_jobs(session_id,project_id,source_version,state,error,updated_at,source_json,priority) VALUES (?,?,'','partial','Viewed window queue full',?,'null',1)
-           ON CONFLICT(session_id) DO UPDATE SET state=CASE WHEN issue_index_jobs.state='viewed' THEN 'partial' ELSE issue_index_jobs.state END`,
+        this.store.refuseViewedJob(
           source.sessionId,
           source.projectId,
-          Date.now(),
+          "Viewed window queue full",
         );
       } catch {
         this.lastError = "Evidence could not be saved";
@@ -180,7 +258,7 @@ export class IssueIndexer {
       return;
     }
     // Bound retained references even when many tabs return large detail windows.
-    const selected: import("./extract.js").IssueText[] = [];
+    const selected: VisibleMessageText[] = [];
     let bytes = 0;
     let partial = false;
     let records = 0;
@@ -189,7 +267,7 @@ export class IssueIndexer {
         partial = true;
         break;
       }
-      const text = issueMessageText(message);
+      const text = visibleMessageTextWithSourceId(message);
       if (!text) continue;
       const size = text.text.length * 2 + 512;
       if (bytes + size + this.viewBytes > 8 * 1024 * 1024) {
@@ -204,36 +282,14 @@ export class IssueIndexer {
       await yieldTurn();
       for (const text of selected) {
         if (signal.aborted) return;
-        if (text) {
-          // Overlap catches references crossing chunk boundaries. Retain source offsets.
-          for (let offset = 0; offset < text.text.length; offset += 32 * 1024) {
-            if (signal.aborted) return;
-            this.store.capture(
-              source,
-              {
-                ...text,
-                text: text.text.slice(
-                  Math.max(0, offset - 4096),
-                  offset + 32 * 1024 + 4096,
-                ),
-              },
-              Math.max(0, offset - 4096),
-              offset,
-              offset + 32 * 1024,
-            );
-            await yieldTurn();
-          }
-        }
+        await this.captureChunked(source, text, signal);
       }
       if (!signal.aborted)
-        this.store.run(
-          `INSERT INTO issue_index_jobs(session_id,project_id,source_version,state,error,updated_at,source_json,priority) VALUES (?,?,'',?,?,?,'null',1)
-        ON CONFLICT(session_id) DO UPDATE SET project_id=excluded.project_id,state=CASE WHEN excluded.state='partial' AND issue_index_jobs.state='viewed' THEN 'partial' ELSE issue_index_jobs.state END,error=COALESCE(excluded.error,issue_index_jobs.error)`,
+        this.store.recordViewedJob(
           source.sessionId,
           source.projectId,
           partial ? "partial" : "viewed",
           partial ? "Viewed window exceeded acquisition budget" : null,
-          Date.now(),
         );
     })()
       .catch(() => {
@@ -267,9 +323,7 @@ export class IssueIndexer {
     const signal = this.controller.signal;
     while (!signal.aborted && !this.closed) {
       const resolved = this.store.processResolutions();
-      const jobs = this.store.rows(
-        "SELECT * FROM issue_index_jobs WHERE state='queued' ORDER BY priority DESC,updated_at,session_id LIMIT 16",
-      );
+      const jobs = this.store.nextQueuedJobs(16);
       if (!jobs.length) {
         if (resolved) {
           await yieldTurn();
@@ -280,92 +334,64 @@ export class IssueIndexer {
       let processed = false;
       for (const job of jobs) {
         if (signal.aborted) return;
-        const row: SessionCatalogRow | null = JSON.parse(
-          String(job.source_json),
-        );
+        const row: SessionCatalogRow | null = JSON.parse(job.source);
         if (!row) {
-          this.store.run(
-            "UPDATE issue_index_jobs SET state='viewed' WHERE session_id=?",
-            job.session_id!,
-          );
+          this.store.markJob(job.sessionId, "viewed");
           continue;
         }
         const recent =
           this.settings().scope === "recent" &&
           Date.parse(row.updatedAt) >=
             Date.now() - this.settings().recentDays * 86400_000;
-        if (!recent && !this.deps.viewed?.(row.sessionId)) {
-          this.store.run(
-            "UPDATE issue_index_jobs SET state='paused' WHERE session_id=?",
-            row.sessionId,
-          );
+        if (!recent) {
+          this.store.markJob(row.sessionId, "paused");
           processed = true;
           continue;
         }
         processed = true;
-        this.store.run(
-          "UPDATE issue_index_jobs SET state='indexing' WHERE session_id=?",
-          row.sessionId,
-        );
+        this.store.markJob(row.sessionId, "indexing");
         try {
           const batch = await this.deps.read(row, {
-            cursor: typeof job.cursor === "string" ? job.cursor : undefined,
+            cursor: job.cursor,
             signal,
           });
           if (signal.aborted) return;
           if (!batch) {
-            this.store.run(
-              "UPDATE issue_index_jobs SET state='unsupported',error='Background acquisition unavailable' WHERE session_id=?",
+            this.store.markJob(
               row.sessionId,
+              "unsupported",
+              "Background acquisition unavailable",
             );
             continue;
           }
+          const source: IssueSource = {
+            sessionId: row.sessionId,
+            projectId:
+              this.deps.projectForSession?.(row.sessionId) ?? row.projectId,
+            sourceVersion: job.sourceVersion,
+          };
           for (const message of batch.messages) {
             if (signal.aborted) return;
-            for (
-              let offset = 0;
-              offset < message.text.length;
-              offset += 32 * 1024
-            ) {
-              this.store.capture(
-                {
-                  sessionId: row.sessionId,
-                  projectId:
-                    this.deps.projectForSession?.(row.sessionId) ??
-                    row.projectId,
-                  sourceVersion: String(job.source_version),
-                },
-                {
-                  ...message,
-                  text: message.text.slice(
-                    Math.max(0, offset - 4096),
-                    offset + 32 * 1024 + 4096,
-                  ),
-                },
-                Math.max(0, offset - 4096),
-                offset,
-                offset + 32 * 1024,
-              );
-              await yieldTurn();
-              if (signal.aborted) return;
-            }
+            await this.captureChunked(source, message, signal);
+            if (signal.aborted) return;
           }
-          this.store.run(
-            "UPDATE issue_index_jobs SET cursor=?,state=?,error=?,updated_at=? WHERE session_id=? AND source_version=?",
-            batch.cursor,
-            batch.done ? (batch.partial ? "partial" : "indexed") : "queued",
-            batch.partial ? "Some source records could not be indexed" : null,
-            Date.now(),
-            row.sessionId,
-            job.source_version!,
-          );
+          this.store.recordJobBatch(row.sessionId, job.sourceVersion, {
+            cursor: batch.cursor,
+            state: batch.done
+              ? batch.partial
+                ? "partial"
+                : "indexed"
+              : "queued",
+            error: batch.partial
+              ? "Some source records could not be indexed"
+              : null,
+          });
         } catch {
           if (!signal.aborted)
-            this.store.run(
-              "UPDATE issue_index_jobs SET state='failed',error='Session source unavailable or changed',updated_at=? WHERE session_id=? AND source_version=?",
-              Date.now(),
+            this.store.failJob(
               row.sessionId,
-              job.source_version!,
+              job.sourceVersion,
+              "Session source unavailable or changed",
             );
         }
         await yieldTurn();
@@ -380,30 +406,18 @@ export class IssueIndexer {
       knownJiraProjects: this.store.knownJiraProjects(),
       active: Boolean(this.work || this.enumeration || this.viewTasks.size),
       error: this.lastError,
-      counts: this.store
-        .rows(
-          "SELECT state,COUNT(*) AS count FROM issue_index_jobs GROUP BY state",
-        )
-        .map((row) => ({ state: String(row.state), count: Number(row.count) })),
+      counts: this.store.jobStateCounts(),
     };
   }
   /** Fence buffered observations before a user delete; old completed checkpoints stay put. */
   delete(id: string): void {
-    this.controller.abort();
-    this.controller = new AbortController();
+    this.fence();
     this.store.delete(id);
-    this.store.run(
-      "UPDATE issue_index_jobs SET state='queued' WHERE state='indexing'",
-    );
     this.kick();
   }
   remap(oldId: string, newId: string): void {
-    this.controller.abort();
-    this.controller = new AbortController();
+    this.fence();
     this.store.remap(oldId, newId);
-    this.store.run(
-      "UPDATE issue_index_jobs SET state='queued' WHERE state='indexing'",
-    );
     this.refresh();
   }
   async settled(): Promise<void> {

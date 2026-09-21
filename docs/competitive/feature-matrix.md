@@ -7,6 +7,9 @@ use them as a current gap list.
 
 ## Newer source reviews
 
+- [CosmoRemote — 2026-09-20](cosmoremote.md#feature-comparison-with-yep-anywhere):
+  native mobile distribution, multi-Mac fleet, remote simulator testing,
+  security/approval boundaries, and partial-source licensing review.
 - [Zed DeltaDB / Delta — 2026-09-15](deltadb.md#feature-comparison-with-yep-anywhere):
   provenance, branching, and multiplayer comparison against a closed hosted
   product, inferred from Zed's open CRDT crates and published claims.

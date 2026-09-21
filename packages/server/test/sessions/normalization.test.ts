@@ -114,6 +114,67 @@ describe("normalizeSession", () => {
     expect(toolResultIds).toContain("task-3");
   });
 
+  it("re-projects an unchanged Claude transcript when its rewind records change", () => {
+    const rawMessages: ClaudeSessionEntry[] = [
+      { type: "user", uuid: "u1", parentUuid: null },
+      { type: "assistant", uuid: "a1", parentUuid: "u1" },
+      { type: "user", uuid: "u2", parentUuid: "a1" },
+      { type: "assistant", uuid: "a2", parentUuid: "u2" },
+    ] as ClaudeSessionEntry[];
+    const loaded: LoadedSession = {
+      summary: {
+        id: "rewound-session",
+        projectId: "test-project" as UrlProjectId,
+        title: "Rewound",
+        fullTitle: "Rewound",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messageCount: 4,
+        status: { state: "idle" },
+        provider: "claude",
+      },
+      data: {
+        provider: "claude",
+        session: { messages: rawMessages },
+      } as UnifiedSession,
+    };
+    const record = {
+      id: "rw-1",
+      at: "2026-09-19T00:00:00.000Z",
+      cutMessageId: "a1",
+      cutTurnIndex: 1,
+      droppedTurnCount: 1,
+      reason: "clear" as const,
+    };
+
+    const plain = normalizeSession(loaded);
+    expect(plain.messages.map((m) => m.uuid)).toEqual(["u1", "a1", "u2", "a2"]);
+    // Same array identity, same file: the cache answers.
+    expect(normalizeSession(loaded).messages).toBe(plain.messages);
+
+    const rewound = normalizeSession(loaded, { rewindRecords: [record] });
+    expect(rewound.messages).not.toBe(plain.messages);
+    expect(rewound.messages.map((m) => m.uuid)).toEqual([
+      "u1",
+      "a1",
+      "rewound-group-rw-1",
+      "u2",
+      "a2",
+    ]);
+    expect(normalizeSession(loaded, { rewindRecords: [record] }).messages).toBe(
+      rewound.messages,
+    );
+
+    // Deleting the record (a refused rewind) re-projects again.
+    expect(normalizeSession(loaded).messages).not.toBe(rewound.messages);
+    expect(normalizeSession(loaded).messages.map((m) => m.uuid)).toEqual([
+      "u1",
+      "a1",
+      "u2",
+      "a2",
+    ]);
+  });
+
   it("normalizes codex-oss sessions correctly", () => {
     const mockSession: LoadedSession = {
       summary: {

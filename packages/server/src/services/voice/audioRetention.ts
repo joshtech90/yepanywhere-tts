@@ -6,13 +6,18 @@ import type { SpeechAudioRetentionSettings } from "../ServerSettingsService.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * The speech transcription context that is retained on disk and written to
+ * request logs. Recognition hint terms are request-only and have no field
+ * here, so a retained transcription cannot carry the user's session
+ * vocabulary.
+ */
 export interface SpeechTranscriptionContext {
   projectId?: string;
   sessionId?: string;
   clientTurnId?: string;
   draftKey?: string;
   speechTargetId?: string;
-  sessionTerms?: string[];
 }
 
 export type SpeechAudioRequestSource = "http" | "ws";

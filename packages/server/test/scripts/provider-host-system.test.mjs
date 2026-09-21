@@ -45,6 +45,7 @@ describe.skipIf(!["linux", "darwin"].includes(process.platform))(
         NODE_OPTIONS: `--import tsx --import ${join(root, "packages/server/test/scripts/fixtures/provider-host-preload.mjs")}`,
         YA_HOST_TEST_ROOT: directory,
         YEP_DATA_DIR: join(directory, "data"),
+        YEP_PROVIDER_HOST_ENABLED: "true",
         YEP_PROVIDER_HOST_RUNTIME_DIR: join(directory, "host"),
         CLAUDE_CONFIG_DIR: join(directory, "claude"),
         CODEX_HOME: join(directory, "codex"),

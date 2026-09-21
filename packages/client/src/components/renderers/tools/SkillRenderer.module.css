@@ -1,0 +1,38 @@
+.toolUse {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.name {
+  padding: 0.125rem 0.375rem;
+  border-radius: 3px;
+  color: var(--text-primary, var(--text-secondary));
+  background: var(--bg-code);
+  font-family: "SF Mono", Monaco, monospace;
+  font-size: var(--font-size-base);
+}
+
+.args {
+  color: var(--text-secondary, var(--text-muted));
+  overflow-wrap: anywhere;
+}
+
+.result {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.label {
+  color: var(--text-muted);
+}
+
+.error {
+  padding: 0.5rem;
+  border-radius: 4px;
+  color: var(--error-color);
+  background: var(--bg-error, rgba(207, 34, 46, 0.1));
+}

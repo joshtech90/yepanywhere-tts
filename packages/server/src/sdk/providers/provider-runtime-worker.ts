@@ -8,14 +8,8 @@ import {
   pickStaticAgentEnvironment,
 } from "./agentctl-session-env.js";
 import { ClaudeGatewayProvider } from "./claude-gateway.js";
-import { codexOSSProvider } from "./codex-oss.js";
-import { ClaudeOllamaProvider } from "./claude-ollama.js";
-import { grokACPProvider } from "./grok-acp.js";
-import {
-  configureProviderRuntime,
-  getRawProvider,
-  type ProviderRuntimeSnapshot,
-} from "./index.js";
+import { getRawProvider, type ProviderRuntimeSnapshot } from "./index.js";
+import { applyProviderRuntimeSnapshot } from "./provider-runtime-snapshot.js";
 import { ProviderRuntimeSocketAdapter } from "./provider-runtime-socket-adapter.js";
 import {
   ProviderSessionOwner,
@@ -40,33 +34,6 @@ async function readLaunchRequest(): Promise<WorkerLaunchRequest> {
     throw new Error("Provider worker received an invalid launch request");
   }
   return parsed;
-}
-
-async function configureRuntime(
-  config: ProviderRuntimeSnapshot,
-): Promise<void> {
-  configureProviderRuntime({
-    codexCliPath: config.codexCliPath,
-    getClaudeAdditionalModels: () => config.claudeAdditionalModels ?? [],
-    isClaudeOllamaVisible: () => true,
-    getProviderRuntimeSnapshot: () => config,
-  });
-  ClaudeOllamaProvider.setOllamaUrl(config.ollamaUrl);
-  ClaudeOllamaProvider.setSystemPrompt(config.ollamaSystemPrompt);
-  ClaudeOllamaProvider.setUseFullSystemPrompt(
-    config.ollamaUseFullSystemPrompt ?? false,
-  );
-  grokACPProvider.setAmbientXaiApiKey(config.ambientXaiApiKey);
-  grokACPProvider.setUseAmbientXaiApiKey(config.grokBuildUseXaiApiKey ?? false);
-  codexOSSProvider.setGatewayServices(config.gatewayServices ?? []);
-  await ClaudeGatewayProvider.configureGatewayServices({
-    services: config.gatewayServices ?? [],
-    ...(config.defaultGatewayServiceId
-      ? { defaultServiceId: config.defaultGatewayServiceId }
-      : {}),
-    disableAgent: config.claudeGatewayDisableAgent ?? true,
-    disablePlanMode: config.claudeGatewayDisablePlanMode ?? true,
-  });
 }
 
 async function main(): Promise<void> {
@@ -137,25 +104,23 @@ async function main(): Promise<void> {
       ...providerOptions
     } = request.options;
     const metadata = await owner.start(async (hooks) => {
-      await configureRuntime(request.runtimeConfig);
+      await applyProviderRuntimeSnapshot(request.runtimeConfig);
       const provider = getRawProvider(request.providerName);
       if (!provider)
         throw new Error(`Unknown provider ${request.providerName}`);
       if (request.providerName === "claude-gateway") {
         await provider.getAvailableModels();
-        const gatewayProcessGroupId =
-          ClaudeGatewayProvider.getOwnedGatewayProcessGroupId();
-        if (gatewayProcessGroupId) {
-          if (typeof process.send === "function" && process.connected) {
-            process.send({
-              type: "retainedProcessGroup",
-              processGroupId: gatewayProcessGroupId,
-            });
-          }
-          ClaudeGatewayProvider.relinquishOwnedGatewayProcessGroup(
-            gatewayProcessGroupId,
-          );
-        }
+        await ClaudeGatewayProvider.retainOwnedGatewayProcessGroups(
+          (processGroupId) => {
+            // A worker with no live channel still gives the child up: the
+            // gateway is a shared service that has to outlive this session
+            // either way, and killing it on this worker's exit is worse than
+            // the runtime host not knowing about it.
+            if (typeof process.send === "function" && process.connected) {
+              process.send({ type: "retainedProcessGroup", processGroupId });
+            }
+          },
+        );
       }
 
       const sandboxOptions = providerOptions.sessionSandboxOptions;

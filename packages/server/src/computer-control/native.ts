@@ -227,18 +227,8 @@ export async function startNative(
   // Install verifies the complete catalog, including existing staged content.
   // Rechecking before each cold start catches changes since operator install.
   const installed = await managePreview(preview, instance, "Install");
-  if (
-    typeof installed.packageId !== "string" ||
-    !/^[a-f0-9]{64}$/.test(installed.packageId)
-  )
-    throw new Error("Invalid installed package identity");
   const executable = path.join(
-    process.env.LOCALAPPDATA ?? "",
-    "MachineControl",
-    "packages",
-    instance,
-    "versions",
-    installed.packageId,
+    installedPreview(preview, instance, installed.packageId).packageDirectory,
     "machine-control-windows.exe",
   );
   const guard = spawn(process.execPath, ["-e", guardianSource], {

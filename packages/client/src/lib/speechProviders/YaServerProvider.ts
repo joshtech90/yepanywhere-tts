@@ -110,6 +110,23 @@ interface SmartTurnDecision {
   recognizedCommand: boolean;
 }
 
+/**
+ * Model id this browser sends with a speech prewarm or transcribe request.
+ * Only the backends whose model the browser can choose answer one; `ya-granite`
+ * and the cloud backends answer undefined, so their server-side model setting
+ * decides. See `topics/pluggable-speech-recognition.md`.
+ */
+export function browserSelectedSpeechModel(
+  backendId: string,
+  options: Pick<SpeechProviderOptions, "parakeetModel" | "whisperModel">,
+): string | undefined {
+  if (backendId === "ya-parakeet" || backendId === "ya-nemo") {
+    return options.parakeetModel;
+  }
+  if (backendId === "ya-whisper") return options.whisperModel;
+  return undefined;
+}
+
 export async function prewarmYaServerSpeechBackend(
   backendId: string,
   model?: string,
@@ -648,12 +665,7 @@ export class YaServerProvider implements SpeechProvider {
   }
 
   private prewarmBackendModel(): void {
-    const model =
-      this.backendId === "ya-parakeet" || this.backendId === "ya-nemo"
-        ? this.options.parakeetModel
-        : this.backendId === "ya-whisper"
-          ? this.options.whisperModel
-          : undefined;
+    const model = browserSelectedSpeechModel(this.backendId, this.options);
     const key = `${this.backendId}:${model ?? ""}`;
     if (this.prewarmedBackendKey === key) return;
     this.prewarmedBackendKey = key;
@@ -1633,13 +1645,7 @@ export class YaServerProvider implements SpeechProvider {
               body: JSON.stringify({
                 backendId: this.backendId,
                 mimeType: recording.mimeType,
-                model:
-                  this.backendId === "ya-parakeet" ||
-                  this.backendId === "ya-nemo"
-                    ? this.options.parakeetModel
-                    : this.backendId === "ya-whisper"
-                      ? this.options.whisperModel
-                      : undefined,
+                model: browserSelectedSpeechModel(this.backendId, this.options),
                 audioBase64: await blobToBase64(audio),
                 context,
                 prompt:

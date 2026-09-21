@@ -82,11 +82,15 @@ export class MergedSessionReader implements ISessionReader {
   async getSessionListSummary(
     sessionId: string,
     projectId: UrlProjectId,
+    summaryHint?: SessionListSummary,
+    options?: { deferAsyncQuestions?: boolean },
   ): Promise<SessionListSummary | null> {
     for (const reader of this.readers) {
       const summary = await reader.getSessionListSummary?.(
         sessionId,
         projectId,
+        summaryHint,
+        options,
       );
       if (summary) return summary;
     }

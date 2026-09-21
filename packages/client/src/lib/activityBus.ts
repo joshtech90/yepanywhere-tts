@@ -1,11 +1,15 @@
+import type { SessionClearloopBadge } from "@yep-anywhere/shared";
 import type {
   AgentActivity,
   NonHumanUserTurn,
   CacheMissBillingRecord,
+  SessionRewindRecord,
   ContextUsage,
   PendingInputType,
+  ProjectCaptionsChangedEvent,
   ProjectCodeNameChangedEvent,
   ProjectQueueChangedEvent,
+  ProjectsChangedEvent,
   ProviderName,
   ProviderRuntimeStatus,
   PromptSuggestionMode,
@@ -80,6 +84,7 @@ export interface SessionIdRemappedEvent {
 export interface SessionSeenEvent {
   type: "session-seen";
   sessionId: string;
+  /** When the session was read; `SESSION_UNREAD_TIMESTAMP` means unread. */
   timestamp: string;
   messageId?: string;
 }
@@ -119,6 +124,12 @@ export interface SessionMetadataChangedEvent {
   parentSessionId?: string | null;
   parentSessionKind?: "btw-aside" | null;
   forkedFromSessionId?: string | null;
+  /** Remaining `/clearloop` iterations; null when the loop ended. */
+  clearloop?: SessionClearloopBadge | null;
+  /** A same-session rewind just recorded; the open session applies it. */
+  rewindRecord?: SessionRewindRecord;
+  /** A rewind record the provider refused; the open session reloads. */
+  rewindRecordRemoved?: string;
   heartbeatTurnsEnabled?: boolean;
   heartbeatTurnsAfterMinutes?: number | null;
   heartbeatTurnText?: string | null;
@@ -249,6 +260,8 @@ export interface ActivityEventMap {
   "provider-runtime-status-changed": ProviderRuntimeStatusChangedEvent;
   "project-queue-changed": ProjectQueueChangedEvent;
   "project-code-names-changed": ProjectCodeNameChangedEvent;
+  "project-captions-changed": ProjectCaptionsChangedEvent;
+  "projects-changed": ProjectsChangedEvent;
   "workstreams-changed": WorkstreamsChangedEvent;
   "session-queue-persistence-changed": SessionQueuePersistenceChangedEvent;
   "session-metadata-changed": SessionMetadataChangedEvent;
@@ -659,6 +672,8 @@ class ActivityBus {
       "provider-runtime-status-changed",
       "project-queue-changed",
       "project-code-names-changed",
+      "project-captions-changed",
+      "projects-changed",
       "workstreams-changed",
       "session-queue-persistence-changed",
       "session-metadata-changed",

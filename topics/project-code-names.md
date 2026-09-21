@@ -16,9 +16,11 @@ Status: **implemented.**
   browser titles and sidebar rows use full project names with their released
   ellipsis behavior, and Projects hides the code-name editor. This is the
   vanilla presentation for fresh browser profiles.
-- Enabling **Short Project Code Names** displays the code in smaller text
-  directly below the full name on Projects. Clicking it opens an inline editor,
-  leaving the field commits, and the adjacent × cancels.
+- Enabling **Short Project Code Names** displays the code on Projects as a
+  small outlined chip beside the full name, on the same line. Clicking it opens
+  an inline editor, leaving the field commits, and the adjacent × cancels. The
+  name yields space before the chip does, so the code stays readable on a
+  narrow card.
 - Code names are unique across the projects visible to one YA server. A
   generated value remains stable across project ordering and visible-session
   changes, but is regenerated if another project's name introduces a generated
@@ -80,6 +82,11 @@ URL-safe project IDs use JavaScript code-unit order; host locale never changes
 the winner.
 
 ## Editing and conflicts
+
+A project may be given its code when it is added: with short code names
+enabled, the Projects add form shows the allocation the chosen name would get
+and accepts an edit before the project exists
+([project names](project-names.md)). A code chosen there is an explicit edit.
 
 Every syntactically valid explicit user edit wins. Manual values are not subject
 to the generated prefix/full-name collision rule. If another project already
@@ -147,3 +154,5 @@ preference against such a server does not weaken that fallback.
   project identity metadata rather than session-default overrides.
 - [`sidebar-session-ordering.md`](sidebar-session-ordering.md) owns sidebar row
   stability; introducing shorter labels must not re-sort active sessions.
+- [`project-captions.md`](project-captions.md) — the longer, README-derived
+  and user-overridable description shown beside the code name on Projects.

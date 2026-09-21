@@ -18,6 +18,7 @@ import {
 } from "../provider-catalog-family.js";
 import {
   type NativeSessionCatalogAdapter,
+  SESSION_CATALOG_TITLE_MAX_LENGTH,
   type SessionCatalogRow,
   sessionCatalogRowKey,
 } from "../catalog-types.js";
@@ -102,7 +103,11 @@ async function readFileRow(
           undefined,
           { deferAsyncQuestions: true },
         );
+    // The untruncated text, because All Sessions matches these rows in the
+    // browser: a display-length title would make a needle past its cut
+    // unfindable with no way for the reader to tell searching from missing.
     const title =
+      summary?.fullTitle ??
       summary?.title ??
       (family === "claude"
         ? await readClaudeCatalogTitle(file.filePath)
@@ -149,7 +154,9 @@ async function readFileRow(
       provider: summary?.provider ?? source.provider,
       updatedAt: contentUpdatedAt ?? storageUpdatedAt(),
       ...(createdAt ? { createdAt } : {}),
-      ...(title !== undefined ? { title: title?.slice(0, 1024) } : {}),
+      ...(title !== undefined
+        ? { title: title?.slice(0, SESSION_CATALOG_TITLE_MAX_LENGTH) }
+        : {}),
       fidelity: summary || title ? "head" : "identity",
       sourceVersion,
       location: { kind: "file", path: file.filePath },

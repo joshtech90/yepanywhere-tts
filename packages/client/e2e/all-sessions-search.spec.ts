@@ -484,7 +484,7 @@ for (const viewport of [
     );
     await page.getByRole("button", { name: "0", exact: true }).click();
     const manager = page.getByRole("region", {
-      name: "Selection — turn-searchable sessions",
+      name: "Selection — selected and turn-searchable sessions",
     });
     await expect(manager).toBeVisible();
     await expect(manager).not.toContainText("grok");

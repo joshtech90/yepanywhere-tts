@@ -79,6 +79,13 @@ const TextResultBlocksSchema = z
 const TextAcknowledgementSchema = TextResultBlocksSchema.transform((blocks) =>
   blocks.map((block) => block.text).join("\n"),
 );
+/** The text a rejected call carries when the tool has no failure shape of its
+ * own: providers send either the message itself or a `{content}` envelope. */
+export const PlainFailureSchema = z.union([
+  string.transform((content) => ({ content })),
+  z.object({ content: string }),
+]);
+export type PlainFailure = z.output<typeof PlainFailureSchema>;
 const highlight = {
   _highlightedContentHtml: optionalString,
   _highlightedLanguage: optionalString,
@@ -200,10 +207,6 @@ export const EditDisplayResultSchema = z.union([
   TextAcknowledgementSchema.transform((content) =>
     EditResultObjectSchema.parse({ content }),
   ),
-]);
-export const EditDisplayFailureSchema = z.union([
-  z.string().transform((content) => ({ content })),
-  z.object({ content: string }),
 ]);
 export const BashDisplayInputSchema = z
   .object({
@@ -469,6 +472,17 @@ export const KillShellDisplayInputSchema = z.object({ shell_id: string });
 export const KillShellDisplayResultSchema = z.object({
   message: string,
   shell_id: string,
+});
+// Claude's Skill tool loads a packaged instruction set into the turn. The
+// result reports which skill was launched, not the instructions themselves,
+// so `commandName` is the only content it carries.
+export const SkillDisplayInputSchema = z.object({
+  skill: string,
+  args: optionalString,
+});
+export const SkillDisplayResultSchema = z.object({
+  success: z.boolean(),
+  commandName: optionalString,
 });
 export const ViewImageDisplayInputSchema = z.object({ path: string });
 export const ViewImageDisplayResultSchema = z.union([

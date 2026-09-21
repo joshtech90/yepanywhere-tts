@@ -6,7 +6,13 @@ import type {
   ThinkingMode,
   ThinkingOption,
 } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import { api } from "../api/client";
 import {
   CLIENT_STORAGE_DEFAULT,
@@ -15,6 +21,7 @@ import {
   resolveDefaultedValue,
 } from "../lib/defaultedStorage";
 import { EFFORT_LEVEL_OPTIONS, isEffortLevel } from "../lib/effortLevels";
+import { createLocalStorageValue } from "../lib/localStorageValue";
 import { DEFAULT_PARAKEET_SPEECH_MODEL } from "../lib/speechProviders/parakeetModels";
 import {
   DEFAULT_SPEECH_METHOD,
@@ -255,22 +262,25 @@ function saveGrokSpeechAudioSettings(settings: GrokSpeechAudioSettings) {
   );
 }
 
-function loadParakeetSpeechModel(): string {
-  const stored = localStorage.getItem(BROWSER_LOCAL_KEYS.parakeetSpeechModel);
-  return stored?.trim() ?? "";
-}
+/**
+ * Local speech-to-text model choices. Every composer mounted at once shows the
+ * same choice, so these are shared stores rather than per-hook state: a write
+ * in one reaches the others, and a write in another tab arrives as a storage
+ * event. Stored trimmed; an in-progress edit keeps whatever the user typed.
+ */
+const parakeetSpeechModelStore = createLocalStorageValue(
+  BROWSER_LOCAL_KEYS.parakeetSpeechModel,
+  "",
+  (raw) => raw.trim(),
+  (model) => model.trim(),
+);
 
-const speechModelSubscribers = new Set<() => void>();
-
-function loadWhisperSpeechModel(): string {
-  return (
-    localStorage.getItem(BROWSER_LOCAL_KEYS.whisperSpeechModel)?.trim() ?? ""
-  );
-}
-
-function saveParakeetSpeechModel(model: string) {
-  localStorage.setItem(BROWSER_LOCAL_KEYS.parakeetSpeechModel, model.trim());
-}
+const whisperSpeechModelStore = createLocalStorageValue(
+  BROWSER_LOCAL_KEYS.whisperSpeechModel,
+  "",
+  (raw) => raw.trim(),
+  (model) => model.trim(),
+);
 
 function getBuiltInSpeechClientDefaults(): Required<
   NonNullable<ClientDefaults["speech"]>
@@ -362,24 +372,16 @@ export function useModelSettings() {
         speechDefaults.grokSpeechAudioSettings,
       ),
     );
-  const [parakeetSpeechModel, setParakeetSpeechModelState] = useState<string>(
-    loadParakeetSpeechModel,
+  const parakeetSpeechModel = useSyncExternalStore(
+    parakeetSpeechModelStore.subscribe,
+    parakeetSpeechModelStore.read,
+    parakeetSpeechModelStore.read,
   );
-  const [whisperSpeechModel, setWhisperSpeechModelState] = useState(
-    loadWhisperSpeechModel,
+  const whisperSpeechModel = useSyncExternalStore(
+    whisperSpeechModelStore.subscribe,
+    whisperSpeechModelStore.read,
+    whisperSpeechModelStore.read,
   );
-  useEffect(() => {
-    const update = () => {
-      setParakeetSpeechModelState(loadParakeetSpeechModel());
-      setWhisperSpeechModelState(loadWhisperSpeechModel());
-    };
-    speechModelSubscribers.add(update);
-    window.addEventListener("storage", update);
-    return () => {
-      speechModelSubscribers.delete(update);
-      window.removeEventListener("storage", update);
-    };
-  }, []);
 
   useEffect(() => {
     if (isClientStorageDefault(loadVoiceInputEnabledSetting())) {
@@ -473,14 +475,10 @@ export function useModelSettings() {
   );
 
   const setParakeetSpeechModel = useCallback((model: string) => {
-    setParakeetSpeechModelState(model);
-    saveParakeetSpeechModel(model);
-    for (const subscriber of speechModelSubscribers) subscriber();
+    parakeetSpeechModelStore.set(model);
   }, []);
   const setWhisperSpeechModel = useCallback((model: string) => {
-    setWhisperSpeechModelState(model);
-    localStorage.setItem(BROWSER_LOCAL_KEYS.whisperSpeechModel, model.trim());
-    for (const subscriber of speechModelSubscribers) subscriber();
+    whisperSpeechModelStore.set(model);
   }, []);
 
   return {
@@ -583,5 +581,5 @@ export function getGrokSpeechAudioSettings(): GrokSpeechAudioSettings {
 }
 
 export function getParakeetSpeechModel(): string {
-  return loadParakeetSpeechModel() || DEFAULT_PARAKEET_SPEECH_MODEL;
+  return parakeetSpeechModelStore.read() || DEFAULT_PARAKEET_SPEECH_MODEL;
 }

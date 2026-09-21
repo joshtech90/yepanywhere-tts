@@ -1,9 +1,12 @@
 import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { useSessionRewind } from "../../contexts/SessionRewindContext";
 import { useI18n } from "../../i18n";
 import styles from "./ForkTurnMenu.module.css";
 
 interface ForkTurnMenuProps {
+  /** Render id of the turn; enables the index tooltip and Clear entries. */
+  messageId?: string;
   onForkBefore?: () => void;
   onForkAfter?: () => void;
   onForkAfterSummary?: () => void;
@@ -12,7 +15,10 @@ interface ForkTurnMenuProps {
   unavailableMessage?: string;
 }
 
+const MENU_ITEM_HEIGHT = 40;
+
 export function ForkTurnMenu({
+  messageId,
   onForkBefore,
   onForkAfter,
   onForkAfterSummary,
@@ -20,10 +26,24 @@ export function ForkTurnMenu({
   unavailableMessage,
 }: ForkTurnMenuProps) {
   const { t } = useI18n();
+  const rewind = useSessionRewind();
   const [isOpen, setIsOpen] = useState(false);
   const [position, setPosition] = useState({ top: 0, right: 8 });
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  const turnIndex = messageId ? rewind.turnIndexById.get(messageId) : undefined;
+  // Same-session Clear entries (topics/session-rewind.md § Turn menu). They
+  // exist only where the session can be rewound in place, which the context
+  // signals by supplying handlers.
+  const onClearAfter =
+    messageId && rewind.onClearAfter && !unavailableMessage
+      ? () => rewind.onClearAfter?.(messageId)
+      : undefined;
+  const onClearReplacing =
+    messageId && rewind.onClearReplacing && !unavailableMessage
+      ? () => rewind.onClearReplacing?.(messageId)
+      : undefined;
 
   useEffect(() => {
     if (!isOpen) return;
@@ -52,7 +72,13 @@ export function ForkTurnMenu({
   const openMenu = () => {
     const rect = triggerRef.current?.getBoundingClientRect();
     if (rect) {
-      const menuHeight = onForkBefore ? 132 : 92;
+      const itemCount =
+        Number(Boolean(onForkBefore)) +
+        Number(Boolean(onForkAfter)) +
+        Number(Boolean(onForkAfterSummary)) +
+        Number(Boolean(onClearAfter)) +
+        Number(Boolean(onClearReplacing));
+      const menuHeight = Math.max(1, itemCount) * MENU_ITEM_HEIGHT + 12;
       const top =
         rect.bottom + 8 + menuHeight <= window.innerHeight
           ? rect.bottom + 8
@@ -70,6 +96,11 @@ export function ForkTurnMenu({
     action();
   };
 
+  const triggerLabel =
+    turnIndex !== undefined
+      ? t("forkTurnMenuLabelIndexed", { index: String(turnIndex) })
+      : t("forkTurnMenuLabel");
+
   const menu = (
     <div
       ref={menuRef}
@@ -81,7 +112,7 @@ export function ForkTurnMenu({
           "--fork-turn-menu-right": `${position.right}px`,
         } as CSSProperties
       }
-      aria-label={t("forkTurnMenuLabel")}
+      aria-label={triggerLabel}
     >
       {unavailableMessage ? (
         <button type="button" role="menuitem" disabled>
@@ -116,6 +147,40 @@ export function ForkTurnMenu({
           {t("forkTurnAfterSummary")}
         </button>
       )}
+      {onClearAfter && (
+        <button
+          type="button"
+          role="menuitem"
+          className={styles.rewind}
+          disabled={afterDisabled}
+          title={
+            afterDisabled
+              ? t("forkTurnAfterDisabled")
+              : t("rewindClearAfterTurnTooltip", {
+                  index: String(turnIndex ?? ""),
+                })
+          }
+          onClick={() => run(onClearAfter)}
+        >
+          {t("rewindClearAfterTurn")}
+        </button>
+      )}
+      {onClearReplacing && (
+        <button
+          type="button"
+          role="menuitem"
+          className={styles.rewind}
+          disabled={afterDisabled}
+          title={
+            afterDisabled
+              ? t("forkTurnAfterDisabled")
+              : t("rewindClearReplacingTurnTooltip")
+          }
+          onClick={() => run(onClearReplacing)}
+        >
+          {t("rewindClearReplacingTurn")}
+        </button>
+      )}
     </div>
   );
 
@@ -126,8 +191,8 @@ export function ForkTurnMenu({
         type="button"
         className="user-prompt-action"
         onClick={() => (isOpen ? setIsOpen(false) : openMenu())}
-        aria-label={t("forkTurnMenuLabel")}
-        title={unavailableMessage ?? t("forkTurnMenuLabel")}
+        aria-label={triggerLabel}
+        title={unavailableMessage ?? triggerLabel}
         aria-haspopup="menu"
         aria-expanded={isOpen}
       >

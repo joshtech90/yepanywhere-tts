@@ -31,6 +31,7 @@ import { request as requestHttps } from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import { whichCommand } from "./sdk/which-command.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -41,7 +42,7 @@ const __dirname = path.dirname(__filename);
  */
 function checkClaudeCli(): void {
   try {
-    execSync(process.platform === "win32" ? "where claude" : "which claude", {
+    execSync(whichCommand("claude"), {
       encoding: "utf-8",
       stdio: ["pipe", "pipe", "pipe"],
     });

@@ -72,6 +72,8 @@ export type KillShellInput = z.output<
 export type KillShellResult = z.output<
   typeof schemas.KillShellDisplayResultSchema
 >;
+export type SkillInput = z.output<typeof schemas.SkillDisplayInputSchema>;
+export type SkillResult = z.output<typeof schemas.SkillDisplayResultSchema>;
 export type TextFile = z.output<typeof schemas.TextFileDisplaySchema>;
 export type ImageFile = z.output<typeof schemas.MediaFileDisplaySchema>;
 export type PdfFile = z.output<typeof schemas.PdfFileDisplaySchema>;

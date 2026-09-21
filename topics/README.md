@@ -5,6 +5,9 @@
   per-language renderer registry with Mermaid diagrams as its one member)
 - Task-list rendering from incremental Claude `Task*` events (problem framing)
 - Codex GPT-5.5 model and protocol compatibility
+- [Mid-session effort change](mid-session-effort-change.md) (long-context
+  warning before an effort change, per-provider threshold, fork at the new
+  effort)
 - Pluggable speech recognition providers
 - Browser-load session UI reliability
 - Public read-only session shares
@@ -94,7 +97,8 @@
   coordination rules, tripwire matrix, and verification tiers for the
   large-file extraction campaign)
 - Portable transcript compiler (stable server ingest, bounded window + prefix
-  facts, and shared semantic projection for web/Android/iOS native renderers)
+  facts, and shared semantic projection for web and Android native renderers,
+  with iOS following later)
 - [Simple Client API](simple-client-api.md) (server-owned typed summaries and
   Conversation views; multi-server web demo with early Compose consumption and
   TypeScript/Kotlin schema conformance and a capture-tested server producer;

@@ -6,6 +6,7 @@
  * session with no diagrams never downloads it.
  */
 
+import { getResolvedTheme } from "../../hooks/useTheme";
 import type { CodeFenceRenderer } from "./registry";
 
 type MermaidApi = {
@@ -13,7 +14,11 @@ type MermaidApi = {
   render: (id: string, source: string) => Promise<{ svg: string }>;
 };
 
-/** Mermaid's own theme names for YA's resolved light/dark appearance. */
+/**
+ * Mermaid's own theme names for YA's resolved light/dark appearance, which
+ * `getResolvedTheme` decides for every surface: `auto` follows the OS and
+ * `verydark` is a darker variant of dark rather than a third case.
+ */
 const MERMAID_THEME = { dark: "dark", light: "neutral" } as const;
 
 type Appearance = keyof typeof MERMAID_THEME;
@@ -21,23 +26,6 @@ type Appearance = keyof typeof MERMAID_THEME;
 let loadPromise: Promise<MermaidApi> | null = null;
 let configuredAppearance: Appearance | null = null;
 let idCounter = 0;
-
-/**
- * YA's resolved light/dark appearance. `data-theme="auto"` follows the OS, and
- * `verydark` is a darker variant of dark rather than a third case.
- */
-export function resolveAppearance(doc: Document = document): Appearance {
-  const theme = doc.documentElement.getAttribute("data-theme");
-  if (theme === "dark" || theme === "verydark") {
-    return "dark";
-  }
-  if (theme === "light") {
-    return "light";
-  }
-  return doc.defaultView?.matchMedia?.("(prefers-color-scheme: dark)").matches
-    ? "dark"
-    : "light";
-}
 
 async function loadMermaid(): Promise<MermaidApi> {
   if (!loadPromise) {
@@ -80,7 +68,7 @@ export const mermaidRenderer: CodeFenceRenderer = {
   renderedNoun: "diagram",
   async render(source: string): Promise<string | null> {
     const mermaid = await loadMermaid();
-    configure(mermaid, resolveAppearance());
+    configure(mermaid, getResolvedTheme());
 
     const id = `ya-mermaid-${++idCounter}`;
     try {

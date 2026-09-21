@@ -1,15 +1,20 @@
 import {
+  act,
   cleanup,
   fireEvent,
   render,
+  renderHook,
   screen,
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
+import { getCurrentClientSummarySourceKey } from "../../lib/clientSummaryStore";
+import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
 import {
   FilePathContextMenu,
   ResourceContextMenu,
+  useStartNewSessionWithPrefillAction,
 } from "../FileResourceActions";
 
 /** Global class names forbidden by this component's CSS Module ownership. */
@@ -262,5 +267,57 @@ describe("FilePathContextMenu", () => {
     for (const legacy of REMOVED_LEGACY_CLASSES) {
       expect(document.body.innerHTML).not.toContain(legacy);
     }
+  });
+});
+
+const TOKEN_KEY_PREFIX = "new-session-prefill-token:";
+
+function tokenKeys(): string[] {
+  const keys: string[] = [];
+  for (let index = 0; index < localStorage.length; index += 1) {
+    const key = localStorage.key(index);
+    if (key?.startsWith(TOKEN_KEY_PREFIX)) keys.push(key);
+  }
+  return keys;
+}
+
+function startNewTabSession(): void {
+  const { result } = renderHook(() => useStartNewSessionWithPrefillAction());
+  act(() => {
+    result.current("project-1", "handoff text", { newTab: true });
+  });
+}
+
+describe("useStartNewSessionWithPrefillAction", () => {
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+    localStorage.clear();
+    sessionStorage.clear();
+  });
+
+  it("stashes the prefill once the new tab exists", () => {
+    vi.stubGlobal(
+      "open",
+      vi.fn(() => ({ opener: window }) as unknown as Window),
+    );
+
+    startNewTabSession();
+
+    expect(tokenKeys()).toHaveLength(1);
+  });
+
+  it("leaves no token behind when the browser blocks the new tab", () => {
+    vi.stubGlobal(
+      "open",
+      vi.fn(() => null),
+    );
+
+    startNewTabSession();
+
+    expect(tokenKeys()).toEqual([]);
+    expect(getNewSessionPrefill(getCurrentClientSummarySourceKey())).toBe(
+      "handoff text",
+    );
   });
 });

@@ -17,6 +17,9 @@ import {
   ContentSearchPool,
   ContentSearchScan,
   MIN_TURN_SEARCH_QUERY_LENGTH,
+  scanDone,
+  scanHasCompletePass,
+  scanLimited,
 } from "./ContentSearchScan";
 
 const EMPTY_MATCHES = new Map<string, SessionContentMatch[]>();
@@ -101,7 +104,7 @@ export function useContentSearch(
       window.removeEventListener("pageshow", visibility);
     };
   }, []);
-  const [, refresh] = useState(0);
+  const [published, refresh] = useState(0);
   const publish = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const capacity = useRef(viewportRows);
   useEffect(() => {
@@ -117,7 +120,7 @@ export function useContentSearch(
         replacement?.query === current.query &&
         ([...current.wanted].every(([id, version]) => {
           const entry = replacement.entries.get(id);
-          return entry?.done && entry.revision === version;
+          return entry && scanDone(entry) && entry.revision === version;
         }) ||
           [...replacement.entries].filter(
             ([id, entry]) =>
@@ -155,7 +158,7 @@ export function useContentSearch(
           ).length >= capacity.current ||
           [...current.wanted].every(([id, version]) => {
             const entry = second.entries.get(id);
-            return entry?.done && entry.revision === version;
+            return entry && scanDone(entry) && entry.revision === version;
           });
         current.scans.splice(ready ? 0 : 1, 1)[0]!.stop();
       }
@@ -184,6 +187,76 @@ export function useContentSearch(
     [],
   );
 
+  // Scan entries live on a ref and reach React through `changed`, so the
+  // publication counter is what says a fresh projection is due. Every other
+  // render — a keystroke elsewhere on the page, a filter, a row expanding —
+  // reuses these maps, which the result list and every row compare by
+  // identity.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: `published` is the ref-held scans' publication trigger, not an input the body reads
+  const projection = useMemo(() => {
+    const scans = owner.current.scans;
+    const exact = [...scans].reverse().find((scan) => scan.query === query);
+    const matches = new Map<string, SessionContentMatch[]>();
+    const partial = new Map<string, string>();
+    const diagnostics = new Map<string, SessionContentDiagnostic[]>();
+    const needle = query.replace(/\s+/g, " ").trim().toLowerCase();
+    let scanned = 0;
+    let limited = 0;
+    let acquiring = !exact;
+    const limitedSessions = new Set<string>();
+    for (const [id, version] of wanted) {
+      const complete = exact?.entries.get(id);
+      if (!complete || !scanHasCompletePass(complete)) acquiring = true;
+      if (complete && scanLimited(complete)) {
+        limited++;
+        limitedSessions.add(id);
+      }
+      if (
+        complete &&
+        scanDone(complete) &&
+        (scanLimited(complete) || complete.revision === version)
+      )
+        scanned++;
+      const found = new Map<string, SessionContentMatch>();
+      for (const scan of scans) {
+        if (!query.startsWith(scan.query)) continue;
+        const entry = scan.entries.get(id);
+        if (!entry) continue;
+        const settled = scan === exact && scanDone(entry);
+        if (settled) found.clear();
+        for (const hit of entry.matches) {
+          if (
+            !roles.includes(hit.role) ||
+            !inTimeRange(hit.timestamp, after, before)
+          )
+            continue;
+          // Full-text refinement is sliced in the scan worker, never in urgent rendering.
+          const match =
+            scan === exact || hit.preview.toLowerCase().includes(needle)
+              ? hit
+              : undefined;
+          if (match) found.set(match.id, match);
+        }
+        if (entry.partial !== undefined) partial.set(id, entry.partial);
+        else if (settled) partial.delete(id);
+        if (entry.diagnostics.length) diagnostics.set(id, entry.diagnostics);
+        else if (settled) diagnostics.delete(id);
+      }
+      if (found.size) matches.set(id, [...found.values()]);
+    }
+    return {
+      matches,
+      partial,
+      diagnostics,
+      scanned,
+      limited,
+      limitedSessions,
+      running: !exact || scanned < wanted.size,
+      acquiring,
+      error: undefined,
+    };
+  }, [published, wanted, query, roles, after, before]);
+
   if (!active || !roles.length || owner.current.key !== key)
     return {
       matches: EMPTY_MATCHES,
@@ -196,64 +269,5 @@ export function useContentSearch(
       acquiring: active && roles.length > 0,
       error: undefined,
     };
-  const scans = owner.current.scans;
-  const exact = [...scans].reverse().find((scan) => scan.query === query);
-  const matches = new Map<string, SessionContentMatch[]>();
-  const partial = new Map<string, string>();
-  const diagnostics = new Map<string, SessionContentDiagnostic[]>();
-  const needle = query.replace(/\s+/g, " ").trim().toLowerCase();
-  let scanned = 0;
-  let limited = 0;
-  let acquiring = !exact;
-  const limitedSessions = new Set<string>();
-  for (const [id, version] of wanted) {
-    const complete = exact?.entries.get(id);
-    if (
-      !complete ||
-      (!complete.done && !complete.tailing && !complete.seed?.done)
-    )
-      acquiring = true;
-    if (complete?.limited) {
-      limited++;
-      limitedSessions.add(id);
-    }
-    if (complete?.done && (complete.limited || complete.revision === version))
-      scanned++;
-    const found = new Map<string, SessionContentMatch>();
-    for (const scan of scans) {
-      if (!query.startsWith(scan.query)) continue;
-      const entry = scan.entries.get(id);
-      if (!entry) continue;
-      if (scan === exact && entry.done) found.clear();
-      for (const hit of entry.matches) {
-        if (
-          !roles.includes(hit.role) ||
-          !inTimeRange(hit.timestamp, after, before)
-        )
-          continue;
-        // Full-text refinement is sliced in the scan worker, never in urgent rendering.
-        const match =
-          scan === exact || hit.preview.toLowerCase().includes(needle)
-            ? hit
-            : undefined;
-        if (match) found.set(match.id, match);
-      }
-      if (entry.partial !== undefined) partial.set(id, entry.partial);
-      else if (scan === exact && entry.done) partial.delete(id);
-      if (entry.diagnostics.length) diagnostics.set(id, entry.diagnostics);
-      else if (scan === exact && entry.done) diagnostics.delete(id);
-    }
-    if (found.size) matches.set(id, [...found.values()]);
-  }
-  return {
-    matches,
-    partial,
-    diagnostics,
-    scanned,
-    limited,
-    limitedSessions,
-    running: !exact || scanned < wanted.size,
-    acquiring,
-    error: undefined,
-  };
+  return projection;
 }

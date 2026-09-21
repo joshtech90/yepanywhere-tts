@@ -70,13 +70,7 @@ function TodoWriteToolUse({ input }: { input: TodoWriteInput }) {
 /**
  * TodoWrite tool result - shows the updated todo list
  */
-function TodoWriteToolResult({
-  result,
-  isError,
-}: {
-  result: TodoWriteResult;
-  isError: boolean;
-}) {
+function TodoWriteToolResult({ result }: { result: TodoWriteResult }) {
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
   const [validationErrors, setValidationErrors] = useState<ZodError | null>(
@@ -97,23 +91,6 @@ function TodoWriteToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("TodoWrite");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className="todo-error">
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="TodoWrite" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Failed to update todos"}
-      </div>
-    );
-  }
 
   if (!result?.newTodos || result.newTodos.length === 0) {
     return (
@@ -148,8 +125,20 @@ export const todoWriteRenderer = defineTool(toolDisplayContracts.TodoWrite, {
     return <TodoWriteToolUse input={input} />;
   },
 
-  renderToolResult(result, isError, _context) {
-    return <TodoWriteToolResult result={result} isError={isError} />;
+  renderToolResult(result, _isError, _context) {
+    return <TodoWriteToolResult result={result} />;
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className="todo-error">
+        {failure.content || "Failed to update todos"}
+      </div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input) {
@@ -157,8 +146,7 @@ export const todoWriteRenderer = defineTool(toolDisplayContracts.TodoWrite, {
     return todos ? `${todos.length} items` : "Todos";
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     return r?.newTodos ? `${r.newTodos.length} items` : "Todos";
   },

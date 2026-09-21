@@ -24,6 +24,7 @@ import type {
   HelperTargetConfig,
   HostIdentity,
   HostAwakeMode,
+  LongContextEffortWarningSettings,
   NewSessionDefaults,
   PostCompactReplaySettings,
   PromptCacheKeepaliveSettings,
@@ -40,10 +41,12 @@ import {
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_HEARTBEAT_TURN_TEXT,
   DEFAULT_HOST_AWAKE_BATTERY_FLOOR_PERCENT,
+  DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   normalizeAutoSessionTitleSettings,
   DEFAULT_SUBAGENT_MAX_DEPTH,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
+  clampClearloopInactivitySeconds,
   clampProjectQueueQuietSeconds,
   isIdleReapHours,
   isSubagentMaxDepth,
@@ -57,8 +60,10 @@ import {
   parseClaudeAdditionalModelSelections,
   parseClaudeSteerBackgroundBashSettings,
   parseGatewayServices,
+  parseLongContextEffortWarningSettings,
   parsePostCompactReplaySettings,
   parseSpeechVoiceBackends,
+  DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS,
   DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
 } from "@yep-anywhere/shared";
 import { reconcileGatewaySettings } from "./gatewayServiceSettings.js";
@@ -123,6 +128,11 @@ export interface ServerSettings {
   approvalAuditLogEnabled: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled: boolean;
+  /**
+   * Whether limited users exist as a second class of principal beside the
+   * superuser. Default off (topics/limited-users.md § Delivery v1).
+   */
+  limitedUsersEnabled?: boolean;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
   /** Whether experimental live Source Control filesystem monitoring is enabled. */
@@ -245,6 +255,11 @@ export interface ServerSettings {
    * their own compact summary.
    */
   postCompactReplay?: PostCompactReplaySettings;
+  /**
+   * Warn before a mid-session effort change on a long-context session and
+   * offer a fork instead. Per-provider; default on for Claude and Codex.
+   */
+  longContextEffortWarning?: LongContextEffortWarningSettings;
   /** Usage-accounting monitor for suspected prompt-cache billing misses. */
   cacheMissBilling?: CacheMissBillingSettings;
   /** Whether lifecycle webhook delivery is enabled */
@@ -299,6 +314,11 @@ export interface ServerSettings {
    * Queue promotes one item. Range 0-300, default 30.
    */
   projectQueueQuietSeconds?: number;
+  /**
+   * Seconds without a user send or provider progress that end one
+   * `/clearloop` iteration. Range 10-3600, default 60.
+   */
+  clearloopInactivitySeconds?: number;
   /** Optional server-wide executable gate; null disables it. */
   projectQueueReadinessCheck?: ProjectQueueReadinessCommand | null;
   /**
@@ -334,6 +354,7 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   clientLogCollectionRequested: false,
   approvalAuditLogEnabled: false,
   publicSharesEnabled: false,
+  limitedUsersEnabled: false,
   workstreamsEnabled: false,
   liveWorktreeMonitoringEnabled: defaultLiveWorktreeMonitoringEnabled(),
   sourceReviewSubmissionsEnabled: true,
@@ -364,7 +385,9 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   cacheMissBilling: DEFAULT_CACHE_MISS_BILLING_SETTINGS,
   projectQueueQuietSeconds: DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   autoSessionTitle: DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
+  clearloopInactivitySeconds: DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   postCompactReplay: DEFAULT_POST_COMPACT_REPLAY_SETTINGS,
+  longContextEffortWarning: DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS,
 };
 
 const TOOLBAR_PRESENCE_TIERS = new Set(["pin", "last", "mid", "first"]);
@@ -606,6 +629,9 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.projectQueueQuietSeconds =
     clampProjectQueueQuietSeconds(settings.projectQueueQuietSeconds) ??
     DEFAULT_PROJECT_QUEUE_QUIET_SECONDS;
+  normalized.clearloopInactivitySeconds =
+    clampClearloopInactivitySeconds(settings.clearloopInactivitySeconds) ??
+    DEFAULT_CLEARLOOP_INACTIVITY_SECONDS;
   normalized.sourceReviewSubmissionsEnabled =
     typeof settings.sourceReviewSubmissionsEnabled === "boolean"
       ? settings.sourceReviewSubmissionsEnabled
@@ -628,6 +654,9 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.postCompactReplay =
     parsePostCompactReplaySettings(settings.postCompactReplay) ??
     DEFAULT_POST_COMPACT_REPLAY_SETTINGS;
+  normalized.longContextEffortWarning =
+    parseLongContextEffortWarningSettings(settings.longContextEffortWarning) ??
+    DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS;
   return normalized;
 }
 

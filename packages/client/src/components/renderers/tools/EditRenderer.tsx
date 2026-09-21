@@ -1136,19 +1136,7 @@ function EditCollapsedPreview({
   const rawPatch = input._rawPatch;
 
   if (isError) {
-    // Extract error message - can be a string or object with content
-    let errorMessage: string | null = null;
-    if (typeof result === "string") {
-      errorMessage = result;
-    } else if (typeof result === "object" && result !== null) {
-      const errorResult =
-        result && typeof result === "object" && "content" in result
-          ? result
-          : undefined;
-      if (errorResult?.content) {
-        errorMessage = String(errorResult.content);
-      }
-    }
+    const errorMessage = result?.content ?? null;
 
     // Classify the error for appropriate styling
     const classification = errorMessage
@@ -1583,19 +1571,7 @@ function EditToolResult({
   }, [result?.structuredPatch]);
 
   if (isError) {
-    // Extract error message - can be a string or object with content
-    let errorMessage: string | null = null;
-    if (typeof result === "string") {
-      errorMessage = result;
-    } else if (typeof result === "object" && result !== null) {
-      const errorResult =
-        result && typeof result === "object" && "content" in result
-          ? result
-          : undefined;
-      if (errorResult?.content) {
-        errorMessage = String(errorResult.content);
-      }
-    }
+    const errorMessage = result?.content ?? null;
 
     // Classify the error for appropriate styling
     const classification = errorMessage
@@ -1817,19 +1793,7 @@ export const editRenderer = defineTool(toolDisplayContracts.Edit, {
 
   getResultSummary(result, isError, input) {
     if (isError) {
-      // Extract error message for classification
-      let errorMessage: string | null = null;
-      if (typeof result === "string") {
-        errorMessage = result;
-      } else if (typeof result === "object" && result !== null) {
-        const errorResult =
-          result && typeof result === "object" && "content" in result
-            ? result
-            : undefined;
-        if (errorResult?.content) {
-          errorMessage = String(errorResult.content);
-        }
-      }
+      const errorMessage = result?.content;
       if (errorMessage) {
         const classification = classifyToolError(errorMessage);
         return classification.label;

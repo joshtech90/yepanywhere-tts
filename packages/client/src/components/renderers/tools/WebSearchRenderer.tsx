@@ -21,13 +21,7 @@ function WebSearchToolUse({ input }: { input: WebSearchInput }) {
 /**
  * WebSearch tool result - shows search results as links
  */
-function WebSearchToolResult({
-  result,
-  isError,
-}: {
-  result: WebSearchResult;
-  isError: boolean;
-}) {
+function WebSearchToolResult({ result }: { result: WebSearchResult }) {
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
   const [validationErrors, setValidationErrors] = useState<ZodError | null>(
@@ -48,23 +42,6 @@ function WebSearchToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("WebSearch");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className="websearch-error">
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="WebSearch" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Search failed"}
-      </div>
-    );
-  }
 
   if (!result) {
     return <div className="websearch-empty">No results</div>;
@@ -117,16 +94,27 @@ export const webSearchRenderer = defineTool(toolDisplayContracts.WebSearch, {
     return <WebSearchToolUse input={input} />;
   },
 
-  renderToolResult(result, isError, _context) {
-    return <WebSearchToolResult result={result} isError={isError} />;
+  renderToolResult(result, _isError, _context) {
+    return <WebSearchToolResult result={result} />;
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className="websearch-error">
+        {failure.content || "Search failed"}
+      </div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input) {
     return input.query;
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     const count =
       r?.results?.flatMap((res) => (typeof res === "string" ? [] : res.content))

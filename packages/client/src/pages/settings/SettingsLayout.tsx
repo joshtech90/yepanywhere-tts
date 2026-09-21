@@ -20,7 +20,9 @@ import {
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { PageHeader } from "../../components/PageHeader";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
+import { useActingPrincipal } from "../../hooks/useActingPrincipal";
 import { useVersion } from "../../hooks/useVersion";
+import { limitedUserMaySeeSettingsCategory } from "../../lib/limitedUserSettings";
 import { useI18n } from "../../i18n";
 import {
   getEmulatorCategory,
@@ -112,6 +114,14 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
   "local-access": lazy(() =>
     import("./LocalAccessSettings").then((m) => ({
       default: m.LocalAccessSettings,
+    })),
+  ),
+  users: lazy(() =>
+    import("./UsersSettings").then((m) => ({ default: m.UsersSettings })),
+  ),
+  "project-templates": lazy(() =>
+    import("./ProjectTemplatesSettings").then((m) => ({
+      default: m.ProjectTemplatesSettings,
     })),
   ),
   apps: lazy(() =>
@@ -246,7 +256,8 @@ export function SettingsLayout() {
     settingsContainerWidth,
   );
   const { version: versionInfo } = useVersion();
-  const canBackUpBrowserSettings = serverHasCapability(
+  const { principal: actingPrincipal } = useActingPrincipal();
+  const serverBacksUpBrowserSettings = serverHasCapability(
     versionInfo,
     BROWSER_SETTINGS_BACKUP_CAPABILITY,
   );
@@ -280,6 +291,17 @@ export function SettingsLayout() {
   const categories: SettingsCategory[] = [
     ...getSettingsCategories((key) => t(key as never)),
   ];
+  if (
+    !serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.projectTemplateSources.name,
+    )
+  ) {
+    const index = categories.findIndex(
+      (item) => item.id === "project-templates",
+    );
+    if (index >= 0) categories.splice(index, 1);
+  }
   if (
     !serverHasCapability(versionInfo, SERVER_CAPABILITIES.computerControl.name)
   ) {
@@ -317,9 +339,21 @@ export function SettingsLayout() {
     const index = categories.findIndex((item) => item.id === "issues");
     if (index >= 0) categories.splice(index, 1);
   }
+  // A limited user keeps only the categories they can actually operate; the
+  // rest are inert or never finish loading for them. topics/limited-users.md
+  // § Delivery v1.
+  const actingAsLimitedUser = actingPrincipal.username !== null;
+  const visibleCategories = actingAsLimitedUser
+    ? categories.filter((item) => limitedUserMaySeeSettingsCategory(item.id))
+    : categories;
+  // The backup slot is server-wide and `/api/browser-settings-backup` is
+  // denied for a limited user, so the buttons would only ever fail for them.
+  const canBackUpBrowserSettings =
+    serverBacksUpBrowserSettings && !actingAsLimitedUser;
+
   // Two-column settings can fit before the persistent app sidebar can.
   const effectiveCategory =
-    category || (useTwoColumnSettings ? categories[0]?.id : undefined);
+    category || (useTwoColumnSettings ? visibleCategories[0]?.id : undefined);
 
   const setSettingsScrollContainerRef = useCallback(
     (element: HTMLElement | null) => {
@@ -394,7 +428,7 @@ export function SettingsLayout() {
 
   const searchResults = searchActive ? (
     <SettingsSearchResults
-      categories={categories}
+      categories={visibleCategories}
       components={CATEGORY_COMPONENTS}
       query={deferredSearchQuery || searchQuery.trim()}
       matchValues={matchValues}
@@ -407,10 +441,21 @@ export function SettingsLayout() {
     navigateToSettingsRoot();
   };
 
-  const CategoryComponent = effectiveCategory
-    ? CATEGORY_COMPONENTS[effectiveCategory]
-    : null;
-  const activeCategory = categories.find((c) => c.id === effectiveCategory);
+  const activeCategory = visibleCategories.find(
+    (c) => c.id === effectiveCategory,
+  );
+  // A category withheld from this principal does not render even when its URL
+  // is typed directly: the pane behind it cannot load for them. A category the
+  // server's capabilities dropped still renders, because that pane's own
+  // unsupported-server message is the answer a typed URL deserves.
+  const withheldFromPrincipal =
+    actingAsLimitedUser &&
+    effectiveCategory !== undefined &&
+    !limitedUserMaySeeSettingsCategory(effectiveCategory);
+  const CategoryComponent =
+    effectiveCategory && !withheldFromPrincipal
+      ? CATEGORY_COMPONENTS[effectiveCategory]
+      : null;
 
   // Top-strip title for the open pane: the pane registers it via
   // useSettingsPaneTitle; fall back to the category label until that
@@ -479,7 +524,7 @@ export function SettingsLayout() {
               {searchBar}
               {searchResults ?? (
                 <div className="settings-category-list">
-                  {categories.map((cat) => (
+                  {visibleCategories.map((cat) => (
                     <SettingsCategoryItem
                       key={cat.id}
                       category={cat}
@@ -544,7 +589,7 @@ export function SettingsLayout() {
           <nav className="settings-category-nav">
             {searchBar}
             <div className="settings-category-list">
-              {categories.map((cat) => (
+              {visibleCategories.map((cat) => (
                 <SettingsCategoryItem
                   key={cat.id}
                   category={cat}

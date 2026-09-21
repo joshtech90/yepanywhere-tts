@@ -22,7 +22,8 @@ import type {
   GeminiToolUseEvent,
   ModelInfo,
 } from "@yep-anywhere/shared";
-import { selectCommandLookupTarget, whichCommand } from "../cli-detection.js";
+import { selectCommandLookupTarget } from "../cli-detection.js";
+import { whichCommand } from "../which-command.js";
 import { normalizeGeminiTool } from "./gemini-tools.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
 const execAsync = promisify(exec);

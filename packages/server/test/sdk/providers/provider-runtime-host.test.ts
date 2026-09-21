@@ -5,7 +5,7 @@ import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // @ts-expect-error The wrapper lifecycle host intentionally runs as plain ESM.
 import {
   ProviderRuntimeHost,
@@ -32,8 +32,10 @@ import {
   closeProviderRuntimeHostRegistration,
   ensureProviderRuntimeHost,
   initializeProviderRuntimeHost,
+  providerHostEnabled,
   startHostedProviderSession,
 } from "../../../src/sdk/providers/provider-runtime-host.js";
+import { isProviderHostDegraded } from "../../../src/sdk/providers/provider-host-status.js";
 
 const temporaryPaths: string[] = [];
 const fixtureWorker = join(
@@ -69,6 +71,26 @@ describe("resolveProviderRuntimeWorkerPath", () => {
     expect(resolveProviderRuntimeWorkerPath({})).toMatch(
       /provider-runtime-worker\.ts$/,
     );
+  });
+});
+
+describe("providerHostEnabled", () => {
+  it("defaults off on Mac and on for Linux", () => {
+    expect(providerHostEnabled({}, "darwin")).toBe(false);
+    expect(providerHostEnabled({}, "linux")).toBe(true);
+    expect(providerHostEnabled({}, "win32")).toBe(false);
+  });
+
+  it("honors explicit booleans and rejects invalid values", () => {
+    expect(
+      providerHostEnabled({ YEP_PROVIDER_HOST_ENABLED: "true" }, "darwin"),
+    ).toBe(true);
+    expect(
+      providerHostEnabled({ YEP_PROVIDER_HOST_ENABLED: "false" }, "linux"),
+    ).toBe(false);
+    expect(() =>
+      providerHostEnabled({ YEP_PROVIDER_HOST_ENABLED: "sometimes" }, "linux"),
+    ).toThrow("must be true or false");
   });
 });
 
@@ -382,6 +404,27 @@ afterEach(async () => {
 });
 
 describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
+  beforeEach(() => {
+    vi.stubEnv("YEP_PROVIDER_HOST_ENABLED", "true");
+  });
+
+  it("does not bootstrap or report degradation when explicitly disabled", async () => {
+    const runtimeRoot = await mkdtemp(
+      join(runtimeTmpDir, "disabled-provider-host-"),
+    );
+    temporaryPaths.push(runtimeRoot);
+    vi.stubEnv("VITEST", undefined);
+    vi.stubEnv("USE_MOCK_SDK", undefined);
+    vi.stubEnv("YEP_PROVIDER_HOST_ENABLED", "false");
+    vi.stubEnv("YEP_PROVIDER_HOST_RUNTIME_DIR", runtimeRoot);
+    vi.stubEnv("YEP_PROVIDER_RUNTIME_SOCKET", undefined);
+    vi.stubEnv("YEP_PROVIDER_RUNTIME_TOKEN", undefined);
+
+    expect(await ensureProviderRuntimeHost()).toBe(false);
+    expect(existsSync(join(runtimeRoot, "host.json"))).toBe(false);
+    expect(isProviderHostDegraded()).toBe(false);
+  });
+
   it("does not bootstrap an ambient host for a standalone mock server", async () => {
     const runtimeRoot = await mkdtemp(
       join(runtimeTmpDir, "mock-provider-host-"),

@@ -1,6 +1,7 @@
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { globRenderer } from "../GlobRenderer";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 
 vi.mock("../../../../contexts/SchemaValidationContext", () => ({
   useSchemaValidationContext: () => ({
@@ -21,26 +22,33 @@ describe("GlobRenderer", () => {
 
     render(
       <div>
-        {globRenderer.renderToolUse(
-          {
-            pattern: "**/*.ts",
-            path: `${projectPath}\\packages\\client`,
-          },
-          { ...renderContext, projectPath },
-        )}
-        {globRenderer.renderToolResult(
-          {
-            durationMs: 12,
-            filenames: [
-              `${projectPath}\\packages\\client\\src\\App.tsx`,
-              `${projectPath}\\packages\\client\\src\\lib\\text.ts`,
-            ],
-            numFiles: 2,
-            truncated: false,
-          },
-          false,
-          { ...renderContext, projectPath },
-        )}
+        {globRenderer
+          .prepare({
+            input: {
+              pattern: "**/*.ts",
+              path: `${projectPath}\\packages\\client`,
+            },
+            status: "pending",
+          })
+          .renderToolUse({ ...renderContext, projectPath })}
+        {globRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                durationMs: 12,
+                filenames: [
+                  `${projectPath}\\packages\\client\\src\\App.tsx`,
+                  `${projectPath}\\packages\\client\\src\\lib\\text.ts`,
+                ],
+                numFiles: 2,
+                truncated: false,
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult({ ...renderContext, projectPath })}
       </div>,
     );
 

@@ -23,6 +23,9 @@ function service(overrides: Partial<GatewayService> = {}): GatewayService {
 
 describe("gateway service export", () => {
   let paths: { codexHome: string; claudeHome: string };
+  // pi's registry is a real file in a real agent directory, so every export
+  // here is pointed at a temporary one rather than the developer's own.
+  let piAgentDir: string;
 
   beforeEach(async () => {
     const root = await mkdtemp(join(tmpdir(), "ya-gateway-export-"));
@@ -30,6 +33,7 @@ describe("gateway service export", () => {
       codexHome: join(root, "codex"),
       claudeHome: join(root, "claude"),
     };
+    piAgentDir = await mkdtemp(join(tmpdir(), "ya-gateway-export-pi-"));
   });
 
   afterEach(() => {
@@ -41,6 +45,7 @@ describe("gateway service export", () => {
       services: [service({ codexWireApi: "responses" })],
       enabled: true,
       paths,
+      piAgentDir,
     });
 
     expect(result.written).toHaveLength(2);
@@ -67,6 +72,24 @@ describe("gateway service export", () => {
     });
   });
 
+  it("underscores a hyphenated service id into the provider key", async () => {
+    await syncGatewayServiceExports({
+      services: [service({ id: "local-vllm" })],
+      enabled: true,
+      paths,
+      piAgentDir,
+    });
+
+    const codex = await readFile(
+      join(paths.codexHome, "ya-local-vllm.config.toml"),
+      "utf8",
+    );
+    // The key a `codex -c model_providers.<key>…` launch passes for the same
+    // service, so the profile and the launch reach one provider entry.
+    expect(codex).toContain('model_provider = "ya_local_vllm"');
+    expect(codex).toContain("[model_providers.ya_local_vllm]");
+  });
+
   it("states the declared window so a terminal session is not truncated", async () => {
     await syncGatewayServiceExports({
       services: [
@@ -74,6 +97,7 @@ describe("gateway service export", () => {
       ],
       enabled: true,
       paths,
+      piAgentDir,
     });
 
     const claude = JSON.parse(
@@ -92,6 +116,9 @@ describe("gateway service export", () => {
     expect(gatewayServiceCliInvocations(service(), paths)).toEqual({
       claude: `claude --settings ${join(paths.claudeHome, "ya-vllm.settings.json")}`,
       codex: "codex -p ya-vllm",
+      // pi reads one registry rather than a file named at launch, so its
+      // command selects the provider the export wrote into it.
+      pi: "pi --provider ya-vllm",
     });
   });
 
@@ -106,6 +133,7 @@ describe("gateway service export", () => {
       services: [service({ codexEnabled: false })],
       enabled: true,
       paths,
+      piAgentDir,
     });
 
     await expect(readdir(paths.codexHome)).rejects.toMatchObject({
@@ -121,11 +149,13 @@ describe("gateway service export", () => {
       services: [service(), service({ id: "copilot", codexEnabled: true })],
       enabled: true,
       paths,
+      piAgentDir,
     });
     const result = await syncGatewayServiceExports({
       services: [service()],
       enabled: true,
       paths,
+      piAgentDir,
     });
 
     expect(result.removed.map((path) => path.split("/").pop())).toEqual(
@@ -144,11 +174,13 @@ describe("gateway service export", () => {
       services: [service()],
       enabled: true,
       paths,
+      piAgentDir,
     });
     await syncGatewayServiceExports({
       services: [service()],
       enabled: false,
       paths,
+      piAgentDir,
     });
 
     await expect(readdir(paths.codexHome)).resolves.toEqual([]);
@@ -164,6 +196,7 @@ describe("gateway service export", () => {
       services: [],
       enabled: false,
       paths,
+      piAgentDir,
     });
 
     expect(result.removed).toEqual([]);
@@ -175,6 +208,7 @@ describe("gateway service export", () => {
       services: [service({ enabled: false })],
       enabled: true,
       paths,
+      piAgentDir,
     });
 
     expect(result.written).toEqual([]);

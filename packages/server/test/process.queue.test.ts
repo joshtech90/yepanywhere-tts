@@ -80,6 +80,47 @@ describe("Process", () => {
       }
     });
 
+    it("raises legacy-queue delivery attention at consumption, not at enqueue", async () => {
+      const controlled = createControllableIterator();
+      const process = new Process(controlled.iterator, {
+        projectPath: "/test",
+        projectId: "proj-1" as UrlProjectId,
+        sessionId: "receiver",
+        provider: "claude",
+        idleTimeoutMs: 100,
+      });
+      const deliveries = vi.fn();
+      process.subscribe((event) => {
+        if (event.type === "non-human-user-turn") deliveries(event.turn);
+      });
+      try {
+        process.queueMessage({
+          text: "cancel this",
+          tempId: "cancelled",
+          metadata: { sourceSessionId: "sender" },
+        });
+        expect(process.cancelUnconfirmedSteerMessage("cancelled")).toBe(true);
+        process.queueMessage({
+          text: "external",
+          metadata: { sourceSessionId: "sender" },
+        });
+        expect(deliveries).not.toHaveBeenCalled();
+        controlled.push({
+          type: "result",
+          session_id: "receiver",
+        } as SDKMessage);
+        await waitFor(() =>
+          expect(deliveries).toHaveBeenCalledWith(
+            expect.objectContaining({ sourceSessionId: "sender" }),
+          ),
+        );
+        expect(deliveries).toHaveBeenCalledTimes(1);
+      } finally {
+        controlled.finish();
+        await process.abort();
+      }
+    });
+
     it("reports when a human turn is yielded to provider input", async () => {
       let resolveIterator!: (result: IteratorResult<SDKMessage>) => void;
       const iterator: AsyncIterator<SDKMessage> = {

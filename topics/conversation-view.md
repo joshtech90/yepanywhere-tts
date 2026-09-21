@@ -75,6 +75,10 @@ provider-history rewrite and not deletion.
   Provider plan-checklist updates rendered through the canonical `UpdatePlan`
   tool remain top-level at their transcript position: they are supervision
   state rather than routine execution and do not count as hidden activity.
+  A blocking question put to the user through the canonical `AskUserQuestion`
+  tool stays visible for the same reason: the options offered and the answer
+  the user chose are the user's own decision, and the transcript is the only
+  record of it once the popup closes.
   Tool errors, incomplete calls, and task notifications whose structured
   status is `failed` or `error` also retain their ordinary rows because their
   summary or output path may be the only human-readable failure detail.
@@ -82,7 +86,9 @@ provider-history rewrite and not deletion.
   YA does not infer failure from unconstrained summary prose.
 - Each assistant turn with condensed activity ends in one summary button. A
   completed summary reads like `4m · 17 activities hidden`; the live
-  edge reads like `Working 4m · 17 activities`. A durable completion marker in
+  edge reads like `Working 4m · 17 activities`. Once expanded, the completed
+  summary drops `hidden` and reads `4m · 17 activities`, because the rows it
+  counts are on screen directly below it. A durable completion marker in
   the latest turn—provider `turn_complete`, or a Stop-hook summary that did not
   prevent continuation—ends stale coarse `in-turn` presentation. A marker from
   an older turn does not apply after a newer user prompt, and explicitly

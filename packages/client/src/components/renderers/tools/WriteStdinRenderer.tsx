@@ -11,6 +11,7 @@ import {
   parseShellToolOutput,
 } from "@yep-anywhere/shared/transcript/shellToolOutput";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
+import { shellPollOutcome, shellResultText } from "./shellPollOutcome";
 import { ActivityDetailModal } from "../../ActivityDetailModal";
 import { AnsiText } from "../../ui/AnsiText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
@@ -158,39 +159,6 @@ function formatChars(chars: string | undefined): string {
     return escaped;
   }
   return `${escaped.slice(0, 77)}...`;
-}
-
-function getResultText(result: unknown): string {
-  const decoded = decodeCodeModeOutput(result);
-  if (decoded)
-    return decoded.parts
-      .filter((part) => part.kind !== "script-status")
-      .map((part) => part.text)
-      .join("\n");
-  if (typeof result === "string") {
-    return result;
-  }
-
-  if (isRecord(result)) {
-    // Normalized command results carry the text under content/stdout;
-    // unified-exec chunk records carry it under output.
-    for (const field of ["content", "stdout", "output"]) {
-      const value = result[field];
-      if (typeof value === "string") {
-        return value;
-      }
-    }
-  }
-
-  if (result === null || result === undefined) {
-    return "";
-  }
-
-  if (typeof result === "number" || typeof result === "boolean") {
-    return String(result);
-  }
-
-  return JSON.stringify(result, null, 2);
 }
 
 /** Compact runtime ("30s", "2m14s") from structured metadata or the shell
@@ -347,7 +315,7 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
     ) {
       return <CodeModeOutput result={result} isError={isError} shellMetadata />;
     }
-    const text = getResultText(result);
+    const text = shellResultText(result);
     const parsed = parseShellToolOutput(text);
     const linkedToolName = getLinkedToolName(input);
     const linkedFilePath = getLinkedFilePath(input);
@@ -444,7 +412,7 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
         ? "still running"
         : "No output";
     }
-    const text = getResultText(result);
+    const text = shellResultText(result);
     const parsed = parseShellToolOutput(text, {
       bareExitCodeIsEnvelope: isError,
     });
@@ -480,29 +448,20 @@ export const writeStdinRenderer = defineTool(toolDisplayContracts.WriteStdin, {
   renderInteractiveSummary(input, result, isError, _context) {
     const linkedToolName = getLinkedToolName(input);
     const linkedFilePath = getLinkedFilePath(input);
-    // A poll's single output line is already its complete useful display.
-    const decoded = decodeCodeModeOutput(result);
-    const parts = decoded?.parts.filter(
-      (part) => part.kind !== "script-status",
-    );
-    const parsed = parseShellToolOutput(getResultText(result), {
+    const parsed = parseShellToolOutput(shellResultText(result), {
       bareExitCodeIsEnvelope: isError,
     });
-    const output = parsed.output.trim();
-    if (
+    // A poll's single output line is already its complete useful display.
+    // Both outcome kinds show it; the recognized wait outcome gets its own
+    // row-level presentation in ToolCallRow, which never reaches this summary.
+    const outcome =
       !getChars(input) &&
       !linkedFilePath &&
-      (!linkedToolName || linkedToolName === "Bash") &&
-      (!parts || parts.length === 1) &&
-      output.length > 0 &&
-      output.length <= 500 &&
-      !/[\r\n]/.test(output)
-    ) {
-      const part = parts?.[0];
-      const exitCode =
-        getCommandResultMeta(result).exitCode ??
-        (part?.kind === "command-output" ? part.exitCode : undefined) ??
-        parsed.exitCode;
+      (!linkedToolName || linkedToolName === "Bash")
+        ? shellPollOutcome(result, isError)
+        : null;
+    if (outcome) {
+      const { output, exitCode } = outcome;
       return (
         <span className={styles.summary}>
           <span className={styles.output}>

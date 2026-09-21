@@ -182,6 +182,64 @@ describe("useDraftPersistence", () => {
     expect(readStoredText("draft-test")).toBe("never landed");
   });
 
+  it("answers an unmarked draft without reading storage", () => {
+    store.set(
+      "draft-test",
+      JSON.stringify({ version: 1, text: "hydrated draft" }),
+    );
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
+    expect(result.current[0]).toBe("hydrated draft");
+
+    // The session reconciles on every transcript update, so this is the
+    // steady-state cost of a streamed turn.
+    const getItem = vi.mocked(window.localStorage.getItem);
+    getItem.mockClear();
+
+    let discarded = true;
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(() => true);
+    });
+
+    expect(discarded).toBe(false);
+    expect(getItem).not.toHaveBeenCalled();
+  });
+
+  it("learns a sibling tab's recovery marker from the storage event", () => {
+    store.set(
+      "draft-test",
+      JSON.stringify({ version: 1, text: "submitted turn" }),
+    );
+    // This tab was already open with the shared draft when the other tab sent.
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
+    expect(result.current[0]).toBe("submitted turn");
+
+    const marked = JSON.stringify({
+      version: 1,
+      text: "submitted turn",
+      pendingSend: true,
+    });
+    act(() => {
+      store.set("draft-test", marked);
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "draft-test",
+          newValue: marked,
+        }),
+      );
+    });
+
+    let discarded = false;
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(
+        (text) => text === "submitted turn",
+      );
+    });
+
+    expect(discarded).toBe(true);
+    expect(result.current[0]).toBe("");
+    expect(window.localStorage.getItem("draft-test")).toBe(null);
+  });
+
   it("never discards a draft the user typed or recalled", () => {
     const { result } = renderHook(() => useDraftPersistence("draft-test"));
 

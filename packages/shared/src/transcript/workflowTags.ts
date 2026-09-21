@@ -1,4 +1,5 @@
 import { decodeCodeModeOutput } from "../code-mode-output.js";
+import { isRecord } from "../plain-record.js";
 import {
   AcliStreamDecoder,
   initialAcliFormat,
@@ -82,10 +83,6 @@ const NO_TAGS: ToolPolicy = { containsTags: false, closed: false };
 const INLINE_POLICY: ToolPolicy = { containsTags: true, view: "spans" };
 const SEPARATE: Stage["presentation"] = { collect: false, order: 0 };
 
-function record(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value);
-}
-
 function key(value: unknown): value is string {
   return (
     typeof value === "string" && value.length > 0 && !/[[\]\r\n]/.test(value)
@@ -107,7 +104,7 @@ function parseJson(text: string): unknown {
 function policy(value: unknown, inherited: ToolPolicy): ToolPolicy | undefined {
   if (value === undefined) return inherited;
   if (
-    !record(value) ||
+    !isRecord(value) ||
     (value.containsTags !== undefined &&
       typeof value.containsTags !== "boolean") ||
     (value.closed !== undefined && typeof value.closed !== "boolean")
@@ -138,7 +135,7 @@ function policy(value: unknown, inherited: ToolPolicy): ToolPolicy | undefined {
 function presentation(value: unknown): Stage["presentation"] | undefined {
   if (value === undefined) return SEPARATE;
   if (
-    !record(value) ||
+    !isRecord(value) ||
     (value.collect !== undefined && typeof value.collect !== "boolean") ||
     (value.order !== undefined &&
       (typeof value.order !== "number" || !Number.isFinite(value.order)))
@@ -149,7 +146,7 @@ function presentation(value: unknown): Stage["presentation"] | undefined {
 
 function parseSchema(value: unknown): Schema | undefined {
   if (
-    !record(value) ||
+    !isRecord(value) ||
     value.type !== "tagged-stages/1" ||
     typeof value.id !== "string" ||
     !value.id ||
@@ -179,7 +176,7 @@ function parseSchema(value: unknown): Schema | undefined {
     if (depth > 32 || stages.size + values.length > 512) return false;
     for (const child of values) {
       if (
-        !record(child) ||
+        !isRecord(child) ||
         !key(child.key) ||
         (child.title !== undefined && typeof child.title !== "string") ||
         (child.children !== undefined && !Array.isArray(child.children))
@@ -250,7 +247,7 @@ export function readWorkflowSchema(
   if (!reference) return;
   const { id } = reference;
   const json = parseJson(text);
-  if (record(json)) {
+  if (isRecord(json)) {
     const schema = parseSchema(json);
     return schema && (id === undefined || schema.id === id)
       ? schema
@@ -259,7 +256,7 @@ export function readWorkflowSchema(
   const declarations: Schema[] = [];
   for (const match of text.matchAll(/^```json\s*\r?\n([\s\S]*?)^```\s*$/gm)) {
     const value = parseJson(match[1] ?? "");
-    if (!record(value) || (id === undefined ? !value.type : value.id !== id))
+    if (!isRecord(value) || (id === undefined ? !value.type : value.id !== id))
       continue;
     const schema = parseSchema(value);
     if (!schema) return;
@@ -314,9 +311,9 @@ function toolOutputParts(item: ToolCallItem): string[] {
   }
   if (
     item.toolName === "Read" &&
-    record(result) &&
+    isRecord(result) &&
     result.type === "text" &&
-    record(result.file) &&
+    isRecord(result.file) &&
     typeof result.file.content === "string"
   ) {
     return [result.file.content];
@@ -325,7 +322,7 @@ function toolOutputParts(item: ToolCallItem): string[] {
     item.toolName.toLowerCase(),
   );
   if (
-    record(result) &&
+    isRecord(result) &&
     (typeof result.stdout === "string" || typeof result.stderr === "string")
   )
     return [

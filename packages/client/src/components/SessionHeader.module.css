@@ -11,3 +11,20 @@
 :global(.session-header-inner).noLeadingControl {
   padding-left: 0.75rem;
 }
+
+/* A badge after the title (clearloop remaining count) must stay visible when
+   the title ellipsizes: the text shrinks, the badge does not. */
+.titleWithBadge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.titleWithBadge > :global(.session-title-text) {
+  flex: 0 1 auto;
+}
+
+.titleWithBadge > :not(:global(.session-title-text)) {
+  flex-shrink: 0;
+}

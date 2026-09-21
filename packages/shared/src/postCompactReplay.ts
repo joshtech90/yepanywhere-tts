@@ -56,7 +56,12 @@ export function isPostCompactReplayEnabledForProvider(
   return settings?.providers?.[provider] === true;
 }
 
-function capTurnText(text: string): string {
+/**
+ * Trim one replay turn and cap its length, marking a cut with the shared
+ * truncated suffix. Every surface that stores or selects replay turns caps
+ * through this function so the stored text and the quoted text agree.
+ */
+export function capTurnText(text: string): string {
   const trimmed = text.trim();
   if (trimmed.length <= MAX_POST_COMPACT_REPLAY_TURN_CHARS) {
     return trimmed;

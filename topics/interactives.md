@@ -26,6 +26,15 @@ current core and same-origin execution is a security non-starter. Any future
 experiment belongs behind a separately isolated, optional companion boundary.
 See [`interactives-architectural-review.md`](interactives-architectural-review.md).
 
+**Project-birth split (2026-09-19):** the app template, prefab project
+types, and in-project template ideas below are generalized by
+[[project-templates]], which owns template libraries, shape elements as
+shipped prompt documents, and creating a git-initialized project from a
+template. This topic keeps app reach, isolation, and lifecycle. Since this
+proposal was written, Settings → Apps vhost rows and artifact grants landed
+([[active-content-security]] § Interactive HTML artifacts); they are global
+operator config, not the project-linked registry proposed here.
+
 **Storage amendment (2026-08-03):** the proposal's `.yep/interactives.json`
 registry is YA-managed state and is governed by
 [Project Directory Storage](project-directory-storage.md). It lives centrally

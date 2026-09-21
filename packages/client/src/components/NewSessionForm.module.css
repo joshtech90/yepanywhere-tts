@@ -53,6 +53,13 @@
       "secondary";
   }
 
+  .optionLayoutWithoutProvider.optionLayoutWithoutProvider {
+    grid-template-areas:
+      "main"
+      "project"
+      "secondary";
+  }
+
   .secondaryOptions {
     grid-area: secondary;
     grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
@@ -70,6 +77,21 @@
     grid-template-areas:
       "main main"
       "provider secondary";
+  }
+
+  /* Every picker in the provider slot was withheld — a locked provider, model,
+     and effort with no permission control left. The remaining options take the
+     full row instead of sitting beside a hole where the slot would have been. */
+  .optionLayoutWithoutProvider.optionLayoutWithoutProvider {
+    grid-template-areas:
+      "main project"
+      "secondary secondary";
+  }
+
+  .optionLayoutWithoutProject.optionLayoutWithoutProvider {
+    grid-template-areas:
+      "main main"
+      "secondary secondary";
   }
 }
 

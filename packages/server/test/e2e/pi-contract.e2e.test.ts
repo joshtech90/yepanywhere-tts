@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { homedir } from "node:os";
 import { promisify, stripVTControlCharacters } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
-import { whichCommand } from "../../src/sdk/cli-detection.js";
+import { whichCommand } from "../../src/sdk/which-command.js";
 import {
   PiRpcClient,
   type PiRpcResponse,

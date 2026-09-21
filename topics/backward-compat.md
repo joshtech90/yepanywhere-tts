@@ -308,3 +308,19 @@ migrated into a `default` entry rather than lost. Audited stable releases
 `v0.8.1` and `v0.8.0` have only the single-gateway settings. An absent legacy
 value never clears a configured command; an explicit legacy write of an empty
 URL removes that one entry.
+
+2026-09-18 `artifactViewer.deleteOnExpiry` removed — the setting, its toggle,
+and its status field are gone. It never reached a decision: grant ownership
+has only ever come from a request asking for it with `owned`, so no behaviour
+changes. `validateArtifactConfig` accepts and drops the field, whatever its
+type, so a settings file saved before the removal and a hosted client still
+sending it both keep working; the status no longer reports it, and a client
+that read it sees the field absent, which it already had to tolerate.
+
+2026-09-19 persisted session-summary index version 5 — the on-disk shape is
+unchanged from 3 and 4; the number now also dates an index's entries, which is
+what ends the one-shot Claude empty-summary repair. Versions 3 and 4 are still
+accepted and upgraded in place, so no installation rebuilds its indexes on
+upgrade. A downgrade to a build predating 5 does rebuild them: an older reader
+accepts only 3 and 4 and starts that scope fresh. Indexes are caches, so the
+cost is one cold parse per scope, not lost data.

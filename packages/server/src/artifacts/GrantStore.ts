@@ -2,15 +2,14 @@ import {
   mkdir,
   readdir,
   readFile,
-  rename,
   rmdir,
   stat,
   unlink,
-  writeFile,
 } from "node:fs/promises";
-import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { runGit } from "../git/gitExec.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 /**
  * Durable artifact grants and the deletions they owe.
@@ -92,9 +91,52 @@ function readDeletion(value: unknown): PendingDeletion | null {
   return { root, files: readFileset(value.files) ?? [], dueAt };
 }
 
+const has = (path: string) =>
+  stat(path).then(
+    () => true,
+    () => false,
+  );
+
+/**
+ * The working tree `path` sits in, or null.
+ *
+ * `.git` is a directory in an ordinary clone and a file in a linked worktree
+ * or a submodule, so its kind says nothing; that it is there at all does.
+ */
+export async function enclosingWorkingTree(
+  path: string,
+): Promise<string | null> {
+  for (let directory = resolve(path); ; directory = dirname(directory)) {
+    if (await has(join(directory, ".git"))) return directory;
+    if (directory === dirname(directory)) return null;
+  }
+}
+
+/**
+ * The paths Git tracks under `root`, relative to it, or null when Git cannot
+ * say. A staged-but-uncommitted file counts as tracked: it was added.
+ */
+async function trackedFiles(root: string): Promise<Set<string> | null> {
+  return runGit(root, ["ls-files", "-z", "--cached", "--", "."], {
+    maxBuffer: 8 * 1024 * 1024,
+  }).then(
+    ({ stdout }) => new Set(stdout.split("\0").filter(Boolean)),
+    () => null,
+  );
+}
+
 /**
  * Directories that are never a disposable artifact bundle, whatever a caller
- * claims: a working tree, a home directory, or a root that holds one.
+ * claims: a working tree's own root, a home directory, YA's own state, and
+ * anything holding one of those.
+ *
+ * Inside a working tree the location is not the evidence — a capture written
+ * to `<checkout>/.artifacts/` is still the caller's to clean up — because
+ * {@link GrantStore.freeze} keeps only files Git does not track, so published
+ * user content is excluded file by file. Outside every working tree there is
+ * no such evidence, and a directory under a home directory or under YA's state
+ * is ordinary content that happened to be published; `~/Downloads` is the case
+ * that would otherwise cost a user their files.
  */
 export async function deletableDirectory(
   root: string,
@@ -102,16 +144,16 @@ export async function deletableDirectory(
 ): Promise<boolean> {
   const path = resolve(root);
   if (path === dirname(path)) return false;
-  for (const other of forbidden) {
+  // The root of a checkout is the checkout, not a bundle inside one.
+  if (await has(join(path, ".git"))) return false;
+  const tracked = (await enclosingWorkingTree(path)) !== null;
+  for (const other of [...forbidden, homedir()]) {
     if (!other) continue;
     const compare = resolve(other);
     if (path === compare || compare.startsWith(`${path}/`)) return false;
+    if (!tracked && path.startsWith(`${compare}/`)) return false;
   }
-  if (path === resolve(homedir())) return false;
-  return !(await stat(join(path, ".git")).then(
-    () => true,
-    () => false,
-  ));
+  return true;
 }
 
 export class GrantStore {
@@ -161,20 +203,7 @@ export class GrantStore {
       .catch(() => {})
       .then(async () => {
         await mkdir(this.directory!, { recursive: true, mode: 0o700 });
-        // One process can hold several stores over one state directory, and
-        // their writes are serialized per store only. A staging name they
-        // share lets one rename steal another's file, so the loser's rename
-        // fails with ENOENT; the name is unique per write instead.
-        const staging = `${file}.${process.pid}.${randomUUID()}`;
-        try {
-          await writeFile(staging, `${snapshot}\n`, { mode: 0o600 });
-          await rename(staging, file);
-        } catch (error) {
-          // Leaving staging files behind would accumulate live tokens in a
-          // directory whose only expected member is the state file.
-          await unlink(staging).catch(() => {});
-          throw error;
-        }
+        await writeFileAtomically(file, `${snapshot}\n`);
       });
     return this.writing;
   }
@@ -224,9 +253,17 @@ export class GrantStore {
   }
 
   /**
-   * The files in a directory now, relative to it, or null when there are more
-   * than the cap: a directory that large is not an artifact bundle, and
-   * ownership is refused rather than guessed at.
+   * The files an owning grant may later remove, relative to `root`, or null
+   * when it may remove none.
+   *
+   * Two things are excluded. Git metadata and anything Git tracks under this
+   * root belongs to the working tree, not to the grant: a capture written
+   * beside a checkout's own files may take itself away and must leave them.
+   * Tracked-ness is read once, here; a file added to the index afterwards is
+   * still in the fileset, and is recoverable from that index. A directory with
+   * more files than the cap is not an artifact bundle, and one whose files are
+   * all the working tree's own leaves the grant nothing to own, so both refuse
+   * ownership rather than guess at it. So does a Git that will not answer.
    */
   static async freeze(root: string, cap = 4096): Promise<string[] | null> {
     const found: string[] = [];
@@ -238,6 +275,7 @@ export class GrantStore {
         () => [],
       );
       for (const entry of entries) {
+        if (entry.name === ".git") continue;
         const name = prefix ? `${prefix}/${entry.name}` : entry.name;
         if (entry.isDirectory()) {
           if (!(await walk(join(directory, entry.name), name))) return false;
@@ -248,6 +286,11 @@ export class GrantStore {
       }
       return true;
     };
-    return (await walk(root, "")) ? found : null;
+    if (!(await walk(root, ""))) return null;
+    if (!(await enclosingWorkingTree(root))) return found.length ? found : null;
+    const tracked = await trackedFiles(root);
+    if (!tracked) return null;
+    const ours = found.filter((name) => !tracked.has(name));
+    return ours.length ? ours : null;
   }
 }

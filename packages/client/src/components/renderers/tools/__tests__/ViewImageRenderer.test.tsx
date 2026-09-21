@@ -14,6 +14,7 @@ import { asClientSummarySourceKey } from "../../../../lib/clientSummaryStore";
 import type { YaSourceRuntime } from "../../../../lib/sourceRuntime";
 import { SourceRuntimeProvider } from "../../../../lib/sourceRuntimeReact";
 import { FakeSourceTransport } from "../../../../lib/transport";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import { viewImageRenderer } from "../ViewImageRenderer";
 
 const originalCreateObjectUrlDescriptor = Object.getOwnPropertyDescriptor(
@@ -95,16 +96,13 @@ describe("ViewImageRenderer", () => {
 
     renderWithRuntime(
       <div>
-        {viewImageRenderer.renderInteractiveSummary?.(
-          { path: "/tmp/plot.png" },
-          null,
-          false,
-          {
+        {viewImageRenderer
+          .prepare(recordFromLegacyArgs({ path: "/tmp/plot.png" }, null, false))
+          .renderInteractiveSummary({
             isStreaming: false,
             theme: "dark",
             projectPath: "/tmp",
-          },
-        )}
+          })}
       </div>,
       runtime,
     );

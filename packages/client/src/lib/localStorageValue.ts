@@ -50,7 +50,8 @@ function ensureStorageEventListener(): void {
   storageEventWindow.addEventListener("storage", handleStorageEvent);
 }
 
-function getStorage(): Storage | null {
+/** The browser's localStorage when it is present and usable, else null. */
+export function getLocalStorage(): Storage | null {
   try {
     const storage = globalThis.localStorage;
     return storage && typeof storage.getItem === "function" ? storage : null;
@@ -138,7 +139,7 @@ export function createLocalStorageValue<T extends string | number | boolean>(
     if (initialized) {
       return snapshot;
     }
-    const storage = getStorage();
+    const storage = getLocalStorage();
     if (!storage) {
       return snapshot;
     }
@@ -176,7 +177,7 @@ export function createLocalStorageValue<T extends string | number | boolean>(
 
   const set = (value: T): void => {
     try {
-      getStorage()?.setItem(key, serialize(value));
+      getLocalStorage()?.setItem(key, serialize(value));
     } catch {
       // Persistence failed; the coherent in-memory preference still applies.
     }
@@ -185,7 +186,7 @@ export function createLocalStorageValue<T extends string | number | boolean>(
 
   const reset = (): void => {
     let next = defaultValue;
-    const storage = getStorage();
+    const storage = getLocalStorage();
     if (storage) {
       try {
         storage.removeItem(key);

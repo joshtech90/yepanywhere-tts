@@ -4,6 +4,8 @@ import {
   POST_COMPACT_REPLAY_PREAMBLE,
 } from "@yep-anywhere/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ComputerSession } from "../src/computer-control/contract.js";
+import type { ComputerControlService } from "../src/computer-control/service.js";
 import { MessageQueue } from "../src/sdk/messageQueue.js";
 import type {
   EffectiveSessionLaunchSettings,
@@ -554,6 +556,48 @@ describe("Supervisor", () => {
         "Failed to persist successful claude session boundary: disk full",
       );
       expect(supervisorWithEligibility.getAllProcesses()).toEqual([]);
+    });
+  });
+
+  describe("computer control", () => {
+    function failingLaunch() {
+      const close = vi.fn(async () => {});
+      const session = { close } as unknown as ComputerSession;
+      const select = vi.fn(() => session);
+      const provider = testProvider(async () => {
+        throw new Error("provider refused to start");
+      });
+      const supervisor = new Supervisor({ provider });
+      supervisor.computerControl = {
+        select,
+      } as unknown as ComputerControlService;
+      return { supervisor, select, close };
+    }
+
+    it("releases the grant when a launch carrying a message fails to start", async () => {
+      const { supervisor: launchSupervisor, select, close } = failingLaunch();
+
+      await expect(
+        launchSupervisor.startSession("/tmp/test", { text: "hi" }, undefined, {
+          computerControl: true,
+        }),
+      ).rejects.toThrow("provider refused to start");
+
+      expect(select).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
+    });
+
+    it("releases the grant when a message-less launch fails to start", async () => {
+      const { supervisor: launchSupervisor, select, close } = failingLaunch();
+
+      await expect(
+        launchSupervisor.createSession("/tmp/test", undefined, {
+          computerControl: true,
+        }),
+      ).rejects.toThrow("provider refused to start");
+
+      expect(select).toHaveBeenCalledOnce();
+      expect(close).toHaveBeenCalledOnce();
     });
   });
 
@@ -6791,6 +6835,38 @@ describe("Supervisor", () => {
   });
 
   describe("eventBus integration", () => {
+    it("announces a fork so its own transcript writes are not read as external", async () => {
+      const eventBus = new EventBus();
+      const events: BusEvent[] = [];
+      eventBus.subscribe((event) => events.push(event));
+
+      const provider = {
+        ...testProvider(async () => {
+          throw new Error("not started in this test");
+        }),
+        forkSession: async () => ({
+          sessionId: "sess-fork",
+          filePath: "/tmp/test/sess-fork.jsonl",
+        }),
+      } as unknown as AgentProvider;
+      const supervisorWithBus = new Supervisor({ provider, eventBus });
+
+      await supervisorWithBus.forkSession({
+        sessionId: "sess-source",
+        projectPath: "/tmp/test",
+        providerName: "claude",
+      });
+
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: "session-forked",
+          sessionId: "sess-fork",
+          sourceSessionId: "sess-source",
+          projectId: encodeProjectId("/tmp/test"),
+        }),
+      );
+    });
+
     it("emits process-state-changed event when session starts", async () => {
       const eventBus = new EventBus();
       const events: BusEvent[] = [];

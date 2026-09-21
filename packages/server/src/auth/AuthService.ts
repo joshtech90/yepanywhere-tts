@@ -43,6 +43,12 @@ export interface AuthState {
       createdAt: string;
       lastActiveAt: string;
       userAgent?: string;
+      /**
+       * Limited user this session authenticated as. Absent means the
+       * superuser, which is every session created before limited users
+       * existed (topics/limited-users.md).
+       */
+      username?: string;
     }
   >;
 }
@@ -260,7 +266,7 @@ export class AuthService {
   /**
    * Create a new session and return the session ID.
    */
-  async createSession(userAgent?: string): Promise<string> {
+  async createSession(userAgent?: string, username?: string): Promise<string> {
     const sessionId = crypto.randomBytes(SESSION_ID_BYTES).toString("hex");
     const now = new Date().toISOString();
 
@@ -268,6 +274,7 @@ export class AuthService {
       createdAt: now,
       lastActiveAt: now,
       userAgent,
+      ...(username ? { username } : {}),
     };
     await this.save();
 
@@ -301,6 +308,19 @@ export class AuthService {
     void this.save();
 
     return true;
+  }
+
+  /**
+   * The limited user a valid session authenticated as, or null for the
+   * superuser (and for an unknown or expired session).
+   */
+  getSessionUsername(sessionId: string | undefined): string | null {
+    if (!sessionId) return null;
+    const session = this.state.sessions[sessionVerifier(sessionId)];
+    if (!session) return null;
+    const createdAt = new Date(session.createdAt).getTime();
+    if (Date.now() - createdAt > this.sessionTtlMs) return null;
+    return session.username ?? null;
   }
 
   /**

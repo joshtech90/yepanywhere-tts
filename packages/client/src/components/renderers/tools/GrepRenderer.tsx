@@ -405,12 +405,10 @@ function GrepPreviewMatchText({
 function GrepToolResult({
   input,
   result,
-  isError,
   projectPath,
 }: {
   input?: GrepInput;
   result: GrepResult;
-  isError: boolean;
   projectPath?: string | null;
 }) {
   const [isExpanded, setIsExpanded] = useState(false);
@@ -434,23 +432,6 @@ function GrepToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("Grep");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className={styles.error}>
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="Grep" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Search failed"}
-      </div>
-    );
-  }
 
   if (!result) {
     return <div className={styles.empty}>No results</div>;
@@ -799,23 +780,31 @@ export const grepRenderer = defineTool(toolDisplayContracts.Grep, {
     return <GrepToolUse input={input} projectPath={context.projectPath} />;
   },
 
-  renderToolResult(result, isError, context, input) {
+  renderToolResult(result, _isError, context, input) {
     return (
       <GrepToolResult
         input={input}
         result={result}
-        isError={isError}
         projectPath={context.projectPath}
       />
     );
+  },
+
+  renderFailure(failure) {
+    return (
+      <div className={styles.error}>{failure.content || "Search failed"}</div>
+    );
+  },
+
+  getFailureSummary() {
+    return "Error";
   },
 
   getUseSummary(input, context) {
     return getGrepUseSummary(input, context?.projectPath);
   },
 
-  getResultSummary(result, isError) {
-    if (isError) return "Error";
+  getResultSummary(result) {
     const r = result;
     if (!r) return "Results";
     return getGrepResultLabel(r).text;

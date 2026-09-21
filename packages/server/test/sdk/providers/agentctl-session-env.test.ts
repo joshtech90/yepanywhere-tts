@@ -168,6 +168,49 @@ describe("agentctl session env bridge", () => {
     }
   });
 
+  bashIt("replaces a seeded session id once the provider reports one", () => {
+    // A fork resumes a copy of another session's transcript, so the id this
+    // session runs under is not the one it was launched with. Later shells
+    // must report the reported id, never the seed.
+    const bridge = createAgentctlSessionEnvBridge("sess-source");
+    try {
+      const env = bridge.extendEnv(bridgeTestEnv());
+      expect(runBash(env)).toContain("agentctl=sess-source");
+
+      bridge.publishSessionId("sess-fork");
+
+      expect(runBash(env)).toContain("agentctl=sess-fork");
+      expect(runBash(env)).not.toContain("sess-source");
+    } finally {
+      bridge.cleanup();
+    }
+  });
+
+  bashIt("never leaks an inherited session id into tool shells", () => {
+    // The server can be started from an agent's own shell, so its environment
+    // (and a provider worker forked from it) may carry that session's id. A
+    // session with no reported id of its own must report none: agentctl then
+    // refuses, instead of confidently editing a live peer's coordination
+    // entry.
+    const bridge = createAgentctlSessionEnvBridge();
+    try {
+      const env = bridge.extendEnv(
+        bridgeTestEnv({ AGENTCTL_SESSION_ID: "sess-that-launched-the-server" }),
+      );
+      expect(env.AGENTCTL_SESSION_ID).toBeUndefined();
+      expect(runBash(env)).toContain("agentctl=");
+      expect(runBash(env)).not.toContain("sess-that-launched-the-server");
+
+      // An id smuggled past extendEnv (a reused spawn overlay) still loses to
+      // the bridge file, which the shell sources after clearing the variable.
+      expect(
+        runBash({ ...env, AGENTCTL_SESSION_ID: "sess-smuggled" }),
+      ).not.toContain("sess-smuggled");
+    } finally {
+      bridge.cleanup();
+    }
+  });
+
   bashIt("refreshes browser debugging credentials for later shells", () => {
     const bridge = createAgentctlSessionEnvBridge("sess-retained", () => ({
       YEP_SESSION_WAKE_URL: "http://127.0.0.1/session-wake/sess-retained",
@@ -207,6 +250,13 @@ describe("agentctl session env bridge", () => {
       expect(target.AGENT_SERVER_URL).toBe("http://child.invalid/");
       expect(target.BASH_ENV).toBeTruthy();
       expect(target.AGENTCTL_SESSION_ID).toBe("sess-copy");
+      const inherited: Record<string, string> = {
+        AGENTCTL_SESSION_ID: "sess-that-launched-the-server",
+      };
+      copyAgentctlBashEnvInto(inherited, bridge, {
+        baseEnv: bridgeTestEnv(),
+      });
+      expect(inherited.AGENTCTL_SESSION_ID).toBeUndefined();
       expect(
         execFileSync("bash", ["-c", 'printf "%s" "$AGENTCTL_SESSION_ID"'], {
           encoding: "utf8",

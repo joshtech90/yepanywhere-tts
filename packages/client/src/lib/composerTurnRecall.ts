@@ -1,6 +1,7 @@
 import type { ContentBlock, Message } from "../types";
 import { isPlainUserTurn } from "./linearMessageDedup";
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
+import { isTaskNotificationMessage } from "@yep-anywhere/shared/transcript/parseTaskNotification";
 import { getMessageContent } from "./mergeMessages";
 import {
   getPromptTextForCorrection,
@@ -125,7 +126,13 @@ export function createComposerTurnRecallCache(): ComposerTurnRecallCache {
       }
       for (let index = prefix; index < messages.length; index += 1) {
         const message = messages[index];
-        if (!message || !isPlainUserTurn(message)) {
+        // Harness-injected user rows (task notifications) are not things the
+        // user typed, so they are not recallable.
+        if (
+          !message ||
+          !isPlainUserTurn(message) ||
+          isTaskNotificationMessage(message)
+        ) {
           continue;
         }
         const text = extractUserTurnText(message);
@@ -162,6 +169,41 @@ export function getComposerTurnRecallEntries(
   messages: readonly Message[],
 ): ComposerTurnRecallEntry[] {
   return createComposerTurnRecallCache().derive(messages);
+}
+
+/** Render id prefix of recall entries that were YA commands, not turns. */
+export const COMMAND_RECALL_ID_PREFIX = "ya-command-recall-";
+
+/**
+ * A YA-routed command (`/clear N`, `/clearloop …`) never becomes a transcript
+ * turn, so the transcript-derived list cannot recall it. Callers keep their
+ * own newest-first list of accepted commands and merge it here: commands
+ * first, then turns, deduplicated by text.
+ */
+export function mergeCommandRecallEntries(
+  commands: readonly ComposerTurnRecallEntry[],
+  turns: readonly ComposerTurnRecallEntry[],
+): ComposerTurnRecallEntry[] {
+  if (commands.length === 0) return turns.slice();
+  const seen = new Set<string>();
+  const merged: ComposerTurnRecallEntry[] = [];
+  for (const entry of [...commands, ...turns]) {
+    if (seen.has(entry.text)) continue;
+    seen.add(entry.text);
+    merged.push(entry);
+  }
+  return merged;
+}
+
+export function createCommandRecallEntry(
+  text: string,
+  at = Date.now(),
+): ComposerTurnRecallEntry {
+  return {
+    id: `${COMMAND_RECALL_ID_PREFIX}${at}`,
+    text,
+    preview: getSearchPreviewFallback(text),
+  };
 }
 
 /**

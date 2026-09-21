@@ -71,4 +71,24 @@ describe("durable goal receipts", () => {
       }),
     ).toEqual([]);
   });
+  it("puts a receipt written inside a cleared span into that group", () => {
+    const grouped = (id: string, second: number): Message => ({
+      ...provider(id, second),
+      rewoundGroupId: "rw-1",
+    });
+    const result = mergeLocalCommandMessages(
+      [provider("cut", 5), grouped("dropped", 10), grouped("more", 30)],
+      [goal("notice", 20)],
+    );
+    expect(ids(result)).toEqual(["cut", "dropped", "notice", "more"]);
+    expect(result[2]?.rewoundGroupId).toBe("rw-1");
+  });
+  it("leaves a receipt on the live branch alone", () => {
+    const result = mergeLocalCommandMessages(
+      [provider("cut", 5), provider("live", 30)],
+      [goal("notice", 20)],
+    );
+    expect(ids(result)).toEqual(["cut", "notice", "live"]);
+    expect(result[1]?.rewoundGroupId).toBeUndefined();
+  });
 });

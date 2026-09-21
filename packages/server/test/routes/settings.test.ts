@@ -4,6 +4,7 @@ import {
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
   NEVER_IDLE_REAP_HOURS,
+  parseGatewayServices,
 } from "@yep-anywhere/shared";
 import type { ProjectStoragePolicy } from "../../src/projects/projectStoragePolicy.js";
 import { createSettingsRoutes } from "../../src/routes/settings.js";
@@ -2493,6 +2494,50 @@ describe("Settings Routes", () => {
       expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
     });
 
+    it("persists long-context effort warning settings", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          longContextEffortWarning: {
+            providers: { claude: true, codex: false },
+            thresholdTokens: 750000,
+          },
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        longContextEffortWarning: {
+          providers: { claude: true },
+          thresholdTokens: 750000,
+        },
+      });
+    });
+
+    it("rejects invalid long-context effort warning settings", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          longContextEffortWarning: { thresholdTokens: -5 },
+        }),
+      });
+
+      expect(response.status).toBe(400);
+      const json = await response.json();
+      expect(json.error).toContain("longContextEffortWarning must use");
+      expect(mockServerSettingsService.updateSettings).not.toHaveBeenCalled();
+    });
+
     it("rejects invalid prompt-cache keepalive settings", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,
@@ -3005,6 +3050,62 @@ describe("Settings Routes", () => {
       expect(response.status).toBe(400);
       const json = await response.json();
       expect(json.error).toBe("baseUrl must be an http(s) URL");
+    });
+  });
+
+  describe("POST /gateway-services/effort", () => {
+    function configureRemoteService(): void {
+      const services = parseGatewayServices([
+        { id: "remote", url: "http://ml.example:8080" },
+      ]);
+      if (!services) throw new Error("fixture service did not parse");
+      settings = { ...settings, gatewayServices: services };
+    }
+
+    it("asks a configured endpoint however its URL was typed", async () => {
+      configureRemoteService();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const fetchMock = vi.fn(async () => new Response("", { status: 503 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await routes.request("/gateway-services/effort", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: "  http://ml.example:8080/  " }),
+      });
+
+      expect(response.status).toBe(200);
+      await expect(response.json()).resolves.toEqual({
+        detected: false,
+        reason: "unreachable",
+      });
+      expect(fetchMock).toHaveBeenCalledWith(
+        "http://ml.example:8080/v1/models",
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
+    });
+
+    it("refuses an endpoint that is neither configured nor loopback", async () => {
+      configureRemoteService();
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+      const fetchMock = vi.fn(async () => new Response("", { status: 200 }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const response = await routes.request("/gateway-services/effort", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: "http://elsewhere.example:8080/" }),
+      });
+
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toMatchObject({
+        error: expect.stringContaining("configured"),
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

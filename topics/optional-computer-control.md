@@ -22,10 +22,17 @@ Node x64/ARM64 and an ordinary interactive desktop are required.
 YA pins Machine Control's minisign public key and authenticates `release.json`
 before trusting its publisher, names, sizes or SHA-256 hashes. Bounded downloads
 go into unique YA-data staging directories; archive names, entries, expanded
-size and complete bytes are checked before native installation. The signed
+size and complete bytes are checked before native installation. Size and hash
+are measured on the received stream, so the staged archive must receive every
+byte of every chunk; a write that stores less than it was handed fails the
+download rather than leaving a short archive to verify against the stream. The signed
 manager/catalog verification remains mandatory. Download failure, invalid
 signatures or incompatibility leave the existing installation unchanged.
 The installed version is persisted and older release-feed versions are refused.
+A persisted installed version that is not a released `x.y.z` version — settings
+are hand-editable JSON — is ignored with a logged warning and reported as no
+installed version, so status and update checks keep working instead of failing
+on every comparison; the next successful install records a usable version again.
 
 Check for updates is explicit and available while disabled. Managed installs
 also check on enabled startup and every 24 hours while automatic updates are
@@ -94,7 +101,9 @@ explicit selection when starting/creating the session. Other operating systems,
 Bun, providers and executors are unavailable. Grants expire after 30 minutes
 by default (operator API range 10 seconds to one hour). They are scoped to the
 selected provider thread: child threads, revoked grants and aborted sessions
-cannot dispatch. An agent with unrelated unsandboxed same-user shell access is
+cannot dispatch. A launch whose provider start fails releases its grant before
+the failure reaches the caller, so a session that never began holds none of the
+32 concurrent grants until expiry. An agent with unrelated unsandboxed same-user shell access is
 not contained by these grants; this is a computer-tool authority boundary.
 
 For Advanced local import, the operator selects an extracted workstation package
@@ -136,7 +145,11 @@ or timeout after writing is unknown delivery and is never automatically retried.
 Native provider, fidelity, delivery, effect and uncertainty remain in results;
 confirmed delivery is not independent proof of a desktop effect. Revocation
 during an in-flight operation withholds desktop data while preserving known
-delivery/effect metadata and the need to inspect effects independently.
+delivery/effect metadata and the need to inspect effects independently. An
+operation runs against the resident it was dispatched to: a stop that releases
+the resident mid-call neither fails that operation nor skips its activity
+refresh, and the observation it returns still authorizes the grant's later
+references.
 
 Native screenshot reads accept only exact artifact IDs under the owned
 instance/session directory, reject links/path substitution and validate PNG
@@ -181,48 +194,16 @@ machine-specific run contracts and captured desktop data stay outside commits.
 Native source changes are not required by the current Job Object ownership
 implementation. Signed-payload acceptance is separate from native source tests.
 
-## Direct Windows acceptance, 2026-09-12
+## Accepted Windows scope
 
-**Current:** Native ARM64 Windows acceptance places Node YA, Codex 0.154.0
-and the signed workstation resident in the same interactive user session.
-Both the developer and real acceptance agents used GPT-6 Astra with high
-reasoning. The controller used SSH only for supervision and independent
-checks; agent operations used the local named pipe.
-
-An ordinary session created no grant or resident. A selected session discovered
-`yep_computer__computer_control` while the resident remained stopped. First use
-started the resident; one accepted semantic invocation changed the deterministic
-fixture counter from zero to one, independently read from the same fixture
-process. Cua supplied snapshot-bound semantics and exact window-content
-capture. An invalid invocation shape was refused before dispatch, then corrected;
-no uncertain mutation was replayed.
-
-The actual New Session checkbox submitted explicit selection with Astra/high.
-A subsequent read-only screenshot reached the model and YA's live browser view;
-the stored PNG also rendered after reload on desktop and phone. Revoking one of
-two selected sessions refused its next call while the other remained usable.
-Killing the candidate server with the resident and Cua active reclaimed all
-eight owned processes in the first observation, approximately 0.36 seconds.
-SSH, the separate YA supervisor and appliance control remained healthy.
-Restarted YA does not restore the old grants.
-
-The authenticated ARM64 preview from Machine Control source
-`046a79804676f6d4dfa8441106f9911a96756a0a` was installed without importing
-native source. Tampered manager code was refused. Removing the original import
-directory preserved cold startup and uninstall from the managed installed copy.
-Idle stop/restart, expiry/reference refusal and guardian/job failure handling
-also have focused native coverage. Three warm, read-only window-enumeration
-round trips measured 6, 4 and 4 ms; these include native enumeration and IPC,
-exclude model/supervision/startup, and are observations rather than a benchmark.
-
-Final macOS repository checks passed: lint, formatting, typecheck, 11,964 unit
-tests, CSS/capability audits and 232 browser tests (8 skipped). The native
-Windows focused tests and isolated UI checks pass; its broad aggregate and
-checkout/tooling limitations remain explicitly recorded in
+Acceptance covers source-run Node YA with Codex 0.154.0 on an interactive
+Windows ARM64 desktop, reaching the authenticated local preview over the user's
+named pipe. It is not acceptance of a packaged YA executable, Bun, x64 YA
+integration, other providers, macOS/Linux control, public download/update feeds
+or privileged unlock settings; the broad Windows aggregate gates remain open in
 [the Windows validation gap](../gaps/windows-validation-baseline.md).
-This is source-run Node/Codex consumer acceptance, not acceptance of a packaged
-YA executable, Bun, other providers, x64 YA integration, macOS/Linux control,
-public download/update feeds or privileged unlock settings.
+The run record is in
+[Tactical 131](../docs/tactical/131-optional-windows-computer-control.md).
 
 ## Intended experience and ownership
 
@@ -245,6 +226,14 @@ owns installation controls, supervision, session eligibility and authority,
 agent-facing advertisement, and result presentation. Existing Machine Control
 CLI/appliance use must remain independent of YA. Unlock retains its separate
 native installation, UAC approval, grant, and credential-custody flow.
+
+**Decision:** Reach the resident through the provider's deferred dynamic tool
+(vs. a bundled SDK or CLI driving a supervised persistent JavaScript worker):
+Codex's namespaced registration already dispatches over the existing provider
+connection to direct local IPC, so the worker candidate would have added a
+general JavaScript evaluator — which is not same-user containment — for no
+reachable capability. A provider without that hook still needs its own proven
+adapter, and an MCP adapter remains optional.
 
 This is an optional out-of-process native component, not a proposal to reopen
 the banked general-purpose [server plugin architecture](server-plugin-arch.md).
@@ -336,31 +325,6 @@ also describes experimental `dynamicTools` and the `item/tool/call` exchange:
 a client can implement tools and return content, including images, over its
 existing Codex connection. YA now uses this hook for the preview described
 above; that does not establish that Sky uses the same hook.
-
-## Earlier candidate exploration (superseded by the preview contract)
-
-**Historical proposal:** Supply a compact discoverable skill plus a bundled SDK or CLI.
-Start a supervised persistent JavaScript worker only when needed, if that
-provider benefits from a REPL, and have its SDK reach the signed resident over
-direct local IPC. Codex dynamic tools could expose the execution surface
-without a dedicated computer-control MCP server. Other providers need their
-own proven adapter; an MCP adapter may remain optional. Do not assume their
-tool registration, mid-session activation, or image channels are identical.
-
-Treat these as separate gates: package installed; feature enabled; session
-eligible and authorized; instructions loaded; worker started; resident connected.
-Only the last gates should incur runtime cost. Define bounded idle cleanup,
-resume and crash behavior under [resource quiescence](architecture-mandates.md).
-Preserve resident generation/reference checks and distinguish delivery from
-independently observed effect. Never automatically retry uncertain input.
-
-**Original acceptance questions:** Prove the direct local path and its latency; choose per-provider
-registration and activation mechanisms; validate native image delivery and YA
-rendering; define session grants, revocation and worker ownership; then scope
-install/enable controls. Reuse YA's existing runtime where suitable and verify
-Node/Bun and packaged-distribution behavior before adding another bundled runtime.
-A general JavaScript evaluator is not same-user containment, and its existence
-must not grant arbitrary privileged service execution.
 
 ## Agreed development and validation placement
 

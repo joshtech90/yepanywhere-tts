@@ -4,6 +4,7 @@ import type {
   UserMessageMetadata,
 } from "@yep-anywhere/shared";
 import type { SessionMetadataService } from "../metadata/index.js";
+import type { ClearloopService } from "../services/ClearloopService.js";
 import type {
   PersistedSessionQueuedMessage,
   SessionQueuePersistenceService,
@@ -14,6 +15,7 @@ import type { Process } from "../supervisor/Process.js";
 export interface SessionQueueSummaryDeps {
   sessionQueuePersistenceService?: SessionQueuePersistenceService;
   sessionMetadataService?: Pick<SessionMetadataService, "getMetadata">;
+  clearloopService?: Pick<ClearloopService, "getRunningJob" | "getProgress">;
 }
 
 export function persistedPatientQueueSummary(
@@ -89,7 +91,7 @@ export function sessionQueueSummaries(
       .map((message) => message.tempId)
       .filter((id): id is string => id !== undefined),
   );
-  return [
+  const ordered = [
     ...live,
     ...recovered.filter(
       (message) => message.id === undefined || !liveIds.has(message.id),
@@ -111,6 +113,26 @@ export function sessionQueueSummaries(
       right.queuedAt ?? right.timestamp,
     ),
   );
+  // The clearloop entry is always last: it owns its own send boundary and
+  // never holds a deferred or patient position (topics/session-rewind.md).
+  const clearloop = deps.clearloopService?.getRunningJob(sessionId);
+  const progress = clearloop
+    ? deps.clearloopService?.getProgress(sessionId)
+    : undefined;
+  return clearloop && progress
+    ? [
+        ...ordered,
+        {
+          tempId: `ya-clearloop-${clearloop.id}`,
+          content: clearloop.prompt,
+          timestamp: clearloop.startedAt,
+          kind: "ya-command" as const,
+          yaCommand: "clearloop" as const,
+          clearloop: progress,
+          status: "queued" as const,
+        },
+      ]
+    : ordered;
 }
 
 export function recoveredPatientUserMessage(

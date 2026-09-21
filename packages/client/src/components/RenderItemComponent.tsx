@@ -7,8 +7,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { useSessionRewind } from "../contexts/SessionRewindContext";
 import { useTextTooltipAttributes } from "../hooks/useTooltipAppearance";
 import { useI18n } from "../i18n";
+import { getRenderItemRewoundGroupId } from "../lib/sessionDetail/renderItems";
+import { CopyTextButton } from "./ui/CopyTextButton";
 import { AsyncQuestionMessage } from "./AsyncQuestions";
 import {
   MESSAGE_STALE_THRESHOLD_MS,
@@ -242,6 +245,84 @@ const COMPACT_EMPTY_DETAIL =
  */
 function systemIconForText(icon: string, text: string): string {
   return icon === "/" && text.trimStart().startsWith("/") ? "" : icon;
+}
+
+interface RewoundGroupDetails {
+  reason?: string;
+  cutTurnIndex?: number;
+  droppedTurnCount?: number;
+  rowCount?: number;
+  clearloopIteration?: number;
+  clearloopTotal?: number;
+  clearloopPrompt?: string;
+}
+
+/**
+ * Header row of a rewound group (topics/session-rewind.md § Durable
+ * history). The group's body rows are shown or hidden by the display filter
+ * through the shared rewind context; this row only owns the toggle.
+ */
+function RewoundGroupHeader({
+  item,
+}: {
+  item: Extract<RenderItem, { type: "system" }>;
+}) {
+  const { t } = useI18n();
+  const rewind = useSessionRewind();
+  const groupId = getRenderItemRewoundGroupId(item);
+  const source = item.sourceMessages[0] as
+    | { rewoundGroup?: RewoundGroupDetails }
+    | undefined;
+  const details = source?.rewoundGroup ?? {};
+  const expanded = groupId ? rewind.expandedRewoundGroups.has(groupId) : false;
+  const count = String(details.droppedTurnCount ?? details.rowCount ?? 0);
+  const index = String(details.cutTurnIndex ?? 0);
+  // Reads as the command that produced it: `/clear N`, or for a clearloop
+  // iteration `/clear N [#m/M: prompt]` (topics/session-rewind.md).
+  const label =
+    details.clearloopIteration !== undefined
+      ? t("rewoundGroupClearloopLabel", {
+          iteration: String(details.clearloopIteration),
+          total: String(details.clearloopTotal ?? "?"),
+          prompt: details.clearloopPrompt ?? "",
+          index,
+        })
+      : t("rewoundGroupLabel", { index });
+  const tooltip = t("rewoundGroupTooltip", { count });
+  // A clearloop iteration's header copies the command that would resume the
+  // loop from here: the iterations still to run after this one.
+  const relaunchCommand =
+    details.clearloopIteration !== undefined &&
+    details.clearloopTotal !== undefined &&
+    details.clearloopPrompt
+      ? `/clearloop ${index} ${Math.max(0, details.clearloopTotal - details.clearloopIteration)}: ${details.clearloopPrompt}`
+      : null;
+  return (
+    <div
+      className={`system-message system-message-local-command ${styles.rewoundGroupHeader}`}
+    >
+      <button
+        type="button"
+        className={styles.rewoundGroupToggleButton}
+        aria-expanded={expanded}
+        title={`${tooltip} — ${expanded ? t("rewoundGroupCollapse") : t("rewoundGroupExpand")}`}
+        onClick={() => groupId && rewind.toggleRewoundGroup(groupId)}
+      >
+        <span className={styles.rewoundGroupToggle} aria-hidden="true">
+          {expanded ? "−" : "+"}
+        </span>
+        <span className="system-message-icon">↶</span>
+        <span className="system-message-text">{label}</span>
+      </button>
+      {relaunchCommand && (
+        <CopyTextButton
+          text={relaunchCommand}
+          label={t("rewoundGroupCopyRelaunch")}
+          className={`user-prompt-action user-prompt-action-copy ${styles.rewoundGroupCopy}`}
+        />
+      )}
+    </div>
+  );
 }
 
 function CollapsibleSystemMessage({
@@ -892,21 +973,24 @@ function ConversationActivitySummary({
       ? "conversationActivitySingular"
       : "conversationActivityPlural",
   );
+  // Expanded, the activity is on screen right below this summary, so calling it
+  // hidden contradicts what the reader sees; the count alone still describes it.
+  const completeKey = item.expanded
+    ? "conversationActivityExpanded"
+    : "conversationActivityComplete";
+  const completeKeyWithoutTime = item.expanded
+    ? "conversationActivityExpandedWithoutTime"
+    : "conversationActivityCompleteWithoutTime";
   const label = duration
-    ? t(
-        item.active
-          ? "conversationActivityActive"
-          : "conversationActivityComplete",
-        {
-          duration,
-          count: item.activityCount,
-          activity,
-        },
-      )
+    ? t(item.active ? "conversationActivityActive" : completeKey, {
+        duration,
+        count: item.activityCount,
+        activity,
+      })
     : t(
         item.active
           ? "conversationActivityActiveWithoutTime"
-          : "conversationActivityCompleteWithoutTime",
+          : completeKeyWithoutTime,
         {
           count: item.activityCount,
           activity,
@@ -1104,9 +1188,9 @@ function ConversationThinkingPreview({
       : THINKING_PREVIEW_DEFAULT_WIDTH_PX;
 
   // Accurate max-content width once per block. Streaming tokens grow the
-  // estimate in the effect below; mutating live `display`/`width` on every
-  // thinking delta forced layout and could leak a 2px temporary height into
-  // the row's published cap.
+  // estimate in the effect below, because mutating live `display`/`width` on
+  // every thinking delta forces layout and can leak a 2px temporary height
+  // into the row's published cap.
   // biome-ignore lint/correctness/useExhaustiveDependencies: one measure per block identity; thinking text is the fallback only when that measure is 0
   useLayoutEffect(() => {
     if (collapsed) return;
@@ -1359,6 +1443,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         return (
           <UserPromptBlock
             content={item.content}
+            messageId={item.id}
             projectPathLinks={item.projectPathLinks}
             onCorrect={onCorrectUserPrompt}
             onCancelUnconfirmed={
@@ -1425,6 +1510,9 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         );
 
       case "system": {
+        if (item.subtype === "rewound_group") {
+          return <RewoundGroupHeader item={item} />;
+        }
         if (item.subtype === "local_command" && item.content === "/goal") {
           const [objective = "", ...status] = (item.details ?? []).map(
             systemDetailToText,
@@ -1527,11 +1615,21 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         hasTimestamp ? "has-message-age" : "",
         showAgeByDefault ? "is-message-age-visible" : "",
         item.isSubagent ? "subagent-item" : "",
+        // Rewound rows reuse the nested (subagent) presentation.
+        getRenderItemRewoundGroupId(item) &&
+        !(item.type === "system" && item.subtype === "rewound_group")
+          ? `subagent-item ${styles.rewoundItem}`
+          : "",
       ]
         .filter(Boolean)
         .join(" ")}
       data-render-type={item.type}
       data-render-id={item.id}
+      data-rewound-group={
+        item.type === "system" && item.subtype === "rewound_group"
+          ? undefined
+          : getRenderItemRewoundGroupId(item)
+      }
       onClick={handleClick}
     >
       <div className="message-render-content">

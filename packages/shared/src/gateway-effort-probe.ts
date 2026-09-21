@@ -47,6 +47,13 @@ export interface GatewayEndpointEffortProbe {
    * express.
    */
   noThinking: boolean;
+  /**
+   * The level the endpoint applies to a request naming none, when it said so.
+   *
+   * Only the chat-template stage states this; request-schema validation lists
+   * accepted literals without naming a default.
+   */
+  defaultLevel?: EffortLevel;
 }
 
 /**
@@ -81,6 +88,75 @@ export function parseGatewayEffortProbe(
   const levels = EFFORT_LEVEL_ORDER.filter((level) => tokens.has(level));
   if (levels.length === 0) return undefined;
   return { levels, noThinking: tokens.has("none") };
+}
+
+/**
+ * Read a chat template's rejection of an effort its request schema accepts.
+ *
+ * Request validation and the chat template are two different gatekeepers, and
+ * only the first is what `parseGatewayEffortProbe` reads. Observed against the
+ * same vLLM serving Qwen3.8-Flash-Next, whose schema accepts all seven
+ * literals:
+ *
+ *     POST /v1/chat/completions  {"reasoning_effort": "high", …}
+ *     400  {"error":{"message":"Unexpected reasoning effort high. Supported
+ *          types are xhigh (default), medium, and low.", …}}
+ *
+ * The rejection states the set the model actually distinguishes and marks the
+ * one applied to a request naming none, so it answers both questions the
+ * schema stage leaves open. Returns undefined for a body that is not such a
+ * rejection — including a rejection for some unrelated reason, which says
+ * nothing about the accepted set and must not be read as listing none.
+ */
+export function parseGatewayTemplateEffortRejection(
+  body: string,
+): GatewayEndpointEffortProbe | undefined {
+  const supported = /supported\s+(?:types|values|efforts)\s+are\s+([^.]*)/iu
+    .exec(body)
+    ?.at(1);
+  if (!supported || !/effort/iu.test(body)) return undefined;
+  const named = new Set<string>();
+  let defaultLevel: EffortLevel | undefined;
+  let sawNone = false;
+  // Each item is a bare word optionally trailed by "(default)"; the separators
+  // are commas and a final "and", neither of which can be a level name.
+  for (const match of supported.matchAll(
+    /([a-z][a-z0-9_-]{1,31})\s*(\(default\))?/giu,
+  )) {
+    const word = match[1]!.toLowerCase();
+    if (word === "and" || word === "or") continue;
+    if (word === "none") {
+      sawNone = true;
+      continue;
+    }
+    if (!EFFORT_LEVEL_ORDER.includes(word as EffortLevel)) continue;
+    named.add(word);
+    if (match[2]) defaultLevel = word as EffortLevel;
+  }
+  const levels = EFFORT_LEVEL_ORDER.filter((level) => named.has(level));
+  if (levels.length === 0) return undefined;
+  return {
+    levels,
+    noThinking: sawNone,
+    ...(defaultLevel ? { defaultLevel } : {}),
+  };
+}
+
+/**
+ * The request body that asks the chat template about one real effort value.
+ *
+ * Unlike the schema stage this names a level the endpoint's validation accepts,
+ * so a template that also accepts it runs a one-token completion instead of
+ * failing. That is the cost of the second stage, and the reason it is asked
+ * with the highest level the schema listed: a template narrower than its
+ * schema almost always narrows from the top, so the usual answer is another
+ * free rejection.
+ */
+export function gatewayTemplateEffortProbeRequest(
+  modelId: string,
+  effort: EffortLevel,
+): ReturnType<typeof gatewayEffortProbeRequest> {
+  return { ...gatewayEffortProbeRequest(modelId), reasoning_effort: effort };
 }
 
 /**

@@ -1,5 +1,6 @@
 import { useIssuesEnabled } from "../hooks/useIssuesEnabled";
 import {
+  projectDisplayName,
   DEVICE_BRIDGE_CAPABILITY,
   DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   GIT_STATUS_ENHANCED_CAPABILITY,
@@ -54,6 +55,7 @@ import {
 import { UI_KEYS } from "../lib/storageKeys";
 import { getSessionDisplayTitle } from "../utils";
 import { AgentsNavItem } from "./AgentsNavItem";
+import { useActingPrincipal } from "../hooks/useActingPrincipal";
 import { CompactResumeButton } from "./CompactResumeButton";
 import { SessionListItem } from "./SessionListItem";
 import type { SessionNavigationIntent } from "./SessionListItem";
@@ -343,6 +345,11 @@ export function Sidebar({
   const remoteConnection = useOptionalRemoteConnection();
   const { settings: serverSettings } = useServerSettings();
   const issuesEnabled = useIssuesEnabled();
+  // Limited users (topics/limited-users.md § Delivery v1): the acting
+  // principal decides which nav entries are worth showing. Hiding is
+  // cosmetic; the server refuses the same operations either way.
+  const { principal: actingPrincipal } = useActingPrincipal();
+  const isLimitedUser = actingPrincipal.username !== null;
   const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
   const { status: publicShareStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
@@ -662,7 +669,7 @@ export function Sidebar({
           projectCodeNamesEnabled &&
           project.codeName
             ? project.codeName
-            : project.name,
+            : projectDisplayName(project),
         ]),
       ),
     [projectCodeNamesEnabled, projects, supportsProjectCodeNames],
@@ -885,6 +892,7 @@ export function Sidebar({
         hasUnread={session.hasUnread}
         isStarred={session.isStarred}
         isArchived={session.isArchived}
+        clearloop={session.clearloop}
         mode="compact"
         isCurrent={session.id === currentSessionId}
         activity={getSidebarRowActivity(session)}
@@ -1061,7 +1069,7 @@ export function Sidebar({
               onClick={onNavigate}
               basePath={basePath}
             />
-            {issuesEnabled && (
+            {issuesEnabled && !isLimitedUser && (
               <SidebarNavItem
                 to="/issues"
                 icon={SidebarIcons.issues}
@@ -1070,7 +1078,7 @@ export function Sidebar({
                 basePath={basePath}
               />
             )}
-            {bangHistoryVisible && (
+            {bangHistoryVisible && !isLimitedUser && (
               <SidebarNavItem
                 to="/bang-commands"
                 icon={SidebarIcons.bang}
@@ -1100,7 +1108,7 @@ export function Sidebar({
                 basePath={basePath}
               />
             )}
-            {supportsDeviceBridgeNav && (
+            {supportsDeviceBridgeNav && !isLimitedUser && (
               <SidebarNavItem
                 to="/devices"
                 icon={SidebarIcons.emulator}
@@ -1109,7 +1117,9 @@ export function Sidebar({
                 basePath={basePath}
               />
             )}
-            <AgentsNavItem onClick={onNavigate} basePath={basePath} />
+            {!isLimitedUser && (
+              <AgentsNavItem onClick={onNavigate} basePath={basePath} />
+            )}
             <SidebarNavItem
               to="/settings"
               icon={SidebarIcons.settings}

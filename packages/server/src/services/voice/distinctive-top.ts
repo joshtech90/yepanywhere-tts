@@ -2,14 +2,6 @@ import { vocabularyDistinctiveScore } from "@yep-anywhere/shared";
 
 const DEFAULT_LIMIT = 100;
 
-export function distinctiveScore(
-  count: number,
-  total: number,
-  frequency: number | undefined,
-): number {
-  return vocabularyDistinctiveScore(count, total, frequency);
-}
-
 /** Best-N words by the topic distinctive score; threshold is the current worst. */
 export class DistinctiveTop {
   private readonly scores = new Map<string, number>();
@@ -80,7 +72,7 @@ export class DistinctiveTop {
       if (ignored.has(word) || word.length > maxLength) continue;
       this.consider(
         word,
-        distinctiveScore(
+        vocabularyDistinctiveScore(
           counts.user + counts.assistant,
           total,
           frequency(word),

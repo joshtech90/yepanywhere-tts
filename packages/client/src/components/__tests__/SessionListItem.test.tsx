@@ -269,6 +269,41 @@ describe("SessionListItem links", () => {
     );
   });
 
+  it("focuses the rename field as it appears, with the title selected", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="rename-1"
+              projectId="project-1"
+              title="Old title"
+              fullTitle="Old title"
+              hasCustomTitle
+              provider="claude"
+              mode="compact"
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByLabelText("Session options"));
+    fireEvent.click(screen.getByRole("button", { name: "Rename..." }));
+
+    // No timer flush: asking to rename means the next keystroke is the new
+    // title, so focus cannot wait for a later turn of the event loop.
+    const input = document.querySelector<HTMLInputElement>(
+      "input.session-rename-input",
+    );
+    if (!input) throw new Error("expected the rename input");
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([
+      0,
+      "Old title".length,
+    ]);
+  });
+
   it("copies the initial prompt from the session menu", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", {

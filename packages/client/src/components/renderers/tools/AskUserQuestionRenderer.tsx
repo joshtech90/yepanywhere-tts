@@ -103,10 +103,8 @@ function AskUserQuestionToolUse({ input }: { input: AskUserQuestionInput }) {
  */
 function AskUserQuestionToolResult({
   result,
-  isError,
 }: {
   result: AskUserQuestionResult;
-  isError: boolean;
 }) {
   const { enabled, reportValidationError, isToolIgnored } =
     useSchemaValidationContext();
@@ -128,23 +126,6 @@ function AskUserQuestionToolResult({
 
   const showValidationWarning =
     enabled && validationErrors && !isToolIgnored("AskUserQuestion");
-
-  if (isError) {
-    const errorResult =
-      result && typeof result === "object" && "content" in result
-        ? result
-        : undefined;
-    return (
-      <div className={styles.error}>
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="AskUserQuestion" errors={validationErrors} />
-        )}
-        {typeof result === "object" && errorResult?.content
-          ? String(errorResult.content)
-          : "Question failed"}
-      </div>
-    );
-  }
 
   if (!result?.questions) {
     return (
@@ -188,8 +169,20 @@ export const askUserQuestionRenderer = defineTool(
       return <AskUserQuestionToolUse input={input} />;
     },
 
-    renderToolResult(result, isError, _context) {
-      return <AskUserQuestionToolResult result={result} isError={isError} />;
+    renderToolResult(result, _isError, _context) {
+      return <AskUserQuestionToolResult result={result} />;
+    },
+
+    renderFailure(failure) {
+      return (
+        <div className={styles.error}>
+          {failure.content || "Question failed"}
+        </div>
+      );
+    },
+
+    getFailureSummary() {
+      return "Error";
     },
 
     getUseSummary(input) {
@@ -197,8 +190,7 @@ export const askUserQuestionRenderer = defineTool(
       return `${questions?.length || 0} question${questions?.length === 1 ? "" : "s"}`;
     },
 
-    getResultSummary(result, isError): string {
-      if (isError) return "Error";
+    getResultSummary(result): string {
       const answered = Object.keys(result?.answers || {}).length;
       const questionCount = result?.questions?.length || 0;
       // If no answers yet but we have questions, show question count instead

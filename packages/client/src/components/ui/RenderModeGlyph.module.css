@@ -1,0 +1,6 @@
+/* The glyph's markup is shared with a plain-DOM caller, so React needs an
+   element to set it on. This host generates no box, leaving the glyph a
+   direct layout child of whatever button holds it. */
+.host {
+  display: contents;
+}

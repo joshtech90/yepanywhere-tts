@@ -22,7 +22,8 @@ import type {
 } from "@agentclientprotocol/sdk";
 import type { ModelInfo } from "@yep-anywhere/shared";
 import { getLogger } from "../../logging/logger.js";
-import { selectCommandLookupTarget, whichCommand } from "../cli-detection.js";
+import { selectCommandLookupTarget } from "../cli-detection.js";
+import { whichCommand } from "../which-command.js";
 const execAsync = promisify(exec);
 import { MessageQueue } from "../messageQueue.js";
 import type {

@@ -5,18 +5,37 @@ import {
   setProviderHostDegraded,
 } from "../../../src/sdk/providers/provider-host-status.js";
 
-describe("Linux provider-host degraded notice", () => {
+const realPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+
+function runAsPlatform(platform: NodeJS.Platform, body: () => void): void {
+  Object.defineProperty(process, "platform", {
+    configurable: true,
+    value: platform,
+  });
+  try {
+    body();
+  } finally {
+    if (realPlatform) Object.defineProperty(process, "platform", realPlatform);
+  }
+}
+
+describe("provider-host degraded notice", () => {
   afterEach(() => {
     resetProviderHostDegradedForTests();
   });
 
-  it("stays off until Linux boot records a failed ensure", () => {
+  it("stays off until boot records a failed ensure", () => {
     expect(isProviderHostDegraded()).toBe(false);
     setProviderHostDegraded(true);
-    expect(isProviderHostDegraded()).toBe(
-      process.platform === "linux" || process.platform === "darwin",
-    );
+    expect(isProviderHostDegraded()).toBe(true);
     setProviderHostDegraded(false);
     expect(isProviderHostDegraded()).toBe(false);
+  });
+
+  it("stores what it is told, leaving platform support to its caller", () => {
+    runAsPlatform("win32", () => {
+      setProviderHostDegraded(true);
+      expect(isProviderHostDegraded()).toBe(true);
+    });
   });
 });

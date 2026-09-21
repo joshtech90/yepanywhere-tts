@@ -25,7 +25,17 @@ export function useNonHumanUserTurnNavigation(options: NavigationOptions) {
     target: new URLSearchParams(location.search).get("nonHumanTurn"),
     enabled: serverHasCapability(version, NON_HUMAN_USER_TURN_CAPABILITY),
     onResolved: async (target) => {
-      await api.markSessionSeen(options.sessionId!, undefined, target, target);
+      const seen = await api.markSessionSeen(
+        options.sessionId!,
+        undefined,
+        target,
+        target,
+      );
+      // The server keeps a receipt it could not match, so a false answer is
+      // the acknowledgement failure this hook reports.
+      if (seen.acknowledged === false) {
+        throw new Error(`Delivered turn ${target} was not acknowledged`);
+      }
     },
     onError: (kind) =>
       options.onError(kind === "completion" ? "acknowledgement" : kind),

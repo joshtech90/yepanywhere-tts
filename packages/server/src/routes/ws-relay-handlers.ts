@@ -98,6 +98,7 @@ import {
   cleanupSrpConnectionState,
   createInitialSrpLimiterState,
   handleSrpHello,
+  type SrpLimitedUserLookup,
   handleSrpProof,
   handleSrpResume,
   handleSrpResumeInit,
@@ -350,6 +351,24 @@ export interface RelayHandlerDeps {
   attachmentStagingService?: AttachmentStagingService;
   /** Remote access service for SRP authentication (optional for direct, required for relay) */
   remoteAccessService?: RemoteAccessService;
+  /** Limited-user SRP verifiers, selected by srp_hello identity. */
+  limitedUsers?: SrpLimitedUserLookup;
+  /** Whether one activity event is visible to an authenticated identity. */
+  isActivityEventVisible?: (
+    username: string | null,
+    event: { projectId?: string },
+  ) => boolean;
+  /**
+   * Whether the authenticated identity may open this subscription. Absent
+   * means every authenticated connection may (the single-superuser case).
+   * See topics/limited-users.md § Delivery v1 — Authorization.
+   */
+  authorizeSubscription?: (params: {
+    username: string | null;
+    channel: string;
+    sessionId?: string;
+    projectId?: string;
+  }) => Promise<boolean>;
   /** Remote session service for session persistence (optional for direct, required for relay) */
   remoteSessionService?: RemoteSessionService;
   /** Registered-client continuity and security audit service. */
@@ -1094,6 +1113,12 @@ export function handleActivitySubscribe(
   connectedBrowsers?: ConnectedBrowsersService,
   browserProfileService?: BrowserProfileService,
   closeConnection?: () => void,
+  /**
+   * Whether this connection's identity may see one activity event. Absent
+   * means every event is visible, which is the single-superuser case.
+   * See topics/limited-users.md § Delivery v1 — Authorization.
+   */
+  isEventVisible?: (event: { projectId?: string }) => boolean,
 ): void {
   const { subscriptionId, browserProfileId, originMetadata } = msg;
 
@@ -1118,6 +1143,12 @@ export function handleActivitySubscribe(
 
   let eventId = 0;
   const sendEvent = (eventType: string, data: unknown) => {
+    if (
+      isEventVisible &&
+      !isEventVisible((data ?? {}) as { projectId?: string })
+    ) {
+      return;
+    }
     send({
       type: "event",
       subscriptionId,
@@ -1612,6 +1643,7 @@ export function handleSubscribe(
     paths: readonly string[],
   ) => Promise<ReadonlySet<string>>,
   conversationSubscriptions?: ConversationSubscriptions,
+  isActivityEventVisible?: (event: { projectId?: string }) => boolean,
 ): void {
   const { subscriptionId, channel } = msg;
 
@@ -1655,6 +1687,7 @@ export function handleSubscribe(
         connectedBrowsers,
         browserProfileService,
         closeConnection,
+        isActivityEventVisible,
       );
       break;
 
@@ -2150,6 +2183,7 @@ export async function handleMessage(
     remoteAccessService,
     remoteSessionService,
     securityClientService,
+    limitedUsers,
   } = deps;
   const srpRequiredPolicy = isPolicySrpRequired(connState.connectionPolicy);
   const getSpeechSession = (): SpeechWebSocketSession | null => {
@@ -2236,8 +2270,30 @@ export async function handleMessage(
         // the way it never would over plain HTTP.
         void handleRequest(requestMsg, send, ws, app, baseUrl, connState);
       },
-      onSubscribe: (subscribeMsg) =>
-        handleSubscribe(
+      onSubscribe: async (subscribeMsg) => {
+        if (deps.authorizeSubscription) {
+          const params = subscribeMsg as unknown as {
+            channel: string;
+            sessionId?: string;
+            projectId?: string;
+          };
+          const permitted = await deps.authorizeSubscription({
+            username: connState.username ?? null,
+            channel: params.channel,
+            sessionId: params.sessionId,
+            projectId: params.projectId,
+          });
+          if (!permitted) {
+            send({
+              type: "response",
+              id: subscribeMsg.subscriptionId,
+              status: 403,
+              body: { error: "Not permitted for this user" },
+            });
+            return;
+          }
+        }
+        return handleSubscribe(
           subscriptions,
           subscribeMsg,
           send,
@@ -2253,7 +2309,16 @@ export async function handleMessage(
           () => ws.close(4004, "Legacy browser profile revoked"),
           deps.resolveAbsoluteFilePaths,
           deps.conversationSubscriptions,
-        ),
+          deps.isActivityEventVisible
+            ? (event) =>
+                (
+                  deps.isActivityEventVisible as NonNullable<
+                    RelayHandlerDeps["isActivityEventVisible"]
+                  >
+                )(connState.username ?? null, event)
+            : undefined,
+        );
+      },
       onUnsubscribe: async (unsubscribeMsg) =>
         handleUnsubscribe(subscriptions, unsubscribeMsg),
       onUploadStart: async (uploadStartMsg) =>
@@ -2356,7 +2421,13 @@ export async function handleMessage(
   }
 
   if (isSrpClientHello(parsed)) {
-    await handleSrpHello(ws, connState, parsed, remoteAccessService);
+    await handleSrpHello(
+      ws,
+      connState,
+      parsed,
+      remoteAccessService,
+      limitedUsers,
+    );
     return;
   }
 

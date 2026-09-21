@@ -152,4 +152,40 @@ describe("SessionMenu CSS module contracts", () => {
     fireEvent.click(compact);
     expect(onCompact).not.toHaveBeenCalled();
   });
+
+  it("copies the session id and confirms it in place", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      configurable: true,
+    });
+    renderMenu({ sessionId: "abc-123" });
+    fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy session id" }));
+    });
+
+    expect(writeText).toHaveBeenCalledWith("abc-123");
+    expect(
+      screen.getByRole("button", { name: "Copied session id" }),
+    ).toBeTruthy();
+  });
+
+  it("says so when the clipboard refuses the session id", async () => {
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },
+      configurable: true,
+    });
+    renderMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Copy session id" }));
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Clipboard blocked — copy failed" }),
+    ).toBeTruthy();
+  });
 });

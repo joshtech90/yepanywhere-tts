@@ -1,3 +1,4 @@
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import {
   cleanup,
   fireEvent,
@@ -63,7 +64,7 @@ const renderContext = {
   theme: "dark" as const,
 };
 
-if (!readRenderer.renderInteractiveSummary) {
+if (!readRenderer.operations.includes("renderInteractiveSummary")) {
   throw new Error("Read renderer must provide interactive summary");
 }
 
@@ -92,21 +93,24 @@ describe("ReadRenderer", () => {
   it("keeps normal text reads as native file links", () => {
     renderInSession(
       <div>
-        {readRenderer.renderInteractiveSummary?.(
-          { file_path: "packages/client/src/hooks/useGlobalSessions.ts" },
-          {
-            type: "text",
-            file: {
-              filePath: "packages/client/src/hooks/useGlobalSessions.ts",
-              content: 'import { useCallback } from "react";\n',
-              numLines: 1,
-              startLine: 1,
-              totalLines: 1,
-            },
-          },
-          false,
-          renderContext,
-        )}
+        {readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { file_path: "packages/client/src/hooks/useGlobalSessions.ts" },
+              {
+                type: "text",
+                file: {
+                  filePath: "packages/client/src/hooks/useGlobalSessions.ts",
+                  content: 'import { useCallback } from "react";\n',
+                  numLines: 1,
+                  startLine: 1,
+                  totalLines: 1,
+                },
+              },
+              false,
+            ),
+          )
+          .renderInteractiveSummary(renderContext)}
       </div>,
     );
 
@@ -122,24 +126,28 @@ describe("ReadRenderer", () => {
   it("links partial read summaries and their line counts to the read range", () => {
     renderInSession(
       <div>
-        {readRenderer.renderInteractiveSummary?.(
-          {
-            file_path: "packages/client/src/lib/connection/SecureConnection.ts",
-          },
-          {
-            type: "text",
-            file: {
-              filePath:
-                "packages/client/src/lib/connection/SecureConnection.ts",
-              content: "line\n".repeat(81),
-              numLines: 81,
-              startLine: 510,
-              totalLines: 900,
-            },
-          },
-          false,
-          renderContext,
-        )}
+        {readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              {
+                file_path:
+                  "packages/client/src/lib/connection/SecureConnection.ts",
+              },
+              {
+                type: "text",
+                file: {
+                  filePath:
+                    "packages/client/src/lib/connection/SecureConnection.ts",
+                  content: "line\n".repeat(81),
+                  numLines: 81,
+                  startLine: 510,
+                  totalLines: 900,
+                },
+              },
+              false,
+            ),
+          )
+          .renderInteractiveSummary(renderContext)}
       </div>,
     );
 
@@ -170,21 +178,24 @@ describe("ReadRenderer", () => {
           projectPath={projectRoot}
           sessionId="session-1"
         >
-          {readRenderer.renderInteractiveSummary?.(
-            { file_path: "ui-report/README.md" },
-            {
-              type: "text",
-              file: {
-                filePath: "ui-report/README.md",
-                content: "# Report\n",
-                numLines: 1,
-                startLine: 1,
-                totalLines: 1,
-              },
-            },
-            false,
-            renderContext,
-          )}
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                { file_path: "ui-report/README.md" },
+                {
+                  type: "text",
+                  file: {
+                    filePath: "ui-report/README.md",
+                    content: "# Report\n",
+                    numLines: 1,
+                    startLine: 1,
+                    totalLines: 1,
+                  },
+                },
+                false,
+              ),
+            )
+            .renderInteractiveSummary(renderContext)}
         </SessionMetadataProvider>
       </PublicShareProvider>,
     );
@@ -201,20 +212,25 @@ describe("ReadRenderer", () => {
   it("renders expanded text reads with a native file link", () => {
     renderInSession(
       <div>
-        {readRenderer.renderToolResult(
-          {
-            type: "text",
-            file: {
-              filePath: "packages/client/src/hooks/useGlobalSessions.ts",
-              content: 'import { useCallback } from "react";\n',
-              numLines: 1,
-              startLine: 1,
-              totalLines: 1,
-            },
-          },
-          false,
-          renderContext,
-        )}
+        {readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                type: "text",
+                file: {
+                  filePath: "packages/client/src/hooks/useGlobalSessions.ts",
+                  content: 'import { useCallback } from "react";\n',
+                  numLines: 1,
+                  startLine: 1,
+                  totalLines: 1,
+                },
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -226,20 +242,25 @@ describe("ReadRenderer", () => {
   it("does not markdown-render backticks in non-Markdown reads", () => {
     const { container } = renderInSession(
       <div>
-        {readRenderer.renderToolResult(
-          {
-            type: "text",
-            file: {
-              filePath: "packages/client/src/components/Widget.tsx",
-              content: "const label = `dev`;\n",
-              numLines: 1,
-              startLine: 1,
-              totalLines: 1,
-            },
-          },
-          false,
-          renderContext,
-        )}
+        {readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                type: "text",
+                file: {
+                  filePath: "packages/client/src/components/Widget.tsx",
+                  content: "const label = `dev`;\n",
+                  numLines: 1,
+                  startLine: 1,
+                  totalLines: 1,
+                },
+              },
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -253,22 +274,25 @@ describe("ReadRenderer", () => {
   it("renders zero-line PTY-backed reads without fake continuation text", () => {
     renderInSession(
       <div>
-        {readRenderer.renderInteractiveSummary?.(
-          { file_path: "packages/client/src/hooks/useGlobalSessions.ts" },
-          {
-            type: "text",
-            file: {
-              filePath: "packages/client/src/hooks/useGlobalSessions.ts",
-              content: "",
-              numLines: 0,
-              startLine: 1,
-              totalLines: 260,
-            },
-            session_id: 37863,
-          } as never,
-          false,
-          renderContext,
-        )}
+        {readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { file_path: "packages/client/src/hooks/useGlobalSessions.ts" },
+              {
+                type: "text",
+                file: {
+                  filePath: "packages/client/src/hooks/useGlobalSessions.ts",
+                  content: "",
+                  numLines: 0,
+                  startLine: 1,
+                  totalLines: 260,
+                },
+                session_id: 37863,
+              } as never,
+              false,
+            ),
+          )
+          .renderInteractiveSummary(renderContext)}
       </div>,
     );
 
@@ -286,21 +310,26 @@ describe("ReadRenderer", () => {
   it("renders zero-line PTY-backed read results without a phantom first line", () => {
     renderInSession(
       <div>
-        {readRenderer.renderToolResult(
-          {
-            type: "text",
-            file: {
-              filePath: "packages/client/src/hooks/useGlobalSessions.ts",
-              content: "",
-              numLines: 0,
-              startLine: 1,
-              totalLines: 260,
-            },
-            session_id: 37863,
-          } as never,
-          false,
-          renderContext,
-        )}
+        {readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              undefined,
+              {
+                type: "text",
+                file: {
+                  filePath: "packages/client/src/hooks/useGlobalSessions.ts",
+                  content: "",
+                  numLines: 0,
+                  startLine: 1,
+                  totalLines: 260,
+                },
+                session_id: 37863,
+              } as never,
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult(renderContext)}
       </div>,
     );
 
@@ -328,9 +357,18 @@ describe("ReadRenderer", () => {
       setInlineMediaExpandedPreference(false);
       const { container } = renderInSession(
         <div>
-          {readRenderer.renderToolResult(imageResult, false, renderContext, {
-            file_path: "/tmp/screenshot.png",
-          })}
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                {
+                  file_path: "/tmp/screenshot.png",
+                },
+                imageResult,
+                false,
+                "complete",
+              ),
+            )
+            .renderToolResult(renderContext)}
         </div>,
       );
 
@@ -344,9 +382,18 @@ describe("ReadRenderer", () => {
       setInlineMediaExpandedPreference(true);
       const { container } = renderInSession(
         <div>
-          {readRenderer.renderToolResult(imageResult, false, renderContext, {
-            file_path: "/tmp/screenshot.png",
-          })}
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                {
+                  file_path: "/tmp/screenshot.png",
+                },
+                imageResult,
+                false,
+                "complete",
+              ),
+            )
+            .renderToolResult(renderContext)}
         </div>,
       );
 
@@ -360,9 +407,18 @@ describe("ReadRenderer", () => {
       setInlineMediaExpandedPreference(false);
       const { container } = renderInSession(
         <div>
-          {readRenderer.renderToolResult(imageResult, false, renderContext, {
-            file_path: "/tmp/screenshot.png",
-          })}
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                {
+                  file_path: "/tmp/screenshot.png",
+                },
+                imageResult,
+                false,
+                "complete",
+              ),
+            )
+            .renderToolResult(renderContext)}
         </div>,
       );
 
@@ -399,12 +455,16 @@ describe("ReadRenderer", () => {
 
       const { container } = renderInSession(
         <SourceRuntimeProvider runtime={runtime}>
-          {readRenderer.renderToolResult(
-            { ...rest, file: strippedFile },
-            false,
-            renderContext,
-            { file_path: "/tmp/screenshot.png" },
-          )}
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                { file_path: "/tmp/screenshot.png" },
+                { ...rest, file: strippedFile },
+                false,
+                "complete",
+              ),
+            )
+            .renderToolResult(renderContext)}
         </SourceRuntimeProvider>,
       );
 
@@ -440,9 +500,18 @@ describe("ReadRenderer", () => {
       expect(() =>
         renderInSession(
           <div>
-            {readRenderer.renderToolResult(dedupResult, false, renderContext, {
-              file_path: "CLAUDE.md",
-            })}
+            {readRenderer
+              .prepare(
+                recordFromLegacyArgs(
+                  {
+                    file_path: "CLAUDE.md",
+                  },
+                  dedupResult,
+                  false,
+                  "complete",
+                ),
+              )
+              .renderToolResult(renderContext)}
           </div>,
         ),
       ).not.toThrow();
@@ -454,12 +523,15 @@ describe("ReadRenderer", () => {
     it("renders the interactive summary as unchanged, not 'undefined lines'", () => {
       renderInSession(
         <div>
-          {readRenderer.renderInteractiveSummary?.(
-            { file_path: "CLAUDE.md" },
-            dedupResult,
-            false,
-            renderContext,
-          )}
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                { file_path: "CLAUDE.md" },
+                dedupResult,
+                false,
+              ),
+            )
+            .renderInteractiveSummary(renderContext)}
         </div>,
       );
 
@@ -469,9 +541,18 @@ describe("ReadRenderer", () => {
 
     it("summarizes the collapsed row as 'unchanged'", () => {
       expect(
-        readRenderer.getResultSummary?.(dedupResult, false, {
-          file_path: "CLAUDE.md",
-        }),
+        readRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              {
+                file_path: "CLAUDE.md",
+              },
+              dedupResult,
+              false,
+              "complete",
+            ),
+          )
+          .getResultSummary() ?? "",
       ).toBe("unchanged");
     });
   });

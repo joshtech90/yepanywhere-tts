@@ -205,6 +205,10 @@ export const displayExpectations = {
     "plain-text": plain("Killing shell"),
     standard: ordinary("shell-contract", "Contract shell stopped"),
   },
+  Skill: {
+    "plain-text": plain("publish"),
+    standard: ordinary("publish", "publish"),
+  },
   TaskCreate: {
     event: ordinary(
       "Verify contracts",

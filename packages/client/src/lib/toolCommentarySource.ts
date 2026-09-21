@@ -1,4 +1,9 @@
-import { decodeCodeModeOutput, initialAcliFormat } from "@yep-anywhere/shared";
+import {
+  asRecord,
+  decodeCodeModeOutput,
+  initialAcliFormat,
+} from "@yep-anywhere/shared";
+import { effectiveInvocationError } from "../components/renderers/tools/prepareDisplay";
 import { normalizeBashResult } from "./bashResult";
 import type { ToolCallItem } from "@yep-anywhere/shared/transcript/items";
 
@@ -7,34 +12,25 @@ type Invocation = Pick<
   "toolName" | "toolInput" | "toolResult" | "status"
 >;
 
-function record(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 export function readToolCommentaryOutput(props: Invocation) {
   const raw =
     props.toolResult?.structured ??
     props.toolResult?.content ??
-    record(props.toolInput)?._previewResult;
+    asRecord(props.toolInput)?._previewResult;
   if (
     ["bash", "exec_command", "shell_command"].includes(
       props.toolName.toLowerCase(),
     )
   ) {
-    const shell = normalizeBashResult(
-      raw,
-      props.toolResult?.isError ?? props.status === "error",
-    );
+    const shell = normalizeBashResult(raw, effectiveInvocationError(props));
     return {
       stdout: shell.stdout ?? "",
       stderr: shell.stderr ?? "",
       shell,
-      stdoutSequenced: typeof record(raw)?.stdout === "string",
+      stdoutSequenced: typeof asRecord(raw)?.stdout === "string",
     };
   }
-  const structured = record(raw);
+  const structured = asRecord(raw);
   return {
     stdout:
       typeof structured?.stdout === "string"

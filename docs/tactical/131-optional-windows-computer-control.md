@@ -9,8 +9,9 @@ deferred namespaced dynamic tools, direct named-pipe operations, bounded
 session grants, native images and operator/session controls. The controller
 accepted real discovery, one independently observed fixture mutation,
 UI-selected Astra/high, live/reloaded images, concurrent revocation and a live
-candidate crash with independent access preserved. The owning topic records
-[the accepted scope and evidence](../../topics/optional-computer-control.md#direct-windows-acceptance-2026-09-12).
+candidate crash with independent access preserved. The owning topic states
+[the accepted scope](../../topics/optional-computer-control.md#accepted-windows-scope);
+the run behind it is recorded below.
 
 The first real selected session exposed Codex 0.154.0's mandatory namespace
 for deferred tools. The fixed adapter uses `yep_computer`, rejects unrelated
@@ -24,6 +25,46 @@ and isolated UI acceptance pass; the broad Windows validation limitations
 remain in [the existing gap](../../gaps/windows-validation-baseline.md).
 No Machine Control runtime change or new signing run was needed. Public
 release-feed integration remains outside the authenticated local-preview slice.
+
+## Acceptance run record, 2026-09-12
+
+Native ARM64 Windows acceptance placed Node YA, Codex 0.154.0 and the signed
+workstation resident in the same interactive user session. Both the developer
+and real acceptance agents used GPT-6 Astra with high reasoning. The controller
+used SSH only for supervision and independent checks; agent operations used the
+local named pipe.
+
+An ordinary session created no grant or resident. A selected session discovered
+`yep_computer__computer_control` while the resident remained stopped. First use
+started the resident; one accepted semantic invocation changed the deterministic
+fixture counter from zero to one, independently read from the same fixture
+process. Cua supplied snapshot-bound semantics and exact window-content capture.
+An invalid invocation shape was refused before dispatch, then corrected; no
+uncertain mutation was replayed.
+
+The actual New Session checkbox submitted explicit selection with Astra/high.
+A subsequent read-only screenshot reached the model and YA's live browser view;
+the stored PNG also rendered after reload on desktop and phone. Revoking one of
+two selected sessions refused its next call while the other remained usable.
+Killing the candidate server with the resident and Cua active reclaimed all
+eight owned processes in the first observation, approximately 0.36 seconds.
+SSH, the separate YA supervisor and appliance control remained healthy.
+Restarted YA does not restore the old grants.
+
+The authenticated ARM64 preview from Machine Control source
+`046a79804676f6d4dfa8441106f9911a96756a0a` was installed without importing
+native source. Tampered manager code was refused. Removing the original import
+directory preserved cold startup and uninstall from the managed installed copy.
+Idle stop/restart, expiry/reference refusal and guardian/job failure handling
+also have focused native coverage. Three warm, read-only window-enumeration
+round trips measured 6, 4 and 4 ms; these include native enumeration and IPC,
+exclude model/supervision/startup, and are observations rather than a benchmark.
+
+Final macOS repository checks passed: lint, formatting, typecheck, 11,964 unit
+tests, CSS/capability audits and 232 browser tests (8 skipped). The native
+Windows focused tests and isolated UI checks pass; its broad aggregate and
+checkout/tooling limitations remain recorded in
+[the Windows validation gap](../../gaps/windows-validation-baseline.md).
 
 ## Objective
 

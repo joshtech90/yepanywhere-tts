@@ -300,7 +300,10 @@ export class ArtifactServer {
     );
   }
 
-  async dispatchHost(request: Request): Promise<Response | null> {
+  async dispatchHost(
+    request: Request,
+    clientAddress?: string,
+  ): Promise<Response | null> {
     const host = request.headers.get("host") ?? new URL(request.url).host;
     const vhost = this.matchesVhost(host);
     if (vhost) {
@@ -314,7 +317,11 @@ export class ArtifactServer {
             "Referrer-Policy": "no-referrer",
           },
         });
-      const response = await proxyLoopbackVhost(authorized.request, vhost.port);
+      const response = await proxyLoopbackVhost(
+        authorized.request,
+        vhost.port,
+        clientAddress,
+      );
       response.headers.set("Cache-Control", "no-store");
       response.headers.set("Referrer-Policy", "no-referrer");
       if (authorized.cookie)
@@ -329,7 +336,6 @@ export class ArtifactServer {
     config = validateArtifactConfig(
       config,
       this.config.expiryDays,
-      this.config.deleteOnExpiry,
       this.config,
     );
     const previous = this.config;
@@ -369,8 +375,13 @@ export class ArtifactServer {
     if (this.listener) throw new Error("Artifact server already started");
     await new Promise<void>((resolveReady, reject) => {
       const listener = createServer(
-        getRequestListener(async (request) => {
-          return (await this.dispatchHost(request)) ?? this.app.fetch(request);
+        getRequestListener(async (request, env) => {
+          return (
+            (await this.dispatchHost(
+              request,
+              env.incoming.socket.remoteAddress,
+            )) ?? this.app.fetch(request)
+          );
         }),
       );
       this.listener = listener;
@@ -440,8 +451,9 @@ export class ArtifactServer {
     // the user already had must not delete it when the viewer closes. Only a
     // caller that produced the directory says so, by asking.
     const wants = owned === true;
-    // Ownership freezes the fileset: exactly what is here now is what this
-    // grant may remove later, whatever else the directory collects.
+    // Ownership freezes the fileset: what is here now and is not the working
+    // tree's own is what this grant may remove later, whatever else the
+    // directory collects. Nothing left to own means nothing to own it.
     const frozen =
       wants && (await deletableDirectory(root, this.protectedPaths))
         ? await GrantStore.freeze(root)

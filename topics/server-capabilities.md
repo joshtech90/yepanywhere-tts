@@ -534,9 +534,49 @@ the same ledger:
 | 63 | server | 0.8.2 | `retained-session-collections` |
 | 64 | server | 0.8.2 | `local-speech-model-selection` |
 | 65 | server | 0.8.2 | `speech-vocabulary` |
+| 66 | server | 0.8.2 | `speech-vocabulary-session-terms` |
+| 67 | server | 0.8.2 | `codex-cyber-access-program-setting` |
+| 68 | server | 0.8.2 | `issue-session-associations-v1` |
+| 69 | server | 0.8.2 | `experimental-simple-client-conversation` |
+| 70 | server | 0.8.2 | `optional-computer-control` |
+| 71 | server | 0.8.2 | `computer-control-releases` |
+| 72 | server | 0.8.2 | `non-human-user-turn` |
+| 73 | server | 0.8.2 | `session-content-search` |
+| 74 | server | 0.8.2 | `speech-backend-setup` |
+| 75 | server | 0.8.2 | `vhost-app-control` |
+| 76 | server | 0.8.2 | `vhost-bearer-access` |
+| 77 | server | 0.8.2 | `claude-gateway-services` |
+| 78 | server | 0.8.2 | `session-rewind` |
+| 79 | server | 0.8.2 | `project-captions` |
+| 80 | server | 0.8.2 | `project-names` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 66; retired rows stay in the ledger as reserved IDs.
+ID 81; retired rows stay in the ledger as reserved IDs.
+
+`project-names` (ID 80, permanent, version-implied from 0.8.2) owns the
+`name` and `codeName` request fields on `POST /api/projects`,
+`PATCH /api/projects/:projectId/name`, and the `projects-changed` event. The
+2026-09-20 optional-feature horizon is v0.8.0 and v0.8.1; neither has any of
+these. Without the capability the Projects add form is path-only and the
+client sends neither field, since an older server would silently add the
+project under its path name. See [project names](project-names.md).
+
+`project-captions` (ID 79, permanent, version-implied from 0.8.2) owns the
+additive `caption` field on project list, detail, and create responses,
+`PATCH /api/projects/:projectId/caption`, and the `project-captions-changed`
+event. The 2026-09-20 optional-feature horizon is v0.8.0 and v0.8.1; neither
+has any of these. Without the capability the client shows no caption on
+project cards or the session breadcrumb tooltip, hides the caption editor,
+and makes no caption request. See [project captions](project-captions.md).
+
+`session-rewind` (ID 78, permanent, version-implied from 0.8.2) gates the
+same-session rewind route, the `/clearloop` start and cancel routes, the
+`clearloop` queued-entry kind, `message.rewoundGroupId`, and the
+`clearloopInactivitySeconds` setting. The 2026-09-18 optional-feature horizon
+is v0.8.0 and v0.8.1; neither has any of these. Without the capability the
+client hides the turn-menu Clear entries, marks `/clear N`, `/fork N`, and
+`/clearloop` unavailable, hides the inactivity setting, and makes no rewind
+or clearloop request. See [session-rewind](session-rewind.md).
 
 `speech-vocabulary` (ID 65, optional bit from 0.8.2) owns GET/PUT
 `/api/speech/vocabulary` and POST `.../scan` and `.../reset`. It is advertised

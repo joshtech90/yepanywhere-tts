@@ -2,6 +2,7 @@ import type { PromptSuggestionMode } from "@yep-anywhere/shared";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
+import { writeClipboardText } from "../lib/clipboard";
 import styles from "./SessionMenu.module.css";
 
 export interface SessionMenuProps {
@@ -77,6 +78,7 @@ export interface SessionMenuProps {
 }
 
 export function SessionMenu({
+  sessionId,
   isStarred,
   isArchived,
   hasUnread,
@@ -118,6 +120,10 @@ export function SessionMenu({
   const [isRestartingProvider, setIsRestartingProvider] = useState(false);
   const [isSharing, setIsSharing] = useState(false);
   const [isCloning, setIsCloning] = useState(false);
+  // A copied id leaves nothing on screen to confirm it, so the entry reports
+  // the outcome in place and closes the menu once the reader has seen it.
+  const [copiedSessionId, setCopiedSessionId] = useState<"ok" | "failed">();
+  const copyFeedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const [dropdownPosition, setDropdownPosition] = useState<{
     top: number;
     left?: number;
@@ -170,6 +176,10 @@ export function SessionMenu({
   useEffect(() => {
     onOpenChange?.(isOpen);
   }, [isOpen, onOpenChange]);
+
+  useEffect(() => {
+    if (!isOpen) setCopiedSessionId(undefined);
+  }, [isOpen]);
 
   const handleToggleOpen = () => {
     if (isOpen) {
@@ -241,6 +251,23 @@ export function SessionMenu({
     } finally {
       setIsSharing(false);
     }
+  };
+
+  useEffect(() => () => clearTimeout(copyFeedbackTimer.current), []);
+
+  const handleCopySessionId = async () => {
+    const copied = await writeClipboardText(sessionId);
+    setCopiedSessionId(copied ? "ok" : "failed");
+    clearTimeout(copyFeedbackTimer.current);
+    // A failure stays on the entry until the menu closes; only success is
+    // transient, because the clipboard already carries the proof.
+    if (!copied) return;
+    copyFeedbackTimer.current = setTimeout(() => {
+      setCopiedSessionId(undefined);
+      setIsOpen(false);
+      setDropdownPosition(null);
+      triggerRef.current?.blur();
+    }, 1000);
   };
 
   const handleClone = async () => {
@@ -394,6 +421,25 @@ export function SessionMenu({
           {t("sessionMenuCopyPrompt")}
         </button>
       )}
+      <button type="button" onClick={handleCopySessionId}>
+        <svg
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          aria-hidden="true"
+        >
+          <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+          <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+        </svg>
+        {copiedSessionId === "ok"
+          ? t("sessionMenuCopiedSessionId")
+          : copiedSessionId === "failed"
+            ? t("sessionMenuCopySessionIdFailed")
+            : t("sessionMenuCopySessionId")}
+      </button>
       {onConfigureProjectSettings && (
         <button
           type="button"

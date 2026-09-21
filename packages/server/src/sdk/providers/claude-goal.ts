@@ -302,7 +302,10 @@ export class ClaudeGoalTracker {
     if (last.installed) {
       this.#objective = last.condition;
       this.#status = "active";
-      this.#pauseObjective = null;
+      // Claude keeps appending not-yet-met rows for the goal it still holds,
+      // and one can land between YA's pause request and the clear YA sent.
+      // Only a hook carrying some other objective means the pause is stale.
+      if (this.#pauseObjective !== last.condition) this.#pauseObjective = null;
     } else if (this.#pauseObjective === last.condition) {
       this.#objective = last.condition;
       this.#status = "paused";

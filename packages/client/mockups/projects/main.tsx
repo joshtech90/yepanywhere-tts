@@ -26,15 +26,30 @@ const names = [
   "Translations",
   "Field notes",
 ];
-const projects: Project[] = names.map((name, index) => ({
-  id: `fixture-${index}`,
-  name,
-  path: `/workspace/${name.toLowerCase().replaceAll(" ", "-")}`,
-  sessionCount: 3 + index,
-  activeOwnedCount: 0,
-  activeExternalCount: 0,
-  lastActivity: null,
-}));
+/** Every third project keeps its caption and code name empty, so the card's
+ * title-only shape is exercised beside the fully populated one. */
+const projects: Project[] = names.map((name, index) => {
+  const slug = name.toLowerCase().replaceAll(" ", "-");
+  const sparse = index % 3 === 2;
+  return {
+    id: `fixture-${index}`,
+    name,
+    path: sparse
+      ? `/workspace/${slug}`
+      : `/workspace/long-enough-to-truncate/nested/${slug}`,
+    codeName: sparse ? undefined : slug.slice(0, 3),
+    caption: sparse
+      ? undefined
+      : {
+          text: `What ${name.toLowerCase()} is for, in the one line a README or manifest gives us.`,
+          source: index % 2 === 0 ? "readme" : "manifest",
+        },
+    sessionCount: 3 + index,
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: null,
+  };
+});
 
 function Projects() {
   const [selected, setSelected] = useState(
@@ -42,7 +57,15 @@ function Projects() {
       ? "Yep Anywhere"
       : "",
   );
+  const [removing, setRemoving] = useState("");
+  const [items, setItems] = useState(projects);
   const route = useLocation();
+
+  /** Inline edits stay in this preview; no project service is contacted. */
+  const editProject = (id: string, change: Partial<Project>) =>
+    setItems((current) =>
+      current.map((item) => (item.id === id ? { ...item, ...change } : item)),
+    );
   return (
     <main className={styles.page}>
       <header className={styles.header}>
@@ -50,8 +73,8 @@ function Projects() {
           <p className={styles.eyebrow}>Yep Anywhere · UI fixture</p>
           <h1>Project review</h1>
           <p>
-            Real project cards with sample data. Open a card’s menu to review
-            its settings.
+            Real project cards with sample data. Use a card’s gear button to
+            review its settings.
           </p>
         </div>
         <a href="./ya-mockup.json">Export manifest</a>
@@ -61,10 +84,12 @@ function Projects() {
           ? `Preview navigation: ${route.pathname}${route.search}`
           : selected
             ? `Settings selected: ${selected}`
-            : "Choose a project to review. Changes stay in this preview."}
+            : removing
+              ? `Removal requested: ${removing}. Nothing is removed in this preview.`
+              : "Choose a project to review. Changes stay in this preview."}
       </p>
       <ul className={styles.grid} aria-label="Sample projects">
-        {projects.map((project, index) => (
+        {items.map((project, index) => (
           <ProjectCard
             key={project.id}
             project={project}
@@ -72,6 +97,17 @@ function Projects() {
             thinkingCount={0}
             queueCount={index === 0 ? 3 : 0}
             onOpenSettings={(item) => setSelected(item.name)}
+            onDeleteProject={(item) => setRemoving(item.name)}
+            onUpdateCodeName={async (item, codeName) => {
+              editProject(item.id, { codeName });
+            }}
+            onUpdateCaption={async (item, caption) => {
+              editProject(item.id, {
+                caption: caption
+                  ? { text: caption, source: "override" }
+                  : undefined,
+              });
+            }}
           />
         ))}
       </ul>

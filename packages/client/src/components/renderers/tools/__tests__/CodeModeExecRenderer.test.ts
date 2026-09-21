@@ -3,6 +3,7 @@ import { createElement } from "react";
 import { render } from "@testing-library/react";
 import { I18nProvider } from "../../../../i18n";
 import { codeModeExecRenderer } from "../CodeModeExecRenderer";
+import { recordFromLegacyArgs } from "../prepareDisplay";
 import { getToolSummary } from "../../../tools/summaries";
 import { toolRegistry } from "..";
 
@@ -26,25 +27,29 @@ describe("CodeModeExecRenderer", () => {
       createElement(
         I18nProvider,
         null,
-        codeModeExecRenderer.renderToolResult(
-          result,
-          false,
-          {
+        codeModeExecRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              {
+                source: "",
+                calls: [
+                  {
+                    toolName: "exec_command",
+                    input: {
+                      cmd: "cat .agents/skills/publish/SKILL.md; git status --short",
+                    },
+                  },
+                ],
+              },
+              result,
+              false,
+              "complete",
+            ),
+          )
+          .renderToolResult({
             isStreaming: false,
             theme: "dark",
-          },
-          {
-            source: "",
-            calls: [
-              {
-                toolName: "exec_command",
-                input: {
-                  cmd: "cat .agents/skills/publish/SKILL.md; git status --short",
-                },
-              },
-            ],
-          },
-        ),
+          }),
       ),
     );
     expect(container.textContent).toContain("Skill: publish");
@@ -155,10 +160,12 @@ describe("CodeModeExecRenderer", () => {
         createElement(
           I18nProvider,
           null,
-          codeModeExecRenderer.renderToolResult(result, false, {
-            isStreaming: false,
-            theme: "dark",
-          }),
+          codeModeExecRenderer
+            .prepare(recordFromLegacyArgs(undefined, result, false, "complete"))
+            .renderToolResult({
+              isStreaming: false,
+              theme: "dark",
+            }),
         ),
       );
       expect(getByText("permission denied").closest("pre")).not.toBeNull();
@@ -178,10 +185,12 @@ describe("CodeModeExecRenderer", () => {
       createElement(
         I18nProvider,
         null,
-        codeModeExecRenderer.renderToolResult(result, true, {
-          isStreaming: false,
-          theme: "dark",
-        }),
+        codeModeExecRenderer
+          .prepare(recordFromLegacyArgs(undefined, result, true, "error"))
+          .renderToolResult({
+            isStreaming: false,
+            theme: "dark",
+          }),
       ),
     );
     expect(container.querySelector('[data-tool-display="raw"]')).not.toBeNull();
