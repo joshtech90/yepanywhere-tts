@@ -36,10 +36,13 @@ if [ ! -f "$DATA_DIR/tts-service-account.json" ] && [ -f "$JSON_QUELLE" ]; then
   chmod 600 "$DATA_DIR/tts-service-account.json"
 fi
 
-# Falls noch nicht gebaut: einmal bauen (sollte normal schon da sein)
-if [ ! -f packages/server/dist/index.js ]; then
-  npx --yes pnpm@9.15.1 install
-  npx --yes pnpm@9.15.1 build
+# Falls noch nicht gebaut oder die Bibliotheken fehlen: installieren und bauen.
+# Am 22.09.2026 fehlte node_modules bei vorhandenem dist, und der Server
+# startete in Endlosschleife mit ERR_MODULE_NOT_FOUND. Die pnpm-Version folgt
+# packageManager in package.json; pnpm 9 wirft die Overrides aus dem Lockfile.
+if [ ! -f packages/server/dist/index.js ] || [ ! -d node_modules/.pnpm ]; then
+  npx --yes pnpm@10.34.5 install --frozen-lockfile
+  npx --yes pnpm@10.34.5 build
 fi
 
 # Evtl. alte Instanz auf dem Port beenden (idempotent bei Re-Launch)
