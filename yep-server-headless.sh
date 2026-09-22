@@ -58,6 +58,12 @@ fi
 # ~/.codex erhalten. YA nutzt ohne CODEX_SESSIONS_DIR-Override automatisch
 # CODEX_HOME/sessions.
 export CODEX_HOME="$HOME/.codex-profiles/loadbalanced"
+# Claude-Sitzungen mit dem normal aktualisierten Claude Code starten, nicht mit
+# der im Agent-SDK mitgelieferten Kopie. Die hinkte am 22.09.2026 hinterher
+# (2.1.273), und neue Modelle lehnten sie mit "version ... required" ab.
+if [ -x "$HOME/.npm-global/bin/claude" ]; then
+  export CLAUDE_CODE_EXECUTABLE="$HOME/.npm-global/bin/claude"
+fi
 exec env ENABLED_PROVIDERS=claude,codex PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
   CLI_HOST_OVERRIDE=true \
   TLS_CERT_PATH="$TLS_CERT" TLS_KEY_PATH="$TLS_KEY" \
