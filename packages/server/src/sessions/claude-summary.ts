@@ -169,6 +169,8 @@ function getTimestamp(entry: ClaudeSessionEntry): string {
 
 const LOCAL_COMMAND_OUTPUT_ONLY_RE =
   /^\s*<local-command-(stdout|stderr)>[\s\S]*?<\/local-command-\1>\s*$/;
+/** A one-line `/command [args]` sent as plain text rather than tagged. */
+const PLAIN_SLASH_COMMAND_RE = /^\s*\/[\w:.-]+(?:[ \t][^\n]*)?\s*$/;
 
 function getRawUserText(entry: ClaudeSessionEntry): string | undefined {
   const content = (entry as { message?: { content?: unknown } }).message
@@ -205,7 +207,8 @@ function isPlaceholderTitleCandidate(
   const withoutIdeMetadata = stripIdeMetadata(raw);
   return (
     formatClaudeCommandTurn(withoutIdeMetadata) !== null ||
-    LOCAL_COMMAND_OUTPUT_ONLY_RE.test(withoutIdeMetadata)
+    LOCAL_COMMAND_OUTPUT_ONLY_RE.test(withoutIdeMetadata) ||
+    PLAIN_SLASH_COMMAND_RE.test(withoutIdeMetadata)
   );
 }
 

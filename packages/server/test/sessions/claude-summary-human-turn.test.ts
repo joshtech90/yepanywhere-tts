@@ -116,6 +116,15 @@ describe("claude summary title", () => {
     expect(summary?.fullTitle).toBe("Bitte repariere die Session-Benennung");
   });
 
+  it("also skips a plain-text slash command", () => {
+    const summary = summaryOf([
+      userRaw("u1", null, "/model sonnet"),
+      userRaw("u2", "u1", effortOutput),
+      userRaw("u3", "u2", "Fix the authentication bug"),
+    ]);
+    expect(summary?.fullTitle).toBe("Fix the authentication bug");
+  });
+
   it("keeps the command as title when no prompt follows", () => {
     const summary = summaryOf([
       userRaw("u1", null, effort),
