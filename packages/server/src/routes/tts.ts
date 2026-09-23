@@ -57,18 +57,21 @@ export function createTtsRoutes(deps: TtsDeps): Hono {
     }
 
     try {
-      const audio = await ttsService.synthesize(text, preCleaned);
+      const { audio, mimeType } = await ttsService.synthesizeAudio(
+        text,
+        preCleaned,
+      );
       // base64 JSON variant: survives the encrypted relay channel used by
       // remote (phone) clients, which only carries JSON.
       if (wantsBase64) {
-        return c.json({ audioBase64: audio.toString("base64") });
+        return c.json({ audioBase64: audio.toString("base64"), mimeType });
       }
       const bytes = new Uint8Array(audio.byteLength);
       bytes.set(audio);
       return new Response(bytes, {
         status: 200,
         headers: {
-          "Content-Type": "audio/mpeg",
+          "Content-Type": mimeType,
           "Content-Length": audio.length.toString(),
           "Cache-Control": "private, max-age=3600",
         },

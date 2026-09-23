@@ -416,7 +416,7 @@ export const api = {
       body: JSON.stringify({ text }),
     }),
   ttsSynthesize: (text: string, preCleaned = false) =>
-    fetchJSON<{ audioBase64: string }>("/tts/synthesize", {
+    fetchJSON<{ audioBase64: string; mimeType?: string }>("/tts/synthesize", {
       method: "POST",
       body: JSON.stringify({ text, format: "base64", preCleaned }),
     }),

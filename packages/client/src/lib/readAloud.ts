@@ -60,9 +60,12 @@ export function stopReadAloud(): void {
   }
 }
 
-function base64ToObjectUrl(audioBase64: string): string {
+function base64ToObjectUrl(audioBase64: string, mimeType?: string): string {
   const bytes = Uint8Array.from(atob(audioBase64), (ch) => ch.charCodeAt(0));
-  return URL.createObjectURL(new Blob([bytes], { type: "audio/mpeg" }));
+  // Server sends Ogg/Opus (Gemini read-aloud) or MP3 (Google Cloud fallback).
+  return URL.createObjectURL(
+    new Blob([bytes], { type: mimeType || "audio/mpeg" }),
+  );
 }
 
 /**
@@ -99,10 +102,8 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       return;
     }
     // Fetch chunk i; prefetch i+1 in parallel for seamless playback.
-    let pending: Promise<{ audioBase64: string }> | null = api.ttsSynthesize(
-      chunks[0] as string,
-      true,
-    );
+    let pending: Promise<{ audioBase64: string; mimeType?: string }> | null =
+      api.ttsSynthesize(chunks[0] as string, true);
     for (let i = 0; i < chunks.length; i++) {
       const current = pending;
       const next = chunks[i + 1];
@@ -111,7 +112,7 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
         pending?.catch(() => {});
         break;
       }
-      const { audioBase64 } = await current;
+      const { audioBase64, mimeType } = await current;
       if (!alive()) {
         pending?.catch(() => {});
         return;
@@ -120,7 +121,7 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
         state = "playing";
         emit();
       }
-      await playUrl(base64ToObjectUrl(audioBase64));
+      await playUrl(base64ToObjectUrl(audioBase64, mimeType));
       if (!alive()) {
         pending?.catch(() => {});
         return;

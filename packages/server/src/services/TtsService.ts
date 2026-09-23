@@ -1,4 +1,5 @@
 import { readFile, access } from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import type { TextToSpeechClient } from "@google-cloud/text-to-speech";
 import { getLogger } from "../logging/logger.js";
@@ -7,16 +8,31 @@ import { CHUNKING_MIN_TOTAL_CHARS, splitIntoChunks } from "./ttsChunking.js";
 const logger = getLogger();
 
 /**
- * Text-to-speech via Google Cloud Text-to-Speech.
+ * Text-to-speech. Two backends, tried in this order:
  *
- * Single fixed voice (de-DE-Chirp3-HD-Algenib, male). Ported from the
- * PocketClaude tts_engine; intentionally minimal — one voice, MP3 output,
- * no model picker.
+ * 1. Gemini web read-aloud service (default since 2026-09-23). A small HTTP
+ *    service keeps a logged-in Gemini web session and turns text into
+ *    Ogg/Opus: POST {url}/tts {"text","lang"} -> audio/ogg. Free, ~40x faster
+ *    than real time, one fixed voice. On the machine that runs it no auth is
+ *    needed (loopback); other machines send a bearer token.
+ *    Config: TTS_GEMINI_URL (default http://127.0.0.1:8811),
+ *            TTS_GEMINI_TOKEN_FILE (default ~/.config/gemini-tts/token).
+ * 2. Google Cloud Text-to-Speech, voice de-DE-Chirp3-HD-Algenib (MP3), used
+ *    when the Gemini service is unreachable and a service-account JSON exists.
  */
 
 const VOICE_NAME = "de-DE-Chirp3-HD-Algenib";
 const LANGUAGE_CODE = "de-DE";
 const MAX_TEXT_LENGTH = 5000;
+const GEMINI_MAX_TEXT_LENGTH = 20000;
+const GEMINI_DEFAULT_URL = "http://127.0.0.1:8811";
+const GEMINI_TIMEOUT_MS = 120_000;
+const GEMINI_HEALTH_TTL_MS = 60_000;
+
+export interface TtsAudio {
+  audio: Buffer;
+  mimeType: string;
+}
 
 export interface TtsServiceOptions {
   dataDir?: string;
@@ -26,6 +42,7 @@ export interface TtsServiceOptions {
 
 export interface TtsStatus {
   enabled: boolean;
+  backend?: "gemini_web" | "google_cloud";
   credentialsPath?: string;
   error?: string;
 }
@@ -38,16 +55,40 @@ export class TtsService {
   private resolvedCredentialsPath: string | null = null;
   private initError: string | null = null;
   private initialized = false;
+  private readonly geminiUrl: string;
+  private readonly geminiTokenFile: string;
+  private geminiToken: string | null = null;
+  private geminiHealthy = false;
+  private geminiCheckedAt = 0;
 
   constructor(options: TtsServiceOptions = {}) {
     this.dataDir = options.dataDir;
     this.explicitPath =
       options.serviceAccountPath ?? process.env.TTS_SERVICE_ACCOUNT_PATH;
+    this.geminiUrl = (process.env.TTS_GEMINI_URL || GEMINI_DEFAULT_URL).replace(
+      /\/+$/,
+      "",
+    );
+    this.geminiTokenFile =
+      process.env.TTS_GEMINI_TOKEN_FILE ||
+      path.join(os.homedir(), ".config", "gemini-tts", "token");
   }
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
     this.initialized = true;
+
+    try {
+      const token = (await readFile(this.geminiTokenFile, "utf-8")).trim();
+      this.geminiToken = token || null;
+    } catch {
+      this.geminiToken = null; // loopback use needs no token
+    }
+    await this.checkGemini(true);
+    logger.info(
+      { component: "tts", url: this.geminiUrl, healthy: this.geminiHealthy },
+      "Gemini read-aloud service checked",
+    );
 
     const candidatePath = await this.findCredentialsPath();
     if (!candidatePath) {
@@ -80,17 +121,105 @@ export class TtsService {
   }
 
   isReady(): boolean {
-    return this.client !== null;
+    return this.geminiHealthy || this.client !== null;
   }
 
   getStatus(): TtsStatus {
+    // Refresh in the background so the status stays current without blocking.
+    void this.checkGemini(false);
+    if (this.geminiHealthy) {
+      return { enabled: true, backend: "gemini_web" };
+    }
     if (this.client) {
       return {
         enabled: true,
+        backend: "google_cloud",
         credentialsPath: this.resolvedCredentialsPath ?? undefined,
       };
     }
     return { enabled: false, error: this.initError ?? "Not initialized" };
+  }
+
+  private geminiHeaders(): Record<string, string> {
+    return this.geminiToken
+      ? { Authorization: `Bearer ${this.geminiToken}` }
+      : {};
+  }
+
+  /** Health check of the Gemini service, cached for a minute. Never throws. */
+  private async checkGemini(force: boolean): Promise<boolean> {
+    const now = Date.now();
+    if (!force && now - this.geminiCheckedAt < GEMINI_HEALTH_TTL_MS) {
+      return this.geminiHealthy;
+    }
+    this.geminiCheckedAt = now;
+    try {
+      const res = await fetch(`${this.geminiUrl}/health`, {
+        headers: this.geminiHeaders(),
+        signal: AbortSignal.timeout(3000),
+      });
+      const body = (await res.json().catch(() => ({}))) as { ok?: boolean };
+      this.geminiHealthy = res.ok && body.ok === true;
+    } catch {
+      this.geminiHealthy = false;
+    }
+    return this.geminiHealthy;
+  }
+
+  private async synthesizeGemini(text: string): Promise<Buffer> {
+    const res = await fetch(`${this.geminiUrl}/tts`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...this.geminiHeaders() },
+      body: JSON.stringify({ text, lang: LANGUAGE_CODE }),
+      signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      const detail = (await res.text().catch(() => "")).slice(0, 300);
+      if (res.status === 503 || res.status === 401) this.geminiHealthy = false;
+      throw new Error(`Gemini read-aloud HTTP ${res.status}: ${detail}`);
+    }
+    const audio = Buffer.from(await res.arrayBuffer());
+    if (!audio.length) throw new Error("Empty audio from Gemini read-aloud");
+    return audio;
+  }
+
+  /**
+   * Synthesize text to audio, Gemini first, Google Cloud as fallback.
+   * Returns the bytes together with their MIME type (Ogg/Opus or MP3).
+   */
+  async synthesizeAudio(text: string, preCleaned = false): Promise<TtsAudio> {
+    const cleaned = preCleaned ? text : stripForTts(text);
+    if (!cleaned) {
+      throw new Error("Nothing to read aloud after cleaning the text");
+    }
+    let geminiError: unknown = null;
+    if (await this.checkGemini(false)) {
+      try {
+        const audio = await this.synthesizeGemini(
+          cleaned.slice(0, GEMINI_MAX_TEXT_LENGTH),
+        );
+        return { audio, mimeType: "audio/ogg" };
+      } catch (err) {
+        geminiError = err;
+        logger.warn(
+          {
+            component: "tts",
+            err: err instanceof Error ? err.message : String(err),
+          },
+          "Gemini read-aloud failed, trying Google Cloud",
+        );
+      }
+    }
+    if (!this.client) {
+      if (geminiError) throw geminiError;
+      throw new Error(
+        this.initError ?? "TTS not configured (Gemini service unreachable)",
+      );
+    }
+    return {
+      audio: await this.synthesize(cleaned, true),
+      mimeType: "audio/mpeg",
+    };
   }
 
   /**
@@ -134,7 +263,8 @@ export class TtsService {
    * remaining chunks are balanced. Returns [] if there is nothing to read.
    */
   planChunks(text: string): string[] {
-    const cleaned = stripForTts(text).slice(0, MAX_TEXT_LENGTH);
+    const limit = this.geminiHealthy ? GEMINI_MAX_TEXT_LENGTH : MAX_TEXT_LENGTH;
+    const cleaned = stripForTts(text).slice(0, limit);
     if (!cleaned) return [];
     if (cleaned.length < CHUNKING_MIN_TOTAL_CHARS) return [cleaned];
     const chunks = splitIntoChunks(cleaned);
