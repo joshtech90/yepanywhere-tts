@@ -156,6 +156,10 @@ export function normalizeGeneratedSessionTitle(
     .map((line) => line.trim())
     .find((line) => line.length > 0);
   if (!firstLine) return undefined;
+  // A helper that answers with a question ("Was möchtest du machen?") has
+  // replied to the session instead of naming it; storing that as the title
+  // is worse than keeping the default.
+  if (/\?["'`“”‘’«»]*(?:\s|$)/u.test(firstLine)) return undefined;
 
   // Strip wrappers repeatedly: `Title: "Telegram-Bot Deploy".` needs the
   // trailing period gone before the closing quote becomes strippable, and a

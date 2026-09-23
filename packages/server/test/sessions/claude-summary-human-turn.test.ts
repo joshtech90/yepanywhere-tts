@@ -90,3 +90,46 @@ describe("claude summary last human turn", () => {
     expect(summary?.updatedAt).toBe("2026-09-01T18:00:02.000Z");
   });
 });
+
+function userRaw(uuid: string, parentUuid: string | null, content: string) {
+  return {
+    type: "user",
+    uuid,
+    parentUuid,
+    timestamp: "2026-09-01T10:00:00.000Z",
+    message: { content },
+  };
+}
+
+describe("claude summary title", () => {
+  const effort =
+    "<command-name>/effort</command-name>\n<command-message>effort</command-message>\n<command-args></command-args>";
+  const effortOutput =
+    "<local-command-stdout>Set effort level to medium</local-command-stdout>";
+
+  it("skips a leading /effort turn and its output for the real prompt", () => {
+    const summary = summaryOf([
+      userRaw("u1", null, effort),
+      userRaw("u2", "u1", effortOutput),
+      userRaw("u3", "u2", "Bitte repariere die Session-Benennung"),
+    ]);
+    expect(summary?.fullTitle).toBe("Bitte repariere die Session-Benennung");
+  });
+
+  it("keeps the command as title when no prompt follows", () => {
+    const summary = summaryOf([
+      userRaw("u1", null, effort),
+      userRaw("u2", "u1", effortOutput),
+    ]);
+    expect(summary?.fullTitle).toBe("/effort");
+  });
+
+  it("does not replace a real prompt with a later command", () => {
+    const summary = summaryOf([
+      userRaw("u1", null, "Bitte repariere die Session-Benennung"),
+      userRaw("u2", "u1", effort),
+      userRaw("u3", "u2", "Und noch etwas anderes"),
+    ]);
+    expect(summary?.fullTitle).toBe("Bitte repariere die Session-Benennung");
+  });
+});

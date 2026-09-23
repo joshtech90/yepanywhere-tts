@@ -167,6 +167,48 @@ function getTimestamp(entry: ClaudeSessionEntry): string {
   return getStringField(entry, "timestamp") ?? "";
 }
 
+const LOCAL_COMMAND_OUTPUT_ONLY_RE =
+  /^\s*<local-command-(stdout|stderr)>[\s\S]*?<\/local-command-\1>\s*$/;
+
+function getRawUserText(entry: ClaudeSessionEntry): string | undefined {
+  const content = (entry as { message?: { content?: unknown } }).message
+    ?.content;
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  return content
+    .filter(
+      (block): block is { type: "text"; text: string } =>
+        typeof block === "object" &&
+        block !== null &&
+        block.type === "text" &&
+        typeof block.text === "string",
+    )
+    .map((block) => block.text)
+    .join("\n");
+}
+
+/**
+ * A first-user candidate that only stands in until a real prompt arrives:
+ * a bare slash-command turn (`/effort`, `/model`, a skill invocation), the
+ * `<local-command-stdout>` echo it produces, or a turn with no text at all.
+ * Sessions often open with `/effort` or `/model` before the actual ask, and
+ * naming the session after that setup step hides its topic. The command is
+ * still kept as the title when no prose turn ever follows.
+ */
+function isPlaceholderTitleCandidate(
+  entry: ClaudeSessionEntry,
+  candidate: string,
+): boolean {
+  if (!candidate.trim()) return true;
+  const raw = getRawUserText(entry);
+  if (raw === undefined) return false;
+  const withoutIdeMetadata = stripIdeMetadata(raw);
+  return (
+    formatClaudeCommandTurn(withoutIdeMetadata) !== null ||
+    LOCAL_COMMAND_OUTPUT_ONLY_RE.test(withoutIdeMetadata)
+  );
+}
+
 function getFirstUserTitleCandidate(
   entry: ClaudeSessionEntry,
 ): string | undefined {
@@ -183,6 +225,25 @@ function getFirstUserTitleCandidate(
   return extractTitleContent(objectBlocks);
 }
 
+/**
+ * Fold one entry into a running title pick. Returns true once a real prompt
+ * settled the title; until then a placeholder (see
+ * `isPlaceholderTitleCandidate`) is held as the fallback.
+ */
+function considerTitleCandidate(
+  pick: { content?: string },
+  entry: ClaudeSessionEntry,
+): boolean {
+  const candidate = getFirstUserTitleCandidate(entry);
+  if (candidate === undefined) return false;
+  if (isPlaceholderTitleCandidate(entry, candidate)) {
+    if (!pick.content?.trim()) pick.content = candidate;
+    return false;
+  }
+  pick.content = candidate;
+  return true;
+}
+
 /** Collection discovery never parses past this prefix to obtain a title.
  * The text is returned whole: search matches the session's own words, and a
  * display-width truncation belongs at the surface that renders them. */
@@ -196,6 +257,7 @@ export async function readClaudeCatalogTitle(
     const text = buffer.subarray(0, bytesRead).toString("utf8");
     const lines = text.split("\n");
     if (bytesRead === buffer.length) lines.pop();
+    const pick: { content?: string } = {};
     for (const line of lines) {
       if (!line.trim()) continue;
       let entry: ClaudeSessionEntry;
@@ -205,10 +267,11 @@ export async function readClaudeCatalogTitle(
         continue;
       }
       if (!entry || typeof entry !== "object") continue;
-      const title = getFirstUserTitleCandidate(entry);
-      if (title !== undefined) return sanitizeSessionTitle(title) || undefined;
+      if (considerTitleCandidate(pick, entry)) break;
     }
-    return undefined;
+    return pick.content === undefined
+      ? undefined
+      : sanitizeSessionTitle(pick.content) || undefined;
   } finally {
     await file.close();
   }
@@ -335,11 +398,9 @@ export function addEntryToState(
   }
 
   if (!state.firstUserTitleCaptured) {
-    const candidate = getFirstUserTitleCandidate(entry);
-    if (candidate !== undefined) {
-      state.firstUserTitleContent = candidate;
-      state.firstUserTitleCaptured = true;
-    }
+    const pick = { content: state.firstUserTitleContent };
+    state.firstUserTitleCaptured = considerTitleCandidate(pick, entry);
+    state.firstUserTitleContent = pick.content;
   }
 
   const uuid = getUuid(entry);

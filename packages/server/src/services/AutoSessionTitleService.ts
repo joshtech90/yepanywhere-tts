@@ -274,7 +274,10 @@ export class AutoSessionTitleService {
         this.outcomes.set(sessionId, "failed");
         return;
       }
-      if (context.messageCount < settings.triggerMessageCount) {
+      if (
+        context.messageCount < settings.triggerMessageCount ||
+        isCommandOnlyOpening(context)
+      ) {
         // Not enough of an opening yet. Clear the outcome so a later update
         // re-arms the debounce instead of the session never being titled.
         this.outcomes.delete(sessionId);
@@ -353,6 +356,23 @@ export class AutoSessionTitleService {
       );
     }
   }
+}
+
+const SLASH_COMMAND_TITLE_RE = /^\/[\w:.-]+(?:\s|$)/u;
+
+/**
+ * True while the session has only run a slash command such as `/effort` or
+ * `/model` and nobody has written a real prompt or received a reply yet.
+ * Those setup turns count as messages, so without this the helper would be
+ * asked to name a session from `/effort` alone and answer with a question.
+ * A command the assistant already answered (a skill invocation) is titled.
+ */
+export function isCommandOnlyOpening(
+  context: AutoTitleSessionContext,
+): boolean {
+  const opening = context.fullTitle?.trim() ?? "";
+  if (!opening || !SLASH_COMMAND_TITLE_RE.test(opening)) return false;
+  return !context.lastAgentText?.trim();
 }
 
 /**

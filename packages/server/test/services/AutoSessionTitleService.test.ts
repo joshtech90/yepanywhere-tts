@@ -220,6 +220,43 @@ describe("AutoSessionTitleService", () => {
     expect(early.titles.get("s1")).toBe("Stripe anfragen");
   });
 
+  it("waits past a bare slash command until a real prompt arrives", async () => {
+    const setup = fixture({
+      context: { fullTitle: "/effort", lastAgentText: undefined, messageCount: 2 },
+    });
+    setup.service.start();
+    emitUpdate(setup.eventBus, "s1");
+    await settle();
+
+    expect(setup.generateTitle).not.toHaveBeenCalled();
+    expect(setup.service.getOutcome("s1")).toBeUndefined();
+
+    setup.loadContext.mockResolvedValue({
+      provider: "claude",
+      fullTitle: "Kannst du bitte bei Stripe die Gebuehren anfragen?",
+      lastAgentText: "Ich schreibe den Support an.",
+      messageCount: 4,
+    });
+    emitUpdate(setup.eventBus, "s1");
+    await settle();
+
+    expect(setup.titles.get("s1")).toBe("Stripe anfragen");
+  });
+
+  it("titles a skill command once the assistant has answered it", async () => {
+    const skill = fixture({
+      context: {
+        fullTitle: "/code-review 42",
+        lastAgentText: "Ich pruefe den Pull Request 42.",
+      },
+    });
+    skill.service.start();
+    emitUpdate(skill.eventBus, "s1");
+    await settle();
+
+    expect(skill.generateTitle).toHaveBeenCalledTimes(1);
+  });
+
   it("marks a session failed when generation throws, and does not retry", async () => {
     const failing = fixture();
     failing.generateTitle.mockRejectedValue(new Error("provider down"));

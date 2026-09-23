@@ -113,4 +113,15 @@ describe("normalizeGeneratedSessionTitle", () => {
       "Stripe anfragen",
     );
   });
+
+  it("rejects a reply that asks back instead of naming the session", () => {
+    expect(
+      normalizeGeneratedSessionTitle(
+        'Was möchtest du machen? Mit nur „/effort" kann ich nichts benennen.',
+      ),
+    ).toBeUndefined();
+    expect(
+      normalizeGeneratedSessionTitle("Worum geht es in dieser Session?"),
+    ).toBeUndefined();
+  });
 });
