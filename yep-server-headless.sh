@@ -64,6 +64,24 @@ export CODEX_HOME="$HOME/.codex-profiles/loadbalanced"
 if [ -x "$HOME/.npm-global/bin/claude" ]; then
   export CLAUDE_CODE_EXECUTABLE="$HOME/.npm-global/bin/claude"
 fi
+# Vorlesen ueber den Gemini-Web-Vorlesedienst auf dem Dienste-Rechner (aihub),
+# Token aus ~/.config/gemini-tts/token. Die Adresse liefert der Rollen-Befehl
+# aus AI Worker/hosts, damit ein Umzug hier nichts aendert. Faellt der Dienst
+# aus, liest der Server ueber Google Cloud (Algenib) vor.
+if [ -x "$HOME/.local/bin/rolle" ]; then
+  TTS_GEMINI_URL="$("$HOME/.local/bin/rolle" url vorlesen 2>/dev/null || true)"
+  [ -n "$TTS_GEMINI_URL" ] && export TTS_GEMINI_URL
+fi
+
+# Nur Warnungen ins launchd-Protokoll: mit INFO wuchs es auf ueber 200 MB.
+# Beim Start wird ein zu grosses Protokoll geleert (launchd rotiert nicht).
+export LOG_LEVEL="${LOG_LEVEL:-warn}"
+for LOGDATEI in .memory/yep-launchd.out.log .memory/yep-launchd.err.log; do
+  if [ -f "$LOGDATEI" ] && [ "$(wc -c < "$LOGDATEI")" -gt 52428800 ]; then
+    : > "$LOGDATEI"
+  fi
+done
+
 exec env ENABLED_PROVIDERS=claude,codex PORT="$PORT" NODE_ENV=production HOST=0.0.0.0 \
   CLI_HOST_OVERRIDE=true \
   TLS_CERT_PATH="$TLS_CERT" TLS_KEY_PATH="$TLS_KEY" \
