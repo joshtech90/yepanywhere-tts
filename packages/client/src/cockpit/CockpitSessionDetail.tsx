@@ -9,6 +9,7 @@ import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import contentStyles from "./CockpitSessionContent.module.css";
 import styles from "./CockpitSessionDetail.module.css";
+import { CockpitToolCall } from "./CockpitToolCall";
 import { createCockpitNavigation } from "./core/navigation";
 import {
   deriveCockpitSessionState,
@@ -146,6 +147,10 @@ function TranscriptEntry({
         <div className={styles.userText}>{entry.text}</div>
       </article>
     );
+  }
+
+  if (entry.kind === "tool") {
+    return <CockpitToolCall entry={entry} time={time} />;
   }
 
   return (

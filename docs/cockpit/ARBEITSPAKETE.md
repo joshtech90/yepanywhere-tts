@@ -167,7 +167,7 @@ Dateiaenderung und Diff-Vorschau fuer Paket 6.
 
 ## 6 — Tool Calls, Shell, Dateiaenderungen und Diff-Ansicht
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 5.
 
@@ -185,6 +185,18 @@ Einzeln pruefbar durch:
 - Fehler-, Abbruch-, langer Output- und Multi-Datei-Faelle;
 - semantische Browsertests fuer Auf-/Zuklappen und Diff-Navigation;
 - visuelle Desktop-/Mobil-Abnahme.
+
+Ergebnis dieses Zugs: Tool Calls erscheinen in der Cockpit-Gespraechsansicht
+als ruhige, standardmaessig geschlossene Karten. Shell-Aufrufe zeigen Lauf-,
+Fehler-, Abbruch- und fehlenden Ergebnisstatus; im Detail stehen Befehl,
+Ausgabe, Fehlerausgabe und Exit-Code ohne Terminaloptik im normalen
+Gespraechsfluss. Edit- und Write-Aufrufe projizieren vorhandene strukturierte
+Hunks, Raw-Patches und Multi-Datei-Angaben in eine eigene begrenzte Diff-Ansicht
+mit Dateinavigation und Zeilennummern. Unbekannte Provider-Tools bleiben mit
+einem klaren Hinweis als escaped Input-/Ergebnistext sichtbar und werden nicht
+interpretiert. Die Projektion arbeitet pro vorhandenem `RenderItem`; Server,
+Shared-Protokoll, kanonischer Session-Store und Bestandsrenderer wurden nicht
+geaendert.
 
 ## 7 — Composer mit Prompt, Attachments, Queue und Steer
 

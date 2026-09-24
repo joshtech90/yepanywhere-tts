@@ -1,5 +1,9 @@
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import type { ContentBlock } from "@yep-anywhere/shared/transcript/message";
+import {
+  createCockpitToolDisplay,
+  type CockpitToolDisplay,
+} from "./toolDisplay";
 
 export interface CockpitTextSegment {
   id: string;
@@ -38,10 +42,16 @@ export interface CockpitBoundaryEntry extends CockpitTranscriptEntryBase {
   subtype: "compact_boundary" | "status";
 }
 
+export interface CockpitToolEntry extends CockpitTranscriptEntryBase {
+  kind: "tool";
+  tool: CockpitToolDisplay;
+}
+
 export type CockpitTranscriptEntry =
   | CockpitUserEntry
   | CockpitAssistantEntry
-  | CockpitBoundaryEntry;
+  | CockpitBoundaryEntry
+  | CockpitToolEntry;
 
 export type CockpitSessionState =
   | "active"
@@ -160,6 +170,18 @@ export function createCockpitTranscriptEntries(input: {
 
     if (item.type === "text" || item.type === "thinking") {
       assistantItems.push(item);
+      continue;
+    }
+
+    if (item.type === "tool_call") {
+      flushAssistant();
+      const timestamp = timestampForItem(item);
+      entries.push({
+        kind: "tool",
+        key: entryKey(input.sourceKey, input.sessionId, "tool", item.id),
+        ...(timestamp ? { timestamp } : {}),
+        tool: createCockpitToolDisplay(item),
+      });
       continue;
     }
 

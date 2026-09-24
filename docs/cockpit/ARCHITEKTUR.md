@@ -243,6 +243,23 @@ abgebrochenen Audiowiedergabe auf, damit kein offenes Wiedergabe-Promise
 zurueckbleibt. Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und
 bleibt dadurch kompatibel.
 
+### Werkzeugdarstellungs-Grenze aus Paket 6
+
+Tool Calls bleiben Teil derselben kanonischen `RenderItem`-Folge wie Text und
+Thinking. Eine reine Cockpit-Projektion formt jeweils nur einen Tool Call in
+kompakte Shell-, Datei- oder generische Darstellungsdaten um; sie scannt weder
+die Sitzung noch fuehrt sie Providerlogik aus. Die bekannte Alias-Normalisierung
+fuer Bash, Edit und weitere Werkzeuge wird wiederverwendet.
+
+Shell-Karten zeigen im geschlossenen Normalzustand nur Werkzeug, Kurzfassung und
+serverbeobachteten Status. Befehl, Ausgabe, Fehlerausgabe und Exit-Code liegen
+im explizit geoeffneten Detail. Edit/Write-Karten lesen vorhandene strukturierte
+Hunks, Multi-Datei-Angaben und Raw-Patches in eine begrenzte Cockpit-Diff-
+Projektion; die Dateiauswahl ist lokaler Ansichtsstatus und keine zweite
+Datei- oder Git-Quelle. Unbekannte Provider-Tools werden nicht erraten: Name,
+Input und Ergebnis bleiben als laengenbegrenzter, von React escaped dargestellter
+Text sichtbar. Server, Shared-Vertrag und Bestandsrenderer bleiben unveraendert.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten
