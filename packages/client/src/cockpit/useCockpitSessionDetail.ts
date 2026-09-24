@@ -3,6 +3,10 @@ import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useSession } from "../hooks/useSession";
 import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
 import type { SessionMetadata, SessionStatus } from "../types";
+import {
+  useCockpitAttention,
+  type CockpitAttentionPort,
+} from "./useCockpitAttention";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import {
   createCockpitTranscriptEntries,
@@ -10,6 +14,7 @@ import {
 } from "./core/sessionDetail";
 
 export interface CockpitSessionDetailData {
+  attention: CockpitAttentionPort;
   composer: CockpitComposerSessionPort;
   entries: CockpitTranscriptEntry[];
   error: Error | null;
@@ -63,8 +68,17 @@ export function useCockpitSessionDetail(
       }),
     [renderItems, runtime.sourceKey, sessionId],
   );
+  const attention = useCockpitAttention({
+    pendingInputRequest: detail.pendingInputRequest,
+    processState: detail.processState,
+    setPendingInputRequest: detail.setPendingInputRequest,
+    setProcessState: detail.setProcessState,
+    setStatus: detail.setStatus,
+    status: detail.status,
+  });
 
   return {
+    attention,
     composer: {
       actualSessionId: detail.actualSessionId,
       addPendingMessage: detail.addPendingMessage,

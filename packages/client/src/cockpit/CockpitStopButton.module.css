@@ -1,0 +1,97 @@
+.wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 2.45rem;
+  padding: 0 0.72rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--cockpit-danger) 38%,
+    var(--cockpit-border)
+  );
+  border-radius: 0.75rem;
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 7%, transparent);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 780;
+  cursor: pointer;
+}
+
+.button:hover {
+  border-color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 13%, transparent);
+}
+
+.button:focus-visible {
+  outline: 3px solid color-mix(
+    in srgb,
+    var(--cockpit-danger) 36%,
+    transparent
+  );
+  outline-offset: 2px;
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.icon {
+  width: 0.68rem;
+  height: 0.68rem;
+  flex: 0 0 auto;
+  border-radius: 0.16rem;
+  background: currentColor;
+}
+
+.error {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 4;
+  max-width: min(24rem, calc(100vw - 2rem));
+  padding: 0.45rem 0.65rem;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--cockpit-danger) 42%,
+    var(--cockpit-border)
+  );
+  border-radius: 0.62rem;
+  color: var(--cockpit-danger);
+  background: var(--cockpit-surface-raised);
+  box-shadow: 0 10px 28px var(--cockpit-shadow);
+  font-size: 0.66rem;
+}
+
+@media (max-width: 760px) {
+  .button {
+    width: 2.7rem;
+    height: 2.7rem;
+    padding: 0;
+  }
+
+  .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+    margin: -1px;
+    white-space: nowrap;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+}

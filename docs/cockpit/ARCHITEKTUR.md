@@ -284,6 +284,33 @@ und Effort werden ueber den vorhandenen `ModelSwitchModal` samt
 Long-Context-Warnung geaendert; ein ruhiger Cockpit-Trigger ersetzt dabei nicht
 die vorhandenen serverautoritativen Konfigurationsaktionen.
 
+### Aufmerksamkeits-Grenze aus Paket 8
+
+`useSession` bleibt Eigentuemer der jeweils aktuellen `pendingInputRequest`.
+Das Cockpit projiziert genau diese Anfrage in eine Approval- oder Fragekarte;
+strukturierte Claude-, Codex- und providerneutrale Fragen werden dabei nur in
+ein lokales View-Modell mit stabilen Frage-IDs, Optionen und Mehrfachauswahl
+uebersetzt. Unbekannte Anfragearten bleiben als Approval mit escaped
+Eingabedetails sichtbar, ohne Anbieterbedeutung zu erraten.
+
+Accept, Reject und Antworten rufen unveraendert `respondToInput` auf. Ein
+Doppelklick startet nie eine zweite Anfrage. Erfolg wird erst nach
+Serverbestaetigung angezeigt; HTTP 400 gilt als veraltete Anfrage und loest
+eine begrenzte Aktualisierung der aktuellen Serveranfrage aus. Andere Fehler
+bleiben an der Karte sichtbar und lassen die Eingabe fuer einen erneuten
+Versuch bestehen. Freitextantworten, insbesondere als geheim markierte, leben
+nur im lokalen Komponentenzustand und werden nicht browserlokal gespeichert.
+
+Interrupt/Stop ist eine direkte Schaltflaeche im festen Sitzungskopf und damit
+nicht von Transcript-Aufklappzustand oder einem Menue abhaengig. Sie verwendet
+zuerst den vorhandenen sanften Interrupt und faellt bei fehlender Unterstuetzung
+oder Fehler auf den vorhandenen verifizierten Prozessabbruch zurueck. Nur ein
+bestaetigter Abbruch setzt lokalen Besitz und Prozesszustand zurueck; bei einem
+angenommenen sanften Interrupt bleibt das naechste Serverereignis die
+Zustandsautoritaet. Der Knopf liegt ausserhalb der nicht dringenden
+Transcript-Projektion, damit eine schnelle Nachrichtenfolge ihn nicht
+verdraengt.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

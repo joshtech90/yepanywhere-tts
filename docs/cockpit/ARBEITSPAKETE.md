@@ -238,7 +238,7 @@ dupliziert oder erweitert.
 
 ## 8 — Approvals, Fragen und Interrupt/Stop
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 7.
 
@@ -256,6 +256,17 @@ Einzeln pruefbar durch:
 - Doppelclick, Reconnect, bereits beantwortete Anfrage und Serverfehler;
 - Message-Storm-Szenario aus dem offenen Gap: Stop bleibt bedienbar;
 - visuelle und tastaturbasierte Abnahme.
+
+Ergebnis dieses Zugs: Die Cockpit-Sitzung zeigt die jeweils serverautoritative
+Approval- oder Frageanfrage als prominente Karte direkt ueber dem Composer.
+Strukturierte Claude-/Codex-Fragen, einfache Auswahlfragen und unbekannte
+Approval-Arten bleiben sichtbar; Antworten, Freigabe und Ablehnung besitzen
+Pending-, bestaetigten, Fehler- und veralteten Zustand. Doppelklicks werden
+unterdrueckt, HTTP-400-Antworten mit der aktuellen Serveranfrage abgeglichen und
+keine Providerannahme optimistisch behauptet. Stop ist als direkter Knopf im
+festen Sitzungskopf erreichbar, versucht zuerst Interrupt und faellt bei Bedarf
+auf den vorhandenen verifizierten Prozessabbruch zurueck. Session-Core, Server
+und Shared-Protokoll wurden nicht erweitert.
 
 ## 9 — Session-Organisation, Pins und Prompt-History
 

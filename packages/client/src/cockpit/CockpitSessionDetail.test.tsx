@@ -27,6 +27,12 @@ function detailData(
   overrides: Partial<CockpitSessionDetailData> = {},
 ): CockpitSessionDetailData {
   return {
+    attention: {
+      interruptible: false,
+      request: null,
+      respond: vi.fn(async () => ({ kind: "accepted" as const })),
+      stop: vi.fn(async () => ({ kind: "accepted" as const })),
+    },
     composer: {
       actualSessionId: "session-1",
       addPendingMessage: vi.fn(() => ({ tempId: "temp-1" })),
@@ -164,5 +170,36 @@ describe("Cockpit session detail", () => {
 
     expect(screen.getByText("Reconnecting")).toBeTruthy();
     expect(screen.getByText("Everything is ready.")).toBeTruthy();
+  });
+
+  it("keeps a pending approval visible while session updates reconnect", () => {
+    detailMocks.data = detailData({
+      attention: {
+        interruptible: true,
+        request: {
+          id: "approval-1",
+          sessionId: "session-1",
+          type: "tool-approval",
+          prompt: "Allow the invented formatting command?",
+          toolName: "Bash",
+          toolInput: { command: "printf demo" },
+          timestamp: "2026-09-24T09:00:02.000Z",
+        },
+        respond: vi.fn(async () => ({ kind: "accepted" as const })),
+        stop: vi.fn(async () => ({ kind: "accepted" as const })),
+      },
+      processState: "waiting-input",
+      sessionUpdatesConnected: false,
+      sessionUpdatesResubscribing: true,
+      status: { owner: "self", processId: "process-1" },
+    });
+    renderDetail();
+
+    expect(
+      screen.getByRole("heading", { name: "Review this action" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Stop current turn" }),
+    ).toBeTruthy();
   });
 });

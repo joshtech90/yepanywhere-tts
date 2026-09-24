@@ -6,9 +6,11 @@ import {
 } from "react";
 import { Link } from "react-router-dom";
 import { useI18n, type TranslationFn } from "../i18n";
+import { CockpitAttentionCard } from "./CockpitAttentionCard";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
+import { CockpitStopButton } from "./CockpitStopButton";
 import contentStyles from "./CockpitSessionContent.module.css";
 import styles from "./CockpitSessionDetail.module.css";
 import { CockpitToolCall } from "./CockpitToolCall";
@@ -304,6 +306,15 @@ export function CockpitSessionDetail({
           </div>
         </div>
         <div className={styles.sessionActions}>
+          <CockpitStopButton
+            interruptible={detail.attention.interruptible}
+            key={
+              detail.status.owner === "self"
+                ? detail.status.processId
+                : "cockpit-stop-idle"
+            }
+            stop={detail.attention.stop}
+          />
           <CockpitModelControls
             actualSessionId={detail.composer.actualSessionId}
             projectId={projectId}
@@ -390,6 +401,14 @@ export function CockpitSessionDetail({
           ))}
         </div>
       </div>
+
+      {detail.attention.request && (
+        <CockpitAttentionCard
+          key={detail.attention.request.id}
+          request={detail.attention.request}
+          respond={detail.attention.respond}
+        />
+      )}
 
       <CockpitComposer
         projectId={projectId}
