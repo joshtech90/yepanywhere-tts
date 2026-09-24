@@ -15,6 +15,7 @@ import { useCockpitSearch } from "./useCockpitSearch";
 
 export interface CockpitSearchPanelProps {
   basePath: string;
+  focusOnOpen?: boolean;
   onClose: () => void;
   onNavigate: () => void;
 }
@@ -44,6 +45,7 @@ function toggleField(fields: SearchField[], field: SearchField): SearchField[] {
 
 export function CockpitSearchPanel({
   basePath,
+  focusOnOpen = false,
   onClose,
   onNavigate,
 }: CockpitSearchPanelProps) {
@@ -68,10 +70,10 @@ export function CockpitSearchPanel({
   }, [search.support]);
 
   useEffect(() => {
-    if (matchMedia("(min-width: 701px)").matches) {
+    if (focusOnOpen || matchMedia("(min-width: 701px)").matches) {
       inputRef.current?.focus({ preventScroll: true });
     }
-  }, []);
+  }, [focusOnOpen]);
 
   useEffect(() => {
     if (

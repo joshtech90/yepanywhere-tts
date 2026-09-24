@@ -304,7 +304,7 @@ pruefen die geforderte 100-ms-Bestaetigung pro Zeichen.
 
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Pakete 3 bis 8.
 
@@ -322,6 +322,20 @@ Einzeln pruefbar durch:
 - Android-/iOS-aehnliche Viewport-Resize-Faelle im Browser;
 - sequentielle Eingabe und Fokus-Restore;
 - Desktop-/Mobil-Captures aller Hauptzustaende.
+
+Ergebnis dieses Zugs: Eine sichtbare, per `?` erreichbare Hilfe dokumentiert
+die Cockpit-Kuerzel fuer Suche, neue Sitzung, Composer, Queue, Stop und
+Navigation. Buchstaben- und Slash-Kuerzel bleiben in Eingabefeldern sowie bei
+Browser-Modifikatoren wirkungslos; Queue verwendet im Composer gezielt
+`Strg/Befehl+Eingabe`. `Escape` aktiviert ausschliesslich den bedienbaren,
+serverautoritativen Stop-Knopf aus Paket 8 und bleibt sonst frei. Suche und
+Shortcut-Hilfe stellen den Fokus nach dem Schliessen wieder her. Auf Mobilgeraeten
+folgt die Shell der sichtbaren Viewport-Hoehe und ihrem Versatz, sodass
+Bildschirmtastatur, Safe Area, untere Navigation und Composer keine zweite
+Dokument-Scrollflaeche erzeugen. Primaere mobile Aktionen besitzen mindestens
+44 Pixel Zielgroesse und stabile Screenreader-Namen. Reine Adapter-,
+Komponenten- und Resize-Tests decken die Shortcut-Matrix, editierbare Felder,
+Queue, Fokus-Restore und Android-/iOS-aehnliche Viewport-Aenderungen ab.
 
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 

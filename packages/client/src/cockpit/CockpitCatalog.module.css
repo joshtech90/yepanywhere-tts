@@ -339,6 +339,11 @@
     font-size: 0.85rem;
   }
 
+  .searchField button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
   .projectList {
     overflow: visible;
   }
@@ -353,6 +358,10 @@
 
   .sessionMeta {
     font-size: 0.65rem;
+  }
+
+  .coverage button {
+    min-height: 2.75rem;
   }
 }
 

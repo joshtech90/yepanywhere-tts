@@ -1,4 +1,11 @@
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useCallback,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Link, useParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -11,6 +18,10 @@ import { CockpitCatalog } from "./CockpitCatalog";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
+import {
+  CockpitShortcutButton,
+  CockpitShortcutDialog,
+} from "./CockpitShortcutHelp";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { createCockpitNavigation } from "./core/navigation";
 import {
@@ -22,6 +33,8 @@ import {
   useCockpitCatalog,
   type CockpitCatalogData,
 } from "./useCockpitCatalog";
+import { useCockpitShortcuts } from "./useCockpitShortcuts";
+import { useCockpitViewportGeometry } from "./useCockpitViewportGeometry";
 
 function SessionsIcon() {
   return (
@@ -126,7 +139,48 @@ export function CockpitShell({
   const { t } = useI18n();
   const [catalogQuery, setCatalogQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
-  const navigation = createCockpitNavigation(basePath);
+  const [searchFocusRequested, setSearchFocusRequested] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const rootRef = useRef<HTMLElement>(null);
+  const searchTriggerRef = useRef<HTMLButtonElement>(null);
+  const shortcutTriggerRef = useRef<HTMLButtonElement>(null);
+  const navigation = useMemo(
+    () => createCockpitNavigation(basePath),
+    [basePath],
+  );
+  const viewport = useCockpitViewportGeometry();
+  const openSearch = useCallback((focusInput: boolean) => {
+    setSearchFocusRequested(focusInput);
+    setSearchOpen(true);
+  }, []);
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchFocusRequested(false);
+    searchTriggerRef.current?.focus({ preventScroll: true });
+  }, []);
+  const navigateFromSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchFocusRequested(false);
+  }, []);
+  const openSearchFromShortcut = useCallback(
+    () => openSearch(true),
+    [openSearch],
+  );
+  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
+  const closeShortcuts = useCallback(() => {
+    setShortcutsOpen(false);
+    shortcutTriggerRef.current?.focus({ preventScroll: true });
+  }, []);
+  useCockpitShortcuts({
+    navigation,
+    onCloseHelp: closeShortcuts,
+    onCloseSearch: closeSearch,
+    onOpenHelp: openShortcuts,
+    onOpenSearch: openSearchFromShortcut,
+    rootRef,
+    searchOpen,
+    shortcutsOpen,
+  });
   const hasCatalog = catalogData.catalog.projects.length > 0;
   const hasDetail = children !== undefined && children !== null;
   const destinations: Array<{
@@ -182,7 +236,10 @@ export function CockpitShell({
     <main
       className={styles.root}
       data-accent={accent}
+      data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
+      ref={rootRef}
+      style={viewport.style}
     >
       <aside className={styles.sidebar} aria-label={t("cockpitNavigationAria")}>
         <Link className={styles.brand} to={navigation.cockpit}>
@@ -209,9 +266,11 @@ export function CockpitShell({
 
         <nav className={styles.navigation}>
           <button
+            aria-keyshortcuts="/"
             aria-pressed={searchOpen}
             className={styles.navigationItem}
-            onClick={() => setSearchOpen(true)}
+            onClick={() => openSearch(false)}
+            ref={searchTriggerRef}
             type="button"
           >
             <span className={styles.icon}>
@@ -221,6 +280,9 @@ export function CockpitShell({
           </button>
           {destinations.map((destination) => (
             <Link
+              aria-keyshortcuts={
+                destination.href === navigation.newSession ? "N" : undefined
+              }
               className={styles.navigationItem}
               key={destination.href}
               onClick={() => setSearchOpen(false)}
@@ -230,6 +292,11 @@ export function CockpitShell({
               <span>{destination.label}</span>
             </Link>
           ))}
+          <CockpitShortcutButton
+            onOpen={openShortcuts}
+            open={shortcutsOpen}
+            triggerRef={shortcutTriggerRef}
+          />
         </nav>
 
         <section
@@ -244,6 +311,12 @@ export function CockpitShell({
           />
         </section>
       </aside>
+
+      <CockpitShortcutDialog
+        onClose={closeShortcuts}
+        open={shortcutsOpen}
+        triggerRef={shortcutTriggerRef}
+      />
 
       <section
         aria-labelledby={
@@ -277,7 +350,12 @@ export function CockpitShell({
                 />
               </div>
             </details>
-            <Link className={styles.primaryAction} to={navigation.newSession}>
+            <Link
+              aria-keyshortcuts="N"
+              aria-label={t("sidebarNewSession")}
+              className={styles.primaryAction}
+              to={navigation.newSession}
+            >
               <NewSessionIcon />
               <span>{t("sidebarNewSession")}</span>
             </Link>
@@ -286,13 +364,14 @@ export function CockpitShell({
 
         <div
           className={styles.canvas}
-          data-detail={hasDetail || searchOpen ? "true" : "false"}
+          data-view={searchOpen ? "search" : hasDetail ? "session" : "home"}
         >
           {searchOpen ? (
             <CockpitSearchPanel
               basePath={basePath}
-              onClose={() => setSearchOpen(false)}
-              onNavigate={() => setSearchOpen(false)}
+              focusOnOpen={searchFocusRequested}
+              onClose={closeSearch}
+              onNavigate={navigateFromSearch}
             />
           ) : hasDetail ? (
             children

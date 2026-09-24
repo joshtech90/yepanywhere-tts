@@ -59,8 +59,8 @@
 
 @media (max-width: 520px) {
   .button {
-    width: 2.7rem;
-    min-height: 2.7rem;
+    width: 2.75rem;
+    min-height: 2.75rem;
     padding: 0;
     justify-content: center;
   }

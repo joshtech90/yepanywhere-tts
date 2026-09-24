@@ -328,6 +328,31 @@ Erfolgreich gesendete Prompts werden source-gebunden, dedupliziert und begrenzt
 gespeichert. Die UI kann letzte und haeufige Prompts nur in den Draft
 uebernehmen; sie sendet nie durch Auswahl eines Verlaufswerts.
 
+### Shortcut- und Mobilgrenze aus Paket 10
+
+Die Cockpit-Shell besitzt genau einen dokumentierten Keyboard-Dispatcher. Er
+verwendet nur browserneutrale Einzeltasten ausserhalb editierbarer Felder:
+`/` oeffnet die globale Suche, `N` die neue Sitzung, `R` fokussiert den
+Composer, `G S` und `G P` navigieren zu Sitzungen beziehungsweise Projekten,
+und `?` oeffnet die sichtbare Uebersicht. Browserbefehle mit Strg, Befehl oder
+Alt bleiben unangetastet. Im Composer ist nur die ausdrueckliche
+`Strg/Befehl+Eingabe`-Aktion fuer Queue zusaetzlich aktiv; normale Eingabe und
+IME-Komposition bleiben lokale Editorereignisse.
+
+`Escape` adressiert den serverautoritativen Stop-Knopf aus Paket 8 ueber dessen
+semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag. Die
+Shortcut-Schicht fuehrt selbst keinen Interrupt aus und baut daher weder
+Pending-/Fehlerzustand noch Provider-Fallback ein zweites Mal nach. Ohne eine
+aktive, bedienbare Stop-Aktion wird `Escape` nicht konsumiert.
+
+Auf schmalen Viewports besitzt die Cockpit-Wurzel die sichtbare
+`VisualViewport`-Geometrie. Resize- und Pan-Aenderungen durch Browserleiste oder
+Bildschirmtastatur aktualisieren nur Hoehe und oberen Versatz der Shell; der
+untere Navigationsrahmen und der Composer bleiben innerhalb dieser Wurzel,
+waehrend Transcript, Katalog und Suche ihre jeweils eigenen Scrollbereiche
+behalten. Fehlt die API, bleibt `100dvh` der reine CSS-Fallback. Safe-Area-
+Insets werden weiterhin genau an Navigation und Composer angewendet.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

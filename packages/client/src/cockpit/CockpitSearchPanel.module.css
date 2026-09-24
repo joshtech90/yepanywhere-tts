@@ -428,6 +428,11 @@
     min-height: 3.1rem;
   }
 
+  .searchField button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
   .fields {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -79,8 +79,18 @@ export function CockpitComposer(props: CockpitComposerProps) {
       <div className={styles.composerBox}>
         <textarea
           aria-label={t("sessionPlaceholderResume")}
+          aria-keyshortcuts="R"
+          data-cockpit-shortcut="composer"
+          enterKeyHint="send"
           onChange={(event) => composer.setDraft(event.target.value)}
           onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+              if (canSubmit && composer.actions.canQueue) {
+                event.preventDefault();
+                void composer.submit("queue");
+              }
+              return;
+            }
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();
               if (canSubmit) void composer.submit();
@@ -123,7 +133,9 @@ export function CockpitComposer(props: CockpitComposerProps) {
           <span className={styles.hint}>{t("toolbarSendTooltip")}</span>
           {composer.actions.canQueue && composer.actions.primary !== "queue" && (
             <button
+              aria-keyshortcuts="Control+Enter Meta+Enter"
               className={styles.secondaryAction}
+              data-cockpit-shortcut="queue"
               disabled={!canSubmit}
               onClick={() => void composer.submit("queue")}
               type="button"
@@ -132,7 +144,15 @@ export function CockpitComposer(props: CockpitComposerProps) {
             </button>
           )}
           <button
+            aria-keyshortcuts={
+              composer.actions.primary === "queue"
+                ? "Control+Enter Meta+Enter"
+                : undefined
+            }
             className={styles.primaryAction}
+            data-cockpit-shortcut={
+              composer.actions.primary === "queue" ? "queue" : undefined
+            }
             disabled={!canSubmit}
             onClick={() => void composer.submit()}
             type="button"

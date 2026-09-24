@@ -138,6 +138,32 @@ describe("Cockpit composer", () => {
     });
   });
 
+  it("queues with Ctrl+Enter while preserving ordinary draft input", async () => {
+    const queue = vi.spyOn(api, "queueMessage").mockResolvedValue({
+      queued: true,
+      deferred: true,
+      deferredMessages: [],
+      serverTimestamp: Date.now(),
+    });
+    render(
+      composer(
+        sessionPort({
+          processState: "in-turn",
+          status: { owner: "self", processId: "process-1" },
+        }),
+      ),
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Queue this fictional note." } });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+
+    await waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
+    expect(queue.mock.calls[0]?.[6]).toBe(true);
+    expect(queue.mock.calls[0]?.[8]).toMatchObject({
+      deliveryIntent: "deferred",
+    });
+  });
+
   it("shows an upload failure and retries through the existing transport", async () => {
     runtime.transport.upload
       .mockRejectedValueOnce(new Error("preview upload unavailable"))

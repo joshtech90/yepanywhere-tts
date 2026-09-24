@@ -396,7 +396,7 @@
   right: 1.2rem;
   bottom: 8rem;
   z-index: 2;
-  min-height: 2.65rem;
+  min-height: 2.75rem;
   padding: 0 0.85rem;
   gap: 0.45rem;
   border-radius: 999px;
@@ -442,7 +442,7 @@
   }
 
   .sessionState {
-    min-width: 2.65rem;
+    min-width: 2.75rem;
     padding: 0;
     justify-content: center;
   }
@@ -457,7 +457,7 @@
   }
 
   .classicLink {
-    width: 2.65rem;
+    width: 2.75rem;
     padding: 0;
   }
 
@@ -484,8 +484,8 @@
   .backLink,
   .classicLink,
   .sessionState {
-    width: 2.7rem;
-    height: 2.7rem;
+    width: 2.75rem;
+    height: 2.75rem;
   }
 
   .sessionActions {
