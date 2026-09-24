@@ -230,10 +230,7 @@ export function CockpitShell({
         </header>
 
         <div className={styles.canvas}>
-          <section
-            className={styles.statePanel}
-            data-state={shellState.kind}
-          >
+          <section className={styles.statePanel} data-state={shellState.kind}>
             <span className={styles.stateIcon}>
               <StateIcon kind={shellState.kind} />
             </span>
@@ -259,10 +256,13 @@ export function CockpitShell({
 export function CockpitPage() {
   const runtime = useCurrentSourceRuntime();
   const basePath = useRemoteBasePath();
-  const transport = useSyncExternalStore(
+  // Subscribe to the derived primitive only: getSnapshot() returns a fresh
+  // object on every call, which makes useSyncExternalStore loop forever
+  // (React error 185). useActivityBusState selects `.state` for the same reason.
+  const shellKind = useSyncExternalStore(
     (listener) => runtime.transport.status.subscribe(listener),
-    () => runtime.transport.status.getSnapshot(),
-    () => runtime.transport.status.getSnapshot(),
+    () => deriveCockpitShellState(runtime.transport.status.getSnapshot()).kind,
+    () => deriveCockpitShellState(runtime.transport.status.getSnapshot()).kind,
   );
   const appearance = useCockpitAppearance();
 
@@ -273,7 +273,7 @@ export function CockpitPage() {
       onAccentChange={appearance.setAccent}
       onThemeChange={appearance.setTheme}
       resolvedTheme={appearance.resolvedTheme}
-      shellState={deriveCockpitShellState(transport)}
+      shellState={{ kind: shellKind }}
       theme={appearance.theme}
     />
   );
