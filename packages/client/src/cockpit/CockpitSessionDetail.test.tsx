@@ -6,8 +6,10 @@ import {
   screen,
 } from "@testing-library/react";
 import type { UrlProjectId } from "@yep-anywhere/shared";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { flushSync } from "react-dom";
+import { createRoot } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
@@ -366,5 +368,74 @@ describe("Cockpit session detail", () => {
     expect(
       screen.getByRole("button", { name: "Stop current turn" }),
     ).toBeTruthy();
+  });
+
+  it("defers storming transcript tails while the direct stop action stays immediate", async () => {
+    const stop = vi.fn(async () => ({ kind: "accepted" as const }));
+    const initial = detailData({
+      attention: {
+        interruptible: true,
+        request: null,
+        respond: vi.fn(async () => ({ kind: "accepted" as const })),
+        stop,
+      },
+      processState: "in-turn",
+      sessionUpdatesConnected: true,
+      status: { owner: "self", processId: "storm-process" },
+    });
+    detailMocks.data = initial;
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    act(() => root.render(detailTree()));
+    const stopButton = screen.getByRole("button", {
+      name: "Stop current turn",
+    });
+    stopButton.focus();
+
+    const storm: CockpitSessionDetailData = {
+      ...initial,
+      entries: [
+        ...initial.entries,
+        {
+          kind: "user",
+          key: "storm-tail",
+          text: "Invented storm update",
+        },
+      ],
+    };
+    detailMocks.data = storm;
+    act(() => {
+      flushSync(() => root.render(detailTree()));
+      expect(screen.queryByText("Invented storm update")).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Stop current turn" }),
+      ).toBe(stopButton);
+      expect(document.activeElement).toBe(stopButton);
+      fireEvent.click(stopButton);
+    });
+
+    await screen.findByText("Stop requested");
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Invented storm update")).toBeTruthy();
+
+    detailMocks.data = {
+      ...storm,
+      entries: [
+        {
+          kind: "user",
+          key: "older-prefix",
+          text: "Invented older update",
+        },
+        ...storm.entries,
+      ],
+    };
+    act(() => {
+      flushSync(() => root.render(detailTree()));
+      expect(screen.getByText("Invented older update")).toBeTruthy();
+    });
+
+    act(() => root.unmount());
+    host.remove();
   });
 });

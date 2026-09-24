@@ -308,6 +308,13 @@ Beim Kontextwechsel werden Auswahl, Freitext, Serverrueckmeldung und
 Stop-Feedback verworfen; gleiche Anfrage- oder Prozess-IDs auf zwei Hosts
 koennen dadurch keine Bedienzustaende mehr miteinander vermischen.
 
+Nachbesserung A18: Laufende Transcript-Anhaenge und Tail-Aktualisierungen
+nutzen nun Reacts nicht-dringende Darstellungsbahn. Status, Freigaben und der
+direkte Stop-Knopf bleiben davon getrennt und reagieren sofort; ein
+Regressionstest haelt den Stop-Knopf waehrend vieler Transcript-Updates im
+Fokus und bedienbar. Echte Praefixwechsel wie aeltere Seiten, Trimming oder
+ein Sitzungswechsel bleiben synchron, damit Leseanker und Kontext stimmen.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **offen**

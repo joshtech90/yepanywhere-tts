@@ -84,6 +84,12 @@ stable component identity, and lower update cadence.
   boundary and must not wait for the transcript. Prefix-changing pagination and
   trimming remain immediate because their scroll corrections are coupled to the
   new transcript structure.
+- The Cockpit session view follows the same scheduling boundary. Live appends
+  and tail replacements may render from a deferred transcript snapshot while
+  its status, approval, composer, and direct stop controls stay current. An
+  older-page prepend, prefix trim, first load, or session replacement bypasses
+  deferral so identity and scroll-anchor corrections commit with the rows they
+  describe.
 - An open managed viewer covers the transcript and holds its last committed
   projection stable. Incoming session data continues to buffer and surrounding
   controls and viewer sources remain live, but transcript reconciliation and

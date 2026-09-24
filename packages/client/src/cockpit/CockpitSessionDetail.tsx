@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useDeferredValue,
   useLayoutEffect,
   useRef,
   useState,
@@ -24,6 +25,7 @@ import {
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 import type { CockpitShellState } from "./core/shellState";
+import { selectCockpitTranscriptSnapshot } from "./core/transcriptScheduling";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
 
 export interface CockpitSessionDetailProps {
@@ -214,6 +216,11 @@ export function CockpitSessionDetail({
   const runtime = useCurrentSourceRuntime();
   const navigation = createCockpitNavigation(basePath);
   const detail = useCockpitSessionDetail(projectId, sessionId);
+  const deferredEntries = useDeferredValue(detail.entries);
+  const transcriptEntries = selectCockpitTranscriptSnapshot(
+    detail.entries,
+    deferredEntries,
+  );
   const interactionKey = JSON.stringify([
     runtime.sourceKey,
     projectId,
@@ -240,7 +247,7 @@ export function CockpitSessionDetail({
       } else {
         const entriesBeforeAnchor = countEntriesBeforeCockpitScrollAnchor(
           prepend.anchorKey,
-          detail.entries,
+          transcriptEntries,
         );
         if (entriesBeforeAnchor === null) {
           prependRef.current = null;
@@ -274,7 +281,7 @@ export function CockpitSessionDetail({
     if (followingRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [detail.entries, projectId, sessionId]);
+  }, [projectId, sessionId, transcriptEntries]);
 
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
@@ -297,7 +304,7 @@ export function CockpitSessionDetail({
 
   const loadOlder = useCallback(async () => {
     const container = scrollRef.current;
-    const anchorKey = detail.entries[0]?.key;
+    const anchorKey = transcriptEntries[0]?.key;
     if (container && anchorKey) {
       const anchorElement = findTranscriptEntryElement(container, anchorKey);
       prependRef.current = {
@@ -319,9 +326,9 @@ export function CockpitSessionDetail({
     } else {
       clearSettledMarker();
     }
-  }, [detail.entries, detail.loadOlderMessages, projectId, sessionId]);
+  }, [detail.loadOlderMessages, projectId, sessionId, transcriptEntries]);
 
-  const hasEntries = detail.entries.length > 0;
+  const hasEntries = transcriptEntries.length > 0;
   const state = deriveCockpitSessionState({
     transport:
       shellKind === "empty" && detail.loading && !hasEntries
@@ -458,7 +465,7 @@ export function CockpitSessionDetail({
             </section>
           )}
 
-          {detail.entries.map((entry) => (
+          {transcriptEntries.map((entry) => (
             <TranscriptEntry entry={entry} key={entry.key} locale={locale} />
           ))}
         </div>

@@ -328,6 +328,14 @@ gebunden. Ein Kontextwechsel demontiert ihn auch dann, wenn zwei Hosts dieselbe
 Anfrage- oder Prozess-ID verwenden; Auswahl, Freitext und Rueckmeldungen duerfen
 nicht in den naechsten Kontext uebernommen werden.
 
+Transcript-Projektion ist auch im Cockpit nicht-dringende React-Arbeit. Live-
+Anhaenge und Tail-Aktualisierungen duerfen deshalb ueber einen verzoegerten
+Snapshot laufen, waehrend Status, Freigaben, Composer und Stop auf dem aktuellen
+Session-Zustand bleiben. Praefixwechsel werden davon ausgenommen: Nachladen
+aelterer Seiten, Trimming und ein ersetzter Sitzungskontext muessen gemeinsam
+mit ihrer Scrollanker- beziehungsweise Identitaetskorrektur synchron sichtbar
+werden.
+
 Interrupt/Stop ist eine direkte Schaltflaeche im festen Sitzungskopf und damit
 nicht von Transcript-Aufklappzustand oder einem Menue abhaengig. Sie verwendet
 zuerst den vorhandenen sanften Interrupt und faellt bei fehlender Unterstuetzung
