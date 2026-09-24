@@ -259,6 +259,11 @@ Desktop-Enter. Laufende IME-Komposition, gehaltenes Enter, Zusatztasten und
 primaere Touch-Eingabe bleiben im Textfeld; ein Regressionstest prueft danach
 weiterhin den regulaeren Versand.
 
+Nachbesserung A16: Dateien und eingefuegte Screenshots erreichen die vorhandene
+Upload-Pipeline nun auch per Datei-Paste oder Drag-and-drop. Ein ruhiger
+Drop-Hinweis bestaetigt das Ziel; normal eingefuegter Text bleibt unveraendert
+im Draft und Clipboard-HTML wird nicht als Datei gedeutet.
+
 ## 8 — Approvals, Fragen und Interrupt/Stop
 
 Status: **umgesetzt**

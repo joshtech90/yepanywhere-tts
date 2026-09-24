@@ -467,6 +467,8 @@
   "cockpitStopPending": "Stopping...",
   "cockpitStopAccepted": "Stop requested",
   "cockpitStopFailed": "The turn could not be stopped: {message}",
+  "cockpitComposerDropFiles": "Drop files to attach",
+  "cockpitComposerAttachmentHint": "Paste or drop files to attach",
   "sidebarSectionPendingSessions": "Pending Sessions",
   "sidebarSectionStarred": "Starred",
   "sidebarSectionLast24Hours": "Last 24 Hours",

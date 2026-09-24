@@ -2,6 +2,10 @@ import { useRef } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
 import { hasCoarsePointer } from "../lib/deviceDetection";
+import {
+  CockpitAttachmentDropCue,
+  useCockpitAttachmentDropTarget,
+} from "./CockpitAttachmentDropTarget";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
 import styles from "./CockpitComposer.module.css";
@@ -36,9 +40,15 @@ function CockpitComposerSession(props: CockpitComposerProps) {
     !composer.submitting &&
     !hasBlockedAttachment &&
     (composer.draft.trim().length > 0 || composer.attachments.length > 0);
+  const attachmentDrop = useCockpitAttachmentDropTarget(composer.attachFiles);
 
   return (
-    <section className={styles.root} aria-label={t("sessionPlaceholderResume")}>
+    <section
+      {...attachmentDrop.handlers}
+      className={styles.root}
+      aria-label={t("sessionPlaceholderResume")}
+      data-dragging-files={attachmentDrop.draggingFiles || undefined}
+    >
       {composer.attachments.length > 0 && (
         <ul className={styles.attachments}>
           {composer.attachments.map((attachment) => (
@@ -122,11 +132,14 @@ function CockpitComposerSession(props: CockpitComposerProps) {
             aria-label={t("toolbarAttachFiles")}
             className={styles.attachButton}
             onClick={() => fileInputRef.current?.click()}
+            title={t("cockpitComposerAttachmentHint")}
             type="button"
           >
             +
           </button>
-          <span className={styles.hint}>{t("toolbarSendTooltip")}</span>
+          <span className={styles.hint}>
+            {t("toolbarSendTooltip")} · {t("cockpitComposerAttachmentHint")}
+          </span>
           {composer.actions.canQueue && composer.actions.primary !== "queue" && (
             <button
               className={styles.secondaryAction}
@@ -155,6 +168,10 @@ function CockpitComposerSession(props: CockpitComposerProps) {
           {composer.error}
         </p>
       )}
+      <CockpitAttachmentDropCue
+        label={t("cockpitComposerDropFiles")}
+        visible={attachmentDrop.draggingFiles}
+      />
     </section>
   );
 }

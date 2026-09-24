@@ -24,6 +24,12 @@ Desktop clipboard paste reads file items from the existing textarea paste
 event and hands them to the normal pending-attachment pipeline. It does not
 interpret arbitrary clipboard HTML as an attachment.
 
+The Cockpit composer uses the same file-item paste boundary and additionally
+accepts files dropped on its composer surface. A visible drop cue confirms the
+target before release; both paths hand the files to the existing upload,
+image-preparation, progress, retry and cancellation pipeline. Text-only paste
+keeps the browser's ordinary textarea behavior.
+
 The capability-gated projects-page editor for an existing Project Queue item
 uses the same file-item paste boundary and staged upload preparation. Its Save
 operation may combine retained queue-owned references with newly uploaded
@@ -90,6 +96,8 @@ web path.
   otherwise New Session opens in the same relay context.
 - Desktop file paste and PWA share intake converge on the same pending-file
   behavior.
+- Cockpit file paste and file drop converge on the same attachment upload as
+  its file picker, while ordinary text paste remains text.
 - Project Queue inline paste preserves, adds, and removes queued attachments in
   one update when advertised, while the absent-capability path stays text-only.
 - Direct start, resume, and queue requests accept empty text with a completed

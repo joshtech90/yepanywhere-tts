@@ -207,6 +207,52 @@ describe("Cockpit composer", () => {
     );
   });
 
+  it("uploads files pasted or dropped on the composer", async () => {
+    runtime.transport.upload.mockResolvedValue({
+      id: "upload-1",
+      originalName: "notes.txt",
+      name: "upload-1-notes.txt",
+      path: "/demo/uploads/upload-1-notes.txt",
+      size: 8,
+      mimeType: "text/plain",
+    });
+    render(composer());
+    const input = screen.getByRole("textbox");
+    const pasted = new File(["invented"], "pasted.txt", {
+      type: "text/plain",
+    });
+    const dropped = new File(["invented"], "dropped.txt", {
+      type: "text/plain",
+    });
+
+    fireEvent.paste(input, {
+      clipboardData: {
+        items: [{ getAsFile: () => pasted, kind: "file" }],
+      },
+    });
+    fireEvent.dragEnter(input, {
+      dataTransfer: {
+        dropEffect: "none",
+        files: [dropped],
+        types: ["Files"],
+      },
+    });
+    expect(screen.getByText("Drop files to attach")).toBeTruthy();
+    fireEvent.drop(input, {
+      dataTransfer: {
+        dropEffect: "copy",
+        files: [dropped],
+        types: ["Files"],
+      },
+    });
+
+    await waitFor(() =>
+      expect(runtime.transport.upload).toHaveBeenCalledTimes(2),
+    );
+    expect(screen.getByText("pasted.txt")).toBeTruthy();
+    expect(screen.getByText("dropped.txt")).toBeTruthy();
+  });
+
   it("aborts an in-flight upload when its attachment is removed", async () => {
     let observedSignal: AbortSignal | undefined;
     runtime.transport.upload.mockImplementation(

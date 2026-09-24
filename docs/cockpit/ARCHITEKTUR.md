@@ -299,6 +299,13 @@ ein unveraendertes, einmaliges Enter auf einem Desktop-Eingabegeraet sendet.
 IME-Komposition, gehaltenes Enter, Zusatztasten und primaere Touch-Eingabe
 bleiben Texteingabe und koennen keinen Draft versehentlich abschicken.
 
+Datei-Paste und Drag-and-drop enden an derselben Attachment-Grenze wie der
+Dateiauswahldialog. Der Cockpit-Composer nimmt dabei nur echte Dateiobjekte aus
+Zwischenablage oder Drop an; normaler Text-Paste bleibt native Texteingabe und
+beliebiges Clipboard-HTML wird nicht als Anhang interpretiert. Upload,
+Bildverkleinerung, Fortschritt, Abbruch und Wiederholung bleiben Besitzer der
+vorhandenen Composer-Pipeline.
+
 ### Aufmerksamkeits-Grenze aus Paket 8
 
 `useSession` bleibt Eigentuemer der jeweils aktuellen `pendingInputRequest`.

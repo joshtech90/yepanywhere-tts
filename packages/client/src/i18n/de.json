@@ -138,6 +138,8 @@
   "cockpitToolInput": "Eingabe",
   "cockpitToolResult": "Ergebnis",
   "cockpitToolNoDetails": "Es wurden keine weiteren Werkzeugdaten geliefert.",
+  "cockpitComposerDropFiles": "Dateien hier ablegen",
+  "cockpitComposerAttachmentHint": "Dateien einfügen oder hierher ziehen",
   "sidebarSectionStarred": "Markiert",
   "sidebarSectionLast24Hours": "Letzte 24 Stunden",
   "sidebarSectionOlder": "Älter",
