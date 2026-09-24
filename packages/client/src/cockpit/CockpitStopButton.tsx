@@ -15,7 +15,6 @@ export function CockpitStopButton({
   const [pending, setPending] = useState(false);
   const [result, setResult] =
     useState<CockpitAttentionActionResult | null>(null);
-  const settled = result?.kind === "accepted" || result?.kind === "stale";
 
   useEffect(() => {
     if (interruptible) return;
@@ -27,7 +26,7 @@ export function CockpitStopButton({
   if (!interruptible) return null;
 
   const handleStop = async () => {
-    if (inFlightRef.current || settled) return;
+    if (inFlightRef.current) return;
     inFlightRef.current = true;
     setPending(true);
     setResult(null);
@@ -44,7 +43,7 @@ export function CockpitStopButton({
       <button
         aria-label={t("cockpitStopAction")}
         className={styles.button}
-        disabled={pending || settled}
+        disabled={pending}
         onClick={() => void handleStop()}
         type="button"
       >
@@ -52,7 +51,7 @@ export function CockpitStopButton({
         <span className={styles.label}>
           {pending
             ? t("cockpitStopPending")
-            : settled
+            : result?.kind === "accepted"
               ? t("cockpitStopAccepted")
               : t("cockpitStopAction")}
         </span>

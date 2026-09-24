@@ -280,6 +280,12 @@ festen Sitzungskopf erreichbar, versucht zuerst Interrupt und faellt bei Bedarf
 auf den vorhandenen verifizierten Prozessabbruch zurueck. Session-Core, Server
 und Shared-Protokoll wurden nicht erweitert.
 
+Nachbesserung dieses Zugs: Nach einer serverbestaetigten sanften
+Unterbrechungsanfrage bleibt der direkte Stop-Knopf bedienbar, solange der
+Server den Zug weiterhin als aktiv meldet. Die Rueckmeldung „Stop angefordert“
+bleibt sichtbar, wird aber nicht mehr mit einem bereits abgeschlossenen Stop
+verwechselt; nur die laufende Anfrage sperrt wiederholte Aktivierungen.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **offen**

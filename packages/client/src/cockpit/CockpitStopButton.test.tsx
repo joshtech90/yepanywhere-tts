@@ -19,11 +19,15 @@ beforeEach(() => {
 describe("Cockpit stop button", () => {
   it("stays a direct action and suppresses repeated stop requests", async () => {
     let release = () => {};
+    let attempt = 0;
     const stop = vi.fn(
-      () =>
-        new Promise<{ kind: "accepted" }>((resolve) => {
+      (): Promise<{ kind: "accepted" }> => {
+        attempt += 1;
+        if (attempt > 1) return Promise.resolve({ kind: "accepted" });
+        return new Promise<{ kind: "accepted" }>((resolve) => {
           release = () => resolve({ kind: "accepted" });
-        }),
+        });
+      },
     );
     const view = render(
       <I18nProvider>
@@ -51,6 +55,18 @@ describe("Cockpit stop button", () => {
       release();
       await Promise.resolve();
     });
+    expect(
+      (screen.getByRole("button", {
+        name: "Stop current turn",
+      }) as HTMLButtonElement).disabled,
+    ).toBe(false);
+    expect(screen.getByText("Stop requested")).toBeTruthy();
+    await act(async () => {
+      fireEvent.click(button);
+      await Promise.resolve();
+    });
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect((button as HTMLButtonElement).disabled).toBe(false);
 
     view.rerender(
       <I18nProvider>
