@@ -140,7 +140,8 @@ eigenen Transcript- oder Dateiscans und keine Server-/Shared-Erweiterung.
 Nachbesserung dieses Zugs: Aus dem Suchfeld wechselt Pfeil runter direkt zum
 stabil ausgewaehlten Treffer. Pfeil hoch und runter bewegen den Fokus zwischen
 den Ergebnisgruppen; vom ersten Treffer fuehrt Pfeil hoch zurueck ins
-Suchfeld. Spaet eintreffende Treffer aendern diese Tastaturauswahl nicht.
+Suchfeld. Pfeil hoch im Suchfeld bleibt eine native Eingabetaste. Spaet
+eintreffende Treffer aendern diese Tastaturauswahl nicht.
 
 ## 5 — Read-only Session-Detail und Vorlesen
 

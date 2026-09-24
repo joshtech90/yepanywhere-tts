@@ -188,6 +188,15 @@ describe("Cockpit global search", () => {
     const second = screen.getByRole("link", { name: "Research archive" });
     input.focus();
 
+    const arrowUp = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "ArrowUp",
+    });
+    fireEvent(input, arrowUp);
+    expect(arrowUp.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(input);
+
     fireEvent.keyDown(input, { key: "ArrowDown" });
     expect(document.activeElement).toBe(first);
 

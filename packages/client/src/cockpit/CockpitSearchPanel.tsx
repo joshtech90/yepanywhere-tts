@@ -139,23 +139,14 @@ export function CockpitSearchPanel({
     resultLinkRefs.current.get(result.session.id)?.focus();
   };
   const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (
-      (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
-      search.results.length === 0
-    ) {
+    if (event.key !== "ArrowDown" || search.results.length === 0) {
       return;
     }
     event.preventDefault();
     const selectedIndex = search.results.findIndex(
       (result) => result.session.id === selectedSessionId,
     );
-    focusResult(
-      selectedIndex >= 0
-        ? selectedIndex
-        : event.key === "ArrowDown"
-          ? 0
-          : search.results.length - 1,
-    );
+    focusResult(selectedIndex >= 0 ? selectedIndex : 0);
   };
   const handleResultKeyDown = (
     event: KeyboardEvent<HTMLAnchorElement>,

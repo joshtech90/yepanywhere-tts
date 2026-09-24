@@ -227,8 +227,9 @@ Gruppe bleibt ausgewaehlt, solange sie noch passt.
 Die Tastaturauswahl folgt derselben stabilen Ergebnisreihenfolge. Pfeil runter
 bewegt den Fokus aus dem Suchfeld auf die ausgewaehlte Gruppe, Pfeil hoch und
 runter wechseln zwischen benachbarten Gruppen, und Pfeil hoch auf der ersten
-Gruppe kehrt zum Suchfeld zurueck. Enter bleibt die native Link-Aktion; die
-Suche baut dafuer keine zweite Navigationslogik.
+Gruppe kehrt zum Suchfeld zurueck. Im Suchfeld selbst bleibt Pfeil hoch nativ.
+Enter bleibt die native Link-Aktion; die Suche baut dafuer keine zweite
+Navigationslogik.
 
 Abdeckung ist Teil des View-Modells: laufende Katalogseiten, noch unbekannte
 oder fehlende Server-Capability, title-only Provider, begrenzte/fehlerhafte
