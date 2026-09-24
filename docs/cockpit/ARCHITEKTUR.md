@@ -343,6 +343,9 @@ Die sichtbare Uebersicht ist eine modale Fokusgrenze: Sie nimmt den Fokus beim
 Oeffnen, haelt Tab-Navigation im Dialog und gibt den Fokus nach Escape,
 Schliessen oder Hintergrundklick an ihren Ausloeser zurueck. Die verdeckte
 Cockpit-Oberflaeche bleibt dadurch nicht versehentlich per Tastatur bedienbar.
+Navigation und Arbeitsbereich tragen waehrenddessen die native `inert`-Grenze;
+sie sind damit auch fuer assistive Technik und programmatischen Fokus nicht
+erreichbar. Die Grenze wird vor der Fokus-Rueckgabe entfernt.
 
 `Escape` adressiert den serverautoritativen Stop-Knopf aus Paket 8 ueber dessen
 semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag. Die

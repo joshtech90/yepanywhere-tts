@@ -61,16 +61,24 @@ export function CockpitShortcutDialog({
   const { t } = useI18n();
   const closeRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLElement>(null);
+  const wasOpenRef = useRef(false);
 
   useEffect(() => {
-    if (open) closeRef.current?.focus({ preventScroll: true });
-  }, [open]);
+    if (open) {
+      wasOpenRef.current = true;
+      closeRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      triggerRef.current?.focus({ preventScroll: true });
+    }
+  }, [open, triggerRef]);
 
   if (!open) return null;
 
   const close = () => {
     onClose();
-    triggerRef.current?.focus({ preventScroll: true });
   };
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Escape") {

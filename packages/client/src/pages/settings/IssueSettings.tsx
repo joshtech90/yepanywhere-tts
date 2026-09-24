@@ -238,6 +238,10 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
   const update = (next: Partial<typeof confirmation>) =>
     void save({ ...settings, confirmation: { ...confirmation, ...next } });
   useEffect(() => {
+    if (!confirmation.enabled) {
+      setCredentials(undefined);
+      return;
+    }
     let disposed = false;
     setCredentials(undefined);
     transport
@@ -251,7 +255,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
     return () => {
       disposed = true;
     };
-  }, [transport]);
+  }, [confirmation.enabled, transport]);
   const storeKey = async (provider: string, key: string) => {
     setSaving(provider);
     try {

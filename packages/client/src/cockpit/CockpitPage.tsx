@@ -169,7 +169,6 @@ export function CockpitShell({
   const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
   const closeShortcuts = useCallback(() => {
     setShortcutsOpen(false);
-    shortcutTriggerRef.current?.focus({ preventScroll: true });
   }, []);
   useCockpitShortcuts({
     navigation,
@@ -241,7 +240,11 @@ export function CockpitShell({
       ref={rootRef}
       style={viewport.style}
     >
-      <aside className={styles.sidebar} aria-label={t("cockpitNavigationAria")}>
+      <aside
+        aria-label={t("cockpitNavigationAria")}
+        className={styles.sidebar}
+        inert={shortcutsOpen}
+      >
         <Link className={styles.brand} to={navigation.cockpit}>
           <span className={styles.brandMark}>C</span>
           <span>
@@ -323,6 +326,7 @@ export function CockpitShell({
           hasDetail || searchOpen ? undefined : "cockpit-title"
         }
         className={styles.workspace}
+        inert={shortcutsOpen}
       >
         <header className={styles.header} hidden={hasDetail || searchOpen}>
           <div>

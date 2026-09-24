@@ -157,6 +157,33 @@ describe("Cockpit shell", () => {
     expect(onAccentChange).toHaveBeenCalledWith("violet");
   });
 
+  it("makes the Cockpit surface inert while shortcut help is modal", () => {
+    renderShell();
+    const root = screen.getByRole("main");
+    const sidebar = root.querySelector("aside");
+    const workspace = Array.from(root.children).find(
+      (child) => child.tagName === "SECTION",
+    );
+    if (!sidebar || !workspace) throw new Error("Cockpit surface missing");
+    const trigger = screen.getByRole("button", {
+      name: "Keyboard shortcuts",
+    });
+
+    fireEvent.click(trigger);
+
+    expect(sidebar.hasAttribute("inert")).toBe(true);
+    expect(workspace.hasAttribute("inert")).toBe(true);
+    const dialog = screen.getByRole("dialog");
+    const close = screen
+      .getAllByRole("button", { name: "Close shortcuts" })
+      .find((button) => dialog.contains(button));
+    if (!close) throw new Error("shortcut close button missing");
+    fireEvent.click(close);
+    expect(sidebar.hasAttribute("inert")).toBe(false);
+    expect(workspace.hasAttribute("inert")).toBe(false);
+    expect(document.activeElement).toBe(trigger);
+  });
+
   it.each([
     ["loading", "Preparing your workspace", "status"],
     ["offline", "This source is offline", "status"],

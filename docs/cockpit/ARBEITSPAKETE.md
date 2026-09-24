@@ -342,6 +342,11 @@ Tab und Umschalt+Tab bleiben innerhalb der Hilfe, Escape und ein Klick auf den
 abgedunkelten Hintergrund schliessen sie, und der ausloesende Knopf erhaelt den
 Fokus zurueck. Klicks im Hilfefenster selbst schliessen es nicht.
 
+Nachbesserung dieses Zugs: Solange die Shortcut-Hilfe geoeffnet ist, sind
+Navigation und Arbeitsbereich jetzt auch fuer Browser und assistive Technik
+explizit inaktiv. Beim Schliessen wird diese Sperre vor der Fokus-Rueckgabe
+aufgehoben, sodass der ausloesende Knopf wieder verlaesslich fokussiert wird.
+
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
 Status: **offen**
