@@ -5,6 +5,10 @@ import { api } from "../api/client";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitComposer } from "./CockpitComposer";
+import {
+  cockpitComposerDraftKey,
+  writeCockpitComposerDraft,
+} from "./core/composer";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 
 const runtime = vi.hoisted(() => ({
@@ -70,12 +74,16 @@ function sessionPort(
   };
 }
 
-function composer(port = sessionPort()) {
+function composer(
+  port = sessionPort(),
+  projectId = "project-1",
+  sessionId = "session-1",
+) {
   return (
     <I18nProvider>
       <CockpitComposer
-        projectId="project-1"
-        sessionId="session-1"
+        projectId={projectId}
+        sessionId={sessionId}
         sessionPort={port}
       />
     </I18nProvider>
@@ -193,5 +201,49 @@ describe("Cockpit composer", () => {
 
     expect(observedSignal?.aborted).toBe(true);
     expect(screen.queryByText("draft.txt")).toBeNull();
+  });
+
+  it("isolates drafts and uploads when the session identity changes", async () => {
+    let observedSignal: AbortSignal | undefined;
+    runtime.transport.upload.mockImplementation(
+      (_projectId, _sessionId, _file, options) =>
+        new Promise((_resolve, reject) => {
+          observedSignal = options?.signal;
+          options?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("cancelled", "AbortError")),
+          );
+        }),
+    );
+    writeCockpitComposerDraft(
+      cockpitComposerDraftKey("local", "session-2"),
+      "Draft for session two",
+    );
+    const view = render(composer());
+    const input = view.container.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    );
+    if (!input) throw new Error("file input missing");
+
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Draft for session one" },
+    });
+    fireEvent.change(input, {
+      target: { files: [new File(["demo"], "session-one.txt")] },
+    });
+    await waitFor(() => expect(runtime.transport.upload).toHaveBeenCalled());
+
+    view.rerender(
+      composer(
+        sessionPort({ actualSessionId: "session-2" }),
+        "project-1",
+        "session-2",
+      ),
+    );
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(screen.queryByText("session-one.txt")).toBeNull();
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "Draft for session two",
+    );
   });
 });

@@ -248,6 +248,12 @@ Eltern-Updates und fordert fuer jedes Zeichen eine Bestaetigung unter 100 ms.
 Der kanonische Session-Store, Server und Shared-Protokoll wurden nicht
 dupliziert oder erweitert.
 
+Nachbesserung dieses Zugs: Source, Projekt und Sitzung bilden nun auch fuer den
+gemounteten Composer eine feste Identitaet. Beim Wechsel werden der passende
+Draft sofort geladen, alte Attachment-Karten entfernt und noch laufende Uploads
+abgebrochen; ein spaet eintreffendes Upload-Ergebnis kann dadurch nicht mehr in
+der naechsten Sitzung erscheinen.
+
 ## 8 — Approvals, Fragen und Interrupt/Stop
 
 Status: **umgesetzt**

@@ -288,6 +288,12 @@ und Effort werden ueber den vorhandenen `ModelSwitchModal` samt
 Long-Context-Warnung geaendert; ein ruhiger Cockpit-Trigger ersetzt dabei nicht
 die vorhandenen serverautoritativen Konfigurationsaktionen.
 
+Source, Projekt und Sitzung bilden zugleich die React-Identitaet des Composers.
+Ein Kontextwechsel demontiert deshalb seinen lokalen Draft-, Fehler- und
+Attachment-Zustand, bricht laufende Uploads ab und laedt erst danach den Draft
+des neuen Kontexts. Spaete Upload-Ergebnisse duerfen nicht in eine andere
+Sitzung uebernommen werden.
+
 ### Aufmerksamkeits-Grenze aus Paket 8
 
 `useSession` bleibt Eigentuemer der jeweils aktuellen `pendingInputRequest`.

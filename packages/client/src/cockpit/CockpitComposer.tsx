@@ -1,4 +1,5 @@
 import { useRef } from "react";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
@@ -19,7 +20,7 @@ function actionLabel(
   return t("toolbarSend");
 }
 
-export function CockpitComposer(props: CockpitComposerProps) {
+function CockpitComposerSession(props: CockpitComposerProps) {
   const { t } = useI18n();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const composer = useCockpitComposer(
@@ -144,4 +145,15 @@ export function CockpitComposer(props: CockpitComposerProps) {
       )}
     </section>
   );
+}
+
+export function CockpitComposer(props: CockpitComposerProps) {
+  const runtime = useCurrentSourceRuntime();
+  const composerKey = JSON.stringify([
+    runtime.sourceKey,
+    props.projectId,
+    props.sessionId,
+  ]);
+
+  return <CockpitComposerSession key={composerKey} {...props} />;
 }
