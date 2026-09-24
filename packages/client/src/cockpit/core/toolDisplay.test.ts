@@ -87,6 +87,108 @@ describe("Cockpit tool display projection", () => {
     });
   });
 
+  it("does not duplicate a diff supplied in structured and raw form", () => {
+    const display = createCockpitToolDisplay(
+      tool({
+        toolName: "Edit",
+        toolInput: {
+          changes: [
+            {
+              path: "notes/fern.md",
+              structuredPatch: [
+                {
+                  oldStart: 3,
+                  newStart: 3,
+                  lines: ["-Status: queued", "+Status: ready"],
+                },
+              ],
+              rawPatch:
+                "@@ -3,1 +3,1 @@\n-Status: queued\n+Status: ready\n",
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(display.files).toHaveLength(1);
+    expect(display.files[0]).toMatchObject({
+      path: "notes/fern.md",
+      additions: 1,
+      deletions: 1,
+    });
+    expect(display.files[0]?.lines).toHaveLength(2);
+  });
+
+  it("prefers a top-level structured edit over its duplicate raw patch", () => {
+    const display = createCockpitToolDisplay(
+      tool({
+        toolName: "Edit",
+        toolInput: {
+          file_path: "notes/moss.md",
+          _structuredPatch: [
+            {
+              oldStart: 8,
+              newStart: 8,
+              lines: ["-State: waiting", "+State: complete"],
+            },
+          ],
+          _rawPatch:
+            "@@ -8,1 +8,1 @@\n-State: waiting\n+State: complete\n",
+        },
+      }),
+    );
+
+    expect(display.files[0]).toMatchObject({
+      path: "notes/moss.md",
+      additions: 1,
+      deletions: 1,
+    });
+    expect(display.files[0]?.lines).toHaveLength(2);
+  });
+
+  it("keeps an additional raw-patch file beside a structured edit", () => {
+    const display = createCockpitToolDisplay(
+      tool({
+        toolName: "Edit",
+        toolInput: {
+          file_path: "notes/moss.md",
+          _structuredPatch: [
+            {
+              oldStart: 8,
+              newStart: 8,
+              lines: ["-State: waiting", "+State: complete"],
+            },
+          ],
+          _rawPatch: [
+            "diff --git a/notes/moss.md b/notes/moss.md",
+            "--- a/notes/moss.md",
+            "+++ b/notes/moss.md",
+            "@@ -8,1 +8,1 @@",
+            "-State: waiting",
+            "+State: complete",
+            "diff --git a/notes/fern.md b/notes/fern.md",
+            "--- a/notes/fern.md",
+            "+++ b/notes/fern.md",
+            "@@ -1,0 +1,1 @@",
+            "+New note",
+          ].join("\n"),
+        },
+      }),
+    );
+
+    expect(display.files).toHaveLength(2);
+    expect(display.files[0]).toMatchObject({
+      path: "notes/moss.md",
+      additions: 1,
+      deletions: 1,
+    });
+    expect(display.files[1]).toMatchObject({
+      path: "notes/fern.md",
+      additions: 1,
+      deletions: 0,
+    });
+  });
+
   it("keeps unknown provider tools visible without interpreting them", () => {
     const display = createCockpitToolDisplay(
       tool({

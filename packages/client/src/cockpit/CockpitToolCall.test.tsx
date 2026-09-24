@@ -145,4 +145,34 @@ describe("Cockpit tool call", () => {
     expect(screen.getByText("DEMO_FAILURE")).toBeTruthy();
     expect(screen.getByText(/line 80/)).toBeTruthy();
   });
+
+  it("uses the German Cockpit labels for tool details", async () => {
+    localStorage.setItem(UI_KEYS.locale, "de");
+    renderTool(
+      entry({
+        displayName: "Bash",
+        files: [],
+        kind: "shell",
+        rawInput: "",
+        rawResult: "",
+        recognized: true,
+        shell: {
+          command: "run-demo-check",
+          stdout: "",
+          stderr: "DEMO_FAILURE",
+          exitCode: 7,
+          interrupted: false,
+        },
+        status: "error",
+        summary: "run-demo-check",
+      }),
+    );
+
+    expect(await screen.findByText("Fehlgeschlagen")).toBeTruthy();
+    fireEvent.click(
+      await screen.findByLabelText("Details für Bash ein- oder ausblenden"),
+    );
+    expect(screen.getByRole("heading", { name: "Befehl" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Fehlerausgabe" })).toBeTruthy();
+  });
 });

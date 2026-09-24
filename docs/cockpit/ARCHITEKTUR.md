@@ -259,6 +259,10 @@ Projektion; die Dateiauswahl ist lokaler Ansichtsstatus und keine zweite
 Datei- oder Git-Quelle. Unbekannte Provider-Tools werden nicht erraten: Name,
 Input und Ergebnis bleiben als laengenbegrenzter, von React escaped dargestellter
 Text sichtbar. Server, Shared-Vertrag und Bestandsrenderer bleiben unveraendert.
+Wenn dieselbe Dateiaenderung strukturiert und als Raw-Patch vorliegt, hat die
+strukturierte Darstellung Vorrang; Zeilen und Statistik werden nicht doppelt
+gezaehlt. Alle Cockpit-eigenen Werkzeugtexte besitzen deutsche und englische
+Katalogwerte.
 
 ### Composer-Grenze aus Paket 7
 

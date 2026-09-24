@@ -198,6 +198,12 @@ interpretiert. Die Projektion arbeitet pro vorhandenem `RenderItem`; Server,
 Shared-Protokoll, kanonischer Session-Store und Bestandsrenderer wurden nicht
 geaendert.
 
+Nachbesserung dieses Zugs: Werkzeugstatus, Shell-Details, Diff-Hinweise und
+unbekannte Werkzeuge sind nun auch in der deutschen Cockpit-Oberflaeche
+vollstaendig uebersetzt. Liefert ein Anbieter dieselbe Dateiaenderung zugleich
+als strukturierte Hunks und als Raw-Patch, verwendet die Projektion die
+strukturierte Darstellung einmalig, statt Zeilen und Statistik zu verdoppeln.
+
 ## 7 — Composer mit Prompt, Attachments, Queue und Steer
 
 Status: **umgesetzt**

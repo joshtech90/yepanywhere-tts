@@ -250,14 +250,21 @@ function addRawPatch(
   files: Map<string, MutableFileChange>,
   patch: string,
   fallbackPath?: string,
+  preservePopulatedFiles = false,
 ) {
-  let current = fallbackPath
-    ? mutableFile(files, fallbackPath)
+  const selectFile = (path: string): MutableFileChange | null => {
+    const file = mutableFile(files, path);
+    return preservePopulatedFiles && file.sourceLines.length > 0
+      ? null
+      : file;
+  };
+  let current: MutableFileChange | null | undefined = fallbackPath
+    ? selectFile(fallbackPath)
     : undefined;
   for (const line of patch.replace(/\r\n?/g, "\n").split("\n")) {
     const headerPath = filePathFromHeader(line);
     if (headerPath) {
-      current = mutableFile(files, headerPath);
+      current = selectFile(headerPath);
       continue;
     }
     if (line.startsWith("--- ")) continue;
@@ -267,6 +274,7 @@ function addRawPatch(
       line.startsWith("-") ||
       line.startsWith(" ")
     ) {
+      if (current === null) continue;
       current ??= mutableFile(files, fallbackPath ?? "Edit");
       current.sourceLines.push({ text: line });
     }
@@ -277,7 +285,7 @@ function addStructuredPatch(
   files: Map<string, MutableFileChange>,
   path: string,
   value: unknown,
-) {
+): void {
   if (!Array.isArray(value)) return;
   const file = mutableFile(files, path);
   for (const hunk of value) {
@@ -333,7 +341,7 @@ function collectChangeRecord(
     nonEmptyString(change.rawPatch) ??
     nonEmptyString(change._rawPatch) ??
     nonEmptyString(change.patch);
-  if (rawPatch) addRawPatch(files, rawPatch, path);
+  if (rawPatch) addRawPatch(files, rawPatch, path, true);
 }
 
 function collectChangesValue(
@@ -474,7 +482,7 @@ function getFileChanges(item: ToolCallItem): CockpitFileChange[] {
     nonEmptyString(input?.patch) ??
     nonEmptyString(resultRecord?._rawPatch) ??
     nonEmptyString(resultRecord?.rawPatch);
-  if (rawPatch) addRawPatch(files, rawPatch, primaryPath);
+  if (rawPatch) addRawPatch(files, rawPatch, primaryPath, true);
 
   return [...files.values()].map((file) => ({
     path: file.path,
