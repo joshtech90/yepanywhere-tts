@@ -328,6 +328,12 @@ Erfolgreich gesendete Prompts werden source-gebunden, dedupliziert und begrenzt
 gespeichert. Die UI kann letzte und haeufige Prompts nur in den Draft
 uebernehmen; sie sendet nie durch Auswahl eines Verlaufswerts.
 
+Der Prompt-Verlauf ist eine lokale, nicht-modale Dialoggrenze ueber dem
+Composer. Escape wird dort abgefangen, schliesst nur den Verlauf und stellt den
+Fokus am Ausloeser wieder her; es darf in diesem Zustand nicht den globalen
+Stop-Shortcut erreichen. Ein Pointer-Klick ausserhalb schliesst den Verlauf,
+laesst den Fokus aber beim bewusst angeklickten Ziel.
+
 ### Shortcut- und Mobilgrenze aus Paket 10
 
 Die Cockpit-Shell besitzt genau einen dokumentierten Keyboard-Dispatcher. Er

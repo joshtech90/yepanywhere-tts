@@ -302,6 +302,12 @@ Cockpit-Zaehler nun eine korrekte Einzahl, Projekt- und Suchtrefferlinks besitze
 auch mobil einen stabilen zugaenglichen Namen, und die sequentiellen Suchtests
 pruefen die geforderte 100-ms-Bestaetigung pro Zeichen.
 
+Nachbesserung dieses Zugs: Der Prompt-Verlauf ist nun als benannter Dialog mit
+seinem Ausloeser verknuepft. Escape schliesst ausschliesslich diesen Verlauf,
+statt bis zum globalen Stop-Kuerzel durchzureichen, und gibt den Fokus an den
+Ausloeser zurueck. Ein Klick ausserhalb schliesst das Panel ebenfalls, ohne den
+angeklickten Arbeitsbereich wieder zu verlassen.
+
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
 Status: **umgesetzt**

@@ -241,4 +241,37 @@ describe("Cockpit composer", () => {
       "Summarize the fictional release notes.",
     );
   });
+
+  it("dismisses prompt history without leaking Escape to global shortcuts", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    render(composer());
+    const trigger = screen.getByRole("button", { name: "Open prompt history" });
+
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Recent prompts" });
+    const prompt = screen.getByRole("button", {
+      name: "Review the fictional launch checklist.",
+    });
+    expect(document.activeElement).toBe(prompt);
+    const escapeEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    fireEvent(prompt, escapeEvent);
+
+    expect(escapeEvent.defaultPrevented).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    const reopened = screen.getByRole("dialog", { name: "Recent prompts" });
+    const input = screen.getByRole("textbox");
+    input.focus();
+    fireEvent.pointerDown(input);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(input);
+    expect(dialog.isConnected).toBe(false);
+    expect(reopened.isConnected).toBe(false);
+  });
 });

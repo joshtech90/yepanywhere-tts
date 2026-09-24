@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { useI18n } from "../i18n";
 import type { CockpitPromptHistoryEntry } from "./core/composer";
 import styles from "./CockpitPromptHistory.module.css";
@@ -27,27 +27,73 @@ export function CockpitPromptHistory({
 }: CockpitPromptHistoryProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef(false);
+
+  useEffect(() => {
+    if (!open || entries.length === 0) return;
+    panelRef.current
+      ?.querySelector<HTMLButtonElement>("button")
+      ?.focus({ preventScroll: true });
+    const closeFromOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && rootRef.current?.contains(target)) return;
+      restoreFocusRef.current = false;
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", closeFromOutside);
+    return () => document.removeEventListener("pointerdown", closeFromOutside);
+  }, [entries.length, open]);
+
+  useEffect(() => {
+    if (entries.length === 0 && open) setOpen(false);
+  }, [entries.length, open]);
+
+  useEffect(() => {
+    if (open || !restoreFocusRef.current) return;
+    restoreFocusRef.current = false;
+    triggerRef.current?.focus({ preventScroll: true });
+  }, [open]);
 
   if (entries.length === 0) return null;
 
   const selectPrompt = (text: string) => {
     onUse(text);
+    restoreFocusRef.current = true;
+    setOpen(false);
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!open || event.key !== "Escape") return;
+    event.preventDefault();
+    event.stopPropagation();
+    restoreFocusRef.current = true;
     setOpen(false);
   };
 
   return (
-    <div className={styles.root}>
+    <div className={styles.root} onKeyDown={handleKeyDown} ref={rootRef}>
       <button
+        aria-controls="cockpit-prompt-history-panel"
         aria-expanded={open}
+        aria-haspopup="dialog"
         aria-label={t("cockpitPromptHistoryOpen")}
         className={styles.trigger}
         onClick={() => setOpen((current) => !current)}
+        ref={triggerRef}
         type="button"
       >
         <HistoryIcon />
       </button>
       {open && (
-        <div className={styles.panel}>
+        <div
+          aria-labelledby="cockpit-recent-prompts"
+          className={styles.panel}
+          id="cockpit-prompt-history-panel"
+          ref={panelRef}
+          role="dialog"
+        >
           {frequent.length > 0 && (
             <section aria-labelledby="cockpit-frequent-prompts">
               <h2 id="cockpit-frequent-prompts">
