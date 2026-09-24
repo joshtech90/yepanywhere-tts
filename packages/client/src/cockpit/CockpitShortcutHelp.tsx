@@ -48,12 +48,14 @@ export function CockpitShortcutButton({
 }
 
 export interface CockpitShortcutDialogProps {
+  focusReturnRef: RefObject<HTMLElement | null>;
   onClose: () => void;
   open: boolean;
   triggerRef: RefObject<HTMLButtonElement | null>;
 }
 
 export function CockpitShortcutDialog({
+  focusReturnRef,
   onClose,
   open,
   triggerRef,
@@ -71,9 +73,12 @@ export function CockpitShortcutDialog({
     }
     if (wasOpenRef.current) {
       wasOpenRef.current = false;
-      triggerRef.current?.focus({ preventScroll: true });
+      const focusTarget = focusReturnRef.current;
+      const destination =
+        focusTarget?.isConnected === true ? focusTarget : triggerRef.current;
+      destination?.focus({ preventScroll: true });
     }
-  }, [open, triggerRef]);
+  }, [focusReturnRef, open, triggerRef]);
 
   if (!open) return null;
 

@@ -19,6 +19,7 @@ function Fixture() {
         triggerRef={triggerRef}
       />
       <CockpitShortcutDialog
+        focusReturnRef={triggerRef}
         onClose={() => setOpen(false)}
         open={open}
         triggerRef={triggerRef}

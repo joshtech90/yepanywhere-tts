@@ -1,5 +1,6 @@
 import {
   useCallback,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -143,38 +144,74 @@ export function CockpitShell({
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
+  const searchFocusReturnRef = useRef<HTMLElement | null>(null);
+  const searchWasOpenRef = useRef(false);
   const shortcutTriggerRef = useRef<HTMLButtonElement>(null);
+  const shortcutFocusReturnRef = useRef<HTMLElement | null>(null);
   const navigation = useMemo(
     () => createCockpitNavigation(basePath),
     [basePath],
   );
   const viewport = useCockpitViewportGeometry();
-  const openSearch = useCallback((focusInput: boolean) => {
-    setSearchFocusRequested(focusInput);
-    setSearchOpen(true);
-  }, []);
+  const openSearch = useCallback(
+    (focusInput: boolean, focusOrigin: HTMLElement | null) => {
+      searchFocusReturnRef.current =
+        focusOrigin?.isConnected === true
+          ? focusOrigin
+          : searchTriggerRef.current;
+      setSearchFocusRequested(focusInput);
+      setSearchOpen(true);
+    },
+    [],
+  );
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
     setSearchFocusRequested(false);
-    searchTriggerRef.current?.focus({ preventScroll: true });
   }, []);
   const navigateFromSearch = useCallback(() => {
+    searchWasOpenRef.current = false;
+    searchFocusReturnRef.current = null;
     setSearchOpen(false);
     setSearchFocusRequested(false);
   }, []);
   const openSearchFromShortcut = useCallback(
-    () => openSearch(true),
+    (focusOrigin: HTMLElement | null) => openSearch(true, focusOrigin),
     [openSearch],
   );
-  const openShortcuts = useCallback(() => setShortcutsOpen(true), []);
+  const openShortcuts = useCallback((focusOrigin: HTMLElement | null) => {
+    shortcutFocusReturnRef.current =
+      focusOrigin?.isConnected === true
+        ? focusOrigin
+        : shortcutTriggerRef.current;
+    setShortcutsOpen(true);
+  }, []);
+  const openShortcutsFromShortcut = useCallback(
+    (focusOrigin: HTMLElement | null) => openShortcuts(focusOrigin),
+    [openShortcuts],
+  );
   const closeShortcuts = useCallback(() => {
     setShortcutsOpen(false);
   }, []);
+  useEffect(() => {
+    if (searchOpen) {
+      searchWasOpenRef.current = true;
+      return;
+    }
+    if (!searchWasOpenRef.current) return;
+    searchWasOpenRef.current = false;
+    const focusTarget = searchFocusReturnRef.current;
+    searchFocusReturnRef.current = null;
+    const destination =
+      focusTarget?.isConnected === true
+        ? focusTarget
+        : searchTriggerRef.current;
+    destination?.focus({ preventScroll: true });
+  }, [searchOpen]);
   useCockpitShortcuts({
     navigation,
     onCloseHelp: closeShortcuts,
     onCloseSearch: closeSearch,
-    onOpenHelp: openShortcuts,
+    onOpenHelp: openShortcutsFromShortcut,
     onOpenSearch: openSearchFromShortcut,
     rootRef,
     searchOpen,
@@ -272,7 +309,7 @@ export function CockpitShell({
             aria-keyshortcuts="/"
             aria-pressed={searchOpen}
             className={styles.navigationItem}
-            onClick={() => openSearch(false)}
+            onClick={() => openSearch(false, searchTriggerRef.current)}
             ref={searchTriggerRef}
             type="button"
           >
@@ -296,7 +333,7 @@ export function CockpitShell({
             </Link>
           ))}
           <CockpitShortcutButton
-            onOpen={openShortcuts}
+            onOpen={() => openShortcuts(shortcutTriggerRef.current)}
             open={shortcutsOpen}
             triggerRef={shortcutTriggerRef}
           />
@@ -316,6 +353,7 @@ export function CockpitShell({
       </aside>
 
       <CockpitShortcutDialog
+        focusReturnRef={shortcutFocusReturnRef}
         onClose={closeShortcuts}
         open={shortcutsOpen}
         triggerRef={shortcutTriggerRef}

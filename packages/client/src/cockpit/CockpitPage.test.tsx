@@ -66,6 +66,20 @@ vi.mock("./useCockpitCatalog", () => ({
   useCockpitCatalog: () => pageMocks.catalogData,
 }));
 
+vi.mock("./useCockpitSearch", () => ({
+  useCockpitSearch: () => ({
+    results: [],
+    support: "title-only",
+    loadedSessionCount: 0,
+    catalogLoading: false,
+    catalogHasMore: false,
+    contentRunning: false,
+    partialSessions: [],
+    unsupportedProviderSessionCount: 0,
+    error: null,
+  }),
+}));
+
 afterEach(cleanup);
 beforeEach(() => localStorage.setItem(UI_KEYS.locale, "en"));
 
@@ -182,6 +196,50 @@ describe("Cockpit shell", () => {
     expect(sidebar.hasAttribute("inert")).toBe(false);
     expect(workspace.hasAttribute("inert")).toBe(false);
     expect(document.activeElement).toBe(trigger);
+  });
+
+  it("returns shortcut-help focus to its keyboard origin", () => {
+    renderShell();
+    const origin = screen
+      .getAllByRole("link", { name: "New Session" })
+      .at(-1);
+    if (!origin) throw new Error("new-session focus origin missing");
+    origin.focus();
+
+    fireEvent.keyDown(origin, { key: "?" });
+    const dialog = screen.getByRole("dialog");
+    const close = screen
+      .getAllByRole("button", { name: "Close shortcuts" })
+      .find((button) => dialog.contains(button));
+    if (!close) throw new Error("shortcut close button missing");
+    expect(document.activeElement).toBe(close);
+
+    fireEvent.keyDown(close, { key: "Escape" });
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(origin);
+  });
+
+  it("returns search focus to its keyboard origin", () => {
+    renderShell();
+    const origin = screen
+      .getAllByRole("link", { name: "New Session" })
+      .at(-1);
+    if (!origin) throw new Error("new-session focus origin missing");
+    origin.focus();
+
+    fireEvent.keyDown(origin, { key: "/" });
+    const search = screen.getByRole("searchbox", {
+      name: "Search all sessions",
+    });
+    expect(document.activeElement).toBe(search);
+
+    fireEvent.keyDown(search, { key: "Escape" });
+
+    expect(
+      screen.queryByRole("searchbox", { name: "Search all sessions" }),
+    ).toBeNull();
+    expect(document.activeElement).toBe(origin);
   });
 
   it.each([

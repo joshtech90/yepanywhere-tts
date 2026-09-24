@@ -9,8 +9,8 @@ export interface CockpitShortcutOptions {
   navigation: CockpitNavigation;
   onCloseHelp: () => void;
   onCloseSearch: () => void;
-  onOpenHelp: () => void;
-  onOpenSearch: () => void;
+  onOpenHelp: (focusOrigin: HTMLElement | null) => void;
+  onOpenSearch: (focusOrigin: HTMLElement | null) => void;
   rootRef: RefObject<HTMLElement | null>;
   searchOpen: boolean;
   shortcutsOpen: boolean;
@@ -92,8 +92,13 @@ export function useCockpitShortcuts({
       }
 
       event.preventDefault();
-      if (action === "help") onOpenHelp();
-      if (action === "search") onOpenSearch();
+      const activeElement = document.activeElement;
+      const focusOrigin =
+        activeElement instanceof HTMLElement && activeElement !== document.body
+          ? activeElement
+          : null;
+      if (action === "help") onOpenHelp(focusOrigin);
+      if (action === "search") onOpenSearch(focusOrigin);
       if (action === "new-session") navigate(navigation.newSession);
       if (action === "sessions") navigate(navigation.sessions);
       if (action === "projects") navigate(navigation.projects);

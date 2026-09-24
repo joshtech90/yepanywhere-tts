@@ -83,4 +83,22 @@ describe("useCockpitShortcuts", () => {
     expect(onSearch).not.toHaveBeenCalled();
     expect(screen.getByLabelText("location").textContent).toBe("/");
   });
+
+  it("passes the focused keyboard origin to overlays", () => {
+    const onHelp = vi.fn();
+    const onSearch = vi.fn();
+    render(
+      <MemoryRouter>
+        <Fixture onHelp={onHelp} onSearch={onSearch} onStop={vi.fn()} />
+      </MemoryRouter>,
+    );
+    const stop = screen.getByRole("button", { name: "Stop" });
+    stop.focus();
+
+    fireEvent.keyDown(stop, { key: "?" });
+    fireEvent.keyDown(stop, { key: "/" });
+
+    expect(onHelp).toHaveBeenCalledWith(stop);
+    expect(onSearch).toHaveBeenCalledWith(stop);
+  });
 });

@@ -353,6 +353,12 @@ Navigation und Arbeitsbereich jetzt auch fuer Browser und assistive Technik
 explizit inaktiv. Beim Schliessen wird diese Sperre vor der Fokus-Rueckgabe
 aufgehoben, sodass der ausloesende Knopf wieder verlaesslich fokussiert wird.
 
+Nachbesserung dieses Zugs: Oeffnet Joscha Suche oder Shortcut-Hilfe per
+Tastatur, kehrt der Fokus beim Schliessen jetzt an das zuvor fokussierte
+Cockpit-Element zurueck. Nur wenn dieses Element inzwischen entfernt wurde,
+springt er zum sichtbaren Such- beziehungsweise Shortcut-Knopf. Mausaufrufe
+behalten den jeweiligen Navigationsknopf als eindeutigen Ausloeser.
+
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
 Status: **offen**
