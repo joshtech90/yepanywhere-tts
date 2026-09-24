@@ -170,4 +170,33 @@ describe("Cockpit global search", () => {
         .getAttribute("aria-current"),
     ).toBe("true");
   });
+
+  it("moves between stable search results with the arrow keys", () => {
+    searchMock.data = {
+      ...searchMock.data,
+      support: "supported",
+      results: [
+        result("first", "Research notes"),
+        result("second", "Research archive"),
+      ],
+    };
+    renderSearch();
+    const input = screen.getByRole("searchbox", {
+      name: "Search all sessions",
+    });
+    const first = screen.getByRole("link", { name: "Research notes" });
+    const second = screen.getByRole("link", { name: "Research archive" });
+    input.focus();
+
+    fireEvent.keyDown(input, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(second);
+    expect(second.getAttribute("aria-current")).toBe("true");
+
+    fireEvent.keyDown(second, { key: "ArrowUp" });
+    fireEvent.keyDown(first, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(input);
+  });
 });

@@ -137,6 +137,11 @@ eintreffen. Laufende Katalogabdeckung, title-only Provider, alte Server,
 Teilabdeckung und Aktualisierungsfehler werden sichtbar benannt. Es gibt keine
 eigenen Transcript- oder Dateiscans und keine Server-/Shared-Erweiterung.
 
+Nachbesserung dieses Zugs: Aus dem Suchfeld wechselt Pfeil runter direkt zum
+stabil ausgewaehlten Treffer. Pfeil hoch und runter bewegen den Fokus zwischen
+den Ergebnisgruppen; vom ersten Treffer fuehrt Pfeil hoch zurueck ins
+Suchfeld. Spaet eintreffende Treffer aendern diese Tastaturauswahl nicht.
+
 ## 5 — Read-only Session-Detail und Vorlesen
 
 Status: **umgesetzt**
@@ -364,6 +369,11 @@ Prompt-Verlauf nun innerhalb der bereits gemessenen sichtbaren Cockpit-Wurzel.
 Damit folgt die Hilfe dem durch Browserleiste oder Bildschirmtastatur
 verkleinerten Ausschnitt, waehrend der Verlauf direkt ueber seinem
 Composer-Ausloeser aufklappt und nicht hinter der Tastatur liegen bleibt.
+
+Nachbesserung dieses Zugs: Die globale Suche ist fuer Joschas
+Tastaturarbeitsweise jetzt ohne Tab-Kette bedienbar. Pfeiltasten wechseln vom
+Suchfeld in die stabile Trefferliste und dort zeilenweise weiter; die
+vorhandenen Links behalten Enter als normale Oeffnungsaktion.
 
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 

@@ -4,6 +4,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent,
 } from "react";
 import { Link } from "react-router-dom";
 import { getSessionDisplayTitle } from "../utils";
@@ -55,6 +56,7 @@ export function CockpitSearchPanel({
   const [query, setQuery] = useState("");
   const [fields, setFields] = useState<SearchField[]>(["title"]);
   const inputRef = useRef<HTMLInputElement>(null);
+  const resultLinkRefs = useRef(new Map<string, HTMLAnchorElement>());
   const search = useCockpitSearch(query, fields);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const contentFieldsDisabled = search.support === "title-only";
@@ -130,6 +132,49 @@ export function CockpitSearchPanel({
     startTransition(() => setQuery(value));
   };
 
+  const focusResult = (index: number) => {
+    const result = search.results[index];
+    if (!result) return;
+    setSelectedSessionId(result.session.id);
+    resultLinkRefs.current.get(result.session.id)?.focus();
+  };
+  const handleInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (
+      (event.key !== "ArrowDown" && event.key !== "ArrowUp") ||
+      search.results.length === 0
+    ) {
+      return;
+    }
+    event.preventDefault();
+    const selectedIndex = search.results.findIndex(
+      (result) => result.session.id === selectedSessionId,
+    );
+    focusResult(
+      selectedIndex >= 0
+        ? selectedIndex
+        : event.key === "ArrowDown"
+          ? 0
+          : search.results.length - 1,
+    );
+  };
+  const handleResultKeyDown = (
+    event: KeyboardEvent<HTMLAnchorElement>,
+    index: number,
+  ) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusResult(Math.min(index + 1, search.results.length - 1));
+      return;
+    }
+    if (event.key !== "ArrowUp") return;
+    event.preventDefault();
+    if (index === 0) {
+      inputRef.current?.focus();
+      return;
+    }
+    focusResult(index - 1);
+  };
+
   return (
     <section className={styles.root} aria-labelledby="cockpit-search-title">
       <header className={styles.header}>
@@ -155,6 +200,7 @@ export function CockpitSearchPanel({
           </span>
           <input
             onChange={(event) => editQuery(event.currentTarget.value)}
+            onKeyDown={handleInputKeyDown}
             placeholder={t("cockpitGlobalSearchPlaceholder")}
             ref={inputRef}
             type="search"
@@ -270,7 +316,7 @@ export function CockpitSearchPanel({
           </div>
         )}
 
-        {search.results.map((result) => {
+        {search.results.map((result, index) => {
           const session = result.session;
           const title =
             getSessionDisplayTitle(session) ??
@@ -296,6 +342,11 @@ export function CockpitSearchPanel({
                 className={styles.resultLink}
                 onClick={onNavigate}
                 onFocus={() => setSelectedSessionId(session.id)}
+                onKeyDown={(event) => handleResultKeyDown(event, index)}
+                ref={(node) => {
+                  if (node) resultLinkRefs.current.set(session.id, node);
+                  else resultLinkRefs.current.delete(session.id);
+                }}
                 to={navigation.session(session.projectId, session.id)}
               >
                 <span className={styles.resultHeading}>

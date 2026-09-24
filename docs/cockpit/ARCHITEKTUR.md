@@ -224,6 +224,12 @@ needle-gebundener Entdeckungsrang haelt bestehende Sitzungsgruppen stabil;
 spaetere Katalogseiten und Live-Treffer werden angehaengt. Eine ausgewaehlte
 Gruppe bleibt ausgewaehlt, solange sie noch passt.
 
+Die Tastaturauswahl folgt derselben stabilen Ergebnisreihenfolge. Pfeil runter
+bewegt den Fokus aus dem Suchfeld auf die ausgewaehlte Gruppe, Pfeil hoch und
+runter wechseln zwischen benachbarten Gruppen, und Pfeil hoch auf der ersten
+Gruppe kehrt zum Suchfeld zurueck. Enter bleibt die native Link-Aktion; die
+Suche baut dafuer keine zweite Navigationslogik.
+
 Abdeckung ist Teil des View-Modells: laufende Katalogseiten, noch unbekannte
 oder fehlende Server-Capability, title-only Provider, begrenzte/fehlerhafte
 Transcript-Abdeckung und Katalogfehler bleiben sichtbar. Titel-only Suche
