@@ -323,6 +323,11 @@ bleiben an der Karte sichtbar und lassen die Eingabe fuer einen erneuten
 Versuch bestehen. Freitextantworten, insbesondere als geheim markierte, leben
 nur im lokalen Komponentenzustand und werden nicht browserlokal gespeichert.
 
+Dieser lokale Karten- und Stop-Zustand ist an Source, Projekt und Sitzung
+gebunden. Ein Kontextwechsel demontiert ihn auch dann, wenn zwei Hosts dieselbe
+Anfrage- oder Prozess-ID verwenden; Auswahl, Freitext und Rueckmeldungen duerfen
+nicht in den naechsten Kontext uebernommen werden.
+
 Interrupt/Stop ist eine direkte Schaltflaeche im festen Sitzungskopf und damit
 nicht von Transcript-Aufklappzustand oder einem Menue abhaengig. Sie verwendet
 zuerst den vorhandenen sanften Interrupt und faellt bei fehlender Unterstuetzung

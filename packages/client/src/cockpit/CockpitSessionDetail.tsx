@@ -5,6 +5,7 @@ import {
   useState,
 } from "react";
 import { Link } from "react-router-dom";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitAttentionCard } from "./CockpitAttentionCard";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
@@ -210,8 +211,14 @@ export function CockpitSessionDetail({
   shellKind,
 }: CockpitSessionDetailProps) {
   const { locale, t } = useI18n();
+  const runtime = useCurrentSourceRuntime();
   const navigation = createCockpitNavigation(basePath);
   const detail = useCockpitSessionDetail(projectId, sessionId);
+  const interactionKey = JSON.stringify([
+    runtime.sourceKey,
+    projectId,
+    sessionId,
+  ]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const prependRef = useRef<{
@@ -363,11 +370,11 @@ export function CockpitSessionDetail({
         <div className={styles.sessionActions}>
           <CockpitStopButton
             interruptible={detail.attention.interruptible}
-            key={
+            key={`${interactionKey}:${
               detail.status.owner === "self"
                 ? detail.status.processId
                 : "cockpit-stop-idle"
-            }
+            }`}
             stop={detail.attention.stop}
           />
           <CockpitModelControls
@@ -459,7 +466,7 @@ export function CockpitSessionDetail({
 
       {detail.attention.request && (
         <CockpitAttentionCard
-          key={detail.attention.request.id}
+          key={`${interactionKey}:${detail.attention.request.id}`}
           request={detail.attention.request}
           respond={detail.attention.respond}
         />

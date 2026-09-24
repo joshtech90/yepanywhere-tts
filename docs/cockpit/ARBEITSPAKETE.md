@@ -302,6 +302,12 @@ Server den Zug weiterhin als aktiv meldet. Die Rueckmeldung „Stop angefordert�
 bleibt sichtbar, wird aber nicht mehr mit einem bereits abgeschlossenen Stop
 verwechselt; nur die laufende Anfrage sperrt wiederholte Aktivierungen.
 
+Nachbesserung A17: Source, Projekt und Sitzung bilden nun auch fuer die lokalen
+Zustaende der Freigabe-/Fragekarte und des Stop-Knopfs eine feste Identitaet.
+Beim Kontextwechsel werden Auswahl, Freitext, Serverrueckmeldung und
+Stop-Feedback verworfen; gleiche Anfrage- oder Prozess-IDs auf zwei Hosts
+koennen dadurch keine Bedienzustaende mehr miteinander vermischen.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **offen**

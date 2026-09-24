@@ -15,6 +15,11 @@ import type { CockpitSessionDetailData } from "./useCockpitSessionDetail";
 
 const detailMocks = vi.hoisted(() => ({
   data: null as CockpitSessionDetailData | null,
+  sourceKey: "local",
+}));
+
+vi.mock("../contexts/SourceRuntimeContext", () => ({
+  useCurrentSourceRuntime: () => ({ sourceKey: detailMocks.sourceKey }),
 }));
 
 vi.mock("./useCockpitSessionDetail", () => ({
@@ -139,6 +144,7 @@ function renderDetail() {
 afterEach(cleanup);
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
+  detailMocks.sourceKey = "local";
   detailMocks.data = detailData();
 });
 
@@ -253,6 +259,82 @@ describe("Cockpit session detail", () => {
 
     expect(screen.getByText("Reconnecting")).toBeTruthy();
     expect(screen.getByText("Everything is ready.")).toBeTruthy();
+  });
+
+  it("clears local approval answers when the source identity changes", () => {
+    const request = {
+      id: "shared-request",
+      sessionId: "session-1",
+      type: "question" as const,
+      prompt: "Add a fictional review note.",
+      toolName: "AskUserQuestion",
+      toolInput: {
+        questions: [
+          {
+            id: "note",
+            header: "Review note",
+            question: "What should the note say?",
+            isOther: true,
+            options: [],
+          },
+        ],
+      },
+      timestamp: "2026-09-24T09:00:03.000Z",
+    };
+    detailMocks.data = detailData({
+      attention: {
+        interruptible: true,
+        request,
+        respond: vi.fn(async () => ({ kind: "accepted" as const })),
+        stop: vi.fn(async () => ({ kind: "accepted" as const })),
+      },
+      processState: "waiting-input",
+      status: { owner: "self", processId: "shared-process" },
+    });
+    const view = renderDetail();
+    const answer = screen.getByRole("textbox", {
+      name: "Review note: Write another answer",
+    });
+    fireEvent.change(answer, { target: { value: "Old source answer" } });
+    expect((answer as HTMLInputElement).value).toBe("Old source answer");
+
+    detailMocks.sourceKey = "relay:studio";
+    view.rerender(detailTree());
+
+    expect(
+      (
+        screen.getByRole("textbox", {
+          name: "Review note: Write another answer",
+        }) as HTMLInputElement
+      ).value,
+    ).toBe("");
+  });
+
+  it("clears local stop feedback when the session context changes", async () => {
+    const stop = vi.fn(async () => ({ kind: "accepted" as const }));
+    detailMocks.data = detailData({
+      attention: {
+        interruptible: true,
+        request: null,
+        respond: vi.fn(async () => ({ kind: "accepted" as const })),
+        stop,
+      },
+      processState: "in-turn",
+      status: { owner: "self", processId: "shared-process" },
+    });
+    const view = renderDetail();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Stop current turn" }),
+    );
+    expect(await screen.findByText("Stop requested")).toBeTruthy();
+
+    detailMocks.sourceKey = "relay:studio";
+    view.rerender(detailTree());
+
+    expect(screen.queryByText("Stop requested")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Stop current turn" }),
+    ).toBeTruthy();
   });
 
   it("keeps a pending approval visible while session updates reconnect", () => {
