@@ -254,6 +254,11 @@ Draft sofort geladen, alte Attachment-Karten entfernt und noch laufende Uploads
 abgebrochen; ein spaet eintreffendes Upload-Ergebnis kann dadurch nicht mehr in
 der naechsten Sitzung erscheinen.
 
+Nachbesserung A15: Enter sendet nur noch als unveraendertes, einmaliges
+Desktop-Enter. Laufende IME-Komposition, gehaltenes Enter, Zusatztasten und
+primaere Touch-Eingabe bleiben im Textfeld; ein Regressionstest prueft danach
+weiterhin den regulaeren Versand.
+
 ## 8 — Approvals, Fragen und Interrupt/Stop
 
 Status: **umgesetzt**

@@ -120,6 +120,39 @@ describe("Cockpit composer", () => {
     }
   });
 
+  it("sends only on a plain desktop Enter outside keyboard composition", async () => {
+    const resume = vi.spyOn(api, "resumeSession").mockResolvedValue({
+      processId: "process-1",
+      permissionMode: "default",
+      modeVersion: 1,
+      serverTimestamp: 0,
+    });
+    render(composer());
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Keep this draft safe." } });
+
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
+    fireEvent.keyDown(input, { key: "Enter", repeat: true });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+    expect(resume).not.toHaveBeenCalled();
+
+    vi.spyOn(window, "matchMedia").mockImplementation(
+      (query) =>
+        ({
+          matches: query === "(pointer: coarse)",
+        }) as MediaQueryList,
+    );
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(resume).not.toHaveBeenCalled();
+
+    vi.mocked(window.matchMedia).mockImplementation(
+      (query) => ({ media: query, matches: false }) as MediaQueryList,
+    );
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+  });
+
   it("uses the provider steering lane and keeps queue as an explicit alternative", async () => {
     const queue = vi.spyOn(api, "queueMessage").mockResolvedValue({
       queued: true,

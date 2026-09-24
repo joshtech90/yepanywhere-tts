@@ -294,6 +294,11 @@ Attachment-Zustand, bricht laufende Uploads ab und laedt erst danach den Draft
 des neuen Kontexts. Spaete Upload-Ergebnisse duerfen nicht in eine andere
 Sitzung uebernommen werden.
 
+Die Enter-Taste folgt derselben Eingabegrenze wie der bestehende Composer: Nur
+ein unveraendertes, einmaliges Enter auf einem Desktop-Eingabegeraet sendet.
+IME-Komposition, gehaltenes Enter, Zusatztasten und primaere Touch-Eingabe
+bleiben Texteingabe und koennen keinen Draft versehentlich abschicken.
+
 ### Aufmerksamkeits-Grenze aus Paket 8
 
 `useSession` bleibt Eigentuemer der jeweils aktuellen `pendingInputRequest`.

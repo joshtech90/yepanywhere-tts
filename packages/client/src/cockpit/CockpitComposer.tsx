@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
+import { hasCoarsePointer } from "../lib/deviceDetection";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
 import styles from "./CockpitComposer.module.css";
@@ -81,10 +82,21 @@ function CockpitComposerSession(props: CockpitComposerProps) {
           aria-label={t("sessionPlaceholderResume")}
           onChange={(event) => composer.setDraft(event.target.value)}
           onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              if (canSubmit) void composer.submit();
+            if (
+              event.key !== "Enter" ||
+              event.shiftKey ||
+              event.ctrlKey ||
+              event.metaKey ||
+              event.altKey ||
+              event.repeat ||
+              event.nativeEvent.isComposing ||
+              event.keyCode === 229 ||
+              hasCoarsePointer()
+            ) {
+              return;
             }
+            event.preventDefault();
+            if (canSubmit) void composer.submit();
           }}
           placeholder={t(
             composer.actions.busy
