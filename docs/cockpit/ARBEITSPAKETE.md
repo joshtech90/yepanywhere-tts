@@ -2,7 +2,11 @@
 
 Stand: 24. September 2026
 
-Basis: `034026b9da89e60e09e2de2f034075b3e9f2eadc`
+Ausgangsbasis der Cockpit-Serie:
+`034026b9da89e60e09e2de2f034075b3e9f2eadc`
+
+Basis dieses Umsetzungsschritts:
+`e72dc8e2a2c81c4cbf678c8472a28f80f6637221`
 
 Statuswerte: **offen**, **in Arbeit**, **umgesetzt**, **blockiert**.
 
@@ -40,7 +44,7 @@ erreichbar. Geschaeftsdaten werden noch nicht im Cockpit dargestellt.
 
 ## 2 — Cockpit-Theme, Akzentfarben und Shell-Zustaende
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 1.
 
@@ -59,6 +63,14 @@ Einzeln pruefbar durch:
 - CSS-Architekturpruefung;
 - visuelle Captures bei 1000x600 und 375x812, jeweils hell und dunkel;
 - Tastaturnavigation und sichtbarer Fokus ohne Maus.
+
+Ergebnis dieses Zugs: Light, Dark und `Auto` sowie Blau, Violett, Teal und
+Koralle sind unter der lokalen Cockpit-Wurzel waehlbar und gemeinsam
+browserlokal gespeichert. Die Desktop-Sidebar wird mobil zu einer unteren
+Safe-Area-Navigation. Leer, Laden, Offline und Fehler werden direkt aus dem
+vorhandenen Transportstatus abgeleitet. Fokus, Touch-Ziele und Reduced Motion
+sind in den Cockpit-CSS-Modulen enthalten; globale Bestandsstyles bleiben
+unveraendert.
 
 ## 3 — Projekt- und Session-Sidebar auf dem vorhandenen Summary-Core
 
@@ -262,6 +274,6 @@ Einzeln pruefbar durch:
 
 ## Naechstes Paket
 
-Als Naechstes ist **Paket 2 — Cockpit-Theme, Akzentfarben und
-Shell-Zustaende** vorgesehen. Es veraendert noch keine Geschaeftlogik und kann
-die visuelle Richtung mit Light/Dark- und Mobil-Captures frueh festlegen.
+Als Naechstes ist **Paket 3 — Projekt- und Session-Sidebar auf dem vorhandenen
+Summary-Core** vorgesehen. Es bindet erstmals reale Geschaeftsdaten an die nun
+fertige Shell, ohne fuer die Sidebar Transcripts nachzuladen.

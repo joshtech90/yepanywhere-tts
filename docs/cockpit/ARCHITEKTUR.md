@@ -2,7 +2,11 @@
 
 Stand: 24. September 2026
 
-Basis: `034026b9da89e60e09e2de2f034075b3e9f2eadc`
+Ausgangsbasis der Cockpit-Serie:
+`034026b9da89e60e09e2de2f034075b3e9f2eadc`
+
+Basis dieses Umsetzungsschritts:
+`e72dc8e2a2c81c4cbf678c8472a28f80f6637221`
 
 ## Ziel und Leitplanken
 
@@ -145,6 +149,32 @@ Routen erreichbar und bleibt zunaechst der Standard.
    ohne einen Big-Bang-Umschaltpunkt zu erzwingen.
 4. Wenn Upstream einen Hook oder Store umbaut, muss normalerweise nur der
    Cockpit-Adapter angepasst werden, nicht jede Cockpit-Komponente.
+
+### Darstellungsgrenze aus Paket 2
+
+Das Cockpit besitzt Light/Dark und seine Akzentfarben vollstaendig unter der
+lokalen CSS-Module-Wurzel. Die semantischen Cockpit-Tokens veraendern weder die
+globalen Bestands-Themes noch deren eingefrorene Stylesheets. `Auto` wird im
+Cockpit gegen die Systempraeferenz zu Light oder Dark aufgeloest; die konkrete
+Darstellung steht als `data-theme` und `data-accent` nur an der Cockpit-Wurzel.
+
+Theme und Akzent liegen zusammen in einem versionierten browserlokalen Record
+`yep-anywhere-cockpit-appearance`. Unbekannte Versionen oder Werte fallen auf
+`Auto` und Blau zurueck. Nicht verfuegbarer oder voller Browser-Speicher darf
+die Seite nicht verhindern; die Wahl gilt dann fuer den laufenden Tab.
+
+Die Shell liest ihren Zustand direkt aus dem vorhandenen
+`SourceTransportStatusSnapshot`:
+
+- `ready` zeigt den leeren, fuer Paket 3 vorbereiteten Arbeitsbereich;
+- `connecting` und `reconnecting` zeigen Laden bei stabiler Geometrie;
+- `disconnected` zeigt Offline;
+- ein von einem Transportkanal gemeldeter Fehler zeigt den Fehlerzustand.
+
+Damit entstehen keine zweite Verbindungslogik und kein zweiter Store. Desktop
+verwendet eine feste Sidebar; bis 700 Pixel wird dieselbe Navigation zu einer
+Safe-Area-faehigen unteren Leiste. Fokus, Touch-Ziele und Reduced Motion werden
+innerhalb derselben Feature-Grenze gepflegt.
 
 ## Verworfene Alternativen
 

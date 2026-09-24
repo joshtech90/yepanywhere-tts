@@ -1,8 +1,20 @@
+import { useSyncExternalStore, type ReactNode } from "react";
 import { Link } from "react-router-dom";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
+import {
+  CockpitAppearanceControls,
+  type CockpitAppearanceControlsProps,
+} from "./CockpitAppearanceControls";
 import styles from "./CockpitPage.module.css";
+import type { CockpitResolvedTheme } from "./core/appearance";
 import { createCockpitNavigation } from "./core/navigation";
+import {
+  deriveCockpitShellState,
+  type CockpitShellState,
+} from "./core/shellState";
+import { useCockpitAppearance } from "./useCockpitAppearance";
 
 function SessionsIcon() {
   return (
@@ -38,10 +50,66 @@ function SettingsIcon() {
   );
 }
 
-export function CockpitPage() {
+function AppearanceIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.2 0 1.8-.7 1.8-1.5 0-.7-.4-1.2-.4-1.9 0-1 .8-1.8 1.8-1.8h1.7c2.1 0 3.6-1.6 3.6-3.7 0-4.5-3.8-8.1-8.5-8.1Z" />
+      <circle cx="7.8" cy="10" r=".7" />
+      <circle cx="10" cy="6.8" r=".7" />
+      <circle cx="14" cy="6.8" r=".7" />
+      <circle cx="16.3" cy="10.2" r=".7" />
+    </svg>
+  );
+}
+
+function StateIcon({ kind }: { kind: CockpitShellState["kind"] }) {
+  if (kind === "loading") {
+    return <span className={styles.loadingSpinner} aria-hidden="true" />;
+  }
+  if (kind === "offline") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M4 8.5a12 12 0 0 1 16 0M7 12a7.6 7.6 0 0 1 10 0M10.2 15.4a3 3 0 0 1 3.6 0M4 4l16 16" />
+      </svg>
+    );
+  }
+  if (kind === "error") {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 4 21 20H3L12 4Z" />
+        <path d="M12 9v5M12 17.2v.1" />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M7 3.5h10v3H7zM5 6.5h14v14H5zM8.5 10.5h7M8.5 14h7M8.5 17.5h4" />
+    </svg>
+  );
+}
+
+interface CockpitShellProps extends CockpitAppearanceControlsProps {
+  basePath: string;
+  resolvedTheme: CockpitResolvedTheme;
+  shellState: CockpitShellState;
+}
+
+export function CockpitShell({
+  accent,
+  basePath,
+  onAccentChange,
+  onThemeChange,
+  resolvedTheme,
+  shellState,
+  theme,
+}: CockpitShellProps) {
   const { t } = useI18n();
-  const navigation = createCockpitNavigation(useRemoteBasePath());
-  const destinations = [
+  const navigation = createCockpitNavigation(basePath);
+  const destinations: Array<{
+    href: string;
+    label: string;
+    icon: ReactNode;
+  }> = [
     {
       href: navigation.sessions,
       label: t("sidebarAllSessions"),
@@ -63,13 +131,42 @@ export function CockpitPage() {
       icon: <SettingsIcon />,
     },
   ];
+  const stateCopy = {
+    empty: {
+      title: t("cockpitEmptyTitle"),
+      body: t("cockpitEmptyBody"),
+      status: t("cockpitStatusConnected"),
+    },
+    loading: {
+      title: t("cockpitLoadingTitle"),
+      body: t("cockpitLoadingBody"),
+      status: t("cockpitStatusConnecting"),
+    },
+    offline: {
+      title: t("cockpitOfflineTitle"),
+      body: t("cockpitOfflineBody"),
+      status: t("cockpitStatusOffline"),
+    },
+    error: {
+      title: t("cockpitErrorTitle"),
+      body: t("cockpitErrorBody"),
+      status: t("cockpitStatusError"),
+    },
+  }[shellState.kind];
 
   return (
-    <main className={styles.root}>
-      <aside className={styles.sidebar} aria-label="Cockpit">
+    <main
+      className={styles.root}
+      data-accent={accent}
+      data-theme={resolvedTheme}
+    >
+      <aside className={styles.sidebar} aria-label={t("cockpitNavigationAria")}>
         <Link className={styles.brand} to={navigation.cockpit}>
           <span className={styles.brandMark}>C</span>
-          <span>Cockpit</span>
+          <span>
+            <strong>Cockpit</strong>
+            <small>Yep Anywhere</small>
+          </span>
         </Link>
 
         <nav className={styles.navigation}>
@@ -85,40 +182,99 @@ export function CockpitPage() {
           ))}
         </nav>
 
-        <div className={styles.sidebarFooter}>Yep Anywhere</div>
+        <section
+          aria-label={t("cockpitAppearanceLabel")}
+          className={styles.desktopAppearance}
+        >
+          <CockpitAppearanceControls
+            accent={accent}
+            onAccentChange={onAccentChange}
+            onThemeChange={onThemeChange}
+            theme={theme}
+          />
+        </section>
       </aside>
 
       <section className={styles.workspace} aria-labelledby="cockpit-title">
         <header className={styles.header}>
           <div>
-            <div className={styles.eyebrow}>Yep Anywhere</div>
+            <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
             <h1 id="cockpit-title">Cockpit</h1>
           </div>
-          <Link className={styles.primaryAction} to={navigation.newSession}>
-            <NewSessionIcon />
-            <span>{t("sidebarNewSession")}</span>
-          </Link>
+          <div className={styles.headerActions}>
+            <span
+              className={styles.connectionStatus}
+              data-state={shellState.kind}
+            >
+              <span aria-hidden="true" />
+              {stateCopy.status}
+            </span>
+            <details className={styles.mobileAppearance}>
+              <summary aria-label={t("cockpitAppearanceLabel")}>
+                <AppearanceIcon />
+              </summary>
+              <div className={styles.mobileAppearancePanel}>
+                <CockpitAppearanceControls
+                  accent={accent}
+                  onAccentChange={onAccentChange}
+                  onThemeChange={onThemeChange}
+                  theme={theme}
+                />
+              </div>
+            </details>
+            <Link className={styles.primaryAction} to={navigation.newSession}>
+              <NewSessionIcon />
+              <span>{t("sidebarNewSession")}</span>
+            </Link>
+          </div>
         </header>
 
         <div className={styles.canvas}>
-          <div className={styles.launchPanel}>
-            <span className={styles.launchMark}>C</span>
-            <h2>{t("sidebarAllSessions")}</h2>
-            <div className={styles.launchGrid}>
-              {destinations.map((destination) => (
-                <Link
-                  className={styles.launchCard}
-                  key={destination.href}
-                  to={destination.href}
-                >
-                  <span className={styles.icon}>{destination.icon}</span>
-                  <span>{destination.label}</span>
-                </Link>
-              ))}
+          <section
+            className={styles.statePanel}
+            data-state={shellState.kind}
+          >
+            <span className={styles.stateIcon}>
+              <StateIcon kind={shellState.kind} />
+            </span>
+            <div
+              aria-live="polite"
+              role={shellState.kind === "error" ? "alert" : "status"}
+            >
+              <p className={styles.stateKicker}>{stateCopy.status}</p>
+              <h2>{stateCopy.title}</h2>
+              <p className={styles.stateBody}>{stateCopy.body}</p>
             </div>
-          </div>
+            <Link className={styles.secondaryAction} to={navigation.sessions}>
+              <SessionsIcon />
+              <span>{t("cockpitOpenClassic")}</span>
+            </Link>
+          </section>
         </div>
       </section>
     </main>
+  );
+}
+
+export function CockpitPage() {
+  const runtime = useCurrentSourceRuntime();
+  const basePath = useRemoteBasePath();
+  const transport = useSyncExternalStore(
+    (listener) => runtime.transport.status.subscribe(listener),
+    () => runtime.transport.status.getSnapshot(),
+    () => runtime.transport.status.getSnapshot(),
+  );
+  const appearance = useCockpitAppearance();
+
+  return (
+    <CockpitShell
+      accent={appearance.accent}
+      basePath={basePath}
+      onAccentChange={appearance.setAccent}
+      onThemeChange={appearance.setTheme}
+      resolvedTheme={appearance.resolvedTheme}
+      shellState={deriveCockpitShellState(transport)}
+      theme={appearance.theme}
+    />
   );
 }
