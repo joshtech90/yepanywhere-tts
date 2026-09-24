@@ -22,6 +22,8 @@ export interface CockpitThinkingSegment {
 interface CockpitTranscriptEntryBase {
   key: string;
   timestamp?: string;
+  /** Stable render-item references used only to retain unchanged row identity. */
+  sourceItems?: readonly RenderItem[];
 }
 
 export interface CockpitUserEntry extends CockpitTranscriptEntryBase {
@@ -104,6 +106,7 @@ function entryKey(
 }
 
 export function createCockpitTranscriptEntries(input: {
+  previousEntries?: readonly CockpitTranscriptEntry[];
   sourceKey: string;
   sessionId: string;
   renderItems: readonly RenderItem[];
@@ -141,6 +144,7 @@ export function createCockpitTranscriptEntries(input: {
         kind: "assistant",
         key: entryKey(input.sourceKey, input.sessionId, "assistant", first.id),
         ...(timestamp ? { timestamp } : {}),
+        sourceItems: assistantItems,
         text,
         thinking,
         spokenText: text.map((segment) => segment.text).join("\n\n").trim(),
@@ -162,6 +166,7 @@ export function createCockpitTranscriptEntries(input: {
           kind: "user",
           key: entryKey(input.sourceKey, input.sessionId, "user", item.id),
           ...(timestamp ? { timestamp } : {}),
+          sourceItems: [item],
           text,
         });
       }
@@ -180,6 +185,7 @@ export function createCockpitTranscriptEntries(input: {
         kind: "tool",
         key: entryKey(input.sourceKey, input.sessionId, "tool", item.id),
         ...(timestamp ? { timestamp } : {}),
+        sourceItems: [item],
         tool: createCockpitToolDisplay(item),
       });
       continue;
@@ -195,13 +201,34 @@ export function createCockpitTranscriptEntries(input: {
         kind: "boundary",
         key: entryKey(input.sourceKey, input.sessionId, "boundary", item.id),
         ...(timestamp ? { timestamp } : {}),
+        sourceItems: [item],
         subtype: item.subtype,
       });
     }
   }
 
   flushAssistant();
-  return entries;
+  if (!input.previousEntries?.length || entries.length === 0) return entries;
+
+  const previousByKey = new Map(
+    input.previousEntries.map((entry) => [entry.key, entry]),
+  );
+  return entries.map((entry) => {
+    const previous = previousByKey.get(entry.key);
+    if (
+      !previous ||
+      previous.kind !== entry.kind ||
+      !previous.sourceItems ||
+      !entry.sourceItems ||
+      previous.sourceItems.length !== entry.sourceItems.length ||
+      !previous.sourceItems.every(
+        (sourceItem, index) => sourceItem === entry.sourceItems?.[index],
+      )
+    ) {
+      return entry;
+    }
+    return previous;
+  });
 }
 
 export function deriveCockpitSessionState({

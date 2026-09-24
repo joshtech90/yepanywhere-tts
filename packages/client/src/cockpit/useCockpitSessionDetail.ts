@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useSession } from "../hooks/useSession";
 import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
@@ -44,6 +45,8 @@ export function useCockpitSessionDetail(
 ): CockpitSessionDetailData {
   const runtime = useCurrentSourceRuntime();
   const detail = useSession(projectId, sessionId);
+  const previousRenderItemsRef = useRef<RenderItem[]>([]);
+  const previousEntriesRef = useRef<CockpitTranscriptEntry[]>([]);
   const renderItems = useMemo(
     () =>
       buildSessionDetailRenderItems({
@@ -51,6 +54,7 @@ export function useCockpitSessionDetail(
         provider: detail.session?.provider,
         markdownAugments: detail.markdownAugments,
         transcriptDisplayObjects: detail.session?.transcriptDisplayObjects,
+        previousRenderItems: previousRenderItemsRef.current,
       }),
     [
       detail.markdownAugments,
@@ -62,12 +66,17 @@ export function useCockpitSessionDetail(
   const entries = useMemo(
     () =>
       createCockpitTranscriptEntries({
+        previousEntries: previousEntriesRef.current,
         sourceKey: runtime.sourceKey,
         sessionId,
         renderItems,
       }),
     [renderItems, runtime.sourceKey, sessionId],
   );
+  useEffect(() => {
+    previousRenderItemsRef.current = renderItems;
+    previousEntriesRef.current = entries;
+  }, [entries, renderItems]);
   const attention = useCockpitAttention({
     pendingInputRequest: detail.pendingInputRequest,
     processState: detail.processState,

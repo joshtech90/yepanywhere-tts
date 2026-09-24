@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useDeferredValue,
   useLayoutEffect,
@@ -131,7 +132,7 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
   );
 }
 
-function TranscriptEntry({
+const TranscriptEntry = memo(function TranscriptEntry({
   entry,
   locale,
 }: {
@@ -204,7 +205,7 @@ function TranscriptEntry({
       </div>
     </article>
   );
-}
+});
 
 export function CockpitSessionDetail({
   basePath,

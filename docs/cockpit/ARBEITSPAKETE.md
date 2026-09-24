@@ -315,6 +315,12 @@ Regressionstest haelt den Stop-Knopf waehrend vieler Transcript-Updates im
 Fokus und bedienbar. Echte Praefixwechsel wie aeltere Seiten, Trimming oder
 ein Sitzungswechsel bleiben synchron, damit Leseanker und Kontext stimmen.
 
+Nachbesserung A19: Wenn ein Live-Anhang spaeter dargestellt wird, behalten
+unveraenderte vorhandene Transcript-Zeilen ihre React-Identitaet. Dadurch muss
+ein Nachrichtensturm nicht bei jedem sichtbaren Zwischenstand den gesamten
+alten Verlauf erneut in den DOM schreiben; geaenderte Tail-Zeilen bleiben
+aktuell und die direkte Stop-Aktion bleibt ausserhalb dieser Arbeit.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **offen**

@@ -120,6 +120,33 @@ describe("Cockpit session detail projection", () => {
     });
   });
 
+  it("retains unchanged row objects when only a live tail is appended", () => {
+    const before = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: initialItems,
+    });
+    const after = createCockpitTranscriptEntries({
+      previousEntries: before,
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        ...initialItems,
+        {
+          type: "user_prompt",
+          id: "user-tail",
+          content: "Invented live tail",
+          sourceMessages: [{ uuid: "user-tail" }],
+        },
+      ],
+    });
+
+    expect(after.slice(0, before.length)).toEqual(before);
+    after.slice(0, before.length).forEach((entry, index) => {
+      expect(entry).toBe(before[index]);
+    });
+  });
+
   it("isolates identical session ids when the active source changes", () => {
     const local = createCockpitTranscriptEntries({
       sourceKey: "local",

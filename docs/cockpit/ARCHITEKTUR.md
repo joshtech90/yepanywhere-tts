@@ -336,6 +336,12 @@ aelterer Seiten, Trimming und ein ersetzter Sitzungskontext muessen gemeinsam
 mit ihrer Scrollanker- beziehungsweise Identitaetskorrektur synchron sichtbar
 werden.
 
+Innerhalb eines spaeter dargestellten Tail-Snapshots werden die stabilisierten
+RenderItems zugleich auf unveraenderte Cockpit-Zeilenidentitaeten abgebildet.
+React kann dadurch alte User-, Assistant-, Werkzeug- und Grenzzeilen auslassen,
+statt deren DOM bei jedem Live-Anhang erneut zu versoehnen; geaenderte
+RenderItems erzeugen weiterhin neue Zeilenobjekte.
+
 Interrupt/Stop ist eine direkte Schaltflaeche im festen Sitzungskopf und damit
 nicht von Transcript-Aufklappzustand oder einem Menue abhaengig. Sie verwendet
 zuerst den vorhandenen sanften Interrupt und faellt bei fehlender Unterstuetzung
