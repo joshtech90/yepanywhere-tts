@@ -359,6 +359,12 @@ Cockpit-Element zurueck. Nur wenn dieses Element inzwischen entfernt wurde,
 springt er zum sichtbaren Such- beziehungsweise Shortcut-Knopf. Mausaufrufe
 behalten den jeweiligen Navigationsknopf als eindeutigen Ausloeser.
 
+Nachbesserung dieses Zugs: Auf schmalen Viewports bleiben Shortcut-Hilfe und
+Prompt-Verlauf nun innerhalb der bereits gemessenen sichtbaren Cockpit-Wurzel.
+Damit folgt die Hilfe dem durch Browserleiste oder Bildschirmtastatur
+verkleinerten Ausschnitt, waehrend der Verlauf direkt ueber seinem
+Composer-Ausloeser aufklappt und nicht hinter der Tastatur liegen bleibt.
+
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
 Status: **offen**

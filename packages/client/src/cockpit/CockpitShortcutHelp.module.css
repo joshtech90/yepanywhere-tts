@@ -199,6 +199,7 @@
   }
 
   .backdrop {
+    position: absolute;
     padding:
       max(0.75rem, env(safe-area-inset-top, 0px))
       max(0.75rem, env(safe-area-inset-right, 0px))

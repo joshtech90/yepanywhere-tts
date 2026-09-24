@@ -367,8 +367,12 @@ Auf schmalen Viewports besitzt die Cockpit-Wurzel die sichtbare
 Bildschirmtastatur aktualisieren nur Hoehe und oberen Versatz der Shell; der
 untere Navigationsrahmen und der Composer bleiben innerhalb dieser Wurzel,
 waehrend Transcript, Katalog und Suche ihre jeweils eigenen Scrollbereiche
-behalten. Fehlt die API, bleibt `100dvh` der reine CSS-Fallback. Safe-Area-
-Insets werden weiterhin genau an Navigation und Composer angewendet.
+behalten. Mobile Cockpit-Overlays werden ebenfalls innerhalb dieser gemessenen
+Wurzel positioniert: Die Shortcut-Hilfe deckt nur den sichtbaren Ausschnitt ab,
+und der Prompt-Verlauf oeffnet sich vom Composer aus nach oben, statt sich am
+durch die Bildschirmtastatur verdeckten Layout-Viewport auszurichten. Fehlt die
+API, bleibt `100dvh` der reine CSS-Fallback. Safe-Area-Insets werden weiterhin
+genau an Navigation und Composer angewendet.
 
 ## Verworfene Alternativen
 

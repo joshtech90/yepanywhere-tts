@@ -148,12 +148,15 @@
   }
 
   .panel {
-    position: fixed;
-    right: 0.55rem;
-    bottom: calc(7.2rem + env(safe-area-inset-bottom));
-    left: 0.55rem;
-    width: auto;
-    max-height: min(28rem, 55vh);
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.55rem);
+    left: auto;
+    width: min(25rem, calc(100vw - 1.1rem));
+    max-height: min(
+      28rem,
+      calc(var(--cockpit-viewport-height, 100dvh) - 8rem)
+    );
   }
 
   .frequent {
