@@ -60,6 +60,9 @@ const loadAgentsPageModule = cachedModule(() => import("./pages/AgentsPage"));
 const loadBangCommandsPageModule = cachedModule(
   () => import("./pages/BangCommandsPage"),
 );
+const loadCockpitPageModule = cachedModule(() =>
+  import("./cockpit/CockpitPage"),
+);
 const loadDirectLoginPageModule = cachedModule(
   () => import("./pages/DirectLoginPage"),
 );
@@ -157,6 +160,11 @@ const AgentsPage = lazy(() =>
 const BangCommandsPage = lazy(() =>
   loadBangCommandsPageModule().then(({ BangCommandsPage }) => ({
     default: BangCommandsPage,
+  })),
+);
+const CockpitPage = lazy(() =>
+  loadCockpitPageModule().then(({ CockpitPage }) => ({
+    default: CockpitPage,
   })),
 );
 const DirectLoginPage = lazy(() =>
@@ -273,6 +281,7 @@ const initialRemoteModuleLoaders: Record<
   activityPage: loadActivityPageModule,
   agentsPage: loadAgentsPageModule,
   bangCommandsPage: loadBangCommandsPageModule,
+  cockpitPage: loadCockpitPageModule,
   directLoginPage: loadDirectLoginPageModule,
   emulatorPage: loadEmulatorPageModule,
   filePage: loadFilePageModule,
@@ -333,6 +342,8 @@ const basename = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
 const APP_ROUTES = (
   <>
     <Route index element={<Navigate to="projects" replace />} />
+
+    <Route path="cockpit" element={routeModule(<CockpitPage />)} />
 
     {/* IMPORTANT: Keep routes in sync with main.tsx — adding a route here? Add it there too! */}
     <Route

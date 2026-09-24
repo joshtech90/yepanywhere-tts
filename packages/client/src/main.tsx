@@ -31,6 +31,11 @@ const ConversationPreviewPage = lazy(() =>
     ({ ConversationPreviewPage }) => ({ default: ConversationPreviewPage }),
   ),
 );
+const CockpitPage = lazy(() =>
+  import("./cockpit/CockpitPage").then(({ CockpitPage }) => ({
+    default: CockpitPage,
+  })),
+);
 
 /** The experimental client owns its connections without the full app runtime. */
 function LocalAppShell({ children }: { children: ReactNode }) {
@@ -295,6 +300,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                   <Route
                     path="/"
                     element={<Navigate to="/projects" replace />}
+                  />
+                  <Route
+                    path="/cockpit"
+                    element={routeModule(<CockpitPage />)}
                   />
                   {/* Login page (no layout wrapper) */}
                   <Route path="/login" element={routeModule(<LoginPage />)} />
