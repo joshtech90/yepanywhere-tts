@@ -1,0 +1,74 @@
+.trigger {
+  display: inline-flex;
+  min-height: 2.45rem;
+  max-width: 22rem;
+  padding: 0.35rem 0.65rem;
+  align-items: center;
+  gap: 0.38rem;
+  overflow: hidden;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.75rem;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: 0.64rem;
+  cursor: pointer;
+}
+
+.trigger span,
+.trigger strong,
+.trigger em {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.trigger strong {
+  color: var(--cockpit-text);
+}
+
+.trigger em {
+  padding: 0.12rem 0.34rem;
+  border-radius: 999px;
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+  font-style: normal;
+  font-weight: 750;
+}
+
+.trigger:hover {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+}
+
+.trigger:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.trigger::before {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  .trigger {
+    width: 2.7rem;
+    min-width: 2.7rem;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .trigger span,
+  .trigger strong,
+  .trigger em {
+    display: none;
+  }
+
+  .trigger::before {
+    display: block;
+    content: "AI";
+    color: var(--cockpit-accent);
+    font-size: 0.62rem;
+    font-weight: 850;
+  }
+}

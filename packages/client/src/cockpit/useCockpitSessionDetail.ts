@@ -3,12 +3,14 @@ import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useSession } from "../hooks/useSession";
 import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
 import type { SessionMetadata, SessionStatus } from "../types";
+import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import {
   createCockpitTranscriptEntries,
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 
 export interface CockpitSessionDetailData {
+  composer: CockpitComposerSessionPort;
   entries: CockpitTranscriptEntry[];
   error: Error | null;
   hasOlderMessages: boolean;
@@ -19,6 +21,7 @@ export interface CockpitSessionDetailData {
   reloadSession: () => void;
   restoredFromSnapshot: boolean;
   session: SessionMetadata | null;
+  setSessionModel: (model: string) => void;
   sessionUpdatesConnected: boolean;
   sessionUpdatesResubscribing: boolean;
   status: SessionStatus;
@@ -62,6 +65,19 @@ export function useCockpitSessionDetail(
   );
 
   return {
+    composer: {
+      actualSessionId: detail.actualSessionId,
+      addPendingMessage: detail.addPendingMessage,
+      permissionMode: detail.permissionMode,
+      processState: detail.processState,
+      reconnectStream: detail.reconnectStream,
+      removePendingMessage: detail.removePendingMessage,
+      session: detail.session,
+      setDeferredMessages: detail.setDeferredMessages,
+      setProcessState: detail.setProcessState,
+      setStatus: detail.setStatus,
+      status: detail.status,
+    },
     entries,
     error: detail.error,
     hasOlderMessages: detail.pagination?.hasOlderMessages === true,
@@ -72,6 +88,7 @@ export function useCockpitSessionDetail(
     reloadSession: detail.reloadSession,
     restoredFromSnapshot: detail.restoredFromSnapshot,
     session: detail.session,
+    setSessionModel: detail.setSessionModel,
     sessionUpdatesConnected: detail.sessionUpdatesConnected,
     sessionUpdatesResubscribing: detail.sessionUpdatesResubscribing,
     status: detail.status,

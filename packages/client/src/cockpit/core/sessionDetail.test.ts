@@ -32,6 +32,21 @@ const initialItems: RenderItem[] = [
       { uuid: "assistant-1", timestamp: "2026-09-24T09:00:02.000Z" },
     ],
   },
+  {
+    type: "tool_call",
+    id: "tool-1",
+    toolName: "Bash",
+    toolInput: { command: "printf 'DEMO_OK\\n'" },
+    toolResult: {
+      content: "DEMO_OK\n",
+      isError: false,
+      structured: { stdout: "DEMO_OK\n", stderr: "" },
+    },
+    status: "complete",
+    sourceMessages: [
+      { uuid: "assistant-1", timestamp: "2026-09-24T09:00:03.000Z" },
+    ],
+  },
 ];
 
 describe("Cockpit session detail projection", () => {
@@ -59,6 +74,14 @@ describe("Cockpit session detail projection", () => {
           augmentHtml: "<h2>Result</h2><p>The checklist is ready.</p>",
         },
       ],
+    });
+    expect(warmReturn[2]).toMatchObject({
+      kind: "tool",
+      tool: {
+        displayName: "Bash",
+        kind: "shell",
+        status: "complete",
+      },
     });
   });
 

@@ -15,10 +15,31 @@ vi.mock("./useCockpitSessionDetail", () => ({
   useCockpitSessionDetail: () => detailMocks.data,
 }));
 
+vi.mock("./CockpitComposer", () => ({
+  CockpitComposer: () => <div data-testid="cockpit-composer" />,
+}));
+
+vi.mock("./CockpitModelControls", () => ({
+  CockpitModelControls: () => <button type="button">Model controls</button>,
+}));
+
 function detailData(
   overrides: Partial<CockpitSessionDetailData> = {},
 ): CockpitSessionDetailData {
   return {
+    composer: {
+      actualSessionId: "session-1",
+      addPendingMessage: vi.fn(() => ({ tempId: "temp-1" })),
+      permissionMode: "default",
+      processState: "idle",
+      reconnectStream: vi.fn(),
+      removePendingMessage: vi.fn(),
+      session: null,
+      setDeferredMessages: vi.fn(),
+      setProcessState: vi.fn(),
+      setStatus: vi.fn(),
+      status: { owner: "none" },
+    },
     entries: [
       {
         kind: "user",
@@ -74,6 +95,7 @@ function detailData(
     },
     sessionUpdatesConnected: false,
     sessionUpdatesResubscribing: false,
+    setSessionModel: vi.fn(),
     status: { owner: "none" },
     ...overrides,
   };
