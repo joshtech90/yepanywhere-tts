@@ -79,5 +79,8 @@ describe("Cockpit catalog", () => {
     }
 
     expect(screen.getByText("Release checklist")).toBeTruthy();
+    expect(
+      screen.getByText("Release checklist").closest("a")?.getAttribute("href"),
+    ).toBe("/cockpit/projects/atlas/sessions/session-0");
   });
 });

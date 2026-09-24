@@ -305,6 +305,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     path="/cockpit"
                     element={routeModule(<CockpitPage />)}
                   />
+                  <Route
+                    path="/cockpit/projects/:projectId/sessions/:sessionId"
+                    element={routeModule(<CockpitPage />)}
+                  />
                   {/* Login page (no layout wrapper) */}
                   <Route path="/login" element={routeModule(<LoginPage />)} />
                   {/* IMPORTANT: Keep routes in sync with remote-main.tsx — adding a route here? Add it there too! */}

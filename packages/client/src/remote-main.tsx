@@ -344,6 +344,10 @@ const APP_ROUTES = (
     <Route index element={<Navigate to="projects" replace />} />
 
     <Route path="cockpit" element={routeModule(<CockpitPage />)} />
+    <Route
+      path="cockpit/projects/:projectId/sessions/:sessionId"
+      element={routeModule(<CockpitPage />)}
+    />
 
     {/* IMPORTANT: Keep routes in sync with main.tsx — adding a route here? Add it there too! */}
     <Route

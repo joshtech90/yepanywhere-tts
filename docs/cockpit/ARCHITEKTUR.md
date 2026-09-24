@@ -208,6 +208,41 @@ Seiten kennt, nennt die UI diese Teilabdeckung und bietet explizites Nachladen
 an. Inhalts- und Volltextsuche bleibt Paket 4; Paket 3 startet dafuer keine
 Transcript-Abfragen und keine eigenen Dateiscans.
 
+### Session-Detail-Grenze aus Paket 5
+
+Cockpit-Sitzungen liegen unter
+`/cockpit/projects/:projectId/sessions/:sessionId` und bleiben damit in der
+Cockpit-Shell; ein eigener Link oeffnet weiterhin die unveraenderte
+Bestandsansicht. Direkter und Relay-Client registrieren dieselbe lazy geladene
+Route ohne `NavigationLayout`.
+
+`useCockpitSessionDetail` ruft den vorhandenen `useSession`-Hook auf. Damit
+bleiben Retain/Release des kanonischen Session-Detail-Stores, warmer
+Ruecksprung, Pagination, Catch-up, Live-Stream und Reconnect bei ihren heutigen
+Besitzern. Das Cockpit legt weder Transcript-Kopie noch eigenen
+Reconnect-Zustand an. Der bestehende semantische
+`buildSessionDetailRenderItems`-Adapter liefert stabile User-, Assistant-,
+Thinking- und Statusobjekte; die Cockpit-Projektion filtert daraus nur die in
+Paket 5 sichtbaren, read-only Zeilen. Tool Calls, Shell, Dateien und Diffs
+bleiben im selben geladenen kanonischen Zustand und erhalten erst in Paket 6
+ihre Cockpit-Darstellung.
+
+Abgeschlossene Markdown-Antworten verwenden das bereits vom Server gelieferte
+HTML-Augment. Waehrend eines Streams bleibt der Text eine guenstige lokale
+Textdarstellung; kein Token wird in einen neuen breit abonnierten Cockpit-State
+verschoben. Das Transcript folgt neuen Zeilen nur, solange der Leser am Ende
+steht. Beim expliziten Nachladen aelterer Seiten bleibt die sichtbare Position
+durch einen Hoehenausgleich erhalten; Reconnect zeigt den Status, behaelt aber
+bereits geladene Zeilen sichtbar.
+
+Vorlesen ruft direkt den bestehenden appweiten Controller in `readAloud.ts`
+auf. Dessen Token stellt weiterhin genau eine Wiedergabe fuer alte und neue UI
+sicher; Start, Chunk-Prefetch und Stop verwenden unveraendert `/api/tts/plan`
+und `/api/tts/synthesize`. Stop loest nun auch die interne Warteoperation der
+abgebrochenen Audiowiedergabe auf, damit kein offenes Wiedergabe-Promise
+zurueckbleibt. Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und
+bleibt dadurch kompatibel.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

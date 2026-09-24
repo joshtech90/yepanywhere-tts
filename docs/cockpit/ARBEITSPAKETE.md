@@ -128,7 +128,7 @@ Einzeln pruefbar durch:
 
 ## 5 — Read-only Session-Detail und Vorlesen
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 3.
 
@@ -149,6 +149,21 @@ Einzeln pruefbar durch:
 - TTS-Controller-Test mit Plan, Chunk-Prefetch und Stop;
 - Captures einer langen Antwort auf Desktop und Mobil;
 - Nachweis, dass der alte `TextBlock`-Vorleseknopf weiter funktioniert.
+
+Ergebnis dieses Zugs: Sitzungen oeffnen jetzt unter der Cockpit-Route in einer
+ruhigen read-only Gespraechsansicht. Der vorhandene `useSession`- und
+Session-Detail-Store bleibt fuer Retain/Release, warmen Ruecksprung, Live-
+Catch-up, Reconnect und Pagination verantwortlich; das Cockpit projiziert nur
+User-, Assistant-, Thinking- und grundlegende Statuszeilen. Abgeschlossene
+Markdown-Antworten nutzen die vorhandenen Server-Augments, aeltere Seiten
+lassen sich mit stabiler Leseposition nachladen, und geladene Inhalte bleiben
+bei Reconnect oder Aktualisierungsfehler sichtbar. Jede abgeschlossene
+Assistant-Antwort kann ueber den bestehenden appweiten `readAloud`-Controller
+gestartet und gestoppt werden; der alte `TextBlock` nutzt unveraendert denselben
+Controller. Server und Shared-Protokoll wurden nicht erweitert. Das geforderte
+Seed-Skript erzeugt zehn vollstaendig erfundene Claude-/Codex-Sitzungen in drei
+Projekten, darunter lange Markdown-Antwort, Thinking, Shell, Fehler,
+Dateiaenderung und Diff-Vorschau fuer Paket 6.
 
 ## 6 — Tool Calls, Shell, Dateiaenderungen und Diff-Ansicht
 

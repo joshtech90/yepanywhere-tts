@@ -1,0 +1,200 @@
+import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
+import type { ContentBlock } from "@yep-anywhere/shared/transcript/message";
+
+export interface CockpitTextSegment {
+  id: string;
+  text: string;
+  augmentHtml?: string;
+  isStreaming: boolean;
+  abortedMidStream: boolean;
+}
+
+export interface CockpitThinkingSegment {
+  id: string;
+  text: string;
+  status: "streaming" | "complete";
+}
+
+interface CockpitTranscriptEntryBase {
+  key: string;
+  timestamp?: string;
+}
+
+export interface CockpitUserEntry extends CockpitTranscriptEntryBase {
+  kind: "user";
+  text: string;
+}
+
+export interface CockpitAssistantEntry extends CockpitTranscriptEntryBase {
+  kind: "assistant";
+  text: CockpitTextSegment[];
+  thinking: CockpitThinkingSegment[];
+  spokenText: string;
+  isStreaming: boolean;
+}
+
+export interface CockpitBoundaryEntry extends CockpitTranscriptEntryBase {
+  kind: "boundary";
+  subtype: "compact_boundary" | "status";
+}
+
+export type CockpitTranscriptEntry =
+  | CockpitUserEntry
+  | CockpitAssistantEntry
+  | CockpitBoundaryEntry;
+
+export type CockpitSessionState =
+  | "active"
+  | "waiting"
+  | "reconnecting"
+  | "complete"
+  | "offline"
+  | "error";
+
+export interface CockpitSessionStateInput {
+  transport: "empty" | "loading" | "offline" | "error";
+  loadError: boolean;
+  owner: "none" | "self" | "external";
+  processState: "idle" | "in-turn" | "waiting-input";
+  updatesConnected: boolean;
+  updatesResubscribing: boolean;
+}
+
+function timestampForItem(item: RenderItem): string | undefined {
+  for (let index = item.sourceMessages.length - 1; index >= 0; index -= 1) {
+    const timestamp = item.sourceMessages[index]?.timestamp;
+    if (timestamp) return timestamp;
+  }
+  return undefined;
+}
+
+function contentText(content: string | ContentBlock[]): string {
+  if (typeof content === "string") return content.trim();
+  return content
+    .flatMap((block) => {
+      if (
+        (block.type === "text" || block.type === "input_text") &&
+        typeof block.text === "string"
+      ) {
+        return [block.text];
+      }
+      return [];
+    })
+    .join("\n\n")
+    .trim();
+}
+
+function entryKey(
+  sourceKey: string,
+  sessionId: string,
+  kind: CockpitTranscriptEntry["kind"],
+  id: string,
+): string {
+  return `${sourceKey}\0session\0${sessionId}\0${kind}\0${id}`;
+}
+
+export function createCockpitTranscriptEntries(input: {
+  sourceKey: string;
+  sessionId: string;
+  renderItems: readonly RenderItem[];
+}): CockpitTranscriptEntry[] {
+  const entries: CockpitTranscriptEntry[] = [];
+  let assistantItems: Array<
+    Extract<RenderItem, { type: "text" | "thinking" }>
+  > = [];
+
+  const flushAssistant = () => {
+    if (assistantItems.length === 0) return;
+    const first = assistantItems[0];
+    if (!first) return;
+    const text = assistantItems.flatMap<CockpitTextSegment>((item) =>
+      item.type === "text" && item.text.trim()
+        ? [
+            {
+              id: item.id,
+              text: item.text,
+              ...(item.augmentHtml ? { augmentHtml: item.augmentHtml } : {}),
+              isStreaming: item.isStreaming === true,
+              abortedMidStream: item.abortedMidStream === true,
+            },
+          ]
+        : [],
+    );
+    const thinking = assistantItems.flatMap<CockpitThinkingSegment>((item) =>
+      item.type === "thinking" && item.thinking.trim()
+        ? [{ id: item.id, text: item.thinking, status: item.status }]
+        : [],
+    );
+    if (text.length > 0 || thinking.length > 0) {
+      const timestamp = timestampForItem(first);
+      entries.push({
+        kind: "assistant",
+        key: entryKey(input.sourceKey, input.sessionId, "assistant", first.id),
+        ...(timestamp ? { timestamp } : {}),
+        text,
+        thinking,
+        spokenText: text.map((segment) => segment.text).join("\n\n").trim(),
+        isStreaming:
+          text.some((segment) => segment.isStreaming) ||
+          thinking.some((segment) => segment.status === "streaming"),
+      });
+    }
+    assistantItems = [];
+  };
+
+  for (const item of input.renderItems) {
+    if (item.type === "user_prompt") {
+      flushAssistant();
+      const text = contentText(item.content);
+      if (text) {
+        const timestamp = timestampForItem(item);
+        entries.push({
+          kind: "user",
+          key: entryKey(input.sourceKey, input.sessionId, "user", item.id),
+          ...(timestamp ? { timestamp } : {}),
+          text,
+        });
+      }
+      continue;
+    }
+
+    if (item.type === "text" || item.type === "thinking") {
+      assistantItems.push(item);
+      continue;
+    }
+
+    if (
+      item.type === "system" &&
+      (item.subtype === "compact_boundary" || item.subtype === "status")
+    ) {
+      flushAssistant();
+      const timestamp = timestampForItem(item);
+      entries.push({
+        kind: "boundary",
+        key: entryKey(input.sourceKey, input.sessionId, "boundary", item.id),
+        ...(timestamp ? { timestamp } : {}),
+        subtype: item.subtype,
+      });
+    }
+  }
+
+  flushAssistant();
+  return entries;
+}
+
+export function deriveCockpitSessionState({
+  transport,
+  loadError,
+  owner,
+  processState,
+  updatesConnected,
+  updatesResubscribing,
+}: CockpitSessionStateInput): CockpitSessionState {
+  if (transport === "offline") return "offline";
+  if (transport === "error" || loadError) return "error";
+  if (transport === "loading" || updatesResubscribing) return "reconnecting";
+  if (processState === "waiting-input") return "waiting";
+  if (processState === "in-turn") return "active";
+  if (owner !== "none" && !updatesConnected) return "reconnecting";
+  return "complete";
+}

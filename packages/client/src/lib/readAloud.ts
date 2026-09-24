@@ -11,6 +11,7 @@ export type ReadAloudState = "idle" | "loading" | "playing";
 
 let audioEl: HTMLAudioElement | null = null;
 let objectUrl: string | null = null;
+let cancelPlaybackWait: (() => void) | null = null;
 let sessionId = 0;
 let token: string | null = null;
 let state: ReadAloudState = "idle";
@@ -38,6 +39,8 @@ export function getReadAloudToken(): string | null {
 
 export function stopReadAloud(): void {
   sessionId++;
+  cancelPlaybackWait?.();
+  cancelPlaybackWait = null;
   if (audioEl) {
     audioEl.pause();
     // Detach handlers before clearing src: assigning src = "" fires an
@@ -86,13 +89,22 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
 
   const playUrl = (url: string): Promise<void> =>
     new Promise((resolve, reject) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => reject(new Error("audio playback failed"));
+      const finish = () => {
+        if (cancelPlaybackWait === finish) cancelPlaybackWait = null;
+        resolve();
+      };
+      const fail = () => {
+        if (cancelPlaybackWait === finish) cancelPlaybackWait = null;
+        reject(new Error("audio playback failed"));
+      };
+      cancelPlaybackWait = finish;
+      audio.onended = finish;
+      audio.onerror = fail;
       const prev = objectUrl;
       objectUrl = url;
       audio.src = url;
       if (prev && prev !== url) URL.revokeObjectURL(prev);
-      audio.play().catch(reject);
+      audio.play().catch(fail);
     });
 
   try {

@@ -13,6 +13,9 @@ describe("Cockpit navigation", () => {
     });
     expect(navigation.project("project one")).toBe("/projects/project%20one");
     expect(navigation.session("project one", "session/two")).toBe(
+      "/cockpit/projects/project%20one/sessions/session%2Ftwo",
+    );
+    expect(navigation.classicSession("project one", "session/two")).toBe(
       "/projects/project%20one/sessions/session%2Ftwo",
     );
   });
@@ -30,6 +33,9 @@ describe("Cockpit navigation", () => {
       "/-/relay/studio/projects/project%20one",
     );
     expect(navigation.session("project one", "session/two")).toBe(
+      "/-/relay/studio/cockpit/projects/project%20one/sessions/session%2Ftwo",
+    );
+    expect(navigation.classicSession("project one", "session/two")).toBe(
       "/-/relay/studio/projects/project%20one/sessions/session%2Ftwo",
     );
   });

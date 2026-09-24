@@ -251,6 +251,10 @@
   backdrop-filter: blur(20px);
 }
 
+.header[hidden] {
+  display: none;
+}
+
 .header h1 {
   margin: 0.2rem 0 0;
   font-size: clamp(1.35rem, 2vw, 1.72rem);
@@ -380,6 +384,11 @@
   padding: clamp(1.25rem, 5vw, 4rem);
   flex: 1;
   place-items: center;
+}
+
+.canvas[data-detail="true"] {
+  display: block;
+  padding: 0;
 }
 
 .statePanel {
@@ -567,6 +576,11 @@
     flex-direction: column;
     justify-content: center;
     gap: 1rem;
+  }
+
+  .canvas[data-detail="true"] {
+    display: block;
+    padding: 0;
   }
 
   .mobileCatalog {

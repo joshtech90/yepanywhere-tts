@@ -1,5 +1,5 @@
 import { useState, useSyncExternalStore, type ReactNode } from "react";
-import { Link } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
@@ -9,6 +9,7 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import styles from "./CockpitPage.module.css";
+import { CockpitSessionDetail } from "./CockpitSessionDetail";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { createCockpitNavigation } from "./core/navigation";
 import {
@@ -96,6 +97,7 @@ function StateIcon({ kind }: { kind: CockpitShellState["kind"] }) {
 interface CockpitShellProps extends CockpitAppearanceControlsProps {
   basePath: string;
   catalogData: CockpitCatalogData;
+  children?: ReactNode;
   resolvedTheme: CockpitResolvedTheme;
   shellState: CockpitShellState;
 }
@@ -104,6 +106,7 @@ export function CockpitShell({
   accent,
   basePath,
   catalogData,
+  children,
   onAccentChange,
   onThemeChange,
   resolvedTheme,
@@ -114,6 +117,7 @@ export function CockpitShell({
   const [catalogQuery, setCatalogQuery] = useState("");
   const navigation = createCockpitNavigation(basePath);
   const hasCatalog = catalogData.catalog.projects.length > 0;
+  const hasDetail = children !== undefined && children !== null;
   const destinations: Array<{
     href: string;
     label: string;
@@ -217,8 +221,11 @@ export function CockpitShell({
         </section>
       </aside>
 
-      <section className={styles.workspace} aria-labelledby="cockpit-title">
-        <header className={styles.header}>
+      <section
+        aria-labelledby={hasDetail ? undefined : "cockpit-title"}
+        className={styles.workspace}
+      >
+        <header className={styles.header} hidden={hasDetail}>
           <div>
             <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
             <h1 id="cockpit-title">Cockpit</h1>
@@ -251,40 +258,52 @@ export function CockpitShell({
           </div>
         </header>
 
-        <div className={styles.canvas}>
-          <div className={styles.mobileCatalog}>
-            <CockpitCatalog
-              basePath={basePath}
-              catalog={catalogData.catalog}
-              error={catalogData.error}
-              hasMore={catalogData.hasMore}
-              loading={catalogData.loading}
-              onLoadMore={catalogData.loadMore}
-              onQueryChange={setCatalogQuery}
-              query={catalogQuery}
-            />
-          </div>
-          <section
-            className={styles.statePanel}
-            data-catalog={hasCatalog ? "true" : "false"}
-            data-state={shellState.kind}
-          >
-            <span className={styles.stateIcon}>
-              <StateIcon kind={shellState.kind} />
-            </span>
-            <div
-              aria-live="polite"
-              role={shellState.kind === "error" ? "alert" : "status"}
-            >
-              <p className={styles.stateKicker}>{stateCopy.status}</p>
-              <h2>{stateCopy.title}</h2>
-              <p className={styles.stateBody}>{stateCopy.body}</p>
-            </div>
-            <Link className={styles.secondaryAction} to={navigation.sessions}>
-              <SessionsIcon />
-              <span>{t("cockpitOpenClassic")}</span>
-            </Link>
-          </section>
+        <div
+          className={styles.canvas}
+          data-detail={hasDetail ? "true" : "false"}
+        >
+          {hasDetail ? (
+            children
+          ) : (
+            <>
+              <div className={styles.mobileCatalog}>
+                <CockpitCatalog
+                  basePath={basePath}
+                  catalog={catalogData.catalog}
+                  error={catalogData.error}
+                  hasMore={catalogData.hasMore}
+                  loading={catalogData.loading}
+                  onLoadMore={catalogData.loadMore}
+                  onQueryChange={setCatalogQuery}
+                  query={catalogQuery}
+                />
+              </div>
+              <section
+                className={styles.statePanel}
+                data-catalog={hasCatalog ? "true" : "false"}
+                data-state={shellState.kind}
+              >
+                <span className={styles.stateIcon}>
+                  <StateIcon kind={shellState.kind} />
+                </span>
+                <div
+                  aria-live="polite"
+                  role={shellState.kind === "error" ? "alert" : "status"}
+                >
+                  <p className={styles.stateKicker}>{stateCopy.status}</p>
+                  <h2>{stateCopy.title}</h2>
+                  <p className={styles.stateBody}>{stateCopy.body}</p>
+                </div>
+                <Link
+                  className={styles.secondaryAction}
+                  to={navigation.sessions}
+                >
+                  <SessionsIcon />
+                  <span>{t("cockpitOpenClassic")}</span>
+                </Link>
+              </section>
+            </>
+          )}
         </div>
       </section>
     </main>
@@ -294,6 +313,10 @@ export function CockpitShell({
 export function CockpitPage() {
   const runtime = useCurrentSourceRuntime();
   const basePath = useRemoteBasePath();
+  const { projectId, sessionId } = useParams<{
+    projectId: string;
+    sessionId: string;
+  }>();
   // Subscribe to the derived primitive only: getSnapshot() returns a fresh
   // object on every call, which makes useSyncExternalStore loop forever
   // (React error 185). useActivityBusState selects `.state` for the same reason.
@@ -315,6 +338,16 @@ export function CockpitPage() {
       resolvedTheme={appearance.resolvedTheme}
       shellState={{ kind: shellKind }}
       theme={appearance.theme}
-    />
+    >
+      {projectId && sessionId ? (
+        <CockpitSessionDetail
+          basePath={basePath}
+          key={`${projectId}\0${sessionId}`}
+          projectId={projectId}
+          sessionId={sessionId}
+          shellKind={shellKind}
+        />
+      ) : undefined}
+    </CockpitShell>
   );
 }
