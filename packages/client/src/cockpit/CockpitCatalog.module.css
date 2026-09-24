@@ -279,7 +279,7 @@
   font-weight: 700;
 }
 
-.status > span {
+.status > span:first-child {
   width: 0.42rem;
   height: 0.42rem;
   flex: 0 0 auto;
