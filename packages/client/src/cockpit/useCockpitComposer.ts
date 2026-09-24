@@ -24,8 +24,11 @@ import {
   type CockpitComposerAction,
   createCockpitSubmissionMetadata,
   deriveCockpitComposerActions,
+  frequentCockpitPrompts,
   readCockpitComposerDraft,
+  readCockpitPromptHistory,
   rememberCockpitPrompt,
+  removeCockpitPrompt,
   writeCockpitComposerDraft,
 } from "./core/composer";
 
@@ -89,6 +92,9 @@ export function useCockpitComposer(
   const attachmentsRef = useRef<CockpitComposerAttachment[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [promptHistory, setPromptHistory] = useState(() =>
+    readCockpitPromptHistory(runtime.sourceKey),
+  );
   const typingStartedAtRef = useRef<string | null>(
     draft.trim() ? new Date().toISOString() : null,
   );
@@ -106,6 +112,10 @@ export function useCockpitComposer(
       : null;
     lastEditedAtRef.current = typingStartedAtRef.current;
   }, [draftKey]);
+
+  useEffect(() => {
+    setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
+  }, [runtime.sourceKey]);
 
   useEffect(() => {
     mountedRef.current = true;
@@ -348,6 +358,7 @@ export function useCockpitComposer(
 
         writeCockpitComposerDraft(draftKey, "");
         rememberCockpitPrompt(runtime.sourceKey, text, submittedAt);
+        setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
         setDraftState("");
         typingStartedAtRef.current = null;
         lastEditedAtRef.current = null;
@@ -382,13 +393,23 @@ export function useCockpitComposer(
     ],
   );
 
+  const removePrompt = useCallback(
+    (text: string) => {
+      setPromptHistory(removeCockpitPrompt(runtime.sourceKey, text));
+    },
+    [runtime.sourceKey],
+  );
+
   return {
     actions,
     attachFiles,
     attachments,
     draft,
     error,
+    frequentPrompts: frequentCockpitPrompts(promptHistory),
+    promptHistory,
     removeAttachment,
+    removePrompt,
     retryAttachment,
     setDraft,
     submit,

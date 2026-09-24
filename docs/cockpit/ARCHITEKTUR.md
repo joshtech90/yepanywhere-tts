@@ -306,6 +306,28 @@ und Effort werden ueber den vorhandenen `ModelSwitchModal` samt
 Long-Context-Warnung geaendert; ein ruhiger Cockpit-Trigger ersetzt dabei nicht
 die vorhandenen serverautoritativen Konfigurationsaktionen.
 
+### Organisationsgrenze aus Paket 9
+
+Favoriten bleiben vorhandene serverseitige Session-Metadaten. Das Cockpit
+schreibt `starred` ueber den source-gebundenen Transport auf die bestehende
+Metadatenroute und meldet den bestaetigten Wert danach an denselben Summary-
+Store, aus dem Katalog und Suche lesen. Bis zur Serverbestaetigung bleibt die
+sichtbare Markierung unveraendert. Lehnt ein aelterer Server die Operation ab,
+zeigt das Cockpit einen Rueckfallhinweis und behauptet keinen Erfolg.
+
+Gespeicherte Cockpit-Ansichten sind ein versionierter browserlokaler Record.
+Jede Source besitzt eine eigene Liste aus Suchtext und Favoritenfilter; gleiche
+Session-IDs verschiedener Hosts teilen dadurch weder Auswahl noch lokale
+Organisation. Beim Entfernen eines gespeicherten Hosts werden dessen Ansichten
+und Prompt-Verlauf mit entfernt, waehrend andere Sources erhalten bleiben.
+
+Der bereits in Paket 7 angelegte Prompt-Verlauf ist nun Version 2. Alte
+Version-1-Eintraege werden beim Lesen mit einem Nutzungszaehler migriert;
+unbekannte Versionen fallen leer und ohne Auswirkung auf den Composer zurueck.
+Erfolgreich gesendete Prompts werden source-gebunden, dedupliziert und begrenzt
+gespeichert. Die UI kann letzte und haeufige Prompts nur in den Draft
+uebernehmen; sie sendet nie durch Auswahl eines Verlaufswerts.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

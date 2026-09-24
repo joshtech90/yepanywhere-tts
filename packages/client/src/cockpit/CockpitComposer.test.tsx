@@ -5,6 +5,7 @@ import { api } from "../api/client";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitComposer } from "./CockpitComposer";
+import { rememberCockpitPrompt } from "./core/composer";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 
 const runtime = vi.hoisted(() => ({
@@ -193,5 +194,25 @@ describe("Cockpit composer", () => {
 
     expect(observedSignal?.aborted).toBe(true);
     expect(screen.queryByText("draft.txt")).toBeNull();
+  });
+
+  it("recalls frequent source-local prompts into the draft without sending", () => {
+    rememberCockpitPrompt("local", "Summarize the fictional release notes.");
+    rememberCockpitPrompt("local", "Summarize the fictional release notes.");
+    render(composer());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    expect(screen.getByText("Frequently used")).toBeTruthy();
+    const promptButton = screen.getAllByRole("button", {
+      name: /Summarize the fictional release notes/,
+    })[0];
+    if (!promptButton) throw new Error("prompt button missing");
+    fireEvent.click(promptButton);
+
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "Summarize the fictional release notes.",
+    );
   });
 });

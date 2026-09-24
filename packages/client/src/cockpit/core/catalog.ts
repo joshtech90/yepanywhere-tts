@@ -248,18 +248,21 @@ function sessionMatches(
 export function filterCockpitCatalog(
   catalog: CockpitCatalogView,
   query: string,
+  options: { pinnedOnly?: boolean } = {},
 ): CockpitCatalogView {
   const needle = normalized(query);
-  if (!needle) return catalog;
+  if (!needle && !options.pinnedOnly) return catalog;
 
   const projects = catalog.projects.flatMap((project) => {
     const projectMatches = [project.name, project.path].some((value) =>
       normalized(value).includes(needle),
     );
-    const sessions = projectMatches
-      ? project.sessions
-      : project.sessions.filter((session) => sessionMatches(session, needle));
-    return projectMatches || sessions.length > 0
+    const sessions = project.sessions.filter(
+      (session) =>
+        (!options.pinnedOnly || session.pinned) &&
+        (!needle || projectMatches || sessionMatches(session, needle)),
+    );
+    return sessions.length > 0 || (projectMatches && !options.pinnedOnly)
       ? [{ ...project, sessions }]
       : [];
   });

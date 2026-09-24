@@ -5,6 +5,7 @@ import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { CockpitCatalog } from "./CockpitCatalog";
 import type { CockpitCatalogView } from "./core/catalog";
+import type { CockpitOrganizationController } from "./useCockpitOrganization";
 
 afterEach(cleanup);
 
@@ -34,7 +35,29 @@ function catalogWithSessions(count: number): CockpitCatalogView {
   };
 }
 
-function CatalogHarness({ catalog }: { catalog: CockpitCatalogView }) {
+function organization(): CockpitOrganizationController {
+  return {
+    activeViewId: null,
+    pinError: false,
+    pinnedOnly: false,
+    pendingPins: new Set(),
+    views: [],
+    activateView: vi.fn(),
+    clearActiveView: vi.fn(),
+    removeView: vi.fn(),
+    saveView: vi.fn(),
+    setPinnedOnly: vi.fn(),
+    togglePin: vi.fn(async () => true),
+  };
+}
+
+function CatalogHarness({
+  catalog,
+  organizationController = organization(),
+}: {
+  catalog: CockpitCatalogView;
+  organizationController?: CockpitOrganizationController;
+}) {
   const [query, setQuery] = useState("");
   return (
     <MemoryRouter>
@@ -47,6 +70,7 @@ function CatalogHarness({ catalog }: { catalog: CockpitCatalogView }) {
           loading={false}
           onLoadMore={vi.fn(async () => {})}
           onQueryChange={setQuery}
+          organization={organizationController}
           query={query}
         />
       </I18nProvider>
@@ -65,8 +89,10 @@ describe("Cockpit catalog", () => {
 
     for (const character of "Atlas") {
       value += character;
+      const startedAt = performance.now();
       fireEvent.change(input, { target: { value } });
       expect(input.value).toBe(value);
+      expect(performance.now() - startedAt).toBeLessThan(100);
 
       catalog = catalogWithSessions(catalog.sessionCount + 1);
       rerender(<CatalogHarness catalog={catalog} />);
@@ -84,5 +110,32 @@ describe("Cockpit catalog", () => {
       screen.getByText("Release checklist").closest("a")?.getAttribute("href"),
     ).toBe("/cockpit/projects/atlas/sessions/session-0");
     expect(document.querySelector("time")?.textContent).toContain("2026");
+  });
+
+  it("uses singular count copy and an accessible project link on mobile-sized catalogs", () => {
+    render(<CatalogHarness catalog={catalogWithSessions(1)} />);
+
+    expect(screen.getByText("1 session")).toBeTruthy();
+    expect(
+      screen.getByRole("link", { name: "Open project Atlas" }),
+    ).toBeTruthy();
+  });
+
+  it("updates favorites through the organization controller", () => {
+    const controller = organization();
+    render(
+      <CatalogHarness
+        catalog={catalogWithSessions(1)}
+        organizationController={controller}
+      />,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Remove Release checklist from favorites",
+      }),
+    );
+
+    expect(controller.togglePin).toHaveBeenCalledWith("session-0", false);
   });
 });

@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import { useI18n } from "../i18n";
+import { CockpitPromptHistory } from "./CockpitPromptHistory";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
 import styles from "./CockpitComposer.module.css";
@@ -113,6 +114,12 @@ export function CockpitComposer(props: CockpitComposerProps) {
           >
             +
           </button>
+          <CockpitPromptHistory
+            entries={composer.promptHistory}
+            frequent={composer.frequentPrompts}
+            onRemove={composer.removePrompt}
+            onUse={composer.setDraft}
+          />
           <span className={styles.hint}>{t("toolbarSendTooltip")}</span>
           {composer.actions.canQueue && composer.actions.primary !== "queue" && (
             <button

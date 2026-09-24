@@ -95,8 +95,10 @@ describe("Cockpit global search", () => {
 
     for (const character of "Atlas") {
       value += character;
+      const startedAt = performance.now();
       fireEvent.change(input, { target: { value } });
       expect(input.value).toBe(value);
+      expect(performance.now() - startedAt).toBeLessThan(100);
       searchMock.data = {
         ...searchMock.data,
         loadedSessionCount: searchMock.data.loadedSessionCount + 1,

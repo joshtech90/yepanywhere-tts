@@ -27,6 +27,19 @@ const pageMocks = vi.hoisted(() => {
       loading: false,
       hasMore: false,
       loadMore: vi.fn(async () => {}),
+      organization: {
+        activeViewId: null,
+        pinError: false,
+        pinnedOnly: false,
+        pendingPins: new Set<string>(),
+        views: [],
+        activateView: vi.fn(),
+        clearActiveView: vi.fn(),
+        removeView: vi.fn(),
+        saveView: vi.fn(),
+        setPinnedOnly: vi.fn(),
+        togglePin: vi.fn(async () => true),
+      },
     },
   };
 });

@@ -270,7 +270,7 @@ Einzeln pruefbar durch:
 
 ## 9 — Session-Organisation, Pins und Prompt-History
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Pakete 3 und 7.
 
@@ -287,6 +287,20 @@ Einzeln pruefbar durch:
   Hosts;
 - Storage-Migration/Fallback fuer unbekannte Versionen;
 - mobile Bedienung ohne Praezisionstaps.
+
+Ergebnis dieses Zugs: Favoriten lassen sich direkt in der Cockpit-Sidebar ueber
+die vorhandene serverseitige Session-Metadatenroute setzen und entfernen. Die
+Markierung aendert sich erst nach Serverbestaetigung; alte Server erhalten eine
+sichtbare Rueckfallanzeige. Suchtext und Favoritenfilter koennen als benannte,
+browserlokale Ansichten gespeichert werden und bleiben strikt source-gebunden.
+Beim Entfernen eines gespeicherten Hosts werden nur dessen Ansichten und
+Prompt-Verlauf bereinigt. Der Composer zeigt die letzten sowie mehrfach
+verwendete Prompts, uebernimmt eine Auswahl nur in den Draft und erlaubt das
+gezielte Entfernen. Version-1-Verlauf wird auf Nutzungszaehler migriert,
+unbekannte Versionen fallen sicher leer zurueck. Zusaetzlich verwenden die
+Cockpit-Zaehler nun eine korrekte Einzahl, Projekt- und Suchtrefferlinks besitzen
+auch mobil einen stabilen zugaenglichen Namen, und die sequentiellen Suchtests
+pruefen die geforderte 100-ms-Bestaetigung pro Zeichen.
 
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
@@ -336,6 +350,6 @@ Einzeln pruefbar durch:
 
 ## Naechstes Paket
 
-Als Naechstes ist fuer Fenster 2 **Paket 9 — Session-Organisation, Pins und
-Prompt-History** vorgesehen. Seine Voraussetzung Paket 7 liegt bei Fenster 1;
-bis zu dessen Zusammenfuehrung bleibt Paket 9 offen.
+Als Naechstes ist fuer Fenster 2 **Paket 10 — Keyboard-Shortcuts und mobile
+Feinarbeit** vorgesehen. Seine Voraussetzung Paket 8 liegt bei Fenster 1; bis
+zu dessen Zusammenfuehrung bleibt Paket 10 offen.

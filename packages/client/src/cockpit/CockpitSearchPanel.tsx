@@ -86,19 +86,35 @@ export function CockpitSearchPanel({
   }, [search.results, selectedSessionId]);
 
   const coverage = useMemo(() => {
+    const singular = search.loadedSessionCount === 1;
     if (search.error) {
-      return t("cockpitGlobalSearchCoverageError", {
-        count: search.loadedSessionCount,
-      });
+      return t(
+        singular
+          ? "cockpitGlobalSearchCoverageErrorOne"
+          : "cockpitGlobalSearchCoverageError",
+        {
+          count: search.loadedSessionCount,
+        },
+      );
     }
     if (search.catalogHasMore || search.catalogLoading) {
-      return t("cockpitGlobalSearchCoverageLoading", {
-        count: search.loadedSessionCount,
-      });
+      return t(
+        singular
+          ? "cockpitGlobalSearchCoverageLoadingOne"
+          : "cockpitGlobalSearchCoverageLoading",
+        {
+          count: search.loadedSessionCount,
+        },
+      );
     }
-    return t("cockpitGlobalSearchCoverageComplete", {
-      count: search.loadedSessionCount,
-    });
+    return t(
+      singular
+        ? "cockpitGlobalSearchCoverageCompleteOne"
+        : "cockpitGlobalSearchCoverageComplete",
+      {
+        count: search.loadedSessionCount,
+      },
+    );
   }, [
     search.catalogHasMore,
     search.catalogLoading,
@@ -196,18 +212,24 @@ export function CockpitSearchPanel({
 
       {search.unsupportedProviderSessionCount > 0 && (
         <p className={styles.notice}>
-          {t("cockpitGlobalSearchUnsupportedProviders", {
-            count: search.unsupportedProviderSessionCount,
-          })}
+          {t(
+            search.unsupportedProviderSessionCount === 1
+              ? "cockpitGlobalSearchUnsupportedProvidersOne"
+              : "cockpitGlobalSearchUnsupportedProviders",
+            { count: search.unsupportedProviderSessionCount },
+          )}
         </p>
       )}
 
       {search.partialSessions.length > 0 && (
         <details className={styles.partial}>
           <summary>
-            {t("cockpitGlobalSearchPartial", {
-              count: search.partialSessions.length,
-            })}
+            {t(
+              search.partialSessions.length === 1
+                ? "cockpitGlobalSearchPartialOne"
+                : "cockpitGlobalSearchPartial",
+              { count: search.partialSessions.length },
+            )}
           </summary>
           <p>{t("cockpitGlobalSearchPartialBody")}</p>
           <ul>
@@ -229,9 +251,12 @@ export function CockpitSearchPanel({
 
       <div className={styles.resultSummary} aria-live="polite">
         {query.trim()
-          ? t("cockpitGlobalSearchResultCount", {
-              count: search.results.length,
-            })
+          ? t(
+              search.results.length === 1
+                ? "cockpitGlobalSearchResultCountOne"
+                : "cockpitGlobalSearchResultCount",
+              { count: search.results.length },
+            )
           : t("cockpitGlobalSearchHint")}
       </div>
 
@@ -262,6 +287,7 @@ export function CockpitSearchPanel({
               key={session.id}
             >
               <Link
+                aria-label={title}
                 aria-current={
                   selectedSessionId === session.id ? "true" : undefined
                 }

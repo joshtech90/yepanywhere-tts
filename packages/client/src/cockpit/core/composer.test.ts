@@ -3,8 +3,10 @@ import {
   cockpitComposerDraftKey,
   createCockpitSubmissionMetadata,
   deriveCockpitComposerActions,
+  frequentCockpitPrompts,
   readCockpitComposerDraft,
   readCockpitPromptHistory,
+  removeCockpitPromptHistorySource,
   rememberCockpitPrompt,
   writeCockpitComposerDraft,
 } from "./composer";
@@ -75,8 +77,56 @@ describe("Cockpit composer core", () => {
       {
         text: "Summarize the fictional notes.",
         usedAt: "2026-09-24T10:01:00.000Z",
+        useCount: 2,
       },
     ]);
     expect(readCockpitPromptHistory("local")).toEqual([]);
+  });
+
+  it("migrates version-one history and ignores unknown versions", () => {
+    localStorage.setItem(
+      "yep-anywhere-cockpit-prompts",
+      JSON.stringify({
+        version: 1,
+        sources: {
+          local: [
+            {
+              text: "Review the fictional outline.",
+              usedAt: "2026-09-24T09:00:00.000Z",
+            },
+          ],
+        },
+      }),
+    );
+    expect(readCockpitPromptHistory("local")[0]).toEqual({
+      text: "Review the fictional outline.",
+      usedAt: "2026-09-24T09:00:00.000Z",
+      useCount: 1,
+    });
+
+    localStorage.setItem(
+      "yep-anywhere-cockpit-prompts",
+      JSON.stringify({ version: 77, sources: { local: [] } }),
+    );
+    expect(readCockpitPromptHistory("local")).toEqual([]);
+  });
+
+  it("ranks frequent prompts and removes only the selected host", () => {
+    rememberCockpitPrompt("host:alpha", "Draft a fictional summary.");
+    rememberCockpitPrompt("host:alpha", "Draft a fictional summary.");
+    rememberCockpitPrompt("host:beta", "List fictional risks.");
+
+    expect(frequentCockpitPrompts(readCockpitPromptHistory("host:alpha"))).toEqual(
+      [
+        expect.objectContaining({
+          text: "Draft a fictional summary.",
+          useCount: 2,
+        }),
+      ],
+    );
+
+    removeCockpitPromptHistorySource("host:alpha");
+    expect(readCockpitPromptHistory("host:alpha")).toEqual([]);
+    expect(readCockpitPromptHistory("host:beta")).toHaveLength(1);
   });
 });

@@ -202,6 +202,7 @@ export function CockpitShell({
             loading={catalogData.loading}
             onLoadMore={catalogData.loadMore}
             onQueryChange={setCatalogQuery}
+            organization={catalogData.organization}
             query={catalogQuery}
           />
         </div>
@@ -306,6 +307,7 @@ export function CockpitShell({
                   loading={catalogData.loading}
                   onLoadMore={catalogData.loadMore}
                   onQueryChange={setCatalogQuery}
+                  organization={catalogData.organization}
                   query={catalogQuery}
                 />
               </div>

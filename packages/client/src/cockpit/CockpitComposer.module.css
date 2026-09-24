@@ -21,7 +21,7 @@
 }
 
 .composerBox {
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid var(--cockpit-border-strong);
   border-radius: 1rem;
   background: var(--cockpit-surface);
