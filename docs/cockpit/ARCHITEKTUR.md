@@ -6,7 +6,7 @@ Ausgangsbasis der Cockpit-Serie:
 `034026b9da89e60e09e2de2f034075b3e9f2eadc`
 
 Basis dieses Umsetzungsschritts:
-`e72dc8e2a2c81c4cbf678c8472a28f80f6637221`
+`413cde3ef397dc601891fae418643c0e50db3527`
 
 ## Ziel und Leitplanken
 
@@ -166,7 +166,7 @@ die Seite nicht verhindern; die Wahl gilt dann fuer den laufenden Tab.
 Die Shell liest ihren Zustand direkt aus dem vorhandenen
 `SourceTransportStatusSnapshot`:
 
-- `ready` zeigt den leeren, fuer Paket 3 vorbereiteten Arbeitsbereich;
+- `ready` zeigt den Projekt- und Sitzungskatalog aus Paket 3;
 - `connecting` und `reconnecting` zeigen Laden bei stabiler Geometrie;
 - `disconnected` zeigt Offline;
 - ein von einem Transportkanal gemeldeter Fehler zeigt den Fehlerzustand.
@@ -175,6 +175,38 @@ Damit entstehen keine zweite Verbindungslogik und kein zweiter Store. Desktop
 verwendet eine feste Sidebar; bis 700 Pixel wird dieselbe Navigation zu einer
 Safe-Area-faehigen unteren Leiste. Fokus, Touch-Ziele und Reduced Motion werden
 innerhalb derselben Feature-Grenze gepflegt.
+
+`SourceTransportStatusSnapshot` ist als Ganzes kein gueltiger React-Snapshot:
+`getSnapshot()` darf bei jedem Aufruf ein neues Objekt liefern. Cockpit-Hooks
+mit `useSyncExternalStore` abonnieren deshalb nur abgeleitete primitive Werte
+oder eine anderweitig referenzstabile Projektion. Ein Regressionstest deckt den
+Fall ab, dass jeder Snapshot-Aufruf ein frisches Objekt zurueckgibt.
+
+### Kataloggrenze aus Paket 3
+
+`useCockpitCatalog` ist die Kompositionsgrenze zwischen bestehendem Client-Core
+und Cockpit-Katalog. Die vorhandenen Hooks `useProjects` und
+`useGlobalSessionsFeed` laden kompakte Projekt- und Sitzungssummen in den
+source-gebundenen Summary Store. Der reine Adapter unter `cockpit/core` formt
+daraus Projektgruppen und Cockpit-Status; er besitzt weder Transport- noch
+Transcript-Logik und speichert keine zweite Kopie der Daten.
+
+Source-Identitaet ist Bestandteil jedes Projekt- und Sitzungsschluessels des
+View-Modells. Gleiche Projekt- oder Sitzungs-IDs zweier Hosts kollidieren daher
+nicht. Eine Sitzung verlinkt bis Paket 5 weiterhin auf ihre vorhandene
+Bestandsroute, waehrend die neue read-only Detailansicht noch fehlt.
+
+Innerhalb einer Projektgruppe stehen Favoriten zuerst. Danach uebernimmt das
+Cockpit die vorhandene Reihenfolge aus `useSidebarSessionOrder`, statt eine
+zweite Chronologie fuer dieselben Summary-Daten zu erfinden. Der Status ist
+eine separate Projektion mit der Prioritaet Offline, Fehler, Freigabe/Frage,
+aktiv und fertig.
+
+Die Sidebar-Suche filtert nur die bereits geladenen Summary-Daten nach Projekt,
+Pfad, Sitzungstitel, Provider und Modell. Wenn der bestehende Feed weitere
+Seiten kennt, nennt die UI diese Teilabdeckung und bietet explizites Nachladen
+an. Inhalts- und Volltextsuche bleibt Paket 4; Paket 3 startet dafuer keine
+Transcript-Abfragen und keine eigenen Dateiscans.
 
 ## Verworfene Alternativen
 
@@ -257,10 +289,10 @@ Ein neuer Server-/Shared-Erweiterungspunkt braucht jeweils:
 - Streaming-Token werden nicht in breit abonnierte React-Zustaende verschoben.
 - Queue, Steer, Interrupt und Approvals bestaetigt der Server; optimistische UI
   darf die Autoritaet nicht vortaeuschen.
-- Neue sichtbare Texte laufen ueber das vorhandene i18n-System. Der
-  Repository-Workflow nimmt neue Schluessel zuerst in Englisch auf; die
-  deutsche Oberflaeche verwendet vorhandene deutsche Schluessel sofort und
-  erhaelt neue Uebersetzungen im normalen Uebersetzungslauf.
+- Neue sichtbare Texte laufen ueber das vorhandene i18n-System. Cockpit-Texte
+  werden fuer Joschas deutsche Oberflaeche im selben Paket in `en.json` und
+  `de.json` gepflegt; andere sparse Locales fallen bis zu ihrem normalen
+  Uebersetzungslauf auf Englisch zurueck.
 - Desktop und 375-Pixel-Mobilbreite sind pro sichtbarem Paket zu pruefen.
 - Die Schranke und CSS-/i18n-/Console-Pruefungen werden nicht abgeschwaecht.
 

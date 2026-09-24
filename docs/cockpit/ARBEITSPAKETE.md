@@ -6,7 +6,7 @@ Ausgangsbasis der Cockpit-Serie:
 `034026b9da89e60e09e2de2f034075b3e9f2eadc`
 
 Basis dieses Umsetzungsschritts:
-`e72dc8e2a2c81c4cbf678c8472a28f80f6637221`
+`413cde3ef397dc601891fae418643c0e50db3527`
 
 Statuswerte: **offen**, **in Arbeit**, **umgesetzt**, **blockiert**.
 
@@ -74,7 +74,7 @@ unveraendert.
 
 ## 3 — Projekt- und Session-Sidebar auf dem vorhandenen Summary-Core
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Pakete 1 und 2.
 
@@ -93,6 +93,16 @@ Einzeln pruefbar durch:
 - sequentieller Tipptest: jeder Buchstabe der Suche ist innerhalb 100 ms im
   Feld sichtbar, auch waehrend Summary-Updates eintreffen;
 - Desktop-/Mobil-Captures mit grossen und leeren Katalogen.
+
+Ergebnis dieses Zugs: Der Cockpit-Adapter nutzt die vorhandenen Projekt- und
+Global-Sessions-Feeds sowie den source-gebundenen Summary Store. Projekte und
+Sitzungen erscheinen gruppiert mit Favorit, Nutzeraktivitaet und den Zustaenden
+aktiv, fertig, Freigabe, Frage, Fehler und offline. Die lokale Suche bestaetigt
+ihren Draft unabhaengig von Summary-Updates und filtert nur bereits geladene
+Summaries; weitere Feed-Seiten werden ehrlich angezeigt und koennen
+nachgeladen werden. Desktop nutzt die feste Sidebar, mobil steht derselbe
+Katalog im Arbeitsbereich ueber der unteren Navigation. Transcript-Daten,
+Server und Shared wurden nicht erweitert.
 
 ## 4 — Globale Suche ueber Sessions und Inhalte
 
@@ -274,6 +284,7 @@ Einzeln pruefbar durch:
 
 ## Naechstes Paket
 
-Als Naechstes ist **Paket 3 — Projekt- und Session-Sidebar auf dem vorhandenen
-Summary-Core** vorgesehen. Es bindet erstmals reale Geschaeftsdaten an die nun
-fertige Shell, ohne fuer die Sidebar Transcripts nachzuladen.
+Als Naechstes ist **Paket 4 — Globale Suche ueber Sessions und Inhalte**
+vorgesehen. Es baut auf dem geladenen Katalog auf, nutzt die vorhandene
+All-Sessions-Suche und muss Teilabdeckung weiterhin sichtbar machen, statt
+eigene Transcript- oder Dateiscans einzufuehren.

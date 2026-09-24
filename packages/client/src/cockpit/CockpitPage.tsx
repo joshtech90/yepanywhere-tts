@@ -1,4 +1,4 @@
-import { useSyncExternalStore, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -7,6 +7,7 @@ import {
   CockpitAppearanceControls,
   type CockpitAppearanceControlsProps,
 } from "./CockpitAppearanceControls";
+import { CockpitCatalog } from "./CockpitCatalog";
 import styles from "./CockpitPage.module.css";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { createCockpitNavigation } from "./core/navigation";
@@ -15,6 +16,10 @@ import {
   type CockpitShellState,
 } from "./core/shellState";
 import { useCockpitAppearance } from "./useCockpitAppearance";
+import {
+  useCockpitCatalog,
+  type CockpitCatalogData,
+} from "./useCockpitCatalog";
 
 function SessionsIcon() {
   return (
@@ -90,6 +95,7 @@ function StateIcon({ kind }: { kind: CockpitShellState["kind"] }) {
 
 interface CockpitShellProps extends CockpitAppearanceControlsProps {
   basePath: string;
+  catalogData: CockpitCatalogData;
   resolvedTheme: CockpitResolvedTheme;
   shellState: CockpitShellState;
 }
@@ -97,6 +103,7 @@ interface CockpitShellProps extends CockpitAppearanceControlsProps {
 export function CockpitShell({
   accent,
   basePath,
+  catalogData,
   onAccentChange,
   onThemeChange,
   resolvedTheme,
@@ -104,7 +111,9 @@ export function CockpitShell({
   theme,
 }: CockpitShellProps) {
   const { t } = useI18n();
+  const [catalogQuery, setCatalogQuery] = useState("");
   const navigation = createCockpitNavigation(basePath);
+  const hasCatalog = catalogData.catalog.projects.length > 0;
   const destinations: Array<{
     href: string;
     label: string;
@@ -169,6 +178,19 @@ export function CockpitShell({
           </span>
         </Link>
 
+        <div className={styles.desktopCatalog}>
+          <CockpitCatalog
+            basePath={basePath}
+            catalog={catalogData.catalog}
+            error={catalogData.error}
+            hasMore={catalogData.hasMore}
+            loading={catalogData.loading}
+            onLoadMore={catalogData.loadMore}
+            onQueryChange={setCatalogQuery}
+            query={catalogQuery}
+          />
+        </div>
+
         <nav className={styles.navigation}>
           {destinations.map((destination) => (
             <Link
@@ -230,7 +252,23 @@ export function CockpitShell({
         </header>
 
         <div className={styles.canvas}>
-          <section className={styles.statePanel} data-state={shellState.kind}>
+          <div className={styles.mobileCatalog}>
+            <CockpitCatalog
+              basePath={basePath}
+              catalog={catalogData.catalog}
+              error={catalogData.error}
+              hasMore={catalogData.hasMore}
+              loading={catalogData.loading}
+              onLoadMore={catalogData.loadMore}
+              onQueryChange={setCatalogQuery}
+              query={catalogQuery}
+            />
+          </div>
+          <section
+            className={styles.statePanel}
+            data-catalog={hasCatalog ? "true" : "false"}
+            data-state={shellState.kind}
+          >
             <span className={styles.stateIcon}>
               <StateIcon kind={shellState.kind} />
             </span>
@@ -265,11 +303,13 @@ export function CockpitPage() {
     () => deriveCockpitShellState(runtime.transport.status.getSnapshot()).kind,
   );
   const appearance = useCockpitAppearance();
+  const catalogData = useCockpitCatalog(shellKind);
 
   return (
     <CockpitShell
       accent={appearance.accent}
       basePath={basePath}
+      catalogData={catalogData}
       onAccentChange={appearance.setAccent}
       onThemeChange={appearance.setTheme}
       resolvedTheme={appearance.resolvedTheme}

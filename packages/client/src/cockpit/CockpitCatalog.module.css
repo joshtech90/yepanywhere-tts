@@ -1,0 +1,385 @@
+.root {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  color: var(--cockpit-text);
+}
+
+.search {
+  display: grid;
+  gap: 0.42rem;
+}
+
+.searchLabel {
+  color: var(--cockpit-faint);
+  font-size: 0.64rem;
+  font-weight: 750;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+}
+
+.searchField {
+  display: grid;
+  min-height: 2.45rem;
+  padding: 0 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.78rem;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+}
+
+.searchField:focus-within {
+  border-color: var(--cockpit-accent);
+  box-shadow: 0 0 0 3px var(--cockpit-accent-ring);
+}
+
+.searchField svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.searchField input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--cockpit-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.searchField input::placeholder {
+  color: var(--cockpit-faint);
+}
+
+.searchField button {
+  display: grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--cockpit-muted);
+  background: transparent;
+  font: inherit;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.searchField button:hover {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.summaryRow {
+  display: flex;
+  min-height: 1.8rem;
+  padding: 0 0.2rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--cockpit-faint);
+  font-size: 0.65rem;
+  font-weight: 650;
+}
+
+.catalogError,
+.emptyMessage,
+.projectEmpty {
+  color: var(--cockpit-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.catalogError {
+  margin: 0 0 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--cockpit-danger) 28%, transparent);
+  border-radius: 0.68rem;
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
+}
+
+.projectList {
+  min-height: 0;
+  padding-right: 0.18rem;
+  flex: 1;
+  overflow: auto;
+  scrollbar-color: var(--cockpit-border-strong) transparent;
+}
+
+.emptyMessage {
+  margin: 0.8rem 0;
+  padding: 1rem;
+  border: 1px dashed var(--cockpit-border-strong);
+  border-radius: 0.85rem;
+  text-align: center;
+}
+
+.projectGroup + .projectGroup {
+  margin-top: 0.75rem;
+}
+
+.projectHeader {
+  display: grid;
+  min-height: 2.2rem;
+  padding: 0 0.25rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.projectTitle {
+  min-width: 0;
+  margin: 0;
+  font: inherit;
+}
+
+.projectHeader a,
+.unknownProject {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 0.08rem;
+  color: var(--cockpit-text);
+  font-size: 0.72rem;
+  font-weight: 750;
+  text-decoration: none;
+}
+
+.projectHeader a > span,
+.projectHeader small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectHeader small {
+  color: var(--cockpit-faint);
+  font-size: 0.59rem;
+  font-weight: 550;
+}
+
+.projectHeader a:hover > span {
+  color: var(--cockpit-accent);
+}
+
+.projectCount {
+  min-width: 1.35rem;
+  padding: 0.12rem 0.35rem;
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-hover);
+  font-size: 0.6rem;
+  font-weight: 750;
+  text-align: center;
+}
+
+.projectEmpty {
+  margin: 0;
+  padding: 0.5rem 0.7rem;
+}
+
+.sessionList {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 0.18rem;
+  list-style: none;
+}
+
+.sessionLink {
+  display: grid;
+  min-height: 3.15rem;
+  padding: 0.52rem 0.65rem;
+  gap: 0.34rem;
+  border: 1px solid transparent;
+  border-radius: 0.78rem;
+  color: var(--cockpit-text);
+  text-decoration: none;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.sessionLink:hover {
+  border-color: var(--cockpit-border);
+  background: var(--cockpit-hover);
+  transform: translateX(1px);
+}
+
+.sessionTitleRow,
+.sessionMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.sessionTitleRow {
+  justify-content: space-between;
+  gap: 0.45rem;
+}
+
+.sessionTitle {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pin {
+  display: grid;
+  width: 0.82rem;
+  height: 0.82rem;
+  flex: 0 0 auto;
+  place-items: center;
+  color: var(--cockpit-accent);
+}
+
+.pin svg {
+  width: 100%;
+  height: 100%;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 0.8;
+}
+
+.sessionMeta {
+  justify-content: space-between;
+  gap: 0.5rem;
+  color: var(--cockpit-faint);
+  font-size: 0.59rem;
+}
+
+.sessionMeta time {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.status {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.3rem;
+  color: var(--cockpit-muted);
+  font-weight: 700;
+}
+
+.status > span {
+  width: 0.42rem;
+  height: 0.42rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--cockpit-faint);
+}
+
+.status[data-status="active"] > span {
+  background: var(--cockpit-accent);
+  box-shadow: 0 0 0 3px var(--cockpit-accent-soft);
+}
+
+.status[data-status="approval"] > span,
+.status[data-status="question"] > span {
+  background: var(--cockpit-warning);
+}
+
+.status[data-status="error"] > span {
+  background: var(--cockpit-danger);
+}
+
+.coverage {
+  padding: 0.65rem 0.2rem 0;
+  border-top: 1px solid var(--cockpit-border);
+  color: var(--cockpit-faint);
+  font-size: 0.62rem;
+}
+
+.coverage p {
+  margin: 0 0 0.45rem;
+  line-height: 1.4;
+}
+
+.coverage button {
+  min-height: 2rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: 0.65rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.coverage button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.searchField button:focus-visible,
+.projectHeader a:focus-visible,
+.sessionLink:focus-visible,
+.coverage button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  margin: -1px;
+  white-space: nowrap;
+}
+
+@media (max-width: 700px) {
+  .searchField,
+  .sessionLink {
+    min-height: 2.8rem;
+  }
+
+  .searchField input {
+    font-size: 0.85rem;
+  }
+
+  .projectList {
+    overflow: visible;
+  }
+
+  .sessionLink {
+    padding: 0.65rem 0.7rem;
+  }
+
+  .sessionTitle {
+    font-size: 0.82rem;
+  }
+
+  .sessionMeta {
+    font-size: 0.65rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sessionLink {
+    transition: none;
+  }
+}

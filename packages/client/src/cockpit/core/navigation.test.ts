@@ -3,22 +3,34 @@ import { createCockpitNavigation } from "./navigation";
 
 describe("Cockpit navigation", () => {
   it("uses the ordinary application routes for a direct source", () => {
-    expect(createCockpitNavigation("")).toEqual({
+    const navigation = createCockpitNavigation("");
+    expect(navigation).toMatchObject({
       cockpit: "/cockpit",
       sessions: "/sessions",
       projects: "/projects",
       newSession: "/new-session",
       settings: "/settings",
     });
+    expect(navigation.project("project one")).toBe("/projects/project%20one");
+    expect(navigation.session("project one", "session/two")).toBe(
+      "/projects/project%20one/sessions/session%2Ftwo",
+    );
   });
 
   it("keeps every destination inside the active relay namespace", () => {
-    expect(createCockpitNavigation("/-/relay/studio/")).toEqual({
+    const navigation = createCockpitNavigation("/-/relay/studio/");
+    expect(navigation).toMatchObject({
       cockpit: "/-/relay/studio/cockpit",
       sessions: "/-/relay/studio/sessions",
       projects: "/-/relay/studio/projects",
       newSession: "/-/relay/studio/new-session",
       settings: "/-/relay/studio/settings",
     });
+    expect(navigation.project("project one")).toBe(
+      "/-/relay/studio/projects/project%20one",
+    );
+    expect(navigation.session("project one", "session/two")).toBe(
+      "/-/relay/studio/projects/project%20one/sessions/session%2Ftwo",
+    );
   });
 });
