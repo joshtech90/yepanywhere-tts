@@ -339,6 +339,11 @@ Alt bleiben unangetastet. Im Composer ist nur die ausdrueckliche
 `Strg/Befehl+Eingabe`-Aktion fuer Queue zusaetzlich aktiv; normale Eingabe und
 IME-Komposition bleiben lokale Editorereignisse.
 
+Die sichtbare Uebersicht ist eine modale Fokusgrenze: Sie nimmt den Fokus beim
+Oeffnen, haelt Tab-Navigation im Dialog und gibt den Fokus nach Escape,
+Schliessen oder Hintergrundklick an ihren Ausloeser zurueck. Die verdeckte
+Cockpit-Oberflaeche bleibt dadurch nicht versehentlich per Tastatur bedienbar.
+
 `Escape` adressiert den serverautoritativen Stop-Knopf aus Paket 8 ueber dessen
 semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag. Die
 Shortcut-Schicht fuehrt selbst keinen Interrupt aus und baut daher weder

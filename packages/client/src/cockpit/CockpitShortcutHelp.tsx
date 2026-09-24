@@ -1,4 +1,9 @@
-import { useEffect, useRef, type RefObject } from "react";
+import {
+  useEffect,
+  useRef,
+  type KeyboardEvent,
+  type RefObject,
+} from "react";
 import { useI18n } from "../i18n";
 import styles from "./CockpitShortcutHelp.module.css";
 
@@ -55,6 +60,7 @@ export function CockpitShortcutDialog({
 }: CockpitShortcutDialogProps) {
   const { t } = useI18n();
   const closeRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
     if (open) closeRef.current?.focus({ preventScroll: true });
@@ -65,6 +71,43 @@ export function CockpitShortcutDialog({
   const close = () => {
     onClose();
     triggerRef.current?.focus({ preventScroll: true });
+  };
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      close();
+      return;
+    }
+    if (event.key !== "Tab") return;
+
+    const panel = panelRef.current;
+    if (!panel) return;
+    const focusable = Array.from(
+      panel.querySelectorAll<HTMLElement>(
+        'a[href], button:not(:disabled), input:not(:disabled), ' +
+          'select:not(:disabled), textarea:not(:disabled), ' +
+          '[tabindex]:not([tabindex="-1"])',
+      ),
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      event.preventDefault();
+      return;
+    }
+
+    const active = document.activeElement;
+    if (!panel.contains(active)) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+    } else if (event.shiftKey && active === first) {
+      event.preventDefault();
+      last.focus({ preventScroll: true });
+    } else if (!event.shiftKey && active === last) {
+      event.preventDefault();
+      first.focus({ preventScroll: true });
+    }
   };
   const shortcuts = [
     ["/", t("cockpitShortcutSearch")],
@@ -79,9 +122,20 @@ export function CockpitShortcutDialog({
 
   return (
     <div className={styles.backdrop}>
+      <button
+        aria-label={t("cockpitShortcutsClose")}
+        className={styles.backdropDismiss}
+        onClick={close}
+        tabIndex={-1}
+        type="button"
+      />
       <section
+        aria-describedby="cockpit-shortcuts-description"
         aria-labelledby="cockpit-shortcuts-title"
+        aria-modal="true"
         className={styles.panel}
+        onKeyDown={handleKeyDown}
+        ref={panelRef}
         role="dialog"
       >
         <header>
@@ -101,7 +155,9 @@ export function CockpitShortcutDialog({
             ×
           </button>
         </header>
-        <p className={styles.intro}>{t("cockpitShortcutsBody")}</p>
+        <p className={styles.intro} id="cockpit-shortcuts-description">
+          {t("cockpitShortcutsBody")}
+        </p>
         <dl>
           {shortcuts.map(([keys, label]) => (
             <div key={keys}>

@@ -31,17 +31,46 @@ afterEach(cleanup);
 beforeEach(() => localStorage.setItem(UI_KEYS.locale, "en"));
 
 describe("Cockpit shortcut help", () => {
-  it("documents the complete shortcut set and restores trigger focus", () => {
+  it("documents the complete shortcut set in a focus-contained modal", () => {
     render(<Fixture />);
     const trigger = screen.getByRole("button", { name: "Keyboard shortcuts" });
     fireEvent.click(trigger);
 
-    expect(screen.getByRole("dialog")).toBeTruthy();
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.getAttribute("aria-modal")).toBe("true");
     expect(screen.getByText("Search all sessions")).toBeTruthy();
     expect(screen.getByText("Queue the current draft")).toBeTruthy();
     expect(screen.getByText("Stop the running response")).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Close shortcuts" }));
+    const close = screen
+      .getAllByRole("button", { name: "Close shortcuts" })
+      .find((button) => dialog.contains(button));
+    if (!close) throw new Error("shortcut close button missing");
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(close, { key: "Tab" });
+    expect(document.activeElement).toBe(close);
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+    expect(document.activeElement).toBe(close);
+
+    fireEvent.keyDown(close, { key: "Escape" });
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("closes from the backdrop without treating panel clicks as dismissal", () => {
+    render(<Fixture />);
+    const trigger = screen.getByRole("button", { name: "Keyboard shortcuts" });
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog");
+    const backdropDismiss = screen
+      .getAllByRole("button", { name: "Close shortcuts" })
+      .find((button) => !dialog.contains(button));
+    if (!backdropDismiss) throw new Error("shortcut backdrop action missing");
+
+    fireEvent.click(dialog);
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    fireEvent.click(backdropDismiss);
+
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(trigger);
   });

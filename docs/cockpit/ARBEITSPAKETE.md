@@ -337,6 +337,11 @@ Dokument-Scrollflaeche erzeugen. Primaere mobile Aktionen besitzen mindestens
 Komponenten- und Resize-Tests decken die Shortcut-Matrix, editierbare Felder,
 Queue, Fokus-Restore und Android-/iOS-aehnliche Viewport-Aenderungen ab.
 
+Nachbesserung dieses Zugs: Die Shortcut-Hilfe ist nun auch semantisch modal.
+Tab und Umschalt+Tab bleiben innerhalb der Hilfe, Escape und ein Klick auf den
+abgedunkelten Hintergrund schliessen sie, und der ausloesende Knopf erhaelt den
+Fokus zurueck. Klicks im Hilfefenster selbst schliessen es nicht.
+
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
 Status: **offen**
