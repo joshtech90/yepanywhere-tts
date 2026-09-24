@@ -19,6 +19,7 @@ PROJECTS = {
     "field": "/demo/field-guide",
     "signal": "/demo/signal-lab",
 }
+CATALOG_FAMILIES = ("claude", "codex")
 
 
 def stable_id(name: str) -> str:
@@ -39,6 +40,38 @@ def write_jsonl(path: Path, records: list[dict[str, Any]], minutes: int) -> None
             handle.write("\n")
     activity_time = (BASE_TIME + timedelta(minutes=minutes)).timestamp()
     os.utime(path, (activity_time, activity_time))
+
+
+def enable_retained_catalog(data_dir: Path) -> None:
+    """Make the isolated preview's native stores eligible for retained scans."""
+
+    data_dir.mkdir(parents=True, exist_ok=True)
+    install_path = data_dir / "install.json"
+    if install_path.exists():
+        state = json.loads(install_path.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            raise ValueError(f"Expected an object in {install_path}")
+        families = state.get("catalogFamilies", [])
+        if not isinstance(families, list):
+            raise ValueError(f"Expected catalogFamilies to be a list in {install_path}")
+        state["catalogFamilies"] = list(
+            dict.fromkeys([*families, *CATALOG_FAMILIES])
+        )
+    else:
+        state = {
+            "version": 2,
+            "installId": stable_id("cockpit-demo-install"),
+            "createdAt": stamp(0),
+            "catalogFamilies": list(CATALOG_FAMILIES),
+            "catalogMetadataMigrationComplete": True,
+        }
+
+    temporary_path = install_path.with_suffix(".json.tmp")
+    temporary_path.write_text(
+        json.dumps(state, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    temporary_path.replace(install_path)
 
 
 def claude_record(
@@ -577,18 +610,39 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("claude_dir", type=Path, help="CLAUDE_SESSIONS_DIR target")
     parser.add_argument("codex_dir", type=Path, help="CODEX_SESSIONS_DIR target")
+    parser.add_argument(
+        "--yep-data-dir",
+        type=Path,
+        default=Path(os.environ["YEP_DATA_DIR"])
+        if os.environ.get("YEP_DATA_DIR")
+        else None,
+        help=(
+            "YEP_DATA_DIR target. Defaults to the environment variable and "
+            "enables Claude/Codex in the retained session catalog."
+        ),
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     claude_count, codex_count = seed(args.claude_dir, args.codex_dir)
+    if args.yep_data_dir is not None:
+        enable_retained_catalog(args.yep_data_dir)
     print(
         f"Seeded {claude_count + codex_count} fictional sessions "
         f"({claude_count} Claude, {codex_count} Codex) across 3 projects."
     )
     print(f"CLAUDE_SESSIONS_DIR={args.claude_dir}")
     print(f"CODEX_SESSIONS_DIR={args.codex_dir}")
+    if args.yep_data_dir is not None:
+        print(f"YEP_DATA_DIR={args.yep_data_dir}")
+        print("Retained catalog families enabled: claude, codex")
+    else:
+        print(
+            "Retained catalog not enabled: pass --yep-data-dir or set "
+            "YEP_DATA_DIR before starting the preview."
+        )
 
 
 if __name__ == "__main__":

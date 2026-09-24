@@ -7,6 +7,8 @@ import {
 import { Link } from "react-router-dom";
 import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
+import { CockpitComposer } from "./CockpitComposer";
+import { CockpitModelControls } from "./CockpitModelControls";
 import contentStyles from "./CockpitSessionContent.module.css";
 import styles from "./CockpitSessionDetail.module.css";
 import { CockpitToolCall } from "./CockpitToolCall";
@@ -302,6 +304,15 @@ export function CockpitSessionDetail({
           </div>
         </div>
         <div className={styles.sessionActions}>
+          <CockpitModelControls
+            actualSessionId={detail.composer.actualSessionId}
+            projectId={projectId}
+            reconnectStream={detail.composer.reconnectStream}
+            session={detail.session}
+            setSessionModel={detail.setSessionModel}
+            setStatus={detail.composer.setStatus}
+            status={detail.status}
+          />
           <span
             aria-live="polite"
             className={styles.sessionState}
@@ -379,6 +390,12 @@ export function CockpitSessionDetail({
           ))}
         </div>
       </div>
+
+      <CockpitComposer
+        projectId={projectId}
+        sessionId={sessionId}
+        sessionPort={detail.composer}
+      />
 
       {!following && hasEntries && (
         <button

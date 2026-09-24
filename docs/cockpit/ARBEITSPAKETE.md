@@ -200,7 +200,7 @@ geaendert.
 
 ## 7 — Composer mit Prompt, Attachments, Queue und Steer
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Pakete 3 und 5.
 
@@ -221,6 +221,20 @@ Einzeln pruefbar durch:
 - Send/Queue/Steer pro unterstuetztem Provider und ehrlicher Fallback;
 - Attachment-Erfolg, Fehler, Abbruch und erneuter Versuch;
 - mobile Tastatur, Safe Area und Desktop-/Mobil-Captures.
+
+Ergebnis dieses Zugs: Die Cockpit-Gespraechsansicht besitzt jetzt einen eigenen
+ruhigen Composer mit source-/session-gebundenem lokalem Draft. Direkte
+Nachrichten, providerfaehiges Steer und die serverautoritative Queue nutzen die
+vorhandenen Session-Aktionen und markieren ihre Absicht explizit; Provider ohne
+Steer-Unterstuetzung fallen ehrlich auf Queue zurueck. Dateien und Bilder laufen
+ueber die bestehende Upload- und Bildverkleinerungs-Pipeline und zeigen
+Fortschritt, Abbruch, Fehler und erneuten Versuch pro Datei. Provider, Modell
+und Effort bleiben sichtbar; Modell- und Effortwechsel verwenden den
+vorhandenen Konfigurationsdialog einschliesslich der Warnung bei langen
+Kontexten. Ein Regressionstest tippt Zeichen einzeln unter wiederholten
+Eltern-Updates und fordert fuer jedes Zeichen eine Bestaetigung unter 100 ms.
+Der kanonische Session-Store, Server und Shared-Protokoll wurden nicht
+dupliziert oder erweitert.
 
 ## 8 — Approvals, Fragen und Interrupt/Stop
 

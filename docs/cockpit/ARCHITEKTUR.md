@@ -260,6 +260,30 @@ Datei- oder Git-Quelle. Unbekannte Provider-Tools werden nicht erraten: Name,
 Input und Ergebnis bleiben als laengenbegrenzter, von React escaped dargestellter
 Text sichtbar. Server, Shared-Vertrag und Bestandsrenderer bleiben unveraendert.
 
+### Composer-Grenze aus Paket 7
+
+Der Cockpit-Composer bleibt ein Blatt unter derselben
+`useCockpitSessionDetail`-Kompositionswurzel. Der Hook `useSession` wird daher
+nur einmal pro geoeffneter Cockpit-Sitzung aufgerufen; sein kanonischer
+Session-Zustand liefert Ownership, Prozesszustand, Pending-Echos und die
+serverautoritative Deferred Queue. Das Cockpit besitzt nur den unmittelbar zu
+bestaetigenden Texteingabe-Draft, Upload-Fortschritt und lokale Karten-Zustaende.
+
+Direktes Senden, Steer und Queue verwenden die vorhandenen `resumeSession`-
+beziehungsweise `queueMessage`-Aktionen und deren `deliveryIntent`. Wenn ein
+Provider keine aktuelle Runde lenken kann, behauptet die UI das nicht, sondern
+bietet Queue als Primaeraktion an. Attachments laufen durch denselben
+source-gebundenen Transport und denselben Bild-Resize-/Upload-Helfer wie die
+bisherige Oberflaeche; Fehler, Abbruch und Wiederholung bleiben pro Datei lokal
+sichtbar, bis der Server einen Upload bestaetigt hat.
+
+Der Draft ist source- und session-gebunden browserlokal gespeichert. Diese
+kleine versionierte Grenze kann Paket 9 spaeter um Prompt-History erweitern,
+ohne die Sendelogik oder den kanonischen Session-Store zu veraendern. Modell
+und Effort werden ueber den vorhandenen `ModelSwitchModal` samt
+Long-Context-Warnung geaendert; ein ruhiger Cockpit-Trigger ersetzt dabei nicht
+die vorhandenen serverautoritativen Konfigurationsaktionen.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten
