@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { CockpitPromptHistoryEntry } from "./core/composer";
 import styles from "./CockpitPromptHistory.module.css";
@@ -43,8 +43,19 @@ export function CockpitPromptHistory({
       restoreFocusRef.current = false;
       setOpen(false);
     };
+    const closeFromEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      restoreFocusRef.current = true;
+      setOpen(false);
+    };
     document.addEventListener("pointerdown", closeFromOutside);
-    return () => document.removeEventListener("pointerdown", closeFromOutside);
+    document.addEventListener("keydown", closeFromEscape, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeFromOutside);
+      document.removeEventListener("keydown", closeFromEscape, true);
+    };
   }, [entries.length, open]);
 
   useEffect(() => {
@@ -64,16 +75,8 @@ export function CockpitPromptHistory({
     restoreFocusRef.current = true;
     setOpen(false);
   };
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
-    if (!open || event.key !== "Escape") return;
-    event.preventDefault();
-    event.stopPropagation();
-    restoreFocusRef.current = true;
-    setOpen(false);
-  };
-
   return (
-    <div className={styles.root} onKeyDown={handleKeyDown} ref={rootRef}>
+    <div className={styles.root} ref={rootRef}>
       <button
         aria-controls="cockpit-prompt-history-panel"
         aria-expanded={open}

@@ -268,10 +268,30 @@ describe("Cockpit composer", () => {
     const reopened = screen.getByRole("dialog", { name: "Recent prompts" });
     const input = screen.getByRole("textbox");
     input.focus();
+    const globalEscape = vi.fn();
+    document.addEventListener("keydown", globalEscape);
+    const escapedOutside = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    fireEvent(input, escapedOutside);
+    document.removeEventListener("keydown", globalEscape);
+    expect(escapedOutside.defaultPrevented).toBe(true);
+    expect(globalEscape).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    const reopenedForPointer = screen.getByRole("dialog", {
+      name: "Recent prompts",
+    });
+    input.focus();
     fireEvent.pointerDown(input);
     expect(screen.queryByRole("dialog")).toBeNull();
     expect(document.activeElement).toBe(input);
     expect(dialog.isConnected).toBe(false);
     expect(reopened.isConnected).toBe(false);
+    expect(reopenedForPointer.isConnected).toBe(false);
   });
 });

@@ -314,6 +314,12 @@ statt bis zum globalen Stop-Kuerzel durchzureichen, und gibt den Fokus an den
 Ausloeser zurueck. Ein Klick ausserhalb schliesst das Panel ebenfalls, ohne den
 angeklickten Arbeitsbereich wieder zu verlassen.
 
+Nachbesserung dieses Zugs: Der offene Prompt-Verlauf faengt Escape jetzt auch
+dann ab, wenn Joscha den nicht-modalen Dialog zuvor per Tab verlassen hat. So
+kann ein Fokuswechsel innerhalb des Composers nicht versehentlich den globalen
+Stop ausloesen; geschlossen wird weiterhin nur der Verlauf, danach kehrt der
+Fokus zu seinem Ausloeser zurueck.
+
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
 Status: **umgesetzt**

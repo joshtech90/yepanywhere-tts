@@ -337,9 +337,11 @@ uebernehmen; sie sendet nie durch Auswahl eines Verlaufswerts.
 
 Der Prompt-Verlauf ist eine lokale, nicht-modale Dialoggrenze ueber dem
 Composer. Escape wird dort abgefangen, schliesst nur den Verlauf und stellt den
-Fokus am Ausloeser wieder her; es darf in diesem Zustand nicht den globalen
-Stop-Shortcut erreichen. Ein Pointer-Klick ausserhalb schliesst den Verlauf,
-laesst den Fokus aber beim bewusst angeklickten Ziel.
+Fokus am Ausloeser wieder her. Solange der nicht-modale Dialog offen ist, gilt
+diese Escape-Grenze dokumentweit auch nach einem Fokuswechsel aus dem Panel;
+die Taste darf in diesem Zustand nicht den globalen Stop-Shortcut erreichen.
+Ein Pointer-Klick ausserhalb schliesst den Verlauf, laesst den Fokus aber beim
+bewusst angeklickten Ziel.
 
 ### Shortcut- und Mobilgrenze aus Paket 10
 
