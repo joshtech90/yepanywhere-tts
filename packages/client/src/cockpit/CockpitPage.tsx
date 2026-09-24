@@ -9,6 +9,7 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import styles from "./CockpitPage.module.css";
+import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { createCockpitNavigation } from "./core/navigation";
@@ -26,6 +27,15 @@ function SessionsIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M5 6.5h14M5 12h14M5 17.5h9" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="6" />
+      <path d="m15 15 4.5 4.5" />
     </svg>
   );
 }
@@ -115,6 +125,7 @@ export function CockpitShell({
 }: CockpitShellProps) {
   const { t } = useI18n();
   const [catalogQuery, setCatalogQuery] = useState("");
+  const [searchOpen, setSearchOpen] = useState(false);
   const navigation = createCockpitNavigation(basePath);
   const hasCatalog = catalogData.catalog.projects.length > 0;
   const hasDetail = children !== undefined && children !== null;
@@ -196,10 +207,22 @@ export function CockpitShell({
         </div>
 
         <nav className={styles.navigation}>
+          <button
+            aria-pressed={searchOpen}
+            className={styles.navigationItem}
+            onClick={() => setSearchOpen(true)}
+            type="button"
+          >
+            <span className={styles.icon}>
+              <SearchIcon />
+            </span>
+            <span>{t("cockpitGlobalSearchNav")}</span>
+          </button>
           {destinations.map((destination) => (
             <Link
               className={styles.navigationItem}
               key={destination.href}
+              onClick={() => setSearchOpen(false)}
               to={destination.href}
             >
               <span className={styles.icon}>{destination.icon}</span>
@@ -222,10 +245,12 @@ export function CockpitShell({
       </aside>
 
       <section
-        aria-labelledby={hasDetail ? undefined : "cockpit-title"}
+        aria-labelledby={
+          hasDetail || searchOpen ? undefined : "cockpit-title"
+        }
         className={styles.workspace}
       >
-        <header className={styles.header} hidden={hasDetail}>
+        <header className={styles.header} hidden={hasDetail || searchOpen}>
           <div>
             <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
             <h1 id="cockpit-title">Cockpit</h1>
@@ -260,9 +285,15 @@ export function CockpitShell({
 
         <div
           className={styles.canvas}
-          data-detail={hasDetail ? "true" : "false"}
+          data-detail={hasDetail || searchOpen ? "true" : "false"}
         >
-          {hasDetail ? (
+          {searchOpen ? (
+            <CockpitSearchPanel
+              basePath={basePath}
+              onClose={() => setSearchOpen(false)}
+              onNavigate={() => setSearchOpen(false)}
+            />
+          ) : hasDetail ? (
             children
           ) : (
             <>

@@ -63,25 +63,15 @@ function formatActivity(
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return { label: t("cockpitActivityUnknown") };
 
-  const elapsedSeconds = Math.round((parsed - Date.now()) / 1000);
-  const absolute = new Date(parsed).toLocaleString(locale);
-  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
-  if (Math.abs(elapsedSeconds) < 60) {
-    return { label: formatter.format(elapsedSeconds, "second"), title: absolute };
-  }
-  const elapsedMinutes = Math.round(elapsedSeconds / 60);
-  if (Math.abs(elapsedMinutes) < 60) {
-    return { label: formatter.format(elapsedMinutes, "minute"), title: absolute };
-  }
-  const elapsedHours = Math.round(elapsedMinutes / 60);
-  if (Math.abs(elapsedHours) < 24) {
-    return { label: formatter.format(elapsedHours, "hour"), title: absolute };
-  }
-  const elapsedDays = Math.round(elapsedHours / 24);
-  if (Math.abs(elapsedDays) < 7) {
-    return { label: formatter.format(elapsedDays, "day"), title: absolute };
-  }
-  return { label: new Date(parsed).toLocaleDateString(locale), title: absolute };
+  const date = new Date(parsed);
+  const absolute = date.toLocaleString(locale);
+  return {
+    label: new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date),
+    title: absolute,
+  };
 }
 
 export function CockpitCatalog({

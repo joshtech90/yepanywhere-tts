@@ -208,6 +208,28 @@ Seiten kennt, nennt die UI diese Teilabdeckung und bietet explizites Nachladen
 an. Inhalts- und Volltextsuche bleibt Paket 4; Paket 3 startet dafuer keine
 Transcript-Abfragen und keine eigenen Dateiscans.
 
+### Suchgrenze aus Paket 4
+
+Die Cockpit-Suche montiert die vorhandene All-Sessions-Akquisition nur solange
+ihre eigene Ansicht geoeffnet ist. `useGlobalSessionsFeed` und der
+source-gebundene Summary Store liefern den Katalog; `useContentSearch`,
+`titleMatches` und die bestehenden Provider-/Server-Capabilities bleiben die
+einzigen Besitzer von Titel- und begrenzter Inhaltssuche. Das Cockpit baut
+weder einen Transcript-Cache noch einen Datei- oder Transcript-Scanner auf.
+
+Der Eingabe-Draft gehoert unmittelbar der Suchansicht. Die weitergereichte
+Suchprojektion laeuft als nicht dringende React-Aktualisierung, sodass Katalog-
+und Treffer-Updates den sichtbaren Text nicht ersetzen. Ein source- und
+needle-gebundener Entdeckungsrang haelt bestehende Sitzungsgruppen stabil;
+spaetere Katalogseiten und Live-Treffer werden angehaengt. Eine ausgewaehlte
+Gruppe bleibt ausgewaehlt, solange sie noch passt.
+
+Abdeckung ist Teil des View-Modells: laufende Katalogseiten, noch unbekannte
+oder fehlende Server-Capability, title-only Provider, begrenzte/fehlerhafte
+Transcript-Abdeckung und Katalogfehler bleiben sichtbar. Titel-only Suche
+startet keine Inhaltsanfrage. Das bestehende offene Index-Gap und die
+CI-Nachgeschichte werden dadurch nicht umgangen oder als geloest bezeichnet.
+
 ### Session-Detail-Grenze aus Paket 5
 
 Cockpit-Sitzungen liegen unter

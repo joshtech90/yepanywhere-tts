@@ -106,7 +106,7 @@ Server und Shared wurden nicht erweitert.
 
 ## 4 — Globale Suche ueber Sessions und Inhalte
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 3.
 
@@ -125,6 +125,17 @@ Einzeln pruefbar durch:
 - fruehe Eingabe vor Capability-Antwort;
 - neue Treffer waehrend der Suche, Auswahl und 375-Pixel-Layout;
 - keine verlorenen Tastenanschlaege.
+
+Ergebnis dieses Zugs: Die Cockpit-Navigation oeffnet eine eigene globale
+Suchansicht, deren lokaler Eingabe-Draft unabhaengig von Katalog-, Capability-
+und Treffer-Updates bleibt. Titel verwenden die vorhandenen geladenen
+Session-Summaries; User- und Assistant-Inhalte laufen ausschliesslich ueber die
+bestehende, begrenzte All-Sessions-Suche mit deren Provider- und
+Server-Capabilities. Treffer bleiben pro Sitzung gruppiert und behalten ihre
+Entdeckungsreihenfolge, waehrend weitere Katalogseiten oder Live-Treffer
+eintreffen. Laufende Katalogabdeckung, title-only Provider, alte Server,
+Teilabdeckung und Aktualisierungsfehler werden sichtbar benannt. Es gibt keine
+eigenen Transcript- oder Dateiscans und keine Server-/Shared-Erweiterung.
 
 ## 5 — Read-only Session-Detail und Vorlesen
 
@@ -299,7 +310,6 @@ Einzeln pruefbar durch:
 
 ## Naechstes Paket
 
-Als Naechstes ist **Paket 4 — Globale Suche ueber Sessions und Inhalte**
-vorgesehen. Es baut auf dem geladenen Katalog auf, nutzt die vorhandene
-All-Sessions-Suche und muss Teilabdeckung weiterhin sichtbar machen, statt
-eigene Transcript- oder Dateiscans einzufuehren.
+Als Naechstes ist fuer Fenster 2 **Paket 9 — Session-Organisation, Pins und
+Prompt-History** vorgesehen. Seine Voraussetzung Paket 7 liegt bei Fenster 1;
+bis zu dessen Zusammenfuehrung bleibt Paket 9 offen.

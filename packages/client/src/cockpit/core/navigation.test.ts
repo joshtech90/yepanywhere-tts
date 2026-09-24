@@ -11,7 +11,9 @@ describe("Cockpit navigation", () => {
       newSession: "/new-session",
       settings: "/settings",
     });
-    expect(navigation.project("project one")).toBe("/projects/project%20one");
+    expect(navigation.project("project one")).toBe(
+      "/sessions?project=project%20one",
+    );
     expect(navigation.session("project one", "session/two")).toBe(
       "/cockpit/projects/project%20one/sessions/session%2Ftwo",
     );
@@ -30,7 +32,7 @@ describe("Cockpit navigation", () => {
       settings: "/-/relay/studio/settings",
     });
     expect(navigation.project("project one")).toBe(
-      "/-/relay/studio/projects/project%20one",
+      "/-/relay/studio/sessions?project=project%20one",
     );
     expect(navigation.session("project one", "session/two")).toBe(
       "/-/relay/studio/cockpit/projects/project%20one/sessions/session%2Ftwo",

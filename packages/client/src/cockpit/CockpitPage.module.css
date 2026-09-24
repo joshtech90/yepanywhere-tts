@@ -175,11 +175,16 @@
   min-width: 0;
   min-height: 2.45rem;
   padding: 0 0.55rem;
+  border: 0;
   color: var(--cockpit-muted);
+  background: transparent;
+  font: inherit;
   font-size: 0.68rem;
+  cursor: pointer;
 }
 
-.navigationItem:hover {
+.navigationItem:hover,
+.navigationItem[aria-pressed="true"] {
   color: var(--cockpit-text);
   background: var(--cockpit-hover);
 }
@@ -518,7 +523,7 @@
   .navigation {
     display: grid;
     margin: 0;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 0.25rem;
   }
 
