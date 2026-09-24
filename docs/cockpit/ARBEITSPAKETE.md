@@ -165,6 +165,12 @@ Seed-Skript erzeugt zehn vollstaendig erfundene Claude-/Codex-Sitzungen in drei
 Projekten, darunter lange Markdown-Antwort, Thinking, Shell, Fehler,
 Dateiaenderung und Diff-Vorschau fuer Paket 6.
 
+Nachbesserung dieses Zugs: Beim Nachladen aelterer Seiten wird die sichtbare
+Position nur noch korrigiert, wenn vor dem bisherigen ersten Eintrag wirklich
+Historie eingefuegt wurde. Eine gleichzeitig unten eintreffende Live-Nachricht
+loest keinen falschen Hoehenausgleich und damit keinen Lesesprung mehr aus; ein
+stabiler Eintragsschluessel trennt beide Faelle in Regressionstests.
+
 ## 6 — Tool Calls, Shell, Dateiaenderungen und Diff-Ansicht
 
 Status: **umgesetzt**

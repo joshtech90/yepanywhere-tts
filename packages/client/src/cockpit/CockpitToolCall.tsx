@@ -226,6 +226,7 @@ export function CockpitToolCall({ entry, time }: CockpitToolCallProps) {
   return (
     <details
       className={styles.card}
+      data-cockpit-entry-key={entry.key}
       data-status={entry.tool.status}
       data-tool-kind={entry.tool.kind}
     >

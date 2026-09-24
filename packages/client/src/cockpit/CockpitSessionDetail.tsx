@@ -15,6 +15,7 @@ import contentStyles from "./CockpitSessionContent.module.css";
 import styles from "./CockpitSessionDetail.module.css";
 import { CockpitToolCall } from "./CockpitToolCall";
 import { createCockpitNavigation } from "./core/navigation";
+import { countEntriesBeforeCockpitScrollAnchor } from "./core/scrollAnchor";
 import {
   deriveCockpitSessionState,
   type CockpitAssistantEntry,
@@ -79,6 +80,15 @@ function entryTime(timestamp: string | undefined, locale: string) {
   });
 }
 
+function findTranscriptEntryElement(
+  container: HTMLElement,
+  entryKey: string,
+) {
+  return [...container.querySelectorAll<HTMLElement>(
+    "[data-cockpit-entry-key]",
+  )].find((element) => element.dataset.cockpitEntryKey === entryKey);
+}
+
 function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
   const { t } = useI18n();
   return (
@@ -129,7 +139,7 @@ function TranscriptEntry({
   const time = entryTime(entry.timestamp, locale);
   if (entry.kind === "boundary") {
     return (
-      <div className={styles.boundary}>
+      <div className={styles.boundary} data-cockpit-entry-key={entry.key}>
         <span aria-hidden="true" />
         <span>
           {entry.subtype === "compact_boundary"
@@ -143,7 +153,11 @@ function TranscriptEntry({
 
   if (entry.kind === "user") {
     return (
-      <article className={styles.userEntry} data-entry-kind="user">
+      <article
+        className={styles.userEntry}
+        data-cockpit-entry-key={entry.key}
+        data-entry-kind="user"
+      >
         <header className={styles.entryHeader}>
           <strong>{t("cockpitSessionUser")}</strong>
           {time && <time dateTime={entry.timestamp}>{time}</time>}
@@ -158,7 +172,11 @@ function TranscriptEntry({
   }
 
   return (
-    <article className={styles.assistantEntry} data-entry-kind="assistant">
+    <article
+      className={styles.assistantEntry}
+      data-cockpit-entry-key={entry.key}
+      data-entry-kind="assistant"
+    >
       <header className={styles.entryHeader}>
         <span className={styles.assistantIdentity}>
           <span className={styles.assistantMark} aria-hidden="true">
@@ -196,10 +214,11 @@ export function CockpitSessionDetail({
   const detail = useCockpitSessionDetail(projectId, sessionId);
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
-  const entryCountRef = useRef(detail.entries.length);
-  entryCountRef.current = detail.entries.length;
   const prependRef = useRef<{
-    entryCount: number;
+    anchorKey: string;
+    anchorTop: number | null;
+    projectId: string;
+    sessionId: string;
     scrollHeight: number;
   } | null>(null);
   const [following, setFollowing] = useState(true);
@@ -208,15 +227,47 @@ export function CockpitSessionDetail({
     const container = scrollRef.current;
     if (!container) return;
     const prepend = prependRef.current;
-    if (prepend && detail.entries.length > prepend.entryCount) {
-      container.scrollTop += container.scrollHeight - prepend.scrollHeight;
-      prependRef.current = null;
-      return;
+    if (prepend) {
+      if (prepend.projectId !== projectId || prepend.sessionId !== sessionId) {
+        prependRef.current = null;
+      } else {
+        const entriesBeforeAnchor = countEntriesBeforeCockpitScrollAnchor(
+          prepend.anchorKey,
+          detail.entries,
+        );
+        if (entriesBeforeAnchor === null) {
+          prependRef.current = null;
+        } else if (entriesBeforeAnchor > 0) {
+          const anchorElement = findTranscriptEntryElement(
+            container,
+            prepend.anchorKey,
+          );
+          const anchorTop = anchorElement?.getBoundingClientRect().top;
+          container.scrollTop +=
+            prepend.anchorTop !== null && anchorTop !== undefined
+              ? anchorTop - prepend.anchorTop
+              : container.scrollHeight - prepend.scrollHeight;
+          prependRef.current = null;
+          return;
+        } else {
+          // A live append is not an older-page insertion. Keep the marker until
+          // the explicit history request settles, without moving the reader or
+          // charging the appended height to a later history prepend.
+          const anchorElement = findTranscriptEntryElement(
+            container,
+            prepend.anchorKey,
+          );
+          prepend.anchorTop =
+            anchorElement?.getBoundingClientRect().top ?? prepend.anchorTop;
+          prepend.scrollHeight = container.scrollHeight;
+          return;
+        }
+      }
     }
     if (followingRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [detail.entries]);
+  }, [detail.entries, projectId, sessionId]);
 
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
@@ -239,25 +290,29 @@ export function CockpitSessionDetail({
 
   const loadOlder = useCallback(async () => {
     const container = scrollRef.current;
-    if (container) {
+    const anchorKey = detail.entries[0]?.key;
+    if (container && anchorKey) {
+      const anchorElement = findTranscriptEntryElement(container, anchorKey);
       prependRef.current = {
-        entryCount: detail.entries.length,
+        anchorKey,
+        anchorTop: anchorElement?.getBoundingClientRect().top ?? null,
+        projectId,
+        sessionId,
         scrollHeight: container.scrollHeight,
       };
     }
     await detail.loadOlderMessages();
     const marker = prependRef.current;
-    if (marker && typeof requestAnimationFrame === "function") {
-      requestAnimationFrame(() => {
-        if (
-          prependRef.current === marker &&
-          entryCountRef.current === marker.entryCount
-        ) {
-          prependRef.current = null;
-        }
-      });
+    if (!marker) return;
+    const clearSettledMarker = () => {
+      if (prependRef.current === marker) prependRef.current = null;
+    };
+    if (typeof requestAnimationFrame === "function") {
+      requestAnimationFrame(clearSettledMarker);
+    } else {
+      clearSettledMarker();
     }
-  }, [detail.entries.length, detail.loadOlderMessages]);
+  }, [detail.entries, detail.loadOlderMessages, projectId, sessionId]);
 
   const hasEntries = detail.entries.length > 0;
   const state = deriveCockpitSessionState({

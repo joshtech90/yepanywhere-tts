@@ -1,4 +1,10 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+} from "@testing-library/react";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -107,8 +113,8 @@ function detailData(
   };
 }
 
-function renderDetail() {
-  return render(
+function detailTree() {
+  return (
     <MemoryRouter
       initialEntries={[
         "/cockpit/projects/project-1/sessions/session-1",
@@ -122,8 +128,12 @@ function renderDetail() {
           shellKind="empty"
         />
       </I18nProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderDetail() {
+  return render(detailTree());
 }
 
 afterEach(cleanup);
@@ -157,6 +167,79 @@ describe("Cockpit session detail", () => {
     renderDetail();
     fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
     expect(detailMocks.data?.loadOlderMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("anchors only a real history prepend when a live row arrives during loading", async () => {
+    let finishLoading = () => {};
+    const loadOlderMessages = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishLoading = resolve;
+        }),
+    );
+    const initial = detailData({ loadOlderMessages });
+    detailMocks.data = initial;
+    const view = renderDetail();
+    const transcript = screen.getByLabelText("Session conversation");
+    Object.defineProperty(transcript, "scrollHeight", {
+      configurable: true,
+      get: () => (detailMocks.data?.entries.length ?? 0) * 100,
+    });
+    const anchor = transcript.querySelector<HTMLElement>(
+      '[data-cockpit-entry-key="local-user-1"]',
+    );
+    if (!anchor) throw new Error("missing transcript anchor fixture");
+    anchor.getBoundingClientRect = () => {
+      const anchorIndex =
+        detailMocks.data?.entries.findIndex(
+          (entry) => entry.key === "local-user-1",
+        ) ?? 0;
+      return {
+        bottom: (anchorIndex + 1) * 100,
+        height: 100,
+        left: 0,
+        right: 100,
+        top: anchorIndex * 100,
+        width: 100,
+        x: 0,
+        y: anchorIndex * 100,
+        toJSON: () => ({}),
+      };
+    };
+    transcript.scrollTop = 40;
+
+    fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
+
+    const liveTail = {
+      kind: "user" as const,
+      key: "live-tail",
+      text: "A live update arrived.",
+      timestamp: "2026-09-24T09:00:02.000Z",
+    };
+    detailMocks.data = {
+      ...initial,
+      entries: [...initial.entries, liveTail],
+    };
+    view.rerender(detailTree());
+    expect(transcript.scrollTop).toBe(40);
+
+    const older = {
+      kind: "user" as const,
+      key: "older-user",
+      text: "An older message.",
+      timestamp: "2026-09-24T08:59:00.000Z",
+    };
+    detailMocks.data = {
+      ...initial,
+      entries: [older, ...initial.entries, liveTail],
+    };
+    view.rerender(detailTree());
+    expect(transcript.scrollTop).toBe(140);
+
+    await act(async () => {
+      finishLoading();
+      await Promise.resolve();
+    });
   });
 
   it("keeps retained content visible while reconnecting", () => {
