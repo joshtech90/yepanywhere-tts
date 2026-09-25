@@ -636,7 +636,9 @@
     padding: 1rem;
     align-items: center;
     flex-direction: column;
-    justify-content: center;
+    /* A plain centre pushed the top of a long session list, with search and
+       favourites, out of reach above the scroll area. */
+    justify-content: safe center;
     gap: 1rem;
     overflow: auto;
   }
