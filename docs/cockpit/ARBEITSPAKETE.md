@@ -321,6 +321,15 @@ ein Nachrichtensturm nicht bei jedem sichtbaren Zwischenstand den gesamten
 alten Verlauf erneut in den DOM schreiben; geaenderte Tail-Zeilen bleiben
 aktuell und die direkte Stop-Aktion bleibt ausserhalb dieser Arbeit.
 
+Nachbesserung A20: Sehr lange Cockpit-Verlaeufe verwenden nun dieselbe
+gemessene Transcript-Fensterung wie die Bestandsansicht. Nur sichtbare Zeilen
+plus Reserve bleiben im DOM; entfernte Bereiche werden durch nachgemessene
+Abstaende vertreten, waehrend der vollstaendige kanonische Verlauf im
+Session-Store bleibt. Beim Nachladen wird der bisherige erste Eintrag im
+Fenster festgehalten, damit die vorhandene Lesepositionskorrektur weiterhin
+auf ein wirklich gemountetes Ziel zeigt. Header, Freigaben, Composer und Stop
+liegen ausserhalb dieses Fensters.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **offen**

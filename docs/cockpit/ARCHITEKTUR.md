@@ -342,6 +342,15 @@ React kann dadurch alte User-, Assistant-, Werkzeug- und Grenzzeilen auslassen,
 statt deren DOM bei jedem Live-Anhang erneut zu versoehnen; geaenderte
 RenderItems erzeugen weiterhin neue Zeilenobjekte.
 
+Ab zweihundert semantischen Cockpit-Zeilen begrenzt zusaetzlich die vorhandene
+gemessene Transcript-Fensterung die wirklich gemountete Menge. Das Cockpit
+uebergibt ihr nur stabile Zeilenschluessel und bleibt ansonsten Besitzer seiner
+Darstellung; kanonische Eintraege werden weder abgeschnitten noch in einen
+zweiten Store kopiert. Gemessene Platzhalter erhalten die Scrollgeometrie, und
+ein Pagination-Anker wird bis zur Lesepositionskorrektur explizit im Fenster
+gehalten. Diese Grenze umfasst nur das Transcript: Sitzungskopf, Freigaben,
+Composer und Stop bleiben dauerhaft gemountet und direkt bedienbar.
+
 Interrupt/Stop ist eine direkte Schaltflaeche im festen Sitzungskopf und damit
 nicht von Transcript-Aufklappzustand oder einem Menue abhaengig. Sie verwendet
 zuerst den vorhandenen sanften Interrupt und faellt bei fehlender Unterstuetzung

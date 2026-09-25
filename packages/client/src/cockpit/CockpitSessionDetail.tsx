@@ -14,6 +14,7 @@ import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
 import { CockpitStopButton } from "./CockpitStopButton";
+import { CockpitTranscriptWindow } from "./CockpitTranscriptWindow";
 import contentStyles from "./CockpitSessionContent.module.css";
 import styles from "./CockpitSessionDetail.module.css";
 import { CockpitToolCall } from "./CockpitToolCall";
@@ -234,17 +235,38 @@ export function CockpitSessionDetail({
     anchorTop: number | null;
     projectId: string;
     sessionId: string;
+    sourceKey: string;
     scrollHeight: number;
   } | null>(null);
   const [following, setFollowing] = useState(true);
+  const [pinnedEntryKey, setPinnedEntryKey] = useState<string | null>(null);
+
+  const renderTranscriptEntry = useCallback(
+    (entry: CockpitTranscriptEntry) => (
+      <TranscriptEntry entry={entry} locale={locale} />
+    ),
+    [locale],
+  );
+
+  useLayoutEffect(() => {
+    prependRef.current = null;
+    followingRef.current = true;
+    setFollowing(true);
+    setPinnedEntryKey(null);
+  }, [interactionKey]);
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
     if (!container) return;
     const prepend = prependRef.current;
     if (prepend) {
-      if (prepend.projectId !== projectId || prepend.sessionId !== sessionId) {
+      if (
+        prepend.sourceKey !== runtime.sourceKey ||
+        prepend.projectId !== projectId ||
+        prepend.sessionId !== sessionId
+      ) {
         prependRef.current = null;
+        setPinnedEntryKey(null);
       } else {
         const entriesBeforeAnchor = countEntriesBeforeCockpitScrollAnchor(
           prepend.anchorKey,
@@ -252,6 +274,7 @@ export function CockpitSessionDetail({
         );
         if (entriesBeforeAnchor === null) {
           prependRef.current = null;
+          setPinnedEntryKey(null);
         } else if (entriesBeforeAnchor > 0) {
           const anchorElement = findTranscriptEntryElement(
             container,
@@ -263,6 +286,12 @@ export function CockpitSessionDetail({
               ? anchorTop - prepend.anchorTop
               : container.scrollHeight - prepend.scrollHeight;
           prependRef.current = null;
+          const releasePinnedEntry = () => setPinnedEntryKey(null);
+          if (typeof requestAnimationFrame === "function") {
+            requestAnimationFrame(releasePinnedEntry);
+          } else {
+            releasePinnedEntry();
+          }
           return;
         } else {
           // A live append is not an older-page insertion. Keep the marker until
@@ -282,7 +311,7 @@ export function CockpitSessionDetail({
     if (followingRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [projectId, sessionId, transcriptEntries]);
+  }, [projectId, runtime.sourceKey, sessionId, transcriptEntries]);
 
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
@@ -313,21 +342,31 @@ export function CockpitSessionDetail({
         anchorTop: anchorElement?.getBoundingClientRect().top ?? null,
         projectId,
         sessionId,
+        sourceKey: runtime.sourceKey,
         scrollHeight: container.scrollHeight,
       };
+      setPinnedEntryKey(anchorKey);
     }
     await detail.loadOlderMessages();
     const marker = prependRef.current;
     if (!marker) return;
     const clearSettledMarker = () => {
-      if (prependRef.current === marker) prependRef.current = null;
+      if (prependRef.current !== marker) return;
+      prependRef.current = null;
+      setPinnedEntryKey(null);
     };
     if (typeof requestAnimationFrame === "function") {
       requestAnimationFrame(clearSettledMarker);
     } else {
       clearSettledMarker();
     }
-  }, [detail.loadOlderMessages, projectId, sessionId, transcriptEntries]);
+  }, [
+    detail.loadOlderMessages,
+    projectId,
+    runtime.sourceKey,
+    sessionId,
+    transcriptEntries,
+  ]);
 
   const hasEntries = transcriptEntries.length > 0;
   const state = deriveCockpitSessionState({
@@ -425,51 +464,56 @@ export function CockpitSessionDetail({
         onScroll={updateFollowing}
         ref={scrollRef}
       >
-        <div className={styles.transcriptInner}>
-          {detail.hasOlderMessages && (
-            <button
-              className={styles.loadOlder}
-              disabled={detail.loadingOlder}
-              onClick={() => void loadOlder()}
-              type="button"
-            >
-              <ArrowIcon direction="down" />
-              {detail.loadingOlder
-                ? t("cockpitSessionLoadingOlder")
-                : t("cockpitSessionLoadOlder")}
-            </button>
-          )}
+        <CockpitTranscriptWindow
+          beforeRows={
+            <>
+              {detail.hasOlderMessages && (
+                <button
+                  className={styles.loadOlder}
+                  disabled={detail.loadingOlder}
+                  onClick={() => void loadOlder()}
+                  type="button"
+                >
+                  <ArrowIcon direction="down" />
+                  {detail.loadingOlder
+                    ? t("cockpitSessionLoadingOlder")
+                    : t("cockpitSessionLoadOlder")}
+                </button>
+              )}
 
-          {detail.loading && !hasEntries && (
-            <div className={styles.skeleton} role="status">
-              <span>{t("cockpitSessionLoading")}</span>
-              <i />
-              <i />
-              <i />
-            </div>
-          )}
+              {detail.loading && !hasEntries && (
+                <div className={styles.skeleton} role="status">
+                  <span>{t("cockpitSessionLoading")}</span>
+                  <i />
+                  <i />
+                  <i />
+                </div>
+              )}
 
-          {detail.error && !hasEntries && !detail.loading && (
-            <section className={styles.emptyState} role="alert">
-              <h3>{t("cockpitSessionLoadErrorTitle")}</h3>
-              <p>{t("cockpitSessionLoadErrorBody")}</p>
-              <button onClick={detail.reloadSession} type="button">
-                {t("cockpitSessionRetry")}
-              </button>
-            </section>
-          )}
+              {detail.error && !hasEntries && !detail.loading && (
+                <section className={styles.emptyState} role="alert">
+                  <h3>{t("cockpitSessionLoadErrorTitle")}</h3>
+                  <p>{t("cockpitSessionLoadErrorBody")}</p>
+                  <button onClick={detail.reloadSession} type="button">
+                    {t("cockpitSessionRetry")}
+                  </button>
+                </section>
+              )}
 
-          {!detail.loading && !detail.error && !hasEntries && (
-            <section className={styles.emptyState} role="status">
-              <h3>{t("cockpitSessionEmptyTitle")}</h3>
-              <p>{t("cockpitSessionEmptyBody")}</p>
-            </section>
-          )}
-
-          {transcriptEntries.map((entry) => (
-            <TranscriptEntry entry={entry} key={entry.key} locale={locale} />
-          ))}
-        </div>
+              {!detail.loading && !detail.error && !hasEntries && (
+                <section className={styles.emptyState} role="status">
+                  <h3>{t("cockpitSessionEmptyTitle")}</h3>
+                  <p>{t("cockpitSessionEmptyBody")}</p>
+                </section>
+              )}
+            </>
+          }
+          entries={transcriptEntries}
+          following={following}
+          key={`${interactionKey}:transcript`}
+          pinnedEntryKey={pinnedEntryKey}
+          renderEntry={renderTranscriptEntry}
+        />
       </div>
 
       {detail.attention.request && (

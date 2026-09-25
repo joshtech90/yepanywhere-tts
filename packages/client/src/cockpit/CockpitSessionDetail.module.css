@@ -204,6 +204,10 @@
   margin: 0 auto;
 }
 
+.transcriptRow {
+  display: flow-root;
+}
+
 .loadOlder {
   min-height: 2.6rem;
   padding: 0 0.85rem;

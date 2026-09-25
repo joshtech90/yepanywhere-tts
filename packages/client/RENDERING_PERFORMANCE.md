@@ -92,6 +92,12 @@ stable component identity, and lower update cadence.
   describe. Stabilized render-item references also retain unchanged Cockpit row
   objects, allowing memoized rows to skip old DOM work when a deferred tail
   eventually commits.
+- Long Cockpit transcripts also reuse the established measured-height render
+  window. Once the semantic row budget is reached, only viewport-near rows and
+  overscan stay mounted; measured spacers preserve the complete canonical
+  scroll geometry. Older-page loading pins its existing first row until the
+  anchor correction commits. Session controls, approvals, the composer, and
+  stop remain outside this window.
 - An open managed viewer covers the transcript and holds its last committed
   projection stable. Incoming session data continues to buffer and surrounding
   controls and viewer sources remain live, but transcript reconciliation and
