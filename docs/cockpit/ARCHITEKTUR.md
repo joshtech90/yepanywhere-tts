@@ -278,6 +278,11 @@ Shell-Befehl, Standard- und Fehlerausgabe sowie die begrenzten Textdaten
 unbekannter Werkzeuge erhalten lokale Kopieraktionen. Sie kopieren genau die
 bereits projizierte Anzeige, besitzen nur voruebergehenden Rueckmeldestatus und
 veraendern weder Tool-Daten noch Transcript-Zustand.
+Die Datei-Diff-Ansicht bietet dieselbe lokale Aktion fuer die ausgewaehlte
+Datei. Sie serialisiert ausschliesslich die bereits begrenzt projizierten
+Hunk-, Kontext-, Plus- und Minuszeilen samt Markern; ein Dateiwechsler erzeugt
+eine neue lokale Rueckmeldungsinstanz und kann keinen Erfolg der vorigen Datei
+anzeigen.
 
 ### Composer-Grenze aus Paket 7
 

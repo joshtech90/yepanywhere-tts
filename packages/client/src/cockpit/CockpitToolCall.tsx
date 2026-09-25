@@ -76,6 +76,21 @@ function DiffLine({ line }: { line: CockpitDiffLine }) {
   );
 }
 
+function diffClipboardText(lines: readonly CockpitDiffLine[]): string {
+  return lines
+    .map((line) => {
+      if (line.kind === "hunk") return line.text;
+      const marker =
+        line.kind === "addition"
+          ? "+"
+          : line.kind === "deletion"
+            ? "-"
+            : " ";
+      return `${marker}${line.text}`;
+    })
+    .join("\n");
+}
+
 function CopyableCodeSection({
   copiedLabel,
   copyLabel,
@@ -189,16 +204,27 @@ function FilesDetail({ entry }: { entry: CockpitToolEntry }) {
       )}
       <div className={styles.fileHeader}>
         <strong title={selected.path}>{selected.path}</strong>
-        <span>
-          <span className={styles.visuallyHidden}>
-            {t("cockpitToolDiffStats", {
-              additions: selected.additions,
-              deletions: selected.deletions,
-            })}
+        <div className={styles.fileHeaderActions}>
+          <span>
+            <span className={styles.visuallyHidden}>
+              {t("cockpitToolDiffStats", {
+                additions: selected.additions,
+                deletions: selected.deletions,
+              })}
+            </span>
+            <b aria-hidden="true">+{selected.additions}</b>
+            <i aria-hidden="true">−{selected.deletions}</i>
           </span>
-          <b aria-hidden="true">+{selected.additions}</b>
-          <i aria-hidden="true">−{selected.deletions}</i>
-        </span>
+          {selected.lines.length > 0 && (
+            <CockpitToolCopyButton
+              copiedLabel={t("cockpitToolDiffCopied")}
+              failedLabel={t("cockpitToolCopyFailed")}
+              key={selected.path}
+              label={t("cockpitToolCopyDiff")}
+              text={diffClipboardText(selected.lines)}
+            />
+          )}
+        </div>
       </div>
       {selected.lines.length > 0 ? (
         <div

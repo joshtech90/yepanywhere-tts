@@ -159,6 +159,8 @@
   "cockpitToolCopyResult": "Werkzeugergebnis kopieren",
   "cockpitToolResultCopied": "Werkzeugergebnis kopiert",
   "cockpitToolCopyFailed": "Kopieren nicht verfügbar — erneut versuchen",
+  "cockpitToolCopyDiff": "Angezeigten Diff kopieren",
+  "cockpitToolDiffCopied": "Angezeigter Diff kopiert",
   "sidebarSectionStarred": "Markiert",
   "sidebarSectionLast24Hours": "Letzte 24 Stunden",
   "sidebarSectionOlder": "Älter",

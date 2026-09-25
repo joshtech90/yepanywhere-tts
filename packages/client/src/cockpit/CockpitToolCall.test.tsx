@@ -1,5 +1,20 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const clipboardMocks = vi.hoisted(() => ({
+  writeClipboardText: vi.fn(),
+}));
+
+vi.mock("../lib/clipboard", () => ({
+  writeClipboardText: clipboardMocks.writeClipboardText,
+}));
+
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitToolCall } from "./CockpitToolCall";
@@ -70,11 +85,13 @@ function renderTool(toolEntry = entry()) {
 
 afterEach(cleanup);
 beforeEach(() => {
+  clipboardMocks.writeClipboardText.mockReset();
+  clipboardMocks.writeClipboardText.mockResolvedValue(true);
   localStorage.setItem(UI_KEYS.locale, "en");
 });
 
 describe("Cockpit tool call", () => {
-  it("expands a compact row and navigates a multi-file diff", () => {
+  it("expands, copies, and navigates a multi-file diff", async () => {
     renderTool();
 
     const toggle = screen.getByLabelText("Show or hide details for Edit");
@@ -82,10 +99,21 @@ describe("Cockpit tool call", () => {
     fireEvent.click(toggle);
     expect(toggle.closest("details")?.hasAttribute("open")).toBe(true);
     expect(screen.getByText("Status: ready")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Copy displayed diff" }),
+    );
+    await waitFor(() => {
+      expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(
+        "@@ -3 +3 @@\n-Status: queued\n+Status: ready",
+      );
+    });
 
     fireEvent.click(screen.getByRole("button", { name: "notes/moss.md" }));
     expect(screen.getByText("New sample note")).toBeTruthy();
     expect(screen.queryByText("Status: ready")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "Copy displayed diff" }),
+    ).toBeTruthy();
   });
 
   it("labels unknown provider data and renders it as text", () => {

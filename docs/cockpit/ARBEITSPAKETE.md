@@ -234,6 +234,12 @@ unveraendert kopieren. Jeder Knopf bestaetigt Erfolg am selben Ort, zeigt einen
 blockierten Zwischenablagezugriff als wiederholbaren Fehler und bleibt auf
 Mobilbreite ein vollwertiges Touch-Ziel.
 
+Nachbesserung A27: Auch die aktuell ausgewaehlte Datei einer Aenderungskarte
+laesst sich als angezeigter Diff kopieren. Hunk-, Kontext-, Plus- und
+Minuszeilen behalten ihre Diff-Marker; bei einer begrenzten Vorschau wird
+ehrlich nur der sichtbare Ausschnitt kopiert. Dateiwechsler setzen die lokale
+Kopierbestaetigung zurueck, damit sie nicht fuer die vorige Datei stehen bleibt.
+
 ## 7 — Composer mit Prompt, Attachments, Queue und Steer
 
 Status: **umgesetzt**

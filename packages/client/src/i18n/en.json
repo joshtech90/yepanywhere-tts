@@ -488,6 +488,8 @@
   "cockpitToolCopyResult": "Copy tool result",
   "cockpitToolResultCopied": "Tool result copied",
   "cockpitToolCopyFailed": "Copy unavailable — try again",
+  "cockpitToolCopyDiff": "Copy displayed diff",
+  "cockpitToolDiffCopied": "Displayed diff copied",
   "sidebarSectionPendingSessions": "Pending Sessions",
   "sidebarSectionStarred": "Starred",
   "sidebarSectionLast24Hours": "Last 24 Hours",

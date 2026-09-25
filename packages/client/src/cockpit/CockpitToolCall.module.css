@@ -278,7 +278,7 @@
 .fileHeader {
   display: flex;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
 }
@@ -294,9 +294,15 @@
   white-space: nowrap;
 }
 
-.fileHeader > span {
+.fileHeaderActions {
   display: inline-flex;
   flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.fileHeaderActions > span {
+  display: inline-flex;
   gap: 0.5rem;
   font-size: 0.65rem;
 }
