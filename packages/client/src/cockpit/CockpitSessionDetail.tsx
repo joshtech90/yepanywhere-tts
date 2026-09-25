@@ -37,6 +37,8 @@ import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
 
 export interface CockpitSessionDetailProps {
   basePath: string;
+  /** Tells the list that this session works in another program right now. */
+  onWorkingElsewhereChange?: (sessionId: string, working: boolean) => void;
   projectId: string;
   sessionId: string;
   shellKind: CockpitShellState["kind"];
@@ -257,6 +259,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
 
 export function CockpitSessionDetail({
   basePath,
+  onWorkingElsewhereChange,
   projectId,
   sessionId,
   shellKind,
@@ -398,6 +401,12 @@ export function CockpitSessionDetail({
   }, [projectId, runtime.sourceKey, sessionId, transcriptEntries]);
 
   const showWorking = state === "active" || state === "external";
+  const workingElsewhere = state === "external";
+  useEffect(() => {
+    if (!onWorkingElsewhereChange) return;
+    onWorkingElsewhereChange(sessionId, workingElsewhere);
+    return () => onWorkingElsewhereChange(sessionId, false);
+  }, [onWorkingElsewhereChange, sessionId, workingElsewhere]);
   // The working line is not a transcript entry, so the follow effect above
   // does not see it appear; keep a reader at the end looking at it.
   useLayoutEffect(() => {

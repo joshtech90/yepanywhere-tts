@@ -16,7 +16,8 @@ for (const viewport of [
         json: { ...(await response.json()), providerHostDegraded: true },
       });
     });
-    await page.goto("/");
+    // "/" opens the Cockpit; this check is about the classic shell.
+    await page.goto("/projects");
     const banner = page.locator('[data-provider-host-degraded="true"]');
     await expect(banner).toBeVisible();
     const toggle = page.getByRole("button", {

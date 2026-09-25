@@ -299,7 +299,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                   />
                   <Route
                     path="/"
-                    element={<Navigate to="/projects" replace />}
+                    element={<Navigate to="/cockpit" replace />}
                   />
                   <Route
                     path="/cockpit"

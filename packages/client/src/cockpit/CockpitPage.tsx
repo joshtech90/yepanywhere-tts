@@ -28,6 +28,7 @@ import {
   CockpitShortcutDialog,
 } from "./CockpitShortcutHelp";
 import type { CockpitResolvedTheme } from "./core/appearance";
+import { markCockpitSessionWorkingElsewhere } from "./core/catalogSections";
 import { createCockpitNavigation } from "./core/navigation";
 import {
   deriveCockpitShellState,
@@ -524,7 +525,26 @@ function CockpitSourcePage() {
     () => deriveCockpitShellState(runtime.transport.status.getSnapshot()).kind,
   );
   const appearance = useCockpitAppearance();
-  const catalogData = useCockpitCatalog(shellKind);
+  const baseCatalogData = useCockpitCatalog(shellKind);
+  const [workingElsewhereId, setWorkingElsewhereId] = useState<string | null>(
+    null,
+  );
+  const reportWorkingElsewhere = useCallback(
+    (id: string, working: boolean) =>
+      setWorkingElsewhereId((current) =>
+        working ? id : current === id ? null : current,
+      ),
+    [],
+  );
+  const catalogData = useMemo(() => {
+    const catalog = markCockpitSessionWorkingElsewhere(
+      baseCatalogData.catalog,
+      workingElsewhereId,
+    );
+    return catalog === baseCatalogData.catalog
+      ? baseCatalogData
+      : { ...baseCatalogData, catalog };
+  }, [baseCatalogData, workingElsewhereId]);
 
   return (
     <CockpitShell
@@ -559,6 +579,7 @@ function CockpitSourcePage() {
         <CockpitSessionDetail
           basePath={basePath}
           key={`${projectId}\0${sessionId}`}
+          onWorkingElsewhereChange={reportWorkingElsewhere}
           projectId={projectId}
           sessionId={sessionId}
           shellKind={shellKind}

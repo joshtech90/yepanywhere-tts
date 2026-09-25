@@ -341,7 +341,7 @@ const basename = import.meta.env.BASE_URL.replace(/\/$/, "") || undefined;
  */
 const APP_ROUTES = (
   <>
-    <Route index element={<Navigate to="projects" replace />} />
+    <Route index element={<Navigate to="cockpit" replace />} />
 
     <Route path="cockpit" element={routeModule(<CockpitPage />)} />
     <Route

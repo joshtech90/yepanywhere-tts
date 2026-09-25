@@ -63,3 +63,28 @@ export function flattenCockpitCatalog(
         left.session.key.localeCompare(right.session.key),
     );
 }
+
+/**
+ * The open session knows from its transcript that another program is still
+ * working, which the summary list cannot see during a quiet command. Only a
+ * session the list would call idle is lifted; real states stay.
+ */
+export function markCockpitSessionWorkingElsewhere(
+  catalog: CockpitCatalogView,
+  sessionId: string | null,
+): CockpitCatalogView {
+  if (!sessionId) return catalog;
+  let changed = false;
+  const projects = catalog.projects.map((project) => {
+    const index = project.sessions.findIndex(
+      (session) => session.id === sessionId && session.status === "complete",
+    );
+    if (index < 0) return project;
+    changed = true;
+    const sessions = [...project.sessions];
+    const session = sessions[index];
+    if (session) sessions[index] = { ...session, status: "external" };
+    return { ...project, sessions };
+  });
+  return changed ? { ...catalog, projects } : catalog;
+}

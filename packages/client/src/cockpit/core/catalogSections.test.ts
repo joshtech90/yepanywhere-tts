@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { CockpitCatalogSession, CockpitCatalogView } from "./catalog";
 import {
   flattenCockpitCatalog,
+  markCockpitSessionWorkingElsewhere,
   splitCockpitFavorites,
 } from "./catalogSections";
 
@@ -101,5 +102,25 @@ describe("flattenCockpitCatalog", () => {
     expect(
       flattenCockpitCatalog(withTimes).map((item) => item.session.id),
     ).toEqual(["d2", "a2", "d1", "b1", "a1"]);
+  });
+});
+
+describe("markCockpitSessionWorkingElsewhere", () => {
+  it("turns only the open, otherwise idle session green", () => {
+    const marked = markCockpitSessionWorkingElsewhere(catalog, "a2");
+    expect(
+      marked.projects[0]?.sessions.map((item) => [item.id, item.status]),
+    ).toEqual([
+      ["a1", "complete"],
+      ["a2", "external"],
+    ]);
+    expect(marked.projects[1]).toBe(catalog.projects[1]);
+  });
+
+  it("leaves the catalogue untouched without a working session", () => {
+    expect(markCockpitSessionWorkingElsewhere(catalog, null)).toBe(catalog);
+    expect(markCockpitSessionWorkingElsewhere(catalog, "missing")).toBe(
+      catalog,
+    );
   });
 });
