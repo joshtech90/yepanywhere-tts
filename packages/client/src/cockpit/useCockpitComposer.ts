@@ -90,6 +90,7 @@ export function useCockpitComposer(
   const [draft, setDraftState] = useState(() =>
     readCockpitComposerSessionDraft(runtime.sourceKey, projectId, sessionId),
   );
+  const draftRef = useRef(draft);
   const [attachments, setAttachments] = useState<
     CockpitComposerAttachment[]
   >([]);
@@ -114,6 +115,7 @@ export function useCockpitComposer(
       projectId,
       sessionId,
     );
+    draftRef.current = restored;
     setDraftState(restored);
     typingStartedAtRef.current = restored.trim()
       ? new Date().toISOString()
@@ -148,6 +150,7 @@ export function useCockpitComposer(
         typingStartedAtRef.current = null;
         lastEditedAtRef.current = null;
       }
+      draftRef.current = next;
       setDraftState(next);
       writeCockpitComposerDraft(draftKey, next);
       setError(null);
@@ -273,6 +276,9 @@ export function useCockpitComposer(
           ? [attachment.uploaded]
           : [],
       );
+      const submittedAttachmentIds = new Set(
+        attachments.map((attachment) => attachment.id),
+      );
       if ((!text && uploaded.length === 0) || submitting) return false;
       if (attachments.some((attachment) => attachment.status !== "ready")) {
         setError(t("sessionUploading"));
@@ -378,14 +384,21 @@ export function useCockpitComposer(
           }
         }
 
-        writeCockpitComposerDraft(draftKey, "");
         rememberCockpitPrompt(runtime.sourceKey, text, submittedAt);
         setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
-        setDraftState("");
-        typingStartedAtRef.current = null;
-        lastEditedAtRef.current = null;
+        if (draftRef.current === draft) {
+          writeCockpitComposerDraft(draftKey, "");
+          draftRef.current = "";
+          setDraftState("");
+          typingStartedAtRef.current = null;
+          lastEditedAtRef.current = null;
+        }
         revokeAttachmentPreviewUrls(uploaded);
-        setAttachments([]);
+        setAttachments((current) =>
+          current.filter(
+            (attachment) => !submittedAttachmentIds.has(attachment.id),
+          ),
+        );
         return true;
       } catch (submitError) {
         if (pendingId) sessionPort.removePendingMessage(pendingId);

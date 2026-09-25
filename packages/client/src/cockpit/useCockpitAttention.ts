@@ -1,5 +1,5 @@
 import type { UserQuestionAnswers } from "@yep-anywhere/shared";
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import type { InputRequest, SessionStatus } from "../types";
 
@@ -51,13 +51,27 @@ export function useCockpitAttention({
   status,
 }: CockpitAttentionInput): CockpitAttentionPort {
   const runtime = useCurrentSourceRuntime();
+  const currentRequestRef = useRef(pendingInputRequest);
+  const currentProcessIdRef = useRef<string | undefined>(undefined);
+  const currentTransportRef = useRef(runtime.transport);
+  currentRequestRef.current = pendingInputRequest;
+  currentTransportRef.current = runtime.transport;
   const respond = useCallback<CockpitAttentionPort["respond"]>(
     async (requestId, response, answers) => {
       const request = pendingInputRequest;
       if (!request || request.id !== requestId) return { kind: "stale" };
+      const transport = runtime.transport;
+      const isCurrentRequest = () => {
+        const currentRequest = currentRequestRef.current;
+        return (
+          currentRequest?.id === requestId &&
+          currentRequest.sessionId === request.sessionId &&
+          currentTransportRef.current === transport
+        );
+      };
 
       try {
-        const result = await runtime.transport.fetch<{
+        const result = await transport.fetch<{
           accepted: boolean;
           pendingInputRequest?: InputRequest | null;
         }>(`/sessions/${request.sessionId}/input`, {
@@ -67,20 +81,25 @@ export function useCockpitAttention({
         if (!result.accepted) {
           return { kind: "error", message: "" };
         }
+        if (!isCurrentRequest()) return { kind: "stale" };
         setPendingInputRequest(result.pendingInputRequest ?? null);
         return { kind: "accepted" };
       } catch (error) {
-        if (errorStatus(error) !== 400) {
+        const status = errorStatus(error);
+        if (status !== 400 && status !== 404) {
           return { kind: "error", message: errorMessage(error) };
         }
+        if (!isCurrentRequest()) return { kind: "stale" };
 
         try {
-          const refreshed = await runtime.transport.fetch<{
+          const refreshed = await transport.fetch<{
             request: InputRequest | null;
           }>(`/sessions/${request.sessionId}/pending-input`);
-          setPendingInputRequest(refreshed.request ?? null);
+          if (isCurrentRequest()) {
+            setPendingInputRequest(refreshed.request ?? null);
+          }
         } catch {
-          // A 400 already proves this exact request is no longer actionable.
+          // A 400/404 already proves this exact request is no longer actionable.
           // Reconnect or the next session event remains the state authority.
         }
         return { kind: "stale" };
@@ -90,6 +109,7 @@ export function useCockpitAttention({
   );
 
   const processId = status.owner === "self" ? status.processId : undefined;
+  currentProcessIdRef.current = processId;
   const interruptible =
     typeof processId === "string" &&
     processId.length > 0 &&
@@ -97,9 +117,13 @@ export function useCockpitAttention({
 
   const stop = useCallback<CockpitAttentionPort["stop"]>(async () => {
     if (!processId || processState === "idle") return { kind: "stale" };
+    const transport = runtime.transport;
+    const isCurrentProcess = () =>
+      currentProcessIdRef.current === processId &&
+      currentTransportRef.current === transport;
 
     try {
-      const interrupted = await runtime.transport.fetch<{
+      const interrupted = await transport.fetch<{
         aborted?: boolean;
         interrupted: boolean;
         supported: boolean;
@@ -108,22 +132,33 @@ export function useCockpitAttention({
         return { kind: "accepted" };
       }
       if (!interrupted.aborted) {
-        await runtime.transport.fetch(`/processes/${processId}/abort`, {
+        await transport.fetch(`/processes/${processId}/abort`, {
           method: "POST",
         });
       }
-      setStatus({ owner: "none" });
-      setProcessState("idle");
+      if (isCurrentProcess()) {
+        setStatus({ owner: "none" });
+        setProcessState("idle");
+      }
       return { kind: "accepted" };
     } catch (interruptError) {
       try {
-        await runtime.transport.fetch(`/processes/${processId}/abort`, {
+        await transport.fetch(`/processes/${processId}/abort`, {
           method: "POST",
         });
-        setStatus({ owner: "none" });
-        setProcessState("idle");
+        if (isCurrentProcess()) {
+          setStatus({ owner: "none" });
+          setProcessState("idle");
+        }
         return { kind: "accepted" };
       } catch (abortError) {
+        if (errorStatus(abortError) === 404) {
+          if (isCurrentProcess()) {
+            setStatus({ owner: "none" });
+            setProcessState("idle");
+          }
+          return { kind: "stale" };
+        }
         return {
           kind: "error",
           message: errorMessage(abortError ?? interruptError),

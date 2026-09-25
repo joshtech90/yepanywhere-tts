@@ -1,4 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
@@ -186,6 +193,66 @@ describe("Cockpit composer", () => {
       expect(globalResume).not.toHaveBeenCalled();
     },
   );
+
+  it("keeps new input added while the previous send is pending", async () => {
+    let finishSend:
+      | ((result: {
+          processId: string;
+          permissionMode: "default";
+          modeVersion: number;
+        }) => void)
+      | undefined;
+    runtime.transport.fetch.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishSend = resolve;
+        }),
+    );
+    runtime.transport.upload.mockResolvedValue({
+      id: "upload-next",
+      originalName: "next.txt",
+      name: "upload-next-next.txt",
+      path: "/demo/uploads/upload-next-next.txt",
+      size: 10,
+      mimeType: "text/plain",
+    });
+    const view = render(composer());
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+    const fileInput = view.container.querySelector<HTMLInputElement>(
+      'input[type="file"]',
+    );
+    if (!fileInput) throw new Error("file input missing");
+
+    fireEvent.change(input, { target: { value: "Send this first." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.change(input, {
+      target: { value: "Keep this as the next draft." },
+    });
+    fireEvent.change(fileInput, {
+      target: { files: [new File(["next input"], "next.txt")] },
+    });
+    await screen.findByText("next.txt");
+    await act(async () => {
+      finishSend?.({
+        processId: "process-1",
+        permissionMode: "default",
+        modeVersion: 1,
+      });
+      await Promise.resolve();
+    });
+
+    expect(input.value).toBe("Keep this as the next draft.");
+    expect(screen.getByText("next.txt")).toBeTruthy();
+    expect(
+      localStorage.getItem(
+        cockpitComposerDraftKey("local", "project-1", "session-1"),
+      ),
+    ).toBe("Keep this as the next draft.");
+  });
 
   it("uses steering and keeps queue as an explicit alternative", async () => {
     runtime.transport.fetch.mockResolvedValue({
