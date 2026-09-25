@@ -20,6 +20,21 @@ export interface CockpitShortcutKey {
   target: EventTarget | null;
 }
 
+export interface CockpitLocalKeyEvent {
+  key: string;
+  preventDefault: () => void;
+  stopPropagation: () => void;
+}
+
+export function containCockpitLocalEscape(
+  event: CockpitLocalKeyEvent,
+): boolean {
+  if (event.key !== "Escape") return false;
+  event.preventDefault();
+  event.stopPropagation();
+  return true;
+}
+
 export function isCockpitTextEditingTarget(
   target: EventTarget | null,
 ): boolean {

@@ -8,8 +8,12 @@ const shortcutStylesheetUrl = new URL(
   "./CockpitShortcutHelp.module.css",
   import.meta.url,
 );
+const sessionDetailStylesheetUrl = new URL(
+  "./CockpitSessionDetail.module.css",
+  import.meta.url,
+);
 
-function rule(css: string, selector: string): string {
+function rules(css: string, selector: string): string[] {
   const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const matches = [
     ...css.matchAll(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`, "g")),
@@ -17,7 +21,11 @@ function rule(css: string, selector: string): string {
   expect(matches.length, `${selector} should have a CSS rule`).toBeGreaterThan(
     0,
   );
-  return matches.at(-1)?.[1] ?? "";
+  return matches.map((match) => match[1] ?? "");
+}
+
+function rule(css: string, selector: string): string {
+  return rules(css, selector).at(-1) ?? "";
 }
 
 describe("Cockpit mobile navigation layout", () => {
@@ -33,6 +41,18 @@ describe("Cockpit mobile navigation layout", () => {
     ]) {
       expect(declarations).toMatch(/white-space:\s*normal\s*;/);
       expect(declarations).not.toMatch(/text-overflow:\s*ellipsis\s*;/);
+    }
+  });
+
+  it("keeps the follow button above the mobile composer", async () => {
+    const css = await readFile(sessionDetailStylesheetUrl, "utf8");
+    const positionedRules = rules(css, ".followButton").filter((declarations) =>
+      declarations.includes("bottom:"),
+    );
+
+    expect(positionedRules.length).toBeGreaterThan(0);
+    for (const declarations of positionedRules) {
+      expect(declarations).toMatch(/bottom:\s*8rem\s*;/);
     }
   });
 });

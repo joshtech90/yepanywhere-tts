@@ -8,6 +8,7 @@ import {
   type CockpitQuestionOtherAnswers,
   type CockpitQuestionSelections,
 } from "./core/attention";
+import { containCockpitLocalEscape } from "./core/shortcuts";
 import type {
   CockpitAttentionActionResult,
   CockpitAttentionPort,
@@ -64,7 +65,13 @@ export function CockpitAttentionCard({
   };
 
   return (
-    <section className={styles.root}>
+    // biome-ignore lint/a11y/noStaticElementInteractions: contains Escape from the interactive question controls before the global Stop shortcut
+    <section
+      className={styles.root}
+      onKeyDown={(event) => {
+        containCockpitLocalEscape(event);
+      }}
+    >
       <div className={styles.card}>
         <div className={styles.heading}>
           <div className={styles.headingText}>

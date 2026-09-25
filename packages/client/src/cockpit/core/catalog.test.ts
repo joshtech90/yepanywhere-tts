@@ -156,6 +156,37 @@ describe("Cockpit catalog adapter", () => {
     ).toBe(true);
   });
 
+  it("keeps an automatically retrying provider session active", () => {
+    const runtimeStatuses = new Map<string, ProviderRuntimeStatusRecord>([
+      [
+        "retrying",
+        {
+          sessionId: "retrying",
+          status: {
+            kind: "retrying",
+            provider: "claude",
+            reason: "overloaded",
+            startedAt: "2026-09-25T03:00:00.000Z",
+            lastSeenAt: "2026-09-25T03:00:01.000Z",
+            eventCount: 1,
+            source: "fixture",
+          },
+          observedAt: 1,
+        },
+      ],
+    ]);
+
+    const catalog = createCockpitCatalog({
+      sourceKey: "local",
+      projects: [project("project-1", "Atlas")],
+      sessions: [session("retrying", "project-1", { activity: "idle" })],
+      providerRuntimeBySessionId: runtimeStatuses,
+      connection: "online",
+    });
+
+    expect(catalog.projects[0]?.sessions[0]?.status).toBe("active");
+  });
+
   it("filters only the already loaded project and session summaries", () => {
     const catalog = createCockpitCatalog({
       sourceKey: "local",
