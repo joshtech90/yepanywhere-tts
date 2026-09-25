@@ -193,9 +193,12 @@
 
   .trigger > span:last-child {
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    line-height: 1.08;
+    text-align: center;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .backdrop {

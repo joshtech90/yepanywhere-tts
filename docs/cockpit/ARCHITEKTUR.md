@@ -512,6 +512,33 @@ durch die Bildschirmtastatur verdeckten Layout-Viewport auszurichten. Fehlt die
 API, bleibt `100dvh` der reine CSS-Fallback. Safe-Area-Insets werden weiterhin
 genau an Navigation und Composer angewendet.
 
+Die erste `VisualViewport`-Messung ist dabei nur die Ausgangslage und noch kein
+Tastatursignal. Manche mobile Browser und Capture-Umgebungen melden beim Laden
+eine deutlich kleinere sichtbare Hoehe als `window.innerHeight`, obwohl keine
+Bildschirmtastatur offen ist. Die Shell fuellt in diesem Zustand den
+Layout-Viewport; erst eine spaetere Verkleinerung gegen die gemerkte sichtbare
+Ausgangshoehe schaltet auf die Tastaturgeometrie um. Damit bleibt die untere
+Navigation am tatsaechlichen Bildschirmrand, ohne den Composer bei einer echten
+Tastatur zu verdecken.
+
+### Globale Codex-Update-Anzeige auf Cockpit-Routen
+
+Der bestehende appweite `CodexUpdatePrompt` bleibt fuer alle bisherigen Routen
+unveraendert modal. `App` klassifiziert lediglich direkte und Relay-Cockpit-
+Pfade und unterdrueckt den Dialog dort. Im Cockpit liest eine kleine lokale
+Anzeige denselben `useServerSettings`-/`useCodexUpdateStatus`-Vertrag und den
+gemeinsamen browserlokalen Gesehen-Tag. Sie installiert selbst nichts: „Update
+ansehen“ fuehrt in die bisherige Einstellungsroute, wo der unveraenderte Dialog
+die vorhandene Update-Aktion anbietet; „Spaeter“ markiert genau diese Version
+wie bisher als gesehen.
+
+Der dafuer ausserhalb von `packages/client/src/cockpit/` benoetigte
+Erweiterungspunkt bleibt auf die reine Pfadklassifikation in
+`cockpit/core/navigation.ts`, die optionale Unterdrueckung am bestehenden
+Dialog und die gemeinsam genutzte Local-Storage-Hilfe begrenzt. Server,
+Shared-Protokoll, Update-Installation und alte Oberflaeche werden nicht
+veraendert.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

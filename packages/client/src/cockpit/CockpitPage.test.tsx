@@ -80,6 +80,10 @@ vi.mock("./useCockpitSearch", () => ({
   }),
 }));
 
+vi.mock("./CockpitCodexUpdateNotice", () => ({
+  CockpitCodexUpdateNotice: () => null,
+}));
+
 afterEach(cleanup);
 beforeEach(() => localStorage.setItem(UI_KEYS.locale, "en"));
 
@@ -169,6 +173,18 @@ describe("Cockpit shell", () => {
 
     expect(onThemeChange).toHaveBeenCalledWith("dark");
     expect(onAccentChange).toHaveBeenCalledWith("violet");
+  });
+
+  it("keeps desktop appearance controls collapsed so the catalog can grow", () => {
+    renderShell();
+
+    const appearance = screen
+      .getAllByLabelText("Cockpit appearance")
+      .find((element) => element.tagName === "DETAILS");
+    if (!(appearance instanceof HTMLDetailsElement)) {
+      throw new Error("desktop appearance disclosure missing");
+    }
+    expect(appearance.open).toBe(false);
   });
 
   it("makes the Cockpit surface inert while shortcut help is modal", () => {

@@ -1,4 +1,4 @@
-import { useRef } from "react";
+import { useLayoutEffect, useRef } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
 import { hasCoarsePointer } from "../lib/deviceDetection";
@@ -28,7 +28,9 @@ function actionLabel(
 
 function CockpitComposerSession(props: CockpitComposerProps) {
   const { t } = useI18n();
+  const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const restoreComposerFocusRef = useRef(false);
   const composer = useCockpitComposer(
     props.projectId,
     props.sessionId,
@@ -42,6 +44,14 @@ function CockpitComposerSession(props: CockpitComposerProps) {
     !hasBlockedAttachment &&
     (composer.draft.trim().length > 0 || composer.attachments.length > 0);
   const attachmentDrop = useCockpitAttachmentDropTarget(composer.attachFiles);
+
+  useLayoutEffect(() => {
+    if (!restoreComposerFocusRef.current || composer.promptHistory.length > 0) {
+      return;
+    }
+    restoreComposerFocusRef.current = false;
+    composerInputRef.current?.focus({ preventScroll: true });
+  }, [composer.promptHistory.length]);
 
   return (
     <section
@@ -131,6 +141,7 @@ function CockpitComposerSession(props: CockpitComposerProps) {
               ? "sessionPlaceholderQueue"
               : "sessionPlaceholderResume",
           )}
+          ref={composerInputRef}
           rows={2}
           value={composer.draft}
         />
@@ -158,7 +169,11 @@ function CockpitComposerSession(props: CockpitComposerProps) {
           <CockpitPromptHistory
             entries={composer.promptHistory}
             frequent={composer.frequentPrompts}
-            onRemove={composer.removePrompt}
+            onRemove={(text) => {
+              restoreComposerFocusRef.current =
+                composer.promptHistory.length === 1;
+              composer.removePrompt(text);
+            }}
             onUse={composer.setDraft}
           />
           <span className={styles.hint}>

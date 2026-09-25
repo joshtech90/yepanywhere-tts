@@ -214,16 +214,61 @@
 }
 
 .desktopAppearance {
+  position: relative;
   margin-top: 0.65rem;
-  padding: 0.85rem;
+}
+
+.desktopAppearance summary {
+  display: flex;
+  min-height: 2.45rem;
+  padding: 0 0.65rem;
+  align-items: center;
+  gap: 0.65rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 1rem;
+  border-radius: 0.78rem;
+  color: var(--cockpit-muted);
   background: color-mix(
     in srgb,
     var(--cockpit-surface-raised) 78%,
     transparent
   );
-  box-shadow: 0 12px 30px var(--cockpit-shadow);
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+  list-style: none;
+}
+
+.desktopAppearance summary::-webkit-details-marker {
+  display: none;
+}
+
+.desktopAppearance summary svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.desktopAppearance summary:hover,
+.desktopAppearance[open] summary {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.desktopAppearancePanel {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.55rem);
+  left: 0;
+  z-index: 6;
+  padding: 0.85rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 1rem;
+  background: var(--cockpit-surface-raised);
+  box-shadow: 0 18px 44px var(--cockpit-shadow);
 }
 
 .desktopCatalog {
@@ -484,6 +529,7 @@
 .navigationItem:focus-visible,
 .primaryAction:focus-visible,
 .secondaryAction:focus-visible,
+.desktopAppearance summary:focus-visible,
 .mobileAppearance summary:focus-visible {
   outline: 3px solid var(--cockpit-accent-ring);
   outline-offset: 2px;
@@ -560,9 +606,12 @@
 
   .navigationItem > span:last-child {
     max-width: 100%;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    overflow: visible;
+    overflow-wrap: anywhere;
+    line-height: 1.08;
+    text-align: center;
+    text-overflow: clip;
+    white-space: normal;
   }
 
   .icon {
@@ -573,7 +622,7 @@
   .workspace {
     height: 100%;
     min-height: 0;
-    padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
+    padding-bottom: calc(4.75rem + env(safe-area-inset-bottom, 0px));
     overflow: hidden;
   }
 
