@@ -377,3 +377,10 @@
     transition: none;
   }
 }
+
+/* The field has its own clear button; hide the browser's, which showed a
+   second cross beside it. */
+.searchField input::-webkit-search-cancel-button {
+  display: none;
+  appearance: none;
+}
