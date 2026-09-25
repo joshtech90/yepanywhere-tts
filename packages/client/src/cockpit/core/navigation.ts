@@ -4,6 +4,7 @@ export interface CockpitNavigation {
   projects: string;
   /** The established session list, for leaving the Cockpit on purpose. */
   classicSessions: string;
+  hidden: string;
   newSession: string;
   newSessionIn: (projectId: string) => string;
   settings: string;
@@ -34,6 +35,7 @@ export function createCockpitNavigation(basePath: string): CockpitNavigation {
     sessions: withBasePath(basePath, "/cockpit?view=sessions"),
     projects: withBasePath(basePath, "/cockpit?view=projects"),
     classicSessions: withBasePath(basePath, "/sessions"),
+    hidden: withBasePath(basePath, "/cockpit?view=hidden"),
     newSession: withBasePath(basePath, "/cockpit?view=new"),
     newSessionIn: (projectId) =>
       withBasePath(

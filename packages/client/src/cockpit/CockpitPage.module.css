@@ -175,9 +175,64 @@
   stroke-width: 1.7;
 }
 
+/* Appearance and the hidden-sessions folder share the sidebar's last row. */
+.sidebarFooter {
+  display: grid;
+  margin-top: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.4rem;
+}
+
 .desktopAppearance {
   position: relative;
-  margin-top: 0.65rem;
+  min-width: 0;
+}
+
+.footerLink {
+  display: flex;
+  min-width: 0;
+  min-height: 2.45rem;
+  padding: 0 0.65rem;
+  align-items: center;
+  gap: 0.55rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.78rem;
+  color: var(--cockpit-muted);
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 78%,
+    transparent
+  );
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.footerLink:hover {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.footerLink span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.footerLink svg,
+.mobileHiddenLink svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.mobileHiddenLink {
+  display: none;
 }
 
 .desktopAppearance summary {
@@ -222,9 +277,9 @@
 
 .desktopAppearancePanel {
   position: absolute;
-  right: 0;
   bottom: calc(100% + 0.55rem);
   left: 0;
+  width: 15.5rem;
   z-index: 6;
   padding: 0.85rem;
   border: 1px solid var(--cockpit-border);
@@ -497,6 +552,8 @@
 }
 
 .navigationItem:focus-visible,
+.footerLink:focus-visible,
+.mobileHiddenLink:focus-visible,
 .primaryAction:focus-visible,
 .secondaryAction:focus-visible,
 .desktopAppearance summary:focus-visible,
@@ -551,9 +608,20 @@
     border-right: 0;
   }
 
-  .desktopAppearance,
+  .sidebarFooter,
   .desktopCatalog {
     display: none;
+  }
+
+  .mobileHiddenLink {
+    display: grid;
+    width: 2.75rem;
+    height: 2.75rem;
+    place-items: center;
+    border: 1px solid var(--cockpit-border);
+    border-radius: 0.8rem;
+    color: var(--cockpit-muted);
+    background: var(--cockpit-surface);
   }
 
   .navigation {

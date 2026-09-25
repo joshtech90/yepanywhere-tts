@@ -121,7 +121,14 @@ describe("Cockpit catalog adapter", () => {
       }),
       session("failed", "project-1"),
       session("done", "project-1", { activity: "idle" }),
-      session("terminal", "project-1", { ownership: { owner: "external" } }),
+      session("terminal", "project-1", {
+        ownership: { owner: "external" },
+        updatedAt: "2026-09-24T09:59:30.000Z",
+      }),
+      session("idle-terminal", "project-1", {
+        ownership: { owner: "external" },
+        updatedAt: "2026-09-24T09:40:00.000Z",
+      }),
     ];
     const online = createCockpitCatalog({
       sourceKey: "local",
@@ -129,6 +136,7 @@ describe("Cockpit catalog adapter", () => {
       sessions,
       providerRuntimeBySessionId: runtimeErrors,
       connection: "online",
+      now: Date.parse("2026-09-24T10:00:00.000Z"),
     });
 
     expect(
@@ -144,6 +152,7 @@ describe("Cockpit catalog adapter", () => {
       failed: "error",
       done: "complete",
       terminal: "external",
+      "idle-terminal": "complete",
     });
 
     const offline = createCockpitCatalog({
@@ -244,5 +253,20 @@ describe("Cockpit catalog adapter", () => {
       "kept",
     ]);
     expect(catalog.sessionCount).toBe(1);
+
+    const hidden = createCockpitCatalog({
+      sourceKey: "local",
+      projects: [project("project-1", "Atlas")],
+      sessions: [
+        session("kept", "project-1"),
+        session("archived", "project-1", { isArchived: true }),
+      ],
+      providerRuntimeBySessionId: noRuntimeErrors,
+      connection: "online",
+      archived: "only",
+    });
+    expect(hidden.projects[0]?.sessions.map((item) => item.id)).toEqual([
+      "archived",
+    ]);
   });
 });

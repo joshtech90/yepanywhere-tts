@@ -50,7 +50,7 @@ describe("CockpitSessionMenu", () => {
     expect(items).toHaveLength(3);
     expect(items[0]?.textContent).toMatch(/add to favorites/i);
     expect(items[1]?.textContent).toMatch(/rename/i);
-    expect(items[2]?.textContent).toMatch(/archive/i);
+    expect(items[2]?.textContent).toMatch(/hide/i);
   });
 
   it("renders unpin label when pinned", () => {
@@ -168,7 +168,7 @@ describe("CockpitSessionMenu", () => {
     const onClose = vi.fn();
     renderMenu({ onArchive, onClose, sessionTitle: "Sprint Planning" });
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
 
     expect(onArchive).not.toHaveBeenCalled();
     expect(screen.getByText(/Sprint Planning/i)).toBeTruthy();
@@ -176,7 +176,7 @@ describe("CockpitSessionMenu", () => {
     const cancelButton = screen.getByRole("button", { name: /cancel/i });
     expect(document.activeElement).toBe(cancelButton);
 
-    const confirmButton = screen.getByRole("button", { name: /archive/i });
+    const confirmButton = screen.getByRole("button", { name: /hide/i });
     await act(async () => {
       fireEvent.click(confirmButton);
       await Promise.resolve();
@@ -191,9 +191,9 @@ describe("CockpitSessionMenu", () => {
     const onClose = vi.fn();
     renderMenu({ onArchive, onClose });
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
 
-    const confirmButton = screen.getByRole("button", { name: /archive/i });
+    const confirmButton = screen.getByRole("button", { name: /hide/i });
     await act(async () => {
       fireEvent.click(confirmButton);
       await Promise.resolve();
@@ -267,5 +267,19 @@ describe("CockpitSessionMenu", () => {
 
     expect(document.activeElement).toBe(opener);
     document.body.removeChild(opener);
+  });
+});
+
+describe("CockpitSessionMenu without confirmation", () => {
+  it("hides an idle session at once", async () => {
+    const onArchive = vi.fn(() => Promise.resolve(true));
+    const onClose = vi.fn();
+    renderMenu({ onArchive, onClose, confirmArchive: false });
+
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
+
+    await vi.waitFor(() => expect(onArchive).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await vi.waitFor(() => expect(onClose).toHaveBeenCalled());
   });
 });

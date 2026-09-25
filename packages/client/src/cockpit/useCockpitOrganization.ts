@@ -28,6 +28,7 @@ export interface CockpitOrganizationController {
   renameSession: (sessionId: string, title: string) => Promise<boolean>;
   /** YA cannot delete transcripts; archiving hides the session. */
   archiveSession: (sessionId: string) => Promise<boolean>;
+  unarchiveSession: (sessionId: string) => Promise<boolean>;
 }
 
 function activeView(
@@ -162,7 +163,7 @@ export function useCockpitOrganization(): CockpitOrganizationController {
   const writeMetadata = useCallback(
     async (
       sessionId: string,
-      patch: { title: string } | { archived: true },
+      patch: { title: string } | { archived: boolean },
     ): Promise<boolean> => {
       try {
         const result = await runtime.transport.fetch<{ updated: boolean }>(
@@ -194,6 +195,10 @@ export function useCockpitOrganization(): CockpitOrganizationController {
     (sessionId: string) => writeMetadata(sessionId, { archived: true }),
     [writeMetadata],
   );
+  const unarchiveSession = useCallback(
+    (sessionId: string) => writeMetadata(sessionId, { archived: false }),
+    [writeMetadata],
+  );
 
   return useMemo(
     () => ({
@@ -210,6 +215,7 @@ export function useCockpitOrganization(): CockpitOrganizationController {
       togglePin,
       renameSession,
       archiveSession,
+      unarchiveSession,
     }),
     [
       activateView,
@@ -225,6 +231,7 @@ export function useCockpitOrganization(): CockpitOrganizationController {
       state.activeViewId,
       state.views,
       togglePin,
+      unarchiveSession,
     ],
   );
 }

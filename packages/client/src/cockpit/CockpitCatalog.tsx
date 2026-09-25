@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import { Link } from "react-router-dom";
 import { useI18n } from "../i18n";
 import { CockpitSessionRow } from "./CockpitSessionRow";
 import { filterCockpitCatalog, type CockpitCatalogView } from "./core/catalog";
@@ -61,7 +60,7 @@ export function CockpitCatalog({
     [visibleCatalog],
   );
   const isEmpty =
-    sections.favorites.length === 0 && sections.projects.length === 0;
+    sections.favorites.length === 0 && sections.others.length === 0;
   const sessionHref = (projectId: string | null, sessionId: string) =>
     projectId ? navigation.session(projectId, sessionId) : navigation.sessions;
 
@@ -132,50 +131,23 @@ export function CockpitCatalog({
           </section>
         )}
 
-        {sections.projects.map((project) => (
-          <section className={styles.projectGroup} key={project.key}>
-            <header className={styles.projectHeader}>
-              <h2 className={styles.projectTitle}>
-                {project.id ? (
-                  <Link
-                    aria-label={t("cockpitProjectLink", {
-                      name: project.name || t("cockpitUnknownProject"),
-                    })}
-                    to={navigation.project(project.id)}
-                  >
-                    <span>{project.name || t("cockpitUnknownProject")}</span>
-                    <small>{project.path}</small>
-                  </Link>
-                ) : (
-                  <span className={styles.unknownProject}>
-                    {project.name || t("cockpitUnknownProject")}
-                  </span>
-                )}
-              </h2>
-              <span className={styles.projectCount}>
-                {project.sessions.length}
-              </span>
-            </header>
-
-            {project.sessions.length === 0 ? (
-              <p className={styles.projectEmpty}>
-                {t("cockpitProjectNoSessions")}
-              </p>
-            ) : (
-              <ul className={styles.sessionList}>
-                {project.sessions.map((session) => (
-                  <li key={session.key}>
-                    <CockpitSessionRow
-                      href={sessionHref(session.projectId, session.id)}
-                      onOpenMenu={menu.open}
-                      session={session}
-                    />
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        ))}
+        {sections.others.length > 0 && (
+          <ul
+            aria-label={t("cockpitSessionsViewTitle")}
+            className={styles.sessionList}
+          >
+            {sections.others.map(({ session, projectName }) => (
+              <li key={session.key}>
+                <CockpitSessionRow
+                  href={sessionHref(session.projectId, session.id)}
+                  onOpenMenu={menu.open}
+                  projectName={projectName || undefined}
+                  session={session}
+                />
+              </li>
+            ))}
+          </ul>
+        )}
       </div>
 
       {hasMore && (

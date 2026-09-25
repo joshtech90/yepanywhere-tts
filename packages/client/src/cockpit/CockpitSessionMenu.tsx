@@ -19,6 +19,8 @@ export interface CockpitSessionMenuProps {
   onTogglePin: () => void;
   onRename: (title: string) => Promise<boolean>;
   onArchive: () => Promise<boolean>;
+  /** Hiding stops a running turn, so only then does it ask first. */
+  confirmArchive?: boolean;
 }
 
 type MenuView = "menu" | "rename" | "archive";
@@ -33,6 +35,7 @@ export function CockpitSessionMenu({
   onTogglePin,
   onRename,
   onArchive,
+  confirmArchive = true,
 }: CockpitSessionMenuProps) {
   const { t } = useI18n();
   const [view, setView] = useState<MenuView>("menu");
@@ -312,7 +315,9 @@ export function CockpitSessionMenu({
             type="button"
             role="menuitem"
             className={`${styles.item} ${styles.destructive}`}
-            onClick={() => setView("archive")}
+            onClick={() =>
+              confirmArchive ? setView("archive") : void handleArchiveConfirm()
+            }
             disabled={busy}
           >
             {t("cockpitSessionMenuArchive")}

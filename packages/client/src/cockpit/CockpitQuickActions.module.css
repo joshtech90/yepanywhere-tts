@@ -1,0 +1,242 @@
+.root {
+  position: relative;
+}
+
+.trigger {
+  display: grid;
+  width: 2.45rem;
+  height: 2.45rem;
+  place-items: center;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.8rem;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  cursor: pointer;
+}
+
+.trigger:hover,
+.trigger[aria-expanded="true"] {
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.trigger[data-state="copied"] {
+  color: var(--cockpit-working);
+}
+
+.trigger svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.trigger:focus-visible,
+.item:focus-visible,
+.provider:focus-visible,
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.srOnly {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  margin: -1px;
+  white-space: nowrap;
+}
+
+.menu {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  right: 0;
+  z-index: 20;
+  display: grid;
+  width: min(19rem, calc(100vw - 1.5rem));
+  padding: 0.3rem;
+  gap: 0.15rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 12px;
+  background: var(--cockpit-surface-raised);
+  box-shadow: 0 12px 32px var(--cockpit-shadow);
+}
+
+.item {
+  display: grid;
+  padding: 0.55rem 0.7rem;
+  gap: 0.15rem;
+  border: 0;
+  border-radius: 8px;
+  color: var(--cockpit-text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.item:hover:not(:disabled) {
+  background: var(--cockpit-hover);
+}
+
+.item:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.item strong {
+  font-size: 0.82rem;
+}
+
+.item small {
+  color: var(--cockpit-muted);
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  padding: 1rem;
+  place-items: center;
+  background: rgb(10 14 22 / 42%);
+}
+
+.dialog {
+  display: grid;
+  width: min(30rem, 100%);
+  max-height: calc(100dvh - 2rem);
+  padding: 1.2rem;
+  gap: 0.9rem;
+  overflow: auto;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 1.1rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface-raised);
+  box-shadow: 0 24px 60px var(--cockpit-shadow);
+  outline: none;
+}
+
+.dialog h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.explain {
+  margin: 0;
+  color: var(--cockpit-muted);
+  font-size: 0.8rem;
+  line-height: 1.45;
+}
+
+.providers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.provider {
+  min-height: 2.3rem;
+  padding: 0 0.9rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.provider[aria-checked="true"] {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.progress {
+  display: flex;
+  margin: 0;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--cockpit-muted);
+  font-size: 0.8rem;
+}
+
+.spinner {
+  width: 0.9rem;
+  height: 0.9rem;
+  border: 2px solid var(--cockpit-border-strong);
+  border-top-color: var(--cockpit-accent);
+  border-radius: 50%;
+  animation: handoff-spin 0.9s linear infinite;
+}
+
+@keyframes handoff-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.error {
+  margin: 0;
+  color: var(--cockpit-danger);
+  font-size: 0.8rem;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.primary,
+.secondary {
+  min-height: 2.5rem;
+  padding: 0 1rem;
+  border-radius: 0.75rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.primary {
+  border: 0;
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+}
+
+.secondary {
+  border: 1px solid var(--cockpit-border-strong);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+}
+
+.primary:disabled,
+.secondary:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+@media (max-width: 700px) {
+  .trigger {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner {
+    animation: none;
+  }
+}

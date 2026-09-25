@@ -133,6 +133,15 @@
   font-weight: 750;
 }
 
+/* Context use is reference information: small, grey, never a badge. */
+.contextUsage {
+  color: var(--cockpit-faint);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
 .sessionState[data-state="complete"] {
   padding: 0 0.8rem;
 }

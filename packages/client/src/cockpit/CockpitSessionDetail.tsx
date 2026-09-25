@@ -16,6 +16,7 @@ import { CockpitCopyResponseButton } from "./CockpitCopyResponseButton";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
+import { CockpitQuickActions } from "./CockpitQuickActions";
 import { CockpitStatusLed } from "./CockpitStatusLed";
 import { CockpitStopButton } from "./CockpitStopButton";
 import { CockpitTranscriptWindow } from "./CockpitTranscriptWindow";
@@ -496,6 +497,17 @@ export function CockpitSessionDetail({
     projectLabelFromId(projectId) ||
     t("cockpitUnknownProject");
   const classicHref = navigation.classicSession(projectId, sessionId);
+  const usage = detail.session?.contextUsage;
+  const contextUsage =
+    usage && Number.isFinite(usage.percentage)
+      ? {
+          percent: Math.round(usage.percentage),
+          used: usage.inputTokens.toLocaleString(locale),
+          window: usage.contextWindow
+            ? usage.contextWindow.toLocaleString(locale)
+            : "?",
+        }
+      : null;
 
   return (
     <article className={styles.root} aria-labelledby="cockpit-session-title">
@@ -528,6 +540,20 @@ export function CockpitSessionDetail({
             }`}
             stop={detail.attention.stop}
           />
+          <CockpitQuickActions
+            basePath={basePath}
+            busy={
+              state === "active" ||
+              state === "external" ||
+              state === "waiting" ||
+              detail.processState !== "idle"
+            }
+            entries={detail.entries}
+            port={detail.composer}
+            projectId={projectId}
+            sessionId={sessionId}
+            sessionTitle={title}
+          />
           <CockpitModelControls
             actualSessionId={detail.composer.actualSessionId}
             projectId={projectId}
@@ -537,6 +563,20 @@ export function CockpitSessionDetail({
             setStatus={detail.composer.setStatus}
             status={detail.status}
           />
+          {contextUsage && (
+            <span
+              className={styles.contextUsage}
+              title={t("cockpitSessionContextUsageTitle", {
+                percent: contextUsage.percent,
+                used: contextUsage.used,
+                window: contextUsage.window,
+              })}
+            >
+              {t("cockpitSessionContextUsage", {
+                percent: contextUsage.percent,
+              })}
+            </span>
+          )}
           <span
             aria-live="polite"
             className={styles.sessionState}

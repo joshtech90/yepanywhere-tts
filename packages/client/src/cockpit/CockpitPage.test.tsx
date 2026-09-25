@@ -41,6 +41,7 @@ const pageMocks = vi.hoisted(() => {
         togglePin: vi.fn(async () => true),
         renameSession: vi.fn(async () => true),
         archiveSession: vi.fn(async () => true),
+        unarchiveSession: vi.fn(async () => true),
       },
     },
   };
@@ -226,7 +227,7 @@ describe("Cockpit shell", () => {
     renderShell();
 
     const appearance = screen
-      .getAllByLabelText("Cockpit appearance")
+      .getAllByLabelText("Appearance")
       .find((element) => element.tagName === "DETAILS");
     if (!(appearance instanceof HTMLDetailsElement)) {
       throw new Error("desktop appearance disclosure missing");

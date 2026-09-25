@@ -193,6 +193,34 @@
   flex: 1;
 }
 
+.rowGrow {
+  min-width: 0;
+  flex: 1;
+}
+
+.restoreButton {
+  min-height: 2.3rem;
+  padding: 0 0.8rem;
+  flex: none;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: 0.65rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.restoreButton:hover {
+  color: var(--cockpit-accent);
+}
+
+.restoreButton:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
 .iconAction {
   display: grid;
   width: 2.6rem;

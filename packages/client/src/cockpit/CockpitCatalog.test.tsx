@@ -50,6 +50,7 @@ function organization(): CockpitOrganizationController {
     togglePin: vi.fn(async () => true),
     renameSession: vi.fn(async () => true),
     archiveSession: vi.fn(async () => true),
+    unarchiveSession: vi.fn(async () => true),
   };
 }
 
@@ -104,9 +105,6 @@ describe("Cockpit catalog", () => {
 
     expect(screen.getByText("Release checklist")).toBeTruthy();
     expect(
-      screen.getByRole("link", { name: /Atlas/ }).getAttribute("href"),
-    ).toBe("/cockpit?view=sessions&project=atlas");
-    expect(
       screen.getByText("Release checklist").closest("a")?.getAttribute("href"),
     ).toBe("/cockpit/projects/atlas/sessions/session-0");
     expect(document.querySelector("time")?.getAttribute("title")).toContain(
@@ -114,7 +112,7 @@ describe("Cockpit catalog", () => {
     );
   });
 
-  it("leads with favourites under one star and keeps the rest by project", () => {
+  it("leads with favourites under one star, then every session by time", () => {
     render(<CatalogHarness catalog={catalogWithSessions(3)} />);
 
     const favorites = screen.getByRole("region", { name: "Favorites" });
@@ -122,9 +120,9 @@ describe("Cockpit catalog", () => {
     expect(favorites.textContent).not.toContain("Fixture session 1");
     expect(favorites.querySelectorAll("svg")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: /favorites/i })).toBeNull();
-    expect(
-      screen.getByRole("link", { name: "Open project Atlas" }),
-    ).toBeTruthy();
+    const others = screen.getByRole("list", { name: "All sessions" });
+    expect(others.textContent).toContain("Fixture session 1");
+    expect(others.textContent).toContain("Atlas");
     expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
     expect(screen.queryByText("Finished")).toBeNull();
   });
@@ -144,7 +142,7 @@ describe("Cockpit catalog", () => {
     );
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["Remove from favorites", "Rename", "Archive"]);
+    ).toEqual(["Remove from favorites", "Rename", "Hide"]);
     fireEvent.click(
       screen.getByRole("menuitem", { name: "Remove from favorites" }),
     );
@@ -154,21 +152,21 @@ describe("Cockpit catalog", () => {
       screen.getByText("Fixture session 1").closest("a") as HTMLElement,
       { clientX: 40, clientY: 90 },
     );
-    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
-    expect(controller.archiveSession).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    // An idle session hides at once; only a working one asks first.
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
     await vi.waitFor(() =>
       expect(controller.archiveSession).toHaveBeenCalledWith("session-1"),
     );
-  });
 
-  it("links each project header to its Cockpit session list", () => {
-    render(<CatalogHarness catalog={catalogWithSessions(2)} />);
-
-    expect(
-      screen
-        .getByRole("link", { name: "Open project Atlas" })
-        .getAttribute("href"),
-    ).toBe("/cockpit?view=sessions&project=atlas");
+    fireEvent.contextMenu(
+      screen.getByText("Release checklist").closest("a") as HTMLElement,
+      { clientX: 40, clientY: 50 },
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
+    expect(controller.archiveSession).not.toHaveBeenCalledWith("session-0");
+    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    await vi.waitFor(() =>
+      expect(controller.archiveSession).toHaveBeenCalledWith("session-0"),
+    );
   });
 });

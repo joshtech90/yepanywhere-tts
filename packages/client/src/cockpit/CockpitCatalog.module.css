@@ -82,8 +82,7 @@
 }
 
 .catalogError,
-.emptyMessage,
-.projectEmpty {
+.emptyMessage {
   color: var(--cockpit-muted);
   font-size: 0.72rem;
   line-height: 1.45;
@@ -114,10 +113,6 @@
   text-align: center;
 }
 
-.projectGroup + .projectGroup {
-  margin-top: 0.75rem;
-}
-
 .favorites {
   margin-bottom: 0.7rem;
   padding-bottom: 0.7rem;
@@ -143,66 +138,6 @@
   stroke: var(--cockpit-warning);
   stroke-linejoin: round;
   stroke-width: 1.4;
-}
-
-.projectHeader {
-  display: grid;
-  min-height: 2.2rem;
-  padding: 0 0.25rem;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.projectTitle {
-  min-width: 0;
-  margin: 0;
-  font: inherit;
-}
-
-.projectHeader a,
-.unknownProject {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 0.08rem;
-  color: var(--cockpit-text);
-  font-size: 0.72rem;
-  font-weight: 750;
-  text-decoration: none;
-}
-
-.projectHeader a > span,
-.projectHeader small {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.projectHeader small {
-  color: var(--cockpit-faint);
-  font-size: 0.59rem;
-  font-weight: 550;
-}
-
-.projectHeader a:hover > span {
-  color: var(--cockpit-accent);
-}
-
-.projectCount {
-  min-width: 1.35rem;
-  padding: 0.12rem 0.35rem;
-  border-radius: 999px;
-  color: var(--cockpit-muted);
-  background: var(--cockpit-hover);
-  font-size: 0.6rem;
-  font-weight: 750;
-  text-align: center;
-}
-
-.projectEmpty {
-  margin: 0;
-  padding: 0.5rem 0.7rem;
 }
 
 .sessionList {
@@ -250,7 +185,6 @@
 }
 
 .searchField button:focus-visible,
-.projectHeader a:focus-visible,
 .coverage button:focus-visible {
   outline: 3px solid var(--cockpit-accent-ring);
   outline-offset: 2px;

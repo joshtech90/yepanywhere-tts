@@ -51,7 +51,18 @@ export interface CreateCockpitCatalogInput {
   >;
   connection: "online" | "offline" | "error";
   orderedSessionIds?: readonly string[];
+  /** Clock for judging how fresh external activity is. */
+  now?: number;
+  /** Hidden (archived) sessions are left out unless a view asks for them. */
+  archived?: "exclude" | "only";
 }
+
+/**
+ * An idle terminal keeps rewriting bookkeeping lines, which YA reports as
+ * external ownership. The list has no transcript, so it only trusts that
+ * signal while real content (a timestamped message) is this recent.
+ */
+export const COCKPIT_EXTERNAL_FRESH_MS = 2 * 60 * 1000;
 
 function timestamp(value: string | undefined): number {
   if (!value) return Number.NEGATIVE_INFINITY;
@@ -84,6 +95,7 @@ function deriveSessionStatus(
   session: SessionCollectionRecord,
   providerRuntime: ProviderRuntimeStatusRecord | undefined,
   connection: CreateCockpitCatalogInput["connection"],
+  now: number,
 ): CockpitSessionStatus {
   if (connection === "offline") return "offline";
   if (
@@ -106,8 +118,12 @@ function deriveSessionStatus(
   ) {
     return "active";
   }
-  // Another program wrote the transcript within the server's decay window.
-  if (session.ownership?.owner === "external") return "external";
+  if (
+    session.ownership?.owner === "external" &&
+    now - timestamp(session.updatedAt) < COCKPIT_EXTERNAL_FRESH_MS
+  ) {
+    return "external";
+  }
   return "complete";
 }
 
@@ -171,6 +187,8 @@ export function createCockpitCatalog({
   providerRuntimeBySessionId,
   connection,
   orderedSessionIds = [],
+  now = Date.now(),
+  archived = "exclude",
 }: CreateCockpitCatalogInput): CockpitCatalogView {
   const groups = new Map<string | null, CockpitCatalogProject>();
   const orderBySessionId = new Map(
@@ -189,7 +207,7 @@ export function createCockpitCatalog({
 
   for (const session of sessions) {
     // An archived session stays in the loaded page until it is refetched.
-    if (session.isArchived) continue;
+    if ((session.isArchived === true) !== (archived === "only")) continue;
     const projectId = session.projectId ?? null;
     let group = groups.get(projectId);
     if (!group) {
@@ -217,6 +235,7 @@ export function createCockpitCatalog({
         session,
         providerRuntimeBySessionId.get(session.id),
         connection,
+        now,
       ),
     });
   }
@@ -243,7 +262,9 @@ export function createCockpitCatalog({
   return {
     sourceKey,
     projects: orderedProjects,
-    sessionCount: sessions.filter((session) => !session.isArchived).length,
+    sessionCount: sessions.filter(
+      (session) => (session.isArchived === true) === (archived === "only"),
+    ).length,
   };
 }
 

@@ -89,6 +89,25 @@ describe("inspectCockpitLatestTurn", () => {
     expect(turn.openToolCallAt).toBeNull();
   });
 
+  it("reads terminal bookkeeping after the answer as a settled turn", () => {
+    const bookkeeping = (subtype: string, id: string) =>
+      ({
+        type: "system",
+        id,
+        subtype,
+        sourceMessages: at(-1_000),
+      }) as unknown as RenderItem;
+    expect(
+      inspectCockpitLatestTurn([
+        prompt("p1"),
+        tool("t1", "complete"),
+        text("a1"),
+        bookkeeping("stop_hook_summary", "s1"),
+        bookkeeping("away_summary", "s2"),
+      ]).settled,
+    ).toBe(true);
+  });
+
   it("keeps a streaming answer unsettled", () => {
     expect(
       inspectCockpitLatestTurn([prompt("p1"), text("a1", true)]).settled,
@@ -99,7 +118,18 @@ describe("inspectCockpitLatestTurn", () => {
 describe("isCockpitSessionWorkingElsewhere", () => {
   const openTurn = { openToolCallAt: NOW - 20_000, settled: false };
 
-  it("always reports external ownership as work", () => {
+  it("reports external ownership as work while the turn is open", () => {
+    expect(
+      isCockpitSessionWorkingElsewhere({
+        owner: "external",
+        processState: "idle",
+        latestTurn: { openToolCallAt: null, settled: false },
+        now: NOW,
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores an idle terminal that only rewrites its transcript", () => {
     expect(
       isCockpitSessionWorkingElsewhere({
         owner: "external",
@@ -107,7 +137,7 @@ describe("isCockpitSessionWorkingElsewhere", () => {
         latestTurn: { openToolCallAt: null, settled: true },
         now: NOW,
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it("bridges the quiet decay while a recent tool call is still open", () => {

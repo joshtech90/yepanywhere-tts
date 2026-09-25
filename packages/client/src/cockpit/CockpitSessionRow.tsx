@@ -77,29 +77,37 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
 
   return (
     <Link
-      aria-label={`${title}, ${statusLabel}${time ? `, ${time.label}` : ""}`}
+      aria-label={`${title}, ${statusLabel}${time ? `, ${time.label}` : ""}${
+        projectName ? `, ${projectName}` : ""
+      }`}
       className={styles.row}
+      data-with-project={projectName ? "true" : "false"}
       onContextMenu={handleContextMenu}
       to={href}
       {...longPress}
     >
-      <span className={styles.titleLine}>
-        <CockpitStatusLed
-          label={statusLabel}
-          tone={cockpitLedToneForStatus(session.status)}
-        />
-        <span className={styles.title}>{title}</span>
-      </span>
-      <span className={styles.meta} aria-hidden="true">
-        {time ? (
-          <time dateTime={session.lastActivityAt} title={time.title}>
-            {time.label}
-          </time>
-        ) : (
-          <span>{t("cockpitActivityUnknown")}</span>
-        )}
-        {projectName && <span className={styles.project}>{projectName}</span>}
-      </span>
+      <CockpitStatusLed
+        label={statusLabel}
+        tone={cockpitLedToneForStatus(session.status)}
+      />
+      <span className={styles.title}>{title}</span>
+      {time ? (
+        <time
+          aria-hidden="true"
+          className={styles.time}
+          dateTime={session.lastActivityAt}
+          title={time.title}
+        >
+          {time.label}
+        </time>
+      ) : (
+        <span aria-hidden="true" className={styles.time} />
+      )}
+      {projectName && (
+        <span aria-hidden="true" className={styles.project} title={projectName}>
+          {projectName}
+        </span>
+      )}
     </Link>
   );
 });

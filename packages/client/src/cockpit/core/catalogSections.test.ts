@@ -47,41 +47,32 @@ const catalog: CockpitCatalogView = {
 };
 
 describe("splitCockpitFavorites", () => {
-  it("lists favourites first in catalogue order with their project", () => {
-    const sections = splitCockpitFavorites(catalog);
+  it("puts favourites first and every other session after, by time", () => {
+    const timed: CockpitCatalogView = {
+      ...catalog,
+      projects: catalog.projects.map((project) => ({
+        ...project,
+        sessions: project.sessions.map((item, index) => ({
+          ...item,
+          lastActivityAt: new Date(
+            Date.UTC(2026, 8, 20 + index, item.id.charCodeAt(0) - 96),
+          ).toISOString(),
+        })),
+      })),
+    };
+    const sections = splitCockpitFavorites(timed);
 
     expect(
       sections.favorites.map((item) => [item.session.id, item.projectName]),
     ).toEqual([
-      ["a1", "Android"],
-      ["b1", "Buero"],
       ["d2", "Docs"],
+      ["b1", "Buero"],
+      ["a1", "Android"],
     ]);
-  });
-
-  it("keeps the other sessions grouped and drops groups emptied by it", () => {
-    const sections = splitCockpitFavorites(catalog);
-
-    expect(
-      sections.projects.map((project) => [
-        project.name,
-        project.sessions.map((item) => item.id),
-      ]),
-    ).toEqual([
-      ["Android", ["a2"]],
-      ["Cloud", []],
-      ["Docs", ["d1"]],
+    expect(sections.others.map((item) => item.session.id)).toEqual([
+      "a2",
+      "d1",
     ]);
-  });
-
-  it("returns the untouched groups when nothing is a favourite", () => {
-    const plain: CockpitCatalogView = {
-      ...catalog,
-      projects: catalog.projects.slice(2, 3),
-    };
-    const sections = splitCockpitFavorites(plain);
-    expect(sections.favorites).toEqual([]);
-    expect(sections.projects[0]).toBe(plain.projects[0]);
   });
 });
 

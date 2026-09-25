@@ -18,7 +18,11 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
-import { CockpitProjectsView, CockpitSessionsView } from "./CockpitListViews";
+import {
+  CockpitHiddenView,
+  CockpitProjectsView,
+  CockpitSessionsView,
+} from "./CockpitListViews";
 import { CockpitNewSession } from "./CockpitNewSession";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
@@ -95,6 +99,15 @@ function AppearanceIcon() {
       <circle cx="10" cy="6.8" r=".7" />
       <circle cx="14" cy="6.8" r=".7" />
       <circle cx="16.3" cy="10.2" r=".7" />
+    </svg>
+  );
+}
+
+function HiddenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 12s3-6 8.5-6c1.6 0 3 .5 4.2 1.2M20.5 12s-3 6-8.5 6c-1.6 0-3-.5-4.2-1.2" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M4 4l16 16" />
     </svg>
   );
 }
@@ -353,7 +366,9 @@ export function CockpitShell({
             >
               <span className={styles.icon}>{destination.icon}</span>
               <span aria-hidden="true" className={styles.labelLong}>
-                {destination.external ? t("sidebarSettings") : destination.label}
+                {destination.external
+                  ? t("sidebarSettings")
+                  : destination.label}
               </span>
               <span aria-hidden="true" className={styles.labelShort}>
                 {destination.shortLabel}
@@ -367,28 +382,35 @@ export function CockpitShell({
           />
         </nav>
 
-        <details
-          aria-label={t("cockpitAppearanceLabel")}
-          className={styles.desktopAppearance}
-        >
-          <summary>
-            <AppearanceIcon />
-            <span>{t("cockpitAppearanceLabel")}</span>
-          </summary>
-          <div className={styles.desktopAppearancePanel}>
-            <CockpitAppearanceControls
-              accent={accent}
-              onAccentChange={onAccentChange}
-              onThemeChange={onThemeChange}
-              theme={theme}
-            />
-          </div>
-        </details>
+        <div className={styles.sidebarFooter}>
+          <details
+            aria-label={t("cockpitAppearanceLabel")}
+            className={styles.desktopAppearance}
+          >
+            <summary>
+              <AppearanceIcon />
+              <span>{t("cockpitAppearanceLabel")}</span>
+            </summary>
+            <div className={styles.desktopAppearancePanel}>
+              <CockpitAppearanceControls
+                accent={accent}
+                onAccentChange={onAccentChange}
+                onThemeChange={onThemeChange}
+                theme={theme}
+              />
+            </div>
+          </details>
+          <Link
+            className={styles.footerLink}
+            onClick={navigateFromSearch}
+            to={navigation.hidden}
+          >
+            <HiddenIcon />
+            <span>{t("cockpitHiddenNav")}</span>
+          </Link>
+        </div>
         {sidebarWidth.handleProps && (
-          <div
-            className={resizeStyles.handle}
-            {...sidebarWidth.handleProps}
-          />
+          <div className={resizeStyles.handle} {...sidebarWidth.handleProps} />
         )}
       </aside>
 
@@ -418,6 +440,14 @@ export function CockpitShell({
               <span aria-hidden="true" />
               {stateCopy.status}
             </span>
+            <Link
+              aria-label={t("cockpitHiddenNav")}
+              className={styles.mobileHiddenLink}
+              title={t("cockpitHiddenNav")}
+              to={navigation.hidden}
+            >
+              <HiddenIcon />
+            </Link>
             <details className={styles.mobileAppearance}>
               <summary aria-label={t("cockpitAppearanceLabel")}>
                 <AppearanceIcon />
@@ -515,7 +545,8 @@ function CockpitSourcePage() {
   const [searchParams] = useSearchParams();
   const view = sessionId ? null : searchParams.get("view");
   const newSession = view === "new";
-  const listView = view === "sessions" || view === "projects";
+  const listView =
+    view === "sessions" || view === "projects" || view === "hidden";
   // Subscribe to the derived primitive only: getSnapshot() returns a fresh
   // object on every call, which makes useSyncExternalStore loop forever
   // (React error 185). useActivityBusState selects `.state` for the same reason.
@@ -565,6 +596,12 @@ function CockpitSourcePage() {
           key={searchParams.get("project") ?? ""}
           organization={catalogData.organization}
           projectId={searchParams.get("project")}
+          shellKind={shellKind}
+        />
+      ) : view === "hidden" ? (
+        <CockpitHiddenView
+          basePath={basePath}
+          organization={catalogData.organization}
           shellKind={shellKind}
         />
       ) : view === "projects" ? (

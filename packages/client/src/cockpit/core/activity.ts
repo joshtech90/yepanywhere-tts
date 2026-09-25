@@ -55,7 +55,15 @@ export function inspectCockpitLatestTurn(
   for (let index = items.length - 1; index >= start; index -= 1) {
     const item = items[index];
     if (!item) continue;
-    if (item.type === "system" && item.subtype === "config_ack") continue;
+    // Bookkeeping a terminal writes after the answer (hook summaries, turn
+    // duration, away recaps) says nothing about whether the turn is open.
+    if (
+      item.type === "system" &&
+      item.subtype !== "turn_aborted" &&
+      item.subtype !== "error"
+    ) {
+      continue;
+    }
     settled = isSettlingItem(item);
     break;
   }
@@ -86,8 +94,9 @@ export interface CockpitForeignActivityInput {
 
 /**
  * True when another program (a terminal Claude Code, a second YA server) is
- * working in this session. YA sees that program only through the transcript
- * file: "external" ownership lasts ~30 s after its last write, so a long quiet
+ * working in this session, meaning its latest turn has no answer or
+ * completion yet. YA sees that program only through the transcript file:
+ * "external" ownership lasts ~30 s after its last write, so a long quiet
  * command falls back to "none". An unanswered, recent tool call at the end of
  * an unsettled turn keeps the session visibly busy through that silence.
  */
@@ -97,9 +106,12 @@ export function isCockpitSessionWorkingElsewhere({
   latestTurn,
   now,
 }: CockpitForeignActivityInput): boolean {
+  if (owner === "self" || processState !== "idle") return false;
+  // An idle terminal still rewrites its transcript (titles, recaps), which
+  // YA reports as external ownership; only an unfinished turn is work.
+  if (latestTurn.settled) return false;
   if (owner === "external") return true;
-  if (owner !== "none" || processState !== "idle") return false;
-  if (latestTurn.settled || latestTurn.openToolCallAt === null) return false;
+  if (latestTurn.openToolCallAt === null) return false;
   const age = now - latestTurn.openToolCallAt;
   return age >= -60_000 && age < COCKPIT_FOREIGN_TOOL_MAX_AGE_MS;
 }
