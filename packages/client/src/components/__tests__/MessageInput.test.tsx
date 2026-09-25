@@ -3616,6 +3616,42 @@ describe("MessageInput", () => {
 
     expect(textarea.value).toBe("/compact ");
   });
+
+  it("keeps typing ordered when a slash command is accepted", () => {
+    const pendingFrames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      pendingFrames.push(callback);
+      return pendingFrames.length;
+    });
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: ["goal"].map(createClientSlashCommand),
+        onCustomCommand: vi.fn(() => false),
+      },
+    ) as HTMLTextAreaElement;
+    pendingFrames.length = 0;
+
+    fireEvent.change(textarea, { target: { value: "/go" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("/goal ");
+    expect(textarea.selectionStart).toBe("/goal ".length);
+
+    fireEvent.change(textarea, {
+      target: {
+        value: "/goal x",
+        selectionStart: "/goal x".length,
+        selectionEnd: "/goal x".length,
+      },
+    });
+    act(() => {
+      for (const callback of pendingFrames.splice(0)) callback(0);
+    });
+
+    expect(textarea.value).toBe("/goal x");
+    expect(textarea.selectionStart).toBe("/goal x".length);
+  });
+
   it("expands the skill prefix with Tab and selects the first match with Shift-Space", () => {
     const textarea = renderMessageInput(
       vi.fn(() => true),
@@ -3677,6 +3713,46 @@ describe("MessageInput", () => {
     expect(screen.getByText("Remove the current goal")).toBeTruthy();
     fireEvent.keyDown(textarea, { key: "Enter" });
     expect(textarea.value).toBe("/goal clear ");
+  });
+
+  it("keeps typing ordered when a slash argument is accepted", () => {
+    const pendingFrames: FrameRequestCallback[] = [];
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      pendingFrames.push(callback);
+      return pendingFrames.length;
+    });
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        slashCommands: [
+          {
+            name: "goal",
+            description: "",
+            argumentCompletions: [{ value: "clear" }],
+          },
+        ],
+      },
+    ) as HTMLTextAreaElement;
+    pendingFrames.length = 0;
+
+    fireEvent.change(textarea, { target: { value: "/goal c" } });
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    expect(textarea.value).toBe("/goal clear ");
+    expect(textarea.selectionStart).toBe("/goal clear ".length);
+
+    fireEvent.change(textarea, {
+      target: {
+        value: "/goal clear x",
+        selectionStart: "/goal clear x".length,
+        selectionEnd: "/goal clear x".length,
+      },
+    });
+    act(() => {
+      for (const callback of pendingFrames.splice(0)) callback(0);
+    });
+
+    expect(textarea.value).toBe("/goal clear x");
+    expect(textarea.selectionStart).toBe("/goal clear x".length);
   });
 
   it("offers the current goal on bare /goal, tabs it in, and submits bare Enter", () => {
