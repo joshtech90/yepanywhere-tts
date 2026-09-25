@@ -1,0 +1,52 @@
+.button {
+  display: grid;
+  width: 2.35rem;
+  min-height: 2.35rem;
+  padding: 0;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 0;
+  border-radius: 0.7rem;
+  color: var(--cockpit-faint);
+  background: transparent;
+  cursor: pointer;
+}
+
+.button svg {
+  width: 0.95rem;
+  height: 0.95rem;
+  fill: transparent;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
+.button[aria-pressed="true"] {
+  color: var(--cockpit-accent);
+}
+
+.button[aria-pressed="true"] svg {
+  fill: currentColor;
+}
+
+.button:hover {
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.5;
+}
+
+@media (max-width: 700px) {
+  .button {
+    width: 2.75rem;
+    min-height: 2.75rem;
+  }
+}

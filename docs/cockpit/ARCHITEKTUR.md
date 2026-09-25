@@ -208,6 +208,35 @@ Seiten kennt, nennt die UI diese Teilabdeckung und bietet explizites Nachladen
 an. Inhalts- und Volltextsuche bleibt Paket 4; Paket 3 startet dafuer keine
 Transcript-Abfragen und keine eigenen Dateiscans.
 
+### Suchgrenze aus Paket 4
+
+Die Cockpit-Suche montiert die vorhandene All-Sessions-Akquisition nur solange
+ihre eigene Ansicht geoeffnet ist. `useGlobalSessionsFeed` und der
+source-gebundene Summary Store liefern den Katalog; `useContentSearch`,
+`titleMatches` und die bestehenden Provider-/Server-Capabilities bleiben die
+einzigen Besitzer von Titel- und begrenzter Inhaltssuche. Das Cockpit baut
+weder einen Transcript-Cache noch einen Datei- oder Transcript-Scanner auf.
+
+Der Eingabe-Draft gehoert unmittelbar der Suchansicht. Die weitergereichte
+Suchprojektion laeuft als nicht dringende React-Aktualisierung, sodass Katalog-
+und Treffer-Updates den sichtbaren Text nicht ersetzen. Ein source- und
+needle-gebundener Entdeckungsrang haelt bestehende Sitzungsgruppen stabil;
+spaetere Katalogseiten und Live-Treffer werden angehaengt. Eine ausgewaehlte
+Gruppe bleibt ausgewaehlt, solange sie noch passt.
+
+Die Tastaturauswahl folgt derselben stabilen Ergebnisreihenfolge. Pfeil runter
+bewegt den Fokus aus dem Suchfeld auf die ausgewaehlte Gruppe, Pfeil hoch und
+runter wechseln zwischen benachbarten Gruppen, und Pfeil hoch auf der ersten
+Gruppe kehrt zum Suchfeld zurueck. Im Suchfeld selbst bleibt Pfeil hoch nativ.
+Enter bleibt die native Link-Aktion; die Suche baut dafuer keine zweite
+Navigationslogik.
+
+Abdeckung ist Teil des View-Modells: laufende Katalogseiten, noch unbekannte
+oder fehlende Server-Capability, title-only Provider, begrenzte/fehlerhafte
+Transcript-Abdeckung und Katalogfehler bleiben sichtbar. Titel-only Suche
+startet keine Inhaltsanfrage. Das bestehende offene Index-Gap und die
+CI-Nachgeschichte werden dadurch nicht umgangen oder als geloest bezeichnet.
+
 ### Session-Detail-Grenze aus Paket 5
 
 Cockpit-Sitzungen liegen unter
@@ -319,9 +348,11 @@ des neuen Kontexts. Spaete Upload-Ergebnisse duerfen nicht in eine andere
 Sitzung uebernommen werden.
 
 Die Enter-Taste folgt derselben Eingabegrenze wie der bestehende Composer: Nur
-ein unveraendertes, einmaliges Enter auf einem Desktop-Eingabegeraet sendet.
-IME-Komposition, gehaltenes Enter, Zusatztasten und primaere Touch-Eingabe
-bleiben Texteingabe und koennen keinen Draft versehentlich abschicken.
+ein unveraendertes, einmaliges Enter auf einem Desktop-Eingabegeraet sendet;
+`Strg/Befehl+Eingabe` reiht den Draft ausschliesslich dann ein, wenn Queue
+verfuegbar ist. IME-Komposition, gehaltenes Enter, andere Zusatztasten und
+primaere Touch-Eingabe bleiben Texteingabe und koennen keinen Draft
+versehentlich abschicken.
 
 Datei-Paste und Drag-and-drop enden an derselben Attachment-Grenze wie der
 Dateiauswahldialog. Der Cockpit-Composer nimmt dabei nur echte Dateiobjekte aus
@@ -388,6 +419,98 @@ angenommenen sanften Interrupt bleibt das naechste Serverereignis die
 Zustandsautoritaet. Der Knopf liegt ausserhalb der nicht dringenden
 Transcript-Projektion, damit eine schnelle Nachrichtenfolge ihn nicht
 verdraengt.
+
+Reconnect ist nur ein erklaerter Kartenzustand und baut keine zweite Queue.
+Lokal behandelte Tastenereignisse werden vom globalen Cockpit-Dispatcher
+respektiert, sodass Escape in einer Frage oder Freigabe nicht zugleich Stop
+ausloest. Der Dispatcher findet die Stop-Aktion ausschliesslich ueber ihren
+semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag und
+fuehrt selbst weder Interrupt noch Rueckfalllogik aus.
+
+### Organisationsgrenze aus Paket 9
+
+Favoriten bleiben vorhandene serverseitige Session-Metadaten. Das Cockpit
+schreibt `starred` ueber den source-gebundenen Transport auf die bestehende
+Metadatenroute und meldet den bestaetigten Wert danach an denselben Summary-
+Store, aus dem Katalog und Suche lesen. Bis zur Serverbestaetigung bleibt die
+sichtbare Markierung unveraendert. Lehnt ein aelterer Server die Operation ab,
+zeigt das Cockpit einen Rueckfallhinweis und behauptet keinen Erfolg.
+
+Gespeicherte Cockpit-Ansichten sind ein versionierter browserlokaler Record.
+Jede Source besitzt eine eigene Liste aus Suchtext und Favoritenfilter; gleiche
+Session-IDs verschiedener Hosts teilen dadurch weder Auswahl noch lokale
+Organisation. Beim Entfernen eines gespeicherten Hosts werden dessen Ansichten
+und Prompt-Verlauf mit entfernt, waehrend andere Sources erhalten bleiben.
+
+Der bereits in Paket 7 angelegte Prompt-Verlauf ist nun Version 2. Alte
+Version-1-Eintraege werden beim Lesen mit einem Nutzungszaehler migriert;
+unbekannte Versionen fallen leer und ohne Auswirkung auf den Composer zurueck.
+Erfolgreich gesendete Prompts werden source-gebunden, dedupliziert und begrenzt
+gespeichert. Die UI kann letzte und haeufige Prompts nur in den Draft
+uebernehmen; sie sendet nie durch Auswahl eines Verlaufswerts.
+
+Der Prompt-Verlauf ist eine lokale, nicht-modale Dialoggrenze ueber dem
+Composer. Escape wird dort abgefangen, schliesst nur den Verlauf und stellt den
+Fokus am Ausloeser wieder her. Solange der nicht-modale Dialog offen ist, gilt
+diese Escape-Grenze dokumentweit auch nach einem Fokuswechsel aus dem Panel;
+die Taste darf in diesem Zustand nicht den globalen Stop-Shortcut erreichen.
+Ein Pointer-Klick ausserhalb schliesst den Verlauf, laesst den Fokus aber beim
+bewusst angeklickten Ziel.
+
+Die Verlaufssuche ist reiner lokaler Ansichtsstatus. Sie filtert die bereits
+geladenen, source-gebundenen Eintraege unmittelbar und startet weder Storage-
+noch Netzarbeit pro Tastenanschlag. Beim Oeffnen erhaelt das Suchfeld den Fokus;
+Pfeil runter wechselt zum ersten sichtbaren Verlaufseintrag. Innerhalb der
+gefilterten Liste bewegen Pfeil hoch und runter den Fokus zeilenweise; Pfeil
+hoch auf dem ersten Eintrag kehrt zum Filter zurueck. Auswahl, Entfernung und
+Escape behalten die bestehenden Dialoggrenzen.
+
+### Shortcut- und Mobilgrenze aus Paket 10
+
+Die Cockpit-Shell besitzt genau einen dokumentierten Keyboard-Dispatcher. Er
+verwendet nur browserneutrale Einzeltasten ausserhalb editierbarer Felder:
+`/` oeffnet die globale Suche, `N` die neue Sitzung, `R` fokussiert den
+Composer, `G S` und `G P` navigieren zu Sitzungen beziehungsweise Projekten,
+und `?` oeffnet die sichtbare Uebersicht. Browserbefehle mit Strg, Befehl oder
+Alt bleiben unangetastet. Im Composer ist nur die ausdrueckliche
+`Strg/Befehl+Eingabe`-Aktion fuer Queue zusaetzlich aktiv; normale Eingabe und
+IME-Komposition bleiben lokale Editorereignisse.
+
+Die sichtbare Uebersicht ist eine modale Fokusgrenze: Sie nimmt den Fokus beim
+Oeffnen, haelt Tab-Navigation im Dialog und gibt den Fokus nach Escape,
+Schliessen oder Hintergrundklick an ihren Ausloeser zurueck. Bei einem
+Tastaturaufruf ist das konkret das zuvor fokussierte Cockpit-Element; wurde es
+inzwischen entfernt, dient der sichtbare Navigationsknopf als Rueckfall. Die
+globale Suche verwendet dieselbe Regel. Die verdeckte Cockpit-Oberflaeche
+bleibt dadurch nicht versehentlich per Tastatur bedienbar. Navigation und
+Arbeitsbereich tragen waehrenddessen die native `inert`-Grenze; sie sind damit
+auch fuer assistive Technik und programmatischen Fokus nicht erreichbar. Die
+Grenze wird vor der Fokus-Rueckgabe entfernt.
+
+Eine bewusste Navigation aus der globalen Suche beendet diese Rueckgabe. Der
+Markenlink und die Navigationsziele schliessen die Suche, verwerfen den
+gespeicherten Fokusursprung und lassen den Fokus auf dem aktivierten Ziel,
+solange es beim Routenwechsel erhalten bleibt. Das Markensignet ist fuer
+assistive Technik dekorativ; der Linkname besteht nur aus „Cockpit Yep
+Anywhere“.
+
+`Escape` adressiert den serverautoritativen Stop-Knopf aus Paket 8 ueber dessen
+semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag. Die
+Shortcut-Schicht fuehrt selbst keinen Interrupt aus und baut daher weder
+Pending-/Fehlerzustand noch Provider-Fallback ein zweites Mal nach. Ohne eine
+aktive, bedienbare Stop-Aktion wird `Escape` nicht konsumiert.
+
+Auf schmalen Viewports besitzt die Cockpit-Wurzel die sichtbare
+`VisualViewport`-Geometrie. Resize- und Pan-Aenderungen durch Browserleiste oder
+Bildschirmtastatur aktualisieren nur Hoehe und oberen Versatz der Shell; der
+untere Navigationsrahmen und der Composer bleiben innerhalb dieser Wurzel,
+waehrend Transcript, Katalog und Suche ihre jeweils eigenen Scrollbereiche
+behalten. Mobile Cockpit-Overlays werden ebenfalls innerhalb dieser gemessenen
+Wurzel positioniert: Die Shortcut-Hilfe deckt nur den sichtbaren Ausschnitt ab,
+und der Prompt-Verlauf oeffnet sich vom Composer aus nach oben, statt sich am
+durch die Bildschirmtastatur verdeckten Layout-Viewport auszurichten. Fehlt die
+API, bleibt `100dvh` der reine CSS-Fallback. Safe-Area-Insets werden weiterhin
+genau an Navigation und Composer angewendet.
 
 ## Verworfene Alternativen
 

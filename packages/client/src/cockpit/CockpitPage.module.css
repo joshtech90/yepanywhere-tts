@@ -1,5 +1,7 @@
 .root {
   --cockpit-sidebar-width: 17rem;
+  --cockpit-viewport-height: 100dvh;
+  --cockpit-viewport-offset-top: 0px;
   --cockpit-bg: #f6f7fb;
   --cockpit-surface: #ffffff;
   --cockpit-surface-raised: #ffffff;
@@ -30,7 +32,7 @@
     transparent
   );
   display: grid;
-  min-height: 100dvh;
+  min-height: var(--cockpit-viewport-height);
   grid-template-columns: var(--cockpit-sidebar-width) minmax(0, 1fr);
   color: var(--cockpit-text);
   color-scheme: light;
@@ -94,7 +96,7 @@
   top: 0;
   z-index: 3;
   display: flex;
-  height: 100dvh;
+  height: var(--cockpit-viewport-height);
   padding: 1.25rem 0.85rem 1rem;
   border-right: 1px solid var(--cockpit-border);
   flex-direction: column;
@@ -175,11 +177,16 @@
   min-width: 0;
   min-height: 2.45rem;
   padding: 0 0.55rem;
+  border: 0;
   color: var(--cockpit-muted);
+  background: transparent;
+  font: inherit;
   font-size: 0.68rem;
+  cursor: pointer;
 }
 
-.navigationItem:hover {
+.navigationItem:hover,
+.navigationItem[aria-pressed="true"] {
   color: var(--cockpit-text);
   background: var(--cockpit-hover);
 }
@@ -232,7 +239,7 @@
 .workspace {
   display: flex;
   min-width: 0;
-  min-height: 100dvh;
+  min-height: var(--cockpit-viewport-height);
   flex-direction: column;
 }
 
@@ -341,8 +348,8 @@
 
 .mobileAppearance summary {
   display: grid;
-  width: 2.7rem;
-  height: 2.7rem;
+  width: 2.75rem;
+  height: 2.75rem;
   place-items: center;
   border: 1px solid var(--cockpit-border);
   border-radius: 0.75rem;
@@ -386,9 +393,19 @@
   place-items: center;
 }
 
-.canvas[data-detail="true"] {
+.canvas[data-view="search"],
+.canvas[data-view="session"] {
   display: block;
   padding: 0;
+}
+
+.canvas[data-view="search"] {
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+
+.canvas[data-view="session"] {
+  overflow: hidden;
 }
 
 .statePanel {
@@ -488,11 +505,20 @@
 
 @media (max-width: 700px) {
   .root {
+    position: fixed;
+    top: var(--cockpit-viewport-offset-top);
+    right: 0;
+    bottom: auto;
+    left: 0;
     display: block;
+    width: 100%;
+    height: var(--cockpit-viewport-height);
+    min-height: 0;
+    overflow: hidden;
   }
 
   .sidebar {
-    position: fixed;
+    position: absolute;
     top: auto;
     right: 0;
     bottom: 0;
@@ -518,7 +544,7 @@
   .navigation {
     display: grid;
     margin: 0;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0.25rem;
   }
 
@@ -532,14 +558,23 @@
     font-size: 0.61rem;
   }
 
+  .navigationItem > span:last-child {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .icon {
     width: 1.15rem;
     height: 1.15rem;
   }
 
   .workspace {
-    min-height: 100dvh;
+    height: 100%;
+    min-height: 0;
     padding-bottom: calc(4rem + env(safe-area-inset-bottom, 0px));
+    overflow: hidden;
   }
 
   .header {
@@ -560,7 +595,8 @@
   }
 
   .primaryAction {
-    width: 2.7rem;
+    width: 2.75rem;
+    min-height: 2.75rem;
     padding: 0;
     justify-content: center;
   }
@@ -576,11 +612,18 @@
     flex-direction: column;
     justify-content: center;
     gap: 1rem;
+    overflow: auto;
   }
 
-  .canvas[data-detail="true"] {
+  .canvas[data-view="search"],
+  .canvas[data-view="session"] {
     display: block;
+    min-height: 0;
     padding: 0;
+  }
+
+  .canvas[data-view="session"] {
+    overflow: hidden;
   }
 
   .mobileCatalog {

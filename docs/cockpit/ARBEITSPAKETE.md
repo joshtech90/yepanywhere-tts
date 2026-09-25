@@ -106,7 +106,7 @@ Server und Shared wurden nicht erweitert.
 
 ## 4 — Globale Suche ueber Sessions und Inhalte
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 3.
 
@@ -125,6 +125,23 @@ Einzeln pruefbar durch:
 - fruehe Eingabe vor Capability-Antwort;
 - neue Treffer waehrend der Suche, Auswahl und 375-Pixel-Layout;
 - keine verlorenen Tastenanschlaege.
+
+Ergebnis dieses Zugs: Die Cockpit-Navigation oeffnet eine eigene globale
+Suchansicht, deren lokaler Eingabe-Draft unabhaengig von Katalog-, Capability-
+und Treffer-Updates bleibt. Titel verwenden die vorhandenen geladenen
+Session-Summaries; User- und Assistant-Inhalte laufen ausschliesslich ueber die
+bestehende, begrenzte All-Sessions-Suche mit deren Provider- und
+Server-Capabilities. Treffer bleiben pro Sitzung gruppiert und behalten ihre
+Entdeckungsreihenfolge, waehrend weitere Katalogseiten oder Live-Treffer
+eintreffen. Laufende Katalogabdeckung, title-only Provider, alte Server,
+Teilabdeckung und Aktualisierungsfehler werden sichtbar benannt. Es gibt keine
+eigenen Transcript- oder Dateiscans und keine Server-/Shared-Erweiterung.
+
+Nachbesserung dieses Zugs: Aus dem Suchfeld wechselt Pfeil runter direkt zum
+stabil ausgewaehlten Treffer. Pfeil hoch und runter bewegen den Fokus zwischen
+den Ergebnisgruppen; vom ersten Treffer fuehrt Pfeil hoch zurueck ins
+Suchfeld. Pfeil hoch im Suchfeld bleibt eine native Eingabetaste. Spaet
+eintreffende Treffer aendern diese Tastaturauswahl nicht.
 
 ## 5 — Read-only Session-Detail und Vorlesen
 
@@ -291,8 +308,9 @@ abgebrochen; ein spaet eintreffendes Upload-Ergebnis kann dadurch nicht mehr in
 der naechsten Sitzung erscheinen.
 
 Nachbesserung A15: Enter sendet nur noch als unveraendertes, einmaliges
-Desktop-Enter. Laufende IME-Komposition, gehaltenes Enter, Zusatztasten und
-primaere Touch-Eingabe bleiben im Textfeld; ein Regressionstest prueft danach
+Desktop-Enter. Laufende IME-Komposition, gehaltenes Enter, sonstige
+Zusatztasten und primaere Touch-Eingabe bleiben im Textfeld; Paket 10 ergaenzt
+spaeter allein `Strg/Befehl+Eingabe` als ausdrueckliche Queue-Aktion. Ein Test prueft danach
 weiterhin den regulaeren Versand.
 
 Nachbesserung A16: Dateien und eingefuegte Screenshots erreichen die vorhandene
@@ -370,10 +388,12 @@ Nachbesserung A22: Enthaelt eine lange Antwort mehrere Thinking- oder
 Werkzeug-Aufklapper, bleibt ihre Zeile nun gemountet, bis der letzte offene
 Aufklapper geschlossen ist. Das Schliessen eines Geschwister-Details kann
 dadurch keinen anderen noch offenen Abschnitt beim Wegscrollen demontieren.
+Ein in der Freigabe- oder Fragekarte behandeltes Escape erreicht nicht
+zusaetzlich den globalen Stop-Shortcut.
 
 ## 9 — Session-Organisation, Pins und Prompt-History
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Pakete 3 und 7.
 
@@ -391,9 +411,46 @@ Einzeln pruefbar durch:
 - Storage-Migration/Fallback fuer unbekannte Versionen;
 - mobile Bedienung ohne Praezisionstaps.
 
+Ergebnis dieses Zugs: Favoriten lassen sich direkt in der Cockpit-Sidebar ueber
+die vorhandene serverseitige Session-Metadatenroute setzen und entfernen. Die
+Markierung aendert sich erst nach Serverbestaetigung; alte Server erhalten eine
+sichtbare Rueckfallanzeige. Suchtext und Favoritenfilter koennen als benannte,
+browserlokale Ansichten gespeichert werden und bleiben strikt source-gebunden.
+Beim Entfernen eines gespeicherten Hosts werden nur dessen Ansichten und
+Prompt-Verlauf bereinigt. Der Composer zeigt die letzten sowie mehrfach
+verwendete Prompts, uebernimmt eine Auswahl nur in den Draft und erlaubt das
+gezielte Entfernen. Version-1-Verlauf wird auf Nutzungszaehler migriert,
+unbekannte Versionen fallen sicher leer zurueck. Zusaetzlich verwenden die
+Cockpit-Zaehler nun eine korrekte Einzahl, Projekt- und Suchtrefferlinks besitzen
+auch mobil einen stabilen zugaenglichen Namen, und die sequentiellen Suchtests
+pruefen die geforderte 100-ms-Bestaetigung pro Zeichen.
+
+Nachbesserung dieses Zugs: Der Prompt-Verlauf ist nun als benannter Dialog mit
+seinem Ausloeser verknuepft. Escape schliesst ausschliesslich diesen Verlauf,
+statt bis zum globalen Stop-Kuerzel durchzureichen, und gibt den Fokus an den
+Ausloeser zurueck. Ein Klick ausserhalb schliesst das Panel ebenfalls, ohne den
+angeklickten Arbeitsbereich wieder zu verlassen.
+
+Nachbesserung dieses Zugs: Der offene Prompt-Verlauf faengt Escape jetzt auch
+dann ab, wenn Joscha den nicht-modalen Dialog zuvor per Tab verlassen hat. So
+kann ein Fokuswechsel innerhalb des Composers nicht versehentlich den globalen
+Stop ausloesen; geschlossen wird weiterhin nur der Verlauf, danach kehrt der
+Fokus zu seinem Ausloeser zurueck.
+
+Nachbesserung dieses Zugs: Der Prompt-Verlauf besitzt jetzt eine lokale Suche,
+die beim Oeffnen sofort fokussiert ist. Jeder Tastenanschlag filtert die bis zu
+20 source-gebundenen Eintraege unmittelbar; ein leerer Trefferstand wird klar
+benannt. Die Auswahl uebernimmt weiterhin nur Text in den Entwurf und sendet
+nichts automatisch.
+
+Nachbesserung dieses Zugs: Pfeil runter wechselt aus dem Verlauf-Filter direkt
+zum ersten sichtbaren Prompt. Pfeil hoch und runter bewegen den Fokus zwischen
+den gefilterten Verlaufseintraegen; vom ersten Eintrag fuehrt Pfeil hoch zum
+Filter zurueck. Enter behaelt seine bestehende, rein uebernehmende Aktion.
+
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Pakete 3 bis 8.
 
@@ -411,6 +468,52 @@ Einzeln pruefbar durch:
 - Android-/iOS-aehnliche Viewport-Resize-Faelle im Browser;
 - sequentielle Eingabe und Fokus-Restore;
 - Desktop-/Mobil-Captures aller Hauptzustaende.
+
+Ergebnis dieses Zugs: Eine sichtbare, per `?` erreichbare Hilfe dokumentiert
+die Cockpit-Kuerzel fuer Suche, neue Sitzung, Composer, Queue, Stop und
+Navigation. Buchstaben- und Slash-Kuerzel bleiben in Eingabefeldern sowie bei
+Browser-Modifikatoren wirkungslos; Queue verwendet im Composer gezielt
+`Strg/Befehl+Eingabe`. `Escape` aktiviert ausschliesslich den bedienbaren,
+serverautoritativen Stop-Knopf aus Paket 8 und bleibt sonst frei. Suche und
+Shortcut-Hilfe stellen den Fokus nach dem Schliessen wieder her. Auf Mobilgeraeten
+folgt die Shell der sichtbaren Viewport-Hoehe und ihrem Versatz, sodass
+Bildschirmtastatur, Safe Area, untere Navigation und Composer keine zweite
+Dokument-Scrollflaeche erzeugen. Primaere mobile Aktionen besitzen mindestens
+44 Pixel Zielgroesse und stabile Screenreader-Namen. Reine Adapter-,
+Komponenten- und Resize-Tests decken die Shortcut-Matrix, editierbare Felder,
+Queue, Fokus-Restore und Android-/iOS-aehnliche Viewport-Aenderungen ab.
+
+Nachbesserung dieses Zugs: Die Shortcut-Hilfe ist nun auch semantisch modal.
+Tab und Umschalt+Tab bleiben innerhalb der Hilfe, Escape und ein Klick auf den
+abgedunkelten Hintergrund schliessen sie, und der ausloesende Knopf erhaelt den
+Fokus zurueck. Klicks im Hilfefenster selbst schliessen es nicht.
+
+Nachbesserung dieses Zugs: Solange die Shortcut-Hilfe geoeffnet ist, sind
+Navigation und Arbeitsbereich jetzt auch fuer Browser und assistive Technik
+explizit inaktiv. Beim Schliessen wird diese Sperre vor der Fokus-Rueckgabe
+aufgehoben, sodass der ausloesende Knopf wieder verlaesslich fokussiert wird.
+
+Nachbesserung dieses Zugs: Oeffnet Joscha Suche oder Shortcut-Hilfe per
+Tastatur, kehrt der Fokus beim Schliessen jetzt an das zuvor fokussierte
+Cockpit-Element zurueck. Nur wenn dieses Element inzwischen entfernt wurde,
+springt er zum sichtbaren Such- beziehungsweise Shortcut-Knopf. Mausaufrufe
+behalten den jeweiligen Navigationsknopf als eindeutigen Ausloeser.
+
+Nachbesserung dieses Zugs: Auf schmalen Viewports bleiben Shortcut-Hilfe und
+Prompt-Verlauf nun innerhalb der bereits gemessenen sichtbaren Cockpit-Wurzel.
+Damit folgt die Hilfe dem durch Browserleiste oder Bildschirmtastatur
+verkleinerten Ausschnitt, waehrend der Verlauf direkt ueber seinem
+Composer-Ausloeser aufklappt und nicht hinter der Tastatur liegen bleibt.
+
+Nachbesserung dieses Zugs: Die globale Suche ist fuer Joschas
+Tastaturarbeitsweise jetzt ohne Tab-Kette bedienbar. Pfeiltasten wechseln vom
+Suchfeld in die stabile Trefferliste und dort zeilenweise weiter; die
+vorhandenen Links behalten Enter als normale Oeffnungsaktion.
+
+Nachbesserung dieses Zugs: Verlaesst Joscha die globale Suche bewusst ueber
+den Cockpit-Markenlink oder ein Navigationsziel, wird die Suche geschlossen,
+ohne den Fokus danach zum frueheren Ausloeser zurueckzuziehen. Das dekorative
+Markenzeichen wird dabei nicht mehr als Teil des Screenreader-Namens vorgelesen.
 
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
@@ -439,7 +542,6 @@ Einzeln pruefbar durch:
 
 ## Naechstes Paket
 
-Als Naechstes ist **Paket 4 — Globale Suche ueber Sessions und Inhalte**
-vorgesehen. Es baut auf dem geladenen Katalog auf, nutzt die vorhandene
-All-Sessions-Suche und muss Teilabdeckung weiterhin sichtbar machen, statt
-eigene Transcript- oder Dateiscans einzufuehren.
+Als Naechstes ist **Paket 11 — Umschaltpunkt, Alltagstest und
+Upstream-Merge-Probe** vorgesehen; die Pakete 4, 8, 9 und 10 sind in der
+zusammengefuehrten Fassung umgesetzt.

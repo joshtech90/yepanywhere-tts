@@ -176,4 +176,22 @@ describe("Cockpit catalog adapter", () => {
       "two",
     );
   });
+
+  it("filters a saved view to pinned sessions without losing project grouping", () => {
+    const catalog = createCockpitCatalog({
+      sourceKey: "host:alpha",
+      projects: [project("project-1", "Atlas")],
+      sessions: [
+        session("favorite", "project-1", { isStarred: true }),
+        session("ordinary", "project-1"),
+      ],
+      providerRuntimeBySessionId: noRuntimeErrors,
+      connection: "online",
+    });
+
+    expect(
+      filterCockpitCatalog(catalog, "", { pinnedOnly: true }).projects[0]
+        ?.sessions.map((entry) => entry.id),
+    ).toEqual(["favorite"]);
+  });
 });

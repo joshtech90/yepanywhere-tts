@@ -7,6 +7,7 @@ import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitComposer } from "./CockpitComposer";
 import {
   cockpitComposerDraftKey,
+  rememberCockpitPrompt,
   writeCockpitComposerDraft,
 } from "./core/composer";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
@@ -178,6 +179,32 @@ describe("Cockpit composer", () => {
     });
   });
 
+  it("queues with Ctrl+Enter while preserving ordinary draft input", async () => {
+    const queue = vi.spyOn(api, "queueMessage").mockResolvedValue({
+      queued: true,
+      deferred: true,
+      deferredMessages: [],
+      serverTimestamp: Date.now(),
+    });
+    render(
+      composer(
+        sessionPort({
+          processState: "in-turn",
+          status: { owner: "self", processId: "process-1" },
+        }),
+      ),
+    );
+    const input = screen.getByRole("textbox");
+    fireEvent.change(input, { target: { value: "Queue this fictional note." } });
+    fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
+
+    await waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
+    expect(queue.mock.calls[0]?.[6]).toBe(true);
+    expect(queue.mock.calls[0]?.[8]).toMatchObject({
+      deliveryIntent: "deferred",
+    });
+  });
+
   it("shows an upload failure and retries through the existing transport", async () => {
     runtime.transport.upload
       .mockRejectedValueOnce(new Error("preview upload unavailable"))
@@ -324,5 +351,161 @@ describe("Cockpit composer", () => {
     expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
       "Draft for session two",
     );
+  });
+
+  it("recalls frequent source-local prompts into the draft without sending", () => {
+    rememberCockpitPrompt("local", "Summarize the fictional release notes.");
+    rememberCockpitPrompt("local", "Summarize the fictional release notes.");
+    render(composer());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    expect(screen.getByText("Frequently used")).toBeTruthy();
+    const promptButton = screen.getAllByRole("button", {
+      name: /Summarize the fictional release notes/,
+    })[0];
+    if (!promptButton) throw new Error("prompt button missing");
+    fireEvent.click(promptButton);
+
+    expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe(
+      "Summarize the fictional release notes.",
+    );
+  });
+
+  it("filters prompt history immediately while typing", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    rememberCockpitPrompt("local", "Summarize the fictional release notes.");
+    render(composer());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter prompt history",
+    }) as HTMLInputElement;
+    expect(document.activeElement).toBe(filter);
+    let value = "";
+
+    for (const character of "launch") {
+      value += character;
+      const startedAt = performance.now();
+      fireEvent.change(filter, { target: { value } });
+      expect(filter.value).toBe(value);
+      expect(performance.now() - startedAt).toBeLessThan(100);
+    }
+
+    expect(
+      screen.getByRole("button", {
+        name: "Review the fictional launch checklist.",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: "Summarize the fictional release notes.",
+      }),
+    ).toBeNull();
+
+    fireEvent.change(filter, { target: { value: "absent" } });
+    expect(screen.getByRole("status").textContent).toBe(
+      "No saved prompts match this filter.",
+    );
+  });
+
+  it("moves between filtered prompt-history results with arrow keys", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    rememberCockpitPrompt("local", "Review the fictional release notes.");
+    render(composer());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter prompt history",
+    });
+    fireEvent.change(filter, { target: { value: "Review" } });
+    const first = screen.getByRole("button", {
+      name: "Review the fictional release notes.",
+    });
+    const second = screen.getByRole("button", {
+      name: "Review the fictional launch checklist.",
+    });
+
+    const arrowUp = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "ArrowUp",
+    });
+    fireEvent(filter, arrowUp);
+    expect(arrowUp.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(filter);
+
+    fireEvent.keyDown(filter, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(second);
+
+    fireEvent.keyDown(second, { key: "ArrowUp" });
+    fireEvent.keyDown(first, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(filter);
+  });
+
+  it("dismisses prompt history without leaking Escape to global shortcuts", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    render(composer());
+    const trigger = screen.getByRole("button", { name: "Open prompt history" });
+
+    fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "Recent prompts" });
+    expect(
+      screen.getByRole("button", {
+        name: "Review the fictional launch checklist.",
+      }),
+    ).toBeTruthy();
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter prompt history",
+    });
+    expect(document.activeElement).toBe(filter);
+    const escapeEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    fireEvent(filter, escapeEvent);
+
+    expect(escapeEvent.defaultPrevented).toBe(true);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    const reopened = screen.getByRole("dialog", { name: "Recent prompts" });
+    const input = screen.getByRole("textbox");
+    input.focus();
+    const globalEscape = vi.fn();
+    document.addEventListener("keydown", globalEscape);
+    const escapedOutside = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    fireEvent(input, escapedOutside);
+    document.removeEventListener("keydown", globalEscape);
+    expect(escapedOutside.defaultPrevented).toBe(true);
+    expect(globalEscape).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+
+    fireEvent.click(trigger);
+    const reopenedForPointer = screen.getByRole("dialog", {
+      name: "Recent prompts",
+    });
+    input.focus();
+    fireEvent.pointerDown(input);
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(input);
+    expect(dialog.isConnected).toBe(false);
+    expect(reopened.isConnected).toBe(false);
+    expect(reopenedForPointer.isConnected).toBe(false);
   });
 });

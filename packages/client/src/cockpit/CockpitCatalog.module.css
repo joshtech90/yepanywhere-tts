@@ -198,10 +198,19 @@
   list-style: none;
 }
 
+.sessionRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.2rem;
+}
+
 .sessionLink {
   display: grid;
+  min-width: 0;
   min-height: 3.15rem;
   padding: 0.52rem 0.65rem;
+  flex: 1;
   gap: 0.34rem;
   border: 1px solid transparent;
   border-radius: 0.78rem;
@@ -227,7 +236,6 @@
 }
 
 .sessionTitleRow {
-  justify-content: space-between;
   gap: 0.45rem;
 }
 
@@ -237,24 +245,6 @@
   font-weight: 680;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.pin {
-  display: grid;
-  width: 0.82rem;
-  height: 0.82rem;
-  flex: 0 0 auto;
-  place-items: center;
-  color: var(--cockpit-accent);
-}
-
-.pin svg {
-  width: 100%;
-  height: 100%;
-  fill: currentColor;
-  stroke: currentColor;
-  stroke-linejoin: round;
-  stroke-width: 0.8;
 }
 
 .sessionMeta {
@@ -339,18 +329,6 @@
   box-shadow: 0 0 0 1px var(--cockpit-accent);
 }
 
-.srOnly {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  border: 0;
-  margin: -1px;
-  white-space: nowrap;
-}
-
 @media (max-width: 700px) {
   .searchField,
   .sessionLink {
@@ -359,6 +337,11 @@
 
   .searchField input {
     font-size: 0.85rem;
+  }
+
+  .searchField button {
+    width: 2.75rem;
+    height: 2.75rem;
   }
 
   .projectList {
@@ -375,6 +358,10 @@
 
   .sessionMeta {
     font-size: 0.65rem;
+  }
+
+  .coverage button {
+    min-height: 2.75rem;
   }
 }
 

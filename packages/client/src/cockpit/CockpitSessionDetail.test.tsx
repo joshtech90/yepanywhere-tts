@@ -376,6 +376,74 @@ describe("Cockpit session detail", () => {
     ).toBeTruthy();
   });
 
+  it("offers one server-authoritative stop request during rapid clicks", () => {
+    const stop = vi.fn(
+      () =>
+        new Promise<{ kind: "accepted" }>(() => {
+          // Keep the first request pending while the second click is attempted.
+        }),
+    );
+    detailMocks.data = detailData({
+      attention: {
+        interruptible: true,
+        request: null,
+        respond: vi.fn(async () => ({ kind: "accepted" as const })),
+        stop,
+      },
+      processState: "in-turn",
+      status: { owner: "self", processId: "process-1" },
+    });
+    renderDetail();
+
+    const stopButton = screen.getByRole("button", {
+      name: "Stop current turn",
+    });
+    fireEvent.click(stopButton);
+    fireEvent.click(stopButton);
+
+    expect(stop).toHaveBeenCalledTimes(1);
+    expect(stopButton.getAttribute("data-cockpit-shortcut")).toBe("stop");
+    expect(stopButton.getAttribute("aria-keyshortcuts")).toBe("Escape");
+  });
+
+  it("keeps Stop and the pending action card reachable through parent updates", () => {
+    const initial = detailData({
+      attention: {
+        interruptible: true,
+        request: {
+          id: "request-1",
+          sessionId: "session-1",
+          type: "tool-approval",
+          prompt: "Allow the fictional tool?",
+          toolName: "UnfamiliarTool",
+          toolInput: { task: "Check the fictional preview." },
+          timestamp: "2026-09-25T01:00:00.000Z",
+        },
+        respond: vi.fn(async () => ({ kind: "accepted" as const })),
+        stop: vi.fn(async () => ({ kind: "accepted" as const })),
+      },
+      processState: "waiting-input",
+      status: { owner: "self", processId: "process-1" },
+    });
+    detailMocks.data = initial;
+    const view = renderDetail();
+
+    for (let update = 0; update < 5; update += 1) {
+      detailMocks.data = {
+        ...initial,
+        entries: [...initial.entries],
+      };
+      view.rerender(detailTree());
+    }
+
+    expect(
+      screen.getByRole("button", { name: "Stop current turn" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("heading", { name: "Review this action" }),
+    ).toBeTruthy();
+  });
+
   it("defers storming transcript tails while the direct stop action stays immediate", async () => {
     const stop = vi.fn(async () => ({ kind: "accepted" as const }));
     const initial = detailData({

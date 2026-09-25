@@ -1,6 +1,8 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
 import { useI18n, type TranslationFn } from "../i18n";
+import { CockpitOrganizationBar } from "./CockpitOrganizationBar";
+import { CockpitPinButton } from "./CockpitPinButton";
 import { createCockpitNavigation } from "./core/navigation";
 import {
   filterCockpitCatalog,
@@ -8,6 +10,7 @@ import {
   type CockpitSessionStatus,
 } from "./core/catalog";
 import styles from "./CockpitCatalog.module.css";
+import type { CockpitOrganizationController } from "./useCockpitOrganization";
 
 export interface CockpitCatalogProps {
   basePath: string;
@@ -15,6 +18,7 @@ export interface CockpitCatalogProps {
   error: Error | null;
   hasMore: boolean;
   loading: boolean;
+  organization: CockpitOrganizationController;
   query: string;
   onLoadMore: () => Promise<void>;
   onQueryChange: (query: string) => void;
@@ -25,14 +29,6 @@ function SearchIcon() {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="10.5" cy="10.5" r="6" />
       <path d="m15 15 4.5 4.5" />
-    </svg>
-  );
-}
-
-function PinIcon() {
-  return (
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="m12 3 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9L12 3Z" />
     </svg>
   );
 }
@@ -63,25 +59,15 @@ function formatActivity(
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) return { label: t("cockpitActivityUnknown") };
 
-  const elapsedSeconds = Math.round((parsed - Date.now()) / 1000);
-  const absolute = new Date(parsed).toLocaleString(locale);
-  const formatter = new Intl.RelativeTimeFormat(locale, { numeric: "auto" });
-  if (Math.abs(elapsedSeconds) < 60) {
-    return { label: formatter.format(elapsedSeconds, "second"), title: absolute };
-  }
-  const elapsedMinutes = Math.round(elapsedSeconds / 60);
-  if (Math.abs(elapsedMinutes) < 60) {
-    return { label: formatter.format(elapsedMinutes, "minute"), title: absolute };
-  }
-  const elapsedHours = Math.round(elapsedMinutes / 60);
-  if (Math.abs(elapsedHours) < 24) {
-    return { label: formatter.format(elapsedHours, "hour"), title: absolute };
-  }
-  const elapsedDays = Math.round(elapsedHours / 24);
-  if (Math.abs(elapsedDays) < 7) {
-    return { label: formatter.format(elapsedDays, "day"), title: absolute };
-  }
-  return { label: new Date(parsed).toLocaleDateString(locale), title: absolute };
+  const date = new Date(parsed);
+  const absolute = date.toLocaleString(locale);
+  return {
+    label: new Intl.DateTimeFormat(locale, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(date),
+    title: absolute,
+  };
 }
 
 export function CockpitCatalog({
@@ -90,6 +76,7 @@ export function CockpitCatalog({
   error,
   hasMore,
   loading,
+  organization,
   query,
   onLoadMore,
   onQueryChange,
@@ -97,8 +84,11 @@ export function CockpitCatalog({
   const { locale, t } = useI18n();
   const navigation = createCockpitNavigation(basePath);
   const visibleCatalog = useMemo(
-    () => filterCockpitCatalog(catalog, query),
-    [catalog, query],
+    () =>
+      filterCockpitCatalog(catalog, query, {
+        pinnedOnly: organization.pinnedOnly,
+      }),
+    [catalog, organization.pinnedOnly, query],
   );
   const hasProjects = visibleCatalog.projects.length > 0;
 
@@ -110,7 +100,10 @@ export function CockpitCatalog({
           <SearchIcon />
           <input
             aria-label={t("cockpitSearchLabel")}
-            onChange={(event) => onQueryChange(event.currentTarget.value)}
+            onChange={(event) => {
+              organization.clearActiveView();
+              onQueryChange(event.currentTarget.value);
+            }}
             placeholder={t("cockpitSearchPlaceholder")}
             type="search"
             value={query}
@@ -118,7 +111,10 @@ export function CockpitCatalog({
           {query && (
             <button
               aria-label={t("cockpitClearSearch")}
-              onClick={() => onQueryChange("")}
+              onClick={() => {
+                organization.clearActiveView();
+                onQueryChange("");
+              }}
               type="button"
             >
               ×
@@ -127,9 +123,20 @@ export function CockpitCatalog({
         </span>
       </label>
 
+      <CockpitOrganizationBar
+        onQueryChange={onQueryChange}
+        organization={organization}
+        query={query}
+      />
+
       <div className={styles.summaryRow} aria-live="polite">
         <span>
-          {t("cockpitSessionsCount", { count: visibleCatalog.sessionCount })}
+          {t(
+            visibleCatalog.sessionCount === 1
+              ? "cockpitSessionsCountOne"
+              : "cockpitSessionsCount",
+            { count: visibleCatalog.sessionCount },
+          )}
         </span>
         {loading && <span>{t("cockpitCatalogLoading")}</span>}
       </div>
@@ -143,7 +150,7 @@ export function CockpitCatalog({
       <div className={styles.projectList}>
         {!hasProjects && !loading && (
           <p className={styles.emptyMessage}>
-            {query
+            {query || organization.pinnedOnly
               ? t("cockpitCatalogNoMatches")
               : t("cockpitCatalogEmpty")}
           </p>
@@ -154,7 +161,12 @@ export function CockpitCatalog({
             <header className={styles.projectHeader}>
               <h2 className={styles.projectTitle}>
                 {project.id ? (
-                  <Link to={navigation.project(project.id)}>
+                  <Link
+                    aria-label={t("cockpitProjectLink", {
+                      name: project.name || t("cockpitUnknownProject"),
+                    })}
+                    to={navigation.project(project.id)}
+                  >
                     <span>{project.name || t("cockpitUnknownProject")}</span>
                     <small>{project.path}</small>
                   </Link>
@@ -187,40 +199,42 @@ export function CockpitCatalog({
                     : navigation.sessions;
                   return (
                     <li key={session.key}>
-                      <Link className={styles.sessionLink} to={sessionHref}>
-                        <span className={styles.sessionTitleRow}>
-                          <span className={styles.sessionTitle}>{title}</span>
-                          {session.pinned && (
-                            <span
-                              className={styles.pin}
-                              title={t("cockpitPinnedSession")}
-                            >
-                              <PinIcon />
-                              <span className={styles.srOnly}>
-                                {t("cockpitPinnedSession")}
-                              </span>
-                            </span>
-                          )}
-                        </span>
-                        <span className={styles.sessionMeta}>
-                          <span
-                            className={styles.status}
-                            data-status={session.status}
-                          >
-                            <span aria-hidden="true" />
-                            {statusLabel(session.status, t)}
+                      <div className={styles.sessionRow}>
+                        <Link className={styles.sessionLink} to={sessionHref}>
+                          <span className={styles.sessionTitleRow}>
+                            <span className={styles.sessionTitle}>{title}</span>
                           </span>
-                          <time
-                            aria-label={t("cockpitLastActivity", {
-                              time: activity.label,
-                            })}
-                            dateTime={session.lastActivityAt}
-                            title={activity.title}
-                          >
-                            {activity.label}
-                          </time>
-                        </span>
-                      </Link>
+                          <span className={styles.sessionMeta}>
+                            <span
+                              className={styles.status}
+                              data-status={session.status}
+                            >
+                              <span aria-hidden="true" />
+                              {statusLabel(session.status, t)}
+                            </span>
+                            <time
+                              aria-label={t("cockpitLastActivity", {
+                                time: activity.label,
+                              })}
+                              dateTime={session.lastActivityAt}
+                              title={activity.title}
+                            >
+                              {activity.label}
+                            </time>
+                          </span>
+                        </Link>
+                        <CockpitPinButton
+                          onToggle={() =>
+                            void organization.togglePin(
+                              session.id,
+                              !session.pinned,
+                            )
+                          }
+                          pending={organization.pendingPins.has(session.id)}
+                          pinned={session.pinned}
+                          sessionTitle={title}
+                        />
+                      </div>
                     </li>
                   );
                 })}
@@ -233,7 +247,12 @@ export function CockpitCatalog({
       {hasMore && (
         <div className={styles.coverage}>
           <p>
-            {t("cockpitCatalogCoverage", { count: catalog.sessionCount })}
+            {t(
+              catalog.sessionCount === 1
+                ? "cockpitCatalogCoverageOne"
+                : "cockpitCatalogCoverage",
+              { count: catalog.sessionCount },
+            )}
           </p>
           <button
             disabled={loading}

@@ -13,8 +13,9 @@ export function CockpitStopButton({
   const { t } = useI18n();
   const inFlightRef = useRef(false);
   const [pending, setPending] = useState(false);
-  const [result, setResult] =
-    useState<CockpitAttentionActionResult | null>(null);
+  const [result, setResult] = useState<CockpitAttentionActionResult | null>(
+    null,
+  );
 
   useEffect(() => {
     if (interruptible) return;
@@ -43,6 +44,8 @@ export function CockpitStopButton({
       <button
         aria-label={t("cockpitStopAction")}
         className={styles.button}
+        aria-keyshortcuts="Escape"
+        data-cockpit-shortcut="stop"
         disabled={pending}
         onClick={() => void handleStop()}
         type="button"

@@ -1,4 +1,12 @@
-import { useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactNode,
+} from "react";
 import { Link, useParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
@@ -9,7 +17,12 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import styles from "./CockpitPage.module.css";
+import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
+import {
+  CockpitShortcutButton,
+  CockpitShortcutDialog,
+} from "./CockpitShortcutHelp";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { createCockpitNavigation } from "./core/navigation";
 import {
@@ -21,11 +34,22 @@ import {
   useCockpitCatalog,
   type CockpitCatalogData,
 } from "./useCockpitCatalog";
+import { useCockpitShortcuts } from "./useCockpitShortcuts";
+import { useCockpitViewportGeometry } from "./useCockpitViewportGeometry";
 
 function SessionsIcon() {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <path d="M5 6.5h14M5 12h14M5 17.5h9" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <circle cx="10.5" cy="10.5" r="6" />
+      <path d="m15 15 4.5 4.5" />
     </svg>
   );
 }
@@ -115,7 +139,84 @@ export function CockpitShell({
 }: CockpitShellProps) {
   const { t } = useI18n();
   const [catalogQuery, setCatalogQuery] = useState("");
-  const navigation = createCockpitNavigation(basePath);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchFocusRequested, setSearchFocusRequested] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const rootRef = useRef<HTMLElement>(null);
+  const searchTriggerRef = useRef<HTMLButtonElement>(null);
+  const searchFocusReturnRef = useRef<HTMLElement | null>(null);
+  const searchWasOpenRef = useRef(false);
+  const shortcutTriggerRef = useRef<HTMLButtonElement>(null);
+  const shortcutFocusReturnRef = useRef<HTMLElement | null>(null);
+  const navigation = useMemo(
+    () => createCockpitNavigation(basePath),
+    [basePath],
+  );
+  const viewport = useCockpitViewportGeometry();
+  const openSearch = useCallback(
+    (focusInput: boolean, focusOrigin: HTMLElement | null) => {
+      searchFocusReturnRef.current =
+        focusOrigin?.isConnected === true
+          ? focusOrigin
+          : searchTriggerRef.current;
+      setSearchFocusRequested(focusInput);
+      setSearchOpen(true);
+    },
+    [],
+  );
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchFocusRequested(false);
+  }, []);
+  const navigateFromSearch = useCallback(() => {
+    searchWasOpenRef.current = false;
+    searchFocusReturnRef.current = null;
+    setSearchOpen(false);
+    setSearchFocusRequested(false);
+  }, []);
+  const openSearchFromShortcut = useCallback(
+    (focusOrigin: HTMLElement | null) => openSearch(true, focusOrigin),
+    [openSearch],
+  );
+  const openShortcuts = useCallback((focusOrigin: HTMLElement | null) => {
+    shortcutFocusReturnRef.current =
+      focusOrigin?.isConnected === true
+        ? focusOrigin
+        : shortcutTriggerRef.current;
+    setShortcutsOpen(true);
+  }, []);
+  const openShortcutsFromShortcut = useCallback(
+    (focusOrigin: HTMLElement | null) => openShortcuts(focusOrigin),
+    [openShortcuts],
+  );
+  const closeShortcuts = useCallback(() => {
+    setShortcutsOpen(false);
+  }, []);
+  useEffect(() => {
+    if (searchOpen) {
+      searchWasOpenRef.current = true;
+      return;
+    }
+    if (!searchWasOpenRef.current) return;
+    searchWasOpenRef.current = false;
+    const focusTarget = searchFocusReturnRef.current;
+    searchFocusReturnRef.current = null;
+    const destination =
+      focusTarget?.isConnected === true
+        ? focusTarget
+        : searchTriggerRef.current;
+    destination?.focus({ preventScroll: true });
+  }, [searchOpen]);
+  useCockpitShortcuts({
+    navigation,
+    onCloseHelp: closeShortcuts,
+    onCloseSearch: closeSearch,
+    onOpenHelp: openShortcutsFromShortcut,
+    onOpenSearch: openSearchFromShortcut,
+    rootRef,
+    searchOpen,
+    shortcutsOpen,
+  });
   const hasCatalog = catalogData.catalog.projects.length > 0;
   const hasDetail = children !== undefined && children !== null;
   const destinations: Array<{
@@ -171,11 +272,24 @@ export function CockpitShell({
     <main
       className={styles.root}
       data-accent={accent}
+      data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
+      ref={rootRef}
+      style={viewport.style}
     >
-      <aside className={styles.sidebar} aria-label={t("cockpitNavigationAria")}>
-        <Link className={styles.brand} to={navigation.cockpit}>
-          <span className={styles.brandMark}>C</span>
+      <aside
+        aria-label={t("cockpitNavigationAria")}
+        className={styles.sidebar}
+        inert={shortcutsOpen}
+      >
+        <Link
+          className={styles.brand}
+          onClick={navigateFromSearch}
+          to={navigation.cockpit}
+        >
+          <span aria-hidden="true" className={styles.brandMark}>
+            C
+          </span>
           <span>
             <strong>Cockpit</strong>
             <small>Yep Anywhere</small>
@@ -191,21 +305,44 @@ export function CockpitShell({
             loading={catalogData.loading}
             onLoadMore={catalogData.loadMore}
             onQueryChange={setCatalogQuery}
+            organization={catalogData.organization}
             query={catalogQuery}
           />
         </div>
 
         <nav className={styles.navigation}>
+          <button
+            aria-keyshortcuts="/"
+            aria-pressed={searchOpen}
+            className={styles.navigationItem}
+            onClick={() => openSearch(false, searchTriggerRef.current)}
+            ref={searchTriggerRef}
+            type="button"
+          >
+            <span className={styles.icon}>
+              <SearchIcon />
+            </span>
+            <span>{t("cockpitGlobalSearchNav")}</span>
+          </button>
           {destinations.map((destination) => (
             <Link
+              aria-keyshortcuts={
+                destination.href === navigation.newSession ? "N" : undefined
+              }
               className={styles.navigationItem}
               key={destination.href}
+              onClick={navigateFromSearch}
               to={destination.href}
             >
               <span className={styles.icon}>{destination.icon}</span>
               <span>{destination.label}</span>
             </Link>
           ))}
+          <CockpitShortcutButton
+            onOpen={() => openShortcuts(shortcutTriggerRef.current)}
+            open={shortcutsOpen}
+            triggerRef={shortcutTriggerRef}
+          />
         </nav>
 
         <section
@@ -221,11 +358,21 @@ export function CockpitShell({
         </section>
       </aside>
 
+      <CockpitShortcutDialog
+        focusReturnRef={shortcutFocusReturnRef}
+        onClose={closeShortcuts}
+        open={shortcutsOpen}
+        triggerRef={shortcutTriggerRef}
+      />
+
       <section
-        aria-labelledby={hasDetail ? undefined : "cockpit-title"}
+        aria-labelledby={
+          hasDetail || searchOpen ? undefined : "cockpit-title"
+        }
         className={styles.workspace}
+        inert={shortcutsOpen}
       >
-        <header className={styles.header} hidden={hasDetail}>
+        <header className={styles.header} hidden={hasDetail || searchOpen}>
           <div>
             <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
             <h1 id="cockpit-title">Cockpit</h1>
@@ -251,7 +398,12 @@ export function CockpitShell({
                 />
               </div>
             </details>
-            <Link className={styles.primaryAction} to={navigation.newSession}>
+            <Link
+              aria-keyshortcuts="N"
+              aria-label={t("sidebarNewSession")}
+              className={styles.primaryAction}
+              to={navigation.newSession}
+            >
               <NewSessionIcon />
               <span>{t("sidebarNewSession")}</span>
             </Link>
@@ -260,9 +412,16 @@ export function CockpitShell({
 
         <div
           className={styles.canvas}
-          data-detail={hasDetail ? "true" : "false"}
+          data-view={searchOpen ? "search" : hasDetail ? "session" : "home"}
         >
-          {hasDetail ? (
+          {searchOpen ? (
+            <CockpitSearchPanel
+              basePath={basePath}
+              focusOnOpen={searchFocusRequested}
+              onClose={closeSearch}
+              onNavigate={navigateFromSearch}
+            />
+          ) : hasDetail ? (
             children
           ) : (
             <>
@@ -275,6 +434,7 @@ export function CockpitShell({
                   loading={catalogData.loading}
                   onLoadMore={catalogData.loadMore}
                   onQueryChange={setCatalogQuery}
+                  organization={catalogData.organization}
                   query={catalogQuery}
                 />
               </div>

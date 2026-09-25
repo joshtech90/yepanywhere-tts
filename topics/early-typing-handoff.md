@@ -83,6 +83,13 @@ search field inside the `/` keydown handler, so no key can fall between.
 Fork deliberately takes no focus at all (`RestartSessionModal` passes
 `autoFocus={!isFork}`), so there is nothing to hold.
 
+An in-place completion has the same no-gap obligation even though it does not
+navigate or mount a new field. Slash command and argument completion commit the
+new text and its caret target together through the composer's pending textarea
+selection. They do not defer the caret to a later animation frame: a key struck
+immediately after accepting the completion stays after the completed text, and
+the caret stays after that key.
+
 ## Not covered
 
 An IME composition begun before the field exists cannot be carried across:

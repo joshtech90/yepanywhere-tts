@@ -2285,13 +2285,16 @@ export function MessageInput({
         inputType: "insertText",
       });
       noteComposerEdit(nextText);
+      pendingTextareaSelectionRef.current = {
+        value: nextText,
+        restore: (textarea) => {
+          textarea.focus();
+          textarea.setSelectionRange(nextCursor, nextCursor);
+        },
+      };
       setText(nextText);
       setComposerCursor(nextCursor);
       setDismissedSlashQuery(null);
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-      });
     },
     [
       composerCursor,
@@ -2317,13 +2320,16 @@ export function MessageInput({
         inputType: "insertText",
       });
       noteComposerEdit(nextText);
+      pendingTextareaSelectionRef.current = {
+        value: nextText,
+        restore: (textarea) => {
+          textarea.focus();
+          textarea.setSelectionRange(nextCursor, nextCursor);
+        },
+      };
       setText(nextText);
       setComposerCursor(nextCursor);
       setDismissedSlashQuery(null);
-      requestAnimationFrame(() => {
-        textareaRef.current?.focus();
-        textareaRef.current?.setSelectionRange(nextCursor, nextCursor);
-      });
     },
     [noteComposerEdit, noteDraftTextChange, setText, text],
   );

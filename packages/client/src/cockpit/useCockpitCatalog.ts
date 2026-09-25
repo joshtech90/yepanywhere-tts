@@ -9,6 +9,10 @@ import {
 } from "../lib/clientSummaryStore";
 import type { CockpitShellState } from "./core/shellState";
 import { createCockpitCatalog, type CockpitCatalogView } from "./core/catalog";
+import {
+  useCockpitOrganization,
+  type CockpitOrganizationController,
+} from "./useCockpitOrganization";
 
 export interface CockpitCatalogData {
   catalog: CockpitCatalogView;
@@ -16,6 +20,7 @@ export interface CockpitCatalogData {
   loading: boolean;
   hasMore: boolean;
   loadMore: () => Promise<void>;
+  organization: CockpitOrganizationController;
 }
 
 function connectionKind(
@@ -35,6 +40,7 @@ export function useCockpitCatalog(
   shellKind: CockpitShellState["kind"],
 ): CockpitCatalogData {
   const runtime = useCurrentSourceRuntime();
+  const organization = useCockpitOrganization();
   const projectsFeed = useProjects();
   const sessionsFeed = useGlobalSessionsFeed({
     limit: 100,
@@ -79,5 +85,6 @@ export function useCockpitCatalog(
     loading: projectsFeed.loading || sessionsFeed.loading,
     hasMore: sessionsFeed.hasMore,
     loadMore: sessionsFeed.loadMore,
+    organization,
   };
 }
