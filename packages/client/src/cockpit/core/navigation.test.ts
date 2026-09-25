@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCockpitNavigation } from "./navigation";
+import { createCockpitNavigation, isCockpitPathname } from "./navigation";
 
 describe("Cockpit navigation", () => {
   it("uses the ordinary application routes for a direct source", () => {
@@ -40,5 +40,16 @@ describe("Cockpit navigation", () => {
     expect(navigation.classicSession("project one", "session/two")).toBe(
       "/-/relay/studio/projects/project%20one/sessions/session%2Ftwo",
     );
+  });
+
+  it.each([
+    ["/cockpit", true],
+    ["/cockpit/projects/atlas/sessions/demo", true],
+    ["/-/relay/studio/cockpit", true],
+    ["/-/relay/studio/cockpit/projects/atlas/sessions/demo", true],
+    ["/settings", false],
+    ["/-/relay/studio/settings", false],
+  ])("classifies %s as cockpit=%s", (pathname, expected) => {
+    expect(isCockpitPathname(pathname)).toBe(expected);
   });
 });

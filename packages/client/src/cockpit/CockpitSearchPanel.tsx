@@ -190,6 +190,7 @@ export function CockpitSearchPanel({
             {t("cockpitGlobalSearchInputLabel")}
           </span>
           <input
+            aria-label={t("cockpitGlobalSearchInputLabel")}
             onChange={(event) => editQuery(event.currentTarget.value)}
             onKeyDown={handleInputKeyDown}
             placeholder={t("cockpitGlobalSearchPlaceholder")}

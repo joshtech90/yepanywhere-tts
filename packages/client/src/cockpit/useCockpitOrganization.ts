@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
   activateCockpitView,
@@ -35,6 +35,16 @@ function activeView(
 
 export function useCockpitOrganization(): CockpitOrganizationController {
   const runtime = useCurrentSourceRuntime();
+  const sourceGenerationRef = useRef({
+    generation: 0,
+    sourceKey: runtime.sourceKey,
+  });
+  if (sourceGenerationRef.current.sourceKey !== runtime.sourceKey) {
+    sourceGenerationRef.current = {
+      generation: sourceGenerationRef.current.generation + 1,
+      sourceKey: runtime.sourceKey,
+    };
+  }
   const [state, setState] = useState(() =>
     readCockpitOrganization(runtime.sourceKey),
   );
@@ -107,6 +117,7 @@ export function useCockpitOrganization(): CockpitOrganizationController {
 
   const togglePin = useCallback(
     async (sessionId: string, pinned: boolean) => {
+      const sourceGeneration = sourceGenerationRef.current.generation;
       setPendingPins((current) => new Set(current).add(sessionId));
       setPinError(false);
       try {
@@ -128,14 +139,18 @@ export function useCockpitOrganization(): CockpitOrganizationController {
         });
         return true;
       } catch {
-        setPinError(true);
+        if (sourceGenerationRef.current.generation === sourceGeneration) {
+          setPinError(true);
+        }
         return false;
       } finally {
-        setPendingPins((current) => {
-          const next = new Set(current);
-          next.delete(sessionId);
-          return next;
-        });
+        if (sourceGenerationRef.current.generation === sourceGeneration) {
+          setPendingPins((current) => {
+            const next = new Set(current);
+            next.delete(sessionId);
+            return next;
+          });
+        }
       }
     },
     [runtime],

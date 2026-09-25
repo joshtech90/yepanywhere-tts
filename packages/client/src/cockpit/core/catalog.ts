@@ -85,7 +85,12 @@ function deriveSessionStatus(
   connection: CreateCockpitCatalogInput["connection"],
 ): CockpitSessionStatus {
   if (connection === "offline") return "offline";
-  if (connection === "error" || providerRuntime) return "error";
+  if (
+    connection === "error" ||
+    providerRuntime?.status.kind === "terminal"
+  ) {
+    return "error";
+  }
   if (session.pendingInputType === "tool-approval") return "approval";
   if (
     session.pendingInputType === "user-question" ||
@@ -94,7 +99,12 @@ function deriveSessionStatus(
   ) {
     return "question";
   }
-  if (session.activity === "in-turn") return "active";
+  if (
+    providerRuntime?.status.kind === "retrying" ||
+    session.activity === "in-turn"
+  ) {
+    return "active";
+  }
   return "complete";
 }
 

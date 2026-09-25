@@ -37,6 +37,32 @@ afterEach(() => {
 });
 
 describe("Cockpit visual viewport geometry", () => {
+  it("does not mistake the initial mobile browser viewport for an open keyboard", () => {
+    const viewport = new EventTarget();
+    Object.defineProperties(viewport, {
+      height: { configurable: true, value: 669 },
+      offsetTop: { configurable: true, value: 0 },
+    });
+    Object.defineProperty(window, "visualViewport", {
+      configurable: true,
+      value: viewport as VisualViewport,
+    });
+    Object.defineProperty(window, "innerHeight", {
+      configurable: true,
+      value: 812,
+    });
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+
+    const view = render(<Fixture />);
+    const root = view.container.querySelector("main");
+
+    expect(root?.style.getPropertyValue("--cockpit-viewport-height")).toBe(
+      "812px",
+    );
+    expect(root?.getAttribute("data-keyboard")).toBe("closed");
+  });
+
   it("tracks an Android/iOS-like keyboard resize without document geometry", () => {
     let height = 780;
     let offsetTop = 0;

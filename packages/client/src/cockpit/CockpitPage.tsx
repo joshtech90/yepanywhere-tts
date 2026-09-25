@@ -10,12 +10,14 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useI18n } from "../i18n";
 import {
   CockpitAppearanceControls,
   type CockpitAppearanceControlsProps,
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
+import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
@@ -122,6 +124,7 @@ interface CockpitShellProps extends CockpitAppearanceControlsProps {
   basePath: string;
   catalogData: CockpitCatalogData;
   children?: ReactNode;
+  notice?: ReactNode;
   resolvedTheme: CockpitResolvedTheme;
   shellState: CockpitShellState;
 }
@@ -131,6 +134,7 @@ export function CockpitShell({
   basePath,
   catalogData,
   children,
+  notice,
   onAccentChange,
   onThemeChange,
   resolvedTheme,
@@ -153,6 +157,7 @@ export function CockpitShell({
     [basePath],
   );
   const viewport = useCockpitViewportGeometry();
+  const mobileLayout = useMediaQuery("(max-width: 700px)");
   const openSearch = useCallback(
     (focusInput: boolean, focusOrigin: HTMLElement | null) => {
       searchFocusReturnRef.current =
@@ -296,19 +301,21 @@ export function CockpitShell({
           </span>
         </Link>
 
-        <div className={styles.desktopCatalog}>
-          <CockpitCatalog
-            basePath={basePath}
-            catalog={catalogData.catalog}
-            error={catalogData.error}
-            hasMore={catalogData.hasMore}
-            loading={catalogData.loading}
-            onLoadMore={catalogData.loadMore}
-            onQueryChange={setCatalogQuery}
-            organization={catalogData.organization}
-            query={catalogQuery}
-          />
-        </div>
+        {!mobileLayout && (
+          <div className={styles.desktopCatalog}>
+            <CockpitCatalog
+              basePath={basePath}
+              catalog={catalogData.catalog}
+              error={catalogData.error}
+              hasMore={catalogData.hasMore}
+              loading={catalogData.loading}
+              onLoadMore={catalogData.loadMore}
+              onQueryChange={setCatalogQuery}
+              organization={catalogData.organization}
+              query={catalogQuery}
+            />
+          </div>
+        )}
 
         <nav className={styles.navigation}>
           <button
@@ -345,17 +352,23 @@ export function CockpitShell({
           />
         </nav>
 
-        <section
+        <details
           aria-label={t("cockpitAppearanceLabel")}
           className={styles.desktopAppearance}
         >
-          <CockpitAppearanceControls
-            accent={accent}
-            onAccentChange={onAccentChange}
-            onThemeChange={onThemeChange}
-            theme={theme}
-          />
-        </section>
+          <summary>
+            <AppearanceIcon />
+            <span>{t("cockpitAppearanceLabel")}</span>
+          </summary>
+          <div className={styles.desktopAppearancePanel}>
+            <CockpitAppearanceControls
+              accent={accent}
+              onAccentChange={onAccentChange}
+              onThemeChange={onThemeChange}
+              theme={theme}
+            />
+          </div>
+        </details>
       </aside>
 
       <CockpitShortcutDialog
@@ -372,6 +385,7 @@ export function CockpitShell({
         className={styles.workspace}
         inert={shortcutsOpen}
       >
+        {notice}
         <header className={styles.header} hidden={hasDetail || searchOpen}>
           <div>
             <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
@@ -425,19 +439,21 @@ export function CockpitShell({
             children
           ) : (
             <>
-              <div className={styles.mobileCatalog}>
-                <CockpitCatalog
-                  basePath={basePath}
-                  catalog={catalogData.catalog}
-                  error={catalogData.error}
-                  hasMore={catalogData.hasMore}
-                  loading={catalogData.loading}
-                  onLoadMore={catalogData.loadMore}
-                  onQueryChange={setCatalogQuery}
-                  organization={catalogData.organization}
-                  query={catalogQuery}
-                />
-              </div>
+              {mobileLayout && (
+                <div className={styles.mobileCatalog}>
+                  <CockpitCatalog
+                    basePath={basePath}
+                    catalog={catalogData.catalog}
+                    error={catalogData.error}
+                    hasMore={catalogData.hasMore}
+                    loading={catalogData.loading}
+                    onLoadMore={catalogData.loadMore}
+                    onQueryChange={setCatalogQuery}
+                    organization={catalogData.organization}
+                    query={catalogQuery}
+                  />
+                </div>
+              )}
               <section
                 className={styles.statePanel}
                 data-catalog={hasCatalog ? "true" : "false"}
@@ -470,7 +486,7 @@ export function CockpitShell({
   );
 }
 
-export function CockpitPage() {
+function CockpitSourcePage() {
   const runtime = useCurrentSourceRuntime();
   const basePath = useRemoteBasePath();
   const { projectId, sessionId } = useParams<{
@@ -498,6 +514,7 @@ export function CockpitPage() {
       resolvedTheme={appearance.resolvedTheme}
       shellState={{ kind: shellKind }}
       theme={appearance.theme}
+      notice={<CockpitCodexUpdateNotice basePath={basePath} />}
     >
       {projectId && sessionId ? (
         <CockpitSessionDetail
@@ -510,4 +527,9 @@ export function CockpitPage() {
       ) : undefined}
     </CockpitShell>
   );
+}
+
+export function CockpitPage() {
+  const runtime = useCurrentSourceRuntime();
+  return <CockpitSourcePage key={runtime.sourceKey} />;
 }

@@ -601,6 +601,26 @@ describe("Cockpit composer", () => {
     expect(document.activeElement).toBe(filter);
   });
 
+  it("returns focus to the composer after removing the last saved prompt", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    render(composer());
+    const composerInput = screen.getByRole("textbox", {
+      name: "Send a message to resume...",
+    });
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Remove prompt: Review the fictional launch checklist.",
+      }),
+    );
+
+    expect(screen.queryByRole("dialog", { name: "Recent prompts" })).toBeNull();
+    expect(document.activeElement).toBe(composerInput);
+  });
+
   it("dismisses prompt history without leaking Escape to global shortcuts", () => {
     rememberCockpitPrompt("local", "Review the fictional launch checklist.");
     render(composer());

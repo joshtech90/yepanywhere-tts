@@ -80,8 +80,15 @@ vi.mock("./useCockpitSearch", () => ({
   }),
 }));
 
+vi.mock("./CockpitCodexUpdateNotice", () => ({
+  CockpitCodexUpdateNotice: () => null,
+}));
+
 afterEach(cleanup);
-beforeEach(() => localStorage.setItem(UI_KEYS.locale, "en"));
+beforeEach(() => {
+  localStorage.setItem(UI_KEYS.locale, "en");
+  pageMocks.runtime.sourceKey = "local";
+});
 
 function renderShell(shellState: CockpitShellState = { kind: "empty" }) {
   const onAccentChange = vi.fn();
@@ -106,6 +113,43 @@ function renderShell(shellState: CockpitShellState = { kind: "empty" }) {
 }
 
 describe("Cockpit shell", () => {
+  it("renders only the catalog for the active responsive layout", () => {
+    renderShell();
+
+    expect(
+      screen.getAllByRole("region", { name: "Projects and sessions" }),
+    ).toHaveLength(1);
+  });
+
+  it("clears source-local catalog input when the source changes", () => {
+    const view = render(
+      <MemoryRouter initialEntries={["/cockpit"]}>
+        <I18nProvider>
+          <CockpitPage />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "Loaded sessions" }),
+      { target: { value: "Atlas" } },
+    );
+
+    pageMocks.runtime.sourceKey = "relay:studio";
+    view.rerender(
+      <MemoryRouter initialEntries={["/cockpit"]}>
+        <I18nProvider>
+          <CockpitPage />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+
+    expect(
+      (screen.getByRole("searchbox", {
+        name: "Loaded sessions",
+      }) as HTMLInputElement).value,
+    ).toBe("");
+  });
+
   it("stays stable when the transport returns a fresh snapshot object", () => {
     pageMocks.getSnapshot.mockClear();
     pageMocks.subscribe.mockClear();
@@ -169,6 +213,18 @@ describe("Cockpit shell", () => {
 
     expect(onThemeChange).toHaveBeenCalledWith("dark");
     expect(onAccentChange).toHaveBeenCalledWith("violet");
+  });
+
+  it("keeps desktop appearance controls collapsed so the catalog can grow", () => {
+    renderShell();
+
+    const appearance = screen
+      .getAllByLabelText("Cockpit appearance")
+      .find((element) => element.tagName === "DETAILS");
+    if (!(appearance instanceof HTMLDetailsElement)) {
+      throw new Error("desktop appearance disclosure missing");
+    }
+    expect(appearance.open).toBe(false);
   });
 
   it("makes the Cockpit surface inert while shortcut help is modal", () => {

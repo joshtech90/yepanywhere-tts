@@ -13,6 +13,14 @@ function withBasePath(basePath: string, path: string): string {
   return `${basePath.replace(/\/$/, "")}${path}`;
 }
 
+export function isCockpitPathname(pathname: string): boolean {
+  return (
+    pathname === "/cockpit" ||
+    pathname.startsWith("/cockpit/") ||
+    /^\/-\/relay\/[^/]+\/cockpit(?:\/|$)/.test(pathname)
+  );
+}
+
 /**
  * The Cockpit owns its presentation, while the existing router remains the
  * source of truth for application and relay paths.

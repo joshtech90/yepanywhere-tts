@@ -160,4 +160,25 @@ describe("Cockpit attention card", () => {
     ).toBeTruthy();
     expect(respond).toHaveBeenCalledTimes(2);
   });
+
+  it("does not leak Escape from the question card to global Stop", () => {
+    const { respond } = renderCard();
+    const globalEscape = vi.fn();
+    document.addEventListener("keydown", globalEscape);
+    const escapeEvent = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+
+    fireEvent(
+      screen.getByRole("button", { name: /Unit tests/ }),
+      escapeEvent,
+    );
+    document.removeEventListener("keydown", globalEscape);
+
+    expect(escapeEvent.defaultPrevented).toBe(true);
+    expect(globalEscape).not.toHaveBeenCalled();
+    expect(respond).not.toHaveBeenCalled();
+  });
 });

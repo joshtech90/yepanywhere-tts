@@ -1,5 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  containCockpitLocalEscape,
   type CockpitShortcutKey,
   resolveCockpitShortcut,
 } from "./shortcuts";
@@ -50,5 +51,20 @@ describe("Cockpit shortcut matrix", () => {
     expect(
       resolveCockpitShortcut(key("Escape", { target: input }), false),
     ).toBe("stop");
+  });
+
+  it("contains Escape handled by a local Cockpit interaction", () => {
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+
+    expect(
+      containCockpitLocalEscape({
+        key: "Escape",
+        preventDefault,
+        stopPropagation,
+      }),
+    ).toBe(true);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
   });
 });

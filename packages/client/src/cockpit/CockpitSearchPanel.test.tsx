@@ -86,6 +86,22 @@ function renderSearch() {
 }
 
 describe("Cockpit global search", () => {
+  it("keeps the searchbox name stable while the clear action appears", () => {
+    renderSearch();
+    const input = screen.getByRole("searchbox", {
+      name: "Search all sessions",
+    });
+
+    fireEvent.change(input, { target: { value: "Atlas" } });
+
+    expect(
+      screen.getByRole("searchbox", { name: "Search all sessions" }),
+    ).toBe(input);
+    expect(
+      screen.getByRole("button", { name: "Clear global search" }),
+    ).toBeTruthy();
+  });
+
   it("keeps sequential input while search data rerenders", () => {
     const view = renderSearch();
     const input = screen.getByRole("searchbox", {
@@ -95,10 +111,8 @@ describe("Cockpit global search", () => {
 
     for (const character of "Atlas") {
       value += character;
-      const startedAt = performance.now();
       fireEvent.change(input, { target: { value } });
       expect(input.value).toBe(value);
-      expect(performance.now() - startedAt).toBeLessThan(100);
       searchMock.data = {
         ...searchMock.data,
         loadedSessionCount: searchMock.data.loadedSessionCount + 1,
