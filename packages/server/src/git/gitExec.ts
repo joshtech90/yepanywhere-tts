@@ -19,7 +19,7 @@ const DEFAULT_MAX_BUFFER = 1024 * 1024;
  * paths intact.
  */
 function gitProcessEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  return { ...process.env, LC_ALL: "C.UTF-8", LANGUAGE: "", ...extra };
+  return { ...process.env, ...extra, LC_ALL: "C.UTF-8", LANGUAGE: "" };
 }
 
 /** Add the process-wide Source Control invariant to arbitrary Git arguments. */

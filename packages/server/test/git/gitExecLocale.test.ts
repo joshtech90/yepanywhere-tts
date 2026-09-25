@@ -9,9 +9,10 @@ describe("runGit locale", () => {
   let dir: string | undefined;
 
   afterEach(async () => {
-    process.env.LANG = previous.LANG;
-    if (previous.LC_ALL === undefined) delete process.env.LC_ALL;
-    else process.env.LC_ALL = previous.LC_ALL;
+    for (const key of ["LANG", "LC_ALL"] as const) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
     if (dir) await rm(dir, { recursive: true, force: true });
     dir = undefined;
   });
@@ -23,6 +24,21 @@ describe("runGit locale", () => {
     dir = await mkdtemp(join(tmpdir(), "ya-git-locale-"));
 
     const failure = await runGit(dir, ["rev-parse", "--show-toplevel"]).then(
+      () => null,
+      (error: { stderr?: string }) => error,
+    );
+
+    expect(String(failure?.stderr).toLowerCase()).toContain(
+      "not a git repository",
+    );
+  });
+
+  it("keeps English messages when a caller passes its own locale", async () => {
+    dir = await mkdtemp(join(tmpdir(), "ya-git-locale-"));
+
+    const failure = await runGit(dir, ["rev-parse", "--show-toplevel"], {
+      env: { LC_ALL: "de_DE.UTF-8", LANGUAGE: "de" },
+    }).then(
       () => null,
       (error: { stderr?: string }) => error,
     );
