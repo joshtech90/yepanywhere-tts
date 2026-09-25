@@ -1,0 +1,236 @@
+.root {
+  position: relative;
+  z-index: 3;
+  padding: 0.7rem clamp(0.8rem, 3vw, 2rem)
+    calc(0.7rem + env(safe-area-inset-bottom));
+  border-top: 1px solid var(--cockpit-border);
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 94%,
+    transparent
+  );
+  backdrop-filter: blur(18px);
+}
+
+.composerBox,
+.attachments,
+.error {
+  width: min(100%, 54rem);
+  margin-right: auto;
+  margin-left: auto;
+}
+
+.composerBox {
+  overflow: visible;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: 1rem;
+  background: var(--cockpit-surface);
+  box-shadow: 0 12px 32px
+    color-mix(in srgb, var(--cockpit-shadow) 48%, transparent);
+}
+
+.composerBox:focus-within {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-accent) 65%,
+    var(--cockpit-border)
+  );
+  box-shadow: 0 0 0 3px var(--cockpit-accent-soft);
+}
+
+.composerBox textarea {
+  display: block;
+  width: 100%;
+  min-height: 3.5rem;
+  max-height: 11rem;
+  padding: 0.82rem 0.95rem 0.4rem;
+  resize: none;
+  border: 0;
+  outline: 0;
+  color: var(--cockpit-text);
+  background: transparent;
+  font: inherit;
+  font-size: 0.84rem;
+  line-height: 1.5;
+}
+
+.composerBox textarea::placeholder {
+  color: var(--cockpit-faint);
+}
+
+.actions {
+  display: flex;
+  min-height: 2.8rem;
+  padding: 0.35rem 0.45rem 0.45rem;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.fileInput {
+  display: none;
+}
+
+.attachButton,
+.secondaryAction,
+.primaryAction,
+.attachments button {
+  min-height: 2.25rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.68rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface-raised);
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.attachButton {
+  width: 2.35rem;
+  padding: 0;
+  color: var(--cockpit-muted);
+  font-size: 1.1rem;
+}
+
+.hint {
+  flex: 1;
+  color: var(--cockpit-faint);
+  font-size: 0.62rem;
+}
+
+.secondaryAction,
+.primaryAction {
+  padding: 0 0.8rem;
+}
+
+.primaryAction {
+  border-color: transparent;
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+}
+
+.attachButton:hover,
+.secondaryAction:hover {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.primaryAction:hover {
+  filter: brightness(1.06);
+}
+
+.attachButton:focus-visible,
+.secondaryAction:focus-visible,
+.primaryAction:focus-visible,
+.attachments button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.secondaryAction:disabled,
+.primaryAction:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.attachments {
+  display: flex;
+  padding: 0 0 0.5rem;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+}
+
+.attachments li {
+  display: flex;
+  min-width: 0;
+  max-width: min(100%, 21rem);
+  min-height: 2.25rem;
+  padding: 0.22rem 0.28rem 0.22rem 0.45rem;
+  align-items: center;
+  gap: 0.38rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.7rem;
+  background: var(--cockpit-surface);
+}
+
+.attachments li[data-status="failed"] {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-danger) 48%,
+    var(--cockpit-border)
+  );
+}
+
+.fileMark {
+  color: var(--cockpit-accent);
+  font-weight: 850;
+}
+
+.fileName {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--cockpit-muted);
+  font-size: 0.68rem;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileStatus,
+.fileError {
+  color: var(--cockpit-faint);
+  font-size: 0.6rem;
+}
+
+.fileError {
+  max-width: 9rem;
+  overflow: hidden;
+  color: var(--cockpit-danger);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attachments button {
+  min-height: 1.75rem;
+  padding: 0 0.45rem;
+}
+
+.error {
+  margin-top: 0.42rem;
+  margin-bottom: 0;
+  color: var(--cockpit-danger);
+  font-size: 0.68rem;
+}
+
+@media (max-width: 700px) {
+  .root {
+    padding-right: 0.55rem;
+    padding-left: 0.55rem;
+  }
+
+  /* Hidden but still taking the free space, so the actions stay right-aligned. */
+  .hint {
+    min-width: 0;
+    overflow: hidden;
+    visibility: hidden;
+    white-space: nowrap;
+  }
+
+  .secondaryAction,
+  .primaryAction,
+  .attachButton,
+  .attachments button {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .composerBox,
+  .attachButton,
+  .secondaryAction,
+  .primaryAction {
+    transition: none;
+  }
+}

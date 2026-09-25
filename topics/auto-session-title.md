@@ -82,6 +82,14 @@ rename would go.
 Partial `PUT` bodies merge onto the stored value, so toggling `enabled` does
 not reset the other fields.
 
+`backfillExisting` takes effect at server start. The session index persists
+across restarts and only announces sessions that changed, so old sessions
+never produce the `session-created` event the service listens for. When both
+`enabled` and `backfillExisting` are on, the server therefore lists every
+known session once at start and hands them to
+`AutoSessionTitleService.backfill`; the usual gates (user titles, one attempt
+per session, one helper job at a time, the debounce) still apply.
+
 ## Provider support
 
 Automatic naming always uses the Claude provider's `session-retitle` +

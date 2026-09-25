@@ -1,0 +1,621 @@
+.root {
+  position: relative;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--cockpit-bg) 82%, transparent);
+}
+
+.sessionHeader {
+  display: grid;
+  min-height: 5.2rem;
+  padding: 0.8rem clamp(1rem, 3vw, 2rem);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.85rem;
+  border-bottom: 1px solid var(--cockpit-border);
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 88%,
+    transparent
+  );
+}
+
+.backLink,
+.classicLink,
+.loadOlder,
+.emptyState button,
+.inlineError button,
+.followButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--cockpit-border);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease,
+    transform 140ms ease;
+}
+
+.backLink {
+  width: 2.65rem;
+  height: 2.65rem;
+  border-radius: 0.78rem;
+  color: var(--cockpit-muted);
+}
+
+.backLink svg,
+.classicLink svg,
+.loadOlder svg,
+.followButton svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.titleGroup {
+  min-width: 0;
+}
+
+.titleGroup > p {
+  margin: 0 0 0.18rem;
+  overflow: hidden;
+  color: var(--cockpit-faint);
+  font-size: 0.65rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.titleGroup h2 {
+  margin: 0;
+  overflow: hidden;
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  line-height: 1.18;
+  letter-spacing: -0.025em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metadata {
+  display: flex;
+  min-width: 0;
+  margin-top: 0.38rem;
+  align-items: center;
+  gap: 0.35rem;
+  overflow: hidden;
+}
+
+.metadata span {
+  max-width: 13rem;
+  padding: 0.14rem 0.42rem;
+  overflow: hidden;
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-hover);
+  font-size: 0.6rem;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessionActions {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.sessionState {
+  display: inline-flex;
+  min-height: 2.35rem;
+  padding: 0 0.68rem;
+  align-items: center;
+  gap: 0.42rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font-size: 0.69rem;
+  font-weight: 750;
+}
+
+.sessionState[data-state="complete"] {
+  padding: 0 0.8rem;
+}
+
+.workingRow {
+  display: flex;
+  margin: 0.4rem auto 1rem;
+  padding: 0 0.2rem;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--cockpit-muted);
+  font-size: 0.82rem;
+}
+
+.workingDots {
+  display: inline-flex;
+  gap: 0.22rem;
+}
+
+.workingDots > i {
+  width: 0.36rem;
+  height: 0.36rem;
+  border-radius: 50%;
+  background: var(--cockpit-working);
+  opacity: 0.35;
+  animation: working-dot 1.2s ease-in-out infinite;
+}
+
+.workingDots > i:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.workingDots > i:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes working-dot {
+  40% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workingDots > i {
+    animation: none;
+    opacity: 0.8;
+  }
+}
+
+.classicLink {
+  min-height: 2.45rem;
+  padding: 0 0.75rem;
+  gap: 0.4rem;
+  border-radius: 0.75rem;
+  font-size: 0.7rem;
+}
+
+.inlineError {
+  display: flex;
+  min-height: 2.8rem;
+  padding: 0.45rem clamp(1rem, 3vw, 2rem);
+  align-items: center;
+  justify-content: center;
+  gap: 0.7rem;
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--cockpit-danger) 24%, var(--cockpit-border));
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
+  font-size: 0.72rem;
+  font-weight: 650;
+}
+
+.inlineError button {
+  min-height: 2rem;
+  padding: 0 0.65rem;
+  border-radius: 0.6rem;
+  font-size: 0.68rem;
+}
+
+.transcript {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-color: var(--cockpit-border-strong) transparent;
+}
+
+.transcriptInner {
+  width: min(100%, 54rem);
+  min-height: 100%;
+  padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 4vw, 2.8rem) 3.5rem;
+  margin: 0 auto;
+}
+
+.transcriptRow {
+  display: flow-root;
+}
+
+.loadOlder {
+  min-height: 2.6rem;
+  padding: 0 0.85rem;
+  margin: 0 auto 1.4rem;
+  gap: 0.45rem;
+  border-radius: 999px;
+  font-size: 0.72rem;
+}
+
+.loadOlder:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.userEntry,
+.assistantEntry {
+  width: min(100%, 47rem);
+}
+
+.userEntry {
+  padding: 0.8rem 1rem;
+  margin: 0 0 1.15rem auto;
+  border: 1px solid
+    color-mix(in srgb, var(--cockpit-accent) 24%, var(--cockpit-border));
+  border-radius: 1.1rem 1.1rem 0.35rem 1.1rem;
+  background: var(--cockpit-accent-soft);
+}
+
+.assistantEntry {
+  margin: 0 auto 1.35rem 0;
+}
+
+.userAttachments {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  gap: 0.35rem;
+  list-style: none;
+}
+
+.userAttachments li {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 0.28rem 0.6rem;
+  align-items: baseline;
+  gap: 0.4rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font-size: 0.72rem;
+}
+
+.userAttachments span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userAttachments small {
+  color: var(--cockpit-faint);
+  font-size: 0.64rem;
+}
+
+.thinkingEntry {
+  width: min(100%, 47rem);
+  margin: -0.4rem auto 0.9rem 0;
+}
+
+.entryHeader {
+  display: flex;
+  min-height: 1.6rem;
+  margin-bottom: 0.55rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  color: var(--cockpit-faint);
+  font-size: 0.66rem;
+}
+
+.entryHeader strong {
+  color: var(--cockpit-muted);
+  font-size: 0.7rem;
+}
+
+.assistantIdentity {
+  display: flex;
+  align-items: center;
+  gap: 0.48rem;
+}
+
+/* Message actions sit quietly under the message they act on. */
+.entryFooter {
+  display: flex;
+  margin: 0.35rem -0.45rem -0.4rem 0;
+  justify-content: flex-end;
+  gap: 0.1rem;
+}
+
+.entryFooter[data-align="start"] {
+  margin: 0.25rem 0 0 0.2rem;
+  justify-content: flex-start;
+}
+
+.assistantMark {
+  display: grid;
+  width: 1.65rem;
+  height: 1.65rem;
+  place-items: center;
+  border-radius: 0.55rem;
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+  font-size: 0.55rem;
+  font-weight: 850;
+  letter-spacing: -0.02em;
+}
+
+.streamingLabel {
+  display: inline-flex;
+  padding: 0.14rem 0.42rem;
+  border-radius: 999px;
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+  font-size: 0.58rem;
+  font-weight: 750;
+}
+
+.assistantBody {
+  padding: clamp(1rem, 2.6vw, 1.45rem);
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.4rem 1.15rem 1.15rem;
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 94%,
+    transparent
+  );
+  box-shadow: 0 12px 34px
+    color-mix(in srgb, var(--cockpit-shadow) 54%, transparent);
+}
+
+.userText {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+  line-height: 1.55;
+}
+
+.boundary {
+  display: grid;
+  width: min(100%, 47rem);
+  margin: 1.1rem auto;
+  grid-template-columns: minmax(1rem, 1fr) auto minmax(1rem, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  color: var(--cockpit-faint);
+  font-size: 0.62rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.boundary > span:first-child,
+.boundary > span:last-child {
+  height: 1px;
+  background: var(--cockpit-border);
+}
+
+.emptyState {
+  width: min(100%, 30rem);
+  padding: 1.6rem;
+  margin: 12vh auto 0;
+  border: 1px dashed var(--cockpit-border-strong);
+  border-radius: 1.1rem;
+  color: var(--cockpit-muted);
+  text-align: center;
+}
+
+.emptyState h3 {
+  margin: 0;
+  color: var(--cockpit-text);
+  font-size: 1.05rem;
+}
+
+.emptyState p {
+  margin: 0.65rem 0 0;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.emptyState button {
+  min-height: 2.55rem;
+  padding: 0 0.85rem;
+  margin-top: 1rem;
+  border-radius: 0.72rem;
+  font-size: 0.72rem;
+}
+
+.skeleton {
+  display: grid;
+  width: min(100%, 47rem);
+  margin: 8vh auto 0;
+  gap: 0.75rem;
+  color: var(--cockpit-muted);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.skeleton i {
+  display: block;
+  height: 4.5rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 1rem;
+  background: linear-gradient(
+    105deg,
+    var(--cockpit-surface) 35%,
+    var(--cockpit-hover) 48%,
+    var(--cockpit-surface) 61%
+  );
+  background-size: 220% 100%;
+  animation: cockpit-session-shimmer 1.5s ease-in-out infinite;
+}
+
+.skeleton i:nth-of-type(2) {
+  width: 82%;
+  margin-left: auto;
+}
+
+.followButton {
+  position: absolute;
+  right: 1.2rem;
+  bottom: 8rem;
+  z-index: 2;
+  min-height: 2.75rem;
+  padding: 0 0.85rem;
+  gap: 0.45rem;
+  border-radius: 999px;
+  box-shadow: 0 12px 30px var(--cockpit-shadow);
+  font-size: 0.72rem;
+}
+
+.backLink:hover,
+.classicLink:hover,
+.loadOlder:hover,
+.emptyState button:hover,
+.inlineError button:hover,
+.followButton:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-accent) 42%,
+    var(--cockpit-border)
+  );
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.backLink:focus-visible,
+.classicLink:focus-visible,
+.loadOlder:focus-visible,
+.emptyState button:focus-visible,
+.inlineError button:focus-visible,
+.followButton:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+@keyframes cockpit-session-shimmer {
+  to {
+    background-position: -220% 0;
+  }
+}
+
+@media (max-width: 760px) {
+  .sessionHeader {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .sessionState {
+    min-width: 2.75rem;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .sessionState {
+    font-size: 0;
+  }
+
+  .classicLink {
+    width: 2.75rem;
+    padding: 0;
+  }
+
+  .classicLink span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+    margin: -1px;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 700px) {
+  .sessionHeader {
+    min-height: 4.65rem;
+    padding: 0.62rem 0.78rem;
+    gap: 0.55rem;
+  }
+
+  .backLink,
+  .classicLink,
+  .sessionState {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .sessionActions {
+    gap: 0.35rem;
+  }
+
+  .metadata span {
+    max-width: 8rem;
+  }
+
+  .transcriptInner {
+    padding: 0.9rem 0.78rem 4rem;
+  }
+
+  .userEntry {
+    width: 91%;
+  }
+
+  .assistantBody {
+    padding: 0.95rem;
+  }
+
+  .entryHeader {
+    align-items: flex-start;
+  }
+
+  .followButton {
+    right: 0.8rem;
+    bottom: 8rem;
+  }
+}
+
+@media (max-width: 430px) {
+  /* On a phone the dot alone carries the state; the title needs the room. */
+  .sessionState,
+  .sessionState[data-state="complete"] {
+    width: 1.4rem;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
+  .titleGroup > p {
+    max-width: 10rem;
+  }
+
+  .titleGroup h2 {
+    max-width: 12rem;
+  }
+
+  .inlineError {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .backLink,
+  .classicLink,
+  .loadOlder,
+  .emptyState button,
+  .inlineError button,
+  .followButton {
+    transition: none;
+  }
+
+  .skeleton i {
+    animation: none;
+  }
+}

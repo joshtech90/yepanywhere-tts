@@ -4,6 +4,7 @@ export type RemoteRouteModuleKey =
   | "activityPage"
   | "agentsPage"
   | "bangCommandsPage"
+  | "cockpitPage"
   | "directLoginPage"
   | "emulatorPage"
   | "filePage"
@@ -40,6 +41,9 @@ function normalizeRouterPathname(pathname: string, baseUrl: string): string {
 
 function selectedAppPageModules(pathname: string): RemoteRouteModuleKey[] {
   if (pathname === "/activity") return ["activityPage"];
+  if (pathname === "/cockpit" || pathname.startsWith("/cockpit/")) {
+    return ["cockpitPage"];
+  }
 
   const modules: RemoteRouteModuleKey[] = ["layouts"];
   if (pathname === "/" || pathname === "/projects") {

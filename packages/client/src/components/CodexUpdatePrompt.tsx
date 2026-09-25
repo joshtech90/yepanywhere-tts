@@ -3,34 +3,33 @@ import { useCodexUpdateStatus } from "../hooks/useCodexUpdateStatus";
 import { useProviders } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
+import {
+  readSeenCodexUpdateTag,
+  writeSeenCodexUpdateTag,
+} from "../lib/codexUpdateSeen";
 import { Modal } from "./ui/Modal";
 
-const STORAGE_KEY = "codex-update-seen-tag";
-
-function readSeenTag(): string | null {
-  try {
-    return window.localStorage.getItem(STORAGE_KEY);
-  } catch {
-    return null;
-  }
+export interface CodexUpdatePromptProps {
+  suppressed?: boolean;
 }
 
-function writeSeenTag(tag: string): void {
-  try {
-    window.localStorage.setItem(STORAGE_KEY, tag);
-  } catch {
-    // Storage denied / full: prompt will reappear next session.
-  }
+export function CodexUpdatePrompt({
+  suppressed = false,
+}: CodexUpdatePromptProps) {
+  if (suppressed) return null;
+  return <ActiveCodexUpdatePrompt />;
 }
 
-export function CodexUpdatePrompt() {
+function ActiveCodexUpdatePrompt() {
   const { t } = useI18n();
   const { settings, updateSetting } = useServerSettings();
   const policy = settings?.codexUpdatePolicy;
   const { status, isInstalling, error, installOutput, install } =
     useCodexUpdateStatus({ enabled: policy === "notify" });
   const { refetch: refetchProviders } = useProviders();
-  const [seenTag, setSeenTag] = useState<string | null>(() => readSeenTag());
+  const [seenTag, setSeenTag] = useState<string | null>(() =>
+    readSeenCodexUpdateTag(),
+  );
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [dismissedTag, setDismissedTag] = useState<string | null>(null);
   const [autoUpdate, setAutoUpdate] = useState(true);
@@ -41,7 +40,7 @@ export function CodexUpdatePrompt() {
   const [policyError, setPolicyError] = useState<string | null>(null);
 
   useEffect(() => {
-    setSeenTag(readSeenTag());
+    setSeenTag(readSeenCodexUpdateTag());
   }, []);
 
   const latestTag = status?.latest ?? null;
@@ -81,7 +80,7 @@ export function CodexUpdatePrompt() {
 
   const close = ({ markSeen = false }: { markSeen?: boolean } = {}) => {
     if (markSeen) {
-      writeSeenTag(activeTag);
+      writeSeenCodexUpdateTag(activeTag);
       setSeenTag(activeTag);
     }
     setDismissedTag(activeTag);
