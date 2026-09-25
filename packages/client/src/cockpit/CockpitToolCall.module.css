@@ -173,8 +173,16 @@
   min-width: 0;
 }
 
-.codeSection h4 {
-  margin: 0 0 0.38rem;
+.codeHeading {
+  display: flex;
+  margin-bottom: 0.38rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.codeHeading h4 {
+  margin: 0;
   color: var(--cockpit-muted);
   font-size: 0.64rem;
   letter-spacing: 0.04em;

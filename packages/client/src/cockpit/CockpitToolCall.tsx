@@ -5,6 +5,7 @@ import type {
   CockpitDiffLine,
   CockpitToolStatus,
 } from "./core/toolDisplay";
+import { CockpitToolCopyButton } from "./CockpitToolCopyButton";
 import styles from "./CockpitToolCall.module.css";
 
 export interface CockpitToolCallProps {
@@ -75,6 +76,38 @@ function DiffLine({ line }: { line: CockpitDiffLine }) {
   );
 }
 
+function CopyableCodeSection({
+  copiedLabel,
+  copyLabel,
+  error = false,
+  heading,
+  text,
+}: {
+  copiedLabel: string;
+  copyLabel: string;
+  error?: boolean;
+  heading: string;
+  text: string;
+}) {
+  const { t } = useI18n();
+  return (
+    <section className={styles.codeSection} data-error={error || undefined}>
+      <div className={styles.codeHeading}>
+        <h4>{heading}</h4>
+        <CockpitToolCopyButton
+          copiedLabel={copiedLabel}
+          failedLabel={t("cockpitToolCopyFailed")}
+          label={copyLabel}
+          text={text}
+        />
+      </div>
+      <pre>
+        <code>{text}</code>
+      </pre>
+    </section>
+  );
+}
+
 function ShellDetail({ entry }: { entry: CockpitToolEntry }) {
   const { t } = useI18n();
   const shell = entry.tool.shell;
@@ -89,28 +122,29 @@ function ShellDetail({ entry }: { entry: CockpitToolEntry }) {
         {shell.interrupted && <span>{t("cockpitToolInterrupted")}</span>}
       </div>
       {shell.command && (
-        <section className={styles.codeSection}>
-          <h4>{t("cockpitToolCommand")}</h4>
-          <pre>
-            <code>{shell.command}</code>
-          </pre>
-        </section>
+        <CopyableCodeSection
+          copiedLabel={t("cockpitToolCommandCopied")}
+          copyLabel={t("cockpitToolCopyCommand")}
+          heading={t("cockpitToolCommand")}
+          text={shell.command}
+        />
       )}
       {shell.stdout && (
-        <section className={styles.codeSection}>
-          <h4>{t("cockpitToolOutput")}</h4>
-          <pre>
-            <code>{shell.stdout}</code>
-          </pre>
-        </section>
+        <CopyableCodeSection
+          copiedLabel={t("cockpitToolOutputCopied")}
+          copyLabel={t("cockpitToolCopyOutput")}
+          heading={t("cockpitToolOutput")}
+          text={shell.stdout}
+        />
       )}
       {shell.stderr && (
-        <section className={styles.codeSection} data-error="true">
-          <h4>{t("cockpitToolErrorOutput")}</h4>
-          <pre>
-            <code>{shell.stderr}</code>
-          </pre>
-        </section>
+        <CopyableCodeSection
+          copiedLabel={t("cockpitToolErrorOutputCopied")}
+          copyLabel={t("cockpitToolCopyErrorOutput")}
+          error
+          heading={t("cockpitToolErrorOutput")}
+          text={shell.stderr}
+        />
       )}
       {!hasOutput && entry.tool.status !== "pending" && (
         <p className={styles.noData}>{t("cockpitToolNoOutput")}</p>
@@ -199,20 +233,20 @@ function GenericDetail({ entry }: { entry: CockpitToolEntry }) {
         </p>
       )}
       {entry.tool.rawInput && (
-        <section className={styles.codeSection}>
-          <h4>{t("cockpitToolInput")}</h4>
-          <pre>
-            <code>{entry.tool.rawInput}</code>
-          </pre>
-        </section>
+        <CopyableCodeSection
+          copiedLabel={t("cockpitToolInputCopied")}
+          copyLabel={t("cockpitToolCopyInput")}
+          heading={t("cockpitToolInput")}
+          text={entry.tool.rawInput}
+        />
       )}
       {entry.tool.rawResult && (
-        <section className={styles.codeSection}>
-          <h4>{t("cockpitToolResult")}</h4>
-          <pre>
-            <code>{entry.tool.rawResult}</code>
-          </pre>
-        </section>
+        <CopyableCodeSection
+          copiedLabel={t("cockpitToolResultCopied")}
+          copyLabel={t("cockpitToolCopyResult")}
+          heading={t("cockpitToolResult")}
+          text={entry.tool.rawResult}
+        />
       )}
       {!entry.tool.rawInput && !entry.tool.rawResult && (
         <p className={styles.noData}>{t("cockpitToolNoDetails")}</p>

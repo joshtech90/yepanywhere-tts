@@ -112,6 +112,12 @@ describe("Cockpit tool call", () => {
       ),
     ).toBeTruthy();
     expect(screen.getByText(/<script>not markup<\/script>/)).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copy tool input" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copy tool result" }),
+    ).toBeTruthy();
   });
 
   it("shows failed shell metadata and long output only after expansion", () => {
@@ -144,6 +150,11 @@ describe("Cockpit tool call", () => {
     expect(screen.getByText("Exit 7")).toBeTruthy();
     expect(screen.getByText("DEMO_FAILURE")).toBeTruthy();
     expect(screen.getByText(/line 80/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy command" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy output" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Copy error output" }),
+    ).toBeTruthy();
   });
 
   it("uses the German Cockpit labels for tool details", async () => {
@@ -174,5 +185,8 @@ describe("Cockpit tool call", () => {
     );
     expect(screen.getByRole("heading", { name: "Befehl" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Fehlerausgabe" })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Befehl kopieren" }),
+    ).toBeTruthy();
   });
 });

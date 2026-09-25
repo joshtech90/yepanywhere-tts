@@ -228,6 +228,12 @@ vollstaendig uebersetzt. Liefert ein Anbieter dieselbe Dateiaenderung zugleich
 als strukturierte Hunks und als Raw-Patch, verwendet die Projektion die
 strukturierte Darstellung einmalig, statt Zeilen und Statistik zu verdoppeln.
 
+Nachbesserung A26: Shell-Befehle, Standard- und Fehlerausgaben sowie die
+Textdaten unbekannter Werkzeuge lassen sich direkt im aufgeklappten Detail
+unveraendert kopieren. Jeder Knopf bestaetigt Erfolg am selben Ort, zeigt einen
+blockierten Zwischenablagezugriff als wiederholbaren Fehler und bleibt auf
+Mobilbreite ein vollwertiges Touch-Ziel.
+
 ## 7 — Composer mit Prompt, Attachments, Queue und Steer
 
 Status: **umgesetzt**

@@ -274,6 +274,10 @@ Wenn dieselbe Dateiaenderung strukturiert und als Raw-Patch vorliegt, hat die
 strukturierte Darstellung Vorrang; Zeilen und Statistik werden nicht doppelt
 gezaehlt. Alle Cockpit-eigenen Werkzeugtexte besitzen deutsche und englische
 Katalogwerte.
+Shell-Befehl, Standard- und Fehlerausgabe sowie die begrenzten Textdaten
+unbekannter Werkzeuge erhalten lokale Kopieraktionen. Sie kopieren genau die
+bereits projizierte Anzeige, besitzen nur voruebergehenden Rueckmeldestatus und
+veraendern weder Tool-Daten noch Transcript-Zustand.
 
 ### Composer-Grenze aus Paket 7
 
