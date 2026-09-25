@@ -240,6 +240,12 @@ Minuszeilen behalten ihre Diff-Marker; bei einer begrenzten Vorschau wird
 ehrlich nur der sichtbare Ausschnitt kopiert. Dateiwechsler setzen die lokale
 Kopierbestaetigung zurueck, damit sie nicht fuer die vorige Datei stehen bleibt.
 
+Nachbesserung A28: Auf Mobilbreite erhaelt der vollstaendige Pfad der
+ausgewaehlten Diff-Datei eine eigene umbrechende Zeile. Aenderungsstatistik und
+Kopierknopf stehen darunter mit Abstand und behalten ihr vollwertiges
+Touch-Ziel, statt einen langen Pfad abzuschneiden oder den Dateikopf zu
+ueberfuellen. Die kompakte Desktop-Zeile bleibt unveraendert.
+
 ## 7 — Composer mit Prompt, Attachments, Queue und Steer
 
 Status: **umgesetzt**

@@ -283,6 +283,10 @@ Datei. Sie serialisiert ausschliesslich die bereits begrenzt projizierten
 Hunk-, Kontext-, Plus- und Minuszeilen samt Markern; ein Dateiwechsler erzeugt
 eine neue lokale Rueckmeldungsinstanz und kann keinen Erfolg der vorigen Datei
 anzeigen.
+Auf Mobilbreite trennt der Dateikopf den umbrechenden vollstaendigen Pfad von
+Statistik und Kopieraktion. Dadurch bleibt die Datei identifizierbar und das
+Kopierziel ohne Praezisionstap erreichbar; die Desktop-Anordnung bleibt eine
+kompakte Zeile.
 
 ### Composer-Grenze aus Paket 7
 
