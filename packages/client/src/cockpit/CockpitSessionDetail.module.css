@@ -237,6 +237,44 @@
   margin: 0 auto 1.35rem 0;
 }
 
+.userAttachments {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  gap: 0.35rem;
+  list-style: none;
+}
+
+.userAttachments li {
+  display: inline-flex;
+  max-width: 100%;
+  padding: 0.28rem 0.6rem;
+  align-items: baseline;
+  gap: 0.4rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font-size: 0.72rem;
+}
+
+.userAttachments span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.userAttachments small {
+  color: var(--cockpit-faint);
+  font-size: 0.64rem;
+}
+
+.thinkingEntry {
+  width: min(100%, 47rem);
+  margin: -0.4rem auto 0.9rem 0;
+}
+
 .entryHeader {
   display: flex;
   min-height: 2.3rem;

@@ -25,6 +25,8 @@ export interface CockpitAttentionQuestion {
 export interface CockpitAttentionDisplay {
   inputPreview: string;
   kind: "approval" | "question";
+  /** Plan text of a plan-mode exit, shown as the request itself. */
+  plan?: string;
   prompt: string;
   questions: CockpitAttentionQuestion[];
   rawType: string;
@@ -158,9 +160,15 @@ export function createCockpitAttentionDisplay(
     request.toolName === "AskUserQuestion" ||
     questions.length > 0;
 
+  const plan =
+    request.toolName === "ExitPlanMode" && isRecord(request.toolInput)
+      ? nonEmptyString(request.toolInput.plan)
+      : undefined;
+
   return {
     inputPreview: serializeInput(request.toolInput),
     kind: isQuestion ? "question" : "approval",
+    ...(plan && !isQuestion ? { plan } : {}),
     prompt: request.prompt,
     questions: isQuestion
       ? questions.length > 0

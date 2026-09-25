@@ -8,11 +8,14 @@ describe("Cockpit navigation", () => {
       cockpit: "/cockpit",
       sessions: "/sessions",
       projects: "/projects",
-      newSession: "/new-session",
+      newSession: "/cockpit?view=new",
       settings: "/settings",
     });
     expect(navigation.project("project one")).toBe(
       "/sessions?project=project%20one",
+    );
+    expect(navigation.newSessionIn("project one")).toBe(
+      "/cockpit?view=new&project=project%20one",
     );
     expect(navigation.session("project one", "session/two")).toBe(
       "/cockpit/projects/project%20one/sessions/session%2Ftwo",
@@ -28,7 +31,7 @@ describe("Cockpit navigation", () => {
       cockpit: "/-/relay/studio/cockpit",
       sessions: "/-/relay/studio/sessions",
       projects: "/-/relay/studio/projects",
-      newSession: "/-/relay/studio/new-session",
+      newSession: "/-/relay/studio/cockpit?view=new",
       settings: "/-/relay/studio/settings",
     });
     expect(navigation.project("project one")).toBe(

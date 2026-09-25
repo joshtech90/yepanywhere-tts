@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import type { InputRequest } from "../types";
-import { useI18n } from "../i18n";
+import { useI18n, type TranslationFn } from "../i18n";
 import {
   areCockpitQuestionsAnswered,
   createCockpitAttentionDisplay,
@@ -14,6 +14,12 @@ import type {
   CockpitAttentionPort,
 } from "./useCockpitAttention";
 import styles from "./CockpitAttentionCard.module.css";
+
+/** The provider asks "Allow Bash?" in English; say it in the UI language. */
+function approvalPrompt(prompt: string, t: TranslationFn): string {
+  const tool = /^Allow (\S+)\?$/.exec(prompt.trim())?.[1];
+  return tool ? t("cockpitAttentionAllowTool", { tool }) : prompt;
+}
 
 interface CockpitAttentionCardProps {
   request: InputRequest;
@@ -83,7 +89,9 @@ export function CockpitAttentionCard({
             <h3>
               {display.kind === "question"
                 ? t("cockpitAttentionQuestionTitle")
-                : t("cockpitAttentionApprovalTitle")}
+                : display.plan
+                  ? t("cockpitAttentionPlanTitle")
+                  : t("cockpitAttentionApprovalTitle")}
             </h3>
           </div>
           {display.toolName && (
@@ -91,7 +99,11 @@ export function CockpitAttentionCard({
           )}
         </div>
 
-        <p className={styles.prompt}>{display.prompt}</p>
+        {display.plan ? (
+          <div className={styles.plan}>{display.plan}</div>
+        ) : (
+          <p className={styles.prompt}>{approvalPrompt(display.prompt, t)}</p>
+        )}
 
         {display.kind === "question" && (
           <div className={styles.questions}>
@@ -180,7 +192,7 @@ export function CockpitAttentionCard({
           </div>
         )}
 
-        {display.kind === "approval" && display.inputPreview && (
+        {display.kind === "approval" && !display.plan && display.inputPreview && (
           <details className={styles.details}>
             <summary>{t("cockpitAttentionDetails")}</summary>
             <pre>{display.inputPreview}</pre>

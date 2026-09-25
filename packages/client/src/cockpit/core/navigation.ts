@@ -3,6 +3,7 @@ export interface CockpitNavigation {
   sessions: string;
   projects: string;
   newSession: string;
+  newSessionIn: (projectId: string) => string;
   settings: string;
   project: (projectId: string) => string;
   session: (projectId: string, sessionId: string) => string;
@@ -30,7 +31,12 @@ export function createCockpitNavigation(basePath: string): CockpitNavigation {
     cockpit: withBasePath(basePath, "/cockpit"),
     sessions: withBasePath(basePath, "/sessions"),
     projects: withBasePath(basePath, "/projects"),
-    newSession: withBasePath(basePath, "/new-session"),
+    newSession: withBasePath(basePath, "/cockpit?view=new"),
+    newSessionIn: (projectId) =>
+      withBasePath(
+        basePath,
+        `/cockpit?view=new&project=${encodeURIComponent(projectId)}`,
+      ),
     settings: withBasePath(basePath, "/settings"),
     project: (projectId) =>
       withBasePath(

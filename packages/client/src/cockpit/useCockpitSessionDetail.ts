@@ -1,8 +1,15 @@
 import { useEffect, useMemo, useRef } from "react";
+import { useLocation } from "react-router-dom";
+import {
+  CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useSession } from "../hooks/useSession";
+import { useVersion } from "../hooks/useVersion";
 import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
+import { parseSessionNavigationState } from "../lib/sessionNavigationState";
 import type { SessionMetadata, SessionStatus } from "../types";
 import {
   useCockpitAttention,
@@ -44,7 +51,29 @@ export function useCockpitSessionDetail(
   sessionId: string,
 ): CockpitSessionDetailData {
   const runtime = useCurrentSourceRuntime();
-  const detail = useSession(projectId, sessionId);
+  // A session the Cockpit just started carries its live process in the
+  // navigation state, so the stream connects without waiting for REST.
+  const location = useLocation();
+  const { initialStatus } = parseSessionNavigationState(location.state);
+  // Same switch as the classic session page: without it a live Codex tool
+  // call shows twice until reload, once under its stream id and once under
+  // its durable transcript id.
+  const { version } = useVersion();
+  const codexStreamDurableIdAlignment = serverHasCapability(
+    version,
+    CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
+  );
+  const sessionOptions = useMemo(
+    () => ({ codexStreamDurableIdAlignment }),
+    [codexStreamDurableIdAlignment],
+  );
+  const detail = useSession(
+    projectId,
+    sessionId,
+    initialStatus,
+    undefined,
+    sessionOptions,
+  );
   const previousRenderItemsRef = useRef<RenderItem[]>([]);
   const previousEntriesRef = useRef<CockpitTranscriptEntry[]>([]);
   const renderItems = useMemo(

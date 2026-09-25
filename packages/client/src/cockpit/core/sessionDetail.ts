@@ -1,5 +1,6 @@
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import type { ContentBlock } from "@yep-anywhere/shared/transcript/message";
+import { parseUserPrompt } from "../../lib/parseUserPrompt";
 import {
   createCockpitToolDisplay,
   type CockpitToolDisplay,
@@ -26,9 +27,16 @@ interface CockpitTranscriptEntryBase {
   sourceItems?: readonly RenderItem[];
 }
 
+export interface CockpitUserAttachment {
+  name: string;
+  size: string;
+}
+
 export interface CockpitUserEntry extends CockpitTranscriptEntryBase {
   kind: "user";
   text: string;
+  /** Files uploaded with the prompt, split off the provider-facing footer. */
+  attachments?: CockpitUserAttachment[];
 }
 
 export interface CockpitAssistantEntry extends CockpitTranscriptEntryBase {
@@ -159,15 +167,19 @@ export function createCockpitTranscriptEntries(input: {
   for (const item of input.renderItems) {
     if (item.type === "user_prompt") {
       flushAssistant();
-      const text = contentText(item.content);
-      if (text) {
+      const prompt = parseUserPrompt(contentText(item.content));
+      if (prompt.text || prompt.uploadedFiles.length > 0) {
         const timestamp = timestampForItem(item);
         entries.push({
           kind: "user",
           key: entryKey(input.sourceKey, input.sessionId, "user", item.id),
           ...(timestamp ? { timestamp } : {}),
           sourceItems: [item],
-          text,
+          text: prompt.text,
+          attachments: prompt.uploadedFiles.map((file) => ({
+            name: file.originalName,
+            size: file.size,
+          })),
         });
       }
       continue;

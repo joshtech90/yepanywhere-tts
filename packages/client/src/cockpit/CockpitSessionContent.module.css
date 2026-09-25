@@ -96,22 +96,19 @@
 }
 
 .thinking {
-  margin: 0 0 0.85rem;
-  border: 1px solid var(--cockpit-border);
-  border-radius: 0.78rem;
-  color: var(--cockpit-muted);
-  background: color-mix(in srgb, var(--cockpit-bg) 72%, transparent);
+  margin: 0 0 0.6rem;
+  color: var(--cockpit-faint);
 }
 
 .thinking summary {
-  display: flex;
-  min-height: 2.55rem;
-  padding: 0 0.78rem;
+  display: inline-flex;
+  min-height: 1.9rem;
+  padding: 0 0.3rem;
   align-items: center;
-  justify-content: space-between;
-  gap: 0.6rem;
+  gap: 0.4rem;
+  border-radius: 0.5rem;
   font-size: 0.7rem;
-  font-weight: 750;
+  font-weight: 650;
   cursor: pointer;
   list-style: none;
 }
@@ -120,15 +117,33 @@
   display: none;
 }
 
+.thinking summary::before {
+  content: "";
+  width: 0.4rem;
+  height: 0.4rem;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 120ms ease;
+}
+
+.thinking[open] summary::before {
+  transform: rotate(45deg);
+}
+
+.thinking summary:hover {
+  color: var(--cockpit-muted);
+}
+
 .thinking summary:focus-visible {
   outline: 3px solid var(--cockpit-accent-ring);
   outline-offset: 2px;
-  box-shadow: 0 0 0 1px var(--cockpit-accent);
 }
 
 .thinking p {
-  margin: 0;
-  padding: 0 0.78rem 0.8rem;
+  margin: 0.3rem 0 0 0.45rem;
+  padding: 0.1rem 0 0.1rem 0.85rem;
+  border-left: 2px solid var(--cockpit-border);
   color: var(--cockpit-muted);
   font-size: 0.74rem;
   line-height: 1.58;

@@ -2,11 +2,13 @@ import {
   memo,
   useCallback,
   useDeferredValue,
+  useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
-import { Link } from "react-router-dom";
+import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitAttentionCard } from "./CockpitAttentionCard";
@@ -171,13 +173,39 @@ const TranscriptEntry = memo(function TranscriptEntry({
             <CockpitCopyResponseButton text={entry.text} target="prompt" />
           </span>
         </header>
-        <div className={styles.userText}>{entry.text}</div>
+        {entry.text && <div className={styles.userText}>{entry.text}</div>}
+        {entry.attachments && entry.attachments.length > 0 && (
+          <ul
+            aria-label={t("cockpitSessionAttachments")}
+            className={styles.userAttachments}
+          >
+            {entry.attachments.map((file, index) => (
+              <li key={`${file.name}\0${index}`}>
+                <span>{file.name}</span>
+                <small>{file.size}</small>
+              </li>
+            ))}
+          </ul>
+        )}
       </article>
     );
   }
 
   if (entry.kind === "tool") {
     return <CockpitToolCall entry={entry} time={time} />;
+  }
+
+  // Thinking without an answer yet is one quiet line, not an answer card.
+  if (entry.text.length === 0 && entry.thinking.length > 0) {
+    return (
+      <article
+        className={styles.thinkingEntry}
+        data-cockpit-entry-key={entry.key}
+        data-entry-kind="assistant"
+      >
+        <AssistantContent entry={entry} />
+      </article>
+    );
   }
 
   return (
@@ -223,8 +251,23 @@ export function CockpitSessionDetail({
 }: CockpitSessionDetailProps) {
   const { locale, t } = useI18n();
   const runtime = useCurrentSourceRuntime();
-  const navigation = createCockpitNavigation(basePath);
+  const navigation = useMemo(
+    () => createCockpitNavigation(basePath),
+    [basePath],
+  );
   const detail = useCockpitSessionDetail(projectId, sessionId);
+  const navigate = useNavigate();
+  const location = useLocation();
+  const actualSessionId = detail.composer.actualSessionId;
+  // A new session starts under a temporary id; once the provider reports the
+  // real one, the address follows it so a reload finds the session again.
+  useEffect(() => {
+    if (!actualSessionId || actualSessionId === sessionId) return;
+    navigate(navigation.session(projectId, actualSessionId), {
+      replace: true,
+      state: location.state,
+    });
+  }, [actualSessionId, location.state, navigate, navigation, projectId, sessionId]);
   const deferredEntries = useDeferredValue(detail.entries);
   const transcriptEntries = selectCockpitTranscriptSnapshot(
     detail.entries,

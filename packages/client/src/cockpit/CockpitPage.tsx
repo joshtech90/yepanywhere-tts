@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -18,6 +18,7 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
+import { CockpitNewSession } from "./CockpitNewSession";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
@@ -124,6 +125,8 @@ interface CockpitShellProps extends CockpitAppearanceControlsProps {
   basePath: string;
   catalogData: CockpitCatalogData;
   children?: ReactNode;
+  /** Which kind of page the children are; both replace the home canvas. */
+  detailView?: "session" | "new";
   notice?: ReactNode;
   resolvedTheme: CockpitResolvedTheme;
   shellState: CockpitShellState;
@@ -134,6 +137,7 @@ export function CockpitShell({
   basePath,
   catalogData,
   children,
+  detailView = "session",
   notice,
   onAccentChange,
   onThemeChange,
@@ -435,7 +439,7 @@ export function CockpitShell({
 
         <div
           className={styles.canvas}
-          data-view={searchOpen ? "search" : hasDetail ? "session" : "home"}
+          data-view={searchOpen ? "search" : hasDetail ? detailView : "home"}
         >
           {searchOpen ? (
             <CockpitSearchPanel
@@ -502,6 +506,8 @@ function CockpitSourcePage() {
     projectId: string;
     sessionId: string;
   }>();
+  const [searchParams] = useSearchParams();
+  const newSession = searchParams.get("view") === "new";
   // Subscribe to the derived primitive only: getSnapshot() returns a fresh
   // object on every call, which makes useSyncExternalStore loop forever
   // (React error 185). useActivityBusState selects `.state` for the same reason.
@@ -524,8 +530,15 @@ function CockpitSourcePage() {
       shellState={{ kind: shellKind }}
       theme={appearance.theme}
       notice={<CockpitCodexUpdateNotice basePath={basePath} />}
+      detailView={newSession && !sessionId ? "new" : "session"}
     >
-      {projectId && sessionId ? (
+      {newSession && !sessionId ? (
+        <CockpitNewSession
+          basePath={basePath}
+          key={searchParams.get("project") ?? ""}
+          projectId={searchParams.get("project")}
+        />
+      ) : projectId && sessionId ? (
         <CockpitSessionDetail
           basePath={basePath}
           key={`${projectId}\0${sessionId}`}

@@ -120,6 +120,27 @@ describe("Cockpit session detail projection", () => {
     });
   });
 
+  it("splits uploaded files off the prompt text", () => {
+    const [entry] = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        {
+          type: "user_prompt",
+          id: "user-files",
+          content:
+            "Which code word?\n\nUser uploaded files:\n- [notes.txt](</data/attachments/abc_notes.txt>) (35 b, text/plain)",
+          sourceMessages: [{ uuid: "user-files" }],
+        },
+      ],
+    });
+    expect(entry).toMatchObject({
+      kind: "user",
+      text: "Which code word?",
+      attachments: [{ name: "notes.txt" }],
+    });
+  });
+
   it("retains unchanged row objects when only a live tail is appended", () => {
     const before = createCockpitTranscriptEntries({
       sourceKey: "local",

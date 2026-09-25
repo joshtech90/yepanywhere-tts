@@ -77,6 +77,21 @@
   white-space: pre-wrap;
 }
 
+.plan {
+  max-height: min(40vh, 22rem);
+  margin: 0.7rem 0 0;
+  padding: 0.75rem 0.85rem;
+  overflow: auto;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.7rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .questions {
   display: grid;
   margin-top: 0.8rem;

@@ -445,6 +445,7 @@
 }
 
 .canvas[data-view="search"],
+.canvas[data-view="new"],
 .canvas[data-view="session"] {
   display: block;
   padding: 0;
@@ -454,7 +455,8 @@
   place-items: normal;
 }
 
-.canvas[data-view="search"] {
+.canvas[data-view="search"],
+.canvas[data-view="new"] {
   overflow: auto;
   overscroll-behavior: contain;
 }
@@ -683,6 +685,7 @@
   }
 
   .canvas[data-view="search"],
+  .canvas[data-view="new"],
   .canvas[data-view="session"] {
     display: block;
     min-height: 0;

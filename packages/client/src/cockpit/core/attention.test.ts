@@ -18,6 +18,25 @@ function request(overrides: Partial<InputRequest> = {}): InputRequest {
 }
 
 describe("Cockpit attention projection", () => {
+  it("shows a plan-mode exit as its plan text", () => {
+    const display = createCockpitAttentionDisplay(
+      request({
+        prompt: "Allow ExitPlanMode?",
+        toolName: "ExitPlanMode",
+        toolInput: { plan: "# Plan\n\nCreate plan.txt.\n", planFilePath: "/x" },
+      }),
+    );
+    expect(display.kind).toBe("approval");
+    expect(display.plan).toBe("# Plan\n\nCreate plan.txt.");
+  });
+
+  it("leaves other approvals without a plan", () => {
+    const display = createCockpitAttentionDisplay(
+      request({ toolName: "Bash", toolInput: { plan: "not a plan tool" } }),
+    );
+    expect(display.plan).toBeUndefined();
+  });
+
   it("projects Codex-style choices and structured questions", () => {
     const display = createCockpitAttentionDisplay(
       request({
