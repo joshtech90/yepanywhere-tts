@@ -343,6 +343,11 @@ die Taste darf in diesem Zustand nicht den globalen Stop-Shortcut erreichen.
 Ein Pointer-Klick ausserhalb schliesst den Verlauf, laesst den Fokus aber beim
 bewusst angeklickten Ziel.
 
+Die Verlaufssuche ist reiner lokaler Ansichtsstatus. Sie filtert die bereits
+geladenen, source-gebundenen Eintraege unmittelbar und startet weder Storage-
+noch Netzarbeit pro Tastenanschlag. Beim Oeffnen erhaelt das Suchfeld den Fokus;
+Auswahl, Entfernung und Escape behalten die bestehenden Dialoggrenzen.
+
 ### Shortcut- und Mobilgrenze aus Paket 10
 
 Die Cockpit-Shell besitzt genau einen dokumentierten Keyboard-Dispatcher. Er

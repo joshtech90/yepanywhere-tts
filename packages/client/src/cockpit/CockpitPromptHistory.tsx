@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { CockpitPromptHistoryEntry } from "./core/composer";
 import styles from "./CockpitPromptHistory.module.css";
@@ -27,6 +27,8 @@ export function CockpitPromptHistory({
 }: CockpitPromptHistoryProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const inputRef = useRef<HTMLInputElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -34,9 +36,7 @@ export function CockpitPromptHistory({
 
   useEffect(() => {
     if (!open || entries.length === 0) return;
-    panelRef.current
-      ?.querySelector<HTMLButtonElement>("button")
-      ?.focus({ preventScroll: true });
+    inputRef.current?.focus({ preventScroll: true });
     const closeFromOutside = (event: PointerEvent) => {
       const target = event.target;
       if (target instanceof Node && rootRef.current?.contains(target)) return;
@@ -68,6 +68,26 @@ export function CockpitPromptHistory({
     triggerRef.current?.focus({ preventScroll: true });
   }, [open]);
 
+  const normalizedQuery = query.trim().toLowerCase();
+  const visibleEntries = useMemo(
+    () =>
+      normalizedQuery
+        ? entries.filter((entry) =>
+            entry.text.toLowerCase().includes(normalizedQuery),
+          )
+        : entries,
+    [entries, normalizedQuery],
+  );
+  const visibleFrequent = useMemo(
+    () =>
+      normalizedQuery
+        ? frequent.filter((entry) =>
+            entry.text.toLowerCase().includes(normalizedQuery),
+          )
+        : frequent,
+    [frequent, normalizedQuery],
+  );
+
   if (entries.length === 0) return null;
 
   const selectPrompt = (text: string) => {
@@ -97,13 +117,25 @@ export function CockpitPromptHistory({
           ref={panelRef}
           role="dialog"
         >
-          {frequent.length > 0 && (
+          <label className={styles.search}>
+            <span>{t("cockpitPromptHistoryFilter")}</span>
+            <input
+              aria-label={t("cockpitPromptHistoryFilter")}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+              placeholder={t("cockpitPromptHistoryFilter")}
+              ref={inputRef}
+              type="search"
+              value={query}
+            />
+          </label>
+
+          {visibleFrequent.length > 0 && (
             <section aria-labelledby="cockpit-frequent-prompts">
               <h2 id="cockpit-frequent-prompts">
                 {t("cockpitPromptFrequent")}
               </h2>
               <div className={styles.frequent}>
-                {frequent.map((entry) => (
+                {visibleFrequent.map((entry) => (
                   <button
                     key={entry.text}
                     onClick={() => selectPrompt(entry.text)}
@@ -122,28 +154,34 @@ export function CockpitPromptHistory({
 
           <section aria-labelledby="cockpit-recent-prompts">
             <h2 id="cockpit-recent-prompts">{t("cockpitPromptRecent")}</h2>
-            <ul className={styles.recent}>
-              {entries.map((entry) => (
-                <li key={entry.text}>
-                  <button
-                    onClick={() => selectPrompt(entry.text)}
-                    title={entry.text}
-                    type="button"
-                  >
-                    {entry.text}
-                  </button>
-                  <button
-                    aria-label={t("cockpitPromptRemove", {
-                      prompt: entry.text,
-                    })}
-                    onClick={() => onRemove(entry.text)}
-                    type="button"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
+            {visibleEntries.length > 0 ? (
+              <ul className={styles.recent}>
+                {visibleEntries.map((entry) => (
+                  <li key={entry.text}>
+                    <button
+                      onClick={() => selectPrompt(entry.text)}
+                      title={entry.text}
+                      type="button"
+                    >
+                      {entry.text}
+                    </button>
+                    <button
+                      aria-label={t("cockpitPromptRemove", {
+                        prompt: entry.text,
+                      })}
+                      onClick={() => onRemove(entry.text)}
+                      type="button"
+                    >
+                      ×
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className={styles.empty} role="status">
+                {t("cockpitPromptHistoryNoMatches")}
+              </p>
+            )}
           </section>
         </div>
       )}

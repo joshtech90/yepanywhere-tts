@@ -165,6 +165,8 @@
   "cockpitShortcutSessions": "Alle Sitzungen öffnen",
   "cockpitShortcutProjects": "Projekte öffnen",
   "cockpitShortcutHelpAction": "Diese Tastenkürzel-Hilfe öffnen",
+  "cockpitPromptHistoryFilter": "Prompt-Verlauf filtern",
+  "cockpitPromptHistoryNoMatches": "Kein gespeicherter Prompt passt zu diesem Filter.",
   "sidebarSectionStarred": "Markiert",
   "sidebarSectionLast24Hours": "Letzte 24 Stunden",
   "sidebarSectionOlder": "Älter",

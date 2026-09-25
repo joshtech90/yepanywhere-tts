@@ -515,6 +515,8 @@
   "cockpitShortcutSessions": "Open all sessions",
   "cockpitShortcutProjects": "Open projects",
   "cockpitShortcutHelpAction": "Open this shortcut help",
+  "cockpitPromptHistoryFilter": "Filter prompt history",
+  "cockpitPromptHistoryNoMatches": "No saved prompts match this filter.",
   "sidebarSectionPendingSessions": "Pending Sessions",
   "sidebarSectionStarred": "Starred",
   "sidebarSectionLast24Hours": "Last 24 Hours",

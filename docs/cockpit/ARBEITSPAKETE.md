@@ -320,6 +320,12 @@ kann ein Fokuswechsel innerhalb des Composers nicht versehentlich den globalen
 Stop ausloesen; geschlossen wird weiterhin nur der Verlauf, danach kehrt der
 Fokus zu seinem Ausloeser zurueck.
 
+Nachbesserung dieses Zugs: Der Prompt-Verlauf besitzt jetzt eine lokale Suche,
+die beim Oeffnen sofort fokussiert ist. Jeder Tastenanschlag filtert die bis zu
+20 source-gebundenen Eintraege unmittelbar; ein leerer Trefferstand wird klar
+benannt. Die Auswahl uebernimmt weiterhin nur Text in den Entwurf und sendet
+nichts automatisch.
+
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
 Status: **umgesetzt**

@@ -242,6 +242,45 @@ describe("Cockpit composer", () => {
     );
   });
 
+  it("filters prompt history immediately while typing", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    rememberCockpitPrompt("local", "Summarize the fictional release notes.");
+    render(composer());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter prompt history",
+    }) as HTMLInputElement;
+    expect(document.activeElement).toBe(filter);
+    let value = "";
+
+    for (const character of "launch") {
+      value += character;
+      const startedAt = performance.now();
+      fireEvent.change(filter, { target: { value } });
+      expect(filter.value).toBe(value);
+      expect(performance.now() - startedAt).toBeLessThan(100);
+    }
+
+    expect(
+      screen.getByRole("button", {
+        name: "Review the fictional launch checklist.",
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: "Summarize the fictional release notes.",
+      }),
+    ).toBeNull();
+
+    fireEvent.change(filter, { target: { value: "absent" } });
+    expect(screen.getByRole("status").textContent).toBe(
+      "No saved prompts match this filter.",
+    );
+  });
+
   it("dismisses prompt history without leaking Escape to global shortcuts", () => {
     rememberCockpitPrompt("local", "Review the fictional launch checklist.");
     render(composer());
@@ -249,16 +288,21 @@ describe("Cockpit composer", () => {
 
     fireEvent.click(trigger);
     const dialog = screen.getByRole("dialog", { name: "Recent prompts" });
-    const prompt = screen.getByRole("button", {
-      name: "Review the fictional launch checklist.",
+    expect(
+      screen.getByRole("button", {
+        name: "Review the fictional launch checklist.",
+      }),
+    ).toBeTruthy();
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter prompt history",
     });
-    expect(document.activeElement).toBe(prompt);
+    expect(document.activeElement).toBe(filter);
     const escapeEvent = new KeyboardEvent("keydown", {
       bubbles: true,
       cancelable: true,
       key: "Escape",
     });
-    fireEvent(prompt, escapeEvent);
+    fireEvent(filter, escapeEvent);
 
     expect(escapeEvent.defaultPrevented).toBe(true);
     expect(screen.queryByRole("dialog")).toBeNull();
