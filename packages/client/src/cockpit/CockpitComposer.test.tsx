@@ -281,6 +281,45 @@ describe("Cockpit composer", () => {
     );
   });
 
+  it("moves between filtered prompt-history results with arrow keys", () => {
+    rememberCockpitPrompt("local", "Review the fictional launch checklist.");
+    rememberCockpitPrompt("local", "Review the fictional release notes.");
+    render(composer());
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Open prompt history" }),
+    );
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter prompt history",
+    });
+    fireEvent.change(filter, { target: { value: "Review" } });
+    const first = screen.getByRole("button", {
+      name: "Review the fictional release notes.",
+    });
+    const second = screen.getByRole("button", {
+      name: "Review the fictional launch checklist.",
+    });
+
+    const arrowUp = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "ArrowUp",
+    });
+    fireEvent(filter, arrowUp);
+    expect(arrowUp.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(filter);
+
+    fireEvent.keyDown(filter, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(first);
+
+    fireEvent.keyDown(first, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(second);
+
+    fireEvent.keyDown(second, { key: "ArrowUp" });
+    fireEvent.keyDown(first, { key: "ArrowUp" });
+    expect(document.activeElement).toBe(filter);
+  });
+
   it("dismisses prompt history without leaking Escape to global shortcuts", () => {
     rememberCockpitPrompt("local", "Review the fictional launch checklist.");
     render(composer());

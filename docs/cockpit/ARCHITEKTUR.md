@@ -346,7 +346,10 @@ bewusst angeklickten Ziel.
 Die Verlaufssuche ist reiner lokaler Ansichtsstatus. Sie filtert die bereits
 geladenen, source-gebundenen Eintraege unmittelbar und startet weder Storage-
 noch Netzarbeit pro Tastenanschlag. Beim Oeffnen erhaelt das Suchfeld den Fokus;
-Auswahl, Entfernung und Escape behalten die bestehenden Dialoggrenzen.
+Pfeil runter wechselt zum ersten sichtbaren Verlaufseintrag. Innerhalb der
+gefilterten Liste bewegen Pfeil hoch und runter den Fokus zeilenweise; Pfeil
+hoch auf dem ersten Eintrag kehrt zum Filter zurueck. Auswahl, Entfernung und
+Escape behalten die bestehenden Dialoggrenzen.
 
 ### Shortcut- und Mobilgrenze aus Paket 10
 

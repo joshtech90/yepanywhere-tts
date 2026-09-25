@@ -326,6 +326,11 @@ die beim Oeffnen sofort fokussiert ist. Jeder Tastenanschlag filtert die bis zu
 benannt. Die Auswahl uebernimmt weiterhin nur Text in den Entwurf und sendet
 nichts automatisch.
 
+Nachbesserung dieses Zugs: Pfeil runter wechselt aus dem Verlauf-Filter direkt
+zum ersten sichtbaren Prompt. Pfeil hoch und runter bewegen den Fokus zwischen
+den gefilterten Verlaufseintraegen; vom ersten Eintrag fuehrt Pfeil hoch zum
+Filter zurueck. Enter behaelt seine bestehende, rein uebernehmende Aktion.
+
 ## 10 — Keyboard-Shortcuts und mobile Feinarbeit
 
 Status: **umgesetzt**

@@ -1,4 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 import { useI18n } from "../i18n";
 import type { CockpitPromptHistoryEntry } from "./core/composer";
 import styles from "./CockpitPromptHistory.module.css";
@@ -29,6 +35,7 @@ export function CockpitPromptHistory({
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const recentPromptRefs = useRef(new Map<string, HTMLButtonElement>());
   const panelRef = useRef<HTMLDivElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -88,6 +95,34 @@ export function CockpitPromptHistory({
     [frequent, normalizedQuery],
   );
 
+  const focusRecentPrompt = (index: number) => {
+    const entry = visibleEntries[index];
+    if (!entry) return;
+    recentPromptRefs.current.get(entry.text)?.focus({ preventScroll: true });
+  };
+  const handleFilterKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "ArrowDown" || visibleEntries.length === 0) return;
+    event.preventDefault();
+    focusRecentPrompt(0);
+  };
+  const handlePromptKeyDown = (
+    event: KeyboardEvent<HTMLButtonElement>,
+    index: number,
+  ) => {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      focusRecentPrompt(Math.min(index + 1, visibleEntries.length - 1));
+      return;
+    }
+    if (event.key !== "ArrowUp") return;
+    event.preventDefault();
+    if (index === 0) {
+      inputRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    focusRecentPrompt(index - 1);
+  };
+
   if (entries.length === 0) return null;
 
   const selectPrompt = (text: string) => {
@@ -122,6 +157,7 @@ export function CockpitPromptHistory({
             <input
               aria-label={t("cockpitPromptHistoryFilter")}
               onChange={(event) => setQuery(event.currentTarget.value)}
+              onKeyDown={handleFilterKeyDown}
               placeholder={t("cockpitPromptHistoryFilter")}
               ref={inputRef}
               type="search"
@@ -156,10 +192,17 @@ export function CockpitPromptHistory({
             <h2 id="cockpit-recent-prompts">{t("cockpitPromptRecent")}</h2>
             {visibleEntries.length > 0 ? (
               <ul className={styles.recent}>
-                {visibleEntries.map((entry) => (
+                {visibleEntries.map((entry, index) => (
                   <li key={entry.text}>
                     <button
                       onClick={() => selectPrompt(entry.text)}
+                      onKeyDown={(event) =>
+                        handlePromptKeyDown(event, index)
+                      }
+                      ref={(node) => {
+                        if (node) recentPromptRefs.current.set(entry.text, node);
+                        else recentPromptRefs.current.delete(entry.text);
+                      }}
                       title={entry.text}
                       type="button"
                     >
