@@ -373,6 +373,13 @@ Arbeitsbereich tragen waehrenddessen die native `inert`-Grenze; sie sind damit
 auch fuer assistive Technik und programmatischen Fokus nicht erreichbar. Die
 Grenze wird vor der Fokus-Rueckgabe entfernt.
 
+Eine bewusste Navigation aus der globalen Suche beendet diese Rueckgabe. Der
+Markenlink und die Navigationsziele schliessen die Suche, verwerfen den
+gespeicherten Fokusursprung und lassen den Fokus auf dem aktivierten Ziel,
+solange es beim Routenwechsel erhalten bleibt. Das Markensignet ist fuer
+assistive Technik dekorativ; der Linkname besteht nur aus „Cockpit Yep
+Anywhere“.
+
 `Escape` adressiert den serverautoritativen Stop-Knopf aus Paket 8 ueber dessen
 semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag. Die
 Shortcut-Schicht fuehrt selbst keinen Interrupt aus und baut daher weder

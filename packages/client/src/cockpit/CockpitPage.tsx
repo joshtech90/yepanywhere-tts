@@ -282,8 +282,14 @@ export function CockpitShell({
         className={styles.sidebar}
         inert={shortcutsOpen}
       >
-        <Link className={styles.brand} to={navigation.cockpit}>
-          <span className={styles.brandMark}>C</span>
+        <Link
+          className={styles.brand}
+          onClick={navigateFromSearch}
+          to={navigation.cockpit}
+        >
+          <span aria-hidden="true" className={styles.brandMark}>
+            C
+          </span>
           <span>
             <strong>Cockpit</strong>
             <small>Yep Anywhere</small>
@@ -325,7 +331,7 @@ export function CockpitShell({
               }
               className={styles.navigationItem}
               key={destination.href}
-              onClick={() => setSearchOpen(false)}
+              onClick={navigateFromSearch}
               to={destination.href}
             >
               <span className={styles.icon}>{destination.icon}</span>

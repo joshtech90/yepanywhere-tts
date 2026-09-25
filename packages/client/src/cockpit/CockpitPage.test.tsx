@@ -242,6 +242,25 @@ describe("Cockpit shell", () => {
     expect(document.activeElement).toBe(origin);
   });
 
+  it("keeps focus on deliberate navigation away from search", () => {
+    renderShell();
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    expect(
+      screen.getByRole("searchbox", { name: "Search all sessions" }),
+    ).toBeTruthy();
+    const brand = screen.getByRole("link", {
+      name: "Cockpit Yep Anywhere",
+    });
+    brand.focus();
+
+    fireEvent.click(brand);
+
+    expect(
+      screen.queryByRole("searchbox", { name: "Search all sessions" }),
+    ).toBeNull();
+    expect(document.activeElement).toBe(brand);
+  });
+
   it.each([
     ["loading", "Preparing your workspace", "status"],
     ["offline", "This source is offline", "status"],

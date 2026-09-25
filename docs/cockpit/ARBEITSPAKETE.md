@@ -393,6 +393,11 @@ Tastaturarbeitsweise jetzt ohne Tab-Kette bedienbar. Pfeiltasten wechseln vom
 Suchfeld in die stabile Trefferliste und dort zeilenweise weiter; die
 vorhandenen Links behalten Enter als normale Oeffnungsaktion.
 
+Nachbesserung dieses Zugs: Verlaesst Joscha die globale Suche bewusst ueber
+den Cockpit-Markenlink oder ein Navigationsziel, wird die Suche geschlossen,
+ohne den Fokus danach zum frueheren Ausloeser zurueckzuziehen. Das dekorative
+Markenzeichen wird dabei nicht mehr als Teil des Screenreader-Namens vorgelesen.
+
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
 Status: **offen**
