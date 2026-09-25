@@ -174,10 +174,7 @@ const TranscriptEntry = memo(function TranscriptEntry({
       >
         <header className={styles.entryHeader}>
           <strong>{t("cockpitSessionUser")}</strong>
-          <span className={styles.entryActions}>
-            {time && <time dateTime={entry.timestamp}>{time}</time>}
-            <CockpitCopyResponseButton text={entry.text} target="prompt" />
-          </span>
+          {time && <time dateTime={entry.timestamp}>{time}</time>}
         </header>
         {entry.text && <div className={styles.userText}>{entry.text}</div>}
         {entry.attachments && entry.attachments.length > 0 && (
@@ -192,6 +189,11 @@ const TranscriptEntry = memo(function TranscriptEntry({
               </li>
             ))}
           </ul>
+        )}
+        {entry.text && (
+          <footer className={styles.entryFooter}>
+            <CockpitCopyResponseButton text={entry.text} target="prompt" />
+          </footer>
         )}
       </article>
     );
@@ -238,19 +240,17 @@ const TranscriptEntry = memo(function TranscriptEntry({
             </span>
           )}
         </span>
-        <span className={styles.entryActions}>
-          {time && <time dateTime={entry.timestamp}>{time}</time>}
-          {entry.spokenText && !entry.isStreaming && (
-            <CockpitCopyResponseButton text={entry.spokenText} />
-          )}
-          {entry.spokenText && !entry.isStreaming && (
-            <CockpitReadAloudButton id={entry.key} text={entry.spokenText} />
-          )}
-        </span>
+        {time && <time dateTime={entry.timestamp}>{time}</time>}
       </header>
       <div className={styles.assistantBody}>
         <AssistantContent entry={entry} />
       </div>
+      {entry.spokenText && !entry.isStreaming && (
+        <footer className={styles.entryFooter} data-align="start">
+          <CockpitCopyResponseButton text={entry.spokenText} />
+          <CockpitReadAloudButton id={entry.key} text={entry.spokenText} />
+        </footer>
+      )}
     </article>
   );
 });

@@ -303,7 +303,7 @@
 
 .entryHeader {
   display: flex;
-  min-height: 2.3rem;
+  min-height: 1.6rem;
   margin-bottom: 0.55rem;
   align-items: center;
   justify-content: space-between;
@@ -317,15 +317,23 @@
   font-size: 0.7rem;
 }
 
-.assistantIdentity,
-.entryActions {
+.assistantIdentity {
   display: flex;
   align-items: center;
   gap: 0.48rem;
 }
 
-.entryActions {
+/* Message actions sit quietly under the message they act on. */
+.entryFooter {
+  display: flex;
+  margin: 0.35rem -0.45rem -0.4rem 0;
   justify-content: flex-end;
+  gap: 0.1rem;
+}
+
+.entryFooter[data-align="start"] {
+  margin: 0.25rem 0 0 0.2rem;
+  justify-content: flex-start;
 }
 
 .assistantMark {
@@ -564,10 +572,6 @@
 
   .entryHeader {
     align-items: flex-start;
-  }
-
-  .entryActions {
-    flex: 0 0 auto;
   }
 
   .followButton {
