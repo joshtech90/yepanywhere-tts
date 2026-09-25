@@ -189,6 +189,67 @@ describe("Cockpit tool display projection", () => {
     });
   });
 
+  it("does not duplicate a structured Write diff with the full new content", () => {
+    const display = createCockpitToolDisplay(
+      tool({
+        toolName: "Write",
+        toolInput: {
+          file_path: "notes/fern.md",
+          content: "State: ready\nNext line\n",
+        },
+        toolResult: {
+          content: "Updated notes/fern.md",
+          isError: false,
+          structured: {
+            filePath: "notes/fern.md",
+            content: "State: ready\nNext line\n",
+            structuredPatch: [
+              {
+                oldStart: 1,
+                newStart: 1,
+                lines: ["-State: queued", "+State: ready"],
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(display.files).toHaveLength(1);
+    expect(display.files[0]).toMatchObject({
+      path: "notes/fern.md",
+      additions: 1,
+      deletions: 1,
+    });
+    expect(display.files[0]?.lines).toHaveLength(2);
+  });
+
+  it("shows an apply-patch move only under its destination path", () => {
+    const display = createCockpitToolDisplay(
+      tool({
+        toolName: "apply_patch",
+        toolInput: {
+          patch: [
+            "*** Begin Patch",
+            "*** Update File: notes/old.md",
+            "*** Move to: notes/new.md",
+            "@@ -1,1 +1,1 @@",
+            "-State: queued",
+            "+State: ready",
+            "*** End Patch",
+          ].join("\n"),
+        },
+      }),
+    );
+
+    expect(display.files).toHaveLength(1);
+    expect(display.files[0]).toMatchObject({
+      path: "notes/new.md",
+      additions: 1,
+      deletions: 1,
+    });
+  });
+
   it("keeps unknown provider tools visible without interpreting them", () => {
     const display = createCockpitToolDisplay(
       tool({

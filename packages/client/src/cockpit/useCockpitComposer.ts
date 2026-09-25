@@ -91,6 +91,7 @@ export function useCockpitComposer(
     readCockpitComposerSessionDraft(runtime.sourceKey, projectId, sessionId),
   );
   const draftRef = useRef(draft);
+  const draftRevisionRef = useRef(0);
   const [attachments, setAttachments] = useState<
     CockpitComposerAttachment[]
   >([]);
@@ -116,6 +117,7 @@ export function useCockpitComposer(
       sessionId,
     );
     draftRef.current = restored;
+    draftRevisionRef.current += 1;
     setDraftState(restored);
     typingStartedAtRef.current = restored.trim()
       ? new Date().toISOString()
@@ -150,6 +152,7 @@ export function useCockpitComposer(
         typingStartedAtRef.current = null;
         lastEditedAtRef.current = null;
       }
+      draftRevisionRef.current += 1;
       draftRef.current = next;
       setDraftState(next);
       writeCockpitComposerDraft(draftKey, next);
@@ -279,6 +282,7 @@ export function useCockpitComposer(
       const submittedAttachmentIds = new Set(
         attachments.map((attachment) => attachment.id),
       );
+      const submittedDraftRevision = draftRevisionRef.current;
       if ((!text && uploaded.length === 0) || submitting) return false;
       if (attachments.some((attachment) => attachment.status !== "ready")) {
         setError(t("sessionUploading"));
@@ -386,7 +390,7 @@ export function useCockpitComposer(
 
         rememberCockpitPrompt(runtime.sourceKey, text, submittedAt);
         setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
-        if (draftRef.current === draft) {
+        if (draftRevisionRef.current === submittedDraftRevision) {
           writeCockpitComposerDraft(draftKey, "");
           draftRef.current = "";
           setDraftState("");

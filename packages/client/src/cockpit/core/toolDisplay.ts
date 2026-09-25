@@ -223,7 +223,7 @@ function getShellDisplay(
 }
 
 function filePathFromHeader(line: string): string | undefined {
-  const applyPatch = /^\*\*\*\s+(?:Update File|Add File|Delete File|Move to):\s+(.+?)\s*$/.exec(
+  const applyPatch = /^\*\*\*\s+(?:Update File|Add File|Delete File):\s+(.+?)\s*$/.exec(
     line,
   );
   if (applyPatch?.[1]) return applyPatch[1].trim();
@@ -232,6 +232,11 @@ function filePathFromHeader(line: string): string | undefined {
   const newFile = /^\+\+\+\s+(?:b\/)?(.+?)\s*$/.exec(line);
   if (newFile?.[1] && newFile[1] !== "/dev/null") return newFile[1].trim();
   return undefined;
+}
+
+function movePathFromHeader(line: string): string | undefined {
+  const move = /^\*\*\*\s+Move to:\s+(.+?)\s*$/.exec(line);
+  return move?.[1]?.trim();
 }
 
 function mutableFile(
@@ -246,6 +251,26 @@ function mutableFile(
   return created;
 }
 
+function moveMutableFile(
+  files: Map<string, MutableFileChange>,
+  fromPath: string,
+  toPath: string,
+): MutableFileChange {
+  const source = files.get(fromPath);
+  if (!source) return mutableFile(files, toPath);
+  if (source.path === toPath) return source;
+  const target = files.get(toPath);
+  if (target) {
+    target.sourceLines.push(...source.sourceLines);
+    files.delete(fromPath);
+    return target;
+  }
+  files.delete(fromPath);
+  source.path = toPath;
+  files.set(toPath, source);
+  return source;
+}
+
 function addRawPatch(
   files: Map<string, MutableFileChange>,
   patch: string,
@@ -258,12 +283,24 @@ function addRawPatch(
       ? null
       : file;
   };
+  let currentPath = fallbackPath;
   let current: MutableFileChange | null | undefined = fallbackPath
     ? selectFile(fallbackPath)
     : undefined;
   for (const line of patch.replace(/\r\n?/g, "\n").split("\n")) {
+    const movePath = movePathFromHeader(line);
+    if (movePath) {
+      const moved = currentPath
+        ? moveMutableFile(files, currentPath, movePath)
+        : mutableFile(files, movePath);
+      currentPath = movePath;
+      current =
+        preservePopulatedFiles && moved.sourceLines.length > 0 ? null : moved;
+      continue;
+    }
     const headerPath = filePathFromHeader(line);
     if (headerPath) {
+      currentPath = headerPath;
       current = selectFile(headerPath);
       continue;
     }
@@ -447,13 +484,15 @@ function getFileChanges(item: ToolCallItem): CockpitFileChange[] {
   if (primaryPath) {
     const structuredPatch =
       resultRecord?.structuredPatch ?? input?._structuredPatch;
+    const hasStructuredPatch =
+      Array.isArray(structuredPatch) && structuredPatch.length > 0;
     addStructuredPatch(files, primaryPath, structuredPatch);
     const oldText =
       nonEmptyString(resultRecord?.oldString) ?? nonEmptyString(input?.old_string);
     const newText =
       nonEmptyString(resultRecord?.newString) ?? nonEmptyString(input?.new_string);
     if (
-      (!Array.isArray(structuredPatch) || structuredPatch.length === 0) &&
+      !hasStructuredPatch &&
       oldText !== undefined &&
       newText !== undefined
     ) {
@@ -467,6 +506,7 @@ function getFileChanges(item: ToolCallItem): CockpitFileChange[] {
           : undefined;
     if (
       canonicalizeToolName(item.toolName) === "Write" &&
+      !hasStructuredPatch &&
       writeContent !== undefined
     ) {
       const file = mutableFile(files, primaryPath);

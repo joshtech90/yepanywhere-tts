@@ -254,6 +254,48 @@ describe("Cockpit composer", () => {
     ).toBe("Keep this as the next draft.");
   });
 
+  it("keeps a re-edited draft even when it matches the submitted text again", async () => {
+    let finishSend:
+      | ((result: {
+          processId: string;
+          permissionMode: "default";
+          modeVersion: number;
+        }) => void)
+      | undefined;
+    runtime.transport.fetch.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finishSend = resolve;
+        }),
+    );
+    render(composer());
+    const input = screen.getByRole("textbox") as HTMLTextAreaElement;
+
+    fireEvent.change(input, { target: { value: "Repeat this prompt." } });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    await waitFor(() =>
+      expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.change(input, { target: { value: "Temporary next draft." } });
+    fireEvent.change(input, { target: { value: "Repeat this prompt." } });
+    await act(async () => {
+      finishSend?.({
+        processId: "process-1",
+        permissionMode: "default",
+        modeVersion: 1,
+      });
+      await Promise.resolve();
+    });
+
+    expect(input.value).toBe("Repeat this prompt.");
+    expect(
+      localStorage.getItem(
+        cockpitComposerDraftKey("local", "project-1", "session-1"),
+      ),
+    ).toBe("Repeat this prompt.");
+  });
+
   it("uses steering and keeps queue as an explicit alternative", async () => {
     runtime.transport.fetch.mockResolvedValue({
       queued: true,
