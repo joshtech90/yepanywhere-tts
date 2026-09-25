@@ -1,6 +1,6 @@
 # Cockpit-Architektur
 
-Stand: 24. September 2026
+Stand: 25. September 2026
 
 Ausgangsbasis der Cockpit-Serie:
 `034026b9da89e60e09e2de2f034075b3e9f2eadc`
@@ -487,12 +487,11 @@ Arbeitsbereich tragen waehrenddessen die native `inert`-Grenze; sie sind damit
 auch fuer assistive Technik und programmatischen Fokus nicht erreichbar. Die
 Grenze wird vor der Fokus-Rueckgabe entfernt.
 
-Eine bewusste Navigation aus der globalen Suche beendet diese Rueckgabe. Der
-Markenlink und die Navigationsziele schliessen die Suche, verwerfen den
-gespeicherten Fokusursprung und lassen den Fokus auf dem aktivierten Ziel,
-solange es beim Routenwechsel erhalten bleibt. Das Markensignet ist fuer
-assistive Technik dekorativ; der Linkname besteht nur aus „Cockpit Yep
-Anywhere“.
+Eine bewusste Navigation aus der globalen Suche beendet diese Rueckgabe. Die
+Navigationsziele schliessen die Suche, verwerfen den gespeicherten
+Fokusursprung und lassen den Fokus auf dem aktivierten Ziel, solange es beim
+Routenwechsel erhalten bleibt. Seit Runde 2 hat die Seitenleiste kein
+Markenlogo mehr.
 
 `Escape` adressiert den serverautoritativen Stop-Knopf aus Paket 8 ueber dessen
 semantischen `aria-keyshortcuts`- beziehungsweise Cockpit-Datenvertrag. Die
@@ -538,6 +537,47 @@ Erweiterungspunkt bleibt auf die reine Pfadklassifikation in
 Dialog und die gemeinsam genutzte Local-Storage-Hilfe begrenzt. Server,
 Shared-Protokoll, Update-Installation und alte Oberflaeche werden nicht
 veraendert.
+
+### Runde 2: Aktivitaet, Seitenleiste und Listenansichten (25.09.2026)
+
+**Fremde Aktivitaet.** Eine Sitzung, die ein anderes Programm betreibt (ein
+Claude-Code-Terminal oder ein zweiter YA-Server), sieht YA nur ueber die
+Transcript-Datei: `owner: "external"` gilt etwa 30 Sekunden nach dem letzten
+Schreiben (`topics/session-ownership.md`). Das Cockpit zeigt diesen Zustand
+jetzt als eigenen Status „Arbeitet in anderem Programm“ in Liste und Kopf und
+mit einer ruhigen Arbeitszeile am Ende des Verlaufs. Waehrend eines langen
+Befehls schreibt das andere Programm nichts, die Eigentuemerschaft faellt auf
+`none` zurueck. `core/activity.ts` ueberbrueckt diese Stille nur fuer die
+geoeffnete Sitzung: ein unbeantworteter Werkzeugaufruf der letzten, nicht
+abgeschlossenen Runde, der juenger als 30 Minuten ist, gilt weiter als Arbeit.
+Die Liste hat keinen Verlauf und zeigt in dieser Phase ehrlich „Nichts laeuft“.
+
+Der Server markiert beim Lesen jeden Werkzeugaufruf ohne Ergebnis als
+verwaist, auch den gerade laufenden. Das Cockpit projiziert die aktuelle Runde
+deshalb mit `activeToolApproval: true` und entscheidet in der Werkzeugzeile
+anhand des Sitzungszustands zwischen „Laeuft“ und „Kein Ergebnis“. Server,
+Shared-Projektion und alte Oberflaeche bleiben unveraendert.
+
+**Statusfarben.** `core/statusLed.ts` bildet Listenstatus und Sitzungszustand
+auf eine Farbsprache ab: grau ruht, gruen arbeitet (auch extern), gelb wartet
+auf den Nutzer (Freigabe oder Frage), rot Fehler, grauer Ring keine Sicht
+(offline oder Neuverbindung). Die Bedeutung traegt der zugaengliche Name.
+
+**Seitenleiste.** Favoriten fuehren als flache Liste unter einem Stern, darunter
+die uebrigen Sitzungen nach Projekt (`core/catalogSections.ts`). Rechtsklick,
+Kontextmenue-Taste und langes Druecken oeffnen dasselbe Menue mit Favorit,
+Umbenennen und Archivieren. Umbenennen und Archivieren schreiben ueber die
+vorhandene Metadatenroute (`title`, `archived`) und melden den bestaetigten Wert
+an den Summary Store. YA kann Transcripts nicht loeschen; Archivieren blendet
+aus und stoppt einen eigenen laufenden Prozess, die Datei bleibt. Die Breite
+ist ein versionierter browserlokaler Wert (`core/sidebarWidth.ts`), per Ziehen,
+Pfeiltasten, Pos1/Ende und Doppelklick bedienbar, auf dem Handy aus.
+
+**Listenansichten.** `?view=projects` und `?view=sessions[&project=]` sind
+Cockpit-Seiten. Die Sitzungsliste montiert den vorhandenen
+`useGlobalSessionsFeed` nur solange sie offen ist, wie die Suche. Einstellungen
+bleiben die bisherige Seite und oeffnen in einem neuen Tab, damit das Cockpit
+ohne Kern-Eingriff offen bleibt.
 
 ## Verworfene Alternativen
 

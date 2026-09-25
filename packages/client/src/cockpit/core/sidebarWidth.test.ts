@@ -19,9 +19,9 @@ describe("cockpit sidebar width core logic", () => {
     expect(COCKPIT_SIDEBAR_WIDTH_STORAGE_KEY).toBe(
       "yep-anywhere-cockpit-sidebar-width",
     );
-    expect(COCKPIT_SIDEBAR_WIDTH_DEFAULT).toBe(272);
-    expect(COCKPIT_SIDEBAR_WIDTH_MIN).toBe(216);
-    expect(COCKPIT_SIDEBAR_WIDTH_MAX).toBe(480);
+    expect(COCKPIT_SIDEBAR_WIDTH_DEFAULT).toBe(312);
+    expect(COCKPIT_SIDEBAR_WIDTH_MIN).toBe(240);
+    expect(COCKPIT_SIDEBAR_WIDTH_MAX).toBe(520);
     expect(COCKPIT_SIDEBAR_WIDTH_KEYBOARD_STEP).toBe(16);
     expect(COCKPIT_SIDEBAR_WIDTH_KEYBOARD_BIG_STEP).toBe(64);
   });
@@ -48,12 +48,12 @@ describe("cockpit sidebar width core logic", () => {
     });
 
     it("caps width according to viewportWidth constraints", () => {
-      // 50% of 700 is 350 (< 480)
+      // 50% of 700 is 350 (< 520)
       expect(clampCockpitSidebarWidth(400, 700)).toBe(350);
-      // Large viewport (1200) allows up to MAX (480)
+      // Large viewport (1200) allows up to MAX (520)
       expect(clampCockpitSidebarWidth(450, 1200)).toBe(450);
-      // Small viewport (300) caps at max(MIN, floor(150)) = MIN (216)
-      expect(clampCockpitSidebarWidth(250, 300)).toBe(216);
+      // Small viewport (300) caps at max(MIN, floor(150)) = MIN (240)
+      expect(clampCockpitSidebarWidth(250, 300)).toBe(240);
     });
   });
 
@@ -152,7 +152,7 @@ describe("cockpit sidebar width core logic", () => {
     it("steps sidebar width left and right", () => {
       expect(nextCockpitSidebarWidthForKey(272, "ArrowLeft", false)).toBe(256);
       expect(nextCockpitSidebarWidthForKey(272, "ArrowRight", false)).toBe(288);
-      expect(nextCockpitSidebarWidthForKey(272, "ArrowLeft", true)).toBe(216);
+      expect(nextCockpitSidebarWidthForKey(272, "ArrowLeft", true)).toBe(240);
       expect(nextCockpitSidebarWidthForKey(272, "ArrowRight", true)).toBe(336);
     });
 

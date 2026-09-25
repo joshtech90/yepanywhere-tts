@@ -1,9 +1,10 @@
 export const COCKPIT_SIDEBAR_WIDTH_STORAGE_KEY =
   "yep-anywhere-cockpit-sidebar-width";
 
-export const COCKPIT_SIDEBAR_WIDTH_DEFAULT = 272;
-export const COCKPIT_SIDEBAR_WIDTH_MIN = 216;
-export const COCKPIT_SIDEBAR_WIDTH_MAX = 480;
+// The Cockpit runs on an 18.4px root font; 312px is its former 17rem.
+export const COCKPIT_SIDEBAR_WIDTH_DEFAULT = 312;
+export const COCKPIT_SIDEBAR_WIDTH_MIN = 240;
+export const COCKPIT_SIDEBAR_WIDTH_MAX = 520;
 export const COCKPIT_SIDEBAR_WIDTH_KEYBOARD_STEP = 16;
 export const COCKPIT_SIDEBAR_WIDTH_KEYBOARD_BIG_STEP = 64;
 

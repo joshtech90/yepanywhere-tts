@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  clampCockpitSidebarWidth,
   COCKPIT_SIDEBAR_WIDTH_DEFAULT,
   COCKPIT_SIDEBAR_WIDTH_MAX,
   COCKPIT_SIDEBAR_WIDTH_MIN,
@@ -75,20 +76,20 @@ describe("useCockpitSidebarWidth hook", () => {
     render(<TestSidebarHandle />);
     const handle = screen.getByRole("separator", { name: "Resize sidebar" });
 
-    expect(handle.getAttribute("aria-valuenow")).toBe("272");
+    expect(handle.getAttribute("aria-valuenow")).toBe("312");
 
     const defaultPrevented = !fireEvent.keyDown(handle, { key: "ArrowRight" });
     expect(defaultPrevented).toBe(true);
-    expect(handle.getAttribute("aria-valuenow")).toBe("288");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(288);
+    expect(handle.getAttribute("aria-valuenow")).toBe("328");
+    expect(readCockpitSidebarWidth(localStorage)).toBe(328);
 
     fireEvent.keyDown(handle, { key: "ArrowLeft" });
-    expect(handle.getAttribute("aria-valuenow")).toBe("272");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(272);
+    expect(handle.getAttribute("aria-valuenow")).toBe("312");
+    expect(readCockpitSidebarWidth(localStorage)).toBe(312);
 
     fireEvent.keyDown(handle, { key: "ArrowRight", shiftKey: true });
-    expect(handle.getAttribute("aria-valuenow")).toBe("336");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(336);
+    expect(handle.getAttribute("aria-valuenow")).toBe("376");
+    expect(readCockpitSidebarWidth(localStorage)).toBe(376);
 
     const ignoredPrevented = !fireEvent.keyDown(handle, { key: "ArrowUp" });
     expect(ignoredPrevented).toBe(false);
@@ -107,12 +108,13 @@ describe("useCockpitSidebarWidth hook", () => {
     );
 
     fireEvent.keyDown(handle, { key: "End" });
-    expect(handle.getAttribute("aria-valuenow")).toBe(
-      String(COCKPIT_SIDEBAR_WIDTH_MAX),
-    );
-    expect(readCockpitSidebarWidth(localStorage)).toBe(
+    // End reaches the maximum the current viewport allows.
+    const widest = clampCockpitSidebarWidth(
       COCKPIT_SIDEBAR_WIDTH_MAX,
+      window.innerWidth,
     );
+    expect(handle.getAttribute("aria-valuenow")).toBe(String(widest));
+    expect(readCockpitSidebarWidth(localStorage)).toBe(widest);
   });
 
   it("resets to default and clears storage on double click", () => {
@@ -158,7 +160,7 @@ describe("useCockpitSidebarWidth hook", () => {
       pointerId: 1,
     });
 
-    expect(handle.getAttribute("aria-valuenow")).toBe("320");
+    expect(handle.getAttribute("aria-valuenow")).toBe("360");
     expect(localStorage.getItem(COCKPIT_SIDEBAR_WIDTH_STORAGE_KEY)).toBeNull();
 
     fireEvent.pointerUp(handle, {
@@ -166,11 +168,11 @@ describe("useCockpitSidebarWidth hook", () => {
       pointerId: 1,
     });
 
-    expect(handle.getAttribute("aria-valuenow")).toBe("320");
+    expect(handle.getAttribute("aria-valuenow")).toBe("360");
     expect(handle.getAttribute("data-resizing")).toBe("false");
     expect(document.body.style.userSelect).toBe("");
     expect(document.body.style.cursor).toBe("");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(320);
+    expect(readCockpitSidebarWidth(localStorage)).toBe(360);
   });
 
   it("does not crash when localStorage.getItem throws", () => {

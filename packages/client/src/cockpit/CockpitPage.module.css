@@ -403,6 +403,7 @@
 
 .canvas[data-view="search"],
 .canvas[data-view="new"],
+.canvas[data-view="list"],
 .canvas[data-view="session"] {
   display: block;
   padding: 0;
@@ -418,7 +419,8 @@
   overscroll-behavior: contain;
 }
 
-.canvas[data-view="session"] {
+.canvas[data-view="session"],
+.canvas[data-view="list"] {
   overflow: hidden;
 }
 
@@ -641,13 +643,15 @@
 
   .canvas[data-view="search"],
   .canvas[data-view="new"],
+  .canvas[data-view="list"],
   .canvas[data-view="session"] {
     display: block;
     min-height: 0;
     padding: 0;
   }
 
-  .canvas[data-view="session"] {
+  .canvas[data-view="session"],
+  .canvas[data-view="list"] {
     overflow: hidden;
   }
 

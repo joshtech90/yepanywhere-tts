@@ -1,8 +1,9 @@
 .popover {
   position: fixed;
   z-index: 1000;
+  width: max-content;
   min-width: 13rem;
-  max-width: calc(100vw - 16px);
+  max-width: min(21rem, calc(100vw - 16px));
   padding: 0.3rem;
   background: var(--cockpit-surface-raised, var(--cockpit-surface));
   border: 1px solid var(--cockpit-border);

@@ -581,6 +581,16 @@
 }
 
 @media (max-width: 430px) {
+  /* On a phone the dot alone carries the state; the title needs the room. */
+  .sessionState,
+  .sessionState[data-state="complete"] {
+    width: 1.4rem;
+    min-width: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+  }
+
   .titleGroup > p {
     max-width: 10rem;
   }
