@@ -10,6 +10,7 @@ import {
 import { Link, useParams } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 import { useI18n } from "../i18n";
 import {
   CockpitAppearanceControls,
@@ -156,6 +157,7 @@ export function CockpitShell({
     [basePath],
   );
   const viewport = useCockpitViewportGeometry();
+  const mobileLayout = useMediaQuery("(max-width: 700px)");
   const openSearch = useCallback(
     (focusInput: boolean, focusOrigin: HTMLElement | null) => {
       searchFocusReturnRef.current =
@@ -299,19 +301,21 @@ export function CockpitShell({
           </span>
         </Link>
 
-        <div className={styles.desktopCatalog}>
-          <CockpitCatalog
-            basePath={basePath}
-            catalog={catalogData.catalog}
-            error={catalogData.error}
-            hasMore={catalogData.hasMore}
-            loading={catalogData.loading}
-            onLoadMore={catalogData.loadMore}
-            onQueryChange={setCatalogQuery}
-            organization={catalogData.organization}
-            query={catalogQuery}
-          />
-        </div>
+        {!mobileLayout && (
+          <div className={styles.desktopCatalog}>
+            <CockpitCatalog
+              basePath={basePath}
+              catalog={catalogData.catalog}
+              error={catalogData.error}
+              hasMore={catalogData.hasMore}
+              loading={catalogData.loading}
+              onLoadMore={catalogData.loadMore}
+              onQueryChange={setCatalogQuery}
+              organization={catalogData.organization}
+              query={catalogQuery}
+            />
+          </div>
+        )}
 
         <nav className={styles.navigation}>
           <button
@@ -435,19 +439,21 @@ export function CockpitShell({
             children
           ) : (
             <>
-              <div className={styles.mobileCatalog}>
-                <CockpitCatalog
-                  basePath={basePath}
-                  catalog={catalogData.catalog}
-                  error={catalogData.error}
-                  hasMore={catalogData.hasMore}
-                  loading={catalogData.loading}
-                  onLoadMore={catalogData.loadMore}
-                  onQueryChange={setCatalogQuery}
-                  organization={catalogData.organization}
-                  query={catalogQuery}
-                />
-              </div>
+              {mobileLayout && (
+                <div className={styles.mobileCatalog}>
+                  <CockpitCatalog
+                    basePath={basePath}
+                    catalog={catalogData.catalog}
+                    error={catalogData.error}
+                    hasMore={catalogData.hasMore}
+                    loading={catalogData.loading}
+                    onLoadMore={catalogData.loadMore}
+                    onQueryChange={setCatalogQuery}
+                    organization={catalogData.organization}
+                    query={catalogQuery}
+                  />
+                </div>
+              )}
               <section
                 className={styles.statePanel}
                 data-catalog={hasCatalog ? "true" : "false"}
@@ -480,7 +486,7 @@ export function CockpitShell({
   );
 }
 
-export function CockpitPage() {
+function CockpitSourcePage() {
   const runtime = useCurrentSourceRuntime();
   const basePath = useRemoteBasePath();
   const { projectId, sessionId } = useParams<{
@@ -521,4 +527,9 @@ export function CockpitPage() {
       ) : undefined}
     </CockpitShell>
   );
+}
+
+export function CockpitPage() {
+  const runtime = useCurrentSourceRuntime();
+  return <CockpitSourcePage key={runtime.sourceKey} />;
 }

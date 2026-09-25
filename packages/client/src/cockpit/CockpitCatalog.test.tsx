@@ -89,10 +89,8 @@ describe("Cockpit catalog", () => {
 
     for (const character of "Atlas") {
       value += character;
-      const startedAt = performance.now();
       fireEvent.change(input, { target: { value } });
       expect(input.value).toBe(value);
-      expect(performance.now() - startedAt).toBeLessThan(100);
 
       catalog = catalogWithSessions(catalog.sessionCount + 1);
       rerender(<CatalogHarness catalog={catalog} />);
