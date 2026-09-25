@@ -52,24 +52,22 @@
 
 @media (max-width: 700px) {
   .trigger {
-    width: 2.75rem;
-    min-width: 2.75rem;
+    max-width: 6.5rem;
     min-height: 2.75rem;
-    padding: 0;
+    padding: 0 0.6rem;
     justify-content: center;
   }
 
+  /* Only the model name fits on a phone; provider and effort stay in the
+     dialog. A bare "AI" label told Joscha nothing. */
   .trigger span,
-  .trigger strong,
   .trigger em {
     display: none;
   }
 
-  .trigger::before {
-    display: block;
-    content: "AI";
-    color: var(--cockpit-accent);
-    font-size: 0.62rem;
-    font-weight: 850;
+  .trigger strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 }

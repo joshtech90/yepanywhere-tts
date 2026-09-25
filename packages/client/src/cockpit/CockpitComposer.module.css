@@ -210,8 +210,12 @@
     padding-left: 0.55rem;
   }
 
+  /* Hidden but still taking the free space, so the actions stay right-aligned. */
   .hint {
-    display: none;
+    min-width: 0;
+    overflow: hidden;
+    visibility: hidden;
+    white-space: nowrap;
   }
 
   .secondaryAction,

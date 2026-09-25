@@ -221,3 +221,11 @@
     grid-template-columns: minmax(6.5rem, 0.42fr) minmax(0, 1fr);
   }
 }
+
+/* Keyboard shortcuts mean nothing on a touch phone; the slot goes back to the
+   bottom navigation, whose labels otherwise wrapped mid-word. */
+@media (max-width: 700px) and (pointer: coarse) {
+  .trigger {
+    display: none;
+  }
+}
