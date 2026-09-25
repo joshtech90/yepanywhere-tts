@@ -98,13 +98,17 @@ export function CockpitModelControls({
   useEffect(() => {
     if (!open) return;
     setError(null);
+    // Never show or apply values read for an earlier process.
+    setProcessModels(null);
+    setCurrent(null);
+    setDraft(null);
     if (!processId) {
       const idle = {
         model: session?.model ?? null,
         thinkingMode,
         effortLevel,
       };
-      setProcessModels(null);
+      setLoading(false);
       setCurrent(idle);
       setDraft(idle);
       return;
@@ -160,6 +164,9 @@ export function CockpitModelControls({
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
+      // Capture phase on document runs before the global Stop shortcut,
+      // which also ignores prevented events.
+      event.preventDefault();
       event.stopPropagation();
       setOpen(false);
       triggerRef.current?.focus();

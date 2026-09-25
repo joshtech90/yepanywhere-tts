@@ -168,7 +168,8 @@
   background: var(--cockpit-accent);
 }
 
-.primary:disabled {
+.primary:disabled,
+.secondary:disabled {
   cursor: default;
   opacity: 0.5;
 }

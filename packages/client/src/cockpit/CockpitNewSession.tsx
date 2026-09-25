@@ -86,6 +86,15 @@ export function CockpitNewSession({
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const messageRef = useRef<HTMLTextAreaElement>(null);
+  // A start that finishes after this view was left must not navigate back;
+  // the session still runs and shows up in the list.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
   const folderRef = useRef<HTMLInputElement>(null);
   const projectFieldId = useId();
   const folderFieldId = useId();
@@ -159,6 +168,7 @@ export function CockpitNewSession({
       if (remembered) {
         void updateSetting("newSessionDefaults", remembered).catch(() => {});
       }
+      if (!mountedRef.current) return;
       navigate(navigation.session(result.projectId, result.sessionId), {
         state: createSessionNavigationState({
           initialStatus: {
@@ -175,6 +185,7 @@ export function CockpitNewSession({
         }),
       });
     } catch (err) {
+      if (!mountedRef.current) return;
       setError(
         err instanceof Error && err.message
           ? err.message
@@ -338,6 +349,7 @@ export function CockpitNewSession({
         <div className={styles.actions}>
           <button
             className={styles.secondary}
+            disabled={starting}
             onClick={() => navigate(-1)}
             type="button"
           >
