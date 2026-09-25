@@ -350,6 +350,10 @@ zweiten Store kopiert. Gemessene Platzhalter erhalten die Scrollgeometrie, und
 ein Pagination-Anker wird bis zur Lesepositionskorrektur explizit im Fenster
 gehalten. Diese Grenze umfasst nur das Transcript: Sitzungskopf, Freigaben,
 Composer und Stop bleiben dauerhaft gemountet und direkt bedienbar.
+Eine Zeile mit mehreren Thinking- oder Werkzeug-Aufklappern bleibt dabei so
+lange als sparse Insel gemountet, wie mindestens einer dieser Aufklapper offen
+ist. Das Schliessen eines Geschwister-Aufklappers darf einen noch offenen
+Detailbereich weder demontieren noch seinen lokalen Offen-Zustand verlieren.
 
 Interrupt/Stop ist eine direkte Schaltflaeche im festen Sitzungskopf und damit
 nicht von Transcript-Aufklappzustand oder einem Menue abhaengig. Sie verwendet

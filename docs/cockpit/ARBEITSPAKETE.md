@@ -330,6 +330,11 @@ Fenster festgehalten, damit die vorhandene Lesepositionskorrektur weiterhin
 auf ein wirklich gemountetes Ziel zeigt. Header, Freigaben, Composer und Stop
 liegen ausserhalb dieses Fensters.
 
+Nachbesserung A22: Enthaelt eine lange Antwort mehrere Thinking- oder
+Werkzeug-Aufklapper, bleibt ihre Zeile nun gemountet, bis der letzte offene
+Aufklapper geschlossen ist. Das Schliessen eines Geschwister-Details kann
+dadurch keinen anderen noch offenen Abschnitt beim Wegscrollen demontieren.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **offen**

@@ -97,7 +97,9 @@ stable component identity, and lower update cadence.
   overscan stay mounted; measured spacers preserve the complete canonical
   scroll geometry. Older-page loading pins its existing first row until the
   anchor correction commits. Session controls, approvals, the composer, and
-  stop remain outside this window.
+  stop remain outside this window. A row with multiple disclosure controls is
+  retained until all of its disclosures are closed; closing one sibling must
+  not unmount another disclosure that is still open.
 - An open managed viewer covers the transcript and holds its last committed
   projection stable. Incoming session data continues to buffer and surrounding
   controls and viewer sources remain live, but transcript reconciliation and

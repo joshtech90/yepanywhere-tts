@@ -124,4 +124,66 @@ describe("Cockpit transcript render window", () => {
       view.container.querySelectorAll("[data-render-id]").length,
     ).toBeLessThanOrEqual(49);
   });
+
+  it("retains a row until all of its disclosures are closed", () => {
+    const items = entries(240);
+    const renderWindow = (pinnedEntryKey: string | null) => (
+      <CockpitTranscriptWindow
+        beforeRows={null}
+        entries={items}
+        following
+        pinnedEntryKey={pinnedEntryKey}
+        renderEntry={(entry) => (
+          <article data-cockpit-entry-key={entry.key}>
+            <details>
+              <summary>{entry.key} first detail</summary>
+            </details>
+            <details>
+              <summary>{entry.key} second detail</summary>
+            </details>
+          </article>
+        )}
+      />
+    );
+    const view = render(renderWindow(null));
+    const tailEntry = view.container.querySelector<HTMLElement>(
+      '[data-cockpit-entry-key="entry-239"] article',
+    );
+    const disclosures = tailEntry?.querySelectorAll("details");
+    const first = disclosures?.[0];
+    const second = disclosures?.[1];
+    if (!first || !second) throw new Error("tail disclosures missing");
+
+    first.open = true;
+    fireEvent(first, new Event("toggle"));
+    second.open = true;
+    fireEvent(second, new Event("toggle"));
+    first.open = false;
+    fireEvent(first, new Event("toggle"));
+
+    view.rerender(renderWindow("entry-0"));
+
+    expect(
+      view.container.querySelector('[data-render-id="entry-0"]'),
+    ).not.toBeNull();
+    expect(
+      view.container.querySelector('[data-render-id="entry-239"]'),
+    ).not.toBeNull();
+    expect(
+      view.container.querySelector(
+        '[data-cockpit-entry-key="entry-239"] details[open]',
+      ),
+    ).not.toBeNull();
+
+    const remainingOpen = view.container.querySelector<HTMLDetailsElement>(
+      '[data-cockpit-entry-key="entry-239"] details[open]',
+    );
+    if (!remainingOpen) throw new Error("retained disclosure missing");
+    remainingOpen.open = false;
+    fireEvent(remainingOpen, new Event("toggle"));
+
+    expect(
+      view.container.querySelector('[data-render-id="entry-239"]'),
+    ).toBeNull();
+  });
 });

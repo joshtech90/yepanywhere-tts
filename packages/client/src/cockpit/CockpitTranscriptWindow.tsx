@@ -25,6 +25,13 @@ function getEntryRenderWeight() {
   return 1;
 }
 
+function hasOpenDisclosure(entry: HTMLElement): boolean {
+  return (
+    (entry instanceof HTMLDetailsElement && entry.open) ||
+    entry.querySelector("details[open]") !== null
+  );
+}
+
 export interface CockpitTranscriptWindowProps {
   beforeRows: ReactNode;
   entries: readonly CockpitTranscriptEntry[];
@@ -53,10 +60,11 @@ export function CockpitTranscriptWindow({
     const entry = details.closest<HTMLElement>("[data-cockpit-entry-key]");
     const entryKey = entry?.dataset.cockpitEntryKey;
     if (!entryKey) return;
+    const shouldRetain = hasOpenDisclosure(entry);
     setRetainedEntryKeys((previous) => {
       const retained = previous.includes(entryKey);
-      if (details.open === retained) return previous;
-      return details.open
+      if (shouldRetain === retained) return previous;
+      return shouldRetain
         ? [...previous, entryKey]
         : previous.filter((key) => key !== entryKey);
     });
