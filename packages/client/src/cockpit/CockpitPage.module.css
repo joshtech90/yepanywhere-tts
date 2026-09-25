@@ -173,6 +173,11 @@
     transform 140ms ease;
 }
 
+/* Phones get short navigation labels; the full label stays the link name. */
+.labelShort {
+  display: none;
+}
+
 .navigationItem {
   min-width: 0;
   min-height: 2.1rem;
@@ -608,6 +613,14 @@
     justify-content: center;
     gap: 0.18rem;
     font-size: 0.61rem;
+  }
+
+  .labelLong {
+    display: none;
+  }
+
+  .labelShort {
+    display: inline;
   }
 
   .navigationItem > span:last-child {

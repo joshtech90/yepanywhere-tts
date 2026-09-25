@@ -227,26 +227,31 @@ export function CockpitShell({
   const destinations: Array<{
     href: string;
     label: string;
+    shortLabel: string;
     icon: ReactNode;
   }> = [
     {
       href: navigation.sessions,
       label: t("sidebarAllSessions"),
+      shortLabel: t("cockpitNavShortSessions"),
       icon: <SessionsIcon />,
     },
     {
       href: navigation.projects,
       label: t("sidebarProjects"),
+      shortLabel: t("sidebarProjects"),
       icon: <ProjectsIcon />,
     },
     {
       href: navigation.newSession,
       label: t("sidebarNewSession"),
+      shortLabel: t("cockpitNavShortNew"),
       icon: <NewSessionIcon />,
     },
     {
       href: navigation.settings,
       label: t("sidebarSettings"),
+      shortLabel: t("cockpitNavShortSettings"),
       icon: <SettingsIcon />,
     },
   ];
@@ -336,13 +341,19 @@ export function CockpitShell({
               aria-keyshortcuts={
                 destination.href === navigation.newSession ? "N" : undefined
               }
+              aria-label={destination.label}
               className={styles.navigationItem}
               key={destination.href}
               onClick={navigateFromSearch}
               to={destination.href}
             >
               <span className={styles.icon}>{destination.icon}</span>
-              <span>{destination.label}</span>
+              <span aria-hidden="true" className={styles.labelLong}>
+                {destination.label}
+              </span>
+              <span aria-hidden="true" className={styles.labelShort}>
+                {destination.shortLabel}
+              </span>
             </Link>
           ))}
           <CockpitShortcutButton
@@ -379,9 +390,7 @@ export function CockpitShell({
       />
 
       <section
-        aria-labelledby={
-          hasDetail || searchOpen ? undefined : "cockpit-title"
-        }
+        aria-labelledby={hasDetail || searchOpen ? undefined : "cockpit-title"}
         className={styles.workspace}
         inert={shortcutsOpen}
       >

@@ -4,10 +4,6 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 const pageStylesheetUrl = new URL("./CockpitPage.module.css", import.meta.url);
-const shortcutStylesheetUrl = new URL(
-  "./CockpitShortcutHelp.module.css",
-  import.meta.url,
-);
 const sessionDetailStylesheetUrl = new URL(
   "./CockpitSessionDetail.module.css",
   import.meta.url,
@@ -29,19 +25,13 @@ function rule(css: string, selector: string): string {
 }
 
 describe("Cockpit mobile navigation layout", () => {
-  it("wraps every visible navigation label instead of clipping it", async () => {
-    const [pageCss, shortcutCss] = await Promise.all([
-      readFile(pageStylesheetUrl, "utf8"),
-      readFile(shortcutStylesheetUrl, "utf8"),
-    ]);
+  it("uses short navigation labels on phones instead of breaking words", async () => {
+    const pageCss = await readFile(pageStylesheetUrl, "utf8");
+    const phone = pageCss.slice(pageCss.indexOf("@media (max-width: 700px)"));
 
-    for (const declarations of [
-      rule(pageCss, ".navigationItem > span:last-child"),
-      rule(shortcutCss, ".trigger > span:last-child"),
-    ]) {
-      expect(declarations).toMatch(/white-space:\s*normal\s*;/);
-      expect(declarations).not.toMatch(/text-overflow:\s*ellipsis\s*;/);
-    }
+    expect(rules(pageCss, ".labelShort")[0]).toMatch(/display:\s*none\s*;/);
+    expect(rule(phone, ".labelShort")).toMatch(/display:\s*inline\s*;/);
+    expect(rule(phone, ".labelLong")).toMatch(/display:\s*none\s*;/);
   });
 
   it("keeps the follow button above the mobile composer", async () => {
