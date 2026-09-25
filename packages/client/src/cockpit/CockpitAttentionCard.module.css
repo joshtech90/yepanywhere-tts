@@ -231,12 +231,17 @@
   overflow-wrap: anywhere;
 }
 
+/* The answer buttons stay in view while a long question scrolls. */
 .actions {
+  position: sticky;
+  bottom: 0;
   display: flex;
   margin-top: 0.8rem;
+  padding: 0.55rem 0 0.7rem;
   align-items: center;
   justify-content: flex-end;
   gap: 0.5rem;
+  background: var(--cockpit-surface-raised);
 }
 
 .secondaryAction,

@@ -5,9 +5,9 @@
   min-width: 0;
   min-height: 2.35rem;
   padding: 0.35rem 0.55rem;
-  grid-template-columns: auto minmax(0, 1fr) 2.9rem;
+  grid-template-columns: auto minmax(0, 1fr) 2.35rem;
   align-items: center;
-  column-gap: 0.5rem;
+  column-gap: 0.4rem;
   border: 1px solid transparent;
   border-radius: 0.7rem;
   color: var(--cockpit-text);
@@ -19,7 +19,7 @@
 }
 
 .row[data-with-project="true"] {
-  grid-template-columns: auto minmax(0, 1fr) 2.9rem 5.6rem;
+  grid-template-columns: auto minmax(0, 1fr) 2.35rem 4.6rem;
 }
 
 .row:hover {
@@ -64,12 +64,12 @@
   .row {
     min-height: 2.9rem;
     padding: 0.55rem 0.65rem;
-    grid-template-columns: auto minmax(0, 1fr) 3.1rem;
+    grid-template-columns: auto minmax(0, 1fr) 2.6rem;
     user-select: none;
   }
 
   .row[data-with-project="true"] {
-    grid-template-columns: auto minmax(0, 1fr) 3.1rem 5rem;
+    grid-template-columns: auto minmax(0, 1fr) 2.6rem 4.6rem;
   }
 
   .title {

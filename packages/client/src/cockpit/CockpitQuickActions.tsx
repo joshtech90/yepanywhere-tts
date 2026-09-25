@@ -205,12 +205,15 @@ function HandoffDialog({
       legacy,
       port.permissionMode,
     );
+    // Sessions report full model ids (claude-haiku-4-5-…) while the picker
+    // lists aliases (haiku); an alias contained in the id is the same model.
     const model = port.session?.model;
-    setSelection(
-      model && provider.models?.some((entry) => entry.id === model)
-        ? { ...base, model }
-        : base,
-    );
+    const models = provider.models ?? [];
+    const match = model
+      ? (models.find((entry) => entry.id === model) ??
+        models.find((entry) => entry.id.length > 3 && model.includes(entry.id)))
+      : undefined;
+    setSelection(match ? { ...base, model: match.id } : base);
   }, [launchable, legacy, port.permissionMode, port.session, selection, settings]);
 
   useEffect(() => {

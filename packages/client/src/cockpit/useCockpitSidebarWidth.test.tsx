@@ -76,20 +76,20 @@ describe("useCockpitSidebarWidth hook", () => {
     render(<TestSidebarHandle />);
     const handle = screen.getByRole("separator", { name: "Resize sidebar" });
 
-    expect(handle.getAttribute("aria-valuenow")).toBe("312");
+    expect(handle.getAttribute("aria-valuenow")).toBe("352");
 
     const defaultPrevented = !fireEvent.keyDown(handle, { key: "ArrowRight" });
     expect(defaultPrevented).toBe(true);
-    expect(handle.getAttribute("aria-valuenow")).toBe("328");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(328);
+    expect(handle.getAttribute("aria-valuenow")).toBe("368");
+    expect(readCockpitSidebarWidth(localStorage)).toBe(368);
 
     fireEvent.keyDown(handle, { key: "ArrowLeft" });
-    expect(handle.getAttribute("aria-valuenow")).toBe("312");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(312);
+    expect(handle.getAttribute("aria-valuenow")).toBe("352");
+    expect(readCockpitSidebarWidth(localStorage)).toBe(352);
 
     fireEvent.keyDown(handle, { key: "ArrowRight", shiftKey: true });
-    expect(handle.getAttribute("aria-valuenow")).toBe("376");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(376);
+    expect(handle.getAttribute("aria-valuenow")).toBe("416");
+    expect(readCockpitSidebarWidth(localStorage)).toBe(416);
 
     const ignoredPrevented = !fireEvent.keyDown(handle, { key: "ArrowUp" });
     expect(ignoredPrevented).toBe(false);
@@ -160,7 +160,7 @@ describe("useCockpitSidebarWidth hook", () => {
       pointerId: 1,
     });
 
-    expect(handle.getAttribute("aria-valuenow")).toBe("360");
+    expect(handle.getAttribute("aria-valuenow")).toBe("400");
     expect(localStorage.getItem(COCKPIT_SIDEBAR_WIDTH_STORAGE_KEY)).toBeNull();
 
     fireEvent.pointerUp(handle, {
@@ -168,11 +168,11 @@ describe("useCockpitSidebarWidth hook", () => {
       pointerId: 1,
     });
 
-    expect(handle.getAttribute("aria-valuenow")).toBe("360");
+    expect(handle.getAttribute("aria-valuenow")).toBe("400");
     expect(handle.getAttribute("data-resizing")).toBe("false");
     expect(document.body.style.userSelect).toBe("");
     expect(document.body.style.cursor).toBe("");
-    expect(readCockpitSidebarWidth(localStorage)).toBe(360);
+    expect(readCockpitSidebarWidth(localStorage)).toBe(400);
   });
 
   it("does not crash when localStorage.getItem throws", () => {
