@@ -284,7 +284,8 @@
 .workspace {
   display: flex;
   min-width: 0;
-  min-height: var(--cockpit-viewport-height);
+  height: var(--cockpit-viewport-height);
+  min-height: 0;
   flex-direction: column;
 }
 

@@ -393,7 +393,9 @@ export function CockpitSessionDetail({
     detail.session?.initialPrompt?.trim() ||
     t("cockpitSessionTitleFallback");
   const projectName =
-    detail.session?.projectName?.trim() || t("cockpitUnknownProject");
+    detail.session?.projectName?.trim() ||
+    projectLabelFromId(projectId) ||
+    t("cockpitUnknownProject");
   const classicHref = navigation.classicSession(projectId, sessionId);
 
   return (
@@ -411,15 +413,11 @@ export function CockpitSessionDetail({
           <h2 id="cockpit-session-title" title={title}>
             {title}
           </h2>
-          <div className={styles.metadata}>
-            {detail.session?.provider && (
-              <span>{detail.session.provider}</span>
-            )}
-            {detail.session?.model && <span>{detail.session.model}</span>}
-            {detail.restoredFromSnapshot && detail.loading && (
+          {detail.restoredFromSnapshot && detail.loading && (
+            <div className={styles.metadata}>
               <span>{t("cockpitSessionWarm")}</span>
-            )}
-          </div>
+            </div>
+          )}
         </div>
         <div className={styles.sessionActions}>
           <CockpitStopButton
@@ -549,4 +547,24 @@ export function CockpitSessionDetail({
       )}
     </article>
   );
+}
+
+/**
+ * Project ids are base64url-encoded project paths. When the session summary
+ * has no project name yet, the last path segment is a better header than a
+ * generic fallback.
+ */
+export function projectLabelFromId(projectId: string): string | undefined {
+  try {
+    const base64 = projectId.replace(/-/g, "+").replace(/_/g, "/");
+    const path = decodeURIComponent(
+      Array.from(atob(base64), (char) =>
+        `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
+      ).join(""),
+    );
+    const name = path.split("/").filter(Boolean).pop()?.trim();
+    return name || undefined;
+  } catch {
+    return undefined;
+  }
 }
