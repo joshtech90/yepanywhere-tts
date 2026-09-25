@@ -1,9 +1,18 @@
-import { useMemo } from "react";
+import { useCallback, useMemo } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useSession } from "../hooks/useSession";
 import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
-import type { SessionMetadata, SessionStatus } from "../types";
+import type {
+  InputRequest,
+  SessionMetadata,
+  SessionStatus,
+  UserQuestionAnswers,
+} from "../types";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
+import {
+  readCockpitPendingInput,
+  respondToCockpitInput,
+} from "./core/inputRequest";
 import {
   createCockpitTranscriptEntries,
   type CockpitTranscriptEntry,
@@ -17,8 +26,16 @@ export interface CockpitSessionDetailData {
   loadOlderMessages: () => Promise<void>;
   loading: boolean;
   loadingOlder: boolean;
+  pendingInputRequest: InputRequest | null;
   processState: "idle" | "in-turn" | "waiting-input";
+  refreshPendingInput: () => Promise<InputRequest | null>;
   reloadSession: () => void;
+  respondToInput: (
+    requestId: string,
+    response: "approve" | "approve_accept_edits" | "deny",
+    answers?: UserQuestionAnswers,
+    feedback?: string,
+  ) => Promise<void>;
   restoredFromSnapshot: boolean;
   session: SessionMetadata | null;
   setSessionModel: (model: string) => void;
@@ -39,6 +56,7 @@ export function useCockpitSessionDetail(
 ): CockpitSessionDetailData {
   const runtime = useCurrentSourceRuntime();
   const detail = useSession(projectId, sessionId);
+  const actualSessionId = detail.actualSessionId;
   const renderItems = useMemo(
     () =>
       buildSessionDetailRenderItems({
@@ -63,6 +81,36 @@ export function useCockpitSessionDetail(
       }),
     [renderItems, runtime.sourceKey, sessionId],
   );
+  const respondToInput = useCallback<CockpitSessionDetailData["respondToInput"]>(
+    async (requestId, response, answers, feedback) => {
+      const nextRequest = await respondToCockpitInput(
+        runtime.transport,
+        actualSessionId,
+        requestId,
+        response,
+        answers,
+        feedback,
+      );
+      detail.setPendingInputRequest(nextRequest);
+      if (response === "approve_accept_edits") {
+        detail.setPermissionMode("acceptEdits");
+      }
+    },
+    [
+      actualSessionId,
+      detail.setPendingInputRequest,
+      detail.setPermissionMode,
+      runtime.transport,
+    ],
+  );
+  const refreshPendingInput = useCallback(async () => {
+    const nextRequest = await readCockpitPendingInput(
+      runtime.transport,
+      actualSessionId,
+    );
+    detail.setPendingInputRequest(nextRequest);
+    return nextRequest;
+  }, [actualSessionId, detail.setPendingInputRequest, runtime.transport]);
 
   return {
     composer: {
@@ -84,8 +132,14 @@ export function useCockpitSessionDetail(
     loadOlderMessages: detail.loadOlderMessages,
     loading: detail.loading,
     loadingOlder: detail.loadingOlder,
+    pendingInputRequest:
+      detail.pendingInputRequest?.sessionId === actualSessionId
+        ? detail.pendingInputRequest
+        : null,
     processState: detail.processState,
+    refreshPendingInput,
     reloadSession: detail.reloadSession,
+    respondToInput,
     restoredFromSnapshot: detail.restoredFromSnapshot,
     session: detail.session,
     setSessionModel: detail.setSessionModel,

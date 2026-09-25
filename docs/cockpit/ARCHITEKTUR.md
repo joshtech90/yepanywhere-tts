@@ -326,6 +326,25 @@ Interrupt noch Abbruch vor einer Server- beziehungsweise Streambestaetigung.
 Fehler bleiben lokal und sichtbar; `Escape` findet diese Aktion ausschliesslich
 ueber den semantischen Cockpit-Shortcut-Vertrag.
 
+Approval- und Fragekarten lesen `pendingInputRequest` aus derselben
+`useSession`-Instanz wie Transcript und Composer. Die Cockpit-Kompositionswurzel
+uebersetzt nur die vorhandene source-gebundene `respondToInput`-Route in kleine
+Callbacks fuer die bestehenden `ToolApprovalPanel`- und
+`QuestionAnswerPanel`-Komponenten. Providerneutrale `question`- und
+`choice`-Anfragen ohne Claude-Werkzeugform werden in einen einzelnen
+Frageeintrag projiziert; der Drahtvertrag bleibt unveraendert.
+
+Eine Antwort besitzt genau einen laufenden Request pro Anfrage-ID. Die Karte
+bleibt bis zur Serverantwort sichtbar und behauptet keinen Erfolg vor dem
+`accepted`-Ergebnis. Fehler geben dieselbe Anfrage fuer einen neuen Versuch
+frei. Ein 400- oder 404-Ergebnis gilt als moeglicherweise veraltet und loest
+einen source-gebundenen Abgleich der aktuellen Anfrage aus; der sichtbare
+Hinweis ueberlebt auch das serverbestaetigte Entfernen der alten Karte.
+Reconnect ist nur ein erklaerter Kartenzustand und baut keine zweite Queue.
+Lokal behandelte Tastenereignisse werden vom globalen Cockpit-Dispatcher
+respektiert, sodass Escape in einer Frage oder Freigabe nicht zugleich Stop
+ausloest.
+
 ### Organisationsgrenze aus Paket 9
 
 Favoriten bleiben vorhandene serverseitige Session-Metadaten. Das Cockpit

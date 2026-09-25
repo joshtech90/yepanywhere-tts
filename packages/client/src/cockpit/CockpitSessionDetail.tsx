@@ -11,6 +11,10 @@ import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
+import {
+  CockpitPendingInput,
+  type CockpitInputNotice,
+} from "./CockpitPendingInput";
 import contentStyles from "./CockpitSessionContent.module.css";
 import styles from "./CockpitSessionDetail.module.css";
 import { CockpitToolCall } from "./CockpitToolCall";
@@ -266,6 +270,26 @@ export function CockpitSessionDetail({
     scrollHeight: number;
   } | null>(null);
   const [following, setFollowing] = useState(true);
+  const [inputNotice, setInputNotice] = useState<CockpitInputNotice | null>(
+    null,
+  );
+  const previousInputRequestRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    const requestId = detail.pendingInputRequest?.id;
+    if (
+      requestId &&
+      previousInputRequestRef.current &&
+      previousInputRequestRef.current !== requestId
+    ) {
+      setInputNotice(null);
+    }
+    previousInputRequestRef.current = requestId;
+  }, [detail.pendingInputRequest?.id]);
+
+  useEffect(() => {
+    setInputNotice(null);
+  }, [sessionId]);
 
   useLayoutEffect(() => {
     const container = scrollRef.current;
@@ -462,6 +486,37 @@ export function CockpitSessionDetail({
           ))}
         </div>
       </div>
+
+      {inputNotice && (
+        <div className={styles.inputNotice} role="status">
+          <span>
+            {t(
+              inputNotice === "accepted"
+                ? "cockpitSessionInputAccepted"
+                : "cockpitSessionInputStale",
+            )}
+          </span>
+          <button
+            aria-label={t("cockpitSessionInputDismissNotice")}
+            onClick={() => setInputNotice(null)}
+            type="button"
+          >
+            ×
+          </button>
+        </div>
+      )}
+
+      {detail.pendingInputRequest && (
+        <CockpitPendingInput
+          key={detail.pendingInputRequest.id}
+          onNotice={setInputNotice}
+          onRefresh={detail.refreshPendingInput}
+          onRespond={detail.respondToInput}
+          reconnecting={detail.sessionUpdatesResubscribing}
+          request={detail.pendingInputRequest}
+          sessionId={detail.composer.actualSessionId}
+        />
+      )}
 
       <CockpitComposer
         projectId={projectId}

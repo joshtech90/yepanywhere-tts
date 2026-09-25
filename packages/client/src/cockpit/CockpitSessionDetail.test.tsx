@@ -78,8 +78,11 @@ function detailData(
     loadOlderMessages: vi.fn(async () => {}),
     loading: false,
     loadingOlder: false,
+    pendingInputRequest: null,
     processState: "idle",
+    refreshPendingInput: vi.fn(async () => null),
     reloadSession: vi.fn(),
+    respondToInput: vi.fn(async () => {}),
     restoredFromSnapshot: true,
     session: {
       id: "session-1",
@@ -191,5 +194,48 @@ describe("Cockpit session detail", () => {
     expect(abort).not.toHaveBeenCalled();
     expect(stop.getAttribute("data-cockpit-shortcut")).toBe("stop");
     expect(stop.getAttribute("aria-keyshortcuts")).toBe("Escape");
+  });
+
+  it("keeps Stop and the pending action card reachable through parent updates", () => {
+    detailMocks.data = detailData({
+      pendingInputRequest: {
+        id: "request-1",
+        sessionId: "session-1",
+        type: "tool-approval",
+        prompt: "Allow the fictional tool?",
+        toolName: "UnfamiliarTool",
+        toolInput: { task: "Check the fictional preview." },
+        timestamp: "2026-09-25T01:00:00.000Z",
+      },
+      processState: "waiting-input",
+      status: { owner: "self", processId: "process-1" },
+    });
+    const view = renderDetail();
+
+    for (let update = 0; update < 5; update += 1) {
+      const current = detailMocks.data;
+      if (!current) throw new Error("session detail mock missing");
+      detailMocks.data = detailData({
+        ...current,
+        entries: [...current.entries],
+      });
+      view.rerender(
+        <MemoryRouter>
+          <I18nProvider>
+            <CockpitSessionDetail
+              basePath=""
+              projectId="project-1"
+              sessionId="session-1"
+              shellKind="empty"
+            />
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+    }
+
+    expect(screen.getByRole("button", { name: "Stop" })).toBeTruthy();
+    expect(
+      screen.getByRole("region", { name: "Action needed" }),
+    ).toBeTruthy();
   });
 });

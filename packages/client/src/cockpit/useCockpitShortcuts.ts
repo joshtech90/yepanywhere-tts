@@ -40,6 +40,7 @@ export function useCockpitShortcuts({
     };
 
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
       if (event.key === "Escape" && shortcutsOpen) {
         event.preventDefault();
         onCloseHelp();

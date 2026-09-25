@@ -7,10 +7,12 @@ import { useCockpitShortcuts } from "./useCockpitShortcuts";
 
 function Fixture({
   onHelp,
+  onLocalEscape = vi.fn(),
   onSearch,
   onStop,
 }: {
   onHelp: () => void;
+  onLocalEscape?: () => void;
   onSearch: () => void;
   onStop: () => void;
 }) {
@@ -37,6 +39,16 @@ function Fixture({
         type="button"
       >
         Stop
+      </button>
+      <button
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          onLocalEscape();
+        }}
+        type="button"
+      >
+        Local action
       </button>
     </main>
   );
@@ -100,5 +112,27 @@ describe("useCockpitShortcuts", () => {
 
     expect(onHelp).toHaveBeenCalledWith(stop);
     expect(onSearch).toHaveBeenCalledWith(stop);
+  });
+
+  it("leaves handled Escape keys inside local action cards", () => {
+    const onLocalEscape = vi.fn();
+    const onStop = vi.fn();
+    render(
+      <MemoryRouter>
+        <Fixture
+          onHelp={vi.fn()}
+          onLocalEscape={onLocalEscape}
+          onSearch={vi.fn()}
+          onStop={onStop}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.keyDown(screen.getByRole("button", { name: "Local action" }), {
+      key: "Escape",
+    });
+
+    expect(onLocalEscape).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
   });
 });

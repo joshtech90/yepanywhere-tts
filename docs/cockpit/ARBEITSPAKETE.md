@@ -255,7 +255,7 @@ dupliziert oder erweitert.
 
 ## 8 — Approvals, Fragen und Interrupt/Stop
 
-Status: **offen**
+Status: **umgesetzt**
 
 Voraussetzung: Paket 7.
 
@@ -282,6 +282,18 @@ zurueck. Doppelklicks starten nur eine Anfrage; Erfolg wird nicht optimistisch
 behauptet, Fehler bleiben am Knopf sichtbar. Escape aktiviert genau diese
 serverautoritative Aktion. Approval- und Fragekarten folgen in einem weiteren
 Schnitt desselben Projekts; Paket 8 bleibt deshalb offen.
+
+Zweiter Schnitt des Projekts „Cockpit Handlungsbedarf“: Die kanonische
+`pendingInputRequest` erscheint jetzt direkt ueber dem Cockpit-Composer. Das
+Cockpit bindet dafuer die vorhandenen Approval- und Fragekomponenten an den
+source-gebundenen Transport; providerneutrale Choice-Anfragen werden in deren
+Fragevertrag uebersetzt. Antworten verschwinden erst nach Serverbestaetigung.
+Waehrend einer Anfrage sperrt eine lokale Request-ID-Grenze Doppelklicks;
+Serverfehler bleiben an der Karte sichtbar und erlauben einen neuen Versuch.
+Bereits beantwortete beziehungsweise veraltete Anfragen werden gegen den
+Server abgeglichen und klar benannt. Beim Reconnect bleibt die Karte sichtbar,
+und ein dort behandeltes Escape erreicht nicht zusaetzlich den globalen Stop.
+Damit ist Paket 8 abgeschlossen.
 
 ## 9 — Session-Organisation, Pins und Prompt-History
 
