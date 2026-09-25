@@ -77,25 +77,3 @@ equivalent is `Ask`, not `Bypass` and not a hidden provider-specific setting.
   approval.
 - Tightening a mode is never less important than loosening it. A UI that says
   Ask must not leave the next turn running under a sticky Bypass policy.
-
-## Cockpit blocking-input presentation
-
-The Cockpit presents the one server-authoritative `pendingInputRequest` owned
-by the existing session-detail state. It may project structured provider
-questions into its own view model, but it must not infer an approval from
-transcript text or keep a second request queue.
-
-- Approve, deny, and question answers remain pending until `respondToInput`
-  confirms them. Repeated activation while that request is in flight sends no
-  second decision.
-- A response rejected as stale refreshes the current pending request and says
-  that the old request was answered or replaced; it does not claim success.
-- Unknown request types remain inspectable and escaped. The Cockpit does not
-  invent provider-specific semantics for them.
-- Secret free-form answers stay in component memory and are not written to
-  browser storage.
-- The active-turn Stop action remains directly reachable outside transcript
-  rendering. It tries the existing graceful interrupt first and uses the
-  verified abort fallback only when needed. An accepted interrupt request is
-  not displayed as a completed stop; subsequent server state remains
-  authoritative.

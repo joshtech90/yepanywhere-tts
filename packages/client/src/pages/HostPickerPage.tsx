@@ -8,7 +8,6 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { removeCockpitSourceStorage } from "../cockpit/core/sourceStorage";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
 import { useRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useI18n } from "../i18n";
@@ -19,7 +18,6 @@ import {
   type SavedHost,
 } from "../lib/hostStorage";
 import { relayEndpoints } from "../lib/connection/relayEndpoints";
-import { resolveSourceKeyForSavedHost } from "../lib/sourceIdentity";
 
 type HostStatus = "online" | "offline" | "checking" | "unknown";
 
@@ -184,21 +182,11 @@ export function HostPickerPage() {
     (hostId: string, e: React.MouseEvent) => {
       e.stopPropagation();
       if (confirm(t("hostPickerRemoveConfirm"))) {
-        const host = hosts.find((candidate) => candidate.id === hostId);
-        if (host) {
-          const sourceKey = resolveSourceKeyForSavedHost(host);
-          const sourceStillSaved = hosts.some(
-            (candidate) =>
-              candidate.id !== hostId &&
-              resolveSourceKeyForSavedHost(candidate) === sourceKey,
-          );
-          if (!sourceStillSaved) removeCockpitSourceStorage(sourceKey);
-        }
         removeHost(hostId);
         setHosts((prev) => prev.filter((h) => h.id !== hostId));
       }
     },
-    [hosts, t],
+    [t],
   );
 
   // Format last connected time
