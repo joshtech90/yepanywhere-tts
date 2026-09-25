@@ -129,6 +129,7 @@
   "cockpitSessionWorkingElsewhere": "Arbeitet in einem anderen Programm …",
   "cockpitSessionContextUsage": "{percent} %",
   "cockpitSessionContextUsageTitle": "Kontext genutzt: {percent} % ({used} von {window} Tokens)",
+  "cockpitSessionContextTokensTitle": "Kontext: {used} Tokens (Fenstergröße nicht bekannt)",
   "cockpitQuickActions": "Kurzbefehle",
   "cockpitQuickTerminal": "Im Terminal fortsetzen",
   "cockpitQuickTerminalHint": "Kopiert den Befehl, der diese Sitzung im Terminal öffnet.",

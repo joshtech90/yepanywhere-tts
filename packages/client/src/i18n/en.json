@@ -458,6 +458,7 @@
   "cockpitSessionWorkingElsewhere": "Working in another program…",
   "cockpitSessionContextUsage": "{percent}%",
   "cockpitSessionContextUsageTitle": "Context used: {percent}% ({used} of {window} tokens)",
+  "cockpitSessionContextTokensTitle": "Context: {used} tokens (window size unknown)",
   "cockpitQuickActions": "Quick actions",
   "cockpitQuickTerminal": "Continue in a terminal",
   "cockpitQuickTerminalHint": "Copies the command that opens this session in a terminal.",

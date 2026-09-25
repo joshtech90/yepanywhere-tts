@@ -32,6 +32,7 @@ import {
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 import type { CockpitShellState } from "./core/shellState";
+import { cockpitContextUsage } from "./core/contextUsage";
 import { cockpitLedToneForState } from "./core/statusLed";
 import { selectCockpitTranscriptSnapshot } from "./core/transcriptScheduling";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
@@ -497,17 +498,7 @@ export function CockpitSessionDetail({
     projectLabelFromId(projectId) ||
     t("cockpitUnknownProject");
   const classicHref = navigation.classicSession(projectId, sessionId);
-  const usage = detail.session?.contextUsage;
-  const contextUsage =
-    usage && Number.isFinite(usage.percentage)
-      ? {
-          percent: Math.round(usage.percentage),
-          used: usage.inputTokens.toLocaleString(locale),
-          window: usage.contextWindow
-            ? usage.contextWindow.toLocaleString(locale)
-            : "?",
-        }
-      : null;
+  const contextUsage = cockpitContextUsage(detail.session?.contextUsage, locale);
 
   return (
     <article className={styles.root} aria-labelledby="cockpit-session-title">
@@ -566,15 +557,23 @@ export function CockpitSessionDetail({
           {contextUsage && (
             <span
               className={styles.contextUsage}
-              title={t("cockpitSessionContextUsageTitle", {
-                percent: contextUsage.percent,
-                used: contextUsage.used,
-                window: contextUsage.window,
-              })}
+              title={
+                contextUsage.percent === null
+                  ? t("cockpitSessionContextTokensTitle", {
+                      used: contextUsage.used,
+                    })
+                  : t("cockpitSessionContextUsageTitle", {
+                      percent: contextUsage.percent,
+                      used: contextUsage.used,
+                      window: contextUsage.window,
+                    })
+              }
             >
-              {t("cockpitSessionContextUsage", {
-                percent: contextUsage.percent,
-              })}
+              {contextUsage.percent === null
+                ? contextUsage.short
+                : t("cockpitSessionContextUsage", {
+                    percent: contextUsage.percent,
+                  })}
             </span>
           )}
           <span
