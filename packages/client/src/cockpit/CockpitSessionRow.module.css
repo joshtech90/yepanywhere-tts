@@ -1,0 +1,90 @@
+.row {
+  display: grid;
+  min-width: 0;
+  min-height: 3rem;
+  padding: 0.5rem 0.62rem;
+  gap: 0.3rem;
+  border: 1px solid transparent;
+  border-radius: 0.78rem;
+  color: var(--cockpit-text);
+  text-decoration: none;
+  -webkit-touch-callout: none;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.row:hover {
+  border-color: var(--cockpit-border);
+  background: var(--cockpit-hover);
+}
+
+.row:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+.titleLine,
+.meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.titleLine {
+  gap: 0.5rem;
+}
+
+.title {
+  overflow: hidden;
+  font-size: 0.75rem;
+  font-weight: 680;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The time sits under the title, aligned with it rather than with the dot. */
+.meta {
+  padding-left: 1.05rem;
+  gap: 0.45rem;
+  color: var(--cockpit-faint);
+  font-size: 0.6rem;
+}
+
+.meta time {
+  flex: none;
+}
+
+.project {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project::before {
+  content: "·";
+  margin-right: 0.45rem;
+}
+
+@media (max-width: 700px) {
+  .row {
+    min-height: 2.9rem;
+    padding: 0.65rem 0.7rem;
+    user-select: none;
+  }
+
+  .title {
+    font-size: 0.85rem;
+  }
+
+  .meta {
+    font-size: 0.68rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row {
+    transition: none;
+  }
+}

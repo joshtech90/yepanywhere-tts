@@ -2,17 +2,18 @@ import { describe, expect, it } from "vitest";
 import { createCockpitNavigation, isCockpitPathname } from "./navigation";
 
 describe("Cockpit navigation", () => {
-  it("uses the ordinary application routes for a direct source", () => {
+  it("keeps list views inside the Cockpit for a direct source", () => {
     const navigation = createCockpitNavigation("");
     expect(navigation).toMatchObject({
       cockpit: "/cockpit",
-      sessions: "/sessions",
-      projects: "/projects",
+      sessions: "/cockpit?view=sessions",
+      projects: "/cockpit?view=projects",
+      classicSessions: "/sessions",
       newSession: "/cockpit?view=new",
       settings: "/settings",
     });
     expect(navigation.project("project one")).toBe(
-      "/sessions?project=project%20one",
+      "/cockpit?view=sessions&project=project%20one",
     );
     expect(navigation.newSessionIn("project one")).toBe(
       "/cockpit?view=new&project=project%20one",
@@ -29,13 +30,14 @@ describe("Cockpit navigation", () => {
     const navigation = createCockpitNavigation("/-/relay/studio/");
     expect(navigation).toMatchObject({
       cockpit: "/-/relay/studio/cockpit",
-      sessions: "/-/relay/studio/sessions",
-      projects: "/-/relay/studio/projects",
+      sessions: "/-/relay/studio/cockpit?view=sessions",
+      projects: "/-/relay/studio/cockpit?view=projects",
+      classicSessions: "/-/relay/studio/sessions",
       newSession: "/-/relay/studio/cockpit?view=new",
       settings: "/-/relay/studio/settings",
     });
     expect(navigation.project("project one")).toBe(
-      "/-/relay/studio/sessions?project=project%20one",
+      "/-/relay/studio/cockpit?view=sessions&project=project%20one",
     );
     expect(navigation.session("project one", "session/two")).toBe(
       "/-/relay/studio/cockpit/projects/project%20one/sessions/session%2Ftwo",

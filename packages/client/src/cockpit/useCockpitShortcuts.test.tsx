@@ -31,7 +31,9 @@ function Fixture({
   });
   return (
     <main ref={rootRef}>
-      <output aria-label="location">{location.pathname}</output>
+      <output aria-label="location">
+        {location.pathname + location.search}
+      </output>
       <textarea data-cockpit-shortcut="composer" aria-label="Composer" />
       <button
         data-cockpit-shortcut="stop"
@@ -73,7 +75,9 @@ describe("useCockpitShortcuts", () => {
     fireEvent.keyDown(document, { key: "p" });
     expect(onSearch).toHaveBeenCalledTimes(1);
     expect(onHelp).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText("location").textContent).toBe("/projects");
+    expect(screen.getByLabelText("location").textContent?.trim()).toBe(
+      "/cockpit?view=projects",
+    );
 
     fireEvent.keyDown(document, { key: "r" });
     expect(document.activeElement).toBe(screen.getByRole("textbox"));

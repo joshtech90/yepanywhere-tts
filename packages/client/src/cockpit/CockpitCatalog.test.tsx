@@ -48,6 +48,8 @@ function organization(): CockpitOrganizationController {
     saveView: vi.fn(),
     setPinnedOnly: vi.fn(),
     togglePin: vi.fn(async () => true),
+    renameSession: vi.fn(async () => true),
+    archiveSession: vi.fn(async () => true),
   };
 }
 
@@ -103,37 +105,70 @@ describe("Cockpit catalog", () => {
     expect(screen.getByText("Release checklist")).toBeTruthy();
     expect(
       screen.getByRole("link", { name: /Atlas/ }).getAttribute("href"),
-    ).toBe("/sessions?project=atlas");
+    ).toBe("/cockpit?view=sessions&project=atlas");
     expect(
       screen.getByText("Release checklist").closest("a")?.getAttribute("href"),
     ).toBe("/cockpit/projects/atlas/sessions/session-0");
-    expect(document.querySelector("time")?.textContent).toContain("2026");
+    expect(document.querySelector("time")?.getAttribute("title")).toContain(
+      "2026",
+    );
   });
 
-  it("uses singular count copy and an accessible project link on mobile-sized catalogs", () => {
-    render(<CatalogHarness catalog={catalogWithSessions(1)} />);
+  it("leads with favourites under one star and keeps the rest by project", () => {
+    render(<CatalogHarness catalog={catalogWithSessions(3)} />);
 
-    expect(screen.getByText("1 session")).toBeTruthy();
+    const favorites = screen.getByRole("region", { name: "Favorites" });
+    expect(favorites.textContent).toContain("Release checklist");
+    expect(favorites.textContent).not.toContain("Fixture session 1");
+    expect(favorites.querySelectorAll("svg")).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /favorites/i })).toBeNull();
     expect(
       screen.getByRole("link", { name: "Open project Atlas" }),
     ).toBeTruthy();
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    expect(screen.queryByText("Finished")).toBeNull();
   });
 
-  it("updates favorites through the organization controller", () => {
+  it("offers favourite, rename and archive from the context menu", async () => {
     const controller = organization();
     render(
       <CatalogHarness
-        catalog={catalogWithSessions(1)}
+        catalog={catalogWithSessions(2)}
         organizationController={controller}
       />,
     );
 
-    fireEvent.click(
-      screen.getByRole("button", {
-        name: "Remove Release checklist from favorites",
-      }),
+    fireEvent.contextMenu(
+      screen.getByText("Release checklist").closest("a") as HTMLElement,
+      { clientX: 40, clientY: 50 },
     );
-
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Remove from favorites", "Rename", "Archive"]);
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Remove from favorites" }),
+    );
     expect(controller.togglePin).toHaveBeenCalledWith("session-0", false);
+
+    fireEvent.contextMenu(
+      screen.getByText("Fixture session 1").closest("a") as HTMLElement,
+      { clientX: 40, clientY: 90 },
+    );
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    expect(controller.archiveSession).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+    await vi.waitFor(() =>
+      expect(controller.archiveSession).toHaveBeenCalledWith("session-1"),
+    );
+  });
+
+  it("links each project header to its Cockpit session list", () => {
+    render(<CatalogHarness catalog={catalogWithSessions(2)} />);
+
+    expect(
+      screen
+        .getByRole("link", { name: "Open project Atlas" })
+        .getAttribute("href"),
+    ).toBe("/cockpit?view=sessions&project=atlas");
   });
 });

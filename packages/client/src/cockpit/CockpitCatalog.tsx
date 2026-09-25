@@ -1,16 +1,13 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { useI18n, type TranslationFn } from "../i18n";
-import { CockpitOrganizationBar } from "./CockpitOrganizationBar";
-import { CockpitPinButton } from "./CockpitPinButton";
+import { useI18n } from "../i18n";
+import { CockpitSessionRow } from "./CockpitSessionRow";
+import { filterCockpitCatalog, type CockpitCatalogView } from "./core/catalog";
+import { splitCockpitFavorites } from "./core/catalogSections";
 import { createCockpitNavigation } from "./core/navigation";
-import {
-  filterCockpitCatalog,
-  type CockpitCatalogView,
-  type CockpitSessionStatus,
-} from "./core/catalog";
 import styles from "./CockpitCatalog.module.css";
 import type { CockpitOrganizationController } from "./useCockpitOrganization";
+import { useCockpitSessionMenu } from "./useCockpitSessionMenu";
 
 export interface CockpitCatalogProps {
   basePath: string;
@@ -33,43 +30,12 @@ function SearchIcon() {
   );
 }
 
-function statusLabel(status: CockpitSessionStatus, t: TranslationFn): string {
-  switch (status) {
-    case "active":
-      return t("cockpitSessionStatusActive");
-    case "external":
-      return t("cockpitSessionStatusExternal");
-    case "complete":
-      return t("cockpitSessionStatusComplete");
-    case "approval":
-      return t("cockpitSessionStatusApproval");
-    case "question":
-      return t("cockpitSessionStatusQuestion");
-    case "error":
-      return t("cockpitSessionStatusError");
-    case "offline":
-      return t("cockpitSessionStatusOffline");
-  }
-}
-
-function formatActivity(
-  value: string | undefined,
-  locale: string,
-  t: TranslationFn,
-): { label: string; title?: string } {
-  if (!value) return { label: t("cockpitActivityUnknown") };
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) return { label: t("cockpitActivityUnknown") };
-
-  const date = new Date(parsed);
-  const absolute = date.toLocaleString(locale);
-  return {
-    label: new Intl.DateTimeFormat(locale, {
-      dateStyle: "medium",
-      timeStyle: "short",
-    }).format(date),
-    title: absolute,
-  };
+function StarIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="m12 3 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9L12 3Z" />
+    </svg>
+  );
 }
 
 export function CockpitCatalog({
@@ -83,16 +49,21 @@ export function CockpitCatalog({
   onLoadMore,
   onQueryChange,
 }: CockpitCatalogProps) {
-  const { locale, t } = useI18n();
+  const { t } = useI18n();
   const navigation = createCockpitNavigation(basePath);
+  const menu = useCockpitSessionMenu(organization);
   const visibleCatalog = useMemo(
-    () =>
-      filterCockpitCatalog(catalog, query, {
-        pinnedOnly: organization.pinnedOnly,
-      }),
-    [catalog, organization.pinnedOnly, query],
+    () => filterCockpitCatalog(catalog, query),
+    [catalog, query],
   );
-  const hasProjects = visibleCatalog.projects.length > 0;
+  const sections = useMemo(
+    () => splitCockpitFavorites(visibleCatalog),
+    [visibleCatalog],
+  );
+  const isEmpty =
+    sections.favorites.length === 0 && sections.projects.length === 0;
+  const sessionHref = (projectId: string | null, sessionId: string) =>
+    projectId ? navigation.session(projectId, sessionId) : navigation.sessions;
 
   return (
     <section className={styles.root} aria-label={t("cockpitCatalogAria")}>
@@ -102,10 +73,7 @@ export function CockpitCatalog({
           <SearchIcon />
           <input
             aria-label={t("cockpitSearchLabel")}
-            onChange={(event) => {
-              organization.clearActiveView();
-              onQueryChange(event.currentTarget.value);
-            }}
+            onChange={(event) => onQueryChange(event.currentTarget.value)}
             placeholder={t("cockpitSearchPlaceholder")}
             type="search"
             value={query}
@@ -113,10 +81,7 @@ export function CockpitCatalog({
           {query && (
             <button
               aria-label={t("cockpitClearSearch")}
-              onClick={() => {
-                organization.clearActiveView();
-                onQueryChange("");
-              }}
+              onClick={() => onQueryChange("")}
               type="button"
             >
               ×
@@ -125,24 +90,11 @@ export function CockpitCatalog({
         </span>
       </label>
 
-      <CockpitOrganizationBar
-        onQueryChange={onQueryChange}
-        organization={organization}
-        query={query}
-      />
-
-      <div className={styles.summaryRow} aria-live="polite">
-        <span>
-          {t(
-            visibleCatalog.sessionCount === 1
-              ? "cockpitSessionsCountOne"
-              : "cockpitSessionsCount",
-            { count: visibleCatalog.sessionCount },
-          )}
-        </span>
-        {loading && <span>{t("cockpitCatalogLoading")}</span>}
-      </div>
-
+      {organization.pinError && (
+        <p className={styles.catalogError} role="status">
+          {t("cockpitPinUnavailable")}
+        </p>
+      )}
       {error && (
         <p className={styles.catalogError} role="status">
           {t("cockpitCatalogError")}
@@ -150,15 +102,37 @@ export function CockpitCatalog({
       )}
 
       <div className={styles.projectList}>
-        {!hasProjects && !loading && (
+        {isEmpty && !loading && (
           <p className={styles.emptyMessage}>
-            {query || organization.pinnedOnly
-              ? t("cockpitCatalogNoMatches")
-              : t("cockpitCatalogEmpty")}
+            {query ? t("cockpitCatalogNoMatches") : t("cockpitCatalogEmpty")}
           </p>
         )}
 
-        {visibleCatalog.projects.map((project) => (
+        {sections.favorites.length > 0 && (
+          <section
+            aria-labelledby="cockpit-favorites-title"
+            className={styles.favorites}
+          >
+            <h2 className={styles.sectionTitle} id="cockpit-favorites-title">
+              <StarIcon />
+              {t("cockpitFavoritesTitle")}
+            </h2>
+            <ul className={styles.sessionList}>
+              {sections.favorites.map(({ session, projectName }) => (
+                <li key={session.key}>
+                  <CockpitSessionRow
+                    href={sessionHref(session.projectId, session.id)}
+                    onOpenMenu={menu.open}
+                    projectName={projectName || undefined}
+                    session={session}
+                  />
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
+        {sections.projects.map((project) => (
           <section className={styles.projectGroup} key={project.key}>
             <header className={styles.projectHeader}>
               <h2 className={styles.projectTitle}>
@@ -189,57 +163,15 @@ export function CockpitCatalog({
               </p>
             ) : (
               <ul className={styles.sessionList}>
-                {project.sessions.map((session) => {
-                  const activity = formatActivity(
-                    session.lastActivityAt,
-                    locale,
-                    t,
-                  );
-                  const title = session.title || t("cockpitUntitledSession");
-                  const sessionHref = session.projectId
-                    ? navigation.session(session.projectId, session.id)
-                    : navigation.sessions;
-                  return (
-                    <li key={session.key}>
-                      <div className={styles.sessionRow}>
-                        <Link className={styles.sessionLink} to={sessionHref}>
-                          <span className={styles.sessionTitleRow}>
-                            <span className={styles.sessionTitle}>{title}</span>
-                          </span>
-                          <span className={styles.sessionMeta}>
-                            <span
-                              className={styles.status}
-                              data-status={session.status}
-                            >
-                              <span aria-hidden="true" />
-                              {statusLabel(session.status, t)}
-                            </span>
-                            <time
-                              aria-label={t("cockpitLastActivity", {
-                                time: activity.label,
-                              })}
-                              dateTime={session.lastActivityAt}
-                              title={activity.title}
-                            >
-                              {activity.label}
-                            </time>
-                          </span>
-                        </Link>
-                        <CockpitPinButton
-                          onToggle={() =>
-                            void organization.togglePin(
-                              session.id,
-                              !session.pinned,
-                            )
-                          }
-                          pending={organization.pendingPins.has(session.id)}
-                          pinned={session.pinned}
-                          sessionTitle={title}
-                        />
-                      </div>
-                    </li>
-                  );
-                })}
+                {project.sessions.map((session) => (
+                  <li key={session.key}>
+                    <CockpitSessionRow
+                      href={sessionHref(session.projectId, session.id)}
+                      onOpenMenu={menu.open}
+                      session={session}
+                    />
+                  </li>
+                ))}
               </ul>
             )}
           </section>
@@ -265,6 +197,7 @@ export function CockpitCatalog({
           </button>
         </div>
       )}
+      {menu.element}
     </section>
   );
 }

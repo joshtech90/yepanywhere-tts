@@ -2,6 +2,8 @@ export interface CockpitNavigation {
   cockpit: string;
   sessions: string;
   projects: string;
+  /** The established session list, for leaving the Cockpit on purpose. */
+  classicSessions: string;
   newSession: string;
   newSessionIn: (projectId: string) => string;
   settings: string;
@@ -29,8 +31,9 @@ export function isCockpitPathname(pathname: string): boolean {
 export function createCockpitNavigation(basePath: string): CockpitNavigation {
   return {
     cockpit: withBasePath(basePath, "/cockpit"),
-    sessions: withBasePath(basePath, "/sessions"),
-    projects: withBasePath(basePath, "/projects"),
+    sessions: withBasePath(basePath, "/cockpit?view=sessions"),
+    projects: withBasePath(basePath, "/cockpit?view=projects"),
+    classicSessions: withBasePath(basePath, "/sessions"),
     newSession: withBasePath(basePath, "/cockpit?view=new"),
     newSessionIn: (projectId) =>
       withBasePath(
@@ -41,7 +44,7 @@ export function createCockpitNavigation(basePath: string): CockpitNavigation {
     project: (projectId) =>
       withBasePath(
         basePath,
-        `/sessions?project=${encodeURIComponent(projectId)}`,
+        `/cockpit?view=sessions&project=${encodeURIComponent(projectId)}`,
       ),
     session: (projectId, sessionId) =>
       withBasePath(

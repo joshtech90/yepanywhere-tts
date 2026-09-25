@@ -227,4 +227,22 @@ describe("Cockpit catalog adapter", () => {
         ?.sessions.map((entry) => entry.id),
     ).toEqual(["favorite"]);
   });
+
+  it("leaves out a session archived after its page was loaded", () => {
+    const catalog = createCockpitCatalog({
+      sourceKey: "local",
+      projects: [project("project-1", "Atlas")],
+      sessions: [
+        session("kept", "project-1"),
+        session("archived", "project-1", { isArchived: true }),
+      ],
+      providerRuntimeBySessionId: noRuntimeErrors,
+      connection: "online",
+    });
+
+    expect(catalog.projects[0]?.sessions.map((item) => item.id)).toEqual([
+      "kept",
+    ]);
+    expect(catalog.sessionCount).toBe(1);
+  });
 });

@@ -188,6 +188,8 @@ export function createCockpitCatalog({
   }
 
   for (const session of sessions) {
+    // An archived session stays in the loaded page until it is refetched.
+    if (session.isArchived) continue;
     const projectId = session.projectId ?? null;
     let group = groups.get(projectId);
     if (!group) {
@@ -241,7 +243,7 @@ export function createCockpitCatalog({
   return {
     sourceKey,
     projects: orderedProjects,
-    sessionCount: sessions.length,
+    sessionCount: sessions.filter((session) => !session.isArchived).length,
   };
 }
 

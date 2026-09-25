@@ -20,6 +20,8 @@ function controller(
     saveView: vi.fn(),
     setPinnedOnly: vi.fn(),
     togglePin: vi.fn(async () => true),
+    renameSession: vi.fn(async () => true),
+    archiveSession: vi.fn(async () => true),
     ...overrides,
   };
 }

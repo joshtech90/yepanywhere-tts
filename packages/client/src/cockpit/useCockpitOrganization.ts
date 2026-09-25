@@ -25,6 +25,9 @@ export interface CockpitOrganizationController {
   }) => CockpitSavedView | undefined;
   setPinnedOnly: (value: boolean) => void;
   togglePin: (sessionId: string, pinned: boolean) => Promise<boolean>;
+  renameSession: (sessionId: string, title: string) => Promise<boolean>;
+  /** YA cannot delete transcripts; archiving hides the session. */
+  archiveSession: (sessionId: string) => Promise<boolean>;
 }
 
 function activeView(
@@ -156,6 +159,42 @@ export function useCockpitOrganization(): CockpitOrganizationController {
     [runtime],
   );
 
+  const writeMetadata = useCallback(
+    async (
+      sessionId: string,
+      patch: { title: string } | { archived: true },
+    ): Promise<boolean> => {
+      try {
+        const result = await runtime.transport.fetch<{ updated: boolean }>(
+          `/sessions/${encodeURIComponent(sessionId)}/metadata`,
+          { method: "PUT", body: JSON.stringify(patch) },
+        );
+        if (!result.updated) return false;
+        // The server announces the change too; reporting the confirmed value
+        // now keeps the list from showing the old title until that arrives.
+        runtime.summary.reportSessionCollectionMetadataChanged({
+          type: "session-metadata-changed",
+          sessionId,
+          ...patch,
+          timestamp: new Date().toISOString(),
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [runtime],
+  );
+  const renameSession = useCallback(
+    (sessionId: string, title: string) =>
+      writeMetadata(sessionId, { title: title.trim() }),
+    [writeMetadata],
+  );
+  const archiveSession = useCallback(
+    (sessionId: string) => writeMetadata(sessionId, { archived: true }),
+    [writeMetadata],
+  );
+
   return useMemo(
     () => ({
       activeViewId: state.activeViewId,
@@ -169,14 +208,18 @@ export function useCockpitOrganization(): CockpitOrganizationController {
       saveView,
       setPinnedOnly,
       togglePin,
+      renameSession,
+      archiveSession,
     }),
     [
       activateView,
+      archiveSession,
       clearActiveView,
       pendingPins,
       pinError,
       pinnedOnly,
       removeView,
+      renameSession,
       saveView,
       setPinnedOnly,
       state.activeViewId,

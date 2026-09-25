@@ -39,6 +39,8 @@ const pageMocks = vi.hoisted(() => {
         saveView: vi.fn(),
         setPinnedOnly: vi.fn(),
         togglePin: vi.fn(async () => true),
+        renameSession: vi.fn(async () => true),
+        archiveSession: vi.fn(async () => true),
       },
     },
   };
@@ -175,10 +177,15 @@ describe("Cockpit shell", () => {
     expect(screen.getByRole("main").getAttribute("data-accent")).toBe("blue");
     expect(
       screen.getByRole("link", { name: "All Sessions" }).getAttribute("href"),
-    ).toBe("/-/relay/studio/sessions");
+    ).toBe("/-/relay/studio/cockpit?view=sessions");
     expect(
       screen.getByRole("link", { name: "Projects" }).getAttribute("href"),
-    ).toBe("/-/relay/studio/projects");
+    ).toBe("/-/relay/studio/cockpit?view=projects");
+    const settings = screen.getByRole("link", {
+      name: "Settings (opens the existing view in a new tab)",
+    });
+    expect(settings.getAttribute("href")).toBe("/-/relay/studio/settings");
+    expect(settings.getAttribute("target")).toBe("_blank");
     expect(
       screen.getByRole("status").textContent?.includes("calmly organized"),
     ).toBe(true);
@@ -304,17 +311,15 @@ describe("Cockpit shell", () => {
     expect(
       screen.getByRole("searchbox", { name: "Search all sessions" }),
     ).toBeTruthy();
-    const brand = screen.getByRole("link", {
-      name: "Cockpit Yep Anywhere",
-    });
-    brand.focus();
+    const projects = screen.getByRole("link", { name: "Projects" });
+    projects.focus();
 
-    fireEvent.click(brand);
+    fireEvent.click(projects);
 
     expect(
       screen.queryByRole("searchbox", { name: "Search all sessions" }),
     ).toBeNull();
-    expect(document.activeElement).toBe(brand);
+    expect(document.activeElement).toBe(projects);
   });
 
   it.each([

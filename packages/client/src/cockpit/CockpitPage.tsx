@@ -18,6 +18,7 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
+import { CockpitProjectsView, CockpitSessionsView } from "./CockpitListViews";
 import { CockpitNewSession } from "./CockpitNewSession";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
@@ -38,6 +39,8 @@ import {
   type CockpitCatalogData,
 } from "./useCockpitCatalog";
 import { useCockpitShortcuts } from "./useCockpitShortcuts";
+import { useCockpitSidebarWidth } from "./useCockpitSidebarWidth";
+import resizeStyles from "./CockpitSidebarResizeHandle.module.css";
 import { useCockpitViewportGeometry } from "./useCockpitViewportGeometry";
 
 function SessionsIcon() {
@@ -125,8 +128,8 @@ interface CockpitShellProps extends CockpitAppearanceControlsProps {
   basePath: string;
   catalogData: CockpitCatalogData;
   children?: ReactNode;
-  /** Which kind of page the children are; both replace the home canvas. */
-  detailView?: "session" | "new";
+  /** Which kind of page the children are; each replaces the home canvas. */
+  detailView?: "session" | "new" | "list";
   notice?: ReactNode;
   resolvedTheme: CockpitResolvedTheme;
   shellState: CockpitShellState;
@@ -162,6 +165,10 @@ export function CockpitShell({
   );
   const viewport = useCockpitViewportGeometry();
   const mobileLayout = useMediaQuery("(max-width: 700px)");
+  const sidebarWidth = useCockpitSidebarWidth(
+    !mobileLayout,
+    t("cockpitSidebarResize"),
+  );
   const openSearch = useCallback(
     (focusInput: boolean, focusOrigin: HTMLElement | null) => {
       searchFocusReturnRef.current =
@@ -233,6 +240,8 @@ export function CockpitShell({
     label: string;
     shortLabel: string;
     icon: ReactNode;
+    /** Leaves the Cockpit; a new tab keeps the Cockpit open to return to. */
+    external?: boolean;
   }> = [
     {
       href: navigation.sessions,
@@ -254,9 +263,10 @@ export function CockpitShell({
     },
     {
       href: navigation.settings,
-      label: t("sidebarSettings"),
+      label: t("cockpitSettingsNewTab"),
       shortLabel: t("cockpitNavShortSettings"),
       icon: <SettingsIcon />,
+      external: true,
     },
   ];
   const stateCopy = {
@@ -289,27 +299,13 @@ export function CockpitShell({
       data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
       ref={rootRef}
-      style={viewport.style}
+      style={{ ...viewport.style, ...sidebarWidth.style }}
     >
       <aside
         aria-label={t("cockpitNavigationAria")}
         className={styles.sidebar}
         inert={shortcutsOpen}
       >
-        <Link
-          className={styles.brand}
-          onClick={navigateFromSearch}
-          to={navigation.cockpit}
-        >
-          <span aria-hidden="true" className={styles.brandMark}>
-            C
-          </span>
-          <span>
-            <strong>Cockpit</strong>
-            <small>Yep Anywhere</small>
-          </span>
-        </Link>
-
         {!mobileLayout && (
           <div className={styles.desktopCatalog}>
             <CockpitCatalog
@@ -348,12 +344,15 @@ export function CockpitShell({
               aria-label={destination.label}
               className={styles.navigationItem}
               key={destination.href}
-              onClick={navigateFromSearch}
+              onClick={destination.external ? undefined : navigateFromSearch}
+              rel={destination.external ? "noopener" : undefined}
+              target={destination.external ? "_blank" : undefined}
+              title={destination.external ? destination.label : undefined}
               to={destination.href}
             >
               <span className={styles.icon}>{destination.icon}</span>
               <span aria-hidden="true" className={styles.labelLong}>
-                {destination.label}
+                {destination.external ? t("sidebarSettings") : destination.label}
               </span>
               <span aria-hidden="true" className={styles.labelShort}>
                 {destination.shortLabel}
@@ -384,6 +383,12 @@ export function CockpitShell({
             />
           </div>
         </details>
+        {sidebarWidth.handleProps && (
+          <div
+            className={resizeStyles.handle}
+            {...sidebarWidth.handleProps}
+          />
+        )}
       </aside>
 
       <CockpitShortcutDialog
@@ -485,7 +490,7 @@ export function CockpitShell({
                 </div>
                 <Link
                   className={styles.secondaryAction}
-                  to={navigation.sessions}
+                  to={navigation.classicSessions}
                 >
                   <SessionsIcon />
                   <span>{t("cockpitOpenClassic")}</span>
@@ -507,7 +512,9 @@ function CockpitSourcePage() {
     sessionId: string;
   }>();
   const [searchParams] = useSearchParams();
-  const newSession = searchParams.get("view") === "new";
+  const view = sessionId ? null : searchParams.get("view");
+  const newSession = view === "new";
+  const listView = view === "sessions" || view === "projects";
   // Subscribe to the derived primitive only: getSnapshot() returns a fresh
   // object on every call, which makes useSyncExternalStore loop forever
   // (React error 185). useActivityBusState selects `.state` for the same reason.
@@ -530,9 +537,19 @@ function CockpitSourcePage() {
       shellState={{ kind: shellKind }}
       theme={appearance.theme}
       notice={<CockpitCodexUpdateNotice basePath={basePath} />}
-      detailView={newSession && !sessionId ? "new" : "session"}
+      detailView={newSession ? "new" : listView ? "list" : "session"}
     >
-      {newSession && !sessionId ? (
+      {view === "sessions" ? (
+        <CockpitSessionsView
+          basePath={basePath}
+          key={searchParams.get("project") ?? ""}
+          organization={catalogData.organization}
+          projectId={searchParams.get("project")}
+          shellKind={shellKind}
+        />
+      ) : view === "projects" ? (
+        <CockpitProjectsView basePath={basePath} />
+      ) : newSession ? (
         <CockpitNewSession
           basePath={basePath}
           key={searchParams.get("project") ?? ""}
