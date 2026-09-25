@@ -151,13 +151,16 @@ export function CockpitQuickActions({
           >
             <strong>{t("cockpitQuickHandoff")}</strong>
             <small>
-              {busy ? t("cockpitQuickHandoffBusy") : t("cockpitQuickHandoffHint")}
+              {busy
+                ? t("cockpitQuickHandoffBusy")
+                : t("cockpitQuickHandoffHint")}
             </small>
           </button>
         </div>
       )}
       {dialogOpen && (
         <HandoffDialog
+          busy={busy}
           handoff={handoff}
           onClose={() => setDialogOpen(false)}
           port={port}
@@ -168,10 +171,12 @@ export function CockpitQuickActions({
 }
 
 function HandoffDialog({
+  busy,
   handoff,
   onClose,
   port,
 }: {
+  busy: boolean;
   handoff: ReturnType<typeof useCockpitHandoff>;
   onClose: () => void;
   port: CockpitComposerSessionPort;
@@ -188,8 +193,9 @@ function HandoffDialog({
   const [selection, setSelection] = useState<CockpitLaunchSelection | null>(
     null,
   );
-  const dialogRef = useRef<HTMLDivElement>(null);
-  const running = handoff.phase === "summarizing" || handoff.phase === "starting";
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const running =
+    handoff.phase === "summarizing" || handoff.phase === "starting";
 
   // Start from the session's own provider and model; the rest from the saved
   // new-session defaults.
@@ -214,10 +220,30 @@ function HandoffDialog({
         models.find((entry) => entry.id.length > 3 && model.includes(entry.id)))
       : undefined;
     setSelection(match ? { ...base, model: match.id } : base);
-  }, [launchable, legacy, port.permissionMode, port.session, selection, settings]);
+  }, [
+    launchable,
+    legacy,
+    port.permissionMode,
+    port.session,
+    selection,
+    settings,
+  ]);
 
+  // A native modal dialog keeps focus inside and the page behind it inert;
+  // focus returns to where it was once the dialog closes.
   useEffect(() => {
-    dialogRef.current?.focus();
+    const dialog = dialogRef.current;
+    const previous =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    if (dialog && typeof dialog.showModal === "function" && !dialog.open) {
+      dialog.showModal();
+    }
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (previous?.isConnected) previous.focus();
+    };
   }, []);
 
   const providerInfo = launchable.find(
@@ -240,102 +266,94 @@ function HandoffDialog({
   };
 
   return (
-    <div className={styles.backdrop}>
-      <div
-        aria-labelledby="cockpit-handoff-title"
-        aria-modal="true"
-        className={styles.dialog}
-        onKeyDown={(event) => {
-          if (event.key === "Escape" && !running) {
-            event.preventDefault();
-            event.stopPropagation();
-            onClose();
-          }
-        }}
-        ref={dialogRef}
-        role="dialog"
-        tabIndex={-1}
-      >
-        <h2 id="cockpit-handoff-title">{t("cockpitQuickHandoff")}</h2>
-        <p className={styles.explain}>{t("cockpitHandoffExplain")}</p>
+    <dialog
+      aria-labelledby="cockpit-handoff-title"
+      className={styles.dialog}
+      onCancel={(event) => {
+        event.preventDefault();
+        if (!running) onClose();
+      }}
+      ref={dialogRef}
+    >
+      <h2 id="cockpit-handoff-title">{t("cockpitQuickHandoff")}</h2>
+      <p className={styles.explain}>{t("cockpitHandoffExplain")}</p>
 
-        {launchable.length > 1 && selection && (
-          <div
-            aria-label={t("newSessionProviderTitle")}
-            className={styles.providers}
-            role="radiogroup"
-          >
-            {launchable.map((provider) => (
-              <button
-                aria-checked={provider.name === selection.provider}
-                className={styles.provider}
-                disabled={running}
-                key={provider.name}
-                onClick={() => chooseProvider(provider.name)}
-                role="radio"
-                type="button"
-              >
-                {provider.displayName}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {choices && (
-          <>
-            <CockpitModelField
+      {launchable.length > 1 && selection && (
+        <div
+          aria-label={t("newSessionProviderTitle")}
+          className={styles.providers}
+          role="radiogroup"
+        >
+          {launchable.map((provider) => (
+            <button
+              aria-checked={provider.name === selection.provider}
+              className={styles.provider}
               disabled={running}
-              models={choices.models}
-              onChange={(model) => update({ model })}
-              value={choices.effective.model}
-            />
-            {choices.supportsThinking && (
-              <CockpitThinkingField
-                disabled={running}
-                effort={choices.effective.effortLevel}
-                effortOptions={choices.effortOptions}
-                mode={choices.effective.thinkingMode}
-                modes={choices.thinkingModes}
-                onEffortChange={(effortLevel) => update({ effortLevel })}
-                onModeChange={(thinkingMode) => update({ thinkingMode })}
-              />
-            )}
-          </>
-        )}
-
-        {running && (
-          <p className={styles.progress} role="status">
-            <span aria-hidden="true" className={styles.spinner} />
-            {handoff.phase === "summarizing"
-              ? t("cockpitHandoffSummarizing")
-              : t("cockpitHandoffStarting")}
-          </p>
-        )}
-        {handoff.error && (
-          <p className={styles.error} role="alert">
-            {handoff.error}
-          </p>
-        )}
-
-        <div className={styles.actions}>
-          <button
-            className={styles.secondary}
-            disabled={running}
-            onClick={onClose}
-            type="button"
-          >
-            {t("cockpitSessionMenuCancel")}
-          </button>
-          <button
-            className={styles.primary}
-            disabled={!choices || running}
-            onClick={() => choices && void handoff.start(choices)}
-            type="button"
-          >
-            {t("cockpitHandoffStart")}
-          </button>
+              key={provider.name}
+              onClick={() => chooseProvider(provider.name)}
+              role="radio"
+              type="button"
+            >
+              {provider.displayName}
+            </button>
+          ))}
         </div>
+      )}
+
+      {choices && (
+        <>
+          <CockpitModelField
+            disabled={running}
+            models={choices.models}
+            onChange={(model) => update({ model })}
+            value={choices.effective.model}
+          />
+          {choices.supportsThinking && (
+            <CockpitThinkingField
+              disabled={running}
+              effort={choices.effective.effortLevel}
+              effortOptions={choices.effortOptions}
+              mode={choices.effective.thinkingMode}
+              modes={choices.thinkingModes}
+              onEffortChange={(effortLevel) => update({ effortLevel })}
+              onModeChange={(thinkingMode) => update({ thinkingMode })}
+            />
+          )}
+        </>
+      )}
+
+      {running && (
+        <p className={styles.progress} role="status">
+          <span aria-hidden="true" className={styles.spinner} />
+          {handoff.phase === "summarizing"
+            ? t("cockpitHandoffSummarizing")
+            : t("cockpitHandoffStarting")}
+        </p>
+      )}
+      {handoff.error && (
+        <p className={styles.error} role="alert">
+          {handoff.error}
+        </p>
+      )}
+
+      <div className={styles.actions}>
+        <button
+          className={styles.secondary}
+          disabled={running}
+          onClick={onClose}
+          type="button"
+        >
+          {t("cockpitSessionMenuCancel")}
+        </button>
+        <button
+          className={styles.primary}
+          disabled={!choices || running || busy}
+          onClick={() => choices && void handoff.start(choices)}
+          type="button"
+        >
+          {t("cockpitHandoffStart")}
+        </button>
       </div>
-    </div>
+    </dialog>
   );
 }

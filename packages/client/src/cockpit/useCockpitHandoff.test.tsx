@@ -151,7 +151,8 @@ describe("useCockpitHandoff", () => {
     );
   });
 
-  it("reports a turn that ends without a handoff", async () => {
+  it("reports a turn that ends without a handoff after a grace period", async () => {
+    vi.useFakeTimers();
     let props = {
       basePath: "",
       entries: [] as CockpitTranscriptEntry[],
@@ -170,7 +171,54 @@ describe("useCockpitHandoff", () => {
       rerender();
     });
 
+    // The answer may still be on its way into the transcript.
+    expect(result.current.phase).toBe("summarizing");
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+    });
     expect(result.current.phase).toBe("error");
     expect(mocks.startSession).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("refuses to write into a session another program is driving", async () => {
+    const external = {
+      ...port("idle"),
+      status: { owner: "external" },
+    } as CockpitComposerSessionPort;
+    const { result } = renderHook(
+      () =>
+        useCockpitHandoff({
+          basePath: "",
+          entries: [],
+          port: external,
+          projectId: "project-1",
+          sourceTitle: "Test",
+        }),
+      { wrapper },
+    );
+
+    await act(() => result.current.start(choices));
+    expect(mocks.send).not.toHaveBeenCalled();
+    expect(result.current.phase).toBe("error");
+  });
+
+  it("starts only once when clicked twice", async () => {
+    const { result } = renderHook(
+      () =>
+        useCockpitHandoff({
+          basePath: "",
+          entries: [],
+          port: port("idle"),
+          projectId: "project-1",
+          sourceTitle: "Test",
+        }),
+      { wrapper },
+    );
+    await act(async () => {
+      void result.current.start(choices);
+      void result.current.start(choices);
+    });
+    expect(mocks.send).toHaveBeenCalledTimes(1);
   });
 });

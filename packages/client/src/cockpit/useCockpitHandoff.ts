@@ -15,11 +15,10 @@ import { type CockpitLaunchChoices, launchOptions } from "./core/newSession";
 import type { CockpitTranscriptEntry } from "./core/sessionDetail";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 
-export type CockpitHandoffPhase =
-  | "idle"
-  | "summarizing"
-  | "starting"
-  | "error";
+/** How long a finished turn may take to show its answer in the transcript. */
+export const COCKPIT_HANDOFF_SUMMARY_WAIT_MS = 20_000;
+
+export type CockpitHandoffPhase = "idle" | "summarizing" | "starting" | "error";
 
 export interface CockpitHandoff {
   phase: CockpitHandoffPhase;
@@ -53,6 +52,9 @@ export function useCockpitHandoff({
   const [error, setError] = useState<string | null>(null);
   const choicesRef = useRef<CockpitLaunchChoices | null>(null);
   const sawTurnRef = useRef(false);
+  // Set before the first await so a second click cannot start a second run.
+  const inFlightRef = useRef(false);
+  const [waitExpired, setWaitExpired] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => {
     mountedRef.current = true;
@@ -62,6 +64,7 @@ export function useCockpitHandoff({
   }, []);
 
   const fail = useCallback((message: string) => {
+    inFlightRef.current = false;
     if (!mountedRef.current) return;
     setError(message);
     setPhase("error");
@@ -69,9 +72,16 @@ export function useCockpitHandoff({
 
   const start = useCallback(
     async (choices: CockpitLaunchChoices) => {
-      if (phase === "summarizing" || phase === "starting") return;
+      if (inFlightRef.current) return;
+      // Never write into a transcript another program or a running turn owns.
+      if (port.status.owner === "external" || port.processState !== "idle") {
+        fail(t("cockpitQuickHandoffBusy"));
+        return;
+      }
+      inFlightRef.current = true;
       choicesRef.current = choices;
       sawTurnRef.current = false;
+      setWaitExpired(false);
       setError(null);
       setPhase("summarizing");
       const submittedAt = new Date().toISOString();
@@ -97,12 +107,14 @@ export function useCockpitHandoff({
         fail(
           t("cockpitHandoffSendFailed", {
             message:
-              sendError instanceof Error ? sendError.message : String(sendError),
+              sendError instanceof Error
+                ? sendError.message
+                : String(sendError),
           }),
         );
       }
     },
-    [fail, phase, port, projectId, runtime.transport, t],
+    [fail, port, projectId, runtime.transport, t],
   );
 
   // The summary is ready once the turn that answers the prompt has ended.
@@ -112,11 +124,15 @@ export function useCockpitHandoff({
       sawTurnRef.current = true;
       return;
     }
-    if (!sawTurnRef.current) return;
+    if (!sawTurnRef.current) {
+      if (waitExpired) fail(t("cockpitHandoffNoSummary"));
+      return;
+    }
     const summary = extractCockpitHandoffSummary(entries);
     const choices = choicesRef.current;
     if (!summary || !choices) {
-      fail(t("cockpitHandoffNoSummary"));
+      // The process can report idle before the final transcript rows land.
+      if (waitExpired) fail(t("cockpitHandoffNoSummary"));
       return;
     }
     setPhase("starting");
@@ -148,8 +164,7 @@ export function useCockpitHandoff({
               recapAfterSeconds: result.recapAfterSeconds,
             },
             initialTitle: t("cockpitHandoffNewTitle", { title: sourceTitle }),
-            initialModel:
-              result.model ?? choices.effective.model ?? undefined,
+            initialModel: result.model ?? choices.effective.model ?? undefined,
             initialProvider:
               result.provider ?? choices.effective.provider ?? undefined,
           }),
@@ -173,13 +188,24 @@ export function useCockpitHandoff({
     projectId,
     sourceTitle,
     t,
+    waitExpired,
   ]);
 
+  const turnEnded = phase === "summarizing" && port.processState === "idle";
+  useEffect(() => {
+    if (!turnEnded) return;
+    const timer = setTimeout(
+      () => setWaitExpired(true),
+      COCKPIT_HANDOFF_SUMMARY_WAIT_MS,
+    );
+    return () => clearTimeout(timer);
+  }, [turnEnded]);
+
   const reset = useCallback(() => {
-    if (phase === "summarizing" || phase === "starting") return;
+    if (inFlightRef.current) return;
     setError(null);
     setPhase("idle");
-  }, [phase]);
+  }, []);
 
   return { phase, error, start, reset };
 }
