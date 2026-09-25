@@ -13,6 +13,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import {
+  getReadAloudFailedToken,
   getReadAloudState,
   getReadAloudToken,
   playReadAloud,
@@ -108,6 +109,7 @@ describe("read-aloud controller", () => {
 
     expect(getReadAloudState()).toBe("idle");
     expect(getReadAloudToken()).toBeNull();
+    expect(getReadAloudFailedToken()).toBeNull();
   });
 
   it("stops the current app-wide playback and settles its pending controller", async () => {
@@ -128,5 +130,24 @@ describe("read-aloud controller", () => {
     expect(audio?.pause).toHaveBeenCalledTimes(1);
     expect(getReadAloudState()).toBe("idle");
     expect(getReadAloudToken()).toBeNull();
+    expect(getReadAloudFailedToken()).toBeNull();
+  });
+
+  it("publishes a caller-scoped failure that explicit stop clears", async () => {
+    const failure = new Error("TTS unavailable");
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    apiMocks.ttsPlan.mockRejectedValue(failure);
+
+    await playReadAloud("Retry this response", "cockpit-response-3");
+
+    expect(consoleError).toHaveBeenCalledWith("Read aloud failed:", failure);
+    expect(getReadAloudState()).toBe("idle");
+    expect(getReadAloudToken()).toBeNull();
+    expect(getReadAloudFailedToken()).toBe("cockpit-response-3");
+
+    stopReadAloud();
+    expect(getReadAloudFailedToken()).toBeNull();
   });
 });

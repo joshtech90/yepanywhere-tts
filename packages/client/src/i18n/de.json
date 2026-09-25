@@ -140,6 +140,8 @@
   "cockpitToolNoDetails": "Es wurden keine weiteren Werkzeugdaten geliefert.",
   "cockpitComposerDropFiles": "Dateien hier ablegen",
   "cockpitComposerAttachmentHint": "Dateien einfügen oder hierher ziehen",
+  "cockpitSessionReadAloudRetry": "Antwort erneut vorlesen",
+  "cockpitSessionReadAloudFailed": "Audio nicht verfügbar — erneut versuchen",
   "sidebarSectionStarred": "Markiert",
   "sidebarSectionLast24Hours": "Letzte 24 Stunden",
   "sidebarSectionOlder": "Älter",

@@ -240,8 +240,11 @@ auf. Dessen Token stellt weiterhin genau eine Wiedergabe fuer alte und neue UI
 sicher; Start, Chunk-Prefetch und Stop verwenden unveraendert `/api/tts/plan`
 und `/api/tts/synthesize`. Stop loest nun auch die interne Warteoperation der
 abgebrochenen Audiowiedergabe auf, damit kein offenes Wiedergabe-Promise
-zurueckbleibt. Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und
-bleibt dadurch kompatibel.
+zurueckbleibt. Ein fehlgeschlagener Plan-, Synthese- oder Wiedergabeschritt
+bleibt am Token des ausloesenden Cockpit-Knopfs sichtbar und kann dort erneut
+gestartet werden; Stop oder der naechste Start loescht diesen Fehlerzustand.
+Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und bleibt dadurch
+kompatibel.
 
 ### Werkzeugdarstellungs-Grenze aus Paket 6
 

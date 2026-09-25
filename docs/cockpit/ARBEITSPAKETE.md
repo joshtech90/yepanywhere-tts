@@ -171,6 +171,12 @@ Historie eingefuegt wurde. Eine gleichzeitig unten eintreffende Live-Nachricht
 loest keinen falschen Hoehenausgleich und damit keinen Lesesprung mehr aus; ein
 stabiler Eintragsschluessel trennt beide Faelle in Regressionstests.
 
+Nachbesserung A23: Scheitert die Vorbereitung oder Wiedergabe einer
+Vorleseantwort, springt der Cockpit-Knopf nicht mehr kommentarlos in den
+Ausgangszustand zurueck. Er zeigt den Fehler an derselben Antwort an und bietet
+direkt einen erneuten Versuch; eine andere Wiedergabe oder explizites Stoppen
+loescht den alten Fehlerzustand appweit.
+
 ## 6 — Tool Calls, Shell, Dateiaenderungen und Diff-Ansicht
 
 Status: **umgesetzt**

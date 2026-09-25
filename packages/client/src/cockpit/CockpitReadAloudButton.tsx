@@ -1,6 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 import { useI18n } from "../i18n";
 import {
+  getReadAloudFailedToken,
   getReadAloudState,
   getReadAloudToken,
   playReadAloud,
@@ -15,7 +16,9 @@ export interface CockpitReadAloudButtonProps {
 }
 
 function readAloudSnapshot(): string {
-  return `${getReadAloudState()}\0${getReadAloudToken() ?? ""}`;
+  return `${getReadAloudState()}\0${getReadAloudToken() ?? ""}\0${
+    getReadAloudFailedToken() ?? ""
+  }`;
 }
 
 function SpeakerIcon({ stop }: { stop: boolean }) {
@@ -41,17 +44,22 @@ export function CockpitReadAloudButton({
   useSyncExternalStore(
     subscribeReadAloud,
     readAloudSnapshot,
-    () => "idle\0",
+    () => "idle\0\0",
   );
   const active =
     getReadAloudToken() === id && getReadAloudState() !== "idle";
   const loading = active && getReadAloudState() === "loading";
+  const failed = !active && getReadAloudFailedToken() === id;
   const actionLabel = active
     ? t("cockpitSessionReadAloudStop")
-    : t("cockpitSessionReadAloud");
+    : failed
+      ? t("cockpitSessionReadAloudRetry")
+      : t("cockpitSessionReadAloud");
   const visibleLabel = loading
     ? t("cockpitSessionReadAloudPreparing")
-    : actionLabel;
+    : failed
+      ? t("cockpitSessionReadAloudFailed")
+      : actionLabel;
   const handleClick = useCallback(() => {
     if (active) {
       stopReadAloud();
@@ -65,13 +73,15 @@ export function CockpitReadAloudButton({
       aria-label={actionLabel}
       aria-pressed={active}
       className={styles.button}
-      data-state={loading ? "loading" : active ? "playing" : "idle"}
+      data-state={
+        loading ? "loading" : active ? "playing" : failed ? "error" : "idle"
+      }
       onClick={handleClick}
       title={actionLabel}
       type="button"
     >
       <SpeakerIcon stop={active} />
-      <span>{visibleLabel}</span>
+      <span aria-live="polite">{visibleLabel}</span>
     </button>
   );
 }

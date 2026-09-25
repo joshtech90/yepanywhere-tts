@@ -30,6 +30,16 @@
   background: var(--cockpit-accent-soft);
 }
 
+.button[data-state="error"] {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-danger) 48%,
+    var(--cockpit-border)
+  );
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
+}
+
 .button svg {
   width: 1rem;
   height: 1rem;

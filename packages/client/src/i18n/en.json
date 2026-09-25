@@ -469,6 +469,8 @@
   "cockpitStopFailed": "The turn could not be stopped: {message}",
   "cockpitComposerDropFiles": "Drop files to attach",
   "cockpitComposerAttachmentHint": "Paste or drop files to attach",
+  "cockpitSessionReadAloudRetry": "Try reading response aloud again",
+  "cockpitSessionReadAloudFailed": "Audio unavailable — try again",
   "sidebarSectionPendingSessions": "Pending Sessions",
   "sidebarSectionStarred": "Starred",
   "sidebarSectionLast24Hours": "Last 24 Hours",
