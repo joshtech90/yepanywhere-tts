@@ -8,6 +8,7 @@ import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useSession } from "../hooks/useSession";
 import { useVersion } from "../hooks/useVersion";
+import { getSessionActivityUiState } from "../lib/sessionActivityUi";
 import { buildSessionDetailRenderItems } from "../lib/sessionDetail/renderItems";
 import { parseSessionNavigationState } from "../lib/sessionNavigationState";
 import type { SessionMetadata, SessionStatus } from "../types";
@@ -115,11 +116,20 @@ export function useCockpitSessionDetail(
       }),
     [renderItems, runtime.sourceKey, sessionId],
   );
-  const latestTurn = useMemo(
-    () => inspectCockpitLatestTurn(renderItems),
-    [renderItems],
-  );
   const owner = detail.status.owner;
+  const latestTurn = useMemo(() => {
+    const turn = inspectCockpitLatestTurn(renderItems);
+    if (turn.settled || turn.openToolCallAt === null) return turn;
+    // A provider may close a turn with only a completion message after an
+    // unanswered call; the existing activity rules already recognise that.
+    const { latestTurnCompleted } = getSessionActivityUiState({
+      owner,
+      processState: detail.processState,
+      items: renderItems,
+      messages: detail.messages,
+    });
+    return latestTurnCompleted ? { ...turn, settled: true } : turn;
+  }, [detail.messages, detail.processState, owner, renderItems]);
   const quietOpenTool =
     owner === "none" &&
     detail.processState === "idle" &&

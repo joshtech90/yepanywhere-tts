@@ -59,7 +59,11 @@ function getSafeLocalStorage(): Storage | null {
 }
 
 function getInitialWidth(): number {
-  return readCockpitSidebarWidth(getSafeLocalStorage());
+  // A width saved on a wider screen must still fit this viewport.
+  return clampCockpitSidebarWidth(
+    readCockpitSidebarWidth(getSafeLocalStorage()),
+    typeof window !== "undefined" ? window.innerWidth : undefined,
+  );
 }
 
 export function useCockpitSidebarWidth(

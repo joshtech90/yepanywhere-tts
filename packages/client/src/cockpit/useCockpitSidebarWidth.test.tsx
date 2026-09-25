@@ -209,6 +209,22 @@ describe("useCockpitSidebarWidth hook", () => {
     expect(result.current.width).toBe(COCKPIT_SIDEBAR_WIDTH_DEFAULT);
   });
 
+  it("fits a width saved on a wider screen into this viewport", () => {
+    localStorage.setItem(
+      COCKPIT_SIDEBAR_WIDTH_STORAGE_KEY,
+      JSON.stringify({ version: 1, width: 520 }),
+    );
+    const originalWidth = window.innerWidth;
+    window.innerWidth = 800;
+    try {
+      render(<TestSidebarHandle />);
+      const handle = screen.getByRole("separator", { name: "Resize sidebar" });
+      expect(handle.getAttribute("aria-valuenow")).toBe("400");
+    } finally {
+      window.innerWidth = originalWidth;
+    }
+  });
+
   it("re-clamps width on window resize without saving to storage", () => {
     localStorage.setItem(
       COCKPIT_SIDEBAR_WIDTH_STORAGE_KEY,

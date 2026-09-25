@@ -190,7 +190,33 @@ describe("Cockpit session detail", () => {
     ).toBeTruthy();
     expect(
       screen.getByRole("status").textContent,
-    ).toContain("Working in another program, for example a terminal");
+    ).toContain("Working in another program…");
+  });
+
+  it("keeps a following reader at the end when the transcript resizes", () => {
+    const callbacks: Array<() => void> = [];
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        constructor(callback: () => void) {
+          callbacks.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      },
+    );
+    try {
+      renderDetail();
+      const transcript = screen.getByLabelText("Session conversation");
+      Object.defineProperty(transcript, "scrollHeight", {
+        configurable: true,
+        get: () => 900,
+      });
+      for (const callback of callbacks) callback();
+      expect(transcript.scrollTop).toBe(900);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("keeps an idle session to a grey dot without a finished label", () => {

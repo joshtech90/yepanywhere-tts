@@ -258,9 +258,11 @@ export function deriveCockpitSessionState({
   if (transport === "offline") return "offline";
   if (transport === "error" || loadError) return "error";
   if (transport === "loading" || updatesResubscribing) return "reconnecting";
+  // Another program's work wins over a process state that only YA's own
+  // process can own; a leftover value must not relabel it.
+  if (workingElsewhere) return "external";
   if (processState === "waiting-input") return "waiting";
   if (processState === "in-turn") return "active";
-  if (workingElsewhere) return "external";
   if (owner !== "none" && !updatesConnected) return "reconnecting";
   return "complete";
 }

@@ -449,7 +449,7 @@
   "cockpitSessionStateOffline": "Offline",
   "cockpitSessionStateError": "Refresh failed",
   "cockpitSessionWorking": "Working…",
-  "cockpitSessionWorkingElsewhere": "Working in another program, for example a terminal…",
+  "cockpitSessionWorkingElsewhere": "Working in another program…",
   "cockpitToolToggle": "Show or hide details for {tool}",
   "cockpitToolStatusRunning": "Running",
   "cockpitToolStatusComplete": "Finished",

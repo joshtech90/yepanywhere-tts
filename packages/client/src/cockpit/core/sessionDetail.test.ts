@@ -238,6 +238,13 @@ describe("Cockpit session detail projection", () => {
     expect(
       deriveCockpitSessionState({
         ...external,
+        processState: "waiting-input",
+        workingElsewhere: true,
+      }),
+    ).toBe("external");
+    expect(
+      deriveCockpitSessionState({
+        ...external,
         transport: "offline",
         workingElsewhere: true,
       }),

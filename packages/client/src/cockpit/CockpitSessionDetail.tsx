@@ -407,6 +407,21 @@ export function CockpitSessionDetail({
     }
   }, [showWorking]);
 
+  // The phone shell measures its visible height after the first paint, so
+  // the transcript can shrink after it was scrolled to the end; a reader who
+  // follows the end keeps following it through such resizes.
+  useEffect(() => {
+    const container = scrollRef.current;
+    if (!container || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (followingRef.current) container.scrollTop = container.scrollHeight;
+    });
+    observer.observe(container);
+    const inner = container.firstElementChild;
+    if (inner) observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
+
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;

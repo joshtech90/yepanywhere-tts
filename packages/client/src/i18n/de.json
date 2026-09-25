@@ -120,7 +120,7 @@
   "cockpitSessionStateOffline": "Offline",
   "cockpitSessionStateError": "Aktualisierung fehlgeschlagen",
   "cockpitSessionWorking": "Arbeitet …",
-  "cockpitSessionWorkingElsewhere": "Arbeitet in einem anderen Programm, zum Beispiel im Terminal …",
+  "cockpitSessionWorkingElsewhere": "Arbeitet in einem anderen Programm …",
   "cockpitAttentionQuestionEyebrow": "Deine Antwort wird gebraucht",
   "cockpitAttentionApprovalEyebrow": "Freigabe erforderlich",
   "cockpitAttentionQuestionTitle": "Der Assistent hat eine Frage",
