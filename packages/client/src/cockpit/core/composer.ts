@@ -129,6 +129,18 @@ export function createCockpitSubmissionMetadata(input: {
 
 export function cockpitComposerDraftKey(
   sourceKey: string,
+  projectId: string,
+  sessionId: string,
+): string {
+  return `yep-anywhere-cockpit-composer:v2:${JSON.stringify([
+    sourceKey,
+    projectId,
+    sessionId,
+  ])}`;
+}
+
+function cockpitLegacyComposerDraftKey(
+  sourceKey: string,
   sessionId: string,
 ): string {
   return `yep-anywhere-cockpit-composer:v1:${sourceKey}:${sessionId}`;
@@ -149,6 +161,23 @@ export function writeCockpitComposerDraft(key: string, draft: string): void {
   } catch {
     // A blocked/full browser store must not disable the composer.
   }
+}
+
+export function readCockpitComposerSessionDraft(
+  sourceKey: string,
+  projectId: string,
+  sessionId: string,
+): string {
+  const key = cockpitComposerDraftKey(sourceKey, projectId, sessionId);
+  const current = readCockpitComposerDraft(key);
+  if (current) return current;
+
+  const legacyKey = cockpitLegacyComposerDraftKey(sourceKey, sessionId);
+  const legacy = readCockpitComposerDraft(legacyKey);
+  if (!legacy) return "";
+  writeCockpitComposerDraft(key, legacy);
+  writeCockpitComposerDraft(legacyKey, "");
+  return legacy;
 }
 
 export function readCockpitPromptHistory(

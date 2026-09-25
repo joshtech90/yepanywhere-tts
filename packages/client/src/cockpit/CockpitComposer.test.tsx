@@ -15,6 +15,7 @@ import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 const runtime = vi.hoisted(() => ({
   sourceKey: "local",
   transport: {
+    fetch: vi.fn(),
     upload: vi.fn(),
     uploadStagedAttachment: vi.fn(),
   },
@@ -98,6 +99,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   runtime.transport.upload.mockReset();
   runtime.transport.uploadStagedAttachment.mockReset();
+  runtime.transport.fetch.mockReset();
 });
 
 describe("Cockpit composer", () => {
@@ -122,7 +124,7 @@ describe("Cockpit composer", () => {
   });
 
   it("sends only on a plain desktop Enter outside keyboard composition", async () => {
-    const resume = vi.spyOn(api, "resumeSession").mockResolvedValue({
+    runtime.transport.fetch.mockResolvedValue({
       processId: "process-1",
       permissionMode: "default",
       modeVersion: 1,
@@ -136,7 +138,7 @@ describe("Cockpit composer", () => {
     fireEvent.keyDown(input, { key: "Enter", keyCode: 229 });
     fireEvent.keyDown(input, { key: "Enter", repeat: true });
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
-    expect(resume).not.toHaveBeenCalled();
+    expect(runtime.transport.fetch).not.toHaveBeenCalled();
 
     vi.spyOn(window, "matchMedia").mockImplementation(
       (query) =>
@@ -145,17 +147,48 @@ describe("Cockpit composer", () => {
         }) as MediaQueryList,
     );
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(resume).not.toHaveBeenCalled();
+    expect(runtime.transport.fetch).not.toHaveBeenCalled();
 
     vi.mocked(window.matchMedia).mockImplementation(
       (query) => ({ media: query, matches: false }) as MediaQueryList,
     );
     fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(resume).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+    );
   });
 
-  it("uses the provider steering lane and keeps queue as an explicit alternative", async () => {
-    const queue = vi.spyOn(api, "queueMessage").mockResolvedValue({
+  it(
+    "sends through the mounted source instead of the globally active source",
+    async () => {
+      const globalResume = vi
+        .spyOn(api, "resumeSession")
+        .mockRejectedValue(new Error("wrong source"));
+      runtime.transport.fetch.mockResolvedValue({
+        processId: "process-source-a",
+        permissionMode: "default",
+        modeVersion: 1,
+        serverTimestamp: 0,
+      });
+      render(composer());
+
+      fireEvent.change(screen.getByRole("textbox"), {
+        target: { value: "Keep this on source A." },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+      await waitFor(() =>
+        expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+      );
+      expect(runtime.transport.fetch.mock.calls[0]?.[0]).toBe(
+        "/projects/project-1/sessions/session-1/resume",
+      );
+      expect(globalResume).not.toHaveBeenCalled();
+    },
+  );
+
+  it("uses steering and keeps queue as an explicit alternative", async () => {
+    runtime.transport.fetch.mockResolvedValue({
       queued: true,
       deferred: true,
       deferredMessages: [],
@@ -172,15 +205,19 @@ describe("Cockpit composer", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
 
-    await waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
-    expect(queue.mock.calls[0]?.[6]).toBe(true);
-    expect(queue.mock.calls[0]?.[8]).toMatchObject({
+    await waitFor(() =>
+      expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+    );
+    const request = runtime.transport.fetch.mock.calls[0];
+    const body = JSON.parse(String(request?.[1]?.body));
+    expect(body.deferred).toBe(true);
+    expect(body.messageMetadata).toMatchObject({
       deliveryIntent: "deferred",
     });
   });
 
   it("queues with Ctrl+Enter while preserving ordinary draft input", async () => {
-    const queue = vi.spyOn(api, "queueMessage").mockResolvedValue({
+    runtime.transport.fetch.mockResolvedValue({
       queued: true,
       deferred: true,
       deferredMessages: [],
@@ -198,9 +235,13 @@ describe("Cockpit composer", () => {
     fireEvent.change(input, { target: { value: "Queue this fictional note." } });
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
 
-    await waitFor(() => expect(queue).toHaveBeenCalledTimes(1));
-    expect(queue.mock.calls[0]?.[6]).toBe(true);
-    expect(queue.mock.calls[0]?.[8]).toMatchObject({
+    await waitFor(() =>
+      expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+    );
+    const request = runtime.transport.fetch.mock.calls[0];
+    const body = JSON.parse(String(request?.[1]?.body));
+    expect(body.deferred).toBe(true);
+    expect(body.messageMetadata).toMatchObject({
       deliveryIntent: "deferred",
     });
   });
@@ -321,7 +362,7 @@ describe("Cockpit composer", () => {
         }),
     );
     writeCockpitComposerDraft(
-      cockpitComposerDraftKey("local", "session-2"),
+      cockpitComposerDraftKey("local", "project-1", "session-2"),
       "Draft for session two",
     );
     const view = render(composer());

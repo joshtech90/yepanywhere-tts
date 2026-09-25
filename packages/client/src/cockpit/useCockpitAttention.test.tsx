@@ -1,11 +1,18 @@
 import { act, renderHook } from "@testing-library/react";
 import type { InputRequest } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { api } from "../api/client";
 import {
   useCockpitAttention,
   type CockpitAttentionActionResult,
 } from "./useCockpitAttention";
+
+const runtime = vi.hoisted(() => ({
+  transport: { fetch: vi.fn() },
+}));
+
+vi.mock("../contexts/SourceRuntimeContext", () => ({
+  useCurrentSourceRuntime: () => runtime,
+}));
 
 const request: InputRequest = {
   id: "request-1",
@@ -16,15 +23,20 @@ const request: InputRequest = {
   timestamp: "2026-09-24T10:00:00.000Z",
 };
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+  vi.restoreAllMocks();
+  runtime.transport.fetch.mockReset();
+});
 
 describe("Cockpit attention actions", () => {
   it("refreshes a request rejected as already answered", async () => {
-    vi.spyOn(api, "respondToInput").mockRejectedValue(
-      Object.assign(new Error("stale"), { status: 400 }),
-    );
-    vi.spyOn(api, "getPendingInputRequest").mockResolvedValue({
-      request: null,
+    runtime.transport.fetch.mockImplementation((path: string) => {
+      if (path === "/sessions/session-1/pending-input") {
+        return Promise.resolve({ request: null });
+      }
+      return Promise.reject(
+        Object.assign(new Error("stale"), { status: 400 }),
+      );
     });
     const setPendingInputRequest = vi.fn();
     const { result } = renderHook(() =>
@@ -44,21 +56,48 @@ describe("Cockpit attention actions", () => {
     });
 
     expect(response).toEqual({ kind: "stale" });
-    expect(api.getPendingInputRequest).toHaveBeenCalledWith("session-1");
+    expect(runtime.transport.fetch).toHaveBeenCalledWith(
+      "/sessions/session-1/pending-input",
+    );
     expect(setPendingInputRequest).toHaveBeenCalledWith(null);
   });
 
-  it("falls back from unsupported interrupt to verified process abort", async () => {
-    vi.spyOn(api, "interruptProcess").mockResolvedValue({
-      interrupted: false,
-      supported: false,
+  it("answers through the mounted source transport", async () => {
+    runtime.transport.fetch.mockResolvedValue({ accepted: true });
+    const { result } = renderHook(() =>
+      useCockpitAttention({
+        pendingInputRequest: request,
+        processState: "waiting-input",
+        setPendingInputRequest: vi.fn(),
+        setProcessState: vi.fn(),
+        setStatus: vi.fn(),
+        status: { owner: "self", processId: "process-1" },
+      }),
+    );
+
+    await act(async () => {
+      expect(await result.current.respond("request-1", "approve")).toEqual({
+        kind: "accepted",
+      });
     });
-    vi.spyOn(api, "abortProcess").mockResolvedValue({
-      aborted: true,
-      processId: "process-1",
-      sessionId: "session-1",
-      verifiedStopped: true,
-      verification: "provider",
+
+    expect(runtime.transport.fetch.mock.calls[0]?.[0]).toBe(
+      "/sessions/session-1/input",
+    );
+  });
+
+  it("falls back from unsupported interrupt to verified process abort", async () => {
+    runtime.transport.fetch.mockImplementation((path: string) => {
+      if (path.endsWith("/interrupt")) {
+        return Promise.resolve({ interrupted: false, supported: false });
+      }
+      return Promise.resolve({
+        aborted: true,
+        processId: "process-1",
+        sessionId: "session-1",
+        verifiedStopped: true,
+        verification: "provider",
+      });
     });
     const setProcessState = vi.fn();
     const setStatus = vi.fn();
@@ -77,8 +116,10 @@ describe("Cockpit attention actions", () => {
       expect(await result.current.stop()).toEqual({ kind: "accepted" });
     });
 
-    expect(api.interruptProcess).toHaveBeenCalledWith("process-1");
-    expect(api.abortProcess).toHaveBeenCalledWith("process-1");
+    expect(runtime.transport.fetch.mock.calls.map((call) => call[0])).toEqual([
+      "/processes/process-1/interrupt",
+      "/processes/process-1/abort",
+    ]);
     expect(setStatus).toHaveBeenCalledWith({ owner: "none" });
     expect(setProcessState).toHaveBeenCalledWith("idle");
   });

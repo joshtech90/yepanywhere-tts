@@ -1,6 +1,6 @@
 import type { UploadedFile } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, type DeferredQueueMessage } from "../api/client";
+import type { DeferredQueueMessage } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
   getAttachmentUploadLongEdgePx,
@@ -25,7 +25,7 @@ import {
   createCockpitSubmissionMetadata,
   deriveCockpitComposerActions,
   frequentCockpitPrompts,
-  readCockpitComposerDraft,
+  readCockpitComposerSessionDraft,
   readCockpitPromptHistory,
   rememberCockpitPrompt,
   removeCockpitPrompt,
@@ -82,9 +82,13 @@ export function useCockpitComposer(
     processState: sessionPort.processState,
     supportsSteering: providerCapabilities.generallySupportsSteering,
   });
-  const draftKey = cockpitComposerDraftKey(runtime.sourceKey, sessionId);
+  const draftKey = cockpitComposerDraftKey(
+    runtime.sourceKey,
+    projectId,
+    sessionId,
+  );
   const [draft, setDraftState] = useState(() =>
-    readCockpitComposerDraft(draftKey),
+    readCockpitComposerSessionDraft(runtime.sourceKey, projectId, sessionId),
   );
   const [attachments, setAttachments] = useState<
     CockpitComposerAttachment[]
@@ -105,13 +109,17 @@ export function useCockpitComposer(
   attachmentsRef.current = attachments;
 
   useEffect(() => {
-    const restored = readCockpitComposerDraft(draftKey);
+    const restored = readCockpitComposerSessionDraft(
+      runtime.sourceKey,
+      projectId,
+      sessionId,
+    );
     setDraftState(restored);
     typingStartedAtRef.current = restored.trim()
       ? new Date().toISOString()
       : null;
     lastEditedAtRef.current = typingStartedAtRef.current;
-  }, [draftKey]);
+  }, [draftKey, projectId, runtime.sourceKey, sessionId]);
 
   useEffect(() => {
     setPromptHistory(readCockpitPromptHistory(runtime.sourceKey));
@@ -286,19 +294,22 @@ export function useCockpitComposer(
 
       try {
         if (action === "queue") {
-          const result = await api.queueMessage(
-            sessionPort.actualSessionId,
-            text,
-            sessionPort.permissionMode,
-            uploaded.length ? uploaded : undefined,
-            tempId,
-            getThinkingSetting(),
-            true,
-            Date.parse(submittedAt),
-            metadata,
-            undefined,
-            getShowThinkingSetting(),
-          );
+          const result = await runtime.transport.fetch<{
+            deferredMessages?: DeferredQueueMessage[];
+          }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
+            method: "POST",
+            body: JSON.stringify({
+              message: text,
+              mode: sessionPort.permissionMode,
+              attachments: uploaded.length ? uploaded : undefined,
+              tempId,
+              thinking: getThinkingSetting(),
+              showThinking: getShowThinkingSetting(),
+              deferred: true,
+              clientTimestamp: Date.parse(submittedAt),
+              messageMetadata: metadata,
+            }),
+          });
           sessionPort.setDeferredMessages(result.deferredMessages ?? []);
         } else {
           pendingId = sessionPort.addPendingMessage(
@@ -308,21 +319,29 @@ export function useCockpitComposer(
           ).tempId;
           sessionPort.setProcessState("in-turn");
           if (sessionPort.status.owner === "none") {
-            const result = await api.resumeSession(
-              projectId,
-              sessionPort.actualSessionId,
-              text,
+            const result = await runtime.transport.fetch<{
+              processId: string;
+              permissionMode: PermissionMode;
+              appliedPermissionMode?: PermissionMode;
+              modeVersion: number;
+              recapAfterSeconds?: number;
+            }>(
+              `/projects/${projectId}/sessions/${sessionPort.actualSessionId}/resume`,
               {
-                mode: sessionPort.permissionMode,
-                model: sessionPort.session?.model,
-                provider: sessionPort.session?.provider,
-                thinking: getThinkingSetting(),
-                showThinking: getShowThinkingSetting(),
+                method: "POST",
+                body: JSON.stringify({
+                  message: text,
+                  attachments: uploaded.length ? uploaded : undefined,
+                  tempId: pendingId,
+                  clientTimestamp: Date.parse(submittedAt),
+                  messageMetadata: metadata,
+                  mode: sessionPort.permissionMode,
+                  model: sessionPort.session?.model,
+                  provider: sessionPort.session?.provider,
+                  thinking: getThinkingSetting(),
+                  showThinking: getShowThinkingSetting(),
+                }),
               },
-              uploaded.length ? uploaded : undefined,
-              pendingId,
-              Date.parse(submittedAt),
-              metadata,
             );
             sessionPort.setStatus({
               owner: "self",
@@ -333,19 +352,22 @@ export function useCockpitComposer(
               recapAfterSeconds: result.recapAfterSeconds,
             });
           } else {
-            const result = await api.queueMessage(
-              sessionPort.actualSessionId,
-              text,
-              sessionPort.permissionMode,
-              uploaded.length ? uploaded : undefined,
-              pendingId,
-              getThinkingSetting(),
-              undefined,
-              Date.parse(submittedAt),
-              metadata,
-              undefined,
-              getShowThinkingSetting(),
-            );
+            const result = await runtime.transport.fetch<{
+              restarted?: boolean;
+              processId?: string;
+            }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
+              method: "POST",
+              body: JSON.stringify({
+                message: text,
+                mode: sessionPort.permissionMode,
+                attachments: uploaded.length ? uploaded : undefined,
+                tempId: pendingId,
+                thinking: getThinkingSetting(),
+                showThinking: getShowThinkingSetting(),
+                clientTimestamp: Date.parse(submittedAt),
+                messageMetadata: metadata,
+              }),
+            });
             if (result.restarted && result.processId) {
               sessionPort.setStatus({
                 owner: "self",
@@ -387,6 +409,7 @@ export function useCockpitComposer(
       draftKey,
       projectId,
       runtime.sourceKey,
+      runtime.transport,
       sessionPort,
       submitting,
       t,

@@ -5,6 +5,7 @@ import {
   deriveCockpitComposerActions,
   frequentCockpitPrompts,
   readCockpitComposerDraft,
+  readCockpitComposerSessionDraft,
   readCockpitPromptHistory,
   removeCockpitPromptHistorySource,
   rememberCockpitPrompt,
@@ -54,12 +55,56 @@ describe("Cockpit composer core", () => {
     });
   });
 
-  it("persists a source- and session-bound local draft", () => {
-    const key = cockpitComposerDraftKey("relay:studio", "session-1");
+  it("persists a source-, project-, and session-bound local draft", () => {
+    const key = cockpitComposerDraftKey(
+      "relay:studio",
+      "project-1",
+      "session-1",
+    );
     writeCockpitComposerDraft(key, "Keep this prompt");
     expect(readCockpitComposerDraft(key)).toBe("Keep this prompt");
     writeCockpitComposerDraft(key, "");
     expect(readCockpitComposerDraft(key)).toBe("");
+
+    expect(
+      cockpitComposerDraftKey("relay:studio", "project-1", "session-1"),
+    ).not.toBe(
+      cockpitComposerDraftKey("relay:studio", "project-2", "session-1"),
+    );
+    expect(
+      cockpitComposerDraftKey("relay:studio", "project-1", "session-1"),
+    ).not.toBe(
+      cockpitComposerDraftKey("relay:studio", "project-1", "session-2"),
+    );
+  });
+
+  it("moves a legacy draft into the first project-bound key", () => {
+    localStorage.setItem(
+      "yep-anywhere-cockpit-composer:v1:relay:studio:session-legacy",
+      "Keep the existing draft",
+    );
+
+    expect(
+      readCockpitComposerSessionDraft(
+        "relay:studio",
+        "project-1",
+        "session-legacy",
+      ),
+    ).toBe("Keep the existing draft");
+    expect(
+      readCockpitComposerDraft(
+        cockpitComposerDraftKey(
+          "relay:studio",
+          "project-1",
+          "session-legacy",
+        ),
+      ),
+    ).toBe("Keep the existing draft");
+    expect(
+      localStorage.getItem(
+        "yep-anywhere-cockpit-composer:v1:relay:studio:session-legacy",
+      ),
+    ).toBeNull();
   });
 
   it("keeps a bounded, source-local prompt-history seam for package 9", () => {

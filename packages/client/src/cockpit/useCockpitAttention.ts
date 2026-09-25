@@ -1,6 +1,6 @@
 import type { UserQuestionAnswers } from "@yep-anywhere/shared";
 import { useCallback } from "react";
-import { api } from "../api/client";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import type { InputRequest, SessionStatus } from "../types";
 
 export type CockpitAttentionActionResult =
@@ -50,18 +50,20 @@ export function useCockpitAttention({
   setStatus,
   status,
 }: CockpitAttentionInput): CockpitAttentionPort {
+  const runtime = useCurrentSourceRuntime();
   const respond = useCallback<CockpitAttentionPort["respond"]>(
     async (requestId, response, answers) => {
       const request = pendingInputRequest;
       if (!request || request.id !== requestId) return { kind: "stale" };
 
       try {
-        const result = await api.respondToInput(
-          request.sessionId,
-          requestId,
-          response,
-          answers,
-        );
+        const result = await runtime.transport.fetch<{
+          accepted: boolean;
+          pendingInputRequest?: InputRequest | null;
+        }>(`/sessions/${request.sessionId}/input`, {
+          method: "POST",
+          body: JSON.stringify({ requestId, response, answers }),
+        });
         if (!result.accepted) {
           return { kind: "error", message: "" };
         }
@@ -73,7 +75,9 @@ export function useCockpitAttention({
         }
 
         try {
-          const refreshed = await api.getPendingInputRequest(request.sessionId);
+          const refreshed = await runtime.transport.fetch<{
+            request: InputRequest | null;
+          }>(`/sessions/${request.sessionId}/pending-input`);
           setPendingInputRequest(refreshed.request ?? null);
         } catch {
           // A 400 already proves this exact request is no longer actionable.
@@ -82,7 +86,7 @@ export function useCockpitAttention({
         return { kind: "stale" };
       }
     },
-    [pendingInputRequest, setPendingInputRequest],
+    [pendingInputRequest, runtime.transport, setPendingInputRequest],
   );
 
   const processId = status.owner === "self" ? status.processId : undefined;
@@ -95,19 +99,27 @@ export function useCockpitAttention({
     if (!processId || processState === "idle") return { kind: "stale" };
 
     try {
-      const interrupted = await api.interruptProcess(processId);
+      const interrupted = await runtime.transport.fetch<{
+        aborted?: boolean;
+        interrupted: boolean;
+        supported: boolean;
+      }>(`/processes/${processId}/interrupt`, { method: "POST" });
       if (interrupted.interrupted && !interrupted.aborted) {
         return { kind: "accepted" };
       }
       if (!interrupted.aborted) {
-        await api.abortProcess(processId);
+        await runtime.transport.fetch(`/processes/${processId}/abort`, {
+          method: "POST",
+        });
       }
       setStatus({ owner: "none" });
       setProcessState("idle");
       return { kind: "accepted" };
     } catch (interruptError) {
       try {
-        await api.abortProcess(processId);
+        await runtime.transport.fetch(`/processes/${processId}/abort`, {
+          method: "POST",
+        });
         setStatus({ owner: "none" });
         setProcessState("idle");
         return { kind: "accepted" };
@@ -118,7 +130,7 @@ export function useCockpitAttention({
         };
       }
     }
-  }, [processId, processState, setProcessState, setStatus]);
+  }, [processId, processState, runtime.transport, setProcessState, setStatus]);
 
   return {
     interruptible,
