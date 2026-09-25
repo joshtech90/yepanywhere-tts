@@ -166,7 +166,10 @@ const TranscriptEntry = memo(function TranscriptEntry({
       >
         <header className={styles.entryHeader}>
           <strong>{t("cockpitSessionUser")}</strong>
-          {time && <time dateTime={entry.timestamp}>{time}</time>}
+          <span className={styles.entryActions}>
+            {time && <time dateTime={entry.timestamp}>{time}</time>}
+            <CockpitCopyResponseButton text={entry.text} target="prompt" />
+          </span>
         </header>
         <div className={styles.userText}>{entry.text}</div>
       </article>

@@ -183,6 +183,12 @@ einen erfolgreichen Kopiervorgang sichtbar und meldet blockierten
 Zwischenablagezugriff an derselben Stelle, statt still zu scheitern. Die
 Aktion bleibt auf Mobilbreite als vollwertiges Touch-Ziel erreichbar.
 
+Nachbesserung A25: Auch fruehere User-Prompts lassen sich direkt an ihrer
+Gespraechszeile als unveraenderter Text kopieren. Erfolg und blockierter
+Zwischenablagezugriff verwenden dieselbe sichtbare Rueckmeldung wie bei
+Assistant-Antworten; die Aktion speichert keine Prompt-History und veraendert
+den Composer-Draft nicht.
+
 ## 6 — Tool Calls, Shell, Dateiaenderungen und Diff-Ansicht
 
 Status: **umgesetzt**

@@ -29,7 +29,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("Cockpit response copy button", () => {
+describe("Cockpit transcript copy button", () => {
   it("copies the unchanged response text and confirms success", async () => {
     clipboardMocks.writeClipboardText.mockResolvedValue(true);
     const response = "## Result\n\nInvented answer.";
@@ -70,5 +70,25 @@ describe("Cockpit response copy button", () => {
     await waitFor(() => {
       expect(clipboardMocks.writeClipboardText).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("uses prompt-specific feedback without changing the copied text", async () => {
+    clipboardMocks.writeClipboardText.mockResolvedValue(true);
+    const prompt = "Keep this invented prompt exactly.";
+
+    render(
+      <I18nProvider>
+        <CockpitCopyResponseButton text={prompt} target="prompt" />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy prompt" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: "Prompt copied" }),
+      ).toBeTruthy();
+    });
+    expect(clipboardMocks.writeClipboardText).toHaveBeenCalledWith(prompt);
   });
 });

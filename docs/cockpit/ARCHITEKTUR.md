@@ -250,6 +250,9 @@ Abgeschlossene Assistant-Antworten bieten daneben eine Cockpit-eigene
 Kopieraktion fuer den bereits projizierten, unveraenderten Antworttext. Sie
 verwendet die vorhandene Clipboard-Hilfe, besitzt nur lokalen Rueckmeldestatus
 und fuehrt weder eine zweite Markdown-Projektion noch Transcript-Zustand ein.
+User-Prompts verwenden dieselbe lokale Aktion und kopieren den bereits
+projizierten Prompttext, ohne eine Prompt-History zu fuehren oder den
+Composer-Draft zu veraendern.
 
 ### Werkzeugdarstellungs-Grenze aus Paket 6
 

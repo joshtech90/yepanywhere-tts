@@ -5,6 +5,7 @@ import styles from "./CockpitCopyResponseButton.module.css";
 
 export interface CockpitCopyResponseButtonProps {
   text: string;
+  target?: "prompt" | "response";
 }
 
 type CopyStatus = "idle" | "copied" | "error";
@@ -36,6 +37,7 @@ function CopyIcon({ status }: { status: CopyStatus }) {
 
 export function CockpitCopyResponseButton({
   text,
+  target = "response",
 }: CockpitCopyResponseButtonProps) {
   const { t } = useI18n();
   const [copying, setCopying] = useState(false);
@@ -59,11 +61,17 @@ export function CockpitCopyResponseButton({
     setStatus(copied ? "copied" : "error");
   }, [copying, text]);
 
-  const label = status === "copied"
-    ? t("cockpitSessionCopyResponseCopied")
-    : status === "error"
-    ? t("cockpitSessionCopyResponseFailed")
-    : t("cockpitSessionCopyResponse");
+  const label = target === "prompt"
+    ? status === "copied"
+      ? t("cockpitSessionCopyPromptCopied")
+      : status === "error"
+        ? t("cockpitSessionCopyPromptFailed")
+        : t("cockpitSessionCopyPrompt")
+    : status === "copied"
+      ? t("cockpitSessionCopyResponseCopied")
+      : status === "error"
+        ? t("cockpitSessionCopyResponseFailed")
+        : t("cockpitSessionCopyResponse");
 
   return (
     <button
