@@ -313,6 +313,19 @@ und Effort werden ueber den vorhandenen `ModelSwitchModal` samt
 Long-Context-Warnung geaendert; ein ruhiger Cockpit-Trigger ersetzt dabei nicht
 die vorhandenen serverautoritativen Konfigurationsaktionen.
 
+### Handlungsgrenze aus Paket 8
+
+Der Cockpit-Stop besitzt keine eigene Prozesssemantik. Fuer eine selbst
+gefuehrte aktive Sitzung ruft er zuerst dieselbe bestehende Interrupt-Route wie
+die bisherige Session-Ansicht auf; nur wenn sie fehlt, fehlschlaegt oder keinen
+Stop bestaetigt, verwendet er deren bestehenden Prozessabbruch als Rueckfall.
+Ab dem Ausloesen bleiben weitere Klicks gesperrt, bis der kanonische Ownership-
+oder Prozesszustand die Aktion entfernt; nur ein sichtbarer Fehler gibt den
+Knopf fuer einen neuen Versuch frei. Das Cockpit behauptet daher weder
+Interrupt noch Abbruch vor einer Server- beziehungsweise Streambestaetigung.
+Fehler bleiben lokal und sichtbar; `Escape` findet diese Aktion ausschliesslich
+ueber den semantischen Cockpit-Shortcut-Vertrag.
+
 ### Organisationsgrenze aus Paket 9
 
 Favoriten bleiben vorhandene serverseitige Session-Metadaten. Das Cockpit

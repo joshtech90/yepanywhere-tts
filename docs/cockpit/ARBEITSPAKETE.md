@@ -274,6 +274,15 @@ Einzeln pruefbar durch:
 - Message-Storm-Szenario aus dem offenen Gap: Stop bleibt bedienbar;
 - visuelle und tastaturbasierte Abnahme.
 
+Erster Schnitt des Projekts „Cockpit Handlungsbedarf“: Eine selbst gefuehrte,
+aktive Cockpit-Sitzung zeigt jetzt einen dauerhaft erreichbaren Stop-Knopf.
+Er verwendet zuerst den bestehenden sanften Interrupt und faellt fuer alte
+Server oder nicht unterstuetzte Provider auf den vorhandenen Prozessabbruch
+zurueck. Doppelklicks starten nur eine Anfrage; Erfolg wird nicht optimistisch
+behauptet, Fehler bleiben am Knopf sichtbar. Escape aktiviert genau diese
+serverautoritative Aktion. Approval- und Fragekarten folgen in einem weiteren
+Schnitt desselben Projekts; Paket 8 bleibt deshalb offen.
+
 ## 9 — Session-Organisation, Pins und Prompt-History
 
 Status: **umgesetzt**

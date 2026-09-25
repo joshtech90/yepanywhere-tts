@@ -24,6 +24,7 @@
 
 .backLink,
 .classicLink,
+.stopButton,
 .loadOlder,
 .emptyState button,
 .inlineError button,
@@ -117,6 +118,57 @@
   display: flex;
   align-items: center;
   gap: 0.55rem;
+}
+
+.stopAction {
+  position: relative;
+  display: inline-flex;
+}
+
+.stopButton {
+  min-height: 2.45rem;
+  padding: 0 0.72rem;
+  gap: 0.42rem;
+  border-radius: 0.75rem;
+  color: var(--cockpit-danger);
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-danger) 34%,
+    var(--cockpit-border)
+  );
+  font-size: 0.7rem;
+}
+
+.stopButton svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  fill: currentColor;
+}
+
+.stopButton:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.stopError {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  right: 0;
+  z-index: 5;
+  width: min(19rem, calc(100vw - 2rem));
+  padding: 0.65rem 0.75rem;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--cockpit-danger) 36%,
+    var(--cockpit-border)
+  );
+  border-radius: 0.72rem;
+  color: var(--cockpit-danger);
+  background: var(--cockpit-surface-raised);
+  box-shadow: 0 12px 30px var(--cockpit-shadow);
+  font-size: 0.68rem;
+  font-weight: 650;
+  line-height: 1.4;
 }
 
 .sessionState {
@@ -419,8 +471,15 @@
   background: var(--cockpit-accent-soft);
 }
 
+.stopButton:hover:not(:disabled) {
+  border-color: var(--cockpit-danger);
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 10%, transparent);
+}
+
 .backLink:focus-visible,
 .classicLink:focus-visible,
+.stopButton:focus-visible,
 .loadOlder:focus-visible,
 .emptyState button:focus-visible,
 .inlineError button:focus-visible,
@@ -461,6 +520,23 @@
     padding: 0;
   }
 
+  .stopButton {
+    width: 2.75rem;
+    padding: 0;
+  }
+
+  .stopButton > span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+    margin: -1px;
+    white-space: nowrap;
+  }
+
   .classicLink span {
     position: absolute;
     width: 1px;
@@ -483,6 +559,7 @@
 
   .backLink,
   .classicLink,
+  .stopButton,
   .sessionState {
     width: 2.75rem;
     height: 2.75rem;
@@ -544,6 +621,7 @@
 @media (prefers-reduced-motion: reduce) {
   .backLink,
   .classicLink,
+  .stopButton,
   .loadOlder,
   .emptyState button,
   .inlineError button,

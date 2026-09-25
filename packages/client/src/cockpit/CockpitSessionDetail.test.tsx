@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
+import { api } from "../api/client";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
@@ -120,7 +121,10 @@ function renderDetail() {
   );
 }
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
   detailMocks.data = detailData();
@@ -164,5 +168,28 @@ describe("Cockpit session detail", () => {
 
     expect(screen.getByText("Reconnecting")).toBeTruthy();
     expect(screen.getByText("Everything is ready.")).toBeTruthy();
+  });
+
+  it("offers one server-authoritative stop request during rapid clicks", () => {
+    detailMocks.data = detailData({
+      processState: "in-turn",
+      status: { owner: "self", processId: "process-1" },
+    });
+    const interrupt = vi.spyOn(api, "interruptProcess").mockResolvedValue({
+      interrupted: true,
+      supported: true,
+    });
+    const abort = vi.spyOn(api, "abortProcess");
+    renderDetail();
+
+    const stop = screen.getByRole("button", { name: "Stop" });
+    fireEvent.click(stop);
+    fireEvent.click(stop);
+
+    expect(interrupt).toHaveBeenCalledTimes(1);
+    expect(interrupt).toHaveBeenCalledWith("process-1");
+    expect(abort).not.toHaveBeenCalled();
+    expect(stop.getAttribute("data-cockpit-shortcut")).toBe("stop");
+    expect(stop.getAttribute("aria-keyshortcuts")).toBe("Escape");
   });
 });

@@ -405,6 +405,8 @@
   "cockpitSessionThinkingStreaming": "Live",
   "cockpitSessionStreaming": "Writing",
   "cockpitSessionInterrupted": "This response was interrupted before it finished.",
+  "cockpitSessionStopping": "Stopping...",
+  "cockpitSessionStopFailed": "Could not stop the response: {message}",
   "cockpitSessionReadAloud": "Read response aloud",
   "cockpitSessionReadAloudPreparing": "Preparing audio",
   "cockpitSessionReadAloudStop": "Stop reading",

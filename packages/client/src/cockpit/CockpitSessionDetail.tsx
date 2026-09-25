@@ -1,10 +1,12 @@
 import {
   useCallback,
+  useEffect,
   useLayoutEffect,
   useRef,
   useState,
 } from "react";
 import { Link } from "react-router-dom";
+import { api } from "../api/client";
 import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
@@ -20,6 +22,7 @@ import {
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 import type { CockpitShellState } from "./core/shellState";
+import { requestCockpitStop } from "./core/stop";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
 
 export interface CockpitSessionDetailProps {
@@ -47,6 +50,68 @@ function ExternalIcon() {
       <path d="M14 5h5v5M19 5l-8 8" />
       <path d="M17 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h5" />
     </svg>
+  );
+}
+
+function StopIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <rect x="7" y="7" width="10" height="10" rx="1.5" />
+    </svg>
+  );
+}
+
+function CockpitStopAction({ processId }: { processId: string }) {
+  const { t } = useI18n();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const stopRequestedRef = useRef(false);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  const stop = useCallback(async () => {
+    if (stopRequestedRef.current) return;
+    stopRequestedRef.current = true;
+    setPending(true);
+    setError(null);
+    try {
+      await requestCockpitStop(api, processId);
+    } catch (stopError) {
+      if (!mountedRef.current) return;
+      const message =
+        stopError instanceof Error ? stopError.message : String(stopError);
+      setError(t("cockpitSessionStopFailed", { message }));
+      stopRequestedRef.current = false;
+      setPending(false);
+    }
+  }, [processId, t]);
+
+  return (
+    <span className={styles.stopAction}>
+      <button
+        aria-keyshortcuts="Escape"
+        aria-label={t(pending ? "cockpitSessionStopping" : "toolbarStop")}
+        className={styles.stopButton}
+        data-cockpit-shortcut="stop"
+        disabled={pending}
+        onClick={() => void stop()}
+        type="button"
+      >
+        <StopIcon />
+        <span>{t(pending ? "cockpitSessionStopping" : "toolbarStop")}</span>
+      </button>
+      {error && (
+        <span className={styles.stopError} role="alert">
+          {error}
+        </span>
+      )}
+    </span>
   );
 }
 
@@ -277,6 +342,10 @@ export function CockpitSessionDetail({
   const projectName =
     detail.session?.projectName?.trim() || t("cockpitUnknownProject");
   const classicHref = navigation.classicSession(projectId, sessionId);
+  const stopProcessId =
+    detail.status.owner === "self" && detail.processState !== "idle"
+      ? detail.status.processId
+      : undefined;
 
   return (
     <article className={styles.root} aria-labelledby="cockpit-session-title">
@@ -304,6 +373,9 @@ export function CockpitSessionDetail({
           </div>
         </div>
         <div className={styles.sessionActions}>
+          {stopProcessId && (
+            <CockpitStopAction key={stopProcessId} processId={stopProcessId} />
+          )}
           <CockpitModelControls
             actualSessionId={detail.composer.actualSessionId}
             projectId={projectId}
