@@ -1,0 +1,43 @@
+.led {
+  display: inline-block;
+  width: 0.55rem;
+  height: 0.55rem;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--cockpit-faint);
+}
+
+.led[data-tone="working"] {
+  background: var(--cockpit-working);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--cockpit-working) 22%, transparent);
+  animation: breathe 2.4s ease-in-out infinite;
+}
+
+.led[data-tone="waiting"] {
+  background: var(--cockpit-warning);
+  box-shadow: 0 0 0 3px
+    color-mix(in srgb, var(--cockpit-warning) 22%, transparent);
+}
+
+.led[data-tone="error"] {
+  background: var(--cockpit-danger);
+}
+
+.led[data-tone="unknown"] {
+  border: 1.5px solid var(--cockpit-faint);
+  background: transparent;
+}
+
+@keyframes breathe {
+  50% {
+    box-shadow: 0 0 0 5px
+      color-mix(in srgb, var(--cockpit-working) 10%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .led[data-tone="working"] {
+    animation: none;
+  }
+}

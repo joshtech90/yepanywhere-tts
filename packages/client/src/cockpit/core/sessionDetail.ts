@@ -65,6 +65,7 @@ export type CockpitTranscriptEntry =
 
 export type CockpitSessionState =
   | "active"
+  | "external"
   | "waiting"
   | "reconnecting"
   | "complete"
@@ -78,6 +79,8 @@ export interface CockpitSessionStateInput {
   processState: "idle" | "in-turn" | "waiting-input";
   updatesConnected: boolean;
   updatesResubscribing: boolean;
+  /** Another program is driving the session (see core/activity.ts). */
+  workingElsewhere?: boolean;
 }
 
 function timestampForItem(item: RenderItem): string | undefined {
@@ -250,12 +253,14 @@ export function deriveCockpitSessionState({
   processState,
   updatesConnected,
   updatesResubscribing,
+  workingElsewhere = false,
 }: CockpitSessionStateInput): CockpitSessionState {
   if (transport === "offline") return "offline";
   if (transport === "error" || loadError) return "error";
   if (transport === "loading" || updatesResubscribing) return "reconnecting";
   if (processState === "waiting-input") return "waiting";
   if (processState === "in-turn") return "active";
+  if (workingElsewhere) return "external";
   if (owner !== "none" && !updatesConnected) return "reconnecting";
   return "complete";
 }

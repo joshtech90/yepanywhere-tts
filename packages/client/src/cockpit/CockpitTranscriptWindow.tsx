@@ -33,6 +33,8 @@ function hasOpenDisclosure(entry: HTMLElement): boolean {
 }
 
 export interface CockpitTranscriptWindowProps {
+  /** Live tail below the last row, such as the working indicator. */
+  afterRows?: ReactNode;
   beforeRows: ReactNode;
   entries: readonly CockpitTranscriptEntry[];
   following: boolean;
@@ -46,6 +48,7 @@ export interface CockpitTranscriptWindowProps {
  * rows are replaced by measured spacers while the reader moves through it.
  */
 export function CockpitTranscriptWindow({
+  afterRows,
   beforeRows,
   entries,
   following,
@@ -153,6 +156,7 @@ export function CockpitTranscriptWindow({
           style={{ height: renderWindow.afterHeightPx }}
         />
       )}
+      {afterRows}
     </div>
   );
 }

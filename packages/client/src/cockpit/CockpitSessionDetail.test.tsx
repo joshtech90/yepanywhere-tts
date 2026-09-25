@@ -116,6 +116,7 @@ function detailData(
     sessionUpdatesResubscribing: false,
     setSessionModel: vi.fn(),
     status: { owner: "none" },
+    workingElsewhere: false,
     ...overrides,
   };
 }
@@ -175,6 +176,29 @@ describe("Cockpit session detail", () => {
         .getByRole("link", { name: "Open in existing view" })
         .getAttribute("href"),
     ).toBe("/projects/project-1/sessions/session-1");
+  });
+
+  it("shows work in another program in the header and at the transcript end", () => {
+    detailMocks.data = detailData({
+      status: { owner: "external" },
+      workingElsewhere: true,
+    });
+    renderDetail();
+
+    expect(
+      screen.getByRole("img", { name: "Working in another program" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("status").textContent,
+    ).toContain("Working in another program, for example a terminal");
+  });
+
+  it("keeps an idle session to a grey dot without a finished label", () => {
+    renderDetail();
+
+    expect(screen.getByRole("img", { name: "Idle" })).toBeTruthy();
+    expect(screen.queryByText("Finished")).toBeNull();
+    expect(screen.queryByText("Idle")).toBeNull();
   });
 
   it("loads older history through the canonical session action", () => {

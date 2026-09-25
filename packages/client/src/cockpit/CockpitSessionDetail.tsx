@@ -16,6 +16,7 @@ import { CockpitCopyResponseButton } from "./CockpitCopyResponseButton";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
+import { CockpitStatusLed } from "./CockpitStatusLed";
 import { CockpitStopButton } from "./CockpitStopButton";
 import { CockpitTranscriptWindow } from "./CockpitTranscriptWindow";
 import contentStyles from "./CockpitSessionContent.module.css";
@@ -30,6 +31,7 @@ import {
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 import type { CockpitShellState } from "./core/shellState";
+import { cockpitLedToneForState } from "./core/statusLed";
 import { selectCockpitTranscriptSnapshot } from "./core/transcriptScheduling";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
 
@@ -65,6 +67,8 @@ function sessionStateLabel(state: CockpitSessionState, t: TranslationFn) {
   switch (state) {
     case "active":
       return t("cockpitSessionStateActive");
+    case "external":
+      return t("cockpitSessionStateExternal");
     case "waiting":
       return t("cockpitSessionStateWaiting");
     case "reconnecting":
@@ -139,9 +143,11 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
 const TranscriptEntry = memo(function TranscriptEntry({
   entry,
   locale,
+  sessionWorking,
 }: {
   entry: CockpitTranscriptEntry;
   locale: string;
+  sessionWorking: boolean;
 }) {
   const { t } = useI18n();
   const time = entryTime(entry.timestamp, locale);
@@ -192,7 +198,13 @@ const TranscriptEntry = memo(function TranscriptEntry({
   }
 
   if (entry.kind === "tool") {
-    return <CockpitToolCall entry={entry} time={time} />;
+    return (
+      <CockpitToolCall
+        entry={entry}
+        sessionWorking={sessionWorking}
+        time={time}
+      />
+    );
   }
 
   // Thinking without an answer yet is one quiet line, not an answer card.
@@ -291,11 +303,33 @@ export function CockpitSessionDetail({
   const [following, setFollowing] = useState(true);
   const [pinnedEntryKey, setPinnedEntryKey] = useState<string | null>(null);
 
+  const hasEntries = transcriptEntries.length > 0;
+  const state = deriveCockpitSessionState({
+    transport:
+      shellKind === "empty" && detail.loading && !hasEntries
+        ? "loading"
+        : shellKind,
+    loadError: detail.error !== null,
+    owner: detail.status.owner,
+    processState: detail.processState,
+    updatesConnected: detail.sessionUpdatesConnected,
+    updatesResubscribing: detail.sessionUpdatesResubscribing,
+    workingElsewhere: detail.workingElsewhere,
+  });
+  const sessionWorking =
+    state === "active" ||
+    state === "external" ||
+    detail.processState !== "idle";
+
   const renderTranscriptEntry = useCallback(
     (entry: CockpitTranscriptEntry) => (
-      <TranscriptEntry entry={entry} locale={locale} />
+      <TranscriptEntry
+        entry={entry}
+        locale={locale}
+        sessionWorking={sessionWorking}
+      />
     ),
-    [locale],
+    [locale, sessionWorking],
   );
 
   useLayoutEffect(() => {
@@ -363,6 +397,16 @@ export function CockpitSessionDetail({
     }
   }, [projectId, runtime.sourceKey, sessionId, transcriptEntries]);
 
+  const showWorking = state === "active" || state === "external";
+  // The working line is not a transcript entry, so the follow effect above
+  // does not see it appear; keep a reader at the end looking at it.
+  useLayoutEffect(() => {
+    const container = scrollRef.current;
+    if (showWorking && container && followingRef.current) {
+      container.scrollTop = container.scrollHeight;
+    }
+  }, [showWorking]);
+
   const updateFollowing = useCallback(() => {
     const container = scrollRef.current;
     if (!container) return;
@@ -418,18 +462,6 @@ export function CockpitSessionDetail({
     transcriptEntries,
   ]);
 
-  const hasEntries = transcriptEntries.length > 0;
-  const state = deriveCockpitSessionState({
-    transport:
-      shellKind === "empty" && detail.loading && !hasEntries
-        ? "loading"
-        : shellKind,
-    loadError: detail.error !== null,
-    owner: detail.status.owner,
-    processState: detail.processState,
-    updatesConnected: detail.sessionUpdatesConnected,
-    updatesResubscribing: detail.sessionUpdatesResubscribing,
-  });
   const title =
     detail.session?.customTitle?.trim() ||
     detail.session?.title?.trim() ||
@@ -486,8 +518,13 @@ export function CockpitSessionDetail({
             className={styles.sessionState}
             data-state={state}
           >
-            <span aria-hidden="true" />
-            {sessionStateLabel(state, t)}
+            <CockpitStatusLed
+              label={sessionStateLabel(state, t)}
+              tone={cockpitLedToneForState(state)}
+            />
+            {state !== "complete" && (
+              <span aria-hidden="true">{sessionStateLabel(state, t)}</span>
+            )}
           </span>
           <Link className={styles.classicLink} to={classicHref}>
             <ExternalIcon />
@@ -513,6 +550,20 @@ export function CockpitSessionDetail({
         ref={scrollRef}
       >
         <CockpitTranscriptWindow
+          afterRows={
+            showWorking ? (
+              <p className={styles.workingRow} role="status">
+                <span aria-hidden="true" className={styles.workingDots}>
+                  <i />
+                  <i />
+                  <i />
+                </span>
+                {state === "external"
+                  ? t("cockpitSessionWorkingElsewhere")
+                  : t("cockpitSessionWorking")}
+              </p>
+            ) : null
+          }
           beforeRows={
             <>
               {detail.hasOlderMessages && (

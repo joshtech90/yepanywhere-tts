@@ -7,6 +7,7 @@ import type {
 
 export type CockpitSessionStatus =
   | "active"
+  | "external"
   | "complete"
   | "approval"
   | "question"
@@ -105,6 +106,8 @@ function deriveSessionStatus(
   ) {
     return "active";
   }
+  // Another program wrote the transcript within the server's decay window.
+  if (session.ownership?.owner === "external") return "external";
   return "complete";
 }
 

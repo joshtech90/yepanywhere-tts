@@ -16,6 +16,7 @@
   --cockpit-on-accent: #ffffff;
   --cockpit-danger: #c74855;
   --cockpit-warning: #bd7719;
+  --cockpit-working: #1f9d55;
   --cockpit-choice-blue: #356ae6;
   --cockpit-choice-violet: #7656e8;
   --cockpit-choice-teal: #087f78;
@@ -66,6 +67,7 @@
   --cockpit-on-accent: #111827;
   --cockpit-danger: #ff8b97;
   --cockpit-warning: #f2b65c;
+  --cockpit-working: #4ade80;
   --cockpit-accent-soft: color-mix(
     in srgb,
     var(--cockpit-accent) 18%,

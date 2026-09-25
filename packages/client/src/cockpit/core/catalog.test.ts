@@ -121,6 +121,7 @@ describe("Cockpit catalog adapter", () => {
       }),
       session("failed", "project-1"),
       session("done", "project-1", { activity: "idle" }),
+      session("terminal", "project-1", { ownership: { owner: "external" } }),
     ];
     const online = createCockpitCatalog({
       sourceKey: "local",
@@ -142,6 +143,7 @@ describe("Cockpit catalog adapter", () => {
       question: "question",
       failed: "error",
       done: "complete",
+      terminal: "external",
     });
 
     const offline = createCockpitCatalog({

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
 import {
   CODEX_STREAM_DURABLE_ID_ALIGNMENT_CAPABILITY,
@@ -16,6 +16,11 @@ import {
   type CockpitAttentionPort,
 } from "./useCockpitAttention";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
+import {
+  COCKPIT_FOREIGN_TOOL_MAX_AGE_MS,
+  inspectCockpitLatestTurn,
+  isCockpitSessionWorkingElsewhere,
+} from "./core/activity";
 import {
   createCockpitTranscriptEntries,
   type CockpitTranscriptEntry,
@@ -38,6 +43,8 @@ export interface CockpitSessionDetailData {
   sessionUpdatesConnected: boolean;
   sessionUpdatesResubscribing: boolean;
   status: SessionStatus;
+  /** Another program is working in this session right now. */
+  workingElsewhere: boolean;
 }
 
 /**
@@ -84,6 +91,12 @@ export function useCockpitSessionDetail(
         markdownAugments: detail.markdownAugments,
         transcriptDisplayObjects: detail.session?.transcriptDisplayObjects,
         previousRenderItems: previousRenderItemsRef.current,
+        // The server marks every unanswered tool_use as orphaned when it reads
+        // a transcript, including the one another program is running right
+        // now. Keep the latest turn's calls pending here; the transcript row
+        // decides from the session's working state whether it says "running"
+        // or "no result".
+        activeToolApproval: true,
       }),
     [
       detail.markdownAugments,
@@ -102,6 +115,34 @@ export function useCockpitSessionDetail(
       }),
     [renderItems, runtime.sourceKey, sessionId],
   );
+  const latestTurn = useMemo(
+    () => inspectCockpitLatestTurn(renderItems),
+    [renderItems],
+  );
+  const owner = detail.status.owner;
+  const quietOpenTool =
+    owner === "none" &&
+    detail.processState === "idle" &&
+    !latestTurn.settled &&
+    latestTurn.openToolCallAt !== null;
+  const [now, setNow] = useState(() => Date.now());
+  // Only a quiet open tool call depends on the clock: it has to stop counting
+  // as work once it is too old, without waiting for another event.
+  useEffect(() => {
+    if (!quietOpenTool) return;
+    setNow(Date.now());
+    const timer = setInterval(
+      () => setNow(Date.now()),
+      Math.min(60_000, COCKPIT_FOREIGN_TOOL_MAX_AGE_MS),
+    );
+    return () => clearInterval(timer);
+  }, [quietOpenTool]);
+  const workingElsewhere = isCockpitSessionWorkingElsewhere({
+    owner,
+    processState: detail.processState,
+    latestTurn,
+    now,
+  });
   useEffect(() => {
     previousRenderItemsRef.current = renderItems;
     previousEntriesRef.current = entries;
@@ -144,5 +185,6 @@ export function useCockpitSessionDetail(
     sessionUpdatesConnected: detail.sessionUpdatesConnected,
     sessionUpdatesResubscribing: detail.sessionUpdatesResubscribing,
     status: detail.status,
+    workingElsewhere,
   };
 }

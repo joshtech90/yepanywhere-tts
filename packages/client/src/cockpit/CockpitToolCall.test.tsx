@@ -91,6 +91,30 @@ beforeEach(() => {
 });
 
 describe("Cockpit tool call", () => {
+  it("says running only while the session is working", () => {
+    const view = render(
+      <I18nProvider>
+        <CockpitToolCall
+          entry={entry({ status: "pending" })}
+          sessionWorking
+          time={null}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("Running")).toBeTruthy();
+
+    view.rerender(
+      <I18nProvider>
+        <CockpitToolCall
+          entry={entry({ status: "pending" })}
+          sessionWorking={false}
+          time={null}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText("No result")).toBeTruthy();
+  });
+
   it("expands, copies, and navigates a multi-file diff", async () => {
     renderTool();
 

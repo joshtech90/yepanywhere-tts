@@ -133,27 +133,53 @@
   font-weight: 750;
 }
 
-.sessionState > span {
-  width: 0.44rem;
-  height: 0.44rem;
-  flex: 0 0 auto;
+.sessionState[data-state="complete"] {
+  padding: 0 0.8rem;
+}
+
+.workingRow {
+  display: flex;
+  margin: 0.4rem auto 1rem;
+  padding: 0 0.2rem;
+  align-items: center;
+  gap: 0.55rem;
+  color: var(--cockpit-muted);
+  font-size: 0.82rem;
+}
+
+.workingDots {
+  display: inline-flex;
+  gap: 0.22rem;
+}
+
+.workingDots > i {
+  width: 0.36rem;
+  height: 0.36rem;
   border-radius: 50%;
-  background: var(--cockpit-faint);
+  background: var(--cockpit-working);
+  opacity: 0.35;
+  animation: working-dot 1.2s ease-in-out infinite;
 }
 
-.sessionState[data-state="active"] > span {
-  background: var(--cockpit-accent);
-  box-shadow: 0 0 0 4px var(--cockpit-accent-soft);
+.workingDots > i:nth-child(2) {
+  animation-delay: 0.2s;
 }
 
-.sessionState[data-state="waiting"] > span,
-.sessionState[data-state="reconnecting"] > span,
-.sessionState[data-state="offline"] > span {
-  background: var(--cockpit-warning);
+.workingDots > i:nth-child(3) {
+  animation-delay: 0.4s;
 }
 
-.sessionState[data-state="error"] > span {
-  background: var(--cockpit-danger);
+@keyframes working-dot {
+  40% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workingDots > i {
+    animation: none;
+    opacity: 0.8;
+  }
 }
 
 .classicLink {
@@ -480,11 +506,6 @@
     justify-content: center;
   }
 
-  .sessionState > span {
-    width: 0.5rem;
-    height: 0.5rem;
-  }
-
   .sessionState {
     font-size: 0;
   }
@@ -556,10 +577,6 @@
 }
 
 @media (max-width: 430px) {
-  .sessionState {
-    display: none;
-  }
-
   .titleGroup > p {
     max-width: 10rem;
   }

@@ -10,6 +10,8 @@ import styles from "./CockpitToolCall.module.css";
 
 export interface CockpitToolCallProps {
   entry: CockpitToolEntry;
+  /** False once the session stopped working; unset keeps the item status. */
+  sessionWorking?: boolean;
   time: string | null;
 }
 
@@ -281,13 +283,23 @@ function GenericDetail({ entry }: { entry: CockpitToolEntry }) {
   );
 }
 
-export function CockpitToolCall({ entry, time }: CockpitToolCallProps) {
+export function CockpitToolCall({
+  entry,
+  sessionWorking,
+  time,
+}: CockpitToolCallProps) {
   const { t } = useI18n();
+  // A call without a result only runs while its session is working; once the
+  // session is idle the same call has ended without one.
+  const status =
+    entry.tool.status === "pending" && sessionWorking === false
+      ? "incomplete"
+      : entry.tool.status;
   return (
     <details
       className={styles.card}
       data-cockpit-entry-key={entry.key}
-      data-status={entry.tool.status}
+      data-status={status}
       data-tool-kind={entry.tool.kind}
     >
       <summary
@@ -304,10 +316,10 @@ export function CockpitToolCall({ entry, time }: CockpitToolCallProps) {
         </span>
         <span
           className={styles.status}
-          data-status={entry.tool.status}
+          data-status={status}
         >
           <i aria-hidden="true" />
-          {statusLabel(entry.tool.status, t)}
+          {statusLabel(status, t)}
         </span>
         {time && <time dateTime={entry.timestamp}>{time}</time>}
         <span className={styles.chevron} aria-hidden="true" />

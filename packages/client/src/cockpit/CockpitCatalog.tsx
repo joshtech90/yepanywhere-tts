@@ -37,6 +37,8 @@ function statusLabel(status: CockpitSessionStatus, t: TranslationFn): string {
   switch (status) {
     case "active":
       return t("cockpitSessionStatusActive");
+    case "external":
+      return t("cockpitSessionStatusExternal");
     case "complete":
       return t("cockpitSessionStatusComplete");
     case "approval":

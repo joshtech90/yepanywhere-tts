@@ -214,4 +214,33 @@ describe("Cockpit session detail projection", () => {
       "error",
     );
   });
+
+  it("shows work in another program instead of a finished session", () => {
+    const external = {
+      transport: "empty" as const,
+      loadError: false,
+      owner: "external" as const,
+      processState: "idle" as const,
+      updatesConnected: false,
+      updatesResubscribing: false,
+    };
+
+    expect(
+      deriveCockpitSessionState({ ...external, workingElsewhere: true }),
+    ).toBe("external");
+    expect(
+      deriveCockpitSessionState({
+        ...external,
+        owner: "none",
+        workingElsewhere: false,
+      }),
+    ).toBe("complete");
+    expect(
+      deriveCockpitSessionState({
+        ...external,
+        transport: "offline",
+        workingElsewhere: true,
+      }),
+    ).toBe("offline");
+  });
 });
