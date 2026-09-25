@@ -165,6 +165,9 @@ describe("Cockpit session detail", () => {
       screen.getByRole("button", { name: "Read response aloud" }),
     ).toBeTruthy();
     expect(
+      screen.getByRole("button", { name: "Copy response" }),
+    ).toBeTruthy();
+    expect(
       screen
         .getByRole("link", { name: "Open in existing view" })
         .getAttribute("href"),

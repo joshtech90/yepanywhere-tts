@@ -177,6 +177,12 @@ Ausgangszustand zurueck. Er zeigt den Fehler an derselben Antwort an und bietet
 direkt einen erneuten Versuch; eine andere Wiedergabe oder explizites Stoppen
 loescht den alten Fehlerzustand appweit.
 
+Nachbesserung A24: Abgeschlossene Assistant-Antworten lassen sich direkt an
+der Antwort als unveraenderter Quelltext kopieren. Der neue Knopf bestaetigt
+einen erfolgreichen Kopiervorgang sichtbar und meldet blockierten
+Zwischenablagezugriff an derselben Stelle, statt still zu scheitern. Die
+Aktion bleibt auf Mobilbreite als vollwertiges Touch-Ziel erreichbar.
+
 ## 6 — Tool Calls, Shell, Dateiaenderungen und Diff-Ansicht
 
 Status: **umgesetzt**

@@ -246,6 +246,11 @@ gestartet werden; Stop oder der naechste Start loescht diesen Fehlerzustand.
 Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und bleibt dadurch
 kompatibel.
 
+Abgeschlossene Assistant-Antworten bieten daneben eine Cockpit-eigene
+Kopieraktion fuer den bereits projizierten, unveraenderten Antworttext. Sie
+verwendet die vorhandene Clipboard-Hilfe, besitzt nur lokalen Rueckmeldestatus
+und fuehrt weder eine zweite Markdown-Projektion noch Transcript-Zustand ein.
+
 ### Werkzeugdarstellungs-Grenze aus Paket 6
 
 Tool Calls bleiben Teil derselben kanonischen `RenderItem`-Folge wie Text und

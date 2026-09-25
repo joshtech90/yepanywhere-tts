@@ -10,6 +10,7 @@ import { Link } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitAttentionCard } from "./CockpitAttentionCard";
+import { CockpitCopyResponseButton } from "./CockpitCopyResponseButton";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
@@ -196,6 +197,9 @@ const TranscriptEntry = memo(function TranscriptEntry({
         </span>
         <span className={styles.entryActions}>
           {time && <time dateTime={entry.timestamp}>{time}</time>}
+          {entry.spokenText && !entry.isStreaming && (
+            <CockpitCopyResponseButton text={entry.spokenText} />
+          )}
           {entry.spokenText && !entry.isStreaming && (
             <CockpitReadAloudButton id={entry.key} text={entry.spokenText} />
           )}
