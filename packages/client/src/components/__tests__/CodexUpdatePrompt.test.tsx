@@ -127,6 +127,13 @@ describe("CodexUpdatePrompt", () => {
     }));
   });
 
+  it("does not open the global modal when its route is suppressed", () => {
+    render(<CodexUpdatePrompt suppressed />);
+
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(mockUseCodexUpdateStatus).not.toHaveBeenCalled();
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();

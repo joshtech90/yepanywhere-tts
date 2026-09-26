@@ -11,6 +11,17 @@ export const GIT_DECODE_PATHS_ARGS = ["-c", "core.quotePath=false"];
 
 const DEFAULT_MAX_BUFFER = 1024 * 1024;
 
+/**
+ * Callers recognise Git failures by their English stderr ("not a git
+ * repository"). On a German system Git answers "Kein Git-Repository", every
+ * such check missed, and project storage refused non-Git folders. Git's own
+ * messages are therefore always requested in English; C.UTF-8 keeps UTF-8
+ * paths intact.
+ */
+function gitProcessEnv(extra?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...process.env, ...extra, LC_ALL: "C.UTF-8", LANGUAGE: "" };
+}
+
 /** Add the process-wide Source Control invariant to arbitrary Git arguments. */
 export function buildGitProcessArgs(args: readonly string[]): string[] {
   return ["--no-optional-locks", ...args];
@@ -51,13 +62,12 @@ export async function runGit(
       {
         maxBuffer: options?.maxBuffer ?? DEFAULT_MAX_BUFFER,
         timeout: options?.timeout ?? 10_000,
-        env: {
-          ...process.env,
+        env: gitProcessEnv({
           ...options?.env,
           ...(options?.disableTerminalPrompt
             ? { GIT_TERMINAL_PROMPT: "0" }
             : {}),
-        },
+        }),
       },
       (error, stdout, stderr) => {
         if (error) reject(Object.assign(error, { stdout, stderr }));
@@ -88,8 +98,8 @@ export async function runGitBytes(
     encoding: "buffer",
     maxBuffer: options?.maxBuffer ?? DEFAULT_MAX_BUFFER,
     timeout: options?.timeout ?? 10_000,
-    ...(options?.disableTerminalPrompt
-      ? { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }
-      : {}),
+    env: gitProcessEnv(
+      options?.disableTerminalPrompt ? { GIT_TERMINAL_PROMPT: "0" } : undefined,
+    ),
   })) as unknown as { stdout: Buffer; stderr: Buffer };
 }

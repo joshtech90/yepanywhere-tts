@@ -232,6 +232,7 @@ export async function uploadComposerAttachmentFile({
   sessionId,
   maxLongEdgePx,
   stagedBatchId,
+  signal,
   onProgress,
 }: {
   file: File;
@@ -240,6 +241,7 @@ export async function uploadComposerAttachmentFile({
   sessionId: string;
   maxLongEdgePx: number;
   stagedBatchId?: string | null;
+  signal?: AbortSignal;
   onProgress?: (bytesUploaded: number, uploadFile: File) => void;
 }): Promise<ComposerAttachment> {
   const preparedImage = file.type.startsWith("image/")
@@ -247,6 +249,7 @@ export async function uploadComposerAttachmentFile({
     : { file };
   const uploadFile = preparedImage.file;
   const uploadOptions: UploadOptions = {
+    signal,
     onProgress: (bytesUploaded) => {
       onProgress?.(bytesUploaded, uploadFile);
     },

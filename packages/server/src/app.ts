@@ -278,6 +278,7 @@ import { HeartbeatCandidateRegistry } from "./services/HeartbeatCandidateRegistr
 import type { HostAwakeService } from "./services/host-awake/HostAwakeService.js";
 import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
+import { buildProviderProjectCatalog } from "./routes/provider-catalog.js";
 import { AutoSessionTitleService } from "./services/AutoSessionTitleService.js";
 import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
 import { initializeSessionHeartbeatDefaults } from "./services/sessionHeartbeatDefaults.js";
@@ -314,6 +315,7 @@ import {
   findSessionListSummaryAcrossProviders,
   findSessionSummaryAcrossProviders,
   getSessionSourceForProvider,
+  listSessionsAcrossProviders,
 } from "./sessions/provider-resolution.js";
 import { applyRecapOverlayToSummary } from "./sessions/recap-overlays.js";
 import { normalizeSession } from "./sessions/normalization.js";
@@ -1733,6 +1735,61 @@ export function createApp(options: AppOptions): AppResult {
         }),
     });
     autoSessionTitleService.start();
+    const titleSettings = normalizeAutoSessionTitleSettings(
+      options.serverSettingsService?.getSetting("autoSessionTitle"),
+    );
+    if (titleSettings.enabled && titleSettings.backfillExisting) {
+      const titles = autoSessionTitleService;
+      // The persisted index does not re-announce old sessions, so hand the
+      // known ones over once; the service still titles them one at a time.
+      void (async () => {
+        const projects = await scanner.listProjects();
+        const catalog = await buildProviderProjectCatalog({
+          projects,
+          codexScanner,
+          geminiScanner,
+        });
+        for (const project of projects) {
+          // One unreadable project must not cost every later project its turn.
+          try {
+            const sessions = await listSessionsAcrossProviders(
+              project,
+              {
+                readerFactory,
+                sessionIndexService: options.sessionIndexService,
+                codexSessionsDir,
+                codexReaderFactory,
+                geminiSessionsDir,
+                geminiReaderFactory,
+                geminiHashToCwd: catalog.geminiHashToCwd,
+                grokSessionsDir,
+                grokReaderFactory,
+                piSessionsDir,
+                piReaderFactory,
+              },
+              catalog,
+            );
+            titles.backfill(
+              sessions.map((session) => ({
+                sessionId: session.id,
+                projectId: project.id,
+                activityAt: session.updatedAt,
+              })),
+            );
+          } catch (error) {
+            console.warn(
+              `[AutoSessionTitle] Backfill skipped project ${project.id}:`,
+              error,
+            );
+          }
+        }
+      })().catch((error: unknown) => {
+        console.warn(
+          "[AutoSessionTitle] Backfill could not list sessions:",
+          error,
+        );
+      });
+    }
   }
 
   let projectQueueScheduler: ProjectQueueScheduler | undefined;

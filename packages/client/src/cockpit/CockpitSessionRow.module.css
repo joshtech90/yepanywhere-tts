@@ -1,0 +1,89 @@
+/* One line per session: dot, title, then time and project folder in fixed
+   columns so they line up across every row of the list. */
+.row {
+  display: grid;
+  min-width: 0;
+  min-height: 2.35rem;
+  padding: 0.35rem 0.55rem;
+  grid-template-columns: auto minmax(0, 1fr) 2.35rem;
+  align-items: center;
+  column-gap: 0.4rem;
+  border: 1px solid transparent;
+  border-radius: 0.7rem;
+  color: var(--cockpit-text);
+  text-decoration: none;
+  -webkit-touch-callout: none;
+  transition:
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.row[data-with-project="true"] {
+  grid-template-columns: auto minmax(0, 1fr) 2.35rem 4.6rem;
+}
+
+.row:hover {
+  border-color: var(--cockpit-border);
+  background: var(--cockpit-hover);
+}
+
+.row:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+.title {
+  overflow: hidden;
+  font-size: 0.74rem;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.time,
+.project {
+  overflow: hidden;
+  color: var(--cockpit-faint);
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.time {
+  text-align: right;
+}
+
+.project {
+  color: var(--cockpit-muted);
+  font-weight: 650;
+}
+
+@media (max-width: 700px) {
+  .row {
+    min-height: 2.9rem;
+    padding: 0.55rem 0.4rem;
+    grid-template-columns: auto minmax(0, 1fr) 2.6rem;
+    user-select: none;
+  }
+
+  .row[data-with-project="true"] {
+    grid-template-columns: auto minmax(0, 1fr) 2.6rem 4.2rem;
+  }
+
+  .title {
+    font-size: 0.85rem;
+  }
+
+  .time,
+  .project {
+    font-size: 0.7rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .row {
+    transition: none;
+  }
+}

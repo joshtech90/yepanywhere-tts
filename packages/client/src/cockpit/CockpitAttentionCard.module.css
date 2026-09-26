@@ -1,0 +1,338 @@
+.root {
+  position: relative;
+  z-index: 4;
+  max-height: min(52vh, 32rem);
+  padding: 0.7rem clamp(0.8rem, 3vw, 2rem) 0;
+  flex: 0 1 auto;
+  overflow: auto;
+  border-top: 1px solid color-mix(
+    in srgb,
+    var(--cockpit-warning) 26%,
+    var(--cockpit-border)
+  );
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 96%,
+    transparent
+  );
+}
+
+.card {
+  width: min(100%, 54rem);
+  padding: clamp(0.85rem, 2.2vw, 1.1rem);
+  margin: 0 auto;
+  border: 1px solid color-mix(
+    in srgb,
+    var(--cockpit-warning) 45%,
+    var(--cockpit-border)
+  );
+  border-radius: 1rem;
+  background: color-mix(in srgb, var(--cockpit-warning) 6%, var(--cockpit-surface));
+  box-shadow: 0 14px 34px
+    color-mix(in srgb, var(--cockpit-shadow) 45%, transparent);
+}
+
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.headingText {
+  min-width: 0;
+}
+
+.eyebrow {
+  margin: 0 0 0.25rem;
+  color: var(--cockpit-warning);
+  font-size: 0.62rem;
+  font-weight: 820;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.heading h3 {
+  margin: 0;
+  color: var(--cockpit-text);
+  font-size: 0.94rem;
+  line-height: 1.3;
+}
+
+.toolName {
+  flex: 0 0 auto;
+  padding: 0.2rem 0.48rem;
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-hover);
+  font-family: var(--font-mono);
+  font-size: 0.6rem;
+}
+
+.prompt {
+  margin: 0.6rem 0 0;
+  color: var(--cockpit-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.plan {
+  max-height: min(40vh, 22rem);
+  margin: 0.7rem 0 0;
+  padding: 0.75rem 0.85rem;
+  overflow: auto;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.7rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.questions {
+  display: grid;
+  margin-top: 0.8rem;
+  gap: 0.7rem;
+}
+
+.question {
+  min-width: 0;
+  padding: 0.72rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.78rem;
+  background: color-mix(in srgb, var(--cockpit-bg) 62%, transparent);
+}
+
+.question legend {
+  padding: 0 0.35rem;
+  color: var(--cockpit-text);
+  font-size: 0.69rem;
+  font-weight: 780;
+}
+
+.questionPrompt {
+  margin: 0 0 0.65rem;
+  color: var(--cockpit-muted);
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.options {
+  display: grid;
+  gap: 0.42rem;
+}
+
+.option,
+.secondaryAction,
+.primaryAction {
+  min-height: 2.55rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.7rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface-raised);
+  font: inherit;
+  cursor: pointer;
+}
+
+.option {
+  display: grid;
+  width: 100%;
+  padding: 0.48rem 0.62rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.7rem;
+  text-align: left;
+}
+
+.option[aria-pressed="true"] {
+  border-color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+  box-shadow: inset 3px 0 0 var(--cockpit-accent);
+}
+
+.optionText {
+  display: grid;
+  min-width: 0;
+  gap: 0.12rem;
+}
+
+.optionText strong {
+  font-size: 0.7rem;
+}
+
+.optionText span {
+  color: var(--cockpit-faint);
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+
+.optionMark {
+  width: 0.78rem;
+  height: 0.78rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: 50%;
+}
+
+.option[aria-pressed="true"] .optionMark {
+  border: 3px solid var(--cockpit-accent);
+  background: var(--cockpit-on-accent);
+}
+
+.otherLabel {
+  display: grid;
+  margin-top: 0.55rem;
+  gap: 0.3rem;
+  color: var(--cockpit-muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.otherLabel input {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.68rem;
+  outline: 0;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: 0.72rem;
+}
+
+.details {
+  margin-top: 0.75rem;
+  border-top: 1px solid var(--cockpit-border);
+}
+
+.details summary {
+  padding-top: 0.62rem;
+  color: var(--cockpit-muted);
+  font-size: 0.66rem;
+  font-weight: 720;
+  cursor: pointer;
+}
+
+.details pre {
+  max-height: 11rem;
+  padding: 0.65rem;
+  overflow: auto;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 0.68rem;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-bg);
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* The answer buttons stay in view while a long question scrolls. */
+.actions {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  margin-top: 0.8rem;
+  padding: 0.55rem 0 0.7rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  background: var(--cockpit-surface-raised);
+}
+
+.secondaryAction,
+.primaryAction {
+  padding: 0 0.85rem;
+  font-size: 0.69rem;
+  font-weight: 780;
+}
+
+.secondaryAction {
+  color: var(--cockpit-danger);
+}
+
+.primaryAction {
+  border-color: transparent;
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+}
+
+.option:hover,
+.secondaryAction:hover {
+  border-color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.primaryAction:hover {
+  filter: brightness(1.06);
+}
+
+.option:focus-visible,
+.otherLabel input:focus-visible,
+.details summary:focus-visible,
+.secondaryAction:focus-visible,
+.primaryAction:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.secondaryAction:disabled,
+.primaryAction:disabled,
+.option:disabled,
+.otherLabel input:disabled {
+  cursor: default;
+  opacity: 0.52;
+}
+
+.result {
+  margin: 0.65rem 0 0;
+  color: var(--cockpit-muted);
+  font-size: 0.68rem;
+  font-weight: 680;
+}
+
+.result[data-kind="error"] {
+  color: var(--cockpit-danger);
+}
+
+.result[data-kind="stale"] {
+  color: var(--cockpit-warning);
+}
+
+@media (max-width: 700px) {
+  .root {
+    max-height: 48vh;
+    padding: 0.5rem 0.55rem 0;
+  }
+
+  .card {
+    padding: 0.75rem;
+    border-radius: 0.85rem;
+  }
+
+  .heading {
+    gap: 0.55rem;
+  }
+
+  .actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .secondaryAction,
+  .primaryAction {
+    min-height: 2.8rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .option,
+  .secondaryAction,
+  .primaryAction {
+    transition: none;
+  }
+}

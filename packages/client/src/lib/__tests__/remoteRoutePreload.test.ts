@@ -51,6 +51,20 @@ describe("initial remote route preloading", () => {
     ).toEqual(["remoteApp", "relayConnectionGate", "layouts", "filePage"]);
   });
 
+  it.each([
+    "/cockpit",
+    "/cockpit/projects/project-1/sessions/session-1",
+    "/-/relay/host/cockpit",
+    "/-/relay/host/cockpit/projects/project-1/sessions/session-1",
+  ])(
+    "loads the Cockpit route %s without the legacy layout",
+    (pathname) => {
+      const modules = getInitialRemoteRouteModuleKeys(pathname, "/");
+      expect(modules).toContain("cockpitPage");
+      expect(modules).not.toContain("layouts");
+    },
+  );
+
   it.each(["/", "/remote/"])(
     "preloads issue browsing under base %s",
     (base) => {
