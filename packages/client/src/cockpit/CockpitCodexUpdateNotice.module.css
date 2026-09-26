@@ -1,0 +1,85 @@
+.root {
+  display: flex;
+  min-height: 3.25rem;
+  padding: 0.55rem clamp(1rem, 3vw, 2.5rem);
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  border-bottom: 1px solid var(--cockpit-border);
+  color: var(--cockpit-muted);
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 86%,
+    transparent
+  );
+  font-size: 0.75rem;
+}
+
+.copy {
+  min-width: 0;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.copy strong {
+  color: var(--cockpit-text);
+}
+
+.actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.actions a,
+.actions button {
+  min-height: 2.25rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: 0.68rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-weight: 700;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.actions a {
+  display: inline-flex;
+  align-items: center;
+}
+
+@media (max-width: 700px) {
+  .root {
+    min-height: 0;
+    padding: 0.6rem 0.75rem;
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+
+  .actions {
+    width: 100%;
+  }
+
+  .actions a,
+  .actions button {
+    min-height: 2.75rem;
+    flex: 1;
+    justify-content: center;
+  }
+}
+
+.actions a:hover,
+.actions button:hover {
+  background: var(--cockpit-hover);
+}
+
+.actions a:focus-visible,
+.actions button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}

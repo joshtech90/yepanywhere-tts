@@ -31,6 +31,7 @@ import {
 } from "./hooks/useReloadNotifications";
 import { useClientSummarySourceKey } from "./lib/clientSummaryStore";
 import { initClientLogCollection } from "./lib/diagnostics";
+import { isCockpitPathname } from "./cockpit/core/navigation";
 
 const CodexUpdatePrompt = lazy(() =>
   import("./components/CodexUpdatePrompt").then(({ CodexUpdatePrompt }) => ({
@@ -52,6 +53,10 @@ interface Props {
   children: ReactNode;
 }
 
+interface AppContentProps extends Props {
+  showCodexUpdatePrompt: boolean;
+}
+
 const disableOnboarding = import.meta.env.VITE_DISABLE_ONBOARDING === "true";
 const disableCliUpdateNotifications =
   import.meta.env.VITE_DISABLE_CLI_UPDATE_NOTIFICATIONS === "true";
@@ -59,9 +64,10 @@ const disableCliUpdateNotifications =
 /**
  * Inner component that uses hooks requiring InboxContext.
  */
-function AppContent({ children }: Props) {
+function AppContent({ children, showCodexUpdatePrompt }: AppContentProps) {
   const location = useLocation();
   const isSessionDetailRoute = /\/sessions\/[^/]+/.test(location.pathname);
+  const isCockpitRoute = isCockpitPathname(location.pathname);
   const { icon: hostIdentityIcon } = useHostIdentity();
   const { authEnabled, isAuthenticated, isLoading: authLoading } = useAuth();
   const sourceKey = useClientSummarySourceKey();
@@ -150,6 +156,9 @@ function AppContent({ children }: Props) {
       {children}
       <Suspense fallback={null}>
         <FloatingActionButton />
+        {showCodexUpdatePrompt && (
+          <CodexUpdatePrompt suppressed={isCockpitRoute} />
+        )}
       </Suspense>
     </>
   );
@@ -162,6 +171,10 @@ function AppContent({ children }: Props) {
  */
 export function App({ children }: Props) {
   const { showWizard, isLoading, completeOnboarding } = useOnboarding();
+  const showCodexUpdatePrompt =
+    !disableCliUpdateNotifications &&
+    !isLoading &&
+    (disableOnboarding || !showWizard);
 
   return (
     <ToastProvider>
@@ -171,14 +184,13 @@ export function App({ children }: Props) {
           <HostIdentityProvider>
             <InboxProvider>
               <SchemaValidationProvider>
-                <AppContent>{children}</AppContent>
+                <AppContent showCodexUpdatePrompt={showCodexUpdatePrompt}>
+                  {children}
+                </AppContent>
                 <Suspense fallback={null}>
                   {!disableOnboarding && !isLoading && showWizard && (
                     <OnboardingWizard onComplete={completeOnboarding} />
                   )}
-                  {!disableCliUpdateNotifications &&
-                    !isLoading &&
-                    (disableOnboarding || !showWizard) && <CodexUpdatePrompt />}
                 </Suspense>
               </SchemaValidationProvider>
             </InboxProvider>

@@ -1,0 +1,83 @@
+.field {
+  display: grid;
+  min-width: 0;
+  gap: 0.42rem;
+}
+
+.label {
+  color: var(--cockpit-muted);
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.select {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: 0.7rem;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: 0.8rem;
+}
+
+.select:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.segment {
+  min-height: 2.35rem;
+  padding: 0 0.72rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.segment:hover:not(:disabled) {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-text);
+}
+
+.segment[aria-checked="true"] {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+}
+
+.segment:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.segment:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.hint {
+  margin: 0;
+  color: var(--cockpit-faint);
+  font-size: 0.7rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 700px) {
+  .segment {
+    min-height: 2.75rem;
+  }
+}

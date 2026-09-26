@@ -186,6 +186,38 @@ describe("AutoSessionTitleService", () => {
     expect(harness.service.getOutcome("old")).toBe("skipped");
   });
 
+  it("titles known sessions handed over at start when backfill is on", async () => {
+    const backfill = fixture({ settings: { backfillExisting: true } });
+    backfill.service.start();
+    const old = new Date(NOW - AUTO_SESSION_TITLE_MAX_AGE_MS * 10).toISOString();
+
+    backfill.service.backfill([
+      { sessionId: "old-a", projectId: PROJECT_ID, activityAt: old },
+      { sessionId: "old-b", projectId: PROJECT_ID, activityAt: old },
+    ]);
+    await settle();
+    await settle();
+
+    expect(backfill.titles.get("old-a")).toBe("Stripe anfragen");
+    expect(backfill.titles.get("old-b")).toBe("Stripe anfragen");
+  });
+
+  it("keeps the age window and user titles for handed-over sessions", async () => {
+    const plain = fixture({ customTitle: "Mein Titel" });
+    plain.service.start();
+    const old = new Date(NOW - AUTO_SESSION_TITLE_MAX_AGE_MS * 10).toISOString();
+
+    plain.service.backfill([
+      { sessionId: "old", projectId: PROJECT_ID, activityAt: old },
+      { sessionId: "fresh", projectId: PROJECT_ID },
+    ]);
+    await settle();
+
+    expect(plain.service.getOutcome("old")).toBe("skipped");
+    expect(plain.service.getOutcome("fresh")).toBe("skipped");
+    expect(plain.generateTitle).not.toHaveBeenCalled();
+  });
+
   it("titles an old session when backfill is enabled", async () => {
     const backfill = fixture({ settings: { backfillExisting: true } });
     backfill.service.start();

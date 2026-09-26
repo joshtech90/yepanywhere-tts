@@ -11,8 +11,10 @@ export type ReadAloudState = "idle" | "loading" | "playing";
 
 let audioEl: HTMLAudioElement | null = null;
 let objectUrl: string | null = null;
+let cancelPlaybackWait: (() => void) | null = null;
 let sessionId = 0;
 let token: string | null = null;
+let failedToken: string | null = null;
 let state: ReadAloudState = "idle";
 
 const listeners = new Set<() => void>();
@@ -36,8 +38,17 @@ export function getReadAloudToken(): string | null {
   return token;
 }
 
-export function stopReadAloud(): void {
+/** Identifier of the most recent caller whose playback failed. */
+export function getReadAloudFailedToken(): string | null {
+  return failedToken;
+}
+
+function resetReadAloud(nextFailedToken: string | null): void {
+  const shouldEmit =
+    state !== "idle" || token !== null || failedToken !== nextFailedToken;
   sessionId++;
+  cancelPlaybackWait?.();
+  cancelPlaybackWait = null;
   if (audioEl) {
     audioEl.pause();
     // Detach handlers before clearing src: assigning src = "" fires an
@@ -54,10 +65,13 @@ export function stopReadAloud(): void {
     objectUrl = null;
   }
   token = null;
-  if (state !== "idle") {
-    state = "idle";
-    emit();
-  }
+  failedToken = nextFailedToken;
+  state = "idle";
+  if (shouldEmit) emit();
+}
+
+export function stopReadAloud(): void {
+  resetReadAloud(null);
 }
 
 function base64ToObjectUrl(audioBase64: string, mimeType?: string): string {
@@ -86,15 +100,26 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
 
   const playUrl = (url: string): Promise<void> =>
     new Promise((resolve, reject) => {
-      audio.onended = () => resolve();
-      audio.onerror = () => reject(new Error("audio playback failed"));
+      const finish = () => {
+        if (cancelPlaybackWait === finish) cancelPlaybackWait = null;
+        resolve();
+      };
+      const fail = () => {
+        if (cancelPlaybackWait === finish) cancelPlaybackWait = null;
+        reject(new Error("audio playback failed"));
+      };
+      cancelPlaybackWait = finish;
+      audio.onended = finish;
+      audio.onerror = fail;
       const prev = objectUrl;
       objectUrl = url;
       audio.src = url;
       if (prev && prev !== url) URL.revokeObjectURL(prev);
-      audio.play().catch(reject);
+      audio.play().catch(fail);
     });
 
+  let pending: Promise<{ audioBase64: string; mimeType?: string }> | null =
+    null;
   try {
     const { chunks } = await api.ttsPlan(text);
     if (!alive() || chunks.length === 0) {
@@ -102,8 +127,7 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       return;
     }
     // Fetch chunk i; prefetch i+1 in parallel for seamless playback.
-    let pending: Promise<{ audioBase64: string; mimeType?: string }> | null =
-      api.ttsSynthesize(chunks[0] as string, true);
+    pending = api.ttsSynthesize(chunks[0] as string, true);
     for (let i = 0; i < chunks.length; i++) {
       const current = pending;
       const next = chunks[i + 1];
@@ -129,7 +153,8 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
     }
     if (alive()) stopReadAloud();
   } catch (err) {
+    pending?.catch(() => {});
     console.error("Read aloud failed:", err);
-    if (alive()) stopReadAloud();
+    if (alive()) resetReadAloud(id);
   }
 }
