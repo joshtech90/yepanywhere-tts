@@ -1,4 +1,9 @@
-import { useLayoutEffect, useRef } from "react";
+import {
+  type MutableRefObject,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+} from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
 import { hasCoarsePointer } from "../lib/deviceDetection";
@@ -12,6 +17,12 @@ import { useCockpitComposer } from "./useCockpitComposer";
 import styles from "./CockpitComposer.module.css";
 
 export interface CockpitComposerProps {
+  /**
+   * Set when a larger surface (the whole session view) takes dropped files:
+   * the composer then leaves dragging to it and publishes its attach
+   * function here. Pasting stays with the composer.
+   */
+  dropTargetRef?: MutableRefObject<((files: File[]) => void) | null>;
   projectId: string;
   sessionId: string;
   sessionPort: CockpitComposerSessionPort;
@@ -62,6 +73,18 @@ function CockpitComposerSession(props: CockpitComposerProps) {
     !hasBlockedAttachment &&
     (composer.draft.trim().length > 0 || composer.attachments.length > 0);
   const attachmentDrop = useCockpitAttachmentDropTarget(composer.attachFiles);
+  const dropTargetRef = props.dropTargetRef;
+  useEffect(() => {
+    if (!dropTargetRef) return;
+    const attach = composer.attachFiles;
+    dropTargetRef.current = attach;
+    return () => {
+      if (dropTargetRef.current === attach) dropTargetRef.current = null;
+    };
+  }, [composer.attachFiles, dropTargetRef]);
+  const dropHandlers = dropTargetRef
+    ? { onPaste: attachmentDrop.handlers.onPaste }
+    : attachmentDrop.handlers;
   const primaryLabel = composer.submitting
     ? t("pushToggleSending")
     : actionLabel(composer.actions.primary, t);
@@ -76,7 +99,7 @@ function CockpitComposerSession(props: CockpitComposerProps) {
 
   return (
     <section
-      {...attachmentDrop.handlers}
+      {...dropHandlers}
       className={styles.root}
       aria-label={t("sessionPlaceholderResume")}
       data-dragging-files={attachmentDrop.draggingFiles || undefined}

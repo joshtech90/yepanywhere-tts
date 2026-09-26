@@ -63,12 +63,47 @@ describe("Cockpit attachment drop target", () => {
     };
 
     fireEvent.dragEnter(screen.getByRole("textbox"), { dataTransfer });
-    expect(screen.getByRole("status").textContent).toBe(
-      "Drop files to attach",
-    );
+    expect(screen.getByRole("status").textContent).toBe("Drop files to attach");
 
     fireEvent.drop(screen.getByRole("textbox"), { dataTransfer });
     expect(onFiles).toHaveBeenCalledWith([file]);
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it("clears the cue when the drag leaves the surface or ends elsewhere", () => {
+    render(<Target onFiles={vi.fn()} />);
+    const input = screen.getByRole("textbox");
+    const surface = input.parentElement as HTMLElement;
+    const dataTransfer = {
+      dropEffect: "none",
+      files: [new File(["x"], "a.txt")],
+      types: ["Files"],
+    };
+    // jsdom has no DragEvent; a MouseEvent carries relatedTarget.
+    const leave = (target: Element, relatedTarget: EventTarget | null) => {
+      const event = new MouseEvent("dragleave", {
+        bubbles: true,
+        cancelable: true,
+        relatedTarget,
+      });
+      Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+      fireEvent(target, event);
+    };
+
+    // Moving between children keeps the cue.
+    fireEvent.dragEnter(input, { dataTransfer });
+    leave(input, surface);
+    expect(screen.getByRole("status")).toBeTruthy();
+
+    // A child that vanished mid-drag sent no leave; leaving the surface
+    // still clears the cue.
+    leave(surface, document.body);
+    expect(screen.queryByRole("status")).toBeNull();
+
+    // Cancelled or dropped elsewhere: the window sees the end.
+    fireEvent.dragEnter(input, { dataTransfer });
+    expect(screen.getByRole("status")).toBeTruthy();
+    fireEvent(window, new Event("dragend"));
     expect(screen.queryByRole("status")).toBeNull();
   });
 });

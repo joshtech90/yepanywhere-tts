@@ -11,6 +11,10 @@ import {
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
+import {
+  CockpitAttachmentDropCue,
+  useCockpitAttachmentDropTarget,
+} from "./CockpitAttachmentDropTarget";
 import { CockpitAttentionCard } from "./CockpitAttentionCard";
 import { CockpitCopyResponseButton } from "./CockpitCopyResponseButton";
 import { useCockpitDrawerOpener } from "./CockpitMobileDrawer";
@@ -275,6 +279,14 @@ export function CockpitSessionDetail({
   const { locale, t } = useI18n();
   const runtime = useCurrentSourceRuntime();
   const openDrawer = useCockpitDrawerOpener();
+  // Files dropped anywhere on the session go to the composer, not only on
+  // the input itself (Joscha 26.09.2026).
+  const attachFilesRef = useRef<((files: File[]) => void) | null>(null);
+  const sessionDrop = useCockpitAttachmentDropTarget((files) =>
+    attachFilesRef.current?.(files),
+  );
+  const { onPaste: _pasteStaysWithComposer, ...sessionDropHandlers } =
+    sessionDrop.handlers;
   const navigation = useMemo(
     () => createCockpitNavigation(basePath),
     [basePath],
@@ -518,7 +530,12 @@ export function CockpitSessionDetail({
   );
 
   return (
-    <article className={styles.root} aria-labelledby="cockpit-session-title">
+    <article
+      {...sessionDropHandlers}
+      aria-labelledby="cockpit-session-title"
+      className={styles.root}
+      data-dragging-files={sessionDrop.draggingFiles || undefined}
+    >
       <header className={styles.sessionHeader}>
         {openDrawer ? (
           <button
@@ -718,9 +735,15 @@ export function CockpitSessionDetail({
       )}
 
       <CockpitComposer
+        dropTargetRef={attachFilesRef}
         projectId={projectId}
         sessionId={sessionId}
         sessionPort={detail.composer}
+      />
+
+      <CockpitAttachmentDropCue
+        label={t("cockpitComposerDropFiles")}
+        visible={sessionDrop.draggingFiles}
       />
 
       {!following && hasEntries && (

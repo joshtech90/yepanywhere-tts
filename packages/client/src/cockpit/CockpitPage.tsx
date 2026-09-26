@@ -362,6 +362,18 @@ export function CockpitShell({
       data-session-drawer={sessionDrawer ? "true" : undefined}
       data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
+      // A file dropped beside a drop surface would make the browser open it
+      // and leave the Cockpit; refuse it instead.
+      onDragOver={(event) => {
+        if (event.defaultPrevented) return;
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "none";
+      }}
+      onDrop={(event) => {
+        if (event.defaultPrevented) return;
+        if (event.dataTransfer.files.length > 0) event.preventDefault();
+      }}
       ref={rootRef}
       style={{ ...viewport.style, ...sidebarWidth.style }}
     >
