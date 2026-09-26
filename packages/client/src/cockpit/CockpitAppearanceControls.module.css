@@ -1,0 +1,134 @@
+.root {
+  display: grid;
+  gap: 0.95rem;
+}
+
+.controlGroup {
+  display: grid;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  gap: 0.45rem;
+}
+
+.controlLabel {
+  padding: 0;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.segmentedControl {
+  display: grid;
+  padding: 0.18rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.15rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  background: var(--cockpit-bg);
+}
+
+.segmentButton,
+.accentButton {
+  border: 0;
+  font: inherit;
+  cursor: pointer;
+}
+
+.segmentButton {
+  min-height: 2.25rem;
+  padding: 0 0.45rem;
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-muted);
+  background: transparent;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.segmentButton:hover {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.segmentButton[aria-pressed="true"] {
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface-raised);
+  box-shadow: var(--cockpit-elevation-low);
+}
+
+.accentChoices {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+
+.accentButton {
+  position: relative;
+  min-width: 2.5rem;
+  min-height: 2.5rem;
+  border-radius: var(--cockpit-radius-md);
+  background: var(--accent-choice);
+  transition:
+    box-shadow 140ms ease,
+    transform 140ms ease;
+}
+
+.accentButton:hover {
+  box-shadow: var(--cockpit-elevation-low);
+}
+
+.accentButton[data-accent-choice="blue"] {
+  --accent-choice: var(--cockpit-choice-blue);
+}
+
+.accentButton[data-accent-choice="violet"] {
+  --accent-choice: var(--cockpit-choice-violet);
+}
+
+.accentButton[data-accent-choice="teal"] {
+  --accent-choice: var(--cockpit-choice-teal);
+}
+
+.accentButton[data-accent-choice="coral"] {
+  --accent-choice: var(--cockpit-choice-coral);
+}
+
+.accentButton[aria-pressed="true"]::after {
+  position: absolute;
+  inset: 0.42rem;
+  border: 2px solid #ffffff;
+  border-radius: var(--cockpit-radius-xs);
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 18%);
+  content: "";
+}
+
+.segmentButton:focus-visible,
+.accentButton:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+@media (max-width: 700px) {
+  .segmentButton {
+    min-height: 2.75rem;
+  }
+
+  .accentButton {
+    min-height: 2.75rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .segmentButton,
+  .accentButton {
+    transition: none;
+  }
+}

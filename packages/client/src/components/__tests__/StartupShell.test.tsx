@@ -1,6 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { StartupShell, isSessionStartupPath } from "../StartupShell";
 
 describe("StartupShell", () => {
@@ -45,5 +45,40 @@ describe("StartupShell", () => {
     expect(
       container.firstElementChild?.getAttribute("data-startup-shell"),
     ).toBe("page");
+  });
+
+  describe("on Cockpit routes", () => {
+    afterEach(() => localStorage.clear());
+
+    it("loads on the Cockpit's own background without the classic skeleton", () => {
+      localStorage.setItem(
+        "yep-anywhere-cockpit-appearance",
+        JSON.stringify({ version: 1, theme: "dark", accent: "blue" }),
+      );
+      const { container } = render(
+        <MemoryRouter
+          initialEntries={["/cockpit/projects/project-1/sessions/session-1"]}
+        >
+          <StartupShell phase="module">Loading…</StartupShell>
+        </MemoryRouter>,
+      );
+
+      const shell = container.firstElementChild;
+      expect(shell?.getAttribute("data-startup-shell")).toBe("cockpit");
+      expect(shell?.getAttribute("data-theme")).toBe("dark");
+      expect(screen.getByRole("status").textContent).toContain("Loading…");
+    });
+
+    it("also covers relay Cockpit routes", () => {
+      const { container } = render(
+        <MemoryRouter initialEntries={["/-/relay/host/cockpit"]}>
+          <StartupShell phase="connection">Reconnecting...</StartupShell>
+        </MemoryRouter>,
+      );
+
+      expect(
+        container.firstElementChild?.getAttribute("data-startup-shell"),
+      ).toBe("cockpit");
+    });
   });
 });

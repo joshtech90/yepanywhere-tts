@@ -1,0 +1,98 @@
+.root {
+  --bg-code: var(--cockpit-surface);
+  --bg-secondary: var(--cockpit-surface-raised);
+  --bg-tertiary: var(--cockpit-hover);
+  --bg-hover: color-mix(
+    in srgb,
+    var(--cockpit-accent) 10%,
+    var(--cockpit-hover)
+  );
+  --bg-surface: var(--cockpit-surface);
+  --border-color: var(--cockpit-border);
+  --border-input: var(--cockpit-border-strong);
+  --border-subtle: var(--cockpit-border);
+  --primary-color: var(--cockpit-accent);
+  --success-color: var(--cockpit-accent);
+  --status-badge-input-bg: var(--cockpit-accent-soft);
+  --status-badge-input-text: var(--cockpit-accent);
+  --text-primary: var(--cockpit-text);
+  --text-secondary: var(--cockpit-muted);
+  --text-muted: var(--cockpit-muted);
+  --text-dimmed: var(--cockpit-faint);
+  --text-link: var(--cockpit-accent);
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --radius-sm: 0.45rem;
+  --radius-md: 0.75rem;
+  --font-size-xs: 0.62rem;
+  --font-size-sm: 0.7rem;
+  --font-size-base: 0.78rem;
+  --font-size-lg: 0.9rem;
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  flex: 0 0 auto;
+  padding: 0.8rem var(--cockpit-gutter) 0.9rem;
+  border-top: 1px solid var(--cockpit-border);
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 92%,
+    transparent
+  );
+  box-shadow: 0 -12px 30px var(--cockpit-shadow);
+}
+
+.root[data-state="pending"] {
+  opacity: 0.82;
+}
+
+.statusRow {
+  display: flex;
+  min-height: 1.5rem;
+  margin-bottom: 0.55rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-xs);
+}
+
+.statusRow strong {
+  color: var(--cockpit-text);
+  font-size: var(--cockpit-text-2xs);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+  font-weight: var(--cockpit-weight-strong);
+}
+
+.statusRow span {
+  text-align: right;
+}
+
+.error {
+  margin: 0.65rem 0 0;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid
+    color-mix(in srgb, var(--cockpit-danger) 36%, var(--cockpit-border));
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+  line-height: 1.4;
+}
+
+@media (max-width: 700px) {
+  .root {
+    padding: 0.7rem 0.65rem 0.8rem;
+  }
+
+  .statusRow {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .statusRow span {
+    text-align: left;
+  }
+}

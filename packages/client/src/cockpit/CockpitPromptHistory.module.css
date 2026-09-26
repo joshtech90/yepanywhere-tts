@@ -1,0 +1,219 @@
+.root {
+  position: relative;
+}
+
+.trigger {
+  display: grid;
+  width: 2.35rem;
+  min-height: 2.25rem;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface-raised);
+  cursor: pointer;
+}
+
+.trigger svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.trigger:hover,
+.trigger[aria-expanded="true"] {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.panel {
+  position: absolute;
+  z-index: 10;
+  right: 0;
+  bottom: calc(100% + 0.55rem);
+  display: grid;
+  width: min(25rem, calc(100vw - 2rem));
+  max-height: min(26rem, 65vh);
+  padding: 0.8rem;
+  gap: 0.8rem;
+  overflow: auto;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-lg);
+  background: var(--cockpit-surface-raised);
+  box-shadow: var(--cockpit-elevation-float);
+}
+
+.panel section {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.panel h2 {
+  margin: 0;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-2xs);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.search {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.search input {
+  min-height: 2.6rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  outline: 0;
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-xs);
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.search input:focus {
+  border-color: var(--cockpit-accent);
+  box-shadow: 0 0 0 3px var(--cockpit-accent-ring);
+}
+
+.frequent {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.frequent button,
+.recent button {
+  min-width: 0;
+  border: 0;
+  color: var(--cockpit-text);
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.frequent button {
+  display: grid;
+  min-height: 3.2rem;
+  padding: 0.55rem 0.65rem;
+  gap: 0.18rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  background: var(--cockpit-surface);
+}
+
+.frequent span,
+.recent li > button:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frequent small {
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-2xs);
+}
+
+.recent {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 0.25rem;
+  list-style: none;
+}
+
+.recent li {
+  display: grid;
+  min-height: 2.5rem;
+  grid-template-columns: minmax(0, 1fr) 2.5rem;
+  align-items: center;
+  border-radius: var(--cockpit-radius-sm);
+}
+
+.recent li:hover {
+  background: var(--cockpit-hover);
+}
+
+.recent li > button:first-child {
+  height: 100%;
+  padding: 0 0.55rem;
+  font-size: var(--cockpit-text-xs);
+}
+
+.recent li > button:last-child {
+  height: 100%;
+  padding: 0;
+  color: var(--cockpit-faint);
+  text-align: center;
+}
+
+.empty {
+  margin: 0;
+  padding: 0.75rem;
+  border: 1px dashed var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-xs);
+  line-height: 1.45;
+  text-align: center;
+}
+
+.trigger:focus-visible,
+.frequent button:focus-visible,
+.recent button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .trigger {
+    width: 1.8rem;
+    min-height: 1.8rem;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  /* The trigger sits at the left of the toolbar; a panel anchored to it ran
+     off the left edge. On a phone it spans the composer box above it. */
+  .root {
+    position: static;
+  }
+
+  .panel {
+    position: absolute;
+    right: 0;
+    bottom: calc(100% + 0.4rem);
+    left: 0;
+    width: auto;
+    max-height: min(28rem, calc(var(--cockpit-viewport-height, 100dvh) - 8rem));
+  }
+
+  .frequent {
+    grid-template-columns: 1fr;
+  }
+
+  .frequent button,
+  .recent li {
+    min-height: 2.75rem;
+  }
+
+  .recent li {
+    grid-template-columns: minmax(0, 1fr) 2.75rem;
+  }
+}

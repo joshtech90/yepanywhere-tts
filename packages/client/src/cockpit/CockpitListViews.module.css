@@ -1,0 +1,285 @@
+.root {
+  display: flex;
+  width: min(100%, 60rem);
+  min-height: 0;
+  height: 100%;
+  margin: 0 auto;
+  padding: clamp(1rem, 3vw, 2rem) clamp(1rem, 4vw, 2.4rem) 2rem;
+  flex-direction: column;
+  gap: 0.9rem;
+  overflow: hidden auto;
+  color: var(--cockpit-text);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+}
+
+.headingGroup {
+  min-width: 0;
+}
+
+.headingGroup h2 {
+  margin: 0;
+  font-size: var(--cockpit-text-xl);
+  letter-spacing: var(--cockpit-tracking-tight);
+}
+
+.crumb {
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
+  text-decoration: none;
+}
+
+.crumb::after {
+  content: " /";
+}
+
+.crumb:hover {
+  color: var(--cockpit-accent);
+}
+
+.path {
+  overflow: hidden;
+  margin: 0.15rem 0 0;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.filter {
+  width: 14rem;
+  min-height: 2.45rem;
+  padding: 0 0.75rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+}
+
+.filter:focus {
+  border-color: var(--cockpit-accent);
+  outline: 0;
+  box-shadow: 0 0 0 3px var(--cockpit-accent-ring);
+}
+
+.filter::-webkit-search-cancel-button {
+  appearance: none;
+}
+
+.primaryAction {
+  display: inline-flex;
+  min-height: 2.45rem;
+  padding: 0 0.9rem;
+  align-items: center;
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 0.2rem;
+  list-style: none;
+}
+
+.notice,
+.empty {
+  margin: 0;
+  padding: 1rem;
+  border: 1px dashed var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-sm);
+  text-align: center;
+}
+
+.more {
+  display: flex;
+  justify-content: center;
+}
+
+.more button {
+  min-height: 2.6rem;
+  padding: 0 1rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+}
+
+.more button:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.projectRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.projectLink {
+  display: grid;
+  min-width: 0;
+  min-height: 3.3rem;
+  padding: 0.6rem 0.75rem;
+  flex: 1;
+  gap: 0.3rem;
+  border: 1px solid transparent;
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-text);
+  text-decoration: none;
+}
+
+.projectLink:hover {
+  border-color: var(--cockpit-border);
+  background: var(--cockpit-hover);
+}
+
+.projectTitle,
+.projectMeta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.projectTitle strong {
+  overflow: hidden;
+  font-size: var(--cockpit-text-md);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--cockpit-weight-medium);
+}
+
+.projectMeta {
+  padding-left: 1.05rem;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-xs);
+}
+
+.projectMeta > * {
+  flex: none;
+}
+
+.projectMeta > .path {
+  min-width: 0;
+  margin: 0;
+  flex: 1;
+}
+
+.rowGrow {
+  min-width: 0;
+  flex: 1;
+}
+
+.restoreButton {
+  min-height: 2.3rem;
+  padding: 0 0.8rem;
+  flex: none;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+}
+
+.restoreButton:hover {
+  color: var(--cockpit-accent);
+}
+
+.restoreButton:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.iconAction {
+  display: grid;
+  width: 2.6rem;
+  height: 2.6rem;
+  flex: none;
+  place-items: center;
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-muted);
+}
+
+.iconAction:hover {
+  color: var(--cockpit-accent);
+  background: var(--cockpit-hover);
+}
+
+.iconAction svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.9;
+}
+
+.crumb:focus-visible,
+.primaryAction:focus-visible,
+.projectLink:focus-visible,
+.iconAction:focus-visible,
+.more button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+@media (max-width: 700px) {
+  .root {
+    padding: 0.9rem 0.78rem 1.5rem;
+  }
+
+  .headerActions {
+    width: 100%;
+  }
+
+  /* An input keeps its intrinsic width as flex minimum; without min-width
+     it pushed "Neue Sitzung" past the screen edge and the whole list could
+     be swiped sideways (Joscha 26.09.2026). */
+  .filter {
+    width: auto;
+    min-width: 0;
+    min-height: 2.75rem;
+    flex: 1;
+    font-size: var(--cockpit-text-md);
+  }
+
+  .primaryAction {
+    min-height: 2.75rem;
+  }
+
+  .projectMeta > .path {
+    display: none;
+  }
+}

@@ -1,0 +1,239 @@
+.root {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  color: var(--cockpit-text);
+}
+
+.search {
+  position: relative;
+  display: grid;
+}
+
+/* The field says what it is; the label stays for screen readers only. */
+.searchLabel {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+.searchField {
+  display: grid;
+  min-height: 2.45rem;
+  padding: 0 0.65rem;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0.5rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+}
+
+.searchField:focus-within {
+  border-color: var(--cockpit-accent);
+  box-shadow: 0 0 0 3px var(--cockpit-accent-ring);
+}
+
+.searchField svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.searchField input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--cockpit-text);
+  background: transparent;
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+}
+
+.searchField input::placeholder {
+  color: var(--cockpit-faint);
+}
+
+.searchField button {
+  display: grid;
+  width: 1.8rem;
+  height: 1.8rem;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  color: var(--cockpit-muted);
+  background: transparent;
+  font: inherit;
+  font-size: var(--cockpit-text-lg);
+  cursor: pointer;
+}
+
+.searchField button:hover {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.catalogError,
+.emptyMessage {
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-xs);
+  line-height: 1.45;
+}
+
+.catalogError {
+  margin: 0 0 0.55rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid color-mix(in srgb, var(--cockpit-danger) 28%, transparent);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
+}
+
+.projectList {
+  min-height: 0;
+  margin-top: 0.6rem;
+  padding-right: 0.18rem;
+  flex: 1;
+  overflow: auto;
+}
+
+.emptyMessage {
+  margin: 0.8rem 0;
+  padding: 1rem;
+  border: 1px dashed var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  text-align: center;
+}
+
+.favorites {
+  margin-bottom: 0.45rem;
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--cockpit-border);
+}
+
+/* Laid out on the rows' own grid: the star sits in the status-dot column
+   and the label starts where the titles start. */
+.sectionTitle {
+  display: grid;
+  min-height: 1.7rem;
+  margin: 0;
+  padding: 0 0.55rem;
+  grid-template-columns: 0.55rem minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.4rem;
+  border: 1px solid transparent;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.sectionTitle svg {
+  width: 0.72rem;
+  height: 0.72rem;
+  justify-self: center;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
+.sessionList {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  gap: 0.18rem;
+  list-style: none;
+}
+
+/* One compact row: the sidebar list needs the height more than this note. */
+/* Quiet footer at the end of the list. */
+.coverage {
+  display: flex;
+  padding: 0.7rem 0.55rem 0.2rem;
+  align-items: center;
+  gap: 0.6rem;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-2xs);
+}
+
+.coverage p {
+  min-width: 0;
+  margin: 0;
+  flex: 1;
+  line-height: 1.3;
+}
+
+.coverage button {
+  flex: none;
+  min-height: 1.8rem;
+  padding: 0 0.6rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-muted);
+  background: transparent;
+  font: inherit;
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    background 140ms ease;
+}
+
+.coverage button:hover:not(:disabled) {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.coverage button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.searchField button:focus-visible,
+.coverage button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+@media (max-width: 700px) {
+  .searchField {
+    min-height: 2.8rem;
+  }
+
+  .searchField input {
+    font-size: var(--cockpit-text-md);
+  }
+
+  .searchField button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .projectList {
+    overflow: visible;
+  }
+
+  .coverage button {
+    min-height: 2.75rem;
+  }
+}
+
+/* The field has its own clear button; hide the browser's, which showed a
+   second cross beside it. */
+.searchField input::-webkit-search-cancel-button {
+  display: none;
+  appearance: none;
+}

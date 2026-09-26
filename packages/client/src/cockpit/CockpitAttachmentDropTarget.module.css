@@ -1,0 +1,21 @@
+.overlay {
+  position: absolute;
+  z-index: 6;
+  inset: 0.2rem;
+  display: grid;
+  min-height: 5rem;
+  place-items: center;
+  padding: 1rem;
+  border: 2px dashed var(--cockpit-accent);
+  border-radius: var(--cockpit-radius-lg);
+  color: var(--cockpit-accent);
+  background: color-mix(
+    in srgb,
+    var(--cockpit-surface-raised) 88%,
+    transparent
+  );
+  backdrop-filter: blur(10px);
+  font-size: var(--cockpit-text-md);
+  font-weight: var(--cockpit-weight-medium);
+  pointer-events: none;
+}

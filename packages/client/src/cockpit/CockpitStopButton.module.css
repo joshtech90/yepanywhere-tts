@@ -1,0 +1,106 @@
+.wrapper {
+  position: relative;
+  display: inline-flex;
+}
+
+.button {
+  display: inline-flex;
+  min-height: 2.45rem;
+  padding: 0 0.72rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.42rem;
+  border: 1px solid
+    color-mix(in srgb, var(--cockpit-danger) 38%, var(--cockpit-border));
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 7%, transparent);
+  font: inherit;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+}
+
+.button:hover {
+  border-color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 13%, transparent);
+}
+
+.button:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--cockpit-danger) 36%, transparent);
+  outline-offset: 2px;
+}
+
+.button:disabled {
+  cursor: default;
+  opacity: 0.58;
+}
+
+.icon {
+  width: 0.68rem;
+  height: 0.68rem;
+  flex: 0 0 auto;
+  /* Icon geometry, not a surface: the stop square keeps its corners. */
+  border-radius: 0.16rem;
+  background: currentColor;
+}
+
+.error {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 0.35rem);
+  z-index: 4;
+  max-width: min(24rem, calc(100vw - 2rem));
+  padding: 0.45rem 0.65rem;
+  border: 1px solid
+    color-mix(in srgb, var(--cockpit-danger) 42%, var(--cockpit-border));
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-danger);
+  background: var(--cockpit-surface-raised);
+  box-shadow: var(--cockpit-elevation-float);
+  font-size: var(--cockpit-text-xs);
+}
+
+@media (max-width: 760px) {
+  .button {
+    width: 2.7rem;
+    height: 2.7rem;
+    padding: 0;
+  }
+
+  .label {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    border: 0;
+    margin: -1px;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 700px) {
+  .button {
+    width: 1.9rem;
+    height: 1.9rem;
+    min-height: 0;
+    border-radius: var(--cockpit-radius-sm);
+  }
+
+  /* Anchored to the button mid-header, the message ran off the left edge. */
+  .error {
+    position: fixed;
+    top: calc(var(--cockpit-viewport-offset-top, 0px) + 2.8rem);
+    right: 0.5rem;
+    left: 0.5rem;
+    max-width: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+}

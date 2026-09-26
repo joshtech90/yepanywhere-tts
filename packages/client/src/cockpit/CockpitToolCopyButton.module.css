@@ -1,0 +1,94 @@
+.button {
+  display: inline-grid;
+  width: 2rem;
+  min-width: 2rem;
+  height: 2rem;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease,
+    background 140ms ease;
+}
+
+.button:hover {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-accent) 48%,
+    var(--cockpit-border)
+  );
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.button[data-state="copied"] {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-accent) 48%,
+    var(--cockpit-border)
+  );
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.button[data-state="error"] {
+  border-color: color-mix(
+    in srgb,
+    var(--cockpit-danger) 48%,
+    var(--cockpit-border)
+  );
+  color: var(--cockpit-danger);
+  background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
+}
+
+.button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+.button svg {
+  width: 1rem;
+  height: 1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.button span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+  margin: -1px;
+  white-space: nowrap;
+}
+
+.button:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+@media (max-width: 520px) {
+  .button {
+    width: 2.7rem;
+    min-width: 2.7rem;
+    height: 2.7rem;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .button {
+    transition: none;
+  }
+}

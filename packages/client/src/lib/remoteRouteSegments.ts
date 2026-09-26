@@ -2,6 +2,7 @@ const DIRECT_APP_ROUTE_SEGMENTS = new Set([
   "activity",
   "agents",
   "bang-commands",
+  "cockpit",
   "devices",
   "git-status",
   "inbox",

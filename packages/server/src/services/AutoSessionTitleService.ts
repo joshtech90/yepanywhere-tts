@@ -172,6 +172,25 @@ export class AutoSessionTitleService {
     this.queue.length = 0;
   }
 
+  /**
+   * Offer already known sessions to the normal title path. The session index
+   * persists across restarts and only announces sessions that changed, so
+   * `backfillExisting` alone never reaches old sessions; the server start
+   * lists them once and hands them here. Every usual gate still applies:
+   * feature switch, age window, user titles, one attempt, one job at a time.
+   */
+  backfill(
+    sessions: ReadonlyArray<{
+      sessionId: string;
+      projectId: UrlProjectId;
+      activityAt?: string;
+    }>,
+  ): void {
+    for (const session of sessions) {
+      this.observe(session.sessionId, session.projectId, session.activityAt);
+    }
+  }
+
   /** Test/diagnostic view of what the service decided per session. */
   getOutcome(sessionId: string): SessionOutcome | undefined {
     return this.outcomes.get(sessionId);

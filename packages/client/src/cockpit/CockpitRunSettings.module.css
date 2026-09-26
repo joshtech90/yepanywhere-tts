@@ -1,0 +1,85 @@
+.field {
+  display: grid;
+  min-width: 0;
+  gap: 0.42rem;
+}
+
+.label {
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.select {
+  width: 100%;
+  min-height: 2.6rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+}
+
+.select:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.segments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.segment {
+  min-height: 2.35rem;
+  padding: 0 0.72rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+}
+
+.segment:hover:not(:disabled) {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-text);
+}
+
+/* A chosen option looks the same in every choice group of the Cockpit;
+   the filled accent stays reserved for the action that starts something. */
+.segment[aria-checked="true"] {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.segment:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.segment:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.hint {
+  margin: 0;
+  color: var(--cockpit-faint);
+  font-size: var(--cockpit-text-xs);
+  line-height: 1.45;
+}
+
+@media (max-width: 700px) {
+  .segment {
+    min-height: 2.75rem;
+  }
+}

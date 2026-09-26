@@ -50,6 +50,12 @@ describe("relay route formatting", () => {
     ).toBe("/-/relay/macbook/projects?queueItem=item-1#top");
   });
 
+  it("keeps the Cockpit inside the active relay namespace", () => {
+    expect(
+      getRelayCanonicalRedirectTarget({ pathname: "/cockpit" }, "macbook"),
+    ).toBe("/-/relay/macbook/cockpit");
+  });
+
   it("redirects the direct index route to relay projects", () => {
     expect(getRelayCanonicalRedirectTarget({ pathname: "/" }, "macbook")).toBe(
       "/-/relay/macbook/projects",
@@ -111,6 +117,7 @@ describe("getLegacyRelayRedirectTarget", () => {
     "activity",
     "agents",
     "bang-commands",
+    "cockpit",
     "devices",
     "git-status",
     "inbox",
