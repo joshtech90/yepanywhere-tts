@@ -6,7 +6,6 @@ import {
   CockpitAttachmentDropCue,
   useCockpitAttachmentDropTarget,
 } from "./CockpitAttachmentDropTarget";
-import { useCockpitComposerNav } from "./CockpitComposerNav";
 import { CockpitPromptHistory } from "./CockpitPromptHistory";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
@@ -47,7 +46,6 @@ function ActionIcon({ action }: { action: "send" | "steer" | "queue" }) {
 
 function CockpitComposerSession(props: CockpitComposerProps) {
   const { t } = useI18n();
-  const navigation = useCockpitComposerNav();
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreComposerFocusRef = useRef(false);
@@ -205,7 +203,6 @@ function CockpitComposerSession(props: CockpitComposerProps) {
             }}
             onUse={composer.setDraft}
           />
-          {navigation}
           <span className={styles.hint}>
             {t("toolbarSendTooltip")} · {t("cockpitComposerAttachmentHint")}
           </span>

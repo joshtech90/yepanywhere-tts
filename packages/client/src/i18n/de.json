@@ -91,6 +91,7 @@
   "cockpitLastActivity": "Letzte Aktivität: {time}",
   "cockpitActivityUnknown": "Keine Aktivitätszeit",
   "cockpitSessionBack": "Zurück zu den Cockpit-Sitzungen",
+  "cockpitMenuOpen": "Menü öffnen",
   "cockpitSessionClassic": "In bisheriger Ansicht öffnen",
   "cockpitSessionTitleFallback": "Sitzung ohne Titel",
   "cockpitSessionTranscriptAria": "Sitzungsverlauf",

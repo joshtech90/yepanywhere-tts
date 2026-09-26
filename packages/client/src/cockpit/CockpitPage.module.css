@@ -558,51 +558,99 @@
   box-shadow: 0 0 0 1px var(--cockpit-accent);
 }
 
-/* Small unlabelled icons in the composer toolbar; phone session view only. */
-.composerNav {
+/* The phone session drawer (CockpitMobileDrawer) and its contents. */
+.drawerHeader {
   display: flex;
-  min-width: 0;
-  margin-left: 0.15rem;
-  padding-left: 0.25rem;
+  min-height: 2.6rem;
+  padding: 0 0.2rem 0 0.55rem;
   align-items: center;
-  gap: 0.1rem;
-  border-left: 1px solid var(--cockpit-border);
+  justify-content: space-between;
 }
 
-.composerNav > a,
-.composerNav > button {
+.drawerTitle {
+  color: var(--cockpit-text);
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  text-decoration: none;
+}
+
+.drawerIconButton {
   display: grid;
-  width: 1.8rem;
-  height: 1.8rem;
+  width: 2.4rem;
+  height: 2.4rem;
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 0.55rem;
-  color: var(--cockpit-muted);
-  background: transparent;
+  border-radius: 50%;
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
   cursor: pointer;
 }
 
-.composerNav svg {
-  width: 1.05rem;
-  height: 1.05rem;
+.drawerIconButton svg {
+  width: 1.1rem;
+  height: 1.1rem;
   fill: none;
   stroke: currentColor;
   stroke-linecap: round;
   stroke-linejoin: round;
-  stroke-width: 1.7;
+  stroke-width: 1.8;
 }
 
-.composerNav > a:hover,
-.composerNav > button:hover {
+.drawerNav {
+  display: grid;
+  gap: 0.1rem;
+}
+
+.drawerItem {
+  display: flex;
+  min-height: 2.5rem;
+  padding: 0 0.55rem;
+  align-items: center;
+  gap: 0.75rem;
+  border-radius: 0.7rem;
   color: var(--cockpit-text);
-  background: var(--cockpit-hover);
+  font-size: 0.82rem;
+  font-weight: 650;
+  text-decoration: none;
 }
 
-.composerNav > a:focus-visible,
-.composerNav > button:focus-visible {
+/* Touch screens keep :hover after a tap; only real pointers get it. */
+@media (hover: hover) {
+  .drawerItem:hover {
+    background: var(--cockpit-hover);
+  }
+}
+
+.drawerTitle:focus-visible,
+.drawerIconButton:focus-visible,
+.drawerItem:focus-visible {
   outline: 3px solid var(--cockpit-accent-ring);
   outline-offset: 1px;
+}
+
+/* The latest sessions fill the rest and scroll on their own. */
+.drawerCatalog {
+  min-height: 0;
+  padding-top: 0.6rem;
+  flex: 1;
+  border-top: 1px solid var(--cockpit-border);
+  overflow: hidden auto;
+  overscroll-behavior: contain;
+}
+
+/* The catalog sizes itself to the phone screen elsewhere; in the drawer it
+   grows with its rows so this box scrolls, with the "load more" footer at
+   the end instead of on top of the list. */
+.drawerCatalog > * {
+  height: auto;
+  min-height: 100%;
+}
+
+/* Narrower time and folder columns leave the titles more room. */
+.drawerCatalog [data-with-project="true"] {
+  grid-template-columns: auto minmax(0, 1fr) 2.4rem 3.6rem;
 }
 
 @keyframes spin {
@@ -790,12 +838,12 @@
     border-radius: 1.15rem;
   }
 
-  /* The open session: the composer carries the navigation. */
-  .root[data-composer-nav="true"] .sidebar {
+  /* The open session: no bottom bar, the header opens the drawer. */
+  .root[data-session-drawer="true"] .sidebar {
     display: none;
   }
 
-  .root[data-composer-nav="true"] .workspace {
+  .root[data-session-drawer="true"] .workspace {
     padding-bottom: 0;
   }
 

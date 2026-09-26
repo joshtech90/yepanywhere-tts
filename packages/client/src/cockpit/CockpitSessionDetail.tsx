@@ -13,6 +13,7 @@ import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
 import { CockpitAttentionCard } from "./CockpitAttentionCard";
 import { CockpitCopyResponseButton } from "./CockpitCopyResponseButton";
+import { useCockpitDrawerOpener } from "./CockpitMobileDrawer";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
@@ -54,6 +55,14 @@ function ArrowIcon({ direction }: { direction: "left" | "down" }) {
       ) : (
         <path d="m7 10 5 5 5-5" />
       )}
+    </svg>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 8h15M4.5 16h9" />
     </svg>
   );
 }
@@ -265,6 +274,7 @@ export function CockpitSessionDetail({
 }: CockpitSessionDetailProps) {
   const { locale, t } = useI18n();
   const runtime = useCurrentSourceRuntime();
+  const openDrawer = useCockpitDrawerOpener();
   const navigation = useMemo(
     () => createCockpitNavigation(basePath),
     [basePath],
@@ -510,13 +520,26 @@ export function CockpitSessionDetail({
   return (
     <article className={styles.root} aria-labelledby="cockpit-session-title">
       <header className={styles.sessionHeader}>
-        <Link
-          aria-label={t("cockpitSessionBack")}
-          className={styles.backLink}
-          to={navigation.cockpit}
-        >
-          <ArrowIcon direction="left" />
-        </Link>
+        {openDrawer ? (
+          <button
+            aria-haspopup="dialog"
+            aria-label={t("cockpitMenuOpen")}
+            data-cockpit-drawer-opener=""
+            className={styles.backLink}
+            onClick={openDrawer}
+            type="button"
+          >
+            <MenuIcon />
+          </button>
+        ) : (
+          <Link
+            aria-label={t("cockpitSessionBack")}
+            className={styles.backLink}
+            to={navigation.cockpit}
+          >
+            <ArrowIcon direction="left" />
+          </Link>
+        )}
         <div className={styles.titleGroup}>
           <p>{projectName}</p>
           <h2 id="cockpit-session-title" title={title}>

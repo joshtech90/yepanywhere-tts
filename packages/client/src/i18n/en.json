@@ -420,6 +420,7 @@
   "cockpitLastActivity": "Last activity: {time}",
   "cockpitActivityUnknown": "No activity time",
   "cockpitSessionBack": "Back to Cockpit sessions",
+  "cockpitMenuOpen": "Open menu",
   "cockpitSessionClassic": "Open in existing view",
   "cockpitSessionTitleFallback": "Untitled session",
   "cockpitSessionTranscriptAria": "Session conversation",

@@ -23,12 +23,15 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
-import { CockpitComposerNavProvider } from "./CockpitComposerNav";
 import {
   CockpitHiddenView,
   CockpitProjectsView,
   CockpitSessionsView,
 } from "./CockpitListViews";
+import {
+  CockpitDrawerOpenerProvider,
+  CockpitMobileDrawer,
+} from "./CockpitMobileDrawer";
 import { CockpitNewSession } from "./CockpitNewSession";
 import { CockpitQuote } from "./CockpitQuote";
 import styles from "./CockpitPage.module.css";
@@ -178,6 +181,7 @@ export function CockpitShell({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchFocusRequested, setSearchFocusRequested] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
   const searchFocusReturnRef = useRef<HTMLElement | null>(null);
@@ -193,16 +197,21 @@ export function CockpitShell({
   const location = useLocation();
   // Back in the Cockpit, a way back offered by the settings is spent.
   useEffect(() => clearCockpitReturn(), []);
+  // Every navigation, also from inside the drawer, closes the drawer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: location.key is the trigger
+  useEffect(() => setDrawerOpen(false), [location.key]);
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const sidebarWidth = useCockpitSidebarWidth(
     !mobileLayout,
     t("cockpitSidebarResize"),
   );
   const openSearch = useCallback(
     (focusInput: boolean, focusOrigin: HTMLElement | null) => {
+      // Without a visible origin the close effect picks the target: the
+      // session's menu button on a phone, otherwise the search button.
       searchFocusReturnRef.current =
-        focusOrigin?.isConnected === true
-          ? focusOrigin
-          : searchTriggerRef.current;
+        focusOrigin?.isConnected === true ? focusOrigin : null;
       setSearchFocusRequested(focusInput);
       setSearchOpen(true);
     },
@@ -245,14 +254,21 @@ export function CockpitShell({
     searchWasOpenRef.current = false;
     const focusTarget = searchFocusReturnRef.current;
     searchFocusReturnRef.current = null;
+    // The phone session hides the bottom bar; its header menu button is the
+    // visible way back into the navigation.
+    const drawerOpener = rootRef.current?.querySelector<HTMLElement>(
+      "[data-cockpit-drawer-opener]",
+    );
     const destination =
       focusTarget?.isConnected === true
         ? focusTarget
-        : searchTriggerRef.current;
+        : (drawerOpener ?? searchTriggerRef.current);
     destination?.focus({ preventScroll: true });
   }, [searchOpen]);
   useCockpitShortcuts({
+    drawerOpen,
     navigation,
+    onCloseDrawer: closeDrawer,
     onCloseHelp: closeShortcuts,
     onCloseSearch: closeSearch,
     onOpenHelp: openShortcutsFromShortcut,
@@ -307,10 +323,15 @@ export function CockpitShell({
     rememberCockpitReturn(`${location.pathname}${location.search}`);
     navigateFromSearch();
   };
-  // The open session on a phone: the composer carries the navigation as
-  // small icons instead of the labelled bar (Joscha 26.09.2026).
-  const composerNav =
+  // The open session on a phone: no bottom bar; the header opens a drawer
+  // with the navigation and the latest sessions (Joscha 26.09.2026).
+  const sessionDrawer =
     mobileLayout && hasDetail && detailView === "session" && !searchOpen;
+  // Leaving the phone session (search, wider screen) forgets an open drawer,
+  // so it does not reappear on the way back.
+  useEffect(() => {
+    if (!sessionDrawer) setDrawerOpen(false);
+  }, [sessionDrawer]);
   const stateCopy = {
     empty: {
       title: "",
@@ -338,7 +359,7 @@ export function CockpitShell({
     <main
       className={styles.root}
       data-accent={accent}
-      data-composer-nav={composerNav ? "true" : undefined}
+      data-session-drawer={sessionDrawer ? "true" : undefined}
       data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
       ref={rootRef}
@@ -456,6 +477,65 @@ export function CockpitShell({
         triggerRef={shortcutTriggerRef}
       />
 
+      <CockpitMobileDrawer
+        label={t("cockpitNavigationAria")}
+        onClose={closeDrawer}
+        open={drawerOpen && sessionDrawer}
+      >
+        <div className={styles.drawerHeader}>
+          <Link className={styles.drawerTitle} to={navigation.cockpit}>
+            Cockpit
+          </Link>
+          <button
+            aria-label={t("cockpitGlobalSearchNav")}
+            className={styles.drawerIconButton}
+            onClick={() => {
+              setDrawerOpen(false);
+              openSearch(true, null);
+            }}
+            title={t("cockpitGlobalSearchNav")}
+            type="button"
+          >
+            <SearchIcon />
+          </button>
+        </div>
+        <nav
+          aria-label={t("cockpitNavigationAria")}
+          className={styles.drawerNav}
+        >
+          {destinations.map((destination) => (
+            <Link
+              className={styles.drawerItem}
+              key={destination.href}
+              onClick={destination.leaves ? leaveCockpit : undefined}
+              to={destination.href}
+            >
+              <span className={styles.icon}>{destination.icon}</span>
+              <span>{destination.label}</span>
+            </Link>
+          ))}
+          <Link className={styles.drawerItem} to={navigation.hidden}>
+            <span className={styles.icon}>
+              <HiddenIcon />
+            </span>
+            <span>{t("cockpitHiddenNav")}</span>
+          </Link>
+        </nav>
+        <div className={styles.drawerCatalog}>
+          <CockpitCatalog
+            basePath={basePath}
+            catalog={catalogData.catalog}
+            error={catalogData.error}
+            hasMore={catalogData.hasMore}
+            loading={catalogData.loading}
+            onLoadMore={catalogData.loadMore}
+            onQueryChange={setCatalogQuery}
+            organization={catalogData.organization}
+            query={catalogQuery}
+          />
+        </div>
+      </CockpitMobileDrawer>
+
       <section
         aria-labelledby={hasDetail || searchOpen ? undefined : "cockpit-title"}
         className={styles.workspace}
@@ -517,42 +597,11 @@ export function CockpitShell({
               onNavigate={navigateFromSearch}
             />
           ) : hasDetail ? (
-            <CockpitComposerNavProvider
-              value={
-                composerNav ? (
-                  <nav
-                    aria-label={t("cockpitNavigationAria")}
-                    className={styles.composerNav}
-                  >
-                    <button
-                      aria-label={t("cockpitGlobalSearchNav")}
-                      onClick={() =>
-                        openSearch(false, searchTriggerRef.current)
-                      }
-                      title={t("cockpitGlobalSearchNav")}
-                      type="button"
-                    >
-                      <SearchIcon />
-                    </button>
-                    {destinations.map((destination) => (
-                      <Link
-                        aria-label={destination.label}
-                        key={destination.href}
-                        onClick={
-                          destination.leaves ? leaveCockpit : navigateFromSearch
-                        }
-                        title={destination.shortLabel}
-                        to={destination.href}
-                      >
-                        {destination.icon}
-                      </Link>
-                    ))}
-                  </nav>
-                ) : null
-              }
+            <CockpitDrawerOpenerProvider
+              value={sessionDrawer ? openDrawer : null}
             >
               {children}
-            </CockpitComposerNavProvider>
+            </CockpitDrawerOpenerProvider>
           ) : (
             <>
               {mobileLayout && (

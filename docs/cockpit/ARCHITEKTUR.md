@@ -585,9 +585,12 @@ einzige Eingriff in `SettingsLayout.tsx`.
 **Handy (Joscha 26.09.2026).** Maximaler Platz fuer den Sitzungstext: Die Liste
 steht ohne Karte in voller Breite; die offene Sitzung hat eine einzeilige,
 schmale Kopfzeile (kurzer Modellname, Link zur bisherigen Ansicht im
-Blitz-Menue). Die beschriftete untere Leiste entfaellt dort; die Shell reicht
-dieselben Ziele ueber `CockpitComposerNav` als kleine Symbole in die
-Werkzeugzeile des Composers. Senden, Lenken und Einreihen sind dort Symbole mit
+Blitz-Menue). Die beschriftete untere Leiste entfaellt in der Sitzung. Statt
+des Zurueck-Pfeils oeffnet ein Menue-Knopf eine Seitenleiste wie in der
+ChatGPT-App (`CockpitMobileDrawer`, natives modales `dialog`): Suche,
+Ziele, Ausgeblendet und darunter die Sitzungsliste mit Favoriten. Die Shell
+reicht den Oeffner per Context an die Sitzungsansicht; jede Navigation
+schliesst die Leiste. Senden, Lenken und Einreihen sind am Handy Symbole mit
 dem bisherigen Text als Namen, das Eingabefeld waechst mit dem Text. Diese
 Symbole unterschreiten bewusst die 44-Pixel-Zielgroesse aus Paket 10. Der leere
 Desktop-Inhalt zeigt ein wechselndes Zitat aus der deutschen Literatur

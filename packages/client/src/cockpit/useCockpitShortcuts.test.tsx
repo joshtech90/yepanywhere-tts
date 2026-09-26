@@ -6,11 +6,15 @@ import { createCockpitNavigation } from "./core/navigation";
 import { useCockpitShortcuts } from "./useCockpitShortcuts";
 
 function Fixture({
+  drawerOpen = false,
+  onCloseDrawer = vi.fn(),
   onHelp,
   onLocalEscape = vi.fn(),
   onSearch,
   onStop,
 }: {
+  drawerOpen?: boolean;
+  onCloseDrawer?: () => void;
   onHelp: () => void;
   onLocalEscape?: () => void;
   onSearch: () => void;
@@ -20,7 +24,9 @@ function Fixture({
   const rootRef = useRef<HTMLElement>(null);
   const navigation = useMemo(() => createCockpitNavigation(""), []);
   useCockpitShortcuts({
+    drawerOpen,
     navigation,
+    onCloseDrawer,
     onCloseHelp: vi.fn(),
     onCloseSearch: vi.fn(),
     onOpenHelp: onHelp,
@@ -35,11 +41,7 @@ function Fixture({
         {location.pathname + location.search}
       </output>
       <textarea data-cockpit-shortcut="composer" aria-label="Composer" />
-      <button
-        data-cockpit-shortcut="stop"
-        onClick={onStop}
-        type="button"
-      >
+      <button data-cockpit-shortcut="stop" onClick={onStop} type="button">
         Stop
       </button>
       <button
@@ -59,6 +61,29 @@ function Fixture({
 afterEach(cleanup);
 
 describe("useCockpitShortcuts", () => {
+  it("lets Escape close the open drawer and never stop the session", () => {
+    const onCloseDrawer = vi.fn();
+    const onSearch = vi.fn();
+    const onStop = vi.fn();
+    render(
+      <MemoryRouter initialEntries={["/cockpit"]}>
+        <Fixture
+          drawerOpen
+          onCloseDrawer={onCloseDrawer}
+          onHelp={vi.fn()}
+          onSearch={onSearch}
+          onStop={onStop}
+        />
+      </MemoryRouter>,
+    );
+
+    fireEvent.keyDown(document, { key: "Escape" });
+    fireEvent.keyDown(document, { key: "/" });
+    expect(onCloseDrawer).toHaveBeenCalledTimes(1);
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onSearch).not.toHaveBeenCalled();
+  });
+
   it("runs global actions, the navigation chord, composer focus, and stop", () => {
     const onHelp = vi.fn();
     const onSearch = vi.fn();

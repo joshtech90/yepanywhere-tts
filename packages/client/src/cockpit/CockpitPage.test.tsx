@@ -1,9 +1,15 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
-import { useCockpitComposerNav } from "./CockpitComposerNav";
+import { useCockpitDrawerOpener } from "./CockpitMobileDrawer";
 import { CockpitPage, CockpitShell } from "./CockpitPage";
 import { readCockpitReturn } from "./core/navigation";
 import type { CockpitShellState } from "./core/shellState";
@@ -95,8 +101,13 @@ beforeEach(() => {
   pageMocks.runtime.sourceKey = "local";
 });
 
-function ComposerNavProbe() {
-  return <div data-testid="composer-nav">{useCockpitComposerNav()}</div>;
+function DrawerProbe() {
+  const openDrawer = useCockpitDrawerOpener();
+  return openDrawer ? (
+    <button onClick={openDrawer} type="button">
+      Open drawer
+    </button>
+  ) : null;
 }
 
 function mockPhoneLayout() {
@@ -133,7 +144,7 @@ function renderShell(shellState: CockpitShellState = { kind: "empty" }) {
 }
 
 describe("Cockpit shell", () => {
-  it("moves the navigation into the composer of an open session on a phone", () => {
+  it("opens a drawer with navigation and sessions from a phone session", () => {
     const restore = mockPhoneLayout();
     try {
       sessionStorage.clear();
@@ -152,29 +163,36 @@ describe("Cockpit shell", () => {
               shellState={{ kind: "empty" }}
               theme="auto"
             >
-              <ComposerNavProbe />
+              <DrawerProbe />
             </CockpitShell>
           </I18nProvider>
         </MemoryRouter>,
       );
 
-      expect(screen.getByRole("main").getAttribute("data-composer-nav")).toBe(
+      expect(screen.getByRole("main").getAttribute("data-session-drawer")).toBe(
         "true",
       );
-      const probe = screen.getByTestId("composer-nav");
-      const settings = Array.from(probe.querySelectorAll("a")).find(
-        (link) => link.getAttribute("href") === "/settings",
-      );
-      expect(settings).toBeTruthy();
-      // An installed phone app has no tabs: the settings stay in the window.
-      expect(settings?.getAttribute("target")).toBeNull();
-      expect(settings?.getAttribute("aria-label")).toBe("Settings");
-      expect(probe.querySelector("button[aria-label='Search']")).toBeTruthy();
+      expect(screen.queryByRole("dialog")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Open drawer" }));
 
-      fireEvent.click(settings as HTMLAnchorElement);
+      const drawer = screen.getByRole("dialog", { name: "Cockpit navigation" });
+      expect(
+        within(drawer).getByRole("region", { name: "Projects and sessions" }),
+      ).toBeTruthy();
+      expect(
+        within(drawer).getByRole("button", { name: "Search" }),
+      ).toBeTruthy();
+      const settings = within(drawer).getByRole("link", { name: "Settings" });
+      expect(settings.getAttribute("href")).toBe("/settings");
+      // An installed phone app has no tabs: the settings stay in the window.
+      expect(settings.getAttribute("target")).toBeNull();
+
+      fireEvent.click(settings);
       expect(readCockpitReturn()?.path).toBe(
         "/cockpit/projects/p/sessions/s?keep=1",
       );
+      // Navigating closes the drawer.
+      expect(screen.queryByRole("dialog")).toBeNull();
     } finally {
       restore();
       sessionStorage.clear();
@@ -183,7 +201,7 @@ describe("Cockpit shell", () => {
 
   it("keeps the labelled navigation outside an open session", () => {
     renderShell();
-    expect(screen.getByRole("main").getAttribute("data-composer-nav")).toBe(
+    expect(screen.getByRole("main").getAttribute("data-session-drawer")).toBe(
       null,
     );
   });
