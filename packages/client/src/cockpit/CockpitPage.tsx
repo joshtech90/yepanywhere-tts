@@ -7,7 +7,12 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  useLocation,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -18,12 +23,14 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
+import { CockpitComposerNavProvider } from "./CockpitComposerNav";
 import {
   CockpitHiddenView,
   CockpitProjectsView,
   CockpitSessionsView,
 } from "./CockpitListViews";
 import { CockpitNewSession } from "./CockpitNewSession";
+import { CockpitQuote } from "./CockpitQuote";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
@@ -33,7 +40,11 @@ import {
 } from "./CockpitShortcutHelp";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { markCockpitSessionWorkingElsewhere } from "./core/catalogSections";
-import { createCockpitNavigation } from "./core/navigation";
+import {
+  clearCockpitReturn,
+  createCockpitNavigation,
+  rememberCockpitReturn,
+} from "./core/navigation";
 import {
   deriveCockpitShellState,
   type CockpitShellState,
@@ -179,6 +190,9 @@ export function CockpitShell({
   );
   const viewport = useCockpitViewportGeometry();
   const mobileLayout = useMediaQuery("(max-width: 700px)");
+  const location = useLocation();
+  // Back in the Cockpit, a way back offered by the settings is spent.
+  useEffect(() => clearCockpitReturn(), []);
   const sidebarWidth = useCockpitSidebarWidth(
     !mobileLayout,
     t("cockpitSidebarResize"),
@@ -256,6 +270,8 @@ export function CockpitShell({
     icon: ReactNode;
     /** Leaves the Cockpit; a new tab keeps the Cockpit open to return to. */
     external?: boolean;
+    /** Leaves the Cockpit in the same window, which remembers the way back. */
+    leaves?: boolean;
   }> = [
     {
       href: navigation.sessions,
@@ -277,16 +293,28 @@ export function CockpitShell({
     },
     {
       href: navigation.settings,
-      label: t("cockpitSettingsNewTab"),
+      // Only the new-tab variant announces a new tab.
+      label: mobileLayout ? t("sidebarSettings") : t("cockpitSettingsNewTab"),
       shortLabel: t("cockpitNavShortSettings"),
       icon: <SettingsIcon />,
-      external: true,
+      // An installed phone app has no tabs: a new window there had no way
+      // back to the Cockpit. Phones stay in the window and remember the way.
+      external: !mobileLayout,
+      leaves: mobileLayout,
     },
   ];
+  const leaveCockpit = () => {
+    rememberCockpitReturn(`${location.pathname}${location.search}`);
+    navigateFromSearch();
+  };
+  // The open session on a phone: the composer carries the navigation as
+  // small icons instead of the labelled bar (Joscha 26.09.2026).
+  const composerNav =
+    mobileLayout && hasDetail && detailView === "session" && !searchOpen;
   const stateCopy = {
     empty: {
-      title: t("cockpitEmptyTitle"),
-      body: t("cockpitEmptyBody"),
+      title: "",
+      body: "",
       status: t("cockpitStatusConnected"),
     },
     loading: {
@@ -310,6 +338,7 @@ export function CockpitShell({
     <main
       className={styles.root}
       data-accent={accent}
+      data-composer-nav={composerNav ? "true" : undefined}
       data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
       ref={rootRef}
@@ -358,7 +387,13 @@ export function CockpitShell({
               aria-label={destination.label}
               className={styles.navigationItem}
               key={destination.href}
-              onClick={destination.external ? undefined : navigateFromSearch}
+              onClick={
+                destination.external
+                  ? undefined
+                  : destination.leaves
+                    ? leaveCockpit
+                    : navigateFromSearch
+              }
               rel={destination.external ? "noopener" : undefined}
               target={destination.external ? "_blank" : undefined}
               title={destination.external ? destination.label : undefined}
@@ -428,10 +463,7 @@ export function CockpitShell({
       >
         {notice}
         <header className={styles.header} hidden={hasDetail || searchOpen}>
-          <div>
-            <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
-            <h1 id="cockpit-title">Cockpit</h1>
-          </div>
+          <h1 id="cockpit-title">Cockpit</h1>
           <div className={styles.headerActions}>
             <span
               className={styles.connectionStatus}
@@ -485,7 +517,42 @@ export function CockpitShell({
               onNavigate={navigateFromSearch}
             />
           ) : hasDetail ? (
-            children
+            <CockpitComposerNavProvider
+              value={
+                composerNav ? (
+                  <nav
+                    aria-label={t("cockpitNavigationAria")}
+                    className={styles.composerNav}
+                  >
+                    <button
+                      aria-label={t("cockpitGlobalSearchNav")}
+                      onClick={() =>
+                        openSearch(false, searchTriggerRef.current)
+                      }
+                      title={t("cockpitGlobalSearchNav")}
+                      type="button"
+                    >
+                      <SearchIcon />
+                    </button>
+                    {destinations.map((destination) => (
+                      <Link
+                        aria-label={destination.label}
+                        key={destination.href}
+                        onClick={
+                          destination.leaves ? leaveCockpit : navigateFromSearch
+                        }
+                        title={destination.shortLabel}
+                        to={destination.href}
+                      >
+                        {destination.icon}
+                      </Link>
+                    ))}
+                  </nav>
+                ) : null
+              }
+            >
+              {children}
+            </CockpitComposerNavProvider>
           ) : (
             <>
               {mobileLayout && (
@@ -508,17 +575,25 @@ export function CockpitShell({
                 data-catalog={hasCatalog ? "true" : "false"}
                 data-state={shellState.kind}
               >
-                <span className={styles.stateIcon}>
-                  <StateIcon kind={shellState.kind} />
-                </span>
-                <div
-                  aria-live="polite"
-                  role={shellState.kind === "error" ? "alert" : "status"}
-                >
-                  <p className={styles.stateKicker}>{stateCopy.status}</p>
-                  <h2>{stateCopy.title}</h2>
-                  <p className={styles.stateBody}>{stateCopy.body}</p>
-                </div>
+                {shellState.kind === "empty" ? (
+                  // Nothing to report: a line of German literature instead of
+                  // an explanation (Joscha 26.09.2026).
+                  <CockpitQuote />
+                ) : (
+                  <>
+                    <span className={styles.stateIcon}>
+                      <StateIcon kind={shellState.kind} />
+                    </span>
+                    <div
+                      aria-live="polite"
+                      role={shellState.kind === "error" ? "alert" : "status"}
+                    >
+                      <p className={styles.stateKicker}>{stateCopy.status}</p>
+                      <h2>{stateCopy.title}</h2>
+                      <p className={styles.stateBody}>{stateCopy.body}</p>
+                    </div>
+                  </>
+                )}
                 <Link
                   className={styles.secondaryAction}
                   to={navigation.classicSessions}

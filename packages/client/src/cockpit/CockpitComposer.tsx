@@ -6,6 +6,7 @@ import {
   CockpitAttachmentDropCue,
   useCockpitAttachmentDropTarget,
 } from "./CockpitAttachmentDropTarget";
+import { useCockpitComposerNav } from "./CockpitComposerNav";
 import { CockpitPromptHistory } from "./CockpitPromptHistory";
 import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitComposer } from "./useCockpitComposer";
@@ -26,8 +27,27 @@ function actionLabel(
   return t("toolbarSend");
 }
 
+/** Phones show the send actions as icons; the label stays the name. */
+function ActionIcon({ action }: { action: "send" | "steer" | "queue" }) {
+  return (
+    <svg aria-hidden="true" className={styles.actionIcon} viewBox="0 0 24 24">
+      {action === "queue" ? (
+        <>
+          <circle cx="12" cy="12" r="7.5" />
+          <path d="M12 8v4.2l2.8 1.8" />
+        </>
+      ) : action === "steer" ? (
+        <path d="M6 19v-4.5A5.5 5.5 0 0 1 11.5 9H18M14.5 5.5 18 9l-3.5 3.5" />
+      ) : (
+        <path d="M12 19V5.5M6.5 11 12 5.5l5.5 5.5" />
+      )}
+    </svg>
+  );
+}
+
 function CockpitComposerSession(props: CockpitComposerProps) {
   const { t } = useI18n();
+  const navigation = useCockpitComposerNav();
   const composerInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const restoreComposerFocusRef = useRef(false);
@@ -44,6 +64,9 @@ function CockpitComposerSession(props: CockpitComposerProps) {
     !hasBlockedAttachment &&
     (composer.draft.trim().length > 0 || composer.attachments.length > 0);
   const attachmentDrop = useCockpitAttachmentDropTarget(composer.attachFiles);
+  const primaryLabel = composer.submitting
+    ? t("pushToggleSending")
+    : actionLabel(composer.actions.primary, t);
 
   useLayoutEffect(() => {
     if (!restoreComposerFocusRef.current || composer.promptHistory.length > 0) {
@@ -71,7 +94,9 @@ function CockpitComposerSession(props: CockpitComposerProps) {
                 {attachment.name}
               </span>
               {attachment.status === "uploading" && (
-                <span className={styles.fileStatus}>{attachment.progress}%</span>
+                <span className={styles.fileStatus}>
+                  {attachment.progress}%
+                </span>
               )}
               {attachment.status === "failed" && (
                 <>
@@ -164,7 +189,11 @@ function CockpitComposerSession(props: CockpitComposerProps) {
             title={t("cockpitComposerAttachmentHint")}
             type="button"
           >
-            +
+            {/* A paper clip: the toolbar's navigation has its own plus for a
+                new session. */}
+            <svg aria-hidden="true" viewBox="0 0 24 24">
+              <path d="m19 11.5-7.1 7.1a4.6 4.6 0 0 1-6.5-6.5l7.8-7.8a3.1 3.1 0 0 1 4.4 4.4l-7.8 7.8a1.5 1.5 0 0 1-2.1-2.1l7.1-7.1" />
+            </svg>
           </button>
           <CockpitPromptHistory
             entries={composer.promptHistory}
@@ -176,21 +205,28 @@ function CockpitComposerSession(props: CockpitComposerProps) {
             }}
             onUse={composer.setDraft}
           />
+          {navigation}
           <span className={styles.hint}>
             {t("toolbarSendTooltip")} · {t("cockpitComposerAttachmentHint")}
           </span>
-          {composer.actions.canQueue && composer.actions.primary !== "queue" && (
-            <button
-              aria-keyshortcuts="Control+Enter Meta+Enter"
-              className={styles.secondaryAction}
-              data-cockpit-shortcut="queue"
-              disabled={!canSubmit}
-              onClick={() => void composer.submit("queue")}
-              type="button"
-            >
-              {t("toolbarQueueLabel")}
-            </button>
-          )}
+          {composer.actions.canQueue &&
+            composer.actions.primary !== "queue" && (
+              <button
+                aria-keyshortcuts="Control+Enter Meta+Enter"
+                aria-label={t("toolbarQueueLabel")}
+                className={styles.secondaryAction}
+                data-cockpit-shortcut="queue"
+                disabled={!canSubmit}
+                onClick={() => void composer.submit("queue")}
+                title={t("toolbarQueueLabel")}
+                type="button"
+              >
+                <span className={styles.actionText}>
+                  {t("toolbarQueueLabel")}
+                </span>
+                <ActionIcon action="queue" />
+              </button>
+            )}
           <button
             aria-keyshortcuts={
               composer.actions.primary === "queue"
@@ -201,13 +237,14 @@ function CockpitComposerSession(props: CockpitComposerProps) {
             data-cockpit-shortcut={
               composer.actions.primary === "queue" ? "queue" : undefined
             }
+            aria-label={primaryLabel}
             disabled={!canSubmit}
             onClick={() => void composer.submit()}
+            title={primaryLabel}
             type="button"
           >
-            {composer.submitting
-              ? t("pushToggleSending")
-              : actionLabel(composer.actions.primary, t)}
+            <span className={styles.actionText}>{primaryLabel}</span>
+            <ActionIcon action={composer.actions.primary} />
           </button>
         </div>
       </div>

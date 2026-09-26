@@ -18,6 +18,10 @@ import {
   useState,
 } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import {
+  readCockpitReturn,
+  returnToCockpit,
+} from "../../cockpit/core/navigation";
 import { PageHeader } from "../../components/PageHeader";
 import { useRemoteBasePath } from "../../hooks/useRemoteBasePath";
 import { useActingPrincipal } from "../../hooks/useActingPrincipal";
@@ -247,6 +251,8 @@ export function SettingsLayout() {
   const { category } = useParams<{ category?: string }>();
   const navigate = useNavigate();
   const location = useLocation();
+  // Opened from the Cockpit on a phone: the list offers the way back there.
+  const [cockpitReturn] = useState(readCockpitReturn);
   const basePath = useRemoteBasePath();
   const { openSidebar, isWideScreen } = useNavigationLayout();
   const [settingsContainerRef, settingsContainerWidth] =
@@ -515,6 +521,12 @@ export function SettingsLayout() {
             onTitleClick={handleSettingsTitleClick}
             onOpenSidebar={openSidebar}
             isWideScreen={isWideScreen}
+            showBack={cockpitReturn !== null}
+            onBack={
+              cockpitReturn
+                ? () => returnToCockpit(cockpitReturn, navigate)
+                : undefined
+            }
           />
           <main
             ref={setSettingsScrollContainerRef}

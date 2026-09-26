@@ -183,20 +183,25 @@
 
 @media (max-width: 700px) {
   .trigger {
-    width: 2.75rem;
-    min-height: 2.75rem;
+    width: 1.8rem;
+    min-height: 1.8rem;
+    border-color: transparent;
+    background: transparent;
+  }
+
+  /* The trigger sits at the left of the toolbar; a panel anchored to it ran
+     off the left edge. On a phone it spans the composer box above it. */
+  .root {
+    position: static;
   }
 
   .panel {
     position: absolute;
     right: 0;
-    bottom: calc(100% + 0.55rem);
-    left: auto;
-    width: min(25rem, calc(100vw - 1.1rem));
-    max-height: min(
-      28rem,
-      calc(var(--cockpit-viewport-height, 100dvh) - 8rem)
-    );
+    bottom: calc(100% + 0.4rem);
+    left: 0;
+    width: auto;
+    max-height: min(28rem, calc(var(--cockpit-viewport-height, 100dvh) - 8rem));
   }
 
   .frequent {

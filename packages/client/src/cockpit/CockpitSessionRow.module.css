@@ -63,13 +63,13 @@
 @media (max-width: 700px) {
   .row {
     min-height: 2.9rem;
-    padding: 0.55rem 0.65rem;
+    padding: 0.55rem 0.4rem;
     grid-template-columns: auto minmax(0, 1fr) 2.6rem;
     user-select: none;
   }
 
   .row[data-with-project="true"] {
-    grid-template-columns: auto minmax(0, 1fr) 2.6rem 4.6rem;
+    grid-template-columns: auto minmax(0, 1fr) 2.6rem 4.2rem;
   }
 
   .title {

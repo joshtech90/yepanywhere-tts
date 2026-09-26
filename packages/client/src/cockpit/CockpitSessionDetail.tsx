@@ -96,13 +96,10 @@ function entryTime(timestamp: string | undefined, locale: string) {
   });
 }
 
-function findTranscriptEntryElement(
-  container: HTMLElement,
-  entryKey: string,
-) {
-  return [...container.querySelectorAll<HTMLElement>(
-    "[data-cockpit-entry-key]",
-  )].find((element) => element.dataset.cockpitEntryKey === entryKey);
+function findTranscriptEntryElement(container: HTMLElement, entryKey: string) {
+  return [
+    ...container.querySelectorAll<HTMLElement>("[data-cockpit-entry-key]"),
+  ].find((element) => element.dataset.cockpitEntryKey === entryKey);
 }
 
 function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
@@ -284,7 +281,14 @@ export function CockpitSessionDetail({
       replace: true,
       state: location.state,
     });
-  }, [actualSessionId, location.state, navigate, navigation, projectId, sessionId]);
+  }, [
+    actualSessionId,
+    location.state,
+    navigate,
+    navigation,
+    projectId,
+    sessionId,
+  ]);
   const deferredEntries = useDeferredValue(detail.entries);
   const transcriptEntries = selectCockpitTranscriptSnapshot(
     detail.entries,
@@ -498,7 +502,10 @@ export function CockpitSessionDetail({
     projectLabelFromId(projectId) ||
     t("cockpitUnknownProject");
   const classicHref = navigation.classicSession(projectId, sessionId);
-  const contextUsage = cockpitContextUsage(detail.session?.contextUsage, locale);
+  const contextUsage = cockpitContextUsage(
+    detail.session?.contextUsage,
+    locale,
+  );
 
   return (
     <article className={styles.root} aria-labelledby="cockpit-session-title">
@@ -533,6 +540,7 @@ export function CockpitSessionDetail({
           />
           <CockpitQuickActions
             basePath={basePath}
+            classicHref={classicHref}
             busy={
               state === "active" ||
               state === "external" ||
@@ -715,8 +723,9 @@ export function projectLabelFromId(projectId: string): string | undefined {
   try {
     const base64 = projectId.replace(/-/g, "+").replace(/_/g, "/");
     const path = decodeURIComponent(
-      Array.from(atob(base64), (char) =>
-        `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
+      Array.from(
+        atob(base64),
+        (char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
       ).join(""),
     );
     const name = path.split("/").filter(Boolean).pop()?.trim();

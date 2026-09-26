@@ -1,5 +1,6 @@
 import type { ProviderName } from "@yep-anywhere/shared";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useProviders } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
@@ -20,6 +21,8 @@ import { useCockpitHandoff } from "./useCockpitHandoff";
 
 export interface CockpitQuickActionsProps {
   basePath: string;
+  /** The session in the existing view; a menu entry on phones only. */
+  classicHref?: string;
   entries: readonly CockpitTranscriptEntry[];
   port: CockpitComposerSessionPort;
   projectId: string;
@@ -44,6 +47,7 @@ function BoltIcon() {
 export function CockpitQuickActions({
   basePath,
   busy,
+  classicHref,
   entries,
   port,
   projectId,
@@ -156,6 +160,16 @@ export function CockpitQuickActions({
                 : t("cockpitQuickHandoffHint")}
             </small>
           </button>
+          {classicHref && (
+            <Link
+              className={`${styles.item} ${styles.phoneOnly}`}
+              onClick={() => setMenuOpen(false)}
+              role="menuitem"
+              to={classicHref}
+            >
+              <strong>{t("cockpitSessionClassic")}</strong>
+            </Link>
+          )}
         </div>
       )}
       {dialogOpen && (

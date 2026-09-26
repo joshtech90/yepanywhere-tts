@@ -79,6 +79,7 @@
   background: transparent;
   font: inherit;
   text-align: left;
+  text-decoration: none;
   cursor: pointer;
 }
 
@@ -224,10 +225,33 @@
   opacity: 0.55;
 }
 
+/* The existing view is a header link on wide screens; on a phone it lives
+   in this menu, where the slim header has no room for it. */
+.phoneOnly {
+  display: none;
+}
+
 @media (max-width: 700px) {
   .trigger {
-    width: 2.75rem;
-    height: 2.75rem;
+    width: 1.9rem;
+    height: 1.9rem;
+    border-color: transparent;
+    border-radius: 0.6rem;
+    background: transparent;
+  }
+
+  .phoneOnly {
+    display: grid;
+  }
+
+  /* The trigger sits mid-header on a phone; a menu anchored to it ran off
+     the left edge. Span the screen below the slim header instead. */
+  .menu {
+    position: fixed;
+    top: calc(var(--cockpit-viewport-offset-top, 0px) + 2.8rem);
+    right: 0.5rem;
+    left: 0.5rem;
+    width: auto;
   }
 }
 

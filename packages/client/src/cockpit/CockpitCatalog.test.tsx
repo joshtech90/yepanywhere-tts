@@ -86,7 +86,7 @@ describe("Cockpit catalog", () => {
     let catalog = catalogWithSessions(30);
     const { rerender } = render(<CatalogHarness catalog={catalog} />);
     let input = screen.getByRole("searchbox", {
-      name: "Loaded sessions",
+      name: "Sessions",
     }) as HTMLInputElement;
     let value = "";
 
@@ -98,7 +98,7 @@ describe("Cockpit catalog", () => {
       catalog = catalogWithSessions(catalog.sessionCount + 1);
       rerender(<CatalogHarness catalog={catalog} />);
       input = screen.getByRole("searchbox", {
-        name: "Loaded sessions",
+        name: "Sessions",
       }) as HTMLInputElement;
       expect(input.value).toBe(value);
     }
