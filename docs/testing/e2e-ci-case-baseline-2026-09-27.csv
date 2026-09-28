@@ -1,0 +1,337 @@
+spec,case_title,observed_jobs,passing_jobs,median_passing_attempt_seconds,p90_passing_attempt_seconds,first_attempt_failed_jobs,retry_pass_jobs,final_failed_jobs
+e2e/acli-commentary.spec.ts,ACLI metadata and JSON retain their types inside workflows,35,30,3.0,3.5,0,0,0
+e2e/acli-commentary.spec.ts,renders through the endpoint and keeps context outside transcript geometry,35,30,6.1,6.3,0,0,0
+e2e/acli-commentary.spec.ts,schema-rendered tool progress stays visible in collapsed Conversation View,35,30,1.75,1.9,0,0,0
+e2e/acli-commentary.spec.ts,shell commentary lines preserve stdout context and unsequenced stderr,35,30,2.5,2.9,0,0,0
+e2e/acli-commentary.spec.ts,the capture CLI presents its links and generated images in collapsed Conversation View,35,30,2.3,2.6,0,0,0
+e2e/acli-commentary.spec.ts,workflow tags compose with rich commentary and recover original records,35,30,3.65,4.1,0,0,0
+e2e/add-project-form.spec.ts,Add project form › replaces the default name through real key-by-key typing,6,2,2.0,2.0,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions does not invent a creation age from last activity on desktop,35,30,1.4,1.5,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions does not invent a creation age from last activity on phone,35,30,1.4,1.5,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions expands retained matches through scanning and live updates on desktop,35,30,3.5,3.6,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions expands retained matches through scanning and live updates on phone,35,30,3.4,3.5,0,0,0
+e2e/all-sessions-search.spec.ts,"All Sessions fans out, retains both roles, and refines cached turns on desktop",35,30,2.2,2.3,0,0,0
+e2e/all-sessions-search.spec.ts,"All Sessions fans out, retains both roles, and refines cached turns on phone",35,30,2.1,2.2,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions follows appended turns and newly discovered sessions without restarting the catalog,35,30,3.2,3.2,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions keeps every typed character with a large title catalog,35,30,4.25,4.5,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions preserves copying and returns to the query end only when typing,35,30,0.93,1.2,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions reserves arriving matches and fits long titles on desktop,35,30,2.8,2.8,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions reserves arriving matches and fits long titles on phone,35,30,2.7,2.8,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions skips unsupported providers and places quoted diagnostics after matches on desktop,35,30,1.8,2.0,1,1,0
+e2e/all-sessions-search.spec.ts,All Sessions skips unsupported providers and places quoted diagnostics after matches on phone,35,30,1.5,1.6,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions streams matches and preserves explicit selection on desktop,35,30,4.2,4.4,0,0,0
+e2e/all-sessions-search.spec.ts,All Sessions streams matches and preserves explicit selection on phone,35,30,4.2,4.3,0,0,0
+e2e/android-stream.spec.ts,keeps physical Android device stream open for long duration (opt-in),35,0,,,0,0,0
+e2e/android-stream.spec.ts,streams physical Android device video over WebRTC when attached,35,0,,,0,0,0
+e2e/app-access.spec.ts,"private app assets, transferable links and revocation survive process restart",35,30,1.6,1.7,0,0,0
+e2e/artifact-relay.spec.ts,"keeps the mobile session mounted through artifact open, park, and Back",35,30,9.45,10.2,0,0,0
+e2e/artifact-relay.spec.ts,opens original interactive files through relay grants and a separate HTTPS origin,35,30,9.2,9.7,0,0,0
+e2e/artifact-relay.spec.ts,runs the generated YA mockup through the hosted relay viewer,35,30,8.0,8.4,0,0,0
+e2e/artifact-viewer.spec.ts,artifact Edit links open an authenticated editor tab and preserve the original view,35,30,5.4,5.5,0,0,0
+e2e/artifact-viewer.spec.ts,edits mapped source from default sanitized HTML and preserves a stale preview,35,30,4.6,5.0,0,0,0
+e2e/artifact-viewer.spec.ts,edits ordinary HTML without source maps and hides Edit on older servers,35,30,1.8,2.0,0,0,0
+e2e/artifact-viewer.spec.ts,"finds within a running artifact frame only, from its own Ctrl+F",26,21,1.8,2.0,1,1,0
+e2e/artifact-viewer.spec.ts,finds within the scriptless preview without giving it scripts,26,21,0.99,1.0,0,0,0
+e2e/artifact-viewer.spec.ts,"hands a framed PDF to a new tab through the viewer, never a popup",24,20,1.6,2.6,0,0,0
+e2e/artifact-viewer.spec.ts,"loads the bundle through the same port, preserves scripts, and denies YA access",35,30,1.4,1.4,0,0,0
+e2e/artifact-viewer.spec.ts,omits expiry controls and writes when older metadata lacks the field,35,30,2.0,2.0,0,0,0
+e2e/artifact-viewer.spec.ts,sanitized preview section links scroll within the document,28,23,0.77,0.79,0,0,0
+e2e/artifact-viewer.spec.ts,"saves artifact expiry without revoking links, alongside addresses and port",35,30,2.1,2.6,0,0,0
+e2e/artifact-viewer.spec.ts,shows the public-copy action in the artifact link menu,35,30,1.0,1.1,0,0,0
+e2e/artifact-viewer.spec.ts,viewer icon modes toggle locally and open through Shift and middle clicks,35,30,7.85,8.9,0,0,0
+e2e/async-questions.spec.ts,"async questions preserve context, drafts, scroll and ordinary delivery",35,30,72.0,78.0,0,0,0
+e2e/bang-command.spec.ts,a !! draft is routed locally and its run is recorded,35,30,4.65,4.7,4,0,4
+e2e/browser-debug-reload.spec.ts,keeps browser debugging active across reload at desktop width,35,30,3.8,3.9,0,0,0
+e2e/browser-debug-reload.spec.ts,keeps browser debugging active across reload at phone width,35,30,3.5,3.6,0,0,0
+e2e/cache-miss-billing.spec.ts,filters cache evidence and links events from the same session,35,30,2.3,2.4,0,0,0
+e2e/chromeos-stream.spec.ts,streams ChromeOS video over WebRTC when host is configured,35,0,,,0,0,0
+e2e/code-fence-renderers.spec.ts,renders a mermaid fence as a diagram and labels other fences,35,30,1.5,1.6,0,0,0
+e2e/code-fence-renderers.spec.ts,renders a mermaid fence at phone width,35,30,0.98,0.99,0,0,0
+e2e/code-fence-renderers.spec.ts,renders a mermaid fence in a markdown file preview,35,30,0.95,1.0,0,0,0
+e2e/codex-compact-availability.spec.ts,warns before compacting an active Codex turn and enables it when idle,35,30,13.8,14.2,0,0,0
+e2e/codex-oss.spec.ts,CodexOSS Provider › appears in provider selection with correct badge,35,30,0.26,0.31,0,0,0
+e2e/codex-oss.spec.ts,CodexOSS Provider › can navigate to codex-oss project,35,30,0.75,0.78,0,0,0
+e2e/codex-streaming-snapshots.spec.ts,Codex first-turn snapshots stay one row at desktop width,6,2,1.4,1.5,0,0,0
+e2e/codex-streaming-snapshots.spec.ts,Codex first-turn snapshots stay one row at phone width,6,2,1.4,1.4,0,0,0
+e2e/codex-streaming-snapshots.spec.ts,Codex first-turn snapshots stay one row at streaming-disabled width,6,2,1.55,1.6,0,0,0
+e2e/computer-control.spec.ts,Computer Control operator actions and old-server fallback,35,30,17.45,17.9,0,0,0
+e2e/conversation-preview.spec.ts,experimental preview isolates real encrypted sources and groups without reopening sessions,35,30,17.2,18.1,0,0,0
+e2e/conversation-thinking-budget.spec.ts,a short window drops the previous card instead of clipping the current one,35,30,1.35,1.4,0,0,0
+e2e/conversation-thinking-budget.spec.ts,a wrapped previous card takes only the room left in the viewport,35,30,3.4,3.5,0,0,0
+e2e/conversation-thinking-budget.spec.ts,thinking the turn spoke past and resumed work after is not previewed,35,30,1.35,1.4,0,0,0
+e2e/development-performance.spec.ts,development React timing is bounded,35,30,0.73,0.77,0,0,0
+e2e/development-performance.spec.ts,development React timing is unbounded in the control,35,30,0.85,0.88,0,0,0
+e2e/development-performance.spec.ts,production clients preserve the native measurement timeline,35,30,10.7,10.7,0,0,0
+e2e/emulator-stream.spec.ts,emits adaptive profile downshift/upshift events via APK transport override,35,0,,,0,0,0
+e2e/emulator-stream.spec.ts,streams emulator video over WebRTC via APK transport override,35,0,,,0,0,0
+e2e/emulator-stream.spec.ts,streams emulator video over WebRTC when ?auto is set,35,0,,,0,0,0
+e2e/explored-group-containment.spec.ts,explored entries stay on their own line instead of overlapping,35,30,1.4,1.4,0,0,0
+e2e/explored-image-strip.spec.ts,grouped image reads show thumbnails that open the viewer,35,30,1.2,1.3,0,0,0
+e2e/file-browser.spec.ts,Files API › downloads active project documents instead of executing them,35,30,0.64,0.67,0,0,0
+e2e/file-browser.spec.ts,Files API › previews large HTML without an artifact service,35,30,1.7,1.8,1,0,1
+e2e/file-browser.spec.ts,Files API › rejects path traversal attempts,35,30,0.01,0.01,0,0,0
+e2e/file-browser.spec.ts,Files API › returns 404 for non-existent files,35,30,0.01,0.01,0,0,0
+e2e/file-browser.spec.ts,Files API › returns file content for text files,35,30,0.31,0.32,0,0,0
+e2e/file-browser.spec.ts,Files API › returns raw file with correct content-type,35,30,0.01,0.01,0,0,0
+e2e/file-browser.spec.ts,Files API › sets attachment disposition for downloads,35,30,0.01,0.01,0,0,0
+e2e/file-viewer-comment.spec.ts,keeps rendered clicks native and quotes from circles at desktop width,35,30,3.1,3.2,0,0,0
+e2e/file-viewer-comment.spec.ts,keeps rendered clicks native and quotes from circles at mobile width,35,30,3.1,3.2,0,0,0
+e2e/file-viewer-comment.spec.ts,keeps rendered clicks native and quotes from circles at wide width,35,30,3.3,3.3,0,0,0
+e2e/file-viewer-comment.spec.ts,keeps selection actions out of an upward pointer drag,35,30,2.9,3.0,0,0,0
+e2e/file-viewer-comment.spec.ts,opens an inline selection comment without consuming the composer at desktop width,35,30,3.2,3.2,0,0,0
+e2e/file-viewer-comment.spec.ts,opens an inline selection comment without consuming the composer at mobile width,35,30,3.2,3.2,0,0,0
+e2e/file-viewer-comment.spec.ts,opens an inline selection comment without consuming the composer at wide width,35,30,3.0,3.2,0,0,0
+e2e/file-viewer-comment.spec.ts,opens and dismisses the standalone viewer sidebar at desktop width,35,30,1.3,1.3,0,0,0
+e2e/file-viewer-comment.spec.ts,opens and dismisses the standalone viewer sidebar at mobile width,35,30,1.3,1.3,0,0,0
+e2e/file-viewer-comment.spec.ts,opens the viewer toolbar link with a native middle click,35,30,2.7,2.8,0,0,0
+e2e/file-viewer-comment.spec.ts,starts a new selection when dragging inside selected viewer text,35,30,2.8,2.8,0,0,0
+e2e/file-viewer-minimize.spec.ts,finds within the file viewer after a click in its content,26,21,1.3,1.3,0,0,0
+e2e/file-viewer-minimize.spec.ts,keeps the viewer open and responsive across session width changes,35,30,5.1,5.2,0,0,0
+e2e/file-viewer-minimize.spec.ts,keeps the viewer open while transcript rich text settles,35,30,1.8,1.8,0,0,0
+e2e/file-viewer-minimize.spec.ts,minimizes and restores an external file viewer at desktop width,35,30,4.0,4.1,0,0,0
+e2e/file-viewer-minimize.spec.ts,minimizes and restores an external file viewer at desktop-1024 width,35,30,4.0,4.0,0,0,0
+e2e/file-viewer-minimize.spec.ts,minimizes and restores an external file viewer at mobile width,35,30,4.0,4.1,0,0,0
+e2e/file-viewer-minimize.spec.ts,minimizes and restores an external file viewer at tablet-800 width,35,30,4.0,4.0,0,0,0
+e2e/follow-sticky.spec.ts,keeps one Follow activation sticky on desktop,35,30,1.2,1.3,0,0,0
+e2e/follow-sticky.spec.ts,keeps one Follow activation sticky on mobile,35,30,1.2,1.3,0,0,0
+e2e/follow-sticky.spec.ts,keeps sidebar return at the high-water position after scrolling up on desktop,35,30,3.7,3.7,0,0,0
+e2e/follow-sticky.spec.ts,keeps sidebar return at the high-water position after scrolling up on mobile,35,30,3.7,3.7,0,0,0
+e2e/follow-sticky.spec.ts,restores Follow at the live tail after return and reload on desktop,35,30,4.0,4.1,0,0,0
+e2e/follow-sticky.spec.ts,restores Follow at the live tail after return and reload on mobile,35,30,4.0,4.0,0,0,0
+e2e/follow-sticky.spec.ts,restores the high-water position after a server restart and reload,35,30,10.7,10.9,0,0,0
+e2e/glossary-term-metrics.spec.ts,glossary term decoration preserves text metrics,35,30,0.17,0.18,0,0,0
+e2e/informational-notices.spec.ts,shows provider notices without conversation turns at desktop width,35,30,1.2,1.2,0,0,0
+e2e/informational-notices.spec.ts,shows provider notices without conversation turns at phone width,35,30,1.1,1.2,0,0,0
+e2e/issue-associations.spec.ts,automatically discovers Jira and GitHub references from viewed and recent sessions,35,30,8.7,8.9,0,0,0
+e2e/issue-associations.spec.ts,old servers receive no issue requests and hide issue settings,35,30,0.75,0.78,0,0,0
+e2e/issues-credentials.spec.ts,issue credential entry stays empty until typed at 1200px,35,30,2.0,2.1,0,0,0
+e2e/issues-credentials.spec.ts,issue credential entry stays empty until typed at 375px,35,30,1.7,1.8,0,0,0
+e2e/issues-scroll.spec.ts,"issue results, pagination and long evidence scroll at 1000px",35,30,2.1,2.1,0,0,0
+e2e/issues-scroll.spec.ts,"issue results, pagination and long evidence scroll at 1440px",35,30,2.1,2.1,0,0,0
+e2e/issues-scroll.spec.ts,"issue results, pagination and long evidence scroll at 375px",35,30,2.0,2.1,0,0,0
+e2e/issues-session-browser.spec.ts,issue browser groups sessions and keeps corrections in menus at 1000px,35,30,3.6,3.7,0,0,0
+e2e/issues-session-browser.spec.ts,issue browser groups sessions and keeps corrections in menus at 375px,35,30,3.2,3.3,0,0,0
+e2e/issues-sort.spec.ts,"issue sorting keeps identity, title and activity distinct at 1000px",35,30,3.4,3.4,0,0,0
+e2e/issues-sort.spec.ts,"issue sorting keeps identity, title and activity distinct at 375px",35,30,3.4,3.4,0,0,0
+e2e/local-conversation-preview.spec.ts,self-hosted preview uses local HTTP/SSE with cookie auth=false,35,30,6.45,6.6,0,0,0
+e2e/local-conversation-preview.spec.ts,self-hosted preview uses local HTTP/SSE with cookie auth=true,35,30,7.75,8.0,0,0,0
+e2e/long-context-effort-warning.spec.ts,a long-context effort change asks first and can fork at the new effort,35,30,16.1,17.7,0,0,0
+e2e/markdown-link-affordance.spec.ts,document links remain recognizable inside inline code,35,30,1.4,1.4,0,0,0
+e2e/mobile-viewport.spec.ts,mobile shell stays anchored with safe-area spacing (degraded host: false),35,30,2.2,2.3,0,0,0
+e2e/mobile-viewport.spec.ts,mobile shell stays anchored with safe-area spacing (degraded host: true),35,30,2.1,2.5,0,0,0
+e2e/mockup-export.spec.ts,"exports matching source states, a complete bundle, and a working direct YA preview",35,30,10.0,10.3,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › disposes one runtime while the others keep serving requests,35,30,1.9,1.9,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › enrolls three saved hosts through the visible login flow,35,30,9.95,10.8,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › isolates a stale resume session as sign-in required,35,30,2.5,2.6,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › keeps healthy hosts visible when one relay target is offline,35,30,2.5,3.0,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › keeps healthy rows live when a connected server disconnects,35,30,2.6,2.7,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › keeps three relay-backed source runtimes independent,35,30,2.0,2.1,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (legacy) › renders three hosts and closes every stream on navigation,35,30,2.9,3.0,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › disposes one runtime while the others keep serving requests,35,30,1.8,1.9,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › enrolls three saved hosts through the visible login flow,35,30,8.5,10.3,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › isolates a stale resume session as sign-in required,35,30,2.4,2.5,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › keeps healthy hosts visible when one relay target is offline,35,30,2.4,2.4,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › keeps healthy rows live when a connected server disconnects,35,30,2.5,2.6,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › keeps three relay-backed source runtimes independent,35,30,1.9,2.0,0,0,0
+e2e/multi-host-secure-coexistence.spec.ts,Secure multi-host coexistence (mux) › renders three hosts and closes every stream on navigation,35,30,2.7,2.7,0,0,0
+e2e/new-session-preboot-composer.spec.ts,keys typed before the app loads reach the new-session composer,3,2,1.19,1.4,0,0,0
+e2e/new-session-preboot-composer.spec.ts,other routes never show the pre-boot composer,3,2,0.26,0.28,0,0,0
+e2e/new-session-project-queue.spec.ts,keeps the selected project queue beneath the selector,35,30,2.85,3.1,0,0,0
+e2e/non-human-user-turn.spec.ts,delivered-turn flag opens older history and clears Inbox attention at 1200px,35,30,8.4,8.5,0,0,0
+e2e/non-human-user-turn.spec.ts,delivered-turn flag opens older history and clears Inbox attention at 375px,35,30,6.5,6.8,0,0,0
+e2e/page-keys-after-scrollbar-drag.spec.ts,Home loads older history at the loaded boundary,35,30,2.4,2.5,1,1,0
+e2e/page-keys-after-scrollbar-drag.spec.ts,PageUp and PageDown keep scrolling after a native scrollbar drag,35,30,2.7,2.8,0,0,0
+e2e/page-keys-after-scrollbar-drag.spec.ts,PageUp loads older history at the loaded boundary,35,30,2.4,2.5,0,0,0
+e2e/panel-slide-animations.spec.ts,Appearance slide animations apply immediately and persist for App toggles,35,30,4.5,4.7,0,0,0
+e2e/panel-slide-animations.spec.ts,file viewers use the right pane with animations off,35,30,2.0,2.1,0,0,0
+e2e/panel-slide-animations.spec.ts,file viewers use the right pane with animations on,35,30,2.6,2.6,0,0,0
+e2e/panel-slide-animations.spec.ts,nested files stay in the right pane and Back preserves the parent,35,30,1.5,1.6,0,0,0
+e2e/project-file-completion.spec.ts,"@ completion is explicit, distinguishes directories, and accepts only Tab or click",35,30,3.1,3.2,0,0,0
+e2e/project-new-session-cta.spec.ts,Project-scoped new session CTA › prefills the new session prompt from project search text,35,30,1.15,1.2,0,0,0
+e2e/project-new-session-cta.spec.ts,Project-scoped new session CTA › shows the CTA when entering sessions from Projects,35,30,0.99,1.0,0,0,0
+e2e/project-queue-idle-affordance.spec.ts,hides the current-session Project Queue action while idle,35,30,2.2,2.3,0,0,0
+e2e/project-queue-new-session-options.spec.ts,right-click queues the draft as a new session in another project,3,2,2.4,2.4,0,0,0
+e2e/project-template-sources.spec.ts,edits ordered template sources and preserves typing on desktop,35,30,3.05,3.5,0,0,0
+e2e/project-template-sources.spec.ts,edits ordered template sources and preserves typing on phone,35,30,3.4,3.4,0,0,0
+e2e/project-template-sources.spec.ts,fetches and composes the pinned YA-default source through the UI,35,0,,,0,0,0
+e2e/project-template-sources.spec.ts,older server 0.8.0 receives no template source requests,35,30,1.1,1.1,0,0,0
+e2e/project-template-sources.spec.ts,older server 0.8.1 receives no template source requests,35,30,0.93,0.98,0,0,0
+e2e/provider-child-session-layout.spec.ts,keeps provider child context compact on desktop,35,30,0.66,0.68,0,0,0
+e2e/provider-child-session-layout.spec.ts,keeps provider child context compact on mobile,35,30,0.65,0.67,0,0,0
+e2e/provider-host-degraded.spec.ts,degraded provider host keeps navigation reachable at 1000px,35,30,1.5,1.6,0,0,0
+e2e/provider-host-degraded.spec.ts,degraded provider host keeps navigation reachable at 375px,35,30,1.5,1.6,0,0,0
+e2e/provider-host-live.spec.ts,"codex durable resume, browser reload and original native approval",35,0,,,0,0,0
+e2e/provider-readiness.spec.ts,New Session provider readiness › keeps a fresh empty Gateway catalog blocked,35,30,0.77,0.81,0,0,0
+e2e/provider-readiness.spec.ts,New Session provider readiness › keeps stale Gateway display blocked until named retry succeeds,35,30,1.1,1.2,0,0,0
+e2e/provider-readiness.spec.ts,"New Session provider readiness › separates desktop, runtime, and auth while keeping launch available",35,30,1.5,1.5,0,0,0
+e2e/public-share-management.spec.ts,left and right click open the same share manager,35,30,5.0,5.2,0,0,0
+e2e/public-share-management.spec.ts,share type labels fit beside creation actions,35,30,1.6,1.6,0,0,0
+e2e/public-share-play.spec.ts,the played document cannot see the share secret or frame this origin,6,2,0.48,0.5,0,0,0
+e2e/public-share-viewer.spec.ts,expanded commands grow with their content,35,30,1.6,1.6,0,0,0
+e2e/public-share-viewer.spec.ts,expanding activities holds the clicked summary near the live edge (1000px),35,30,1.6,1.6,0,0,0
+e2e/public-share-viewer.spec.ts,expanding activities holds the clicked summary near the live edge (375px),35,30,1.6,1.7,0,0,0
+e2e/public-share-viewer.spec.ts,public attachment opens without private API requests,35,30,1.4,1.5,0,0,0
+e2e/question-aside.spec.ts,"question cards use existing forks, keep main typing, and save on empty",35,30,34.45,35.0,1,1,0
+e2e/recovered-queue-stream.spec.ts,Recovered queue stream snapshots › keeps recovered rows live and manages them from Projects,35,30,3.0,3.0,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › !! Commands sidebar category stays on its relay route,35,30,3.1,3.6,4,0,4
+e2e/relay-integration.spec.ts,"Full Relay Integration › connect via relay, login, and verify app loads",35,30,2.8,2.9,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › development settings links to the configured relay monitor,35,30,4.15,4.3,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › explicit relay handoff preserves its source without remembered credentials,35,30,4.2,4.4,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › fresh relay login updates stale saved host relay URL,35,30,2.1,2.1,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › large assistant content stays viewable directly and uses bounded relay chunks,35,30,10.4,10.7,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › large frozen public share uses bounded relay chunks,35,30,11.25,11.6,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › large user upload crosses relay in bounded upload chunks,35,30,5.55,5.8,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › mock project visible through relay connection,35,30,2.8,2.8,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › old relay resume session falls back to fresh login,35,30,1.4,1.4,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › server offline error when relay username not registered,35,30,2.2,2.2,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › session persists after page refresh (auto-resume),35,30,4.5,4.6,0,0,0
+e2e/relay-integration.spec.ts,Full Relay Integration › wrong password shows error through relay,35,30,1.9,2.0,0,0,0
+e2e/remote-issues.spec.ts,Issues sidebar and deep links survive reload in direct hosted client,35,30,5.3,5.5,0,0,0
+e2e/remote-issues.spec.ts,Issues sidebar and deep links survive reload in relay hosted client,35,30,5.1,5.2,0,0,0
+e2e/remote-login.spec.ts,Encrypted Data Flow › !! Commands sidebar category stays on its remote route,35,30,2.7,2.8,4,0,4
+e2e/remote-login.spec.ts,Encrypted Data Flow › activity subscription receives events,35,30,2.5,2.6,0,0,0
+e2e/remote-login.spec.ts,Encrypted Data Flow › mock project visible in sidebar,35,30,2.5,2.6,0,0,0
+e2e/remote-login.spec.ts,Encrypted Data Flow › sidebar navigation loads via SecureConnection,35,30,2.5,2.6,0,0,0
+e2e/remote-login.spec.ts,Remote Login Flow › empty fields show validation error,35,30,1.5,1.5,0,0,0
+e2e/remote-login.spec.ts,Remote Login Flow › login page renders correctly,35,30,1.5,1.5,0,0,0
+e2e/remote-login.spec.ts,Remote Login Flow › server unreachable shows connection error,35,30,1.6,1.7,0,0,0
+e2e/remote-login.spec.ts,Remote Login Flow › successful login renders main app,35,30,2.5,2.6,0,0,0
+e2e/remote-login.spec.ts,Remote Login Flow › unknown username shows error,35,30,1.9,1.9,0,0,0
+e2e/remote-login.spec.ts,Remote Login Flow › wrong password shows error,35,30,1.9,1.9,0,0,0
+e2e/remote-login.spec.ts,"Session Resumption › login with remember me, refresh page, still authenticated",35,30,4.65,5.3,0,0,0
+e2e/remote-login.spec.ts,Session Resumption › password change invalidates stored session,35,30,5.3,5.6,0,0,0
+e2e/remote-login.spec.ts,Session Resumption › session auto-resumes after brief disconnect,35,30,4.8,5.1,0,0,0
+e2e/remote-session-startup.spec.ts,remote selected-session startup › keeps cold and warm reloads monotonic,35,30,5.8,6.3,0,0,0
+e2e/right-pane-composer-popover.spec.ts,composer popovers draw over the docked right pane,29,24,1.5,2.0,0,0,0
+e2e/right-pane-play-minimize.spec.ts,"play in the right pane, then minimize, leaves a restore chip",35,30,2.3,2.6,0,0,0
+e2e/route-lifetime.spec.ts,page fixture accepts a page already closed by its owner,35,30,0.04,0.04,0,0,0
+e2e/route-lifetime.spec.ts,page fixture finishes an active route after the test body returns,35,30,0.33,0.33,0,0,0
+e2e/runtime-notice.spec.ts,old-server runtime advice stays nonblocking at 1000px,35,30,2.4,3.4,0,0,0
+e2e/runtime-notice.spec.ts,old-server runtime advice stays nonblocking at 375px,35,30,2.35,3.3,0,0,0
+e2e/sanitized-embedded-html.spec.ts,renders joined Markdown table cells at desktop width,35,30,0.99,1.0,0,0,0
+e2e/sanitized-embedded-html.spec.ts,renders joined Markdown table cells at phone width,35,30,0.98,1.0,0,0,0
+e2e/session-app-tabs.spec.ts,different App snapshots in two tabs settle without storage feedback,35,30,3.2,3.3,0,0,0
+e2e/session-catchup-order.spec.ts,catch-up places user turns before a live reply on desktop,35,30,1.4,1.6,0,0,0
+e2e/session-catchup-order.spec.ts,catch-up places user turns before a live reply on phone,35,30,1.3,1.4,0,0,0
+e2e/session-defaults-layout.spec.ts,expands New Session option explanations on desktop,33,29,2.4,2.4,0,0,0
+e2e/session-defaults-layout.spec.ts,expands New Session option explanations on phone,33,29,2.4,2.4,0,0,0
+e2e/session-defaults-layout.spec.ts,pairs show thinking with suggestions on desktop,35,30,2.5,2.5,0,0,0
+e2e/session-defaults-layout.spec.ts,pairs show thinking with suggestions on phone,35,30,2.4,2.4,0,0,0
+e2e/session-defaults-layout.spec.ts,uses compact New Session controls on desktop,2,1,3.4,3.4,0,0,0
+e2e/session-defaults-layout.spec.ts,uses compact New Session controls on phone,2,1,3.4,3.4,0,0,0
+e2e/session-history-isearch.spec.ts,continues isearch through bounded history at desktop width,35,30,2.2,2.3,0,0,0
+e2e/session-history-isearch.spec.ts,continues isearch through bounded history at mobile width,35,30,2.2,2.2,0,0,0
+e2e/session-horizontal-overflow.spec.ts,keeps wide session content reachable at desktop width,35,30,1.1,1.2,0,0,0
+e2e/session-horizontal-overflow.spec.ts,keeps wide session content reachable at phone width,35,30,1.1,1.1,0,0,0
+e2e/session-isearch-pointer.spec.ts,search result and transcript clicks keep their own actions,35,30,1.2,1.3,0,0,0
+e2e/session-isearch-scope-controls.spec.ts,clicking the framed match row accepts it,35,30,1.1,1.2,0,0,0
+e2e/session-isearch-scope-controls.spec.ts,committed jumps fade the row frame and clear on the next key,35,30,1.1,1.2,0,0,0
+e2e/session-isearch-scope-controls.spec.ts,"scope picker, key help and close at selection (desktop)",35,30,1.1,1.1,0,0,0
+e2e/session-isearch-scope-controls.spec.ts,"scope picker, key help and close at selection (phone)",35,30,1.1,1.1,0,0,0
+e2e/session-read-state.spec.ts,"read toggles stay synchronized across sidebar, session menu and inbox",35,30,20.95,22.2,0,0,0
+e2e/session-right-pane.spec.ts,Appearance defaults off and persists its setting,35,30,1.3,1.4,0,0,0
+e2e/session-right-pane.spec.ts,Apps saves on defocus without losing typing during a pending save,35,30,3.0,3.1,0,0,0
+e2e/session-right-pane.spec.ts,Apps settings explains wildcard hosting without a domain default,35,30,2.4,2.4,1,1,0
+e2e/session-right-pane.spec.ts,older servers expose no app-link management requests,35,30,0.85,0.92,0,0,0
+e2e/session-right-pane.spec.ts,"right pane discovers tool apps, resizes, parks and preserves typing",35,30,13.9,14.3,0,0,0
+e2e/session-send-recovery.spec.ts,an aborted response after delivery does not restore the sent draft,35,30,2.45,2.6,0,0,0
+e2e/session-stream-flood.spec.ts,a sustained stream flood does not trip React's update-depth limit,35,30,21.65,22.3,0,0,0
+e2e/session-streams.spec.ts,Session streams › idle heartbeat clears processing when completion and tool output were missed,35,30,2.7,2.7,0,0,0
+e2e/session-streams.spec.ts,Session streams › session detail subscribes to focused watch stream over WebSocket,35,30,0.88,0.91,0,0,0
+e2e/session-switch-scroll.spec.ts,direct session switching keeps each scrolled-away reading position,28,23,2.2,2.2,0,0,0
+e2e/session-transcript-search-button.spec.ts,toolbar search button opens transcript search (desktop),35,30,1.1,1.1,0,0,0
+e2e/session-transcript-search-button.spec.ts,toolbar search button opens transcript search (phone),35,30,1.1,1.1,0,0,0
+e2e/session-transcript-search-button.spec.ts,toolbar search button opens transcript search (tablet),35,30,1.1,1.1,0,0,0
+e2e/settings-performance-layout.spec.ts,lays out the reverse-search limit on desktop,35,30,2.3,2.3,0,0,0
+e2e/settings-performance-layout.spec.ts,lays out the reverse-search limit on phone,35,30,2.3,2.3,0,0,0
+e2e/settings-provider-layout.spec.ts,provider limits keep readable text at 1000px,35,30,1.3,1.3,0,0,0
+e2e/settings-provider-layout.spec.ts,provider limits keep readable text at 1100px,35,30,1.3,1.3,0,0,0
+e2e/settings-provider-layout.spec.ts,provider limits keep readable text at 1200px,35,30,1.3,1.3,0,0,0
+e2e/settings-provider-layout.spec.ts,provider limits keep readable text at 1400px,35,30,1.3,1.4,0,0,0
+e2e/settings-provider-layout.spec.ts,provider limits keep readable text at 375px,35,30,1.2,1.3,0,0,0
+e2e/settings-search-navigation.spec.ts,search results save and navigate safely at 1000px,35,30,2.2,2.3,0,0,0
+e2e/settings-search-navigation.spec.ts,search results save and navigate safely at 375px,35,30,1.8,1.9,0,0,0
+e2e/settings-search-navigation.spec.ts,selecting a settings category clears the search,35,30,1.1,1.1,0,0,0
+e2e/settings-startup.spec.ts,Settings controls do not wait for sidebar sessions,35,30,1.2,1.2,0,0,0
+e2e/settings-startup.spec.ts,a fresh Settings window starts collapsed without changing the saved preference,35,30,1.2,1.3,0,0,0
+e2e/settings-startup.spec.ts,search loads inactive panes without blocking existing editable results,35,30,1.5,1.8,0,0,0
+e2e/settings-unsupported-category.spec.ts,Settings category the server does not serve › answers a typed Emulator URL with its message and asks no device route,6,2,1.65,1.7,0,0,0
+e2e/settings-user-deletion.spec.ts,confirms user deletion on desktop,35,30,1.4,1.4,0,0,0
+e2e/settings-user-deletion.spec.ts,confirms user deletion on phone,35,30,1.25,1.4,0,0,0
+e2e/shell-poll-rows.spec.ts,compact polls and aligned labels at 1200px,35,30,5.4,5.7,0,0,0
+e2e/shell-poll-rows.spec.ts,compact polls and aligned labels at 375px,35,30,1.2,1.3,0,0,0
+e2e/sidebar-density.spec.ts,keeps sidebar density spatial and the create action recognizable,35,30,2.2,2.3,0,0,0
+e2e/sidebar-density.spec.ts,opens New Session from the header sidebar launcher middle click,35,30,1.0,1.0,0,0,0
+e2e/sidebar-ordering.spec.ts,sidebar follows user sends while visits and background work stay put,35,30,26.7,30.2,0,0,0
+e2e/slash-command-argument-completions.spec.ts,restarts the provider only after verified stop and reloads saved turns,35,30,13.8,15.0,0,0,0
+e2e/slash-command-argument-completions.spec.ts,shows provider-owned slash hints and argument completions,35,30,20.75,22.2,0,0,0
+e2e/slash-command-argument-completions.spec.ts,toggles the observed goal during work without consuming the draft,35,30,14.05,14.6,1,1,0
+e2e/source-control-clean-landing.spec.ts,clean Changes landing and latest-commit preference stay distinct,35,30,9.4,9.5,0,0,0
+e2e/source-control-clean-landing.spec.ts,commit search keeps the matching preview text visible,35,30,2.5,2.5,0,0,0
+e2e/source-control-clean-landing.spec.ts,groups semantic file sections and keeps current-content browsing distinct,35,30,5.8,5.9,0,0,0
+e2e/source-control-clean-landing.spec.ts,retention eviction preserves the mounted workbench,35,30,2.2,2.2,0,0,0
+e2e/source-control-clean-landing.spec.ts,reviews collapsed commit files with bracket navigation,35,30,7.1,7.2,0,0,0
+e2e/source-control-clean-landing.spec.ts,status refresh follows route and page attention,35,30,5.0,5.1,0,0,0
+e2e/source-control-clean-landing.spec.ts,unfocused cold load keeps the static workbench mounted,35,30,2.6,2.6,0,0,0
+e2e/source-control-filesystem-prefixes.spec.ts,opens filesystem directories one level at a time,35,30,1.5,1.6,0,0,0
+e2e/source-control-markdown-preview.spec.ts,Source Control renders Quarto Markdown with include navigation,35,30,4.8,4.9,0,0,0
+e2e/source-control-toolbar-layout.spec.ts,narrow diff panes keep wrapping identity and controls separate,35,30,2.4,2.4,0,0,0
+e2e/source-selection.spec.ts,keeps a backward drag selected in a collapsed activity preview,35,30,1.7,1.8,0,0,0
+e2e/source-selection.spec.ts,keeps a wrapped highlighted-file range narrow after quote reply,35,30,1.4,1.4,0,0,0
+e2e/source-selection.spec.ts,keeps forward highlighted-file selection ordered and tinted,35,30,1.5,1.5,0,0,0
+e2e/source-selection.spec.ts,keeps reverse highlighted-file selection ordered and tinted,35,30,1.4,1.4,1,1,0
+e2e/source-selection.spec.ts,places activity selection actions beside the selected range,35,30,1.3,1.4,0,0,0
+e2e/source-selection.spec.ts,starts a new transcript selection inside previously selected text,35,30,1.4,1.4,0,0,0
+e2e/source-transport-coexistence.spec.ts,Source transport coexistence › keeps localhost and second direct WebSocket sources independent,35,30,1.2,1.5,0,0,0
+e2e/speech-backend-setup.spec.ts,speech setup is discoverable and fits at 1200px,35,30,1.3,1.3,0,0,0
+e2e/speech-backend-setup.spec.ts,speech setup is discoverable and fits at 375px,35,30,1.25,1.3,0,0,0
+e2e/speech-backend-setup.spec.ts,speech setup is discoverable and fits at 768px,35,30,1.3,1.3,0,0,0
+e2e/speech-backend-setup.spec.ts,speech setup is discoverable and fits at 967px,35,30,1.3,1.3,0,0,0
+e2e/speech-caret-insertion.spec.ts,commits the interim text visible when Stop is pressed,35,30,1.45,1.5,0,0,0
+e2e/speech-caret-insertion.spec.ts,moves a later final-only browser result to the live caret,35,30,0.92,0.95,0,0,0
+e2e/speech-caret-insertion.spec.ts,moves only the next fragment when the caret changes mid-interim,35,30,0.95,1.0,0,0,0
+e2e/speech-caret-insertion.spec.ts,sends the interim text visible when Send is pressed,35,30,1.0,1.1,0,0,0
+e2e/thinking-toolbar-menu-layout.spec.ts,keeps the thinking menu inside the desktop viewport,35,30,2.4,2.4,0,0,0
+e2e/thinking-toolbar-menu-layout.spec.ts,keeps the thinking menu inside the mobile viewport,35,30,2.3,2.3,0,0,0
+e2e/thinking-toolbar-menu-layout.spec.ts,keeps the thinking menu inside the phone viewport from the overflow strip,35,30,2.3,2.3,0,0,0
+e2e/tool-display-contracts.spec.ts,preserves reviewed provider semantics at 1000px,35,30,1.0,1.1,0,0,0
+e2e/tool-display-contracts.spec.ts,preserves reviewed provider semantics at 375px,35,30,1.0,1.1,0,0,0
+e2e/tool-display-contracts.spec.ts,"rich, partial, nested fallback and recovery at 1000px",35,30,5.5,5.9,0,0,0
+e2e/tool-display-contracts.spec.ts,"rich, partial, nested fallback and recovery at 375px",35,30,1.3,1.3,0,0,0
+e2e/toolbar-quick-hide.spec.ts,hides a toolbar control from its desktop hint,35,30,2.3,2.3,0,0,0
+e2e/toolbar-quick-hide.spec.ts,hides a toolbar control from its phone hint,35,30,2.3,2.3,0,0,0
+e2e/tooltip-noninterference.spec.ts,passive tooltips preserve activation and scrolling at desktop width,35,30,1.1,1.1,0,0,0
+e2e/tooltip-noninterference.spec.ts,passive tooltips preserve activation and scrolling at phone width,35,30,1.1,1.1,0,0,0
+e2e/transcript-projection.spec.ts,renders the deterministic transcript projection at desktop width,35,30,1.4,1.5,0,0,0
+e2e/transcript-projection.spec.ts,renders the deterministic transcript projection at mobile width,35,30,1.4,1.4,0,0,0
+e2e/user-turn-presentation.spec.ts,measures user-turn presentation at desktop width,35,30,2.1,2.1,0,0,0
+e2e/user-turn-presentation.spec.ts,measures user-turn presentation at mobile width,35,30,2.1,2.2,0,0,0
+e2e/workflow-tags.spec.ts,"file-reference, inline and nested schemas at desktop width",35,30,9.8,9.9,0,0,0
+e2e/workflow-tags.spec.ts,"file-reference, inline and nested schemas at phone width",35,30,9.7,10.0,0,0,0
+e2e/workflow-tags.spec.ts,publish progress stays visible with source collapsed at desktop width,35,30,1.5,1.6,0,0,0
+e2e/workflow-tags.spec.ts,publish progress stays visible with source collapsed at phone width,35,30,1.5,1.6,0,0,0
+e2e/ws-secure.spec.ts,Maintenance Server › debug sessions endpoint works,35,30,0.0,0.0,0,0,0
+e2e/ws-secure.spec.ts,Maintenance Server › health check works,35,30,0.0,0.0,0,0,0
+e2e/ws-secure.spec.ts,Maintenance Server › status endpoint works,35,30,0.0,0.01,0,0,0
+e2e/ws-secure.spec.ts,Remote Access Configuration › can enable and disable remote access via API,35,30,0.02,0.02,0,0,0
+e2e/ws-secure.spec.ts,Remote Access Configuration › requires relay config before setting password,35,30,0.01,0.01,0,0,0
+e2e/ws-secure.spec.ts,Remote Access Configuration › validates password requirements,35,30,0.01,0.01,0,0,0
+e2e/ws-secure.spec.ts,Remote Access Configuration › validates username requirements (via relay config),35,30,0.0,0.0,0,0,0
+e2e/ws-secure.spec.ts,Secure WebSocket Transport E2E › can complete SRP handshake in browser,35,30,0.46,0.5,0,0,0
+e2e/ws-secure.spec.ts,Secure WebSocket Transport E2E › can perform full encrypted communication,35,30,1.7,1.7,0,0,0
+e2e/ws-secure.spec.ts,Secure WebSocket Transport E2E › full SRP handshake and encrypted request,35,30,0.26,0.27,0,0,0
+e2e/ws-secure.spec.ts,Secure WebSocket Transport E2E › rejects unknown username,35,30,0.46,0.5,0,0,0
+e2e/ws-secure.spec.ts,Secure WebSocket Transport E2E › verifies WebCrypto subtle API available,35,30,0.25,0.27,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › Binary Frame Support (Phase 0) › can receive binary frame response,35,30,0.35,0.4,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › Binary Frame Support (Phase 0) › can send binary frame with format 0x01,35,30,0.25,0.29,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › Binary Frame Support (Phase 0) › handles ArrayBuffer correctly in browser,35,30,0.26,0.27,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › Binary Frame Support (Phase 0) › handles UTF-8 content in binary frames,35,30,0.25,0.27,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can connect and make GET request for health endpoint,35,30,0.26,0.27,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can handle multiple concurrent requests,35,30,0.35,0.4,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can make GET request for projects endpoint,35,30,0.27,0.29,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can make GET request for version endpoint,35,30,0.35,0.39,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can reconnect after disconnection,35,30,0.34,0.35,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can subscribe to activity channel and receive connected event,35,30,0.26,0.27,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › can unsubscribe from activity channel,35,30,2.2,2.3,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › returns error for session subscription without sessionId,35,30,0.26,0.28,0,0,0
+e2e/ws-transport.spec.ts,WebSocket Transport E2E › returns error status for non-existent endpoint,35,30,0.26,0.27,0,0,0

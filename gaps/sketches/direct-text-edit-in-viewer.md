@@ -1,23 +1,24 @@
 # Edit viewed text directly instead of only commenting to the agent
 
-A viewed `.md` or text file — in the session file viewer, the parked viewer,
-or a Source Control dirty file — can only be read or annotated with a comment
-that asks an agent to change it (`topics/source-review-to-session.md`,
-`topics/selection-comment-ui.md`). For a typo, a sentence, or a line of prose
-the user wants to type the change themselves. There is no file-write route in
-`packages/server/src/routes/` today; every mutation goes through a provider.
+Related: [source-map aware artifact editing](source-mapped-artifact-editing.md)
+extends this editor direction to generated HTML, character-level click
+positioning, a full-workspace editing view, and optional registered regeneration.
+
+The initial raw source editor is implemented in authenticated ordinary file
+viewers; see [file source editing](../../topics/file-source-editing.md). It uses
+explicit Save and a dirty-close choice instead of implicit saving on Close.
+It opens at a supplied file/line location; tracking an arbitrary reading caret,
+direct diff-pane entry, rendered-region editing, WYSIWYG, and the optional
+last-editor session notice below remain future work.
 
 Primary intent is editing **text**, not formatting. Acceptable shapes, in
 order of ambition; each is a valid stopping point:
 
-1. **Modal raw editor, v0.** An Edit action on the viewer opens a plain
-   textarea of the whole file, scrolled and caret-placed at the region the
-   user was reading (the viewer already carries a path-and-line controller,
-   `topics/parked-file-viewer.md`). Close saves; Cancel discards. Needs one
-   authenticated write route with a same-content precondition (the file's
-   observed hash or mtime) so a concurrent agent edit is detected and
-   reported rather than clobbered, and the same project-storage posture as
-   any project write.
+1. **Modal raw editor, v0 — implemented.** Edit opens a plain textarea,
+   positioned at the supplied file/line location. Explicit Save uses an
+   authenticated conditional write, and dirty Close offers Save or Discard.
+   Following an arbitrary reading caret remains a refinement of the existing
+   [path-and-line controller](../../topics/parked-file-viewer.md).
 2. **Region editing in the rendered view.** Selecting or placing the caret in
    a rendered block swaps that block for its markdown source in an inline
    textarea; leaving it writes the block back. The source-positioned

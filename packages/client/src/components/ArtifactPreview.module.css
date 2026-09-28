@@ -12,21 +12,10 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 8px;
-  padding: 8px;
+  padding: 0;
   color: var(--text-primary);
   background: var(--bg-secondary);
   font-size: 13px;
-}
-
-.toolbar button {
-  min-height: 32px;
-  padding: 4px 10px;
-  border: 1px solid var(--border-color);
-  border-radius: 6px;
-  color: inherit;
-  background: var(--bg-surface);
-  cursor: pointer;
-  font: inherit;
 }
 
 .frame {

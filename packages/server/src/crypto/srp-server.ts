@@ -3,6 +3,7 @@
  *
  * Uses tssrp6a library with its 2048-bit prime group and SHA-512 default.
  */
+import * as crypto from "node:crypto";
 import {
   SRPParameters,
   SRPRoutines,
@@ -51,6 +52,34 @@ export async function generateVerifier(
     salt: bigIntToHex(s),
     verifier: bigIntToHex(v),
   };
+}
+
+/**
+ * Bytes in a generated salt: tssrp6a draws twice the hash output, and
+ * `SRP_PARAMS` hashes with SHA-512.
+ */
+const SRP_SALT_BYTES = 2 * 64;
+
+/**
+ * Decoy salt for an identity that has no credential: deterministic per
+ * identity under `secret`, and the same size and hex form as a salt
+ * `generateVerifier` stores. Answering every unknown identity with one shared
+ * salt would let a caller find real users by the salt that differs, and a
+ * fresh random salt per hello would let them find real users by the salt that
+ * stays the same.
+ */
+export function deriveDecoySalt(secret: string, identity: string): string {
+  const blocks: Buffer[] = [];
+  for (let counter = 0; counter * 64 < SRP_SALT_BYTES; counter++) {
+    blocks.push(
+      crypto
+        .createHmac("sha512", secret)
+        .update(`srp-decoy-salt\0${counter}\0${identity}`)
+        .digest(),
+    );
+  }
+  const bytes = Buffer.concat(blocks).subarray(0, SRP_SALT_BYTES);
+  return bigIntToHex(hexToBigInt(bytes.toString("hex")));
 }
 
 /**

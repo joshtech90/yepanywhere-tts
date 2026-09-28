@@ -26,6 +26,7 @@ const STRICT_MODE = false;
 const Wrapper = STRICT_MODE ? StrictMode : Fragment;
 
 import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { PrebootComposerRetirement } from "./components/PrebootComposerRetirement";
 import { RouteModule, routeModule } from "./components/RouteModule";
 import { TooltipLayer } from "./components/ui/TooltipLayer";
 import { initializeContentMaxWidth } from "./hooks/useContentMaxWidth";
@@ -179,6 +180,11 @@ const EmulatorPage = lazy(() =>
 );
 const FilePage = lazy(() =>
   loadFilePageModule().then(({ FilePage }) => ({ default: FilePage })),
+);
+const ViewerModePage = lazy(() =>
+  import("./pages/ViewerModePage").then(({ ViewerModePage }) => ({
+    default: ViewerModePage,
+  })),
 );
 const GitStatusPage = lazy(() =>
   loadGitStatusPageModule().then(({ GitStatusPage }) => ({
@@ -400,6 +406,7 @@ const APP_ROUTES = (
         path="projects/:projectId/file"
         element={routeModule(<FilePage />)}
       />
+      <Route path="file-view" element={routeModule(<ViewerModePage />)} />
       <Route
         path="projects/:projectId/sessions/:sessionId"
         element={routeModule(<SessionDomLingerRouteMarker />)}
@@ -427,6 +434,7 @@ createRoot(rootElement).render(
   <Wrapper>
     <TooltipLayer />
     <BrowserRouter basename={basename}>
+      <PrebootComposerRetirement />
       <I18nProvider>
         <Routes>
           <Route

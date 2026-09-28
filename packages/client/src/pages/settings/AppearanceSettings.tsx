@@ -130,6 +130,8 @@ import {
 } from "../../hooks/useTooltipAppearance";
 import { useWiderConversationActivityPreviews } from "../../hooks/useWiderConversationActivityPreviews";
 import { useWorkflowTags } from "../../hooks/useWorkflowTags";
+import { usePdfjsRendererSetting } from "../../hooks/usePdfjsRendererSetting";
+import { useTranscriptMarginNavigation } from "../../hooks/useTranscriptMarginNavigation";
 import { useSessionRightPaneSetting } from "../../hooks/useSessionRightPaneSetting";
 import { usePanelSlideAnimations } from "../../hooks/usePanelSlideAnimations";
 import { useAcliCommentarySetting } from "../../hooks/useAcliCommentarySetting";
@@ -239,6 +241,12 @@ export function AppearanceSettings() {
   const { workflowTagsEnabled, setWorkflowTagsEnabled } = useWorkflowTags();
   const { sessionRightPaneEnabled, setSessionRightPaneEnabled } =
     useSessionRightPaneSetting();
+  const { pdfjsRendererEnabled, setPdfjsRendererEnabled } =
+    usePdfjsRendererSetting();
+  const {
+    transcriptMarginNavigationEnabled,
+    setTranscriptMarginNavigationEnabled,
+  } = useTranscriptMarginNavigation();
   const { panelSlideAnimations, setPanelSlideAnimations } =
     usePanelSlideAnimations();
   const { acliCommentaryEnabled, setAcliCommentaryEnabled } =
@@ -388,6 +396,10 @@ export function AppearanceSettings() {
     undoEntry(glossaryHintsEnabled, setGlossaryHintsEnabled),
     undoEntry(workflowTagsEnabled, setWorkflowTagsEnabled),
     undoEntry(sessionRightPaneEnabled, setSessionRightPaneEnabled),
+    undoEntry(
+      transcriptMarginNavigationEnabled,
+      setTranscriptMarginNavigationEnabled,
+    ),
     undoEntry(panelSlideAnimations, setPanelSlideAnimations),
     undoEntry(acliCommentaryEnabled, setAcliCommentaryEnabled),
     undoEntry(tooltipDelayMs, setTooltipDelayMs),
@@ -795,6 +807,23 @@ export function AppearanceSettings() {
           </label>
         </SettingsItem>
         <SettingsItem
+          label={t("appearanceTranscriptMarginNavigationTitle")}
+          description={t("appearanceTranscriptMarginNavigationDescription")}
+          keywords={["margin", "click", "right-click", "outline", "navigation"]}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={transcriptMarginNavigationEnabled}
+              onChange={(event) =>
+                setTranscriptMarginNavigationEnabled(event.target.checked)
+              }
+              aria-label={t("appearanceTranscriptMarginNavigationTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
           label={t("appearanceSessionRightPaneTitle")}
           description={t("appearanceSessionRightPaneDescription")}
         >
@@ -806,6 +835,23 @@ export function AppearanceSettings() {
                 setSessionRightPaneEnabled(event.target.checked)
               }
               aria-label={t("appearanceSessionRightPaneTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearancePdfjsRendererTitle")}
+          description={t("appearancePdfjsRendererDescription")}
+          keywords={["pdf", "pdf.js", "document", "viewer", "blocked"]}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={pdfjsRendererEnabled}
+              onChange={(event) =>
+                setPdfjsRendererEnabled(event.target.checked)
+              }
+              aria-label={t("appearancePdfjsRendererTitle")}
             />
             <span className="toggle-slider" />
           </label>

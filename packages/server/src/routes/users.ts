@@ -11,7 +11,11 @@
 
 import { type Context, Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
-import type { ActingPrincipal, LimitedUserSummary } from "@yep-anywhere/shared";
+import type {
+  ActingPrincipal,
+  LimitedUserSummary,
+  TemplateCreationGrant,
+} from "@yep-anywhere/shared";
 import { limitedUsernameError } from "@yep-anywhere/shared";
 import type { LimitedUsersService } from "../auth/LimitedUsersService.js";
 import {
@@ -23,6 +27,7 @@ import {
 import { SESSION_COOKIE_NAME, shouldUseSecureCookie } from "../auth/routes.js";
 import type { AuthService } from "../auth/AuthService.js";
 import type { UserUsageService } from "../auth/UserUsageService.js";
+import { getAuthenticatedSrpTransport } from "../middleware/authenticated-transport.js";
 
 export interface UsersRoutesDeps {
   limitedUsers: LimitedUsersService;
@@ -31,6 +36,13 @@ export interface UsersRoutesDeps {
   setEnabled?: (enabled: boolean) => Promise<void>;
   /** Absent on a server built without the usage ledger; usage then 404s. */
   userUsage?: UserUsageService;
+  /**
+   * End every login a limited user holds: direct cookie sessions and relay
+   * sessions with their saved resume credentials.
+   */
+  revokeUserLogins: (username: string) => Promise<void>;
+  /** End one relay session, so its saved resume credential stops working. */
+  revokeRelaySession: (sessionId: string) => Promise<void>;
 }
 
 interface UserBody {
@@ -42,6 +54,7 @@ interface UserBody {
   joinStaleOffsetMinutes?: number;
   lock?: { provider?: string; model?: string; effort?: string };
   projectRoot?: string;
+  templateCreation?: TemplateCreationGrant;
   disabled?: boolean;
 }
 
@@ -104,16 +117,22 @@ export function createUsersRoutes(deps: UsersRoutesDeps): Hono {
    * POST /api/users/logout — end the acting identity.
    *
    * A switched superuser drops back to their own full access; a limited user
-   * who actually logged in has their session invalidated and is told where to
-   * log in again.
+   * who actually logged in has the session they logged in with ended — the
+   * relay session and its resume credential, or the cookie session — and is
+   * told where to log in again.
    */
   app.post("/logout", async (c) => {
     const principal = principalOf(c);
     deleteCookie(c, ACTING_USER_COOKIE, { path: "/" });
     if (principal.kind === "limited" && !principal.switched) {
-      const sessionId = getCookie(c, SESSION_COOKIE_NAME);
-      if (sessionId) await authService.invalidateSession(sessionId);
-      deleteCookie(c, SESSION_COOKIE_NAME, { path: "/" });
+      const relaySession = getAuthenticatedSrpTransport(c.env);
+      if (relaySession) {
+        await deps.revokeRelaySession(relaySession.sessionId);
+      } else {
+        const sessionId = getCookie(c, SESSION_COOKIE_NAME);
+        if (sessionId) await authService.invalidateSession(sessionId);
+        deleteCookie(c, SESSION_COOKIE_NAME, { path: "/" });
+      }
       return c.json({
         success: true,
         redirect: principal.via === "relay" ? "relay-login" : "direct-login",
@@ -192,8 +211,12 @@ export function createUsersRoutes(deps: UsersRoutesDeps): Hono {
         joinStaleOffsetMinutes: body.joinStaleOffsetMinutes,
         lock: body.lock,
         projectRoot: body.projectRoot,
+        templateCreation: body.templateCreation,
         disabled: body.disabled,
       });
+      // A new account starts with no logins, even one reusing the name of a
+      // user deleted before deletion ended their logins.
+      await deps.revokeUserLogins(user.username);
       if (!isEnabled()) await deps.setEnabled?.(true);
       return c.json({ user }, 201);
     } catch (error) {
@@ -221,8 +244,13 @@ export function createUsersRoutes(deps: UsersRoutesDeps): Hono {
         joinStaleOffsetMinutes: body.joinStaleOffsetMinutes,
         lock: body.lock,
         projectRoot: body.projectRoot,
+        templateCreation: body.templateCreation,
         disabled: body.disabled,
       });
+      // A replaced password ends every login the old one opened.
+      if (body.password !== undefined) {
+        await deps.revokeUserLogins(user.username);
+      }
       return c.json({ user });
     } catch (error) {
       const message = (error as Error).message;
@@ -255,6 +283,7 @@ export function createUsersRoutes(deps: UsersRoutesDeps): Hono {
     const username = c.req.param("username");
     const removed = await limitedUsers.remove(username);
     if (!removed) return c.json({ error: "User not found" }, 404);
+    await deps.revokeUserLogins(username);
     // Deleting a user takes their usage history with them.
     await deps.userUsage?.forgetUser(username);
     return c.json({ success: true });

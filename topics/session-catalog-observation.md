@@ -56,7 +56,10 @@ all callers. The first read loads durable state and queues reconciliation after
 facts, otherwise obtain bounded heads (Claude title prefixes stop at 256 KiB).
 Grok, pi, and OpenCode use their native catalog adapters. No list projection
 writes complete-summary cache freshness. Unknown titles, counts, models, full
-prompts, and other detail fields stay absent rather than becoming placeholders.
+prompts, creation times, and other detail fields stay absent rather than
+becoming placeholders. When a bounded provider head supplies its creation time,
+the retained row preserves it; a client never substitutes last activity for an
+unknown creation time.
 
 The base generation publishes before the optional Codex question pass. That
 pass skips archived sessions and obeys the existing bounded preview contract.
@@ -207,6 +210,13 @@ owns grouping, sharding, and persistence. Three rules keep families joinable:
   truncation, or replacement — a file's mtime and size, or the store's own
   updated timestamp. It is what a retained projection of that row stays valid
   for; a coarser value silently serves stale derived work.
+- **A reused row must also be current in format.** An adapter that answers an
+  unchanged source from its retained row (the Claude/Codex/Gemini file
+  adapter does) records the version of the projection that built it in
+  `rowFormat`, and reuses a row only at its current format. When the facts a
+  row stores change — the whole title, the summary's creation time — bumping
+  that format makes each persisted row from an older build read once more on
+  the next reconciliation, while `sourceVersion` stays the file's identity.
 - **Recency may use a narrower provider/platform activity clock.** Plain Codex
   rollouts on Windows use the later of file modification and change time,
   because Windows can defer the last-write timestamp until Codex closes its
@@ -282,7 +292,11 @@ Every durable catalog lineage has a random `catalogEpoch` and a monotonic
 the epoch; restart over valid persisted state preserves it. Durable state is a
 cache and must never keep the server from starting: state that cannot be read
 or that no longer matches the current shard layout ends its lineage at a fresh
-epoch and generation 0, and reconciliation refills it. Each accepted row,
+epoch and generation 0, and reconciliation refills it. This includes a shard
+the current manifest names but that is missing or holds an unparseable row,
+whenever a read finds it: the read answers from generation 0 instead of
+failing, and a reconciliation still based on the abandoned generation fails
+rather than publishing over the reset. Each accepted row,
 membership, count, and delta identifies the catalog generation and provider
 source version from which it was derived.
 
@@ -478,5 +492,9 @@ relocated session visibly grouped under its former project.
   complete pass over the same store still produces that entry.
 - Unreadable or layout-incompatible durable catalog state starts a new epoch
   and still serves requests, rather than failing initialization.
+- A missing or corrupt shard in the current generation starts a new epoch on
+  the read that finds it, and that reset itself schedules a full
+  reconciliation that rebuilds the catalog; no session file change or restart
+  is needed to trigger it.
 - Loss/eviction of browser persistence changes only cold-fetch cost, not visible
   correctness or the ability to reconnect.

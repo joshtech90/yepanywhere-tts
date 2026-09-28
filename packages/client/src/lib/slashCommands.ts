@@ -1,6 +1,7 @@
 import {
   getCanonicalInvocationToken,
   getInvocationNames,
+  isRewindSlashCommand,
   type SlashCommand,
   type SlashCommandArgumentCompletion,
   type ThinkingOption,
@@ -23,13 +24,6 @@ export const CLIENT_SLASH_COMMANDS = [
   "fork",
   "clearloop",
 ] as const;
-
-/** Same-session rewind commands; offered only where rewind is supported. */
-export const REWIND_SLASH_COMMANDS = ["clear", "fork", "clearloop"] as const;
-
-export function isRewindSlashCommand(command: string): boolean {
-  return (REWIND_SLASH_COMMANDS as readonly string[]).includes(command);
-}
 
 export type ComposerSlashCommand =
   | { kind: TurnEffort; argument: string }
@@ -360,8 +354,9 @@ export function parseComposerSlashCommand(
   }
   // Same-session rewind commands (topics/session-rewind.md). `/clear`
   // deliberately shadows the provider's native command on rewind-capable
-  // providers; the handler falls back when rewind is unavailable.
-  if (command === "clear" || command === "fork" || command === "clearloop") {
+  // providers; `resolveComposerSlashTurn` hands them back to the provider
+  // where rewind is unavailable.
+  if (isRewindSlashCommand(command)) {
     return { kind: "custom", command, argument };
   }
 
@@ -379,13 +374,21 @@ export function buildRunExactlyPrompt(command: string): string {
   ].join("\n");
 }
 
-export function resolveComposerSlashTurn(text: string): ComposerSlashTurn {
+export function resolveComposerSlashTurn(
+  text: string,
+  { rewindSupported }: { rewindSupported: boolean },
+): ComposerSlashTurn {
   const parsed = parseComposerSlashCommand(text);
   if (!parsed) {
     return { kind: "message", text };
   }
 
   if (parsed.kind === "custom") {
+    // YA's rewind commands exist only where rewind does; elsewhere the text
+    // is the provider's own `/clear`, `/fork`, or `/clearloop`.
+    if (!rewindSupported && isRewindSlashCommand(parsed.command)) {
+      return { kind: "message", text };
+    }
     return parsed;
   }
 

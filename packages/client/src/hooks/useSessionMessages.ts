@@ -9,9 +9,7 @@ import {
 import type { PaginationInfo } from "../api/client";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { getMessageId } from "@yep-anywhere/shared/transcript/message";
-import type { SessionRewindRecord } from "@yep-anywhere/shared";
 import { createFinalMarkdownAugmentAction } from "../lib/sessionDetail/actionAdapters";
-import { applyRewindToMessages } from "../lib/sessionDetail/transcriptReducer";
 import type { SessionDetailRevealSnapshotResult } from "../lib/sessionDetail/revealSnapshot";
 import {
   buildReturnedToolUseToAgent,
@@ -227,13 +225,14 @@ export interface UseSessionMessagesResult {
   updateActiveWindowFollowingBottom: (followingBottom: boolean) => void;
   /** True when the initial render was hydrated from a retained route snapshot */
   restoredFromSnapshot: boolean;
-  /** Discard cached transcript state and fetch the session again in place. */
-  reloadSession: () => void;
   /**
-   * Restructure the loaded transcript for a same-session rewind without a
-   * refetch. False when the cut is outside the loaded window.
+   * Replace the loaded window with the server's projection of the bounded
+   * tail, keeping the view mounted. A same-session rewind regroups rows the
+   * view already holds, which an incremental fetch cannot express.
    */
-  applyRewindLocally: (record: SessionRewindRecord) => boolean;
+  refreshTranscriptTail: () => Promise<void>;
+  /** Fork (Cockpit): drop the loaded window and load the session again. */
+  reloadSession: () => void;
 }
 
 function readSessionLoadCache(
@@ -526,25 +525,9 @@ export function useSessionMessages(
     coordinator.resetEntryState();
     setReloadGeneration((generation) => generation + 1);
   }, [coordinator]);
-  const applyRewindLocally = useCallback(
-    (record: SessionRewindRecord): boolean => {
-      const current =
-        coordinator.readSelected(selectSessionDetailMessages) ?? [];
-      // Already applied (this tab issued the rewind, or the event repeated).
-      if (
-        current.some(
-          (message) => getMessageId(message) === `rewound-group-${record.id}`,
-        )
-      ) {
-        return true;
-      }
-      const next = applyRewindToMessages(current, record);
-      if (next === current) return false;
-      dispatchSessionDetailAction({ type: "applyRewind", record });
-      return true;
-    },
-    [coordinator, dispatchSessionDetailAction],
-  );
+  // Set by `refreshTranscriptTail`; the next incremental fetch replaces the
+  // loaded window instead of appending to it.
+  const tailReconciliationRequestedRef = useRef(false);
 
   // Hold the store entry for the mounted session: retention protects it from
   // TTL/LRU eviction, so incremental dispatches always land on real state.
@@ -1242,10 +1225,58 @@ export function useSessionMessages(
           sessionId,
           requestId,
         };
+        // Replace the loaded window with the server's bounded tail projection.
+        const reconcileTail = async () => {
+          markReloadPerfPhase(
+            "session_incremental_reconciliation_request_start",
+            { ...perfDetail, afterMessageId },
+          );
+          const data = await sourceApi.getSession(
+            buildInitialHistoryRequest({
+              projectId,
+              sessionId,
+              compactBoundaries: initialHistoryCompactions,
+              tailTurns: effectiveTailTurns,
+              tailFrom,
+            }),
+          );
+          markReloadPerfPhase("session_incremental_reconciliation_data_ready", {
+            ...perfDetail,
+            afterMessageId,
+            sourceMessageCount: data.messages.length,
+          });
+          sourceSummary.reportProviderRuntimeStatusSnapshot(
+            coordinator.buildProviderRuntimeStatusSnapshot(data),
+          );
+          const applied = coordinator.applyFullTailReconciliation(data);
+          notifyTranscriptReconciled(data, applied.sourceMessageCount);
+          reportStoreDivergence("incremental-reconciliation", {
+            session: data.session,
+          });
+          updateSession((prev) =>
+            prev ? { ...prev, ...data.session } : data.session,
+          );
+          markReloadPerfPhase(
+            "session_incremental_reconciliation_state_queued",
+            {
+              ...perfDetail,
+              afterMessageId,
+              messageCount: applied.messageCount,
+              sourceMessageCount: applied.sourceMessageCount,
+            },
+          );
+        };
         markReloadPerfPhase(
           "session_incremental_fetch_request_start",
           perfDetail,
         );
+        // A rewind regroups rows already loaded, which an incremental
+        // catch-up cannot express; only the server's projection can.
+        if (tailReconciliationRequestedRef.current) {
+          tailReconciliationRequestedRef.current = false;
+          await reconcileTail();
+          return;
+        }
         try {
           afterMessageId = readStoreLastMessageId();
           const data = await sourceApi.getSession(
@@ -1313,51 +1344,8 @@ export function useSessionMessages(
             return;
           }
 
-          markReloadPerfPhase(
-            "session_incremental_reconciliation_request_start",
-            {
-              ...perfDetail,
-              afterMessageId,
-            },
-          );
           try {
-            const data = await sourceApi.getSession(
-              buildInitialHistoryRequest({
-                projectId,
-                sessionId,
-                compactBoundaries: initialHistoryCompactions,
-                tailTurns: effectiveTailTurns,
-                tailFrom,
-              }),
-            );
-            markReloadPerfPhase(
-              "session_incremental_reconciliation_data_ready",
-              {
-                ...perfDetail,
-                afterMessageId,
-                sourceMessageCount: data.messages.length,
-              },
-            );
-            sourceSummary.reportProviderRuntimeStatusSnapshot(
-              coordinator.buildProviderRuntimeStatusSnapshot(data),
-            );
-            const applied = coordinator.applyFullTailReconciliation(data);
-            notifyTranscriptReconciled(data, applied.sourceMessageCount);
-            reportStoreDivergence("incremental-reconciliation", {
-              session: data.session,
-            });
-            updateSession((prev) =>
-              prev ? { ...prev, ...data.session } : data.session,
-            );
-            markReloadPerfPhase(
-              "session_incremental_reconciliation_state_queued",
-              {
-                ...perfDetail,
-                afterMessageId,
-                messageCount: applied.messageCount,
-                sourceMessageCount: applied.sourceMessageCount,
-              },
-            );
+            await reconcileTail();
             debugLogIncrementalRefreshDiagnostic(
               incrementalRefreshDiagnosticRef.current,
               {
@@ -1405,6 +1393,15 @@ export function useSessionMessages(
       updateSession,
     ],
   );
+
+  const refreshTranscriptTail = useCallback(async () => {
+    tailReconciliationRequestedRef.current = true;
+    try {
+      await fetchNewMessages({ reason: "server-projection" });
+    } catch {
+      reloadSession();
+    }
+  }, [fetchNewMessages, reloadSession]);
 
   // One reader demand advances through compact-boundary pages until it exposes
   // a real user turn. Bound both pages and newly retained bytes so a pathologically
@@ -1692,7 +1689,7 @@ export function useSessionMessages(
     updateRouteScrollSnapshot,
     updateActiveWindowFollowingBottom,
     restoredFromSnapshot: Boolean(cachedLoad),
+    refreshTranscriptTail,
     reloadSession,
-    applyRewindLocally,
   };
 }

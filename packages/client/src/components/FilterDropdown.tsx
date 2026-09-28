@@ -1,8 +1,10 @@
 import {
+  type CSSProperties,
   Fragment,
   type ReactNode,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
 } from "react";
@@ -13,8 +15,73 @@ import styles from "./FilterDropdown.module.css";
 // Breakpoint for desktop behavior (should match CSS)
 const DESKTOP_BREAKPOINT = 769;
 
+// Keep the desktop panel this far from the edge of the visible area.
+const PANEL_EDGE_MARGIN = 8;
+const CLIPPING_OVERFLOW = new Set(["auto", "scroll", "hidden", "clip"]);
+
 function cx(...classNames: (string | false | undefined)[]): string {
   return classNames.filter(Boolean).join(" ");
+}
+
+interface PanelPlacement {
+  above: boolean;
+  maxHeight: number;
+}
+
+/**
+ * Vertical extent the panel can occupy without leaving the window or any
+ * clipping/scrolling ancestor. A panel that overhangs its scroll container
+ * extends that container's scroll height, and the overhanging rows cannot be
+ * reached by scrolling inside the panel.
+ */
+function visibleVerticalBounds(element: HTMLElement): {
+  top: number;
+  bottom: number;
+} {
+  let top = 0;
+  let bottom = window.innerHeight;
+  for (
+    let node = element.parentElement;
+    node && node !== document.body && node !== document.documentElement;
+    node = node.parentElement
+  ) {
+    if (!CLIPPING_OVERFLOW.has(getComputedStyle(node).overflowY)) continue;
+    const rect = node.getBoundingClientRect();
+    const clipTop = rect.top + node.clientTop;
+    top = Math.max(top, clipTop);
+    bottom = Math.min(bottom, clipTop + node.clientHeight);
+  }
+  return { top, bottom };
+}
+
+function computePanelPlacement(
+  trigger: HTMLElement,
+  panel: HTMLElement,
+): PanelPlacement {
+  const triggerRect = trigger.getBoundingClientRect();
+  const bounds = visibleVerticalBounds(trigger);
+  // The trigger gap is a top margin below and a bottom margin above; read
+  // both so the decision does not shift once the panel has flipped.
+  const panelStyle = getComputedStyle(panel);
+  const gap = Math.max(
+    Number.parseFloat(panelStyle.marginTop) || 0,
+    Number.parseFloat(panelStyle.marginBottom) || 0,
+  );
+  const spaceBelow = Math.max(
+    0,
+    bounds.bottom - triggerRect.bottom - gap - PANEL_EDGE_MARGIN,
+  );
+  const spaceAbove = Math.max(
+    0,
+    triggerRect.top - bounds.top - gap - PANEL_EDGE_MARGIN,
+  );
+  const naturalHeight =
+    panel.scrollHeight + panel.offsetHeight - panel.clientHeight;
+  const above = naturalHeight > spaceBelow && spaceAbove > spaceBelow;
+  return {
+    above,
+    maxHeight: Math.floor(above ? spaceAbove : spaceBelow),
+  };
 }
 
 export interface FilterOption<T extends string> {
@@ -96,6 +163,9 @@ export function FilterDropdown<T extends string>({
 }: FilterDropdownProps<T>) {
   const { t } = useI18n();
   const [isOpen, setIsOpen] = useState(false);
+  const [panelPlacement, setPanelPlacement] = useState<PanelPlacement | null>(
+    null,
+  );
   const [isDesktop, setIsDesktop] = useState(
     () => window.innerWidth >= DESKTOP_BREAKPOINT,
   );
@@ -193,9 +263,46 @@ export function FilterDropdown<T extends string>({
 
   useEffect(() => {
     if (isOpen) {
-      sheetRef.current?.focus();
+      // Focus for Escape/keyboard handling only; scrolling the page to reveal
+      // the panel would leave it scrolled after the menu closes.
+      sheetRef.current?.focus({ preventScroll: true });
     }
   }, [isOpen]);
+
+  // Fit the desktop panel into the visible space below the trigger, or above
+  // it when that side has more room, so every row is reachable by scrolling
+  // inside the panel. Runs before paint, so the panel never shows unplaced,
+  // and again when the window resizes or the option list changes size (for
+  // example, a model catalog arriving while the panel is open).
+  useLayoutEffect(() => {
+    if (!isOpen || !isDesktop) {
+      setPanelPlacement(null);
+      return;
+    }
+    const place = () => {
+      const trigger = buttonRef.current;
+      const panel = sheetRef.current;
+      if (!trigger || !panel) return;
+      const next = computePanelPlacement(trigger, panel);
+      setPanelPlacement((prev) =>
+        prev?.above === next.above && prev.maxHeight === next.maxHeight
+          ? prev
+          : next,
+      );
+    };
+    place();
+    window.addEventListener("resize", place);
+    const optionList = sheetRef.current?.firstElementChild;
+    const observer =
+      optionList && typeof ResizeObserver !== "undefined"
+        ? new ResizeObserver(place)
+        : null;
+    if (optionList) observer?.observe(optionList);
+    return () => {
+      window.removeEventListener("resize", place);
+      observer?.disconnect();
+    };
+  }, [isOpen, isDesktop]);
 
   const handleOverlayClick = (e: React.MouseEvent) => {
     if (e.target === e.currentTarget) {
@@ -361,8 +468,16 @@ export function FilterDropdown<T extends string>({
         className={cx(
           styles.dropdown,
           align === "right" && styles.alignRight,
+          panelPlacement?.above && styles.above,
           isModelPanel && styles.model,
         )}
+        style={
+          panelPlacement
+            ? ({
+                "--filter-dropdown-available-height": `${panelPlacement.maxHeight}px`,
+              } as CSSProperties)
+            : undefined
+        }
         role="dialog"
         tabIndex={-1}
         aria-label={t("filterByLabel", { label })}

@@ -42,6 +42,9 @@ export class RetainedSessionCollections {
     this.catalog = new SessionCatalogService({
       dataDir: options.dataDir,
       maxRowBytes: 256 * 1024,
+      // An unreadable generation empties the catalog; rebuild it from every
+      // provider store rather than from the rows it just lost.
+      onLineageReset: () => this.invalidate(),
     });
   }
 

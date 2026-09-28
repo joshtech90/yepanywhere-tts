@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { exitIfUnsafeHome } from "./safe-home.js";
@@ -33,14 +33,37 @@ if (!command) {
 
 exitIfUnsafeHome({ entrypoint: command });
 
-const temporaryHome = temporaryHomeRequested
-  ? mkdtempSync(join(tmpdir(), "yep-anywhere-test-home-"))
+// Tests bind Unix sockets under the child's TMPDIR, and macOS caps socket
+// paths at 104 bytes. Its per-user tmpdir (/var/folders/.../T/) leaves too
+// little room once nested, so POSIX roots start at /tmp when it is writable.
+function createTemporaryRoot() {
+  const prefix = "yep-anywhere-test-";
+  if (process.platform !== "win32") {
+    try {
+      return mkdtempSync(join("/tmp", prefix));
+    } catch {
+      // Fall back to the platform tmpdir, e.g. in sandboxes without /tmp.
+    }
+  }
+  return mkdtempSync(join(tmpdir(), prefix));
+}
+
+const temporaryRoot = temporaryHomeRequested
+  ? createTemporaryRoot()
   : undefined;
+const temporaryHome = temporaryRoot ? join(temporaryRoot, "home") : undefined;
+const temporaryDirectory = temporaryRoot
+  ? join(temporaryRoot, "tmp")
+  : undefined;
+if (temporaryHome && temporaryDirectory) {
+  mkdirSync(temporaryHome);
+  mkdirSync(temporaryDirectory);
+}
 let cleaned = false;
 function cleanupTemporaryHome() {
-  if (!temporaryHome || cleaned) return;
+  if (!temporaryRoot || cleaned) return;
   cleaned = true;
-  rmSync(temporaryHome, { recursive: true, maxRetries: 3, retryDelay: 100 });
+  rmSync(temporaryRoot, { recursive: true, maxRetries: 3, retryDelay: 100 });
 }
 
 // Node 24+ on Windows requires shell:true to spawn .cmd files (CVE-2024-27980).
@@ -50,7 +73,14 @@ const isWindows = process.platform === "win32";
 const child = spawn(command, args, {
   stdio: [stdinNull ? "ignore" : "inherit", "inherit", "inherit"],
   env: temporaryHome
-    ? { ...process.env, HOME: temporaryHome, USERPROFILE: temporaryHome }
+    ? {
+        ...process.env,
+        HOME: temporaryHome,
+        USERPROFILE: temporaryHome,
+        TMPDIR: temporaryDirectory,
+        TEMP: temporaryDirectory,
+        TMP: temporaryDirectory,
+      }
     : process.env,
   ...(isWindows ? { shell: true } : {}),
 });

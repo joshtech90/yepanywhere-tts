@@ -18,6 +18,7 @@ const initialItems: RenderItem[] = [
     type: "thinking",
     id: "thinking-1",
     thinking: "I should separate confirmed facts from open questions.",
+    sourceBlockIndex: 0,
     status: "complete",
     sourceMessages: [
       { uuid: "assistant-1", timestamp: "2026-09-24T09:00:01.000Z" },
@@ -27,6 +28,7 @@ const initialItems: RenderItem[] = [
     type: "text",
     id: "text-1",
     text: "## Result\n\nThe checklist is ready.",
+    sourceBlockIndex: 1,
     augmentHtml: "<h2>Result</h2><p>The checklist is ready.</p>",
     sourceMessages: [
       { uuid: "assistant-1", timestamp: "2026-09-24T09:00:02.000Z" },
@@ -106,6 +108,7 @@ describe("Cockpit session detail projection", () => {
           type: "text",
           id: "text-2",
           text: "Only the mobile review remains.",
+          sourceBlockIndex: 0,
           sourceMessages: [{ uuid: "assistant-2" }],
         },
       ],

@@ -1,13 +1,22 @@
 import {
+  lstat,
   mkdir,
   readdir,
   readFile,
+  realpath,
   rmdir,
   stat,
   unlink,
 } from "node:fs/promises";
-import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { runGit } from "../git/gitExec.js";
 import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
@@ -97,17 +106,28 @@ const has = (path: string) =>
     () => false,
   );
 
+async function hasWorkingTreeMarker(directory: string): Promise<boolean> {
+  const marker = join(directory, ".git");
+  const kind = await stat(marker).catch(() => null);
+  if (kind?.isDirectory()) return has(join(marker, "HEAD"));
+  if (!kind?.isFile()) return false;
+  const pointer = await readFile(marker, "utf8").catch(() => "");
+  return pointer.startsWith("gitdir:") && pointer.slice(7).trim().length > 0;
+}
+
 /**
  * The working tree `path` sits in, or null.
  *
  * `.git` is a directory in an ordinary clone and a file in a linked worktree
- * or a submodule, so its kind says nothing; that it is there at all does.
+ * or a submodule. A directory needs Git's mandatory HEAD file, while a file
+ * needs a nonempty `gitdir:` pointer; an unrelated empty marker is not enough
+ * to make every descendant part of a working tree.
  */
 export async function enclosingWorkingTree(
   path: string,
 ): Promise<string | null> {
   for (let directory = resolve(path); ; directory = dirname(directory)) {
-    if (await has(join(directory, ".git"))) return directory;
+    if (await hasWorkingTreeMarker(directory)) return directory;
     if (directory === dirname(directory)) return null;
   }
 }
@@ -137,23 +157,70 @@ async function trackedFiles(root: string): Promise<Set<string> | null> {
  * no such evidence, and a directory under a home directory or under YA's state
  * is ordinary content that happened to be published; `~/Downloads` is the case
  * that would otherwise cost a user their files.
+ *
+ * Only a working tree rooted strictly inside a protected directory is that
+ * evidence for it. A dotfiles repository at `~/.git` encloses every path under
+ * the home directory, so its presence says nothing about `~/Downloads`.
+ *
+ * `forbidden` is every protected directory, the home directory included: the
+ * caller names it, so the rule can be exercised against a home that is not
+ * the host's.
  */
 export async function deletableDirectory(
   root: string,
   forbidden: readonly (string | undefined)[],
 ): Promise<boolean> {
-  const path = resolve(root);
+  const path = await realpath(root).catch(() => null);
+  if (!path) return false;
   if (path === dirname(path)) return false;
   // The root of a checkout is the checkout, not a bundle inside one.
   if (await has(join(path, ".git"))) return false;
-  const tracked = (await enclosingWorkingTree(path)) !== null;
-  for (const other of [...forbidden, homedir()]) {
+  const tree = await enclosingWorkingTree(path);
+  for (const other of forbidden) {
     if (!other) continue;
-    const compare = resolve(other);
-    if (path === compare || compare.startsWith(`${path}/`)) return false;
-    if (!tracked && path.startsWith(`${compare}/`)) return false;
+    const compare = await canonicalProtectedPath(other);
+    if (!compare) return false;
+    if (isWithin(path, compare)) return false;
+    const treeInside =
+      tree !== null && tree !== compare && isWithin(compare, tree);
+    if (!treeInside && isWithin(compare, path)) return false;
   }
   return true;
+}
+
+function isWithin(parent: string, child: string): boolean {
+  const fromParent = relative(parent, child);
+  return (
+    fromParent === "" ||
+    (fromParent !== ".." &&
+      !fromParent.startsWith(`..${sep}`) &&
+      !isAbsolute(fromParent))
+  );
+}
+
+/** Resolve existing ancestors so a not-yet-created protected path still blocks ownership. */
+async function canonicalProtectedPath(input: string): Promise<string | null> {
+  const missing: string[] = [];
+  let current = resolve(input);
+  for (;;) {
+    try {
+      return resolve(await realpath(current), ...missing.reverse());
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") return null;
+      // A dangling symlink is not a missing directory we can safely append.
+      if (
+        await lstat(current).then(
+          () => true,
+          () => false,
+        )
+      )
+        return null;
+      const parent = dirname(current);
+      if (parent === current) return null;
+      missing.push(basename(current));
+      current = parent;
+    }
+  }
 }
 
 export class GrantStore {

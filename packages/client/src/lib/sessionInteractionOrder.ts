@@ -1,12 +1,20 @@
-import { createLocalStorageValue } from "./localStorageValue";
+import { createLocalStorageValue, getLocalStorage } from "./localStorageValue";
 
 type Interaction = [sessionId: string, timestamp: number];
 const LIMIT = 1000;
 const stores = new Map<string, ReturnType<typeof createStore>>();
 
 function createStore(sourceKey: string) {
+  const source = encodeURIComponent(sourceKey);
+  // This key also held session visits, which no longer order the sidebar; a
+  // visit kept there would pin its row until something newer was written.
+  try {
+    getLocalStorage()?.removeItem(`yep-sidebar-interactions:${source}`);
+  } catch {
+    // Storage is unavailable, so there is nothing to discard.
+  }
   return createLocalStorageValue(
-    `yep-sidebar-interactions:${encodeURIComponent(sourceKey)}`,
+    `yep-sidebar-submissions:${source}`,
     "[]",
     (raw) => {
       try {
@@ -39,7 +47,7 @@ export function getSessionInteractionStore(sourceKey: string) {
   return store;
 }
 
-/** Only explicit navigation and composer submission call this, never feeds. */
+/** Only composer submission calls this: never navigation or feeds. */
 export function recordSessionInteraction(
   sourceKey: string,
   sessionId: string,

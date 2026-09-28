@@ -10,6 +10,7 @@ describe("async question reminders", () => {
     const items: RenderItem[] = [
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "question-text",
         text: "Choose a color",
         sourceMessages: [
@@ -32,6 +33,7 @@ describe("async question reminders", () => {
       },
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "ordinary",
         text: "Another update",
         sourceMessages: [],

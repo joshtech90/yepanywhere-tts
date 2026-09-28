@@ -10,6 +10,25 @@ import {
 const isDone = (entry: SessionScan | undefined) => !!entry && scanDone(entry);
 
 afterEach(() => vi.useRealTimers());
+
+// The scan yields a timer once a slice exceeds 8 ms of `performance.now()`.
+// Vitest's default fake timers leave `performance` real, so a loaded runner
+// could cross that budget and park work on a timer the test never advances.
+// Faking it keeps slice yields on the same clock the test controls.
+function useFakeClock() {
+  vi.useFakeTimers({
+    toFake: [
+      "setTimeout",
+      "clearTimeout",
+      "setInterval",
+      "clearInterval",
+      "setImmediate",
+      "clearImmediate",
+      "Date",
+      "performance",
+    ],
+  });
+}
 const hit = {
   id: "old",
   role: "user" as const,
@@ -25,7 +44,7 @@ const done = {
 };
 
 it("aborts hidden work without losing its cursor or accepting a late response", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   let finish!: (value: typeof done) => void;
   const fetch = vi
     .fn()
@@ -67,7 +86,7 @@ it("aborts hidden work without losing its cursor or accepting a late response", 
 });
 
 it("resumes only changed sessions, adds new sessions, and excludes filtered IDs before traversal", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const fetch = vi.fn().mockResolvedValue(done);
   const scan = new ContentSearchScan(
     "needle",
@@ -131,7 +150,7 @@ it("resumes only changed sessions, adds new sessions, and excludes filtered IDs 
 });
 
 it("interleaves batches and continues after an unavailable session", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const fetch = vi
     .fn()
     .mockResolvedValueOnce({
@@ -168,7 +187,7 @@ it("interleaves batches and continues after an unavailable session", async () =>
 });
 
 it("does not restart in-flight traversal when another session changes or the set narrows", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   let finish!: (value: typeof done) => void;
   const fetch = vi
     .fn()
@@ -209,7 +228,7 @@ it("does not restart in-flight traversal when another session changes or the set
 });
 
 it("fans out session reads within a shared limit and never overlaps a session's cursor", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const pending: Array<() => void> = [];
   let active = 0;
   let peak = 0;
@@ -260,7 +279,7 @@ it("fans out session reads within a shared limit and never overlaps a session's 
 });
 
 it("refines whole text beyond the first excerpt, then resumes the same tail for live content", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const searchText = `needle ${"x".repeat(500)} needle extended`;
   const fetch = vi.fn().mockResolvedValue({
     ...done,
@@ -313,7 +332,7 @@ it("refines whole text beyond the first excerpt, then resumes the same tail for 
 });
 
 it("stops at the match cap, drops full text, and restarts only capped sessions for the next needle", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const fetch = vi.fn().mockImplementation(async (_path, options) => {
     const { sessionId, query, cursor } = JSON.parse(options.body);
     const offset = cursor ? Number(cursor) : 0;
@@ -383,7 +402,7 @@ it("stops at the match cap, drops full text, and restarts only capped sessions f
 });
 
 it("enforces a text-byte cap independently of the match count", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const fetch = vi.fn().mockResolvedValue({
     ...done,
     done: false,
@@ -410,7 +429,7 @@ it("enforces a text-byte cap independently of the match count", async () => {
 });
 
 it("reuses the original cache when another character interrupts pending refinement", async () => {
-  vi.useFakeTimers();
+  useFakeClock();
   const fetch = vi.fn().mockResolvedValue({
     ...done,
     includesSearchText: true,

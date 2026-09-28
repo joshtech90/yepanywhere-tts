@@ -9,7 +9,12 @@ otherwise.
 
 After editing TypeScript or other source files, verify your changes compile
 and pass `pnpm lint`, `pnpm format:check`, `pnpm typecheck` (no emit), and
-`pnpm test`. For UI changes, also run `pnpm test:e2e`.
+`pnpm test`. For UI changes, run the relevant focused browser checks. The full
+client E2E suite remains a CI gate; run it locally when the affected browser
+scope cannot be bounded reliably. [E2E testing](../../topics/e2e-testing.md)
+owns the decision to add a browser case, choose a cheaper test level, and
+measure its cost and reliability. [UI testing](../../topics/ui-testing.md)
+owns visual QA and captures.
 
 For site changes (marketing pages in `site/`):
 

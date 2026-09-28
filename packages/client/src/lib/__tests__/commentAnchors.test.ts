@@ -7,18 +7,17 @@ import {
   getDraftQuoteLineSignatures,
   getDraftTextChangeMetadata,
 } from "../commentAnchors";
-import { annotateShikiSourceOffsets } from "../shikiHtml";
+import { prepareShikiHtml } from "../shikiHtml";
 
 describe("comment anchors", () => {
   it("re-resolves repeated highlighted text from exact source offsets", () => {
     const sourceText = "repeat first\nrepeat second";
     const sourceElement = document.createElement("div");
     const renderSource = () => {
-      sourceElement.innerHTML =
-        annotateShikiSourceOffsets(
-          '<pre><code><span class="line"><span>repeat</span> first</span><span class="line"><span>repeat</span> second</span></code></pre>',
-          sourceText,
-        ) ?? "";
+      sourceElement.innerHTML = prepareShikiHtml(
+        '<pre><code><span class="line"><span>repeat</span> first</span><span class="line"><span>repeat</span> second</span></code></pre>',
+        sourceText,
+      );
     };
     renderSource();
     document.body.append(sourceElement);

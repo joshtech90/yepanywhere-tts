@@ -1,4 +1,6 @@
 import {
+  PROJECT_QUEUE_NAMED_BLOCKER_COUNT,
+  type ProjectQueueDispatchState,
   type ProjectQueueItemSummary,
   type ProjectQueueListResponse,
   type ProjectQueueProjectStatus,
@@ -6,7 +8,9 @@ import {
   type ProjectQueueResponse,
   getSessionDisplayTitle,
   isUrlProjectId,
+  parseProjectQueueBlocker,
 } from "@yep-anywhere/shared";
+import type { UserUsageService } from "../auth/UserUsageService.js";
 import type { SessionMetadataService } from "../metadata/index.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { ProjectQueueService } from "../services/ProjectQueueService.js";
@@ -30,6 +34,7 @@ export interface ProjectQueueRoutesDeps extends ProjectQueueTitleDeps {
   scanner: ProjectScanner;
   projectQueueService: ProjectQueueService;
   projectQueueScheduler?: Pick<ProjectQueueScheduler, "getProjectStatus">;
+  userUsageService?: Pick<UserUsageService, "recordSession" | "recordTurn">;
 }
 
 export type GlobalProjectQueueRoutesDeps = ProjectQueueTitleDeps & {
@@ -238,6 +243,22 @@ async function resolveProjectForQueueItem(
   return projectPromise;
 }
 
+async function resolveProjectById(
+  projectId: string,
+  deps: ProjectQueueTitleDeps,
+  projectCache: Map<string, Promise<Project | null>>,
+): Promise<Project | null> {
+  if (!deps.scanner) return null;
+  let projectPromise = projectCache.get(projectId);
+  if (!projectPromise) {
+    projectPromise = isUrlProjectId(projectId)
+      ? deps.scanner.getOrCreateProject(projectId).catch(() => null)
+      : Promise.resolve(null);
+    projectCache.set(projectId, projectPromise);
+  }
+  return projectPromise;
+}
+
 async function enrichGlobalProjectQueueItems(
   items: ProjectQueueItemSummary[],
   deps: GlobalProjectQueueRoutesDeps,
@@ -259,19 +280,77 @@ async function enrichGlobalProjectQueueItems(
 
 async function projectStatusesForIds(
   projectIds: Iterable<string>,
-  deps: Pick<
-    GlobalProjectQueueRoutesDeps | ProjectQueueRoutesDeps,
-    "projectQueueScheduler"
-  >,
+  deps: GlobalProjectQueueRoutesDeps | ProjectQueueRoutesDeps,
 ): Promise<Record<string, ProjectQueueProjectStatus> | undefined> {
   const scheduler = deps.projectQueueScheduler;
   if (!scheduler) return undefined;
-  const statuses: Record<string, ProjectQueueProjectStatus> = {};
-  for (const projectId of new Set(projectIds)) {
-    if (!isUrlProjectId(projectId)) continue;
-    statuses[projectId] = await scheduler.getProjectStatus(projectId);
+  const projectCache = new Map<string, Promise<Project | null>>();
+  const resolved = await Promise.all(
+    [...new Set(projectIds)].filter(isUrlProjectId).map(async (projectId) => {
+      const status = await scheduler.getProjectStatus(projectId);
+      await addBlockerSessionTitles(status, deps, projectCache);
+      return status;
+    }),
+  );
+  return Object.fromEntries(
+    resolved.map((status) => [status.projectId, status]),
+  );
+}
+
+/** Sessions the queue UI names among a project's blockers. */
+function namedBlockerSessionIds(blockers: readonly string[]): Set<string> {
+  const sessionIds = new Set<string>();
+  for (const blocker of blockers.slice(0, PROJECT_QUEUE_NAMED_BLOCKER_COUNT)) {
+    const parsed = parseProjectQueueBlocker(blocker);
+    if (parsed.kind === "session" || parsed.kind === "session-liveness") {
+      sessionIds.add(parsed.sessionId);
+    }
   }
-  return statuses;
+  return sessionIds;
+}
+
+async function addBlockerSessionTitles(
+  status: ProjectQueueProjectStatus,
+  deps: GlobalProjectQueueRoutesDeps | ProjectQueueRoutesDeps,
+  projectCache: Map<string, Promise<Project | null>>,
+): Promise<void> {
+  const sessionIds = namedBlockerSessionIds(status.blockers);
+  if (sessionIds.size === 0 || !hasDisplayMetadataDeps(deps)) return;
+  const project =
+    deps.scanner && hasTitleResolutionDeps(deps)
+      ? await resolveProjectById(status.projectId, deps, projectCache)
+      : null;
+  const blockerSessionTitles: Record<string, string> = {};
+  await Promise.all(
+    [...sessionIds].map(async (sessionId) => {
+      let summary: {
+        title?: string | null;
+        fullTitle?: string | null;
+      } | null = null;
+      if (project && hasTitleResolutionDeps(deps)) {
+        try {
+          summary =
+            (
+              await findSessionListSummaryAcrossProviders(
+                project,
+                sessionId,
+                project.id,
+                buildProviderResolutionDeps(deps),
+              )
+            )?.summary ?? null;
+        } catch {
+          // Persisted custom titles still provide a useful fallback.
+        }
+      }
+      const title = resolveTargetTitles(sessionId, summary, deps).targetTitle;
+      if (title) {
+        blockerSessionTitles[sessionId] = title;
+      }
+    }),
+  );
+  if (Object.keys(blockerSessionTitles).length > 0) {
+    status.blockerSessionTitles = blockerSessionTitles;
+  }
 }
 
 export async function projectQueueResponse(
@@ -287,12 +366,29 @@ export async function projectQueueResponse(
   };
 }
 
+export interface GlobalQueueResponseOptions {
+  dispatchState?: ProjectQueueDispatchState;
+  /**
+   * Which projects the caller may see; absent means every project. Applied
+   * before titles are resolved, so another project's items, recovered
+   * queues, statuses, and blocker session titles are never read for them.
+   */
+  isProjectVisible?: (projectId: string) => boolean;
+}
+
 export async function globalQueueResponse(
   deps: GlobalProjectQueueRoutesDeps,
-  dispatchState = deps.projectQueueService.getDispatchState(),
+  options: GlobalQueueResponseOptions = {},
 ): Promise<ProjectQueueListResponse> {
-  const items = deps.projectQueueService.listAll();
-  const recoveredSessionQueues = listRecoveredSessionQueues(deps);
+  const dispatchState =
+    options.dispatchState ?? deps.projectQueueService.getDispatchState();
+  const isVisible = options.isProjectVisible ?? (() => true);
+  const items = deps.projectQueueService
+    .listAll()
+    .filter((item) => isVisible(item.projectId));
+  const recoveredSessionQueues = listRecoveredSessionQueues(deps).filter(
+    (item) => isVisible(item.projectId),
+  );
   const projectStatuses = await projectStatusesForIds(
     [
       ...items.map((item) => item.projectId),

@@ -245,8 +245,9 @@ curl -ksS \
 ```
 
 `model: "opus"` is the YA model alias. Verify the live process rather than
-assuming its resolved provider name; the pilot resolved it to
-`claude-opus-5` with effort `high`.
+assuming its resolved provider name; the 2026-09-22 smoke resolved it to
+`claude-opus-5-5`. Effort remains whatever the launch requested (`high` in the
+bounded-worker example above).
 
 For a Luna-routed slice, change only the provider/model/thinking fields:
 

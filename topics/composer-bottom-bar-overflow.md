@@ -93,10 +93,12 @@ they can reach a control.
   disappear.
 - The eligible set includes controls from both the left and right toolbar
   containers. Permission mode, attachment, slash, thinking, render/formula,
-  Conversation view, heartbeat/pulse, shortcut help, session status, context
-  usage, `/btw`, Steer Now, and Project Queue may all collapse when the user
-  assigns a non-`pin` priority. Conversation view defaults to the `last` tier
-  once enabled. Send, Stop, pending approvals/questions, and microphone remain
+  Conversation view, heartbeat/pulse, shortcut help, transcript search,
+  session status, context usage, `/btw`, Steer Now, and Project Queue may all
+  collapse when the user assigns a non-`pin` priority. Conversation view
+  defaults to the `last` tier once enabled. Transcript search is shown by
+  default at the `first` tier and heads the tie-break order, so it is the
+  first control to fold into `...` and costs no space other controls need. Send, Stop, pending approvals/questions, and microphone remain
   inline/pinned by their own contracts. An active waveform may stay rendered
   underneath or between controls, but its elastic width does not protect space
   from them.

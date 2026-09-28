@@ -1,4 +1,13 @@
 import { ComputerSessionSelection } from "./ComputerSessionSelection";
+import { TemplateProjectForm } from "./TemplateProjectForm";
+import { ComposerRecents } from "./ComposerRecents";
+import { PromptHistoryRail } from "./PromptHistoryRail";
+import {
+  rememberComposerPrompt,
+  rememberComposerUpload,
+} from "../lib/composerHistory";
+import templateStyles from "./TemplateProjectForm.module.css";
+import { useProjectTemplateChoices } from "../hooks/useProjectTemplateChoices";
 import {
   DEFAULT_PROVIDER,
   SERVER_CAPABILITIES,
@@ -68,7 +77,10 @@ import { useServerSettings } from "../hooks/useServerSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
 import { useI18n } from "../i18n";
 import { formatFileSize } from "../lib/formatFileSize";
+import { getUiCreationProvenance } from "../lib/sessionCreationProvenance";
 import { parseComposerSlashCommand } from "../lib/slashCommands";
+import { takePrebootComposer } from "../lib/prebootComposer";
+import { UI_KEYS } from "../lib/storageKeys";
 import {
   getEffortLevelLabel,
   getEffortLevelOptions,
@@ -77,6 +89,8 @@ import {
   resolveSupportedThinkingMode,
 } from "../lib/effortLevels";
 import {
+  knownLockedEffort,
+  knownLockedProvider,
   launchLockFor,
   launchLockOverrides,
   type LaunchLock,
@@ -95,7 +109,10 @@ import {
   providerSupportsLocalSessionSandbox,
   providerSupportsRemoteExecutors,
 } from "../lib/providerCapabilities";
-import { serverHasAvailableSessionSandbox } from "../lib/sessionSandboxAvailability";
+import {
+  describeUnavailableSessionSandbox,
+  serverHasAvailableSessionSandbox,
+} from "../lib/sessionSandboxAvailability";
 import {
   type PendingFile,
   type PendingLocalFile,
@@ -128,6 +145,11 @@ import {
   normalizeProjectInput,
   sortProjectsForChooser,
 } from "../lib/newSessionProjects";
+import {
+  isAnchoredPath,
+  newProjectBaseFor,
+  settlePathEntry,
+} from "../lib/newProjectPath";
 import { getRecapModeDescription } from "../lib/recapModes";
 import { getSessionDefaultControlCopy } from "../lib/sessionDefaultControlCopy";
 import { prepareImageUpload } from "../lib/imageAttachmentResize";
@@ -228,10 +250,6 @@ import { ProviderBadge } from "./ProviderBadge";
 import { ModelSubscriptionUsage } from "./ModelSubscriptionUsage";
 import { RecapAfterSecondsControl } from "./RecapAfterSecondsControl";
 import { SpeechControlMenu } from "./SpeechControlMenu";
-import {
-  ShowThinkingControls,
-  ThinkingControlsPanel,
-} from "./ThinkingControls";
 import {
   VoiceInputButton,
   type SpeechCycleSettlement,
@@ -362,10 +380,10 @@ function NewSessionOptionSection({
   return (
     <div className={className} title={showCaption ? undefined : caption}>
       <h3>{title}</h3>
+      {children}
       {showCaption && caption && (
         <p className={styles.optionCaption}>{caption}</p>
       )}
-      {children}
     </div>
   );
 }
@@ -391,6 +409,17 @@ export function NewSessionForm({
 }: NewSessionFormProps) {
   const { t } = useI18n();
   const sessionDefaultCopy = getSessionDefaultControlCopy(t);
+  const [creatingTemplateProject, setCreatingTemplateProject] = useState(false);
+  const {
+    choices: templateChoices,
+    error: templateError,
+    emptyMessageKey,
+  } = useProjectTemplateChoices(creatingTemplateProject);
+  const [templateProjectBusy, setTemplateProjectBusy] = useState(false);
+  const handleTemplateBusyChange = useCallback((busy: boolean) => {
+    setTemplateProjectBusy(busy);
+    if (busy) setCreatingTemplateProject(true);
+  }, []);
   const navigate = useNavigate();
   const basePath = useRemoteBasePath();
   const { relayTransport, relayedServerSpeechAvailable } =
@@ -440,6 +469,11 @@ export function NewSessionForm({
   const [fullPane, setFullPane] = useState(false);
   const [fullPaneWide, setFullPaneWide] = useState(false);
   const [showOptionCaptions, setShowOptionCaptions] = useState(false);
+  const [showAdvancedOptions, setShowAdvancedOptions] = useState(
+    () =>
+      localStorage.getItem(UI_KEYS.newSessionAdvancedOptionsExpanded) ===
+      "true",
+  );
   const [fullPaneBaseWidth, setFullPaneBaseWidth] = useState<number | null>(
     null,
   );
@@ -509,6 +543,9 @@ export function NewSessionForm({
   const hasSeededMessageRef = useRef(false);
   const seedBaselineRef = useRef<string | null>(null);
   const autoFocusRef = useRef(autoFocus);
+  // Only the page's own form stands in for the pre-boot composer; a launch
+  // (fork, handoff) composer is a different field.
+  const adoptsPrebootRef = useRef(!launch);
 
   // Thinking toggle state
   const {
@@ -530,7 +567,12 @@ export function NewSessionForm({
   // locked fields and forced sandbox are enforced at the launch route; the
   // form reads them so it stops presenting a choice that would be refused.
   // See topics/limited-users.md § Delivery v1.
-  const { principal } = useActingPrincipal();
+  const { principal, resolved: principalResolved } = useActingPrincipal();
+  const historyScope = principalResolved
+    ? JSON.stringify([clientSummarySourceKey, principal.username])
+    : null;
+  const [recentUploadsOpen, setRecentUploadsOpen] = useState(false);
+  const attachGesture = useRef({ y: 0, swiped: false });
   const launchLock = useMemo<LaunchLock>(
     () => launchLockFor(principal),
     [principal],
@@ -544,6 +586,15 @@ export function NewSessionForm({
     supportsSessionSandboxing &&
     effectiveExecutor === null &&
     providerSupportsLocalSessionSandbox(selectedProvider);
+  // Where the toggle would sit, say what keeps a supported host from offering
+  // it; a limited user cannot change the host, and its fixed launch says so.
+  const sessionSandboxUnavailableReason =
+    !supportsSessionSandboxing &&
+    !launchLock.limited &&
+    effectiveExecutor === null &&
+    providerSupportsLocalSessionSandbox(selectedProvider)
+      ? describeUnavailableSessionSandbox(versionInfo, t)
+      : null;
   const effectiveSandboxLevel: SessionSandboxLevel = launchLock.limited
     ? "project-write"
     : canConfigureSessionSandbox
@@ -551,6 +602,10 @@ export function NewSessionForm({
       : "none";
   const effectiveSandboxNetworkFirewall =
     effectiveSandboxLevel === "project-write" && sandboxNetworkFirewall;
+  // Open local access does not block the sandbox; it earns a standing warning.
+  const sandboxLocalAuthOpen =
+    effectiveSandboxLevel === "project-write" &&
+    versionInfo?.sessionSandboxing?.localAuthEnforced === false;
   // Whether this form may offer computer control and send the launch field.
   // The server's select() still decides; this only keeps the offer and the
   // request from disagreeing.
@@ -598,8 +653,11 @@ export function NewSessionForm({
     // The composer is focused and typeable while the seed is still being
     // fetched, so keys can land before it arrives. They belong after the
     // seeded text rather than instead of it — dropping the seed because
-    // someone typed one character lost the whole handoff.
-    const combined = `${launch.initialMessage}${message}`;
+    // someone typed one character lost the whole handoff. They were written
+    // without seeing the seed, so they start their own paragraph.
+    const separator =
+      /\s$/.test(launch.initialMessage) || /^\s/.test(message) ? "" : "\n\n";
+    const combined = `${launch.initialMessage}${separator}${message}`;
     pendingTextareaSelectionRef.current = {
       value: combined,
       restore: (textarea) => {
@@ -882,6 +940,14 @@ export function NewSessionForm({
               uploadFile,
             ).catch(() => {});
           }
+          if (historyScope)
+            void rememberComposerUpload(historyScope, uploadFile).catch(
+              (cause) =>
+                showToast(
+                  t("composerHistorySaveError", { error: String(cause) }),
+                  "error",
+                ),
+            );
           return {
             ...stagedRef,
             originalName: file.name,
@@ -949,6 +1015,7 @@ export function NewSessionForm({
     },
     [
       attachmentQuality,
+      historyScope,
       sourceTransport,
       ensureDraftAttachmentBatchId,
       setPendingFiles,
@@ -994,7 +1061,6 @@ export function NewSessionForm({
   // Fetch remote executors
   const { executors: remoteExecutors, loading: executorsLoading } =
     useRemoteExecutors();
-  const launchableProviders = getLaunchableProviders(providers);
   const resolvedPlaceholder = placeholder ?? t("newSessionPlaceholder");
   const modeLabels: Record<PermissionMode, string> = {
     default: t("modeDefaultLabel"),
@@ -1019,6 +1085,18 @@ export function NewSessionForm({
   const promptSuggestionModeLabels: Record<PromptSuggestionMode, string> = {
     off: t("promptSuggestionModeOff"),
     native: t("promptSuggestionModeNative"),
+  };
+  const providerDescriptions: Record<ProviderName, string> = {
+    claude: t("newSessionProviderDescriptionClaude"),
+    "claude-gateway": t("newSessionProviderDescriptionClaudeGateway"),
+    "claude-ollama": t("newSessionProviderDescriptionClaudeOllama"),
+    codex: t("newSessionProviderDescriptionCodex"),
+    "codex-oss": t("newSessionProviderDescriptionCodexOss"),
+    gemini: t("newSessionProviderDescriptionGemini"),
+    "gemini-acp": t("newSessionProviderDescriptionGeminiAcp"),
+    grok: t("newSessionProviderDescriptionGrok"),
+    opencode: t("newSessionProviderDescriptionOpenCode"),
+    pi: t("newSessionProviderDescriptionPi"),
   };
   const promptSuggestionModeDescriptions: Record<PromptSuggestionMode, string> =
     {
@@ -1195,6 +1273,18 @@ export function NewSessionForm({
   );
   const hasCustomProjectPath =
     Boolean(activeProjectSearchQuery) && exactProjectMatch === null;
+  // A typed name or relative path names a folder under the base, created on
+  // start if missing (topics/project-names.md § Paths from names).
+  const newProjectBase = newProjectBaseFor(principal);
+  const customProjectTarget = useMemo(
+    () =>
+      hasCustomProjectPath
+        ? settlePathEntry(activeProjectSearchQuery, newProjectBase, projects)
+        : null,
+    [activeProjectSearchQuery, hasCustomProjectPath, newProjectBase, projects],
+  );
+  const customProjectIsNewFolder =
+    hasCustomProjectPath && !isAnchoredPath(activeProjectSearchQuery);
   const currentProjectSelection = exactProjectMatch ?? selectedProject ?? null;
   const projectQueueTargetProjectId =
     !hasCustomProjectPath && normalizedProjectInput && currentProjectSelection
@@ -1362,10 +1452,12 @@ export function NewSessionForm({
           onClick={() => setIsProjectChooserExpanded(false)}
         >
           <span className="new-session-project-option-name">
-            {t("newSessionProjectUseTypedPath")}
+            {customProjectIsNewFolder
+              ? t("newSessionProjectNewFolder")
+              : t("newSessionProjectUseTypedPath")}
           </span>
           <span className="new-session-project-option-path">
-            {activeProjectSearchQuery}
+            {customProjectTarget?.path ?? activeProjectSearchQuery}
           </span>
         </button>,
       );
@@ -1414,6 +1506,8 @@ export function NewSessionForm({
     handleDetachedProject,
     handleProjectOptionSelect,
     hasCustomProjectPath,
+    customProjectIsNewFolder,
+    customProjectTarget,
     isDetachedProject,
     isProjectChooserExpanded,
     activeProjectSearchQuery,
@@ -1428,10 +1522,12 @@ export function NewSessionForm({
   // preference worth saving as this client's default.
   const applyLaunchLock = useCallback(() => {
     if (!launchLock.limited) return;
-    if (launchLock.provider) setSelectedProvider(launchLock.provider);
+    const lockedProvider = knownLockedProvider(launchLock);
+    if (lockedProvider) setSelectedProvider(lockedProvider);
     if (launchLock.model) setSelectedModel(launchLock.model);
     if (launchLock.effort) {
-      setSelectedEffortLevel(launchLock.effort);
+      const lockedEffort = knownLockedEffort(launchLock);
+      if (lockedEffort) setSelectedEffortLevel(lockedEffort);
       setSelectedThinkingMode("on");
     }
     setSandboxLevel("project-write");
@@ -1862,16 +1958,37 @@ export function NewSessionForm({
   // effect after paint: this form is reached by a navigation whose point is
   // that the user can type, so a key struck in that gap must not fall through
   // to the page behind it. The caret goes after any seeded text.
+  //
+  // A tab opened on this page was already typeable before the app loaded
+  // (lib/prebootComposer), so the page's form takes over that text and caret
+  // in this same commit: nothing can be struck between the two fields. The
+  // text was typed without seeing a restored draft, so it follows the draft
+  // as its own paragraph.
   const attachComposerTextarea = useCallback(
     (textarea: HTMLTextAreaElement | null) => {
       textareaRef.current = textarea;
-      if (!textarea || !autoFocusRef.current) return;
+      if (!textarea) return;
+      const preboot = adoptsPrebootRef.current ? takePrebootComposer() : null;
+      adoptsPrebootRef.current = false;
+      if (!autoFocusRef.current && !preboot) return;
       autoFocusRef.current = false;
+      let selectionStart = textarea.value.length;
+      let selectionEnd = selectionStart;
+      if (preboot?.text) {
+        const draft = textarea.value;
+        const separator =
+          !draft || /\s$/.test(draft) || /^\s/.test(preboot.text) ? "" : "\n\n";
+        const offset = draft.length + separator.length;
+        const combined = `${draft}${separator}${preboot.text}`;
+        textarea.value = combined;
+        setMessage(combined);
+        selectionStart = offset + preboot.selectionStart;
+        selectionEnd = offset + preboot.selectionEnd;
+      }
       textarea.focus();
-      const caret = textarea.value.length;
-      textarea.setSelectionRange(caret, caret);
+      textarea.setSelectionRange(selectionStart, selectionEnd);
     },
-    [],
+    [setMessage],
   );
 
   useLayoutEffect(() => {
@@ -2075,16 +2192,45 @@ export function NewSessionForm({
           : (findProjectByInput(projects, trimmedProjectInput)?.id ?? null);
 
       if (trimmedProjectInput && !resolvedProjectId) {
-        const addProjectResult = await api.addProject(trimmedProjectInput);
+        // A typed name is a folder under the base, made if missing; a typed
+        // absolute path must already exist, as it always had to.
+        const newFolder = !isAnchoredPath(trimmedProjectInput);
+        const target = settlePathEntry(
+          trimmedProjectInput,
+          newProjectBase,
+          projects,
+        );
+        const addProjectResult = newFolder
+          ? await api.addProject(target.path, {
+              create: true,
+              name: target.name,
+            })
+          : await api.addProject(target.path);
         resolvedProjectId = addProjectResult.project.id ?? null;
         if (!resolvedProjectId) return null;
+        if (newFolder) {
+          const path = addProjectResult.project.path ?? target.path;
+          showToast(
+            addProjectResult.created
+              ? t("newSessionProjectFolderCreated", { path })
+              : t("newSessionProjectFolderExisting", { path }),
+            "info",
+          );
+        }
         lastSyncedProjectIdRef.current = resolvedProjectId;
         onProjectChange?.(resolvedProjectId);
       }
 
       return resolvedProjectId;
     },
-    [currentProjectSelection, onProjectChange, projects],
+    [
+      currentProjectSelection,
+      newProjectBase,
+      onProjectChange,
+      projects,
+      showToast,
+      t,
+    ],
   );
 
   const resolvePendingAttachmentsForSession = useCallback(
@@ -2213,6 +2359,8 @@ export function NewSessionForm({
       // not a reason to refuse the start.
       if (
         (!hasContent && !composerMuted) ||
+        creatingTemplateProject ||
+        templateProjectBusy ||
         isStarting ||
         !hasSelectedProviderModel
       )
@@ -2271,6 +2419,13 @@ export function NewSessionForm({
       setInterimTranscript("");
       consumeSpeechAttribution();
       setIsStarting(true);
+      if (historyScope)
+        void rememberComposerPrompt(historyScope, finalMessage).catch((cause) =>
+          showToast(
+            t("composerHistorySaveError", { error: String(cause) }),
+            "error",
+          ),
+        );
 
       try {
         let resolvedProjectId =
@@ -2300,7 +2455,9 @@ export function NewSessionForm({
         // Display preference for thinking rows; sent for compatibility while the
         // server requests provider summaries independently.
         const showThinking = getShowThinkingSetting();
+        const creationProvenance = getUiCreationProvenance(versionInfo);
         const sessionOptions = {
+          creationProvenance,
           ...(computerSelected && computerControlEligible
             ? { computerControl: true }
             : {}),
@@ -2575,6 +2732,9 @@ export function NewSessionForm({
       draftControls,
       computerControlEligible,
       computerSelected,
+      creatingTemplateProject,
+      templateProjectBusy,
+      historyScope,
       effectiveEffortLevel,
       effectiveExecutor,
       effectivePermissionMode,
@@ -2612,6 +2772,7 @@ export function NewSessionForm({
   );
 
   const handleQueueProjectSession = async (messageOverride?: unknown) => {
+    if (creatingTemplateProject || templateProjectBusy) return;
     const override =
       typeof messageOverride === "string" ? messageOverride : undefined;
     if (override === undefined && deferSpeechDelivery("project-queue")) {
@@ -3295,296 +3456,321 @@ export function NewSessionForm({
   // Shared input area with toolbar (textarea + attach/voice on left, send on right)
   const inputArea = (
     <>
-      <div
-        className={`speech-draft-field ${
-          interimDisplayTranscript ? "has-interim" : ""
-        }`}
+      <ComposerRecents
+        scope={historyScope}
+        onFiles={addPendingFiles}
+        uploadsOpen={recentUploadsOpen}
+        onUploadsClose={() => setRecentUploadsOpen(false)}
+        onBrowse={() => fileInputRef.current?.click()}
+      />
+      <PromptHistoryRail
+        scope={historyScope}
+        textareaRef={textareaRef}
+        onChange={setMessage}
       >
-        <div className="speech-draft-inline">
-          {interimDisplayTranscript && (
-            <div className="speech-draft-mirror" aria-hidden="true">
-              <span>{interimInsertion.before}</span>
-              {interimInsertion.separatorBefore}
-              <span className="speech-interim-inline">
-                {interimInsertion.transcript}
-              </span>
-              <span className="speech-interim-caret" />
-              {interimInsertion.separatorAfter}
-              <span>{interimInsertion.after}</span>
+        <div
+          className={`speech-draft-field ${
+            interimDisplayTranscript ? "has-interim" : ""
+          }`}
+        >
+          <div className="speech-draft-inline">
+            {interimDisplayTranscript && (
+              <div className="speech-draft-mirror" aria-hidden="true">
+                <span>{interimInsertion.before}</span>
+                {interimInsertion.separatorBefore}
+                <span className="speech-interim-inline">
+                  {interimInsertion.transcript}
+                </span>
+                <span className="speech-interim-caret" />
+                {interimInsertion.separatorAfter}
+                <span>{interimInsertion.after}</span>
+              </div>
+            )}
+            <textarea
+              ref={attachComposerTextarea}
+              data-composer-input
+              value={message}
+              onChange={(e) => {
+                const nextMessage = fileCompletion.normalizeInput(
+                  e.target.value,
+                );
+                clearPendingSpeechFinal();
+                if (speechInsertionRangesRef.current.size > 0) {
+                  const nextRanges = new Map<string, SpeechInsertionRange>();
+                  for (const [
+                    targetId,
+                    range,
+                  ] of speechInsertionRangesRef.current) {
+                    nextRanges.set(
+                      targetId,
+                      clearSpeechInsertionRangeReplacement(
+                        mapSpeechInsertionRangeThroughEdit(
+                          message,
+                          nextMessage,
+                          range,
+                        ),
+                      ),
+                    );
+                  }
+                  speechInsertionRangesRef.current = nextRanges;
+                  speechInsertionRangeRef.current =
+                    activeSpeechTargetIdRef.current !== null
+                      ? (nextRanges.get(activeSpeechTargetIdRef.current) ??
+                        null)
+                      : null;
+                }
+                if (
+                  activeSpeechTargetIdRef.current !== null &&
+                  hasNonWhitespaceEdit(message, nextMessage)
+                ) {
+                  composerEditedDuringSpeechRef.current = true;
+                }
+                handleSpeechSelectionTarget(true, nextMessage);
+                setMessage(nextMessage);
+              }}
+              onKeyDown={handleKeyDown}
+              onFocus={fileCompletion.onFocus}
+              onBlur={fileCompletion.onBlur}
+              onSelect={() => {
+                handleSpeechSelectionTarget();
+                fileCompletion.onSelect();
+              }}
+              onPointerUp={handleSpeechSelectionTarget}
+              onClick={handleSpeechSelectionClick}
+              onKeyUp={handleSpeechSelectionTarget}
+              onCut={clearSpeechSelectionTarget}
+              onCopy={clearSpeechSelectionTarget}
+              onPaste={(event) => {
+                clearSpeechSelectionTarget();
+                if (allowAttachments) {
+                  handlePaste(event);
+                }
+              }}
+              placeholder={resolvedPlaceholder}
+              disabled={isStarting}
+              // Read-only rather than disabled: the draft stays selectable and
+              // scrollable so it can still be read, just not sent.
+              readOnly={composerMuted}
+              rows={composerMuted ? Math.min(rows, 3) : rows}
+              className="new-session-form-textarea"
+            />
+          </div>
+          {interimTranscript && (
+            <div
+              className="speech-interim-status"
+              role="status"
+              aria-live="polite"
+              aria-label="Tentative speech transcript"
+            >
+              {interimTranscript}
             </div>
           )}
-          <textarea
-            ref={attachComposerTextarea}
-            data-composer-input
-            value={message}
-            onChange={(e) => {
-              const nextMessage = fileCompletion.normalizeInput(e.target.value);
-              clearPendingSpeechFinal();
-              if (speechInsertionRangesRef.current.size > 0) {
-                const nextRanges = new Map<string, SpeechInsertionRange>();
-                for (const [
-                  targetId,
-                  range,
-                ] of speechInsertionRangesRef.current) {
-                  nextRanges.set(
-                    targetId,
-                    clearSpeechInsertionRangeReplacement(
-                      mapSpeechInsertionRangeThroughEdit(
-                        message,
-                        nextMessage,
-                        range,
-                      ),
-                    ),
-                  );
-                }
-                speechInsertionRangesRef.current = nextRanges;
-                speechInsertionRangeRef.current =
-                  activeSpeechTargetIdRef.current !== null
-                    ? (nextRanges.get(activeSpeechTargetIdRef.current) ?? null)
-                    : null;
-              }
-              if (
-                activeSpeechTargetIdRef.current !== null &&
-                hasNonWhitespaceEdit(message, nextMessage)
-              ) {
-                composerEditedDuringSpeechRef.current = true;
-              }
-              handleSpeechSelectionTarget(true, nextMessage);
-              setMessage(nextMessage);
-            }}
-            onKeyDown={handleKeyDown}
-            onFocus={fileCompletion.onFocus}
-            onBlur={fileCompletion.onBlur}
-            onSelect={() => {
-              handleSpeechSelectionTarget();
-              fileCompletion.onSelect();
-            }}
-            onPointerUp={handleSpeechSelectionTarget}
-            onClick={handleSpeechSelectionClick}
-            onKeyUp={handleSpeechSelectionTarget}
-            onCut={clearSpeechSelectionTarget}
-            onCopy={clearSpeechSelectionTarget}
-            onPaste={(event) => {
-              clearSpeechSelectionTarget();
-              if (allowAttachments) {
-                handlePaste(event);
-              }
-            }}
-            placeholder={resolvedPlaceholder}
-            disabled={isStarting}
-            // Read-only rather than disabled: the draft stays selectable and
-            // scrollable so it can still be read, just not sent.
-            readOnly={composerMuted}
-            rows={composerMuted ? Math.min(rows, 3) : rows}
-            className="new-session-form-textarea"
-          />
         </div>
-        {interimTranscript && (
-          <div
-            className="speech-interim-status"
-            role="status"
-            aria-live="polite"
-            aria-label="Tentative speech transcript"
-          >
-            {interimTranscript}
-          </div>
-        )}
-      </div>
-      <ProjectFileCompletionMenu completion={fileCompletion} />
-      <div className="new-session-form-toolbar">
-        <div className="new-session-form-toolbar-left">
-          {allowAttachments && (
-            <>
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                style={{ display: "none" }}
-                onChange={handleFileSelect}
+        <ProjectFileCompletionMenu completion={fileCompletion} />
+        <div className="new-session-form-toolbar">
+          <div className="new-session-form-toolbar-left">
+            {allowAttachments && (
+              <>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  style={{ display: "none" }}
+                  onChange={handleFileSelect}
+                />
+                <button
+                  type="button"
+                  className="toolbar-button"
+                  onClick={() => {
+                    if (attachGesture.current.swiped) {
+                      attachGesture.current.swiped = false;
+                      return;
+                    }
+                    fileInputRef.current?.click();
+                  }}
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setRecentUploadsOpen(true);
+                  }}
+                  onTouchStart={(event) => {
+                    attachGesture.current = {
+                      y: event.touches[0]?.clientY ?? 0,
+                      swiped: false,
+                    };
+                  }}
+                  onTouchEnd={(event) => {
+                    if (
+                      (event.changedTouches[0]?.clientY ?? 0) -
+                        attachGesture.current.y >
+                      25
+                    ) {
+                      attachGesture.current.swiped = true;
+                      setRecentUploadsOpen(true);
+                    }
+                  }}
+                  title="Choose files; right-click or swipe down for recent uploads"
+                  disabled={isStarting}
+                  aria-label={t("newSessionAttachFiles")}
+                >
+                  <svg
+                    width="18"
+                    height="18"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    aria-hidden="true"
+                  >
+                    <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                  </svg>
+                </button>
+              </>
+            )}
+            <SpeechControlMenu
+              showMethodSelector={showSpeechMethodSelector}
+              methodOptions={speechMethodOptions}
+              selectedMethod={selectedSpeechMethod}
+              onMethodChange={handleSpeechMethodSelect}
+              smartTurnSettings={activeSpeechSmartTurnSettings}
+              onSmartTurnSettingsChange={
+                supportsSelectedSpeechSmartTurn
+                  ? setSpeechSmartTurnSettings
+                  : undefined
+              }
+              smartTurnDisabled={isStarting}
+              onBeforeOpen={() => {
+                if (voiceButtonRef.current?.isListening) {
+                  voiceButtonRef.current.toggle();
+                }
+              }}
+              onBeforeCaptureChange={() => {
+                if (voiceButtonRef.current?.isListening) {
+                  voiceButtonRef.current.toggle();
+                }
+              }}
+              onPointerNearTrigger={() => voiceButtonRef.current?.prewarm?.()}
+              trigger={
+                <VoiceInputButton
+                  ref={voiceButtonRef}
+                  onTranscript={handleVoiceTranscript}
+                  onInterimTranscript={handleInterimTranscript}
+                  onListeningStart={handleListeningStart}
+                  onListeningStop={handleListeningStop}
+                  onPendingSpeechChange={handlePendingSpeechChange}
+                  disabled={isStarting}
+                  className="toolbar-button"
+                  speechMethod={selectedSpeechMethod}
+                  getTranscriptionContext={getTranscriptionContext}
+                  smartTurn={activeSpeechSmartTurnSettings}
+                />
+              }
+            />
+            {!compact && !composerMuted && (
+              <FullPaneComposerToggle
+                expanded={fullPane}
+                className={`toolbar-button ${styles.fullPaneToggle}`}
+                onToggle={() => {
+                  toggleFullPane();
+                  textareaRef.current?.focus();
+                }}
               />
+            )}
+          </div>
+          <div className="new-session-form-toolbar-actions">
+            {toolbarVisibility.projectQueue && showProjectQueueAction && (
               <button
                 type="button"
-                className="toolbar-button"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={isStarting}
-                aria-label={t("newSessionAttachFiles")}
+                onClick={handleQueueProjectSession}
+                disabled={
+                  isStarting ||
+                  creatingTemplateProject ||
+                  templateProjectBusy ||
+                  !canQueueProjectSession
+                }
+                className="send-button project-queue-button new-session-project-queue-button"
+                aria-label={describePrefixedDelivery(
+                  t("toolbarProjectQueueLabel"),
+                )}
+                title={describePrefixedTooltip(projectQueueNewSessionTitle)}
               >
+                <DeliveryGlyph className="send-icon">⇥</DeliveryGlyph>
+                {manualDeliverySpeechPrefix && (
+                  <SpeechPrefixActionCue prefix={manualDeliverySpeechPrefix} />
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={handleStartSession}
+              disabled={
+                isStarting ||
+                creatingTemplateProject ||
+                templateProjectBusy ||
+                !canStart
+              }
+              className="send-button new-session-submit-button"
+              aria-label={describePrefixedDelivery(
+                launch?.startLabel ?? t("newSessionStartAction"),
+              )}
+              title={describePrefixedTooltip(
+                launch?.startLabel ?? t("newSessionStartAction"),
+              )}
+            >
+              {isStarting ? (
+                <span className="send-spinner" />
+              ) : (
                 <svg
-                  width="18"
-                  height="18"
+                  className="send-icon new-session-submit-icon"
+                  width="20"
+                  height="20"
                   viewBox="0 0 24 24"
                   fill="none"
                   stroke="currentColor"
-                  strokeWidth="2"
+                  strokeWidth="2.25"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
                   aria-hidden="true"
                 >
-                  <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
+                  <path d="M12 19V5" />
+                  <path d="m5 12 7-7 7 7" />
                 </svg>
-              </button>
-            </>
-          )}
-          <SpeechControlMenu
-            showMethodSelector={showSpeechMethodSelector}
-            methodOptions={speechMethodOptions}
-            selectedMethod={selectedSpeechMethod}
-            onMethodChange={handleSpeechMethodSelect}
-            smartTurnSettings={activeSpeechSmartTurnSettings}
-            onSmartTurnSettingsChange={
-              supportsSelectedSpeechSmartTurn
-                ? setSpeechSmartTurnSettings
-                : undefined
-            }
-            smartTurnDisabled={isStarting}
-            onBeforeOpen={() => {
-              if (voiceButtonRef.current?.isListening) {
-                voiceButtonRef.current.toggle();
-              }
-            }}
-            onBeforeCaptureChange={() => {
-              if (voiceButtonRef.current?.isListening) {
-                voiceButtonRef.current.toggle();
-              }
-            }}
-            onPointerNearTrigger={() => voiceButtonRef.current?.prewarm?.()}
-            trigger={
-              <VoiceInputButton
-                ref={voiceButtonRef}
-                onTranscript={handleVoiceTranscript}
-                onInterimTranscript={handleInterimTranscript}
-                onListeningStart={handleListeningStart}
-                onListeningStop={handleListeningStop}
-                onPendingSpeechChange={handlePendingSpeechChange}
-                disabled={isStarting}
-                className="toolbar-button"
-                speechMethod={selectedSpeechMethod}
-                getTranscriptionContext={getTranscriptionContext}
-                smartTurn={activeSpeechSmartTurnSettings}
-              />
-            }
-          />
-          {/* A locked model keeps the chip's badge and loses its menu, so the
-              composer still says what will run without offering a switch. */}
-          {selectedProvider &&
-            (launchLock.model ? (
-              <ProviderBadge
-                provider={selectedProvider}
-                model={selectedModel ?? undefined}
-              />
-            ) : (
-              modelOptions.length > 0 && (
-                <FilterDropdown
-                  triggerVariant="chip"
-                  panelVariant="model"
-                  label={t("newSessionModelTitle")}
-                  options={modelOptions}
-                  selected={selectedModel ? [selectedModel] : []}
-                  onChange={handleModelSelect}
-                  multiSelect={false}
-                  triggerContent={
-                    <ProviderBadge
-                      provider={selectedProvider}
-                      model={selectedModel ?? undefined}
-                    />
-                  }
-                  triggerTitle={t("composerModelChipTitle")}
-                />
-              )
-            ))}
-          {!compact && !composerMuted && (
-            <FullPaneComposerToggle
-              expanded={fullPane}
-              className={`toolbar-button ${styles.fullPaneToggle}`}
-              onToggle={() => {
-                toggleFullPane();
-                textareaRef.current?.focus();
-              }}
-            />
-          )}
-        </div>
-        <div className="new-session-form-toolbar-actions">
-          {toolbarVisibility.projectQueue && showProjectQueueAction && (
-            <button
-              type="button"
-              onClick={handleQueueProjectSession}
-              disabled={isStarting || !canQueueProjectSession}
-              className="send-button project-queue-button new-session-project-queue-button"
-              aria-label={describePrefixedDelivery(
-                t("toolbarProjectQueueLabel"),
               )}
-              title={describePrefixedTooltip(projectQueueNewSessionTitle)}
-            >
-              <DeliveryGlyph className="send-icon">⇥</DeliveryGlyph>
-              {manualDeliverySpeechPrefix && (
+              {!isStarting && manualDeliverySpeechPrefix && (
                 <SpeechPrefixActionCue prefix={manualDeliverySpeechPrefix} />
               )}
             </button>
-          )}
-          <button
-            type="button"
-            onClick={handleStartSession}
-            disabled={isStarting || !canStart}
-            className="send-button new-session-submit-button"
-            aria-label={describePrefixedDelivery(
-              launch?.startLabel ?? t("newSessionStartAction"),
-            )}
-            title={describePrefixedTooltip(
-              launch?.startLabel ?? t("newSessionStartAction"),
-            )}
-          >
-            {isStarting ? (
-              <span className="send-spinner" />
-            ) : (
-              <svg
-                className="send-icon new-session-submit-icon"
-                width="20"
-                height="20"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2.25"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M12 19V5" />
-                <path d="m5 12 7-7 7 7" />
-              </svg>
-            )}
-            {!isStarting && manualDeliverySpeechPrefix && (
-              <SpeechPrefixActionCue prefix={manualDeliverySpeechPrefix} />
-            )}
-          </button>
+          </div>
         </div>
-      </div>
-      {pendingFiles.length > 0 && (
-        <div className={styles.pendingFilesList}>
-          {pendingFiles.map((pf) => {
-            const progress = uploadProgress[pf.id];
-            const fileName = getPendingFileName(pf);
-            const fileSize = getPendingFileSize(pf);
-            const imageSize = getPendingFileImageDimensions(pf);
-            return (
-              <AttachmentChip
-                key={pf.id}
-                attachmentId={pf.id}
-                originalName={fileName}
-                mimeType={getPendingFileMimeType(pf)}
-                sizeLabel={
-                  progress
-                    ? `${Math.round((progress.uploaded / progress.total) * 100)}%`
-                    : formatFileSize(fileSize)
-                }
-                imageWidth={imageSize?.width}
-                imageHeight={imageSize?.height}
-                previewUrl={pf.previewUrl}
-                onRemove={
-                  isStarting ? undefined : () => handleRemoveFile(pf.id)
-                }
-              />
-            );
-          })}
-        </div>
-      )}
+        {pendingFiles.length > 0 && (
+          <div className={styles.pendingFilesList}>
+            {pendingFiles.map((pf) => {
+              const progress = uploadProgress[pf.id];
+              const fileName = getPendingFileName(pf);
+              const fileSize = getPendingFileSize(pf);
+              const imageSize = getPendingFileImageDimensions(pf);
+              return (
+                <AttachmentChip
+                  key={pf.id}
+                  attachmentId={pf.id}
+                  originalName={fileName}
+                  mimeType={getPendingFileMimeType(pf)}
+                  sizeLabel={
+                    progress
+                      ? `${Math.round((progress.uploaded / progress.total) * 100)}%`
+                      : formatFileSize(fileSize)
+                  }
+                  imageWidth={imageSize?.width}
+                  imageHeight={imageSize?.height}
+                  previewUrl={pf.previewUrl}
+                  onRemove={
+                    isStarting ? undefined : () => handleRemoveFile(pf.id)
+                  }
+                />
+              );
+            })}
+          </div>
+        )}
+      </PromptHistoryRail>
     </>
   );
 
@@ -3667,20 +3853,35 @@ export function NewSessionForm({
         </datalist>
       </div>
 
-      {isProjectChooserExpanded && projectPanelRows && (
-        <div
-          id="new-session-project-panel"
-          className="new-session-project-panel"
-        >
-          <p className="new-session-project-field-hint">
-            {t("newSessionProjectPathHint")}
-          </p>
-
-          <div className="new-session-project-suggestions">
-            {projectPanelRows}
-          </div>
+      {templateChoices?.enabled && !launch && (
+        <div className={templateStyles.expansion}>
+          <button
+            type="button"
+            aria-expanded={creatingTemplateProject}
+            className={templateStyles.secondary}
+            disabled={templateProjectBusy}
+            onClick={() => setCreatingTemplateProject((value) => !value)}
+          >
+            {t("templateNewProject")}
+          </button>
         </div>
       )}
+      {isProjectChooserExpanded &&
+        projectPanelRows &&
+        !creatingTemplateProject && (
+          <div
+            id="new-session-project-panel"
+            className="new-session-project-panel"
+          >
+            <p className="new-session-project-field-hint">
+              {t("newSessionProjectPathHint")}
+            </p>
+
+            <div className="new-session-project-suggestions">
+              {projectPanelRows}
+            </div>
+          </div>
+        )}
     </div>
   );
   const workstreamChooser =
@@ -3717,53 +3918,65 @@ export function NewSessionForm({
     ) : null;
 
   const providerSection =
-    launchableProviders.length > 1 ? (
+    providers.length > 1 ? (
       <NewSessionOptionSection
-        className="new-session-provider-section"
+        className={`new-session-provider-section ${styles.compactProviderSection}`}
         title={sessionDefaultCopy.provider.title}
         caption={sessionDefaultCopy.provider.description}
         showCaption={showOptionCaptions}
       >
-        <div className="provider-options" aria-busy={providersStale}>
-          {providers.map((p) => {
-            const isLaunchable = p.installed;
-            const isSelected = selectedProvider === p.name;
-            return (
-              <button
-                key={p.name}
-                type="button"
-                className={`provider-option ${isSelected ? "selected" : ""} ${!isLaunchable ? "disabled" : ""}`}
-                onClick={() => isLaunchable && handleProviderSelect(p.name)}
-                disabled={isStarting || !isLaunchable}
-                title={
-                  !isLaunchable
-                    ? t("newSessionProviderUnavailable", {
-                        provider: p.displayName,
-                        reason: t("newSessionProviderNotInstalled"),
-                      })
-                    : !p.authenticated && !p.enabled
-                      ? t("newSessionProviderAuthenticationPending", {
-                          provider: p.displayName,
-                        })
-                      : undefined
-                }
-              >
-                <span className={`provider-option-dot provider-${p.name}`} />
-                <div className="provider-option-content">
-                  <span className="provider-option-label">{p.displayName}</span>
-                  {!isLaunchable ? (
-                    <span className="provider-option-status">
-                      {t("newSessionProviderStatusNotInstalled")}
+        <div aria-busy={providersStale}>
+          <FilterDropdown<ProviderName>
+            label={sessionDefaultCopy.provider.title}
+            options={providers.map((provider) => ({
+              value: provider.name,
+              label: provider.displayName,
+              icon: (
+                <span
+                  className={`provider-option-dot provider-${provider.name}`}
+                />
+              ),
+              description: [
+                providerDescriptions[provider.name],
+                !provider.installed
+                  ? t("newSessionProviderStatusNotInstalled")
+                  : !provider.authenticated && !provider.enabled
+                    ? t("newSessionProviderStatusAuthenticationNeeded")
+                    : null,
+              ]
+                .filter(Boolean)
+                .join(" · "),
+              disabled: !provider.installed,
+            }))}
+            selected={selectedProvider ? [selectedProvider] : []}
+            onChange={([provider]) => {
+              if (provider && !isStarting) handleProviderSelect(provider);
+            }}
+            multiSelect={false}
+            fullWidth
+            triggerContent={
+              selectedProvider ? (
+                <span className={styles.selectedChoice}>
+                  <span
+                    className={`provider-option-dot provider-${selectedProvider}`}
+                    aria-hidden="true"
+                  />
+                  <span className={styles.selectedChoiceText}>
+                    <span>
+                      {selectedProviderInfo?.displayName ?? selectedProvider}
                     </span>
-                  ) : !p.authenticated && !p.enabled ? (
-                    <span className="provider-option-status">
-                      {t("newSessionProviderStatusAuthenticationNeeded")}
-                    </span>
-                  ) : null}
-                </div>
-              </button>
-            );
-          })}
+                    {selectedProviderInfo &&
+                      !selectedProviderInfo.authenticated &&
+                      !selectedProviderInfo.enabled && (
+                        <span className={styles.choiceStatus}>
+                          {t("newSessionProviderStatusAuthenticationNeeded")}
+                        </span>
+                      )}
+                  </span>
+                </span>
+              ) : undefined
+            }
+          />
         </div>
       </NewSessionOptionSection>
     ) : null;
@@ -3784,6 +3997,21 @@ export function NewSessionForm({
           multiSelect={false}
           placeholder={t("newSessionModelPlaceholder")}
           fullWidth
+          triggerClassName={styles.leftAlignedTrigger}
+          triggerContent={
+            selectedProvider && selectedModel ? (
+              <span className={styles.selectedChoice}>
+                <ProviderBadge
+                  provider={selectedProvider}
+                  model={selectedModel}
+                />
+                <span className={styles.selectedChoiceText}>
+                  {modelOptions.find((option) => option.value === selectedModel)
+                    ?.label ?? selectedModel}
+                </span>
+              </span>
+            ) : undefined
+          }
         />
       </NewSessionOptionSection>
     ) : null;
@@ -3827,43 +4055,101 @@ export function NewSessionForm({
       caption={sessionDefaultCopy.showThinking.description}
       showCaption={showOptionCaptions}
     >
-      <ShowThinkingControls
-        value={showThinking}
-        onChange={(value) => setShowThinking(value)}
-        t={t}
-        showLabel={false}
+      <FilterDropdown<"default" | "on" | "off">
+        label={sessionDefaultCopy.showThinking.title}
+        options={[
+          { value: "default", label: t("showThinkingDefault") },
+          { value: "on", label: t("showThinkingOn") },
+          { value: "off", label: t("showThinkingOff") },
+        ]}
+        selected={[showThinking]}
+        onChange={([value]) => setShowThinking(value ?? "default")}
+        multiSelect={false}
+        fullWidth
+        triggerClassName={styles.leftAlignedTrigger}
       />
     </NewSessionOptionSection>
   );
-  const thinkingSection = showThinkingControls ? (
+  const effortSection = showThinkingControls ? (
     <NewSessionOptionSection
-      className="new-session-helper-section new-session-thinking-section"
-      title={sessionDefaultCopy.thinking.title}
+      className={`new-session-helper-section ${styles.effortSection}`}
+      title={t("newSessionThinkingEffortTitle")}
       caption={sessionDefaultCopy.thinking.description}
       showCaption={showOptionCaptions}
     >
-      <ThinkingControlsPanel
-        mode={effectiveThinkingMode}
-        modeOptions={thinkingModeOptions}
-        onSetMode={(nextMode) => {
+      <FilterDropdown<string>
+        label={t("newSessionThinkingEffortTitle")}
+        options={[
+          ...thinkingModeOptions
+            .filter((option) => option !== "on")
+            .map((option) => ({
+              value: option,
+              label: t(
+                option === "off"
+                  ? "modelSettingsThinkingOffLabel"
+                  : "modelSettingsThinkingAutoLabel",
+              ),
+              icon: <span className={`mode-option-dot thinking-${option}`} />,
+            })),
+          ...(thinkingModeOptions.includes("on")
+            ? effortOptions.map((option) => ({
+                value: `on:${option.value}`,
+                label: option.label,
+                icon: (
+                  <span
+                    className={`model-switch-indicator-dot tone-${option.value}`}
+                  />
+                ),
+                description: showOptionCaptions
+                  ? option.description
+                  : undefined,
+              }))
+            : []),
+        ]}
+        selected={[
+          effectiveThinkingMode === "on"
+            ? `on:${effectiveEffortLevel}`
+            : effectiveThinkingMode,
+        ]}
+        onChange={([selection]) => {
+          if (!selection || isStarting) return;
           hasUserCustomizedDefaultsRef.current = true;
-          setSelectedThinkingMode(nextMode);
-        }}
-        level={effectiveEffortLevel}
-        effortOptions={effortOptions}
-        onSetEffort={(nextEffort) => {
-          hasUserCustomizedDefaultsRef.current = true;
-          setSelectedEffortLevel(nextEffort);
-        }}
-        onSetEffortMode={(nextEffort) => {
-          hasUserCustomizedDefaultsRef.current = true;
-          setSelectedEffortLevel(nextEffort);
+          if (selection === "off" || selection === "auto") {
+            setSelectedThinkingMode(selection);
+            return;
+          }
+          const nextEffort = effortOptions.find(
+            (option) => selection === `on:${option.value}`,
+          );
+          if (!nextEffort) return;
+          setSelectedEffortLevel(nextEffort.value);
           setSelectedThinkingMode("on");
         }}
-        showThinkingControl={false}
-        provider={selectedProvider ?? undefined}
-        t={t}
-        className="thinking-controls-panel--inline new-session-thinking-controls"
+        multiSelect={false}
+        fullWidth
+        triggerContent={
+          <span className={styles.selectedChoice}>
+            <span
+              className={
+                effectiveThinkingMode === "on"
+                  ? `model-switch-indicator-dot tone-${effectiveEffortLevel}`
+                  : `mode-option-dot thinking-${effectiveThinkingMode}`
+              }
+              aria-hidden="true"
+            />
+            <span className={styles.selectedChoiceText}>
+              {effectiveThinkingMode === "on"
+                ? (effortOptions.find(
+                    (option) => option.value === effectiveEffortLevel,
+                  )?.label ?? effectiveEffortLevel)
+                : t(
+                    effectiveThinkingMode === "off"
+                      ? "modelSettingsThinkingOffLabel"
+                      : "modelSettingsThinkingAutoLabel",
+                  )}
+            </span>
+          </span>
+        }
       />
     </NewSessionOptionSection>
   ) : null;
@@ -3874,30 +4160,40 @@ export function NewSessionForm({
       caption={getRecapModeDescription(selectedRecapMode, t, recapAfterSeconds)}
       showCaption={showOptionCaptions}
     >
-      <div className="new-session-helper-options">
-        {availableRecapModes.map((modeValue) => (
-          <button
-            key={modeValue}
-            type="button"
-            className={`new-session-helper-option ${
-              selectedRecapMode === modeValue ? "selected" : ""
-            }`}
-            onClick={() => {
-              hasUserCustomizedDefaultsRef.current = true;
-              setSelectedRecapMode(modeValue);
-            }}
-            disabled={
-              isStarting ||
-              (effectiveSandboxLevel === "project-write" &&
-                modeValue === "side-session")
-            }
-            title={getRecapModeDescription(modeValue, t, recapAfterSeconds)}
-          >
-            <span className={`mode-option-dot recap-${modeValue}`} />
-            <span>{recapModeLabels[modeValue]}</span>
-          </button>
-        ))}
-      </div>
+      <FilterDropdown<RecapMode>
+        label={sessionDefaultCopy.recap.title}
+        options={availableRecapModes.map((modeValue) => ({
+          value: modeValue,
+          label: recapModeLabels[modeValue],
+          icon: <span className={`mode-option-dot recap-${modeValue}`} />,
+          description: showOptionCaptions
+            ? getRecapModeDescription(modeValue, t, recapAfterSeconds)
+            : undefined,
+          disabled:
+            isStarting ||
+            (effectiveSandboxLevel === "project-write" &&
+              modeValue === "side-session"),
+        }))}
+        selected={[selectedRecapMode]}
+        onChange={([value]) => {
+          if (isStarting) return;
+          hasUserCustomizedDefaultsRef.current = true;
+          setSelectedRecapMode(value ?? "off");
+        }}
+        multiSelect={false}
+        fullWidth
+        triggerContent={
+          <span className={styles.selectedChoice}>
+            <span
+              className={`mode-option-dot recap-${selectedRecapMode}`}
+              aria-hidden="true"
+            />
+            <span className={styles.selectedChoiceText}>
+              {recapModeLabels[selectedRecapMode]}
+            </span>
+          </span>
+        }
+      />
       {selectedRecapMode !== "off" && (
         <RecapAfterSecondsControl
           value={recapAfterSeconds}
@@ -3937,6 +4233,7 @@ export function NewSessionForm({
         multiSelect={false}
         placeholder={t("helperSideModelCheapest")}
         fullWidth
+        triggerClassName={styles.leftAlignedTrigger}
       />
     </NewSessionOptionSection>
   ) : null;
@@ -3947,26 +4244,37 @@ export function NewSessionForm({
       caption={promptSuggestionModeDescriptions[selectedPromptSuggestionMode]}
       showCaption={showOptionCaptions}
     >
-      <div className="new-session-helper-options">
-        {availablePromptSuggestionModes.map((modeValue) => (
-          <button
-            key={modeValue}
-            type="button"
-            className={`new-session-helper-option ${
-              selectedPromptSuggestionMode === modeValue ? "selected" : ""
-            }`}
-            onClick={() => {
-              hasUserCustomizedDefaultsRef.current = true;
-              setSelectedPromptSuggestionMode(modeValue);
-            }}
-            disabled={isStarting}
-            title={promptSuggestionModeDescriptions[modeValue]}
-          >
-            <span className={`mode-option-dot suggestion-${modeValue}`} />
-            <span>{promptSuggestionModeLabels[modeValue]}</span>
-          </button>
-        ))}
-      </div>
+      <FilterDropdown<PromptSuggestionMode>
+        label={sessionDefaultCopy.suggestions.title}
+        options={availablePromptSuggestionModes.map((modeValue) => ({
+          value: modeValue,
+          label: promptSuggestionModeLabels[modeValue],
+          icon: <span className={`mode-option-dot suggestion-${modeValue}`} />,
+          description: showOptionCaptions
+            ? promptSuggestionModeDescriptions[modeValue]
+            : undefined,
+          disabled: isStarting,
+        }))}
+        selected={[selectedPromptSuggestionMode]}
+        onChange={([value]) => {
+          if (isStarting) return;
+          hasUserCustomizedDefaultsRef.current = true;
+          setSelectedPromptSuggestionMode(value ?? "off");
+        }}
+        multiSelect={false}
+        fullWidth
+        triggerContent={
+          <span className={styles.selectedChoice}>
+            <span
+              className={`mode-option-dot suggestion-${selectedPromptSuggestionMode}`}
+              aria-hidden="true"
+            />
+            <span className={styles.selectedChoiceText}>
+              {promptSuggestionModeLabels[selectedPromptSuggestionMode]}
+            </span>
+          </span>
+        }
+      />
     </NewSessionOptionSection>
   ) : null;
   const permissionSection = supportsPermissionMode ? (
@@ -3975,50 +4283,62 @@ export function NewSessionForm({
       title={sessionDefaultCopy.permission.title}
       showCaption={showOptionCaptions}
     >
-      <div className="mode-options">
-        {permissionModeOptions.map((m) => (
-          <button
-            key={m}
-            type="button"
-            className={`mode-option ${effectivePermissionMode === m ? "selected" : ""}`}
-            onClick={() => handleModeSelect(m)}
-            disabled={isStarting}
-          >
-            <span className={`mode-option-dot mode-${m}`} />
-            <div className="mode-option-content">
-              <span className="mode-option-label">{modeLabels[m]}</span>
-              <span className="mode-option-desc">{modeDescriptions[m]}</span>
-            </div>
-          </button>
-        ))}
-      </div>
+      <FilterDropdown<PermissionMode>
+        label={sessionDefaultCopy.permission.title}
+        options={permissionModeOptions.map((permissionMode) => ({
+          value: permissionMode,
+          label: modeLabels[permissionMode],
+          icon: <span className={`mode-option-dot mode-${permissionMode}`} />,
+          description: modeDescriptions[permissionMode],
+          disabled: isStarting,
+        }))}
+        selected={[effectivePermissionMode]}
+        onChange={([value]) => {
+          if (value && !isStarting) handleModeSelect(value);
+        }}
+        multiSelect={false}
+        fullWidth
+        triggerContent={
+          <span className={styles.selectedChoice}>
+            <span
+              className={`mode-option-dot mode-${effectivePermissionMode}`}
+              aria-hidden="true"
+            />
+            <span className={styles.selectedChoiceText}>
+              {modeLabels[effectivePermissionMode]}
+            </span>
+          </span>
+        }
+      />
     </NewSessionOptionSection>
   ) : null;
   const sandboxSection = canConfigureSessionSandbox ? (
-    <NewSessionOptionSection
-      className="new-session-helper-section new-session-sandbox-section"
-      title={sessionDefaultCopy.sandbox.title}
-      caption={[
-        sessionDefaultCopy.sandbox.description,
-        sessionDefaultCopy.sandboxFirewall.description,
-      ].join(" ")}
-      showCaption={showOptionCaptions}
-    >
-      {/* A limited user cannot clear the sandbox, so the toggle is withheld;
-          the fixed-launch caption states that it is always on. The firewall
-          below stays theirs, because the launch route still honors it. */}
+    <>
       {!launchLock.limited && (
-        <label className="settings-item">
-          <div className="settings-item-info">
-            <strong>{t("newSessionSandboxLabel")}</strong>
-          </div>
-          <input
-            type="checkbox"
-            checked={sandboxLevel === "project-write"}
-            disabled={isStarting}
-            onChange={(event) => {
+        <NewSessionOptionSection
+          className="new-session-helper-section new-session-sandbox-section"
+          title={sessionDefaultCopy.sandbox.title}
+          caption={sessionDefaultCopy.sandbox.description}
+          showCaption={showOptionCaptions}
+        >
+          <FilterDropdown<SessionSandboxLevel>
+            label={sessionDefaultCopy.sandbox.title}
+            options={[
+              { value: "none", label: t("recapModeOff"), disabled: isStarting },
+              {
+                value: "project-write",
+                label: t("newSessionSandboxLabel"),
+                description: showOptionCaptions
+                  ? sessionDefaultCopy.sandbox.description
+                  : undefined,
+                disabled: isStarting,
+              },
+            ]}
+            selected={[sandboxLevel]}
+            onChange={([value]) => {
+              if (isStarting) return;
+              const enabled = value === "project-write";
               hasUserCustomizedDefaultsRef.current = true;
-              const enabled = event.currentTarget.checked;
               setSandboxLevel(enabled ? "project-write" : "none");
               if (enabled) {
                 setSandboxNetworkFirewall(true);
@@ -4027,30 +4347,70 @@ export function NewSessionForm({
                 setSelectedRecapMode("off");
               }
             }}
-            aria-label={t("newSessionSandboxLabel")}
+            multiSelect={false}
+            fullWidth
+            triggerClassName={styles.leftAlignedTrigger}
           />
-        </label>
+          {sandboxLocalAuthOpen && (
+            <p
+              className={styles.optionWarning}
+              data-new-session-sandbox-local-auth-warning="true"
+            >
+              {t("newSessionSandboxLocalAuthWarning")}
+            </p>
+          )}
+        </NewSessionOptionSection>
       )}
-      <label className="settings-item">
-        <div className="settings-item-info">
-          <strong>{sessionDefaultCopy.sandboxFirewall.title}</strong>
-        </div>
-        <input
-          type="checkbox"
-          checked={
-            effectiveSandboxLevel === "project-write" && sandboxNetworkFirewall
-          }
-          disabled={isStarting || effectiveSandboxLevel !== "project-write"}
-          onChange={(event) => {
-            hasUserCustomizedDefaultsRef.current = true;
-            setSandboxNetworkFirewall(event.currentTarget.checked);
-          }}
-          aria-label={sessionDefaultCopy.sandboxFirewall.title}
-        />
-      </label>
+      {effectiveSandboxLevel === "project-write" && (
+        <NewSessionOptionSection
+          className="new-session-helper-section new-session-sandbox-firewall-section"
+          title={sessionDefaultCopy.sandboxFirewall.title}
+          caption={sessionDefaultCopy.sandboxFirewall.description}
+          showCaption={showOptionCaptions}
+        >
+          <FilterDropdown<"on" | "off">
+            label={sessionDefaultCopy.sandboxFirewall.title}
+            options={[
+              { value: "on", label: t("showThinkingOn"), disabled: isStarting },
+              {
+                value: "off",
+                label: t("showThinkingOff"),
+                description: showOptionCaptions
+                  ? sessionDefaultCopy.sandboxFirewall.description
+                  : undefined,
+                disabled: isStarting,
+              },
+            ]}
+            selected={[sandboxNetworkFirewall ? "on" : "off"]}
+            onChange={([value]) => {
+              if (isStarting) return;
+              hasUserCustomizedDefaultsRef.current = true;
+              setSandboxNetworkFirewall(value === "on");
+            }}
+            multiSelect={false}
+            fullWidth
+            triggerClassName={styles.leftAlignedTrigger}
+          />
+        </NewSessionOptionSection>
+      )}
+    </>
+  ) : sessionSandboxUnavailableReason ? (
+    <NewSessionOptionSection
+      className="new-session-helper-section new-session-sandbox-section"
+      title={sessionDefaultCopy.sandbox.title}
+      showCaption={showOptionCaptions}
+    >
+      <p
+        className={styles.optionCaption}
+        data-new-session-sandbox-unavailable="true"
+      >
+        {sessionSandboxUnavailableReason}
+      </p>
     </NewSessionOptionSection>
   ) : null;
   // What this account settles, stated where the withheld pickers would sit.
+  // An effort this client cannot name is stated as stored.
+  const lockedEffortLevel = knownLockedEffort(launchLock);
   const fixedLaunchSection = launchLock.limited ? (
     <NewSessionFixedLaunch
       lock={launchLock}
@@ -4061,8 +4421,8 @@ export function NewSessionForm({
           : null
       }
       effortLabel={
-        launchLock.effort
-          ? getEffortLevelLabel(launchLock.effort, selectedProviderInfo, t)
+        lockedEffortLevel
+          ? getEffortLevelLabel(lockedEffortLevel, selectedProviderInfo, t)
           : null
       }
       sandboxAvailable={supportsSessionSandboxing}
@@ -4074,9 +4434,29 @@ export function NewSessionForm({
     fixedLaunchSection ||
       (showProviderPicker && providerSection) ||
       (showModelPicker && modelSection) ||
-      thinkingSection ||
-      permissionSection,
+      effortSection,
   );
+  const activeAdvancedOptions = [
+    effectivePermissionMode !== "default"
+      ? `${sessionDefaultCopy.permission.title}: ${modeLabels[effectivePermissionMode]}`
+      : null,
+    showThinking !== "default"
+      ? `${sessionDefaultCopy.showThinking.title}: ${showThinking === "on" ? t("showThinkingOn") : t("showThinkingOff")}`
+      : null,
+    selectedRecapMode !== "off"
+      ? `${sessionDefaultCopy.recap.title}: ${recapModeLabels[selectedRecapMode]}`
+      : null,
+    selectedPromptSuggestionMode !== "off"
+      ? `${sessionDefaultCopy.suggestions.title}: ${promptSuggestionModeLabels[selectedPromptSuggestionMode]}`
+      : null,
+    effectiveSandboxLevel === "project-write"
+      ? sessionDefaultCopy.sandbox.title
+      : null,
+    computerSelected ? t("computerSessionOptIn") : null,
+    effectiveExecutor
+      ? `${t("newSessionRunOnTitle")}: ${effectiveExecutor}`
+      : null,
+  ].filter((label): label is string => label !== null);
 
   // Compact mode: just the input area, no header or mode selector
   if (compact) {
@@ -4149,21 +4529,123 @@ export function NewSessionForm({
             {workstreamChooser}
           </aside>
         )}
+        {templateChoices?.enabled && !launch && !fixedProject && (
+          <div
+            className={styles.templateProjectSlot}
+            hidden={!creatingTemplateProject}
+          >
+            <TemplateProjectForm
+              key={clientSummarySourceKey}
+              templates={templateChoices.templates}
+              emptyMessage={templateError ?? t(emptyMessageKey)}
+              projects={projects}
+              pathBase={newProjectBase}
+              initialName={
+                projects.some((project) => project.path === projectInput)
+                  ? ""
+                  : projectInput
+              }
+              intent={message}
+              onBusyChange={handleTemplateBusyChange}
+              stagedAttachments={
+                stagedPendingFileRefs[0]
+                  ? {
+                      batchId: stagedPendingFileRefs[0].batchId,
+                      refs: stagedPendingFileRefs,
+                    }
+                  : undefined
+              }
+              disabledReason={
+                pendingFiles.length > 0 &&
+                !serverHasCapability(
+                  versionInfo,
+                  SERVER_CAPABILITIES.templatePreparationAttachments.name,
+                )
+                  ? t("templateAttachmentsUnsupported")
+                  : !pendingFilesReadyForProjectQueue
+                    ? t("projectQueueNewSessionAttachmentsPreparing")
+                    : effectiveExecutor
+                      ? t("templateLocalOnly")
+                      : !hasSelectedProviderModel
+                        ? t("templateSelectProvider")
+                        : undefined
+              }
+              sessionSettings={{
+                mode: effectivePermissionMode,
+                provider: selectedProvider ?? undefined,
+                model: selectedModel ?? undefined,
+                thinking: toThinkingOption(
+                  effectiveThinkingMode,
+                  effectiveEffortLevel,
+                ),
+                showThinking: getShowThinkingSetting(),
+                sandboxLevel: effectiveSandboxLevel,
+                sandboxNetworkFirewall: effectiveSandboxNetworkFirewall,
+                recapMode: resolveRecapMode(
+                  selectedProviderInfo,
+                  selectedRecapMode,
+                ),
+                recapAfterSeconds,
+                promptSuggestionMode: resolvePromptSuggestionMode(
+                  selectedProviderInfo,
+                  selectedPromptSuggestionMode,
+                ),
+                helperSideModel,
+              }}
+              onStarted={(createdProjectId, sessionId) => {
+                if (historyScope)
+                  void rememberComposerPrompt(historyScope, message).catch(
+                    (cause) =>
+                      showToast(
+                        t("composerHistorySaveError", { error: String(cause) }),
+                        "error",
+                      ),
+                  );
+                draftControls.clearDraft();
+                navigate(
+                  `${basePath}/projects/${createdProjectId}/sessions/${sessionId}`,
+                );
+              }}
+            />
+          </div>
+        )}
         {providerSlotFilled && (
           <div className="new-session-provider-slot">
             {fixedLaunchSection}
             {showProviderPicker && providerSection}
             {showModelPicker && modelSection}
-            {thinkingSection}
-            {permissionSection}
+            {effortSection}
           </div>
         )}
-        <div
-          className={`${styles.secondaryOptions} ${styles.optionsWithCaptionToggle}${
-            isProjectChooserExpanded ? ` ${styles.secondaryOptionsHidden}` : ""
-          }`}
-          data-new-session-secondary-options="true"
-        >
+        <div className={styles.advancedSection}>
+          <button
+            type="button"
+            className={styles.advancedToggle}
+            aria-expanded={showAdvancedOptions}
+            aria-controls="new-session-advanced-options"
+            onClick={() => {
+              const expanded = !showAdvancedOptions;
+              setShowAdvancedOptions(expanded);
+              localStorage.setItem(
+                UI_KEYS.newSessionAdvancedOptionsExpanded,
+                String(expanded),
+              );
+            }}
+          >
+            <span>
+              {t(
+                showAdvancedOptions
+                  ? "newSessionHideAdvancedOptions"
+                  : "newSessionShowAdvancedOptions",
+              )}
+            </span>
+            <span aria-hidden="true">{showAdvancedOptions ? "▴" : "▾"}</span>
+          </button>
+          {!showAdvancedOptions && activeAdvancedOptions.length > 0 && (
+            <span className={styles.advancedSummary}>
+              {activeAdvancedOptions.join(" · ")}
+            </span>
+          )}
           <button
             type="button"
             className={styles.captionToggle}
@@ -4182,6 +4664,16 @@ export function NewSessionForm({
           >
             <span aria-hidden="true">?</span>
           </button>
+        </div>
+        <div
+          id="new-session-advanced-options"
+          className={`${styles.secondaryOptions}${
+            isProjectChooserExpanded ? ` ${styles.secondaryOptionsHidden}` : ""
+          }`}
+          data-new-session-secondary-options="true"
+          hidden={!showAdvancedOptions}
+        >
+          {permissionSection}
           {showThinkingSection}
           {recapSection}
           {helperSideModelSection}
@@ -4191,54 +4683,67 @@ export function NewSessionForm({
             eligible={computerControlEligible}
             selected={computerSelected}
             onChange={setComputerSelected}
+            disabled={isStarting}
+            showCaption={showOptionCaptions}
           />
+          {/* Executor Selection - only show for providers whose adapter uses it. */}
+          {supportsRemoteExecutors &&
+            !executorsLoading &&
+            remoteExecutors.length > 0 && (
+              <NewSessionOptionSection
+                className="new-session-helper-section"
+                title={t("newSessionRunOnTitle")}
+                showCaption={showOptionCaptions}
+              >
+                <FilterDropdown<string>
+                  label={t("newSessionRunOnTitle")}
+                  options={[
+                    {
+                      value: "local",
+                      label: t("newSessionRunOnLocal"),
+                      icon: (
+                        <span className="executor-option-dot executor-local" />
+                      ),
+                      description: t("newSessionRunOnLocalDesc"),
+                      disabled: isStarting,
+                    },
+                    ...remoteExecutors.map((host) => ({
+                      value: `remote:${host}`,
+                      label: host,
+                      icon: (
+                        <span className="executor-option-dot executor-remote" />
+                      ),
+                      description: t("newSessionRunOnRemoteDesc"),
+                      disabled: isStarting,
+                    })),
+                  ]}
+                  selected={[
+                    selectedExecutor ? `remote:${selectedExecutor}` : "local",
+                  ]}
+                  onChange={([value]) => {
+                    if (isStarting) return;
+                    setSelectedExecutor(
+                      value?.startsWith("remote:") ? value.slice(7) : null,
+                    );
+                  }}
+                  multiSelect={false}
+                  fullWidth
+                  triggerContent={
+                    <span className={styles.selectedChoice}>
+                      <span
+                        className={`executor-option-dot executor-${selectedExecutor ? "remote" : "local"}`}
+                        aria-hidden="true"
+                      />
+                      <span className={styles.selectedChoiceText}>
+                        {selectedExecutor ?? t("newSessionRunOnLocal")}
+                      </span>
+                    </span>
+                  }
+                />
+              </NewSessionOptionSection>
+            )}
         </div>
       </div>
-
-      {/* Executor Selection - only show for providers whose adapter uses it. */}
-      {supportsRemoteExecutors &&
-        !executorsLoading &&
-        remoteExecutors.length > 0 && (
-          <div className="new-session-executor-section">
-            <h3>{t("newSessionRunOnTitle")}</h3>
-            <div className="executor-options">
-              <button
-                key="local"
-                type="button"
-                className={`executor-option ${selectedExecutor === null ? "selected" : ""}`}
-                onClick={() => setSelectedExecutor(null)}
-                disabled={isStarting}
-              >
-                <span className="executor-option-dot executor-local" />
-                <div className="executor-option-content">
-                  <span className="executor-option-label">
-                    {t("newSessionRunOnLocal")}
-                  </span>
-                  <span className="executor-option-desc">
-                    {t("newSessionRunOnLocalDesc")}
-                  </span>
-                </div>
-              </button>
-              {remoteExecutors.map((host) => (
-                <button
-                  key={host}
-                  type="button"
-                  className={`executor-option ${selectedExecutor === host ? "selected" : ""}`}
-                  onClick={() => setSelectedExecutor(host)}
-                  disabled={isStarting}
-                >
-                  <span className="executor-option-dot executor-remote" />
-                  <div className="executor-option-content">
-                    <span className="executor-option-label">{host}</span>
-                    <span className="executor-option-desc">
-                      {t("newSessionRunOnRemoteDesc")}
-                    </span>
-                  </div>
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
     </div>
   );
 }

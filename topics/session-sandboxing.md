@@ -10,11 +10,10 @@ Topic: session-sandboxing
 
 Status: **Linux v1 mechanism implemented.** Local Claude-family and Codex
 sessions use trusted Bubblewrap plus a default-on, separately selectable
-public-egress network firewall. Availability and launch require enforced
-password or desktop authentication, with localhost-open and auth-disable both
-off. Persisted browser session material is non-bearer verifier data, provider
-environments exclude YA operator credentials, and authentication cannot be
-relaxed while a project-write sandbox is launching or active. Other providers,
+public-egress network firewall. Local operator authentication is not required;
+without it New Session warns (see [Product Decision](#product-decision)).
+Persisted browser session material is non-bearer verifier data, and provider
+environments exclude YA operator credentials. Other providers,
 remote executors, and non-Linux hosts still fail an enabled launch before
 provider work begins.
 
@@ -60,12 +59,29 @@ session creation. Settings > Session Defaults exposes the matching **Sandbox
 new sessions** toggle. Both are off by default.
 
 The toggle appears only when the server advertises an actively available
-session-sandbox backend, local operator authentication is enforced, and the
-selected execution target is an implemented local Claude-family or standard
-Codex backend. New Session hides it on macOS, Windows, Linux hosts whose trusted
-Bubblewrap preflight fails, while local auth is open or disabled, and while a
-remote executor is selected. Unsupported hosts, providers, and executors do
-not get explanatory placeholder copy.
+session-sandbox backend and the selected execution target is an implemented
+local Claude-family or standard Codex backend. New Session hides it on macOS,
+Windows, and other unsupported platforms, for unimplemented providers, and
+while a remote executor is selected; those cases get no explanatory
+placeholder copy.
+
+On Linux, where the operator can fix the host, a failed preflight instead
+shows the **Sandbox session** heading in Advanced options with a one-line
+reason in place of the toggle. When the server names a
+[blocker](#status-and-evidence) the reason is actionable: the missing packages
+to install, or the AppArmor user-namespace restriction to lift. Otherwise it
+states the availability state (untrusted or outdated Bubblewrap, a failed
+namespace probe, or an older server's auth prerequisite). A limited user sees
+no reason, since their fixed launch already states the sandbox, and no case
+sends a sandbox field.
+
+Local operator authentication does not gate the sandbox (maintainer direction,
+2026-09-27, replacing a launch prerequisite that also refused to relax auth
+while a sandbox ran). When local requests need no authentication — no password
+or desktop auth, localhost-open on, or `--auth-disable` — and the sandbox is
+selected, a warning stays under the toggle regardless of caption visibility:
+an agent that reaches YA can drive it and escape, and the network firewall is
+what keeps it out.
 
 The toggle has short informational text:
 
@@ -522,12 +538,30 @@ interface SessionSandboxAvailability {
   platform: string;
   backend?: "bubblewrap";
   version?: string;
+  localAuthEnforced?: boolean;
+  blocker?:
+    | { kind: "missing-packages"; packages: SessionSandboxHostPackage[] }
+    | { kind: "userns-restricted" };
 }
 ```
 
+`localAuthEnforced` reports whether local YA requests currently require
+authentication; `false` drives the New Session warning and never blocks.
+
+`blocker` names the host fix when the probe can identify one, from a fixed
+vocabulary only: the version route is readable before authentication, so raw
+probe output never crosses it. `missing-packages` lists every absent package
+(`bubblewrap`, `slirp4netns`, `util-linux`, `iproute2`) at once, so one install
+clears it. `userns-restricted` means the namespace probe failed while
+`kernel.apparmor_restrict_unprivileged_userns` is `1` (the Ubuntu 23.10+
+default). Bubblewrap ships its own AppArmor exemption there; the network
+firewall's `unshare` helper does not. Older servers omit the field, and a
+client then names Bubblewrap for `missing-bubblewrap`.
+
 Only `available` permits the `session-sandboxing` capability. `auth-required`
-means the host backend passed but local password or desktop authentication is
-absent, localhost-open is on, or auth-disable is on. Separately, an enabled
+comes only from servers before 2026-09-27, which withheld the sandbox when
+local authentication was absent; current servers report `available` with
+`localAuthEnforced: false`. Separately, an enabled
 process exposes normalized enforcement evidence:
 
 ```ts
@@ -546,13 +580,9 @@ interface SessionSandboxEnforcement {
 - local vs. remote execution host.
 
 The namespace probe establishes the complete filesystem and default network
-mechanism. Availability then applies the local-auth prerequisite, and every
-launch rechecks it. A launch reserves that prerequisite until the process is
-registered, and the authenticated auth routes return 409 rather than disabling
-auth or opening localhost access while a launch is pending or any such process
-is active. One supervisor launch transaction owns that reservation and injects
-the settled auth requirement into every real/provider create, start, and fork
-path. One process-to-metadata serializer owns level, firewall selection, state
+mechanism, and every launch repeats it. The supervisor derives each new or
+resumed process's sandbox request in one place for the real and provider
+create and start paths; fork keeps its own. One process-to-metadata serializer owns level, firewall selection, state
 key, project identity, and provider identity for ordinary persistence,
 reactivation, and provider-created helper forks. A requested confined session
 must never launch with only part of the claimed boundary.
@@ -729,8 +759,9 @@ Rocky 8's Bubblewrap 0.4.0. Each provider launch opens and identity-checks the
 project directory, mounts that descriptor rather than resolving the pathname
 again, and changes to the project only after the mount is installed. Explicit
 network-firewall opt-out retains the same filesystem policy with shared host
-networking, so the local-auth prerequisite and non-bearer persisted session
-verifiers remain defense in depth for every project-write session.
+networking, so operator-chosen local authentication (warned about when absent)
+and non-bearer persisted session verifiers remain defense in depth for every
+project-write session.
 
 ## Backend Integration Gate
 

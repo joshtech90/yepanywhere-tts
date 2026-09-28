@@ -2,10 +2,12 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import { describe, expect, it, vi } from "vitest";
 import { RenderModeGlyph } from "../../components/ui/RenderModeGlyph";
+import { UI_KEYS } from "../../lib/storageKeys";
 import {
   codeFenceRootClass,
   useCodeFenceRenderers,
 } from "../useCodeFenceRenderers";
+import { initializeTheme } from "../useTheme";
 
 vi.mock("mermaid", () => ({
   default: {
@@ -166,6 +168,32 @@ describe("useCodeFenceRenderers", () => {
         expect(
           screen.getByTestId("root").querySelector("[data-ya-code-rendered]"),
         ).not.toBeNull();
+      });
+    });
+
+    it("redraws in the page's appearance when another tab switches theme", async () => {
+      localStorage.setItem(UI_KEYS.theme, "dark");
+      initializeTheme();
+      render(
+        <Harness html={codeBlock("mermaid", "graph LR\nOther --&gt; Tab")} />,
+      );
+      const block = await waitFor(() => {
+        const found = screen
+          .getByTestId("root")
+          .querySelector<HTMLElement>("[data-ya-code-block]");
+        if (!found) throw new Error("not mounted yet");
+        return found;
+      });
+      expect(block.dataset.yaRenderKey).toContain("|dark|");
+
+      localStorage.setItem(UI_KEYS.theme, "light");
+      window.dispatchEvent(
+        new StorageEvent("storage", { key: UI_KEYS.theme, newValue: "light" }),
+      );
+
+      expect(document.documentElement.getAttribute("data-theme")).toBe("light");
+      await waitFor(() => {
+        expect(block.dataset.yaRenderKey).toContain("|light|");
       });
     });
   });

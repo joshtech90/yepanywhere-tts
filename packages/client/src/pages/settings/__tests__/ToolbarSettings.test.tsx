@@ -159,6 +159,8 @@ vi.mock("../../../i18n", () => ({
           appearanceToolbarWaveformButtonOpacityUnit: "%",
           appearanceToolbarShortcutsTitle: "Shortcuts Help",
           appearanceToolbarShortcutsDescription: "Show shortcuts",
+          appearanceToolbarTranscriptSearchTitle: "Transcript Search",
+          appearanceToolbarTranscriptSearchDescription: "Show search",
           appearanceToolbarContextTitle: "Context Usage",
           appearanceToolbarContextDescription: "Show context usage",
           appearanceToolbarBtwTitle: "/btw Button",
@@ -339,9 +341,14 @@ describe("ToolbarSettings", () => {
   it("shows a presence slider for every control row", () => {
     render(<ToolbarSettings />);
 
-    // 15 control-presence sliders plus Conversation View history, waveform
+    // 16 control-presence sliders plus Conversation View history, waveform
     // button-background opacity, and question reminder duration.
-    expect(screen.getAllByRole("slider")).toHaveLength(18);
+    expect(screen.getAllByRole("slider")).toHaveLength(19);
+    expect(
+      screen
+        .getByRole("slider", { name: "Transcript Search visibility" })
+        .getAttribute("max"),
+    ).toBe("4");
     // Overflow-supported controls get the full notch scale...
     expect(
       screen

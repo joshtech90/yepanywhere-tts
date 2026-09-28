@@ -22,6 +22,7 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api/client";
+import { projectRawFileApiPath } from "../api/fileClient";
 import { BackArrowIcon } from "./BackArrowIcon";
 import {
   buildPublicShareFileHref,
@@ -39,6 +40,7 @@ import { useRegisterQuoteableTextSource } from "../hooks/useQuoteableTextSource"
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useSessionFileComments } from "../hooks/useSessionFileComments";
 import { useVersion } from "../hooks/useVersion";
+import { useViewerFind } from "../hooks/useViewerFind";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
 import {
@@ -51,13 +53,19 @@ import { downloadBlob } from "../lib/imageActions";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
 import { extractMarkdownSnippetsFromSelection } from "../lib/markdownSelectionCopy";
 import { getRenderedFileClipboardPayload } from "../lib/renderedFileClipboard";
+import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
+import type { ViewerFindSource } from "../lib/viewerFind";
 import { ArtifactPreview } from "./ArtifactPreview";
+import { ViewerModeToggle } from "./ViewerModeToggle";
+import { buildPublicSharePlayUrl } from "../lib/publicSharePlay";
+import { SourceEditAction } from "./SourceEditor";
+import { ViewerFindField } from "./ViewerFindField";
 import { ViewerWindowActions } from "./ViewerWindowActions";
 import {
-  annotateShikiSourceOffsets,
-  compactShikiLineBreaks,
+  prepareShikiHtml,
   splitHighlightedSourceAfterLine,
 } from "../lib/shikiHtml";
+import { ShikiHtml } from "./ShikiHtml";
 import {
   SESSION_FILE_COMMENT_MODE_ATTR,
   sessionFileCommentDraftKey,
@@ -102,6 +110,7 @@ import {
 } from "./FileResourceActions";
 import { useImageResourceActions } from "./ImageResourceActions";
 import viewerStyles from "./FileViewer.module.css";
+import headerStyles from "./ViewerHeader.module.css";
 import {
   combineDensityOffsets,
   FILE_MARKDOWN_PREVIEW_BASE_DENSITY,
@@ -114,6 +123,11 @@ import {
 import { FileViewerModal } from "./FilePathLink";
 import { ViewerSelectAllButton } from "./ViewerSelectAllButton";
 import { ParagraphQuoteRail } from "./ParagraphQuoteRail";
+import { shouldStackFileViewerActions } from "./fileViewerHeaderLayout";
+import {
+  FileViewerEmbeddedMedia,
+  getEmbeddedMediaKind,
+} from "./FileViewerEmbeddedMedia";
 
 export interface FileViewerSource {
   loadFile: (
@@ -129,6 +143,11 @@ export interface FileViewerSource {
     filePath: string,
     download: boolean,
   ) => string | null;
+  /** Current metadata without content, for the reload button's hover check. */
+  statFile?: (
+    projectId: string,
+    filePath: string,
+  ) => Promise<FileContentResponse>;
   fetchRawFileBlob?: (
     fileData: FileContentResponse,
     filePath: string,
@@ -227,6 +246,9 @@ function getLanguageFromPath(filePath: string): string {
 function isImageFile(mimeType: string): boolean {
   return mimeType.startsWith("image/");
 }
+
+/** Lines the unhighlighted fallback renders; matches server highlighting. */
+const PLAIN_RENDER_MAX_LINES = 10_000;
 
 function isHtmlLikeFile(filePath: string, mimeType: string): boolean {
   return (
@@ -503,6 +525,7 @@ const DEFAULT_FILE_VIEWER_SOURCE: FileViewerSource = {
     api.getFile(projectId, filePath, highlight, lineNumber, lineEnd, viewMode),
   getRawFileUrl: (projectId, filePath, download) =>
     api.getFileRawUrl(projectId, filePath, download),
+  statFile: (projectId, filePath) => api.getFileMetadata(projectId, filePath),
   // Fetch raw bytes through the active source transport so images and downloads
   // work when same-origin /api URLs cannot address the source.
   fetchRawFileBlob: (fileData, _filePath, download) => {
@@ -580,6 +603,8 @@ export const FileViewer = memo(function FileViewer({
   const publicShareContext = usePublicShareContext();
   const viewIdentity = `${projectId}\0${filePath}\0${diffMode ?? "source"}`;
   const [showPreview, setShowPreview] = useState(false);
+  const [modeControlsHost, setModeControlsHost] =
+    useState<HTMLSpanElement | null>(null);
   const [interactivePreviewIdentity, setInteractivePreviewIdentity] = useState<
     string | null
   >(null);
@@ -619,22 +644,41 @@ export const FileViewer = memo(function FileViewer({
         : null;
   const sameOriginUrls = transport.capabilities.sameOriginUrls;
   const basePath = useRemoteBasePath();
+  const publicSharePlayHref =
+    publicShareContext && publicShareContext.projectId !== null
+      ? buildPublicSharePlayUrl(basePath, {
+          relayUsername: publicShareContext.relayUsername,
+          relayUrl: publicShareContext.relayUrl,
+          secret: publicShareContext.secret,
+          projectId: publicShareContext.projectId,
+          path: filePath,
+        })
+      : null;
   const [fileData, setFileData] = useState<FileContentResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [fullscreen, setFullscreen] = useState(false);
+  // A state-backed ref: the header mounts only after loading, so a one-shot
+  // effect over a plain ref would find nothing and never measure it.
+  const [fileHeaderElement, setFileHeaderElement] =
+    useState<HTMLDivElement | null>(null);
+  const fileHeaderContextRef = useRef<HTMLDivElement>(null);
+  const fileHeaderProvenanceRef = useRef<HTMLDivElement>(null);
+  const fileHeaderActionsRef = useRef<HTMLDivElement>(null);
+  const [stackHeaderActions, setStackHeaderActions] = useState(false);
   const [fileShareAnchor, setFileShareAnchor] = useState<DOMRect | null>(null);
   const loadedSourceRef = useRef<{
     identity: string;
     source: FileViewerSource;
+    reloadRequest: number;
   } | null>(null);
   const [commentMode, setCommentMode] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
   } | null>(null);
-  const [imageObjectUrl, setImageObjectUrl] = useState<string | null>(null);
+  const [rawObjectUrl, setRawObjectUrl] = useState<string | null>(null);
   const [highlightedLineRef, setHighlightedLineRef] =
     useState<HTMLElement | null>(null);
   const viewerDensity = useFileViewerDensity();
@@ -687,6 +731,59 @@ export const FileViewer = memo(function FileViewer({
     sendComment: sendSessionViewerComment,
   });
   const fileViewerBodyRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const header = fileHeaderElement;
+    const context = fileHeaderContextRef.current;
+    const provenance = fileHeaderProvenanceRef.current;
+    const actions = fileHeaderActionsRef.current;
+    if (!header || !context || !provenance || !actions) return;
+
+    const measure = () => {
+      const headerStyle = getComputedStyle(header);
+      const actionsStyle = getComputedStyle(actions);
+      const horizontalPadding =
+        Number.parseFloat(headerStyle.paddingLeft) +
+        Number.parseFloat(headerStyle.paddingRight);
+      const actionWidths = Array.from(
+        actions.children,
+        (child) => child.getBoundingClientRect().width,
+      ).filter((width) => width > 0);
+      const next = shouldStackFileViewerActions({
+        actionGap: Number.parseFloat(actionsStyle.columnGap) || 0,
+        actionWidths,
+        availableWidth: header.clientWidth - horizontalPadding,
+        contextWidth: context.getBoundingClientRect().width,
+        headerGap: Number.parseFloat(headerStyle.columnGap) || 0,
+        provenanceWidth: provenance.getBoundingClientRect().width,
+      });
+      setStackHeaderActions((current) => (current === next ? current : next));
+    };
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measure);
+    const observeActionChildren = () => {
+      resizeObserver?.disconnect();
+      resizeObserver?.observe(header);
+      resizeObserver?.observe(context);
+      resizeObserver?.observe(provenance);
+      resizeObserver?.observe(actions);
+      for (const child of actions.children) resizeObserver?.observe(child);
+    };
+    const mutationObserver = new MutationObserver(() => {
+      observeActionChildren();
+      measure();
+    });
+    mutationObserver.observe(actions, { childList: true, subtree: true });
+    observeActionChildren();
+    measure();
+
+    return () => {
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+    };
+  }, [fileHeaderElement]);
   useRegisterQuoteableTextSource(
     fileViewerBodyRef,
     diffActive ? undefined : fileData?.content,
@@ -1001,18 +1098,16 @@ export const FileViewer = memo(function FileViewer({
         : null,
     [fileData, filePath, renderedMarkdownHtml],
   );
-  const highlightedHtml = useMemo(() => {
-    const annotated = annotateHighlightedHtmlLines(
-      fileData?.highlightedHtml,
-      getContentStartLine(fileData),
-      effectiveLineNumber,
-      effectiveLineEnd,
-    );
-    return annotateShikiSourceOffsets(
-      compactShikiLineBreaks(annotated),
-      fileData?.content,
-    );
-  }, [effectiveLineEnd, effectiveLineNumber, fileData]);
+  const highlightedHtml = useMemo(
+    () =>
+      annotateHighlightedHtmlLines(
+        fileData?.highlightedHtml,
+        getContentStartLine(fileData),
+        effectiveLineNumber,
+        effectiveLineEnd,
+      ),
+    [effectiveLineEnd, effectiveLineNumber, fileData],
+  );
   useLocalMediaInlinePreviews(
     markdownPreviewRef,
     !diffActive && showPreview ? renderedMarkdownHtml : null,
@@ -1026,6 +1121,40 @@ export const FileViewer = memo(function FileViewer({
         : highlightedHtml;
 
   const sourceIdentity = `${projectId}\0${filePath}\0${lineNumber ?? ""}\0${lineEnd ?? ""}\0${viewMode}`;
+  // The viewer deliberately does not watch the file; reloading is a reader's
+  // explicit act. A running interactive frame remounts on the same grant so
+  // its document is fetched again from disk.
+  const [frameReloadKey, setFrameReloadKey] = useState(0);
+  // Reload runs through the load effect, so a response for a file the viewer
+  // has since left is cancelled like any other superseded load.
+  const [reloadRequest, setReloadRequest] = useState(0);
+  // Hovering the reload button probes the file's metadata and says whether
+  // the loaded copy is behind the disk; absent times (older servers) say
+  // nothing rather than guessing.
+  const [freshness, setFreshness] = useState<
+    { loadedAt: number; state: "fresh" } | { state: "stale"; at: number } | null
+  >(null);
+  const checkFreshness = useCallback(() => {
+    const loaded = fileData?.metadata.modifiedAt;
+    if (!source.statFile || loaded === undefined) return;
+    void source
+      .statFile(projectId, filePath)
+      .then((current) => {
+        const at = current.metadata.modifiedAt;
+        if (at === undefined) return;
+        setFreshness(
+          at !== loaded || current.metadata.size !== fileData?.metadata.size
+            ? { state: "stale", at }
+            : { state: "fresh", loadedAt: loaded },
+        );
+      })
+      .catch(() => setFreshness(null));
+  }, [source, projectId, filePath, fileData]);
+  const reloadFromDisk = useCallback(() => {
+    setFreshness(null);
+    setFrameReloadKey((value) => value + 1);
+    setReloadRequest((value) => value + 1);
+  }, []);
 
   useEffect(() => {
     if (activeView === "source" || fileVersionControl.loading) return;
@@ -1045,18 +1174,22 @@ export const FileViewer = memo(function FileViewer({
       setHighlightedLineRef(null);
       return;
     }
-    if (
-      fileData &&
-      loadedSourceRef.current?.identity === sourceIdentity &&
-      loadedSourceRef.current.source === source
-    ) {
+    const loaded = loadedSourceRef.current;
+    const showingSource =
+      fileData !== null &&
+      loaded?.identity === sourceIdentity &&
+      loaded.source === source;
+    if (showingSource && loaded.reloadRequest === reloadRequest) {
       setLoading(false);
       setError(null);
       return;
     }
-    setLoading(true);
-    setError(null);
-    setHighlightedLineRef(null);
+    // A reload keeps the loaded copy on screen until the fresh one arrives.
+    if (!showingSource) {
+      setLoading(true);
+      setError(null);
+      setHighlightedLineRef(null);
+    }
 
     // Request highlighting for code files
     source
@@ -1070,8 +1203,16 @@ export const FileViewer = memo(function FileViewer({
       )
       .then((data) => {
         if (!cancelled) {
-          loadedSourceRef.current = { identity: sourceIdentity, source };
+          loadedSourceRef.current = {
+            identity: sourceIdentity,
+            source,
+            reloadRequest,
+          };
           setFileData(data);
+          if (showingSource) {
+            setLoading(false);
+            return;
+          }
           const markdownPreviewAvailable =
             isMarkdownLikeFile(filePath) && Boolean(data.renderedMarkdownHtml);
           const htmlPreviewAvailable =
@@ -1083,7 +1224,7 @@ export const FileViewer = memo(function FileViewer({
               : initialPresentation
                 ? initialPresentation === "preview" &&
                   (markdownPreviewAvailable || htmlPreviewAvailable)
-                : markdownPreviewAvailable,
+                : markdownPreviewAvailable || htmlPreviewAvailable,
           );
           setLoading(false);
         }
@@ -1106,6 +1247,7 @@ export const FileViewer = memo(function FileViewer({
     effectiveViewMode,
     filePath,
     initialPresentation,
+    reloadRequest,
     source,
     sourceIdentity,
     t,
@@ -1114,24 +1256,36 @@ export const FileViewer = memo(function FileViewer({
   ]);
 
   useEffect(() => {
-    if (!fileData || !isImageFile(fileData.metadata.mimeType)) {
-      setImageObjectUrl(null);
+    const mimeType = fileData?.metadata.mimeType;
+    if (
+      !fileData ||
+      !mimeType ||
+      !(isImageFile(mimeType) || getEmbeddedMediaKind(mimeType))
+    ) {
+      setRawObjectUrl(null);
       return;
     }
-    if (!source.fetchRawFileBlob) {
-      setImageObjectUrl(null);
+    if (
+      !source.fetchRawFileBlob ||
+      (getEmbeddedMediaKind(mimeType) === "pdf" && sameOriginUrls)
+    ) {
+      setRawObjectUrl(null);
       return;
     }
 
     let cancelled = false;
     let objectUrl: string | null = null;
-    setImageObjectUrl(null);
+    setRawObjectUrl(null);
     void source
       .fetchRawFileBlob(fileData, filePath, false)
       .then((blob) => {
         if (cancelled) return;
-        objectUrl = URL.createObjectURL(blob);
-        setImageObjectUrl(objectUrl);
+        // PDF and media players key off the blob's type, which a relayed
+        // fetch may leave empty.
+        objectUrl = URL.createObjectURL(
+          blob.type === mimeType ? blob : new Blob([blob], { type: mimeType }),
+        );
+        setRawObjectUrl(objectUrl);
       })
       .catch((err) => {
         if (cancelled) return;
@@ -1144,7 +1298,7 @@ export const FileViewer = memo(function FileViewer({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [fileData, filePath, source]);
+  }, [fileData, filePath, sameOriginUrls, source]);
 
   // Handle Escape key to exit fullscreen
   useEffect(() => {
@@ -1277,13 +1431,18 @@ export const FileViewer = memo(function FileViewer({
   const loadedIsImage = fileData
     ? isImageFile(fileData.metadata.mimeType)
     : false;
+  // Split once per load: inline text may be up to 100 MB.
+  const contentLines = useMemo(
+    () => (fileData?.content ? fileData.content.split("\n") : []),
+    [fileData?.content],
+  );
   const rawFileUrl = fileData
     ? (source.getRawFileUrl?.(projectId, filePath, false) ?? fileData.rawUrl)
     : null;
   const imageOpenUrl = loadedIsImage
     ? sameOriginUrls && rawFileUrl
       ? rawFileUrl
-      : (imageObjectUrl ?? (!source.fetchRawFileBlob ? rawFileUrl : null))
+      : (rawObjectUrl ?? (!source.fetchRawFileBlob ? rawFileUrl : null))
     : null;
   const openImageInNewTabLabel = t("fileViewerOpenImageNewTab" as never);
   const startNewSession = useStartNewSessionFromFile(projectId, filePath);
@@ -1300,9 +1459,12 @@ export const FileViewer = memo(function FileViewer({
       return;
     }
 
-    const params = new URLSearchParams({ path: filePath, download: "true" });
     void transport
-      .fetchBlob(`/projects/${projectId}/files/raw?${params}`)
+      .fetchBlob(
+        toSourceTransportApiPath(
+          projectRawFileApiPath(projectId, filePath, true),
+        ),
+      )
       .then((blob) => downloadBlob(blob, fileName))
       .catch((err) => {
         setError(
@@ -1330,9 +1492,8 @@ export const FileViewer = memo(function FileViewer({
     if (source.fetchRawFileBlob) {
       return source.fetchRawFileBlob(fileData, filePath, false);
     }
-    const params = new URLSearchParams({ path: filePath });
     return transport.fetchBlob(
-      `/projects/${encodeURIComponent(projectId)}/files/raw?${params}`,
+      toSourceTransportApiPath(projectRawFileApiPath(projectId, filePath)),
     );
   }, [fileData, filePath, projectId, source, transport]);
   const imageActions = useImageResourceActions({
@@ -1349,6 +1510,35 @@ export const FileViewer = memo(function FileViewer({
     setContextMenu({ x: event.clientX, y: event.clientY });
   }, []);
   const closeContextMenu = useCallback(() => setContextMenu(null), []);
+
+  // Find searches what this view shows: the HTML preview's frame, else the
+  // source, text, Markdown or diff rendered in the body.
+  const [findBody, setFindBody] = useState<HTMLDivElement | null>(null);
+  const [htmlFindSource, setHtmlFindSource] = useState<ViewerFindSource | null>(
+    null,
+  );
+  const setBodyElement = useCallback((element: HTMLDivElement | null) => {
+    fileViewerBodyRef.current = element;
+    setFindBody(element);
+  }, []);
+  const showsHtmlPreview =
+    !diffActive &&
+    showPreview &&
+    fileData?.content !== undefined &&
+    fileData.metadata !== undefined &&
+    isHtmlLikeFile(filePath, fileData.metadata.mimeType);
+  const showsText = diffActive || fileData?.content !== undefined;
+  const find = useViewerFind(
+    useMemo(
+      () =>
+        showsHtmlPreview
+          ? htmlFindSource
+          : showsText && findBody
+            ? ({ kind: "element", element: findBody } as const)
+            : null,
+      [showsHtmlPreview, htmlFindSource, showsText, findBody],
+    ),
+  );
 
   // Render loading state
   if (
@@ -1454,7 +1644,7 @@ export const FileViewer = memo(function FileViewer({
 
     // Image files
     if (isImage) {
-      const imageUrl = source.fetchRawFileBlob ? imageObjectUrl : rawFileUrl;
+      const imageUrl = source.fetchRawFileBlob ? rawObjectUrl : rawFileUrl;
       const imageLinkUrl = imageOpenUrl ?? imageUrl;
       return (
         <div className="file-viewer-image">
@@ -1475,6 +1665,31 @@ export const FileViewer = memo(function FileViewer({
               {t("fileViewerLoading" as never, { name: fileName })}
             </div>
           )}
+        </div>
+      );
+    }
+
+    const embeddedMediaKind = getEmbeddedMediaKind(metadata.mimeType);
+    if (embeddedMediaKind) {
+      // A directly addressable PDF is read from its own response as it
+      // arrives, rather than first copied whole into a blob.
+      const mediaUrl =
+        !source.fetchRawFileBlob ||
+        (embeddedMediaKind === "pdf" && sameOriginUrls)
+          ? rawFileUrl
+          : rawObjectUrl;
+      return mediaUrl ? (
+        <FileViewerEmbeddedMedia
+          kind={embeddedMediaKind}
+          url={mediaUrl}
+          fileName={fileName}
+          sampleText={t("fileViewerFontSample" as never)}
+          unsupported={binaryCard}
+          pdfjsAvailable={sameOriginUrls}
+        />
+      ) : (
+        <div className="file-viewer-loading">
+          {t("fileViewerLoading" as never, { name: fileName })}
         </div>
       );
     }
@@ -1504,7 +1719,9 @@ export const FileViewer = memo(function FileViewer({
             className={viewerStyles.htmlPreviewFrame}
             title={fileName}
             autoStart={interactivePreviewIdentity === viewIdentity}
-            showControls={interactivePreviewIdentity !== viewIdentity}
+            toolbarHost={modeControlsHost}
+            reloadKey={frameReloadKey}
+            onFindSource={setHtmlFindSource}
           />
         );
       }
@@ -1512,22 +1729,22 @@ export const FileViewer = memo(function FileViewer({
       // Server-rendered syntax highlighting (preferred)
       if (highlightedHtml) {
         const contentWindowLabel = getContentWindowLabel(fileData);
+        // Offsets are carried before splitting, since they count from the
+        // start of the whole file.
         const commentSplit =
           splitCommentAfterLine !== undefined
             ? splitHighlightedSourceAfterLine(
-                highlightedHtml,
+                prepareShikiHtml(highlightedHtml, fileData.content),
                 splitCommentAfterLine,
               )
             : null;
-        const highlightedPart = (html: string) => (
-          // biome-ignore lint/a11y/noStaticElementInteractions: delegation target for anchors in server-rendered HTML
-          <div
-            className="shiki-container"
+        const highlightedPart = (html: string, source?: string) => (
+          <ShikiHtml
+            html={html}
+            source={source}
             onClick={handleLocalResourceClick}
             onContextMenu={handleLocalResourceContextMenu}
             onKeyDown={handleLocalResourceKeyDown}
-            // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered HTML
-            dangerouslySetInnerHTML={{ __html: html }}
           />
         );
         return (
@@ -1547,7 +1764,7 @@ export const FileViewer = memo(function FileViewer({
                 after={highlightedPart(commentSplit.after)}
               />
             ) : (
-              highlightedPart(highlightedHtml)
+              highlightedPart(highlightedHtml, fileData.content)
             )}
             {fileData.highlightedTruncated && (
               <div className="file-viewer-truncated">
@@ -1561,8 +1778,12 @@ export const FileViewer = memo(function FileViewer({
         );
       }
 
-      // Fallback: plain code (no syntax highlighting available)
-      const lines = content.length > 0 ? content.split("\n") : [];
+      // Fallback: plain code (no syntax highlighting available). A large file
+      // renders only its leading lines, as server highlighting does.
+      const lines =
+        contentLines.length > PLAIN_RENDER_MAX_LINES
+          ? contentLines.slice(0, PLAIN_RENDER_MAX_LINES)
+          : contentLines;
       const contentStartLine = getContentStartLine(fileData);
       const highlightStart = effectiveLineNumber ?? 0;
       const highlightEnd = Math.max(
@@ -1642,6 +1863,14 @@ export const FileViewer = memo(function FileViewer({
           ) : (
             <div className="file-viewer-empty-content">No content read</div>
           )}
+          {lines.length < contentLines.length && (
+            <div className="file-viewer-truncated">
+              {t("fileViewerPlainTruncated" as never, {
+                count: lines.length,
+                total: contentLines.length,
+              })}
+            </div>
+          )}
           {contentWindowLabel && (
             <div className="file-viewer-truncated">{contentWindowLabel}</div>
           )}
@@ -1649,46 +1878,56 @@ export const FileViewer = memo(function FileViewer({
       );
     }
 
-    // Binary files or files too large
-    return (
-      <div className="file-viewer-binary">
-        <p>{t("fileViewerBinary" as never)}</p>
-        <p>
-          <strong>{t("fileViewerType" as never)}</strong> {metadata?.mimeType}
-        </p>
-        <p>
-          <strong>{t("fileViewerSize" as never)}</strong>{" "}
-          {metadata ? formatFileSize(metadata.size) : ""}
-        </p>
-        {canDownload && (
-          <button
-            type="button"
-            className="file-viewer-download-btn"
-            onClick={handleDownload}
-          >
-            {t("fileViewerDownloadFile" as never)}
-          </button>
-        )}
-      </div>
-    );
+    return binaryCard;
   };
+
+  // Binary files, or media this browser cannot decode
+  const binaryCard = (
+    <div className="file-viewer-binary">
+      <p>{t("fileViewerBinary" as never)}</p>
+      <p>
+        <strong>{t("fileViewerType" as never)}</strong> {metadata?.mimeType}
+      </p>
+      <p>
+        <strong>{t("fileViewerSize" as never)}</strong>{" "}
+        {metadata ? formatFileSize(metadata.size) : ""}
+      </p>
+      {canDownload && (
+        <button
+          type="button"
+          className="file-viewer-download-btn"
+          onClick={handleDownload}
+        >
+          {t("fileViewerDownloadFile" as never)}
+        </button>
+      )}
+    </div>
+  );
 
   // Header with file info and actions
   const header = (
-    <div className="file-viewer-header">
-      {headerLeading}
-      {onClose && (
-        <button
-          type="button"
-          className={`file-viewer-action ${viewerStyles.backButton}`}
-          onClick={handleClose}
-          title={t("actionBack")}
-          aria-label={t("actionBack")}
-        >
-          <BackArrowIcon />
-        </button>
-      )}
-      <div className={`file-viewer-info ${viewerStyles.info}`}>
+    <div
+      ref={setFileHeaderElement}
+      className={`file-viewer-header ${headerStyles.header} ${viewerStyles.header}`}
+      data-actions-below={stackHeaderActions || undefined}
+    >
+      <div ref={fileHeaderContextRef} className={viewerStyles.context}>
+        {headerLeading}
+        {onClose && (
+          <button
+            type="button"
+            className={`file-viewer-action ${viewerStyles.backButton}`}
+            onClick={handleClose}
+            title={t("actionBack")}
+            aria-label={t("actionBack")}
+          >
+            <BackArrowIcon />
+          </button>
+        )}
+      </div>
+      <div
+        className={`file-viewer-info ${headerStyles.identity} ${viewerStyles.info}`}
+      >
         {/* biome-ignore lint/a11y/noStaticElementInteractions: right-click opens the file action menu; left-click behavior stays on explicit toolbar buttons */}
         <span
           className="file-viewer-path"
@@ -1697,7 +1936,10 @@ export const FileViewer = memo(function FileViewer({
         >
           {displayPath}
         </span>
-        <div className={viewerStyles.provenanceRow}>
+        <div
+          ref={fileHeaderProvenanceRef}
+          className={viewerStyles.provenanceRow}
+        >
           {publicShareContext === null && fileVersionControl.relativePath && (
             <FileRevisionLink
               projectId={projectId}
@@ -1719,15 +1961,18 @@ export const FileViewer = memo(function FileViewer({
                         : ""
                     }`
                   : t("fileViewerLines" as never, {
-                      count:
-                        content.length > 0 ? content.split("\n").length : 0,
+                      count: contentLines.length,
                     })}
               </>
             )}
           </span>
         </div>
       </div>
-      <div className={`file-viewer-actions ${viewerStyles.actions}`}>
+      <ViewerFindField find={find} />
+      <div
+        ref={fileHeaderActionsRef}
+        className={`file-viewer-actions ${headerStyles.actions} ${viewerStyles.actions}`}
+      >
         {publicShareContext === null && (
           <FileDiffViewLinks
             activeView={activeView}
@@ -1767,6 +2012,40 @@ export const FileViewer = memo(function FileViewer({
             <CommentIcon />
           </button>
         )}
+        {publicShareContext === null &&
+          source === DEFAULT_FILE_VIEWER_SOURCE &&
+          !diffActive &&
+          metadata?.isText &&
+          content !== undefined && (
+            <SourceEditAction
+              source={{ path: filePath, projectId }}
+              line={effectiveLineNumber}
+              artifact={hasHtmlPreview}
+              onSaved={hasHtmlPreview ? undefined : reloadFromDisk}
+            />
+          )}
+        <span ref={setModeControlsHost} />
+        {!diffActive && fileData && (
+          <button
+            type="button"
+            className={`file-viewer-action${freshness?.state === "stale" ? ` ${viewerStyles.reloadStale}` : ""}`}
+            aria-label={t("fileViewerReload" as never)}
+            title={
+              freshness?.state === "stale"
+                ? t("fileViewerReloadStale" as never, {
+                    time: new Date(freshness.at).toLocaleTimeString(),
+                  })
+                : freshness?.state === "fresh"
+                  ? t("fileViewerReloadFresh" as never)
+                  : t("fileViewerReload" as never)
+            }
+            onMouseEnter={checkFreshness}
+            onFocus={checkFreshness}
+            onClick={reloadFromDisk}
+          >
+            <RefreshIcon />
+          </button>
+        )}
         {!diffActive && metadata?.isText && content !== undefined && (
           <FileViewerDensityControls
             zoom={viewerDensity.zoom}
@@ -1802,6 +2081,23 @@ export const FileViewer = memo(function FileViewer({
         {publicShareContext === null &&
           source === DEFAULT_FILE_VIEWER_SOURCE &&
           !diffActive && <PublicFileShareButton onOpen={setFileShareAnchor} />}
+        {publicShareContext !== null &&
+          publicShareContext.projectId !== null &&
+          !diffActive &&
+          hasHtmlPreview &&
+          content !== undefined && (
+            <ViewerModeToggle
+              mode="interactive"
+              source={{}}
+              artifact
+              href={publicSharePlayHref!}
+              active={false}
+              label={t("publicSharePlay" as never)}
+              onToggle={() =>
+                window.open(publicSharePlayHref!, "_blank", "noopener")
+              }
+            />
+          )}
         {publicShareContext === null && (
           <button
             type="button"
@@ -1865,6 +2161,8 @@ export const FileViewer = memo(function FileViewer({
           filePath={filePath}
           projectId={projectId}
           title={fileName}
+          // While the interactive preview runs, copied links open play mode.
+          playLinks={interactivePreviewIdentity === viewIdentity}
           onClose={() => setFileShareAnchor(null)}
         />
       )}
@@ -1925,7 +2223,7 @@ export const FileViewer = memo(function FileViewer({
             ? viewerStyles.quoteReplySurface
             : ""
         }`}
-        ref={fileViewerBodyRef}
+        ref={setBodyElement}
         tabIndex={-1}
         {...(commentMode ? { [SESSION_FILE_COMMENT_MODE_ATTR]: "true" } : {})}
         onClick={handleViewerBodyClick}
@@ -2028,6 +2326,25 @@ function FileViewerSelectionActions({
 }
 
 // Icons
+function RefreshIcon() {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 16 16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+      <path d="M13.5 2.5v3.2h-3.2" />
+    </svg>
+  );
+}
+
 function RawSourceIcon() {
   return (
     <svg

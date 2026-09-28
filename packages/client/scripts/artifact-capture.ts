@@ -207,6 +207,7 @@ async function createDelivery(
     id: grant.id,
     url: httpUrl(grant.url).href,
     expiresAt: grant.expiresAt,
+    ...(grant.reused ? { reused: true } : {}),
   };
 }
 
@@ -377,7 +378,8 @@ export async function captureArtifact(options: CaptureOptions) {
       commentary: options.commentary,
     });
   } catch (error) {
-    if (delivery.status === "created") {
+    // A reused grant belongs to whoever else holds it, not to this capture.
+    if (delivery.status === "created" && !delivery.reused) {
       const response = await fetch(
         new URL(
           `/api/artifacts/${encodeURIComponent(delivery.id)}`,

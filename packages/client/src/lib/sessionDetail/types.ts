@@ -1,7 +1,4 @@
-import type {
-  MarkdownAugment,
-  SessionRewindRecord,
-} from "@yep-anywhere/shared";
+import type { MarkdownAugment } from "@yep-anywhere/shared";
 import type { DeferredQueueMessage, PaginationInfo } from "../../api/client";
 import type { Message, SessionMetadata } from "../../types";
 import type {
@@ -107,11 +104,6 @@ export type SessionDetailAction = (
   | {
       type: "removeUnconfirmedSelfSend";
       tempId: string;
-    }
-  | {
-      /** Restructure the loaded transcript for a same-session rewind. */
-      type: "applyRewind";
-      record: SessionRewindRecord;
     }
   | {
       type: "applyCatchupMessages";

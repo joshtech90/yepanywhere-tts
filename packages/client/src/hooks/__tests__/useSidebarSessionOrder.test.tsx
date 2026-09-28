@@ -176,9 +176,33 @@ describe("sidebar user chronology", () => {
     ]);
   });
 
+  it("forgets visits recorded before only submissions counted", () => {
+    const source = createClientSummaryHostSourceKey("pre-submission-visits");
+    const legacyKey = `yep-sidebar-interactions:${encodeURIComponent(source)}`;
+    localStorage.setItem(legacyKey, JSON.stringify([["visited", Date.now()]]));
+    setCurrentClientSummarySourceKey(source);
+    const old = new Date(Date.now() - 3 * 86400000).toISOString();
+    const rows: SessionCollectionRecord[] = [
+      { id: "visited", createdAt: old, isStarred: true, observedAt: 0 },
+      {
+        id: "answered",
+        createdAt: old,
+        lastHumanTurnAt: new Date(Date.now() - 60000).toISOString(),
+        isStarred: true,
+        observedAt: 0,
+      },
+    ];
+    const { result } = renderHook(() => useSidebarSessionOrder(rows, rows));
+    expect(result.current.starred.map((row) => row.id)).toEqual([
+      "answered",
+      "visited",
+    ]);
+    expect(localStorage.getItem(legacyKey)).toBeNull();
+  });
+
   it("ignores malformed stored history and bounds retained interactions", () => {
     const source = "bounded-order";
-    localStorage.setItem(`yep-sidebar-interactions:${source}`, '{"bad":true}');
+    localStorage.setItem(`yep-sidebar-submissions:${source}`, '{"bad":true}');
     expect(getSessionInteractionStore(source).read()).toBe("[]");
     for (let index = 0; index < 1002; index++) {
       recordSessionInteraction(source, `session-${index}`, 1000);

@@ -3,8 +3,9 @@
  *
  * Order: the first sentence-length paragraph or heading of the README, else
  * the description field of a known manifest. Results are cached in server
- * memory for a day so listing projects never rescans directories. See
- * topics/project-captions.md for the contract.
+ * memory and reused while the directory and every file the derivation read
+ * are unchanged, so listing projects costs a few `stat` calls rather than a
+ * directory scan. See topics/project-captions.md for the contract.
  */
 
 import * as fs from "node:fs/promises";
@@ -18,7 +19,6 @@ const README_PATTERN = /^readme(\.(md|markdown|txt))?$/i;
 const MIN_CAPTION_WORDS = 6;
 const MIN_CAPTION_CHARS = 40;
 const MAX_README_BYTES = 64 * 1024;
-export const PROJECT_CAPTION_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 interface ManifestReader {
   file: string;
@@ -209,26 +209,56 @@ export function extractManifestCaption(
   return value ? fitCaption(value) : undefined;
 }
 
-async function readIfPresent(filePath: string): Promise<string | undefined> {
+/**
+ * Identity of one file or directory version: a rewrite changes its mtime or
+ * size, and an atomic replace changes its inode.
+ */
+function statStamp(stats: {
+  mtimeMs: number;
+  size: number;
+  ino: number;
+}): string {
+  return `${stats.mtimeMs}:${stats.size}:${stats.ino}`;
+}
+
+async function stampIfPresent(filePath: string): Promise<string> {
+  try {
+    return statStamp(await fs.stat(filePath));
+  } catch {
+    return "missing";
+  }
+}
+
+/** Every path the derivation depended on, stamped before it was read. */
+type CaptionInputStamps = Map<string, string>;
+
+async function readIfPresent(
+  filePath: string,
+  stamps: CaptionInputStamps,
+): Promise<string | undefined> {
   try {
     const handle = await fs.open(filePath, "r");
     try {
-      const { size } = await handle.stat();
-      const buffer = Buffer.alloc(Math.min(size, MAX_README_BYTES));
+      const stats = await handle.stat();
+      stamps.set(filePath, statStamp(stats));
+      const buffer = Buffer.alloc(Math.min(stats.size, MAX_README_BYTES));
       await handle.read(buffer, 0, buffer.length, 0);
       return buffer.toString("utf-8");
     } finally {
       await handle.close();
     }
   } catch {
+    stamps.set(filePath, "missing");
     return undefined;
   }
 }
 
-/** Uncached derivation: README first, then manifests in a fixed order. */
-export async function deriveProjectCaption(
+async function deriveStampedProjectCaption(
   projectPath: string,
+  stamps: CaptionInputStamps,
 ): Promise<ProjectCaption | undefined> {
+  // Stamp before listing, so an entry added meanwhile invalidates the result.
+  stamps.set(projectPath, await stampIfPresent(projectPath));
   let entries: string[];
   try {
     entries = await fs.readdir(projectPath);
@@ -239,13 +269,19 @@ export async function deriveProjectCaption(
     .filter((entry) => README_PATTERN.test(entry))
     .sort((a, b) => a.localeCompare(b))[0];
   if (readmeName) {
-    const content = await readIfPresent(path.join(projectPath, readmeName));
+    const content = await readIfPresent(
+      path.join(projectPath, readmeName),
+      stamps,
+    );
     const text = content ? extractReadmeCaption(content) : undefined;
     if (text) return { text: fitCaption(text), source: "readme" };
   }
   for (const manifest of MANIFESTS) {
     if (!entries.includes(manifest.file)) continue;
-    const content = await readIfPresent(path.join(projectPath, manifest.file));
+    const content = await readIfPresent(
+      path.join(projectPath, manifest.file),
+      stamps,
+    );
     const text = content
       ? extractManifestCaption(manifest.file, content)
       : undefined;
@@ -254,25 +290,42 @@ export async function deriveProjectCaption(
   return undefined;
 }
 
+/** Uncached derivation: README first, then manifests in a fixed order. */
+export async function deriveProjectCaption(
+  projectPath: string,
+): Promise<ProjectCaption | undefined> {
+  return deriveStampedProjectCaption(projectPath, new Map());
+}
+
 interface CachedCaption {
   caption: ProjectCaption | undefined;
-  expiresAt: number;
+  stamps: CaptionInputStamps;
 }
 
 const cache = new Map<string, CachedCaption>();
 
-/** Cached derivation, one directory scan per project per day. */
+async function stampsUnchanged(stamps: CaptionInputStamps): Promise<boolean> {
+  const current = await Promise.all(
+    [...stamps].map(
+      async ([inputPath, stamp]) => (await stampIfPresent(inputPath)) === stamp,
+    ),
+  );
+  return current.every(Boolean);
+}
+
+/**
+ * Cached derivation. A cached caption, including "no caption", is reused
+ * only while the project directory and every file it was derived from are
+ * unchanged; checking that costs one `stat` per input instead of a rescan.
+ */
 export async function getDerivedProjectCaption(
   projectPath: string,
-  now = Date.now(),
 ): Promise<ProjectCaption | undefined> {
   const cached = cache.get(projectPath);
-  if (cached && cached.expiresAt > now) return cached.caption;
-  const caption = await deriveProjectCaption(projectPath);
-  cache.set(projectPath, {
-    caption,
-    expiresAt: now + PROJECT_CAPTION_CACHE_TTL_MS,
-  });
+  if (cached && (await stampsUnchanged(cached.stamps))) return cached.caption;
+  const stamps: CaptionInputStamps = new Map();
+  const caption = await deriveStampedProjectCaption(projectPath, stamps);
+  cache.set(projectPath, { caption, stamps });
   return caption;
 }
 

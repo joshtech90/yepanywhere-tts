@@ -124,6 +124,10 @@
 .content {
   padding: 10px 12px;
 }
+.content.withBulkBar {
+  /* Keeps the last results and the selection list clear of the fixed bar. */
+  padding-bottom: 96px;
+}
 .filterRow {
   display: flex;
   flex-wrap: wrap;
@@ -286,19 +290,31 @@
   min-height: 30px;
 }
 .scope .selectMatched {
-  width: 34px;
-  height: 30px;
-  border: 2px solid var(--text-muted);
+  min-height: 30px;
+  padding: 0 8px;
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
   border-radius: 4px;
-}
-.selectMatched svg {
-  transform: translateX(1px);
-}
-.selectionArrowIcon {
-  color: color-mix(in srgb, var(--error-color) 50%, var(--text-secondary));
+  white-space: nowrap;
 }
 .selectionCancelIcon {
   color: var(--error-color);
+}
+.scope .onlySelected {
+  min-height: 30px;
+  padding: 0 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  white-space: nowrap;
+}
+.scope .onlySelected[aria-pressed="true"] {
+  background: color-mix(
+    in srgb,
+    var(--accent-primary) 24%,
+    var(--bg-secondary)
+  );
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
 }
 .scope .clearSelection {
   width: 34px;
@@ -327,16 +343,6 @@
   );
   border-color: var(--accent-primary);
   color: var(--text-primary);
-}
-.scope .applyStatus {
-  margin-left: auto;
-  padding: 0 10px;
-  height: 30px;
-  color: var(--text-primary);
-  background: var(--bg-tertiary);
-  border: 1px solid var(--accent-primary);
-  border-radius: 4px;
-  white-space: nowrap;
 }
 .results {
   display: grid;
@@ -465,9 +471,5 @@
   }
   .statusFilters button {
     width: 26px;
-  }
-  .scope .applyStatus {
-    flex-basis: 100%;
-    margin-left: 0;
   }
 }

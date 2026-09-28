@@ -298,8 +298,11 @@ no alternate authentication or provider transcript store is introduced.
   events; idle reconciliation refreshes durable evidence. Unknown approvals
   remain opaque read-only rows. Unmanaged activity is `unknown`. A live record
   the source cannot keep — no stable identity, or over its memory budget —
-  makes reads fail only until the next durable reconciliation succeeds; the
-  refusal is not permanent for the lifetime of the lease.
+  makes reads fail only until a durable reconciliation that can cover it
+  succeeds: one that starts after the record was dropped, with the managed
+  turn idle or ended rather than working or awaiting input. A record arriving
+  while reads are refused is itself treated as dropped. The refusal is not
+  permanent for the lifetime of the lease.
 - Existing focused file watches are shared with the full client and released
   with source demand. Native history is not polled by a new permanent loop.
   Activity/file observation can retry an unavailable source; absence of new

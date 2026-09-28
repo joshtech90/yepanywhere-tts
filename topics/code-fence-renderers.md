@@ -147,7 +147,10 @@ That appearance has one owner, `getResolvedTheme` in `hooks/useTheme.ts`, which
 is the same answer every other client surface asks for: the stored preference,
 with `auto` following the OS and `verydark` resolving to dark. The cache key and
 Mermaid's own theme configuration both read it, so a diagram cannot be drawn in
-one appearance and then cached under another.
+one appearance and then cached under another. The page's `data-theme` follows
+the same stored preference, including a change saved in another tab, so a
+diagram drawn after that change matches the page around it and the attribute
+change redraws the diagrams already shown.
 
 ### Inline SVG from a reviewed renderer is allowed
 

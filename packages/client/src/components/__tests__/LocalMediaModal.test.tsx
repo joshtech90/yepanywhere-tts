@@ -426,7 +426,7 @@ describe("LocalFileModal project paths", () => {
     );
   });
 
-  it("opens ordinary HTML as source and confines an explicit preview", async () => {
+  it("opens ordinary HTML in a confined preview by default", async () => {
     const fetchMock = vi.fn(
       async () =>
         new Response(
@@ -437,22 +437,9 @@ describe("LocalFileModal project paths", () => {
     vi.stubGlobal("fetch", fetchMock);
     const resource = { kind: "local-file" as const, path: "/tmp/demo.html" };
 
-    const { rerender } = render(
+    render(
       <I18nProvider>
         <LocalFileModal resource={resource} onClose={() => {}} />
-      </I18nProvider>,
-    );
-
-    expect(await screen.findByText(/Local preview/)).toBeTruthy();
-    expect(document.querySelector("iframe")).toBeNull();
-
-    rerender(
-      <I18nProvider>
-        <LocalFileModal
-          resource={resource}
-          initialPresentation="preview"
-          onClose={() => {}}
-        />
       </I18nProvider>,
     );
 
@@ -462,10 +449,39 @@ describe("LocalFileModal project paths", () => {
       return candidate;
     });
     if (!frame) throw new Error("Expected HTML preview iframe");
-    expect(frame.getAttribute("sandbox")).toBe("");
+    // Same-origin so the viewer's find can search it; never with scripts.
+    expect(frame.getAttribute("sandbox")).toBe("allow-same-origin");
     expect(frame.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(frame.srcdoc).toContain("default-src 'none'");
     expect(document.body.dataset.pwned).toBeUndefined();
+  });
+
+  it("loads project-relative HTML through the project raw-file route", async () => {
+    const fetchMock = vi.fn(
+      async (_input: RequestInfo | URL) =>
+        new Response("<h1>Project preview</h1>", {
+          headers: { "Content-Type": "text/html" },
+        }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <I18nProvider>
+        <LocalFileModal
+          resource={{
+            kind: "project-file",
+            path: "research/paper.html",
+            projectId: "project-id",
+          }}
+          onClose={() => {}}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain(
+      "/api/projects/project-id/files/raw?path=research%2Fpaper.html",
+    );
   });
 
   it("requests Markdown source or rendered preview from the existing route", async () => {
@@ -513,7 +529,9 @@ describe("LocalFileModal project paths", () => {
     );
 
     await waitFor(() => expect(document.querySelector("iframe")).toBeTruthy());
-    expect(String(fetchMock.mock.calls.at(-1)?.[0])).toContain("render=1");
+    expect(
+      fetchMock.mock.calls.some(([url]) => String(url).includes("render=1")),
+    ).toBe(true);
   });
 });
 

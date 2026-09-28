@@ -287,8 +287,8 @@ export interface DeclaredGatewayEffort {
 export interface ParseGatewayCatalogOptions {
   declared?: DeclaredGatewayWindows;
   declaredEffort?: DeclaredGatewayEffort;
-  /** What the endpoint answered when asked which efforts it accepts. */
-  probedEffort?: GatewayEndpointEffortProbe;
+  /** What the endpoint answered for each model about the efforts it accepts. */
+  probedEffort?: ReadonlyMap<string, GatewayEndpointEffortProbe>;
   /** Keep at most this many advertised models, in catalog order. */
   maxModels?: number;
 }
@@ -334,6 +334,7 @@ function parseClaudeGatewayCatalog(
     // the endpoint itself answered: a vLLM catalog states nothing about
     // reasoning, so an endpoint that accepts effort is indistinguishable from
     // one that does not until something says otherwise.
+    const probedEffort = options.probedEffort?.get(id);
     const effort = gatewayModelEffort({
       modelId: id,
       ...(options.declaredEffort?.levels
@@ -343,7 +344,7 @@ function parseClaudeGatewayCatalog(
         ? { configuredDefaultLevel: options.declaredEffort.defaultLevel }
         : {}),
       advertisedLevels: advertisedGatewayEffortLevels(item),
-      ...(options.probedEffort ? { probed: options.probedEffort } : {}),
+      ...(probedEffort ? { probed: probedEffort } : {}),
     });
     const supportedEffortLevels = effort?.levels ?? [];
     const advertisedWindows = modelWindows(item, options.declared);
@@ -862,7 +863,12 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
     // which is known here and nowhere earlier.
     void refreshPiModelExport(
       ClaudeGatewayProvider.advertisedModelsByService(),
-    );
+    ).catch((error: unknown) => {
+      getLogger().warn(
+        { error },
+        "Could not refresh pi's model registry after a catalog read",
+      );
+    });
     return models;
   }
 
@@ -888,9 +894,14 @@ export class ClaudeGatewayProvider extends ClaudeProvider {
       });
       if (!response.ok) return undefined;
       const payload = await response.json();
-      const probedEffort = await probeServiceEffort(service, baseUrl, payload);
+      const probedEffort = await probeServiceEffort(
+        service,
+        baseUrl,
+        payload,
+        (row, id) => isGatewayModelVisible(row as GatewayModel, id),
+      );
       const parsed = parseClaudeGatewayCatalog(payload, {
-        ...(probedEffort ? { probedEffort } : {}),
+        probedEffort,
         declared: {
           ...(service.contextWindowTokens === undefined
             ? {}

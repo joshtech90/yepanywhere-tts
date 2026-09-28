@@ -90,6 +90,12 @@ export interface HostedProviderReattachSpec {
     : never;
   sandboxNetworkFirewall?: boolean;
   sandboxStateKey?: string;
+  /**
+   * Configured model endpoint the worker was launched against. Kept here so a
+   * replacement server still knows it after a reload; a host that predates the
+   * field returns no value, and usage falls back to resolving the model.
+   */
+  gatewayServiceId?: string;
 }
 
 export interface HostedProviderRuntimeInfo {
@@ -185,19 +191,6 @@ export function supportsProviderHostRuntimeAsLaunched(): boolean {
   );
 }
 
-export function providerHostEnabled(
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  const configured = env.YEP_PROVIDER_HOST_ENABLED?.trim().toLowerCase();
-  if (configured === "true") return true;
-  if (configured === "false") return false;
-  if (configured) {
-    throw new Error("YEP_PROVIDER_HOST_ENABLED must be true or false");
-  }
-  return platform === "linux";
-}
-
 function getEnvironment(): RuntimeHostEnvironment | null {
   if (!supportsProviderHostRuntimeAsLaunched()) return null;
   const runtimeEnv = getModuleEnv("provider-runtime");
@@ -212,7 +205,11 @@ export function isProviderRuntimeHostAvailable(): boolean {
   return getEnvironment() !== null && registered;
 }
 
-function resolveProviderHostProjectRoot(): string {
+/**
+ * The checkout whose `scripts/` start and discover the provider host, or
+ * null for a distribution that ships none, such as the npm bundle.
+ */
+function resolveProviderHostProjectRoot(): string | null {
   let dir = dirname(fileURLToPath(import.meta.url));
   for (let i = 0; i < 8; i += 1) {
     if (existsSync(join(dir, "scripts/provider-runtime-host.mjs"))) return dir;
@@ -220,7 +217,16 @@ function resolveProviderHostProjectRoot(): string {
     if (parent === dir) break;
     dir = parent;
   }
-  return process.cwd();
+  return null;
+}
+
+async function importProviderHostScript<T>(
+  projectRoot: string,
+  script: string,
+): Promise<T> {
+  return (await import(
+    pathToFileURL(join(projectRoot, "scripts", script)).href
+  )) as T;
 }
 
 function applyProviderHostConnection(connection: {
@@ -254,9 +260,18 @@ function applyProviderHostConnection(connection: {
  * When enabled, attach to a live provider host or start one when absent.
  * Remote SSH executor sessions stay allowed either way: they still launch
  * from this YA server. A failed ensure continues in-process and sets the
- * provider-host degraded notice.
+ * provider-host degraded notice. A distribution without the host scripts
+ * cannot run a host, so it stays in-process without that notice. Whether
+ * hosting is enabled is `providerHostEnabled` in those scripts, the rule the
+ * dev wrapper also applies when it decides to start a host.
  */
-export async function ensureProviderRuntimeHost(): Promise<boolean> {
+export async function ensureProviderRuntimeHost(
+  projectRoot = resolveProviderHostProjectRoot(),
+): Promise<boolean> {
+  if (!projectRoot) return false;
+  const { providerHostEnabled } = await importProviderHostScript<{
+    providerHostEnabled: () => boolean;
+  }>(projectRoot, "provider-process-identity.mjs");
   if (!providerHostEnabled()) {
     setProviderHostDegraded(false);
     return false;
@@ -280,11 +295,7 @@ export async function ensureProviderRuntimeHost(): Promise<boolean> {
   }
 
   try {
-    const projectRoot = resolveProviderHostProjectRoot();
-    const moduleUrl = pathToFileURL(
-      join(projectRoot, "scripts/attach-or-start-provider-host.mjs"),
-    ).href;
-    const { attachOrStartProviderHost } = (await import(moduleUrl)) as {
+    const { attachOrStartProviderHost } = await importProviderHostScript<{
       attachOrStartProviderHost: (options: {
         env?: NodeJS.ProcessEnv;
         projectRoot?: string;
@@ -303,7 +314,7 @@ export async function ensureProviderRuntimeHost(): Promise<boolean> {
         };
         error?: string;
       }>;
-    };
+    }>(projectRoot, "attach-or-start-provider-host.mjs");
     const result = await attachOrStartProviderHost({
       env: process.env,
       projectRoot,
@@ -642,6 +653,9 @@ function reattachSpec(
         ? options.sessionSandboxOptions?.networkFirewall !== false
         : undefined,
     sandboxStateKey: options.sessionSandboxOptions?.stateKey,
+    ...(options.gatewayRoute
+      ? { gatewayServiceId: options.gatewayRoute.serviceId }
+      : {}),
   };
 }
 
@@ -1243,6 +1257,9 @@ class HostedAgentSession {
       isProcessAlive: () => this.providerAlive,
       pid: this.runtime.pid,
       sessionId: this.runtime.worker.sessionId,
+      ...(this.runtime.reattach.gatewayServiceId
+        ? { gatewayServiceId: this.runtime.reattach.gatewayServiceId }
+        : {}),
       initializedSessionId: this.initializedSessionId,
       initialTurnState: this.activeProviderTurn ? "in-turn" : "idle",
       ...(capabilities.probeLiveness

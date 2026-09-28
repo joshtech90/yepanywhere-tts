@@ -1,5 +1,16 @@
-import { compactShikiLineBreaks } from "../lib/shikiHtml";
+import { type HTMLAttributes, useMemo } from "react";
+import { prepareShikiHtml } from "../lib/shikiHtml";
 import styles from "./ShikiHtml.module.css";
+
+type ShikiHtmlProps = {
+  html: string;
+  /** The highlighted source text, to carry exact source offsets into the DOM. */
+  source?: string;
+  className?: string;
+} & Omit<
+  HTMLAttributes<HTMLDivElement>,
+  "children" | "className" | "dangerouslySetInnerHTML"
+>;
 
 /**
  * Render server-highlighted Shiki HTML.
@@ -7,20 +18,26 @@ import styles from "./ShikiHtml.module.css";
  * Owning the newline compaction and the block-per-line layout together keeps
  * them from drifting apart: the compaction deletes the only text separating
  * two lines, and this container's styles are what put them back on separate
- * rows. Callers add their own class for surface-specific treatment.
+ * rows. `prepareShikiHtml` is the only compactor, and its output is meant for
+ * this component alone. Callers add their own class for surface-specific
+ * treatment, and may pass handlers for links inside the markup.
  */
 export function ShikiHtml({
   html,
+  source,
   className,
-}: {
-  html: string;
-  className?: string;
-}) {
+  ...containerProps
+}: ShikiHtmlProps) {
+  const prepared = useMemo(
+    () => prepareShikiHtml(html, source),
+    [html, source],
+  );
   return (
     <div
+      {...containerProps}
       className={`shiki-container ${styles.container}${className ? ` ${className}` : ""}`}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered HTML
-      dangerouslySetInnerHTML={{ __html: compactShikiLineBreaks(html) ?? "" }}
+      dangerouslySetInnerHTML={{ __html: prepared }}
     />
   );
 }

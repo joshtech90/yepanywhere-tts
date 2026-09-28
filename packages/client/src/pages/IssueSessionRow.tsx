@@ -12,6 +12,46 @@ import { useI18n } from "../i18n";
 import { formatBriefAge } from "../lib/sessionAge";
 import styles from "./IssuesPage.module.css";
 
+/** The server's largest evidence page. */
+const MAX_EVIDENCE_PAGE = 100;
+/** The page an expanded row asks for when it holds none yet. */
+const DEFAULT_EVIDENCE_PAGE = 50;
+
+type IssueTransport = ReturnType<typeof useCurrentSourceRuntime>["transport"];
+
+function fetchIssueEvidence(
+  transport: IssueTransport,
+  request: {
+    issueId: string;
+    sessionId: string;
+    offset: number;
+    limit?: number;
+    includeDismissed: boolean;
+  },
+) {
+  return transport.fetch<IssueEvidenceResult>(
+    `/issues/evidence?${new URLSearchParams({
+      id: request.issueId,
+      sessionId: request.sessionId,
+      offset: String(request.offset),
+      ...(request.limit ? { limit: String(request.limit) } : {}),
+      dismissed: request.includeDismissed ? "1" : "0",
+    })}`,
+  );
+}
+
+/** Where the evidence after a session's first page starts, if any remains. */
+function evidenceAfterFirstPage(session: IssueSession) {
+  return session.evidence.length < session.evidenceCount
+    ? session.evidence.length
+    : null;
+}
+
+/**
+ * One associated session in the Issues pane. `session` and `includeDismissed`
+ * describe the same answer: the filter is the one that answer was fetched
+ * under, not the checkbox's current state.
+ */
 export function IssueSessionRow({
   issueId,
   session,
@@ -36,7 +76,9 @@ export function IssueSessionRow({
   });
   const [expanded, setExpanded] = useState(false);
   // Only the pages this row fetched are held here: the first mention stays a
-  // prop, so a parent refresh updates it without discarding what is loaded.
+  // prop. Offsets index the list the current `session` came from, so each new
+  // answer re-fetches as many mentions as were loaded rather than keeping
+  // pages fetched under another filter or ordering.
   const [loaded, setLoaded] = useState<{
     entries: IssueEvidence[];
     nextOffset: number | null;
@@ -46,35 +88,81 @@ export function IssueSessionRow({
     : session.evidence;
   const nextOffset = loaded.entries.length
     ? loaded.nextOffset
-    : session.evidence.length < session.evidenceCount
-      ? session.evidence.length
-      : null;
+    : evidenceAfterFirstPage(session);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const alive = useRef(true);
+  // Bumped by every reload and by unmount; a response from an older
+  // generation belongs to a list this row no longer shows.
+  const generation = useRef(0);
+  useEffect(
+    () => () => {
+      generation.current += 1;
+    },
+    [],
+  );
+  const shownSession = useRef(session);
+  const loadedCount = loaded.entries.length;
   useEffect(() => {
-    alive.current = true;
-    return () => {
-      alive.current = false;
-    };
-  }, []);
+    if (shownSession.current === session) return;
+    shownSession.current = session;
+    const current = ++generation.current;
+    const isCurrent = () => current === generation.current;
+    // An expanded row whose first page was still in flight shows one mention
+    // and no "more" control, so it asks again rather than stalling.
+    const wanted = loadedCount || (expanded ? DEFAULT_EVIDENCE_PAGE : 0);
+    if (wanted === 0) {
+      setLoading(false);
+      return;
+    }
+    void (async () => {
+      setLoading(true);
+      setError("");
+      const entries: IssueEvidence[] = [];
+      let offset = evidenceAfterFirstPage(session);
+      try {
+        while (offset !== null && entries.length < wanted) {
+          const page = await fetchIssueEvidence(transport, {
+            issueId,
+            sessionId: session.sessionId,
+            offset,
+            limit: Math.min(MAX_EVIDENCE_PAGE, wanted - entries.length),
+            includeDismissed,
+          });
+          if (!isCurrent()) return;
+          entries.push(...page.evidence);
+          offset = page.nextOffset;
+        }
+        setLoaded({ entries, nextOffset: offset });
+      } catch {
+        if (!isCurrent()) return;
+        setLoaded({ entries: [], nextOffset: null });
+        setError(t("issuesLoadError"));
+      } finally {
+        if (isCurrent()) setLoading(false);
+      }
+    })();
+  }, [session, includeDismissed, issueId, loadedCount, expanded, transport, t]);
   const more = async () => {
     if (nextOffset === null || loading) return;
+    const current = generation.current;
     setLoading(true);
     setError("");
     try {
-      const next = await transport.fetch<IssueEvidenceResult>(
-        `/issues/evidence?${new URLSearchParams({ id: issueId, sessionId: session.sessionId, offset: String(nextOffset), dismissed: includeDismissed ? "1" : "0" })}`,
-      );
-      if (alive.current)
+      const next = await fetchIssueEvidence(transport, {
+        issueId,
+        sessionId: session.sessionId,
+        offset: nextOffset,
+        includeDismissed,
+      });
+      if (current === generation.current)
         setLoaded((previous) => ({
           entries: [...previous.entries, ...next.evidence],
           nextOffset: next.nextOffset,
         }));
     } catch {
-      if (alive.current) setError(t("issuesLoadError"));
+      if (current === generation.current) setError(t("issuesLoadError"));
     } finally {
-      if (alive.current) setLoading(false);
+      if (current === generation.current) setLoading(false);
     }
   };
   const age = formatBriefAge(session.updatedAt);

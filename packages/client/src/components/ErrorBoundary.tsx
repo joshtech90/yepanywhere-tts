@@ -2,6 +2,7 @@ import { Component, type ErrorInfo, type ReactNode } from "react";
 import enMessages from "../i18n/en.json";
 import { activityBus } from "../lib/activityBus";
 import { writeClipboardText } from "../lib/clipboard";
+import { retirePrebootComposer } from "../lib/prebootComposer";
 import { UI_KEYS } from "../lib/storageKeys";
 
 interface Props {
@@ -201,6 +202,8 @@ export class ErrorBoundary extends Component<Props, State> {
   componentDidCatch(error: Error, errorInfo: ErrorInfo) {
     const crashContext = this.state.crashContext ?? captureCrashContext();
     this.setState({ errorInfo, crashContext, versionLoading: true });
+    // The crash report must not sit under a composer that will never load.
+    retirePrebootComposer();
 
     // Fetch server version to help diagnose version mismatches
     this.fetchServerVersion();

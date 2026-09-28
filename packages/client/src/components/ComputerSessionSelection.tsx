@@ -1,16 +1,21 @@
 import { useEffect, useState } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n } from "../i18n";
+import { FilterDropdown } from "./FilterDropdown";
 import styles from "./ComputerSessionSelection.module.css";
 
 export function ComputerSessionSelection({
   eligible,
   selected,
   onChange,
+  disabled = false,
+  showCaption = false,
 }: {
   eligible: boolean;
   selected: boolean;
   onChange: (value: boolean) => void;
+  disabled?: boolean;
+  showCaption?: boolean;
 }) {
   const { transport } = useCurrentSourceRuntime();
   const { t } = useI18n();
@@ -34,16 +39,29 @@ export function ComputerSessionSelection({
   }, [transport, eligible, onChange]);
   if (!available || !eligible) return null;
   return (
-    <label className={styles.selection}>
-      <input
-        type="checkbox"
-        checked={selected}
-        onChange={(event) => onChange(event.currentTarget.checked)}
+    <div className={`new-session-helper-section ${styles.section}`}>
+      <h3>{t("newSessionComputerControlTitle")}</h3>
+      <FilterDropdown<"off" | "on">
+        label={t("newSessionComputerControlTitle")}
+        options={[
+          { value: "off", label: t("showThinkingOff"), disabled },
+          {
+            value: "on",
+            label: t("showThinkingOn"),
+            disabled,
+          },
+        ]}
+        selected={[selected ? "on" : "off"]}
+        onChange={([value]) => {
+          if (!disabled) onChange(value === "on");
+        }}
+        multiSelect={false}
+        fullWidth
+        triggerClassName={styles.leftAlignedTrigger}
       />
-      <span>
-        <strong>{t("computerSessionOptIn")}</strong>
-        <small>{t("computerSessionScope")}</small>
-      </span>
-    </label>
+      {showCaption && (
+        <p className={styles.caption}>{t("computerSessionScope")}</p>
+      )}
+    </div>
   );
 }

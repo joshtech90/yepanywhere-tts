@@ -5,7 +5,7 @@ import {
   getMarkdownSnippetForSubElement,
   registerMarkdownCopySource,
 } from "../markdownSelectionCopy";
-import { annotateShikiSourceOffsets } from "../shikiHtml";
+import { prepareShikiHtml } from "../shikiHtml";
 
 describe("getMarkdownForVisibleSelection", () => {
   it("maps Quarto include labels and paths back to their source", () => {
@@ -102,11 +102,10 @@ describe("extractMarkdownSnippetsFromSelection", () => {
     const registeredSource = "alpha beta gamma\ndelta epsilon";
     const root = document.createElement("div");
     const source = document.createElement("div");
-    source.innerHTML =
-      annotateShikiSourceOffsets(
-        '<pre class="shiki"><code><span class="line"><span>alpha </span><span>beta gamma</span></span><span class="line"><span>delta</span><span> epsilon</span></span></code></pre>',
-        registeredSource,
-      ) ?? "";
+    source.innerHTML = prepareShikiHtml(
+      '<pre class="shiki"><code><span class="line"><span>alpha </span><span>beta gamma</span></span><span class="line"><span>delta</span><span> epsilon</span></span></code></pre>',
+      registeredSource,
+    );
     root.append(source);
     document.body.append(root);
     const unregister = registerMarkdownCopySource(source, registeredSource, {

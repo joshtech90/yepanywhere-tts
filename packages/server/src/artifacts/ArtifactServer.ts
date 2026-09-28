@@ -1,9 +1,12 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import { homedir } from "node:os";
 import { basename, dirname, extname, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { getRequestListener } from "@hono/node-server";
+import { ARTIFACT_SANDBOX, ARTIFACT_TAB_PROTOCOL } from "@yep-anywhere/shared";
+import { FRAME_FIND_AGENT_SCRIPT } from "@yep-anywhere/shared/find/frameFindAgent.generated";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { getMimeType } from "hono/utils/mime";
@@ -28,9 +31,36 @@ import { matchVhost, vhostHostnames } from "./vhosts.js";
 import { VhostAccess } from "./VhostAccess.js";
 
 const MAX_GRANTS = 256;
+
+function escapeHtml(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (char) =>
+      ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[
+        char
+      ]!,
+  );
+}
+
+/**
+ * Stand-in served to a sandboxed frame that navigated to a PDF. The frame may
+ * not open popups or download, so its buttons ask the YA viewer to open this
+ * same URL in a new tab; the page's own address is the fallback.
+ */
+function pdfInFrameDocument(name: string): string {
+  const protocol = JSON.stringify(ARTIFACT_TAB_PROTOCOL);
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(name)}</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;padding:24px;color:#222;background:#fafafa}p{margin:0 0 12px}.actions{display:flex;flex-wrap:wrap;gap:8px}button{font:inherit;padding:6px 12px}code{word-break:break-all;user-select:all}</style></head><body><p><strong>${escapeHtml(name)}</strong> is a PDF. The embedded preview cannot display PDFs, so open it in its own tab.</p><p class="actions"><button type="button" id="open">Open PDF in a new tab</button><button type="button" id="download">Download</button><button type="button" onclick="history.back()">Back</button></p><p>If nothing opens, copy this address into a new tab: <code id="address"></code></p><script>(function(){var url=new URL(location.href);url.hash="";url.search="";document.getElementById("address").textContent=url.href;function send(download){var target=new URL(url.href);if(download)target.searchParams.set("download","true");parent.postMessage({protocol:${protocol},type:"open",url:target.href},"*");}document.getElementById("open").onclick=function(){send(false);};document.getElementById("download").onclick=function(){send(true);};})();</script></body></html>`;
+}
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
+/**
+ * Appended to HTML framed by a YA viewer so the viewer's find field can search
+ * that document alone. Content after `</html>` still parses into the body.
+ */
+const FIND_AGENT_TAIL = Buffer.from(
+  `\n<script data-yep-find-agent>${FRAME_FIND_AGENT_SCRIPT}</script>\n`,
+);
 const ARTIFACT_CSP = [
-  "sandbox allow-scripts allow-same-origin",
+  `sandbox ${ARTIFACT_SANDBOX}`,
   "default-src 'self' data: blob: http: https:",
   "script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: http: https:",
   "style-src 'self' 'unsafe-inline' data: blob: http: https:",
@@ -54,6 +84,11 @@ export interface ArtifactServerOptions {
   stateDir?: string;
   /** Directories an owning grant may never delete, whatever a caller says. */
   protectedPaths?: readonly (string | undefined)[];
+  /**
+   * The server user's home directory, which is always protected; defaults to
+   * the host's.
+   */
+  homeDirectory?: string;
 }
 
 export class ArtifactServer {
@@ -77,7 +112,10 @@ export class ArtifactServer {
   ) {
     this.config = validateArtifactConfig(config);
     this.store = new GrantStore(options.stateDir);
-    this.protectedPaths = options.protectedPaths ?? [];
+    this.protectedPaths = [
+      ...(options.protectedPaths ?? []),
+      options.homeDirectory ?? homedir(),
+    ];
     this.vhostAccess = new VhostAccess(options.stateDir);
     this.ready = Promise.all([this.restore(), this.vhostAccess.ready]).then(
       () => {},
@@ -166,7 +204,48 @@ export class ArtifactServer {
       }
       grant.files.add(canonical);
       const mime = getMimeType(canonical) ?? "application/octet-stream";
+      // Chromium refuses its PDF viewer inside a sandboxed frame and shows
+      // "This content is blocked", so a frame navigation to a PDF gets a page
+      // that opens the same URL in a top-level tab instead. Direct fetches,
+      // top-level tabs, and explicit downloads still receive the bytes.
+      if (
+        mime === "application/pdf" &&
+        c.req.header("Sec-Fetch-Dest") === "iframe" &&
+        new URL(c.req.url).searchParams.get("download") !== "true"
+      ) {
+        await handle.close();
+        return c.html(pdfInFrameDocument(basename(canonical)));
+      }
+      // Only a frame navigation gets the find agent: downloads, top-level
+      // tabs, fetches and range reads still receive the original bytes.
+      // XHTML is left alone, since an appended element would make it invalid.
+      if (
+        mime.startsWith("text/html") &&
+        c.req.header("Sec-Fetch-Dest") === "iframe" &&
+        new URL(c.req.url).searchParams.get("download") !== "true" &&
+        !c.req.header("Range")
+      ) {
+        c.header("Content-Type", mime);
+        if (c.req.method === "HEAD") {
+          await handle.close();
+          c.header(
+            "Content-Length",
+            String(stats.size + FIND_AGENT_TAIL.length),
+          );
+          return c.body(null, 200);
+        }
+        const framed = Buffer.concat([
+          await handle.readFile(),
+          FIND_AGENT_TAIL,
+        ]);
+        await handle.close();
+        c.header("Content-Length", String(framed.length));
+        return c.body(framed, 200);
+      }
       c.header("Content-Type", mime);
+      if (new URL(c.req.url).searchParams.get("download") === "true") {
+        c.header("Content-Disposition", "attachment");
+      }
       c.header("Accept-Ranges", "bytes");
       let start = 0;
       let end = stats.size - 1;
@@ -395,6 +474,10 @@ export class ArtifactServer {
   }
 
   async close(): Promise<void> {
+    // Startup restores and writes state under stateDir; closing before that
+    // settles lets a caller remove the directory mid-write. Its failure is
+    // already reported by the constructor.
+    await this.ready.catch(() => {});
     this.listening = false;
     // Persisted grants outlive the process; only this listener stops here.
     clearInterval(this.sweepTimer);
@@ -439,18 +522,30 @@ export class ArtifactServer {
     const now = Date.now();
     for (const [token, grant] of this.grants)
       if (grant.expiresAt <= now) this.grants.delete(token);
-    if (this.grants.size >= MAX_GRANTS)
-      throw new HTTPException(429, {
-        message: "Close an artifact viewer before opening another",
-      });
-    const token = randomBytes(32).toString("base64url");
     const root = dirname(allowed.file.resolvedPath);
+    const entry = basename(allowed.file.resolvedPath);
+    const lifetimeMs = this.config.expiryDays! * 24 * 60 * 60 * 1000;
     // Ownership is refused rather than honoured for a directory that is
     // plainly not a disposable bundle; the grant is still created, borrowing.
     // Ownership is never inherited from configuration: a preview of a file
     // the user already had must not delete it when the viewer closes. Only a
     // caller that produced the directory says so, by asking.
     const wants = owned === true;
+    // Borrowed grants outlive their viewers, so reopening a file must not
+    // mint another one each time or the grant cap fills with duplicates.
+    const live = wants
+      ? undefined
+      : this.reusableGrant(root, entry, now, lifetimeMs);
+    if (live) return this.issue(live, origin, true);
+    if (this.grants.size >= MAX_GRANTS) {
+      const nextExpiry = Math.min(
+        ...[...this.grants.values()].map((grant) => grant.expiresAt),
+      );
+      throw new HTTPException(429, {
+        message: `Too many live artifact links (${MAX_GRANTS}); the next one expires at ${new Date(nextExpiry).toISOString()}`,
+      });
+    }
+    const token = randomBytes(32).toString("base64url");
     // Ownership freezes the fileset: what is here now and is not the working
     // tree's own is what this grant may remove later, whatever else the
     // directory collects. Nothing left to own means nothing to own it.
@@ -462,8 +557,8 @@ export class ArtifactServer {
       id: randomUUID(),
       token,
       root,
-      entry: basename(allowed.file.resolvedPath),
-      expiresAt: now + this.config.expiryDays! * 24 * 60 * 60 * 1000,
+      entry,
+      expiresAt: now + lifetimeMs,
       owned: frozen !== null,
       ...(frozen ? { ownedFiles: frozen } : {}),
       files: new Set(),
@@ -471,12 +566,68 @@ export class ArtifactServer {
     this.grants.set(token, grant);
     // The caller is handed a URL, so the grant must already be durable.
     await this.persist();
+    return this.issue(grant, origin, false);
+  }
+
+  /**
+   * A live borrowed grant for the same entry file, if one still has at least
+   * half the configured lifetime left and no more than all of it: a viewer
+   * opened on it is not cut off soon after, and shortening the expiry setting
+   * is not undone by handing out an older, longer-lived link.
+   */
+  private reusableGrant(
+    root: string,
+    entry: string,
+    now: number,
+    lifetimeMs: number,
+  ): Grant | undefined {
+    let best: Grant | undefined;
+    for (const grant of this.grants.values()) {
+      if (grant.owned || grant.root !== root || grant.entry !== entry) continue;
+      if (grant.expiresAt < now + lifetimeMs / 2) continue;
+      if (grant.expiresAt > now + lifetimeMs) continue;
+      if (!best || grant.expiresAt > best.expiresAt) best = grant;
+    }
+    return best;
+  }
+
+  private issue(grant: Grant, origin: string, reused: boolean) {
     return {
       id: grant.id,
-      url: `${origin}/a/${token}/${encodeURIComponent(grant.entry)}`,
+      url: `${origin}/a/${grant.token}/${encodeURIComponent(grant.entry)}`,
       expiresAt: grant.expiresAt,
       owned: grant.owned,
+      reused,
     };
+  }
+
+  /** Resolve an artifact URL for the authenticated source editor only. */
+  async resolveSourceUrl(rawUrl: string): Promise<string> {
+    await this.ready;
+    const url = new URL(rawUrl);
+    if (
+      ![this.config.localOrigin, this.config.publicOrigin].includes(url.origin)
+    )
+      throw new HTTPException(403, { message: "Not an artifact origin" });
+    const match = /^\/a\/([^/]+)\/(.+)$/.exec(url.pathname);
+    const grant = match && this.grants.get(match[1]!);
+    if (!match || !grant || grant.expiresAt <= Date.now())
+      throw new HTTPException(404, {
+        message: "Artifact grant expired or unavailable",
+      });
+    const relative = decodeURIComponent(match[2]!);
+    if (
+      relative.includes("\\") ||
+      relative.includes("\0") ||
+      relative.split("/").some((part) => part.startsWith("."))
+    )
+      throw new HTTPException(400, { message: "Invalid artifact path" });
+    const path = await realpath(resolve(grant.root, relative));
+    if (!isPathInsideDirectory(path, grant.root))
+      throw new HTTPException(403, {
+        message: "Artifact source outside granted directory",
+      });
+    return path;
   }
 
   /** Revoking an owning grant pays its deletion now, not at its old deadline. */

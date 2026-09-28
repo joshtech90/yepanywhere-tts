@@ -402,7 +402,14 @@ describe("ClaudeGatewayProvider", () => {
           { id: "qwen3-coder-30b", owned_by: "vllm" },
         ],
       },
-      { probedEffort: { ...probedEffort, levels: [...probedEffort.levels] } },
+      {
+        probedEffort: new Map(
+          ["deepseek-v4-flash", "qwen3-coder-30b"].map((id) => [
+            id,
+            { ...probedEffort, levels: [...probedEffort.levels] },
+          ]),
+        ),
+      },
     );
 
     // The family YA ships knowing distinguishes three behaviors, so its

@@ -59,15 +59,17 @@ describe("session right pane lifecycle", () => {
   it("auto-opens a fresh artifact without vhosts and does not open older history", async () => {
     localStorage.setItem(UI_KEYS.sessionRightPane, "true");
     invalidateLocalStorageValues();
-    const artifact: Message = {
-      uuid: "artifact",
+    const artifact = (id: string): Message => ({
+      uuid: id,
       content: [
         {
           type: "tool_result",
-          content: "http://artifacts.localhost/a/token/review.html",
+          content: `http://artifacts.localhost/a/${id}/review.html`,
         },
       ],
-    };
+    });
+    const previous = artifact("previous-token");
+    const latest = artifact("latest-token");
     const { result, rerender } = renderHook(
       ({ messages }) =>
         useSessionRightPane(
@@ -77,17 +79,18 @@ describe("session right pane lifecycle", () => {
           true,
           "artifact",
         ),
-      { initialProps: { messages: [] as Message[] } },
+      { initialProps: { messages: [previous] } },
     );
-    rerender({ messages: [artifact] });
-    expect(result.current.selected?.artifactToken).toBe("token");
-    act(() => result.current.close());
-    rerender({ messages: [output("older"), artifact] });
     expect(result.current.selected).toBeUndefined();
+    rerender({ messages: [previous, latest] });
+    expect(result.current.selected?.artifactToken).toBe("latest-token");
+    act(() => result.current.close());
     act(() => result.current.select(result.current.apps[0]!.url));
     await act(() => result.current.kill());
-    expect(result.current.apps).toHaveLength(0);
+    expect(result.current.apps).toHaveLength(2);
     expect(result.current.selected).toBeUndefined();
+    act(() => result.current.select(result.current.apps[0]!.url));
+    expect(result.current.selected?.artifactToken).toBe("previous-token");
   });
   it("defaults off, retains selectable links, isolates sessions and honors close", () => {
     const messages = [output("one")];
@@ -137,6 +140,98 @@ describe("session right pane lifecycle", () => {
   });
 });
 
+describe("session right pane viewer-activated apps", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    invalidateLocalStorageValues();
+    clearCurrentSessionViewer();
+  });
+
+  it("makes a play activation the latest App and seeds it on return", () => {
+    localStorage.setItem(UI_KEYS.sessionRightPane, "true");
+    const messages = [output("one")];
+    const { result, rerender } = renderHook(
+      ({ key, messages }) =>
+        useSessionRightPane(key, messages, config, true, key),
+      { initialProps: { key: "play", messages } },
+    );
+    expect(result.current.apps.at(-1)?.url).toContain("/one");
+    const grant = {
+      sourceUrl: `${config.localOrigin}/a/tok3n/report.html`,
+      url: `${config.localOrigin}/a/tok3n/report.html`,
+      label: "report.html",
+      artifactToken: "tok3n",
+    };
+    act(() => result.current.announce(grant.url, grant.label));
+    expect(result.current.apps.at(-1)).toMatchObject(grant);
+    expect(result.current.apps).toHaveLength(2);
+    // The announcing viewer already shows it; the pane must not take it over.
+    expect(result.current.selected).toBeUndefined();
+    // Announcing the same grant again does not duplicate it.
+    act(() => result.current.announce(grant.url, grant.label));
+    expect(result.current.apps).toHaveLength(2);
+    expect(
+      JSON.parse(localStorage.getItem("yep-anywhere-session-apps:play") ?? "{}")
+        .latest,
+    ).toMatchObject({ url: grant.url, announcementId: `play:${grant.url}` });
+
+    // Leaving and returning re-seeds the play app from storage, so the App
+    // action still recalls it after the viewer that started it closed.
+    rerender({ key: "elsewhere", messages: [] });
+    expect(result.current.apps).toHaveLength(0);
+    rerender({ key: "play", messages });
+    expect(result.current.apps).toHaveLength(2);
+    expect(result.current.apps.at(-1)?.url).toBe(grant.url);
+    expect(result.current.selected).toBeUndefined();
+  });
+
+  const savedGrantUrl = `${config.localOrigin}/a/w33k/report.html`;
+  const saveGrant = (key: string) =>
+    localStorage.setItem(
+      `${SESSION_APPS_KEY_PREFIX}${key}`,
+      JSON.stringify({
+        latest: {
+          sourceUrl: savedGrantUrl,
+          url: savedGrantUrl,
+          label: "report.html",
+          artifactToken: "w33k",
+          announcementId: `play:${savedGrantUrl}`,
+        },
+        dismissed: [],
+      }),
+    );
+
+  it("offers a saved play app on reopen without opening it", () => {
+    localStorage.setItem(UI_KEYS.sessionRightPane, "true");
+    saveGrant("reopened");
+    invalidateLocalStorageValues();
+    invalidateSessionApps();
+    const { result } = renderHook(() =>
+      useSessionRightPane("reopened", [], config, true, "reopened"),
+    );
+    expect(result.current.apps.map((app) => app.url)).toEqual([savedGrantUrl]);
+    // Storage cannot establish that a week-old grant is still alive.
+    expect(result.current.selected).toBeUndefined();
+    expect(result.current.expanded).toBe(false);
+  });
+
+  it("keeps a saved play app as the latest over loaded history", () => {
+    saveGrant("history");
+    invalidateLocalStorageValues();
+    invalidateSessionApps();
+    const { result } = renderHook(() =>
+      useSessionRightPane("history", [output("one")], config, true, "history"),
+    );
+    expect(result.current.apps.map((app) => app.url)).toHaveLength(2);
+    expect(result.current.apps.at(-1)?.url).toBe(savedGrantUrl);
+    expect(
+      JSON.parse(
+        localStorage.getItem(`${SESSION_APPS_KEY_PREFIX}history`) ?? "{}",
+      ).latest,
+    ).toMatchObject({ announcementId: `play:${savedGrantUrl}` });
+  });
+});
+
 describe("session right pane app persistence", () => {
   const sessionKey = "/project-1/session-1";
   const storageKey = `${SESSION_APPS_KEY_PREFIX}${sessionKey}`;
@@ -162,6 +257,26 @@ describe("session right pane app persistence", () => {
 
     expect(localStorage.length).toBe(before);
     expect(localStorage.getItem(storageKey)).toBeNull();
+  });
+
+  it("does not write its older App back when another tab publishes a newer one", () => {
+    const messages = [output("older")];
+    renderHook(() =>
+      useSessionRightPane(sessionKey, messages, config, true, "session-1"),
+    );
+    const newer = JSON.stringify({
+      latest: {
+        sourceUrl: "http://localhost:19432/newer",
+        url: "http://plan.localhost/newer",
+        label: "plan/newer",
+      },
+      dismissed: [],
+    });
+    act(() => {
+      localStorage.setItem(storageKey, newer);
+      window.dispatchEvent(new StorageEvent("storage", { key: storageKey }));
+    });
+    expect(localStorage.getItem(storageKey)).toBe(newer);
   });
 
   it("removes a stored entry that has decayed to the default", () => {

@@ -486,7 +486,9 @@ describe("OpenCodeProvider.startSession — blocking session ID", () => {
     }
 
     const assistantTexts = messages
-      .filter((message) => message.type === "assistant")
+      .filter(
+        (message) => message.type === "assistant" && !message._isStreaming,
+      )
       .map((message) => message.message?.content);
     expect(assistantTexts).toEqual(["assistant reply"]);
 
@@ -1179,10 +1181,194 @@ describe("OpenCodeProvider.startSession — blocking session ID", () => {
       if (next.value.type === "result") break;
     }
 
-    const assistantTexts = messages
+    // Each live message carries the reply so far under the durable id, since
+    // the client replaces a same-id row; the ended part commits it.
+    const assistantMessages = messages
       .filter((message) => message.type === "assistant")
-      .map((message) => message.message?.content);
-    expect(assistantTexts).toEqual(["hello ", "world"]);
+      .map((message) => ({
+        uuid: message.uuid,
+        content: message.message?.content,
+        streaming: message._isStreaming === true,
+      }));
+    expect(assistantMessages).toEqual([
+      { uuid: "msg_assistant", content: "hello ", streaming: true },
+      { uuid: "msg_assistant", content: "hello world", streaming: true },
+      { uuid: "msg_assistant", content: "hello world", streaming: false },
+    ]);
+
+    session.abort();
+  });
+
+  it("commits an OpenCode message only when the message completes", async () => {
+    const sessionId = "ses_commit_once";
+    const part = (id: string, type: string, text: string, end?: number) => ({
+      type: "message.part.updated",
+      properties: {
+        part: {
+          id,
+          sessionID: sessionId,
+          messageID: "msg_steps",
+          type,
+          text,
+          ...(end ? { time: { start: 1, end } } : {}),
+        },
+      },
+    });
+    const info = (completed?: number) => ({
+      type: "message.updated",
+      properties: {
+        info: {
+          id: "msg_steps",
+          sessionID: sessionId,
+          role: "assistant",
+          time: { created: 1, ...(completed ? { completed } : {}) },
+        },
+      },
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            info(),
+            // The reasoning part ends before the text part starts: every part
+            // seen so far has ended, but the message is not complete.
+            part("part_reasoning", "reasoning", "pondering", 2),
+            part("part_text", "text", "answer", 3),
+            info(4),
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        return Promise.resolve(jsonResponse({ ok: true }));
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({
+      cwd: "/tmp/test",
+      initialMessage: { text: "hello" },
+    });
+
+    const messages = [];
+    for (let i = 0; i < 8; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done) break;
+      messages.push(next.value);
+      if (next.value.type === "result") break;
+    }
+
+    const thinking = { type: "thinking", thinking: "pondering" };
+    const text = { type: "text", text: "answer" };
+    expect(
+      messages
+        .filter((message) => message.type === "assistant")
+        .map((message) => ({
+          content: message.message?.content,
+          streaming: message._isStreaming === true,
+        })),
+    ).toEqual([
+      { content: [thinking], streaming: true },
+      { content: [thinking, text], streaming: true },
+      { content: [thinking, text], streaming: false },
+    ]);
+
+    session.abort();
+  });
+
+  it("yields live output while the prompt POST is still pending", async () => {
+    const sessionId = "ses_pending_post";
+    // OpenCode answers the prompt POST only once the turn has finished.
+    let finishPost: (() => void) | undefined;
+    const pendingPost = new Promise<Response>((resolve) => {
+      finishPost = () => resolve(jsonResponse({ ok: true }));
+    });
+    fetchMock.mockImplementation((url: string, init?: RequestInit) => {
+      if (url.includes("/event")) {
+        return Promise.resolve(
+          sseResponse([
+            {
+              type: "message.updated",
+              properties: {
+                info: {
+                  id: "msg_live",
+                  sessionID: sessionId,
+                  role: "assistant",
+                },
+              },
+            },
+            {
+              type: "message.part.updated",
+              properties: {
+                part: {
+                  id: "part_live",
+                  sessionID: sessionId,
+                  messageID: "msg_live",
+                  type: "text",
+                  text: "",
+                },
+              },
+            },
+            {
+              type: "message.part.delta",
+              properties: {
+                sessionID: sessionId,
+                messageID: "msg_live",
+                partID: "part_live",
+                field: "text",
+                delta: "streaming now",
+              },
+            },
+            { type: "session.idle", properties: { sessionID: sessionId } },
+          ]),
+        );
+      }
+      if (url.endsWith(`/session/${sessionId}/message`)) {
+        return pendingPost;
+      }
+      if (init?.method === "POST") {
+        return Promise.resolve(jsonResponse({ id: sessionId }));
+      }
+      return Promise.resolve(jsonResponse({ sessions: [] }));
+    });
+
+    const { OpenCodeProvider } = await import(
+      "../../../src/sdk/providers/opencode.js"
+    );
+    const provider = new OpenCodeProvider({ opencodePath: "/fake/opencode" });
+    const session = await provider.startSession({
+      cwd: "/tmp/test",
+      initialMessage: { text: "hello" },
+    });
+
+    let live: unknown;
+    for (let i = 0; i < 6 && !live; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done) break;
+      if (next.value.type === "assistant") live = next.value;
+    }
+    expect(live).toMatchObject({
+      uuid: "msg_live",
+      _isStreaming: true,
+      message: { content: "streaming now" },
+    });
+
+    // The turn result still waits for the POST to settle.
+    finishPost?.();
+    let sawResult = false;
+    for (let i = 0; i < 6 && !sawResult; i += 1) {
+      const next = await session.iterator.next();
+      if (next.done) break;
+      sawResult = next.value.type === "result";
+    }
+    expect(sawResult).toBe(true);
 
     session.abort();
   });

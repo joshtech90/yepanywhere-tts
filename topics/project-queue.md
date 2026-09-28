@@ -39,6 +39,14 @@ idle predicate; standalone yacron is explicitly ineligible.
   A direct Gateway caller without this durable settlement channel receives the
   existing `queue_full` response at worker capacity instead of an acceptance
   whose deferred validation failure it cannot observe.
+- An existing-session item resumes its session inside the sandbox the session
+  was created with, as `/resume` does; a queued turn never asks for a
+  different boundary.
+- An item records the limited user who queued it, if any. That user's launch
+  policy applies when the item is queued or edited and again at dispatch from
+  their grants at that time, and the turn and any new session are attributed
+  to them ([limited-users](limited-users.md) § Delivery v1). An item with no
+  recorded user is the superuser's.
 - Delivery never rewrites user text with hidden prompt framing, elapsed-time
   markers, or automatic anchors.
 - A normal session queue is lower-level than Project Queue. Existing in-turn
@@ -101,9 +109,15 @@ before one Project Queue item may promote.
 Queue status must be server-computed. Project Queue responses expose each
 project's scheduler state (`blocked`, `waiting-quiet`, `ready`, `dispatching`,
 `paused`, or `empty`), the configured quiet window, the next eligible timestamp,
-and raw blocker strings. The client may format that state as "waiting for quiet"
-or "blocked by ..." copy, but it must not infer idleness from stale local
-session rows.
+raw blocker strings, and resolved display titles for blocker sessions when
+available. The client may format that state as "waiting for quiet" or "blocked
+by ..." copy, but it must not infer idleness from stale local session rows.
+Blocker strings keep their wire form (`<sessionId>:<reason>`, `readiness:…`,
+`worker-queue`, …); shared `parseProjectQueueBlocker` is their one reader and
+`PROJECT_QUEUE_SESSION_BLOCKER_REASONS` their one list of session reasons, so
+every reason, `automation-paused` included, renders as words. The UI names the
+first `PROJECT_QUEUE_NAMED_BLOCKER_COUNT` (three) blockers and counts the rest;
+the server resolves titles only for sessions among those named blockers.
 
 Blocked automatic attempts must stay live. If a quiet-window timer fires while
 absolute blockers remain, the scheduler keeps a bounded retry armed while
@@ -116,6 +130,13 @@ triggers. Existing-session titles come from the
 metadata; unresolved titles remain nullable while one exact background repair
 runs. Repeated queue reads with unchanged state perform no provider,
 session-index miss, transcript, or all-project work.
+
+A limited user's global queue collection and promote-now response project
+ordinary items, recovered session-queue items, and project-status entries to
+that user's granted projects. The global dispatch pause remains visible because
+it gates promotion of their own items too. This projection is an explicit
+response-field allowlist: a field added to the global response is withheld from
+limited users until its project scope is defined.
 
 Item, dispatch, blocker, quiet-window, external-ownership, and recovery
 transitions update one server-owned project-status projection and publish a
@@ -256,6 +277,11 @@ compatibility generation, because early Project Queue-capable source checkouts
 predate the compatibility marker and can expose partial Project Queue behavior
 to newer hosted clients.
 
+Blocked status groups reasons that name the same session so its short id is
+shown once. The group ends with the session's display title as a link to that
+session when the server supplied one; older servers retain the short-id-only
+fallback.
+
 After restart-paused dispatch, each queued new-session row in the sidebar's
 Pending Sessions section exposes a compact Resume control. It atomically
 resumes global dispatch and moves that item to the head of its own project's
@@ -289,6 +315,10 @@ hidden after a successful read, so users who have not invoked this default-off
 feature do not encounter a new empty-state concept. An initial read failure is
 still rendered even when no stale items exist; failure must not masquerade as a
 confirmed empty queue.
+Each ordinary Project Queue row shows the provider/model badge saved on its
+target before dispatch. Older items without a saved provider omit the badge;
+the display is informative and does not replace launch-time provider catalog
+validation.
 An active session composer's additional "queue as new session" action has
 useful semantics even while the project is idle, but it is present only when
 the separate `projectQueueNewSessionShortcut` toolbar control is enabled and
@@ -305,6 +335,32 @@ additional new-session action create the same durable Project Queue target
 shape (`target.type === "new-session"`); neither uses a client-held draft
 queue. The active-session action inherits that session's selected provider,
 model, executor, permission mode, and thinking settings for the future session.
+
+Right-click (long-press on touch) on the active-session new-session action
+opens a purple-tinted dock below the editable composer instead of queueing.
+Right-click on the ordinary Send action opens the same dock with green tint.
+It has no modal backdrop or explanatory caption. Project is first and widest,
+model second, provider third; each starts at the current session's value.
+The model dropdown lists the selected provider's catalog. Typing searches
+launchable providers, with provider names in parentheses; choosing a completion
+also changes the provider. Providers requiring an advertised model retain that
+restriction. The composer remains editable while the dock is open.
+
+Green starts a new session immediately through the ordinary session-start
+API and navigates to it. Purple creates a new-session Project Queue item;
+the toast names its project when it differs. Desktop Enter in the draft invokes
+the entry point's action: green from Send, purple from Project Queue.
+Shift+Enter and touch-keyboard Enter retain newline behavior. Model-completion
+Enter chooses the highlighted model before a subsequent Enter can submit.
+An explicit × beside “New session” or Escape exits the mode without changing
+the draft; Escape first closes an open model completion list. Normal sending
+resumes on exit. New-session delivery reuses draft recovery on failure and
+only confirms draft removal after the server accepts the request.
+Permission mode still follows the session. Its executor and its implicit
+effort carry over only when the provider is unchanged, since another
+provider's catalog may reject them; an effort typed in the draft itself still
+applies. Cancelling leaves the draft and queues nothing. A click that ends a
+long-press never also queues.
 
 Current-session Project Queue action visibility should use both exact active
 session ids, when available, and project-level Project Queue blocking-count
@@ -446,10 +502,13 @@ ever reinterprets slash-shaped text by content.
 Three outcomes, all decided at enqueue so the user learns immediately:
 
 - **Queueable** — `/clear N` and `/clearloop [N] M: <prompt>`. The server runs
-  them against the target session at dispatch. A `/clearloop` promoted this
+  them against the target session at dispatch. An argument that cannot run —
+  bare `/clear` or `/clear 0`, `/clear abc`, a `/clearloop` without `M:` and a
+  prompt — is refused with a visible reason and the draft is restored, rather
+  than failing when the project goes quiet. A `/clearloop` promoted this
   way starts **patient** ([session-rewind](session-rewind.md#clearloop)): the
   user chose a lane that waits for the project, so the loop it starts keeps
-  waiting.
+  waiting, including for items this queue is about to promote.
 - **Composer-only** — `/model`, `/btw`, `/done`, `/archive`, `/terminate`,
   `/title`, `/compact`. These act on composer or client state, so queueing
   one would have to either run it now or run it later against a composer that
@@ -460,14 +519,35 @@ Three outcomes, all decided at enqueue so the user learns immediately:
   design. Refused with its own reason, not silently run.
 
 Anything else — ordinary prose, a provider command, a skill line, an effort
-modifier such as `/fast …` — queues as text exactly as before.
+modifier such as `/fast …` — queues as text exactly as before. That includes
+`/clear`, `/fork`, and `/clearloop` from a session without rewind support
+([session-rewind](session-rewind.md#commands)): there they are the provider's
+own commands, not YA's.
+
+The text is the only source of what a tagged item runs. The tag is a marker:
+the server re-derives the command's name and argument from `message.text` on
+every create, edit, and load and again at dispatch, so a queue row can never
+show one command while another runs. Editing a tagged item's text to another
+`/clear` or `/clearloop` changes what runs; editing it into prose makes it an
+ordinary prompt, because the queue editors re-tag from the new text before
+saving. An edit to a malformed `/clear` or `/clearloop` keeps its tag, so it
+is refused rather than queued as provider text. The server refuses a tagged
+message whose text no longer spells the tagged command or whose argument
+cannot run, reading it with the same shared parser the dispatch runner uses,
+and a tagged item whose target is, or is edited to be, a new session. An item
+persisted in any of these states by an older build loads as failed
+with that reason instead of being dropped, and a Retry of it unchanged fails
+the same way at dispatch rather than delivering the command line to a
+provider as a prompt. Editing untagged text into a command line does not tag
+it: the queue editors do not know whether the target session supports rewind.
 
 A queued command resolves its turn at **dispatch**, not at enqueue. `/clearloop
 3: p` queued now loops over turn 3 as it stands when the project finally goes
 quiet, and a command with no number uses the tail then. A queued command takes
-no attachments, targets an existing session only, and `/clear 0` is refused
-because it is the composer's navigate-to-a-new-session action rather than a
-session operation a scheduler can perform.
+no attachments, targets an existing session only, and `/clear 0` (or bare
+`/clear`) is refused at enqueue because it is the composer's
+navigate-to-a-new-session action rather than a session operation a scheduler
+can perform. Only the turn is resolved late; the argument's shape is not.
 
 Dispatching a YA command starts no provider work, so it settles the item
 without a session launch. A refusal from the session — a provider that does

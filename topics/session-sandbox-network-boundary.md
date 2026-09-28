@@ -132,6 +132,21 @@ the route utility plus a real namespace/egress setup. A partial installation is
 not advertised as an available sandbox backend. The authoritative launch path
 repeats the complete setup.
 
+On Ubuntu 23.10 and later, AppArmor's default
+`kernel.apparmor_restrict_unprivileged_userns=1` lets Bubblewrap (which ships
+an exempting profile) create user namespaces but denies the `unshare` stage its
+in-namespace capabilities, so the probe fails with `uid_map: Operation not
+permitted`. The availability result reports this as the `userns-restricted`
+blocker (see [session-sandboxing](session-sandboxing.md#status-and-evidence)).
+Observed 2026-09-27 on an Ubuntu host with every package installed.
+
+The private resolver file is mounted at the resolved target of
+`/etc/resolv.conf`, not at the link itself. systemd-resolved hosts point it
+into `/run/systemd/resolve/`, and the sandbox's fresh `/run` tmpfs lacks that
+directory, so the launch creates it first. Mounting at the link failed every
+Ubuntu launch while the availability probe, which omits this mount, still
+passed ([gap](../gaps/sandbox-availability-probe-omits-launch-mounts.md)).
+
 ## Implementation
 
 `prepareSessionSandbox` remains the single server-side policy owner. For an

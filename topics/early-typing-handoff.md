@@ -10,7 +10,9 @@
 Topic: early-typing-handoff
 
 Status: implemented for reverse search, session entry with a prefilled or
-focused composer, both rename fields, and the new-session prompt (2026-09-19).
+focused composer, both rename fields, and the new-session prompt
+(2026-09-19), and for a tab opened on the new-session page before the app
+loads (2026-09-27, § Pre-boot composer).
 
 ## Why
 
@@ -29,7 +31,10 @@ The observed shapes, all of which existed at once:
   replaced it. CI caught it as `"ho"` typed and `"o"` read.
 - **A timer.** Both rename fields focused from `setTimeout(…, 0)`.
 - **A passive effect.** The new-session prompt focused from a mount effect,
-  which React runs after paint.
+  which React runs after paint. React does flush the effects of an update a
+  click or key handler made before the next event, but the same effect run
+  after a navigation or an asynchronous load waits for paint, so rule 1 does
+  not lean on that distinction.
 - **A whole load.** Entering a session with `composerPrefill` or
   `focusComposer` could only reach the composer once the session had loaded,
   because that is when the composer exists.
@@ -52,14 +57,26 @@ The observed shapes, all of which existed at once:
    focus alone retires the handoff after `attempts` (focus plus one key), and
    that escape puts the caret after whatever the field shows: at most the last
    character is out of order.
-5. **Bound the hold.** An unclaimed handoff expires rather than intercepting
-   for the rest of the page's life.
+5. **Bound the hold.** An unclaimed handoff stops intercepting after 15 s
+   rather than for the rest of the page's life. Expiry ends interception only:
+   keys it already took were kept from the page, so it still delivers them
+   to a field that claims later, such as a composer behind a slow session
+   load. Keys struck after expiry reach the page as usual. Only an abandoned
+   request (a new navigation, leaving the page) forgets the held keys.
 6. **Take printable keys and Backspace only**, and only for the span of one
    request. This is not a general keystroke recorder, and modified or named
    keys keep reaching the shortcuts they belong to.
 7. **Respect the caret the action intends.** Held characters go where the
    request meant them to go relative to any prefilled text — after it for a
-   prefilled composer — and the caret ends after them.
+   prefilled composer — and the caret ends after them. Where the text arrives
+   after the keys and was never shown while they were typed (a new-session
+   launch seed that is still being fetched), the typed text follows it as its
+   own paragraph unless the seed already ends in whitespace.
+8. **A refused commit keeps its field rather than refocusing it.** Enter
+   commits in place, and the field stays focusable while a save is in flight
+   (read-only, not disabled), so a refusal leaves the user typing in it with
+   no later focus call. A commit started by leaving the field does not pull
+   focus back from where the user moved it.
 
 ## Where it lives
 
@@ -72,8 +89,50 @@ and buffers internally when it does not, replaying in order on `claim`.
 Call sites: `useMessageListIsearch` (reverse search),
 `SessionPage` (`flushEarlyComposerTyping`, claimed from the navigation effect
 or from `handleDraftControlsReady`), `NewSessionForm`, `SessionListItem` and
-`SessionPage`'s title rename (focus only — those fields mount with their row,
-so there is no window to hold).
+`SessionPage`'s title rename, and the Projects card's `ProjectCaptionEditor`
+and `ProjectCodeNameEditor` (focus only — those fields mount with their row,
+so there is no window to hold; the two Projects editors also follow rule 8).
+
+## Pre-boot composer
+
+A tab opened directly on `/new-session` has no app yet: loading it takes
+seconds (about 2–3 s against the dev server, 2026-09-27), so neither a ref
+callback nor a key buffer inside the app can help. The HTML therefore carries
+its own composer.
+
+1. **Typeable from the document alone.** On `/new-session` (local or relay
+   path, without a `prefillToken`) an inline script shows a focused textarea
+   during HTML parse, before any module is requested. Measured on the local
+   dev server, it holds focus 28–34 ms after navigation starts; the rest of
+   the tab's startup does not delay it.
+2. **Adopted in one commit.** The page's `NewSessionForm` takes the text and
+   selection in the ref callback that creates its own textarea and focuses
+   it there, so no key falls between the two fields. Text typed there follows
+   a restored draft as its own paragraph (rule 7), since it was typed without
+   seeing it. Launch composers (fork, handoff) never adopt it.
+3. **Never covers another page.** When routing settles anywhere other than
+   the new-session route (a login redirect) or the error boundary catches,
+   the overlay is removed and non-empty text is kept in `sessionStorage` for
+   the next adoption in that tab. It sits below the app's modals, so a
+   blocking dialog raised at the same URL (host offline) shows over it.
+4. **Enter does not send yet.** On a fine pointer, plain Enter is swallowed
+   rather than becoming a newline, because the app's Enter would have sent;
+   Shift+Enter still adds a newline. On a coarse pointer, Enter is a newline,
+   as in the app.
+5. **The tab starts with the sidebar minimized** (unsaved; see
+   [UI architecture](ui-architecture.md#desktop-sidebar-display-modes)), so
+   loading the sidebar neither competes with the composer nor moves it.
+6. **Geometry follows the page.** The pre-boot textarea sits where the form's
+   textarea will be at each width, including the reader's content width, so
+   the handoff does not visibly move the text. Its copy is English only: the
+   app's catalog is not loaded yet.
+
+`packages/client/preboot/new-session-composer.js` is the inline source,
+injected into both entry documents by `vite-plugin-preboot-composer.ts`
+ahead of the CSP pass, which hashes it for the production policy.
+`src/lib/prebootComposer.ts` owns adoption and retirement;
+`e2e/new-session-preboot-composer.spec.ts` holds the app's scripts, types,
+releases them, and checks the handoff.
 
 ## What does not need it
 

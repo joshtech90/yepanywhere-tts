@@ -347,7 +347,7 @@ export function groupConversation(
       item.type === "tool_call" && Array.isArray(sourceContent)
         ? sourceContent.findIndex((block) => block.id === item.id)
         : item.type === "text" || item.type === "thinking"
-          ? (item.sourceBlockIndex ?? 0)
+          ? item.sourceBlockIndex
           : 0;
     while (
       extras[extraIndex] &&

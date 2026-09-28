@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page } from "@playwright/test";
@@ -19,7 +19,12 @@ test.use({ serviceWorkers: "block" });
 
 let devServer: ViteDevServer;
 let devUrl: string;
-test.beforeEach(async ({ baseURL }) => {
+test.beforeAll(async () => {
+  const port = Number.parseInt(
+    readFileSync(join(e2ePaths.tempDir, "port"), "utf8"),
+    10,
+  );
+  const baseURL = `http://localhost:${port}`;
   devServer = await createServer({
     configFile: join(
       dirname(fileURLToPath(import.meta.url)),
@@ -38,8 +43,7 @@ test.beforeEach(async ({ baseURL }) => {
     throw new Error("Missing dev-server port");
   devUrl = `http://127.0.0.1:${address.port}`;
 });
-test.afterEach(async ({ page }) => {
-  await page.close();
+test.afterAll(async () => {
   await devServer?.close();
 });
 

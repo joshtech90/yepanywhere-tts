@@ -1,5 +1,7 @@
 import {
+  type LimitedUserGrants,
   type PermissionMode,
+  type SessionClearloopJob,
   type StagedAttachmentRef,
   toUrlProjectId,
   type UrlProjectId,
@@ -9,18 +11,22 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getLogger } from "../../src/logging/logger.js";
+import type { SessionMetadataService } from "../../src/metadata/index.js";
 import { ProjectStoragePolicy } from "../../src/projects/projectStoragePolicy.js";
 import type { UserMessage } from "../../src/sdk/types.js";
+import { ClearloopService } from "../../src/services/ClearloopService.js";
 import {
   RetryableSessionLaunchError,
   type ModelSettings,
   type SessionLaunchOptions,
+  type Supervisor,
 } from "../../src/supervisor/Supervisor.js";
 import {
   ProjectQueueScheduler,
   type ProjectQueueDispatchResult,
   type ProjectQueueExternalTracker,
   type ProjectQueueProcessSnapshot,
+  type ProjectQueueSessionLaunchMetadata,
   type ProjectQueueSupervisor,
 } from "../../src/services/ProjectQueueScheduler.js";
 import { ProjectQueueService } from "../../src/services/ProjectQueueService.js";
@@ -110,6 +116,7 @@ class FakeSupervisor implements ProjectQueueSupervisor {
   resumeBlocker: Promise<void> | null = null;
   queueNextStart = false;
   startModelSettings: Array<ModelSettings | undefined> = [];
+  resumeModelSettings: Array<ModelSettings | undefined> = [];
   startLaunchOptions: SessionLaunchOptions | undefined;
   createLaunchOptions: SessionLaunchOptions | undefined;
   resumeLaunchOptions: SessionLaunchOptions | undefined;
@@ -168,10 +175,11 @@ class FakeSupervisor implements ProjectQueueSupervisor {
     projectPath: string,
     message: UserMessage,
     _permissionMode?: PermissionMode,
-    _modelSettings?: ModelSettings,
+    modelSettings?: ModelSettings,
     launchOptions?: SessionLaunchOptions,
   ): Promise<ProjectQueueDispatchResult> {
     this.resumeCalls.push({ sessionId, projectPath, message });
+    this.resumeModelSettings.push(modelSettings);
     this.resumeLaunchOptions = launchOptions;
     await this.resumeBlocker;
     if (this.resumeError) throw this.resumeError;
@@ -465,6 +473,59 @@ describe("ProjectQueueScheduler", () => {
     );
   });
 
+  it("refuses a retried command whose text no longer spells it", async () => {
+    await scheduler.dispose();
+    await fs.writeFile(
+      path.join(testDir, "project-queues.json"),
+      JSON.stringify({
+        version: 3,
+        items: [
+          {
+            id: "stale",
+            projectId,
+            projectPath: PROJECT_PATH,
+            target: { type: "existing-session", sessionId: "session-1" },
+            // Left behind by a build that let an edit keep the old tag.
+            message: {
+              text: "summarize instead",
+              yaCommand: { name: "clearloop", argument: "3 2: keep going" },
+            },
+            createdAt: "2026-06-01T00:00:00.000Z",
+            updatedAt: "2026-06-01T00:00:00.000Z",
+            status: "queued",
+          },
+        ],
+      }),
+    );
+    service = new ProjectQueueService({ dataDir: testDir, eventBus });
+    await service.initialize();
+    await service.resumeDispatch();
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 1,
+      blockedRetryMs: 10,
+    });
+    const runs: unknown[] = [];
+    scheduler.setYaCommandRunner({
+      run: async (input) => {
+        runs.push(input);
+      },
+    });
+
+    await service.retryItem(projectId, "stale");
+
+    await waitFor(() => {
+      const [item] = service.listProject(projectId).items;
+      expect(item?.lastAttemptAt).toBeDefined();
+      expect(item?.status).toBe("failed");
+      expect(item?.lastError).toContain("no longer spells /clearloop");
+    });
+    expect(runs).toHaveLength(0);
+    expect(supervisor.resumeCalls).toHaveLength(0);
+  });
+
   it("fails a queued YA command item with the session's refusal", async () => {
     scheduler.setYaCommandRunner({
       run: async () => {
@@ -671,6 +732,142 @@ describe("ProjectQueueScheduler", () => {
         }),
       ]),
     );
+  });
+
+  it("resumes a sandboxed session inside its sandbox for a queued turn", async () => {
+    await scheduler.dispose();
+    scheduler = new ProjectQueueScheduler({
+      projectQueueService: service,
+      supervisor,
+      eventBus,
+      idleGraceMs: 1,
+      blockedRetryMs: 10,
+      getSessionLaunchMetadata: () => ({
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: false,
+        sandboxStateKey: "state-1",
+        sandboxProjectPath: "/sandboxed/project",
+        workingProjectId: projectId,
+      }),
+    });
+    await service.createItem({
+      projectId,
+      projectPath: PROJECT_PATH,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: { text: "continue inside the sandbox" },
+      },
+    });
+
+    await waitFor(() => expect(supervisor.resumeCalls).toHaveLength(1));
+    expect(supervisor.resumeCalls[0]?.projectPath).toBe("/sandboxed/project");
+    expect(supervisor.resumeModelSettings[0]).toMatchObject({
+      sandboxLevel: "project-write",
+      sandboxNetworkFirewall: false,
+      sandboxStateKey: "state-1",
+    });
+  });
+
+  describe("an item a limited user queued", () => {
+    const grantsFor = (level: "new-session" | "join"): LimitedUserGrants => ({
+      newSessionProjects: level === "new-session" ? [projectId] : [],
+      joinProjects: level === "join" ? [projectId] : [],
+      viewProjects: [],
+      joinStaleOffsetMinutes: 0,
+      lock: { model: "gpt-5" },
+    });
+
+    async function schedulerWith(
+      grants: LimitedUserGrants | null,
+      session?: ProjectQueueSessionLaunchMetadata,
+    ) {
+      await scheduler.dispose();
+      scheduler = new ProjectQueueScheduler({
+        projectQueueService: service,
+        supervisor,
+        eventBus,
+        idleGraceMs: 1,
+        blockedRetryMs: 10,
+        getLimitedUserGrants: (username) =>
+          username === "alice" ? grants : null,
+        getSessionLaunchMetadata: () => session,
+      });
+    }
+
+    async function failedError(): Promise<string | undefined> {
+      let lastError: string | undefined;
+      await waitFor(() => {
+        const [item] = service.listProject(projectId).items;
+        expect(item?.status).toBe("failed");
+        lastError = item?.lastError;
+      });
+      return lastError;
+    }
+
+    it("launches sandboxed, inside the lock, and attributed to that user", async () => {
+      await schedulerWith(grantsFor("new-session"));
+      await service.createItem({
+        projectId,
+        projectPath: PROJECT_PATH,
+        createdByUser: "alice",
+        request: {
+          target: {
+            type: "new-session",
+            provider: "codex",
+            sandboxLevel: "none",
+          },
+          message: {
+            text: "start as alice",
+            metadata: { sentByUser: "mallory" },
+          },
+        },
+      });
+
+      await waitFor(() => expect(supervisor.startCalls).toHaveLength(1));
+      expect(supervisor.startModelSettings[0]).toMatchObject({
+        sandboxLevel: "project-write",
+        model: "gpt-5",
+      });
+      expect(supervisor.startCalls[0]?.message.metadata?.sentByUser).toBe(
+        "alice",
+      );
+    });
+
+    it("fails once the user no longer holds the project's new-session grant", async () => {
+      await schedulerWith(grantsFor("join"));
+      await service.createItem({
+        projectId,
+        projectPath: PROJECT_PATH,
+        createdByUser: "alice",
+        request: {
+          target: { type: "new-session", provider: "codex" },
+          message: { text: "start as alice" },
+        },
+      });
+
+      expect(await failedError()).toMatch(/can no longer start sessions/);
+      expect(supervisor.startCalls).toHaveLength(0);
+    });
+
+    it("fails a turn to a session that runs outside the sandbox", async () => {
+      await schedulerWith(grantsFor("new-session"), {
+        sandboxLevel: "none",
+        workingProjectId: projectId,
+        provider: "codex",
+      });
+      await service.createItem({
+        projectId,
+        projectPath: PROJECT_PATH,
+        createdByUser: "alice",
+        request: {
+          target: { type: "existing-session", sessionId: "session-1" },
+          message: { text: "continue as alice" },
+        },
+      });
+
+      expect(await failedError()).toMatch(/outside the sandbox/);
+      expect(supervisor.resumeCalls).toHaveLength(0);
+    });
   });
 
   it("defaults queued project sandboxes to the network firewall", async () => {
@@ -1377,5 +1574,128 @@ describe("ProjectQueueScheduler", () => {
       { status: "failed", messagePreview: "first" },
       { status: "queued", messagePreview: "second" },
     ]);
+  });
+
+  describe("work that yields to the queue", () => {
+    async function queueItem(sessionId = "session-2"): Promise<void> {
+      await service.createItem({
+        projectId,
+        projectPath: PROJECT_PATH,
+        request: {
+          target: { type: "existing-session", sessionId },
+          message: { text: "queued behind a loop" },
+        },
+      });
+    }
+
+    async function schedulerWith(
+      options: Partial<ConstructorParameters<typeof ProjectQueueScheduler>[0]>,
+    ): Promise<void> {
+      await scheduler.dispose();
+      scheduler = new ProjectQueueScheduler({
+        projectQueueService: service,
+        supervisor,
+        eventBus,
+        idleGraceMs: 60_000,
+        ...options,
+      });
+    }
+
+    it("is blocked by an item the queue will promote once quiet", async () => {
+      await schedulerWith({});
+      await queueItem();
+
+      await expect(
+        scheduler.getProjectWorkStatusYieldingToQueue(projectId),
+      ).resolves.toEqual({
+        idle: false,
+        blockers: ["project-queue:item-waiting"],
+      });
+      // The queue's own predicate must not wait on its own head.
+      await expect(scheduler.getProjectWorkStatus(projectId)).resolves.toEqual({
+        idle: true,
+        blockers: [],
+      });
+    });
+
+    it("is not blocked by an item the queue is holding", async () => {
+      await schedulerWith({
+        isSessionAutomationPaused: (sessionId) => sessionId === "session-2",
+      });
+      await queueItem();
+      await expect(
+        scheduler.getProjectWorkStatusYieldingToQueue(projectId),
+      ).resolves.toEqual({ idle: true, blockers: [] });
+
+      await queueItem("session-3");
+      await service.pauseDispatch();
+      await schedulerWith({});
+      await expect(
+        scheduler.getProjectWorkStatusYieldingToQueue(projectId),
+      ).resolves.toEqual({ idle: true, blockers: [] });
+    });
+
+    it("adds no queue blocker while the project is otherwise busy", async () => {
+      await schedulerWith({});
+      supervisor.processes.push(
+        createProcess(projectId, { state: { type: "in-turn" } }),
+      );
+      await queueItem();
+
+      await expect(
+        scheduler.getProjectWorkStatusYieldingToQueue(projectId),
+      ).resolves.toMatchObject({
+        idle: false,
+        blockers: expect.not.arrayContaining(["project-queue:item-waiting"]),
+      });
+    });
+
+    it("lets a queued item run before a patient loop's next iteration", async () => {
+      // The loop's boundary (at least 250 ms) comes well before the queue's
+      // quiet window, so without yielding the loop would start first.
+      await schedulerWith({ idleGraceMs: 700 });
+      let clearloop: SessionClearloopJob | undefined;
+      const order: string[] = [];
+      const loop = new ClearloopService({
+        eventBus,
+        sessionMetadataService: {
+          getClearloop: () => clearloop,
+          setClearloop: async (_id: string, job?: SessionClearloopJob) => {
+            clearloop = job;
+          },
+          addLocalCommandMessage: async () => {},
+        } as unknown as SessionMetadataService,
+        getSupervisor: () =>
+          ({ getProcessForSession: () => undefined }) as unknown as Supervisor,
+        getInactivitySeconds: () => 0,
+        patientRecheckMs: 20,
+        getProjectIdleStatus: (id) =>
+          scheduler.getProjectWorkStatusYieldingToQueue(id),
+      });
+      loop.setRunner({
+        rewind: async () => "noop",
+        send: async () => {
+          order.push("loop");
+        },
+      });
+      const resume = supervisor.resumeSession.bind(supervisor);
+      supervisor.resumeSession = async (...args) => {
+        order.push("queue");
+        return resume(...args);
+      };
+
+      await loop.start("loop-session", projectId, {
+        cutMessageId: "cut-1",
+        cutTurnIndex: 1,
+        prompt: "again",
+        total: 2,
+        commandText: "/clearloop 1 2: again",
+        patient: true,
+      });
+      await queueItem();
+
+      await waitFor(() => expect(clearloop?.state).toBe("completed"), 3_000);
+      expect(order).toEqual(["loop", "queue", "loop"]);
+    });
   });
 });

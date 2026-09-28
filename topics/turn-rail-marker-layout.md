@@ -37,6 +37,24 @@ PageDown keep targeting the transcript instead of a previously focused composer
 or a browser-dependent document fallback. Editable controls retain their page
 keys until the user makes that explicit scrollbar gesture.
 
+## Margin navigation
+
+Margin navigation is an opt-in, browser-local Appearance setting (**Margin
+click navigation**), off by default. When it is off, a click or
+right-click on a transcript row's margin keeps its ordinary browser meaning,
+including the browser context menu.
+
+When it is on, a plain click on a row's margin — the row element itself, not
+its content or a control — scrolls so the next row at the same outline level
+lands just under the pointer; a plain right-click goes to the previous row and
+suppresses the browser menu. A further click without moving the pointer steps
+again. Outline levels are the top level and each rewound group
+([session-rewind](session-rewind.md)), so inside an expanded group the steps
+stay within that group. A click with Alt, Ctrl, Meta or Shift held, or one that
+ends a text selection, is left to the browser. The owner is
+`navigateFromMargin` in `components/MessageList.tsx`; the preference is
+`hooks/useTranscriptMarginNavigation.ts`.
+
 ## The bug (root cause)
 
 Each marker's hit/hover target was a **fixed 22px box** (`height:22px;
@@ -150,7 +168,9 @@ search box to ordinary visible transcript content must neither close search nor
 consume the content click; the clicked control's usual behavior and resulting
 scroll position win. Explicitly closing search after a committed jump must not
 restore the pre-search scroll position or issue a delayed recenter to a stale
-search target.
+search target. After a committed jump closes search, the landed match frame
+clears on the reader's next key, pointer, wheel, or touch input; a reveal still
+settling from that jump must not repaint the frame after that input.
 
 Marker-hover paging is sticky within a horizontal band. Once a hashmark owns the
 preview window, entering another marker at the same pointer Y must not page the

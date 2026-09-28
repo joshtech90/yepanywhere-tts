@@ -291,7 +291,22 @@ export class OpenCodeSessionReader implements ISessionReader {
     sessionId: string,
     projectId: UrlProjectId,
     afterMessageId?: string,
-    _options?: GetSessionOptions,
+    options?: GetSessionOptions,
+  ): Promise<LoadedSession | null> {
+    const loaded = await this.loadSessionFromSources(
+      sessionId,
+      projectId,
+      afterMessageId,
+    );
+    return loaded && options?.ownedTurnInProgress
+      ? withoutUnfinishedAssistantTail(loaded)
+      : loaded;
+  }
+
+  private async loadSessionFromSources(
+    sessionId: string,
+    projectId: UrlProjectId,
+    afterMessageId?: string,
   ): Promise<LoadedSession | null> {
     const fromDb = await this.loadDbSession(
       sessionId,
@@ -1593,6 +1608,29 @@ export class OpenCodeSessionReader implements ISessionReader {
     if (!title) return null;
     return truncateSessionTitle(title) || null;
   }
+}
+
+/**
+ * OpenCode fills an assistant row in place until it records `time.completed`.
+ * While YA's own turn streams that row live, the partial durable copy would
+ * shadow the stream, and an `afterMessageId` catch-up never returns it again.
+ * Only the trailing row is omitted: a killed turn leaves its row unfinished
+ * for good, and it reappears once no owned turn is in progress.
+ */
+function withoutUnfinishedAssistantTail(loaded: LoadedSession): LoadedSession {
+  if (loaded.data.provider !== "opencode") return loaded;
+  const entries = loaded.data.session.messages;
+  const tail = entries.at(-1)?.message;
+  if (tail?.role !== "assistant" || tail.time?.completed !== undefined) {
+    return loaded;
+  }
+  return {
+    ...loaded,
+    data: {
+      ...loaded.data,
+      session: { ...loaded.data.session, messages: entries.slice(0, -1) },
+    },
+  };
 }
 
 function childSummaryFromDbRow(

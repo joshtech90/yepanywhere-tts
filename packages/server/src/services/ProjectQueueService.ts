@@ -19,6 +19,7 @@ import {
   type ProviderName,
   QUEUEABLE_YA_COMMANDS,
   type QueuedYaCommand,
+  type QueuedYaCommandProblem,
   type ShowThinking,
   type StagedAttachmentRef,
   type ThinkingOption,
@@ -26,6 +27,8 @@ import {
   type UploadedFile,
   type UrlProjectId,
   isUrlProjectId,
+  queuedYaCommandForText,
+  readQueuedYaCommand,
 } from "@yep-anywhere/shared";
 import type {
   AttachmentStagingService,
@@ -66,6 +69,31 @@ export class ProjectQueueValidationError extends Error {
     super(message);
     this.name = "ProjectQueueValidationError";
   }
+}
+
+/** A well-formed item the queuing user's launch policy does not allow. */
+export class ProjectQueueLaunchRefusedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "ProjectQueueLaunchRefusedError";
+  }
+}
+
+/**
+ * Checks, and may adjust in place, the normalized target and message of an
+ * item being queued or edited; returns a refusal reason or null.
+ */
+export type ProjectQueueLaunchPolicy = (draft: {
+  target: ProjectQueueTarget;
+  message: ProjectQueueMessage;
+}) => string | null;
+
+function applyLaunchPolicy(
+  policy: ProjectQueueLaunchPolicy | undefined,
+  draft: { target: ProjectQueueTarget; message: ProjectQueueMessage },
+): void {
+  const refusal = policy?.(draft);
+  if (refusal) throw new ProjectQueueLaunchRefusedError(refusal);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -408,10 +436,12 @@ function normalizeMessage(raw: unknown): ProjectQueueMessage {
 }
 
 /**
- * A YA-emulated command the scheduler will run at dispatch instead of sending
- * `text` to the provider (topics/project-queue.md § Queued YA commands). Only
- * the names with a server execution path are accepted, so an unknown name is
- * a rejected request rather than a command line silently delivered as prose.
+ * The shape of the tag marking a message as a YA-emulated command the
+ * scheduler runs at dispatch instead of sending `text` to the provider
+ * (topics/project-queue.md § Queued YA commands). Only the names with a
+ * server execution path are accepted, so an unknown name is a rejected
+ * request rather than a command line silently delivered as prose. What the
+ * tag runs is decided by `queuedYaCommandToRun`, never by this stored copy.
  */
 function normalizeYaCommand(raw: unknown): QueuedYaCommand | undefined {
   if (raw === undefined) return undefined;
@@ -436,6 +466,63 @@ function normalizeYaCommand(raw: unknown): QueuedYaCommand | undefined {
     );
   }
   return { name: name as QueuedYaCommand["name"], argument: argument ?? "" };
+}
+
+/** Why a queued command's argument cannot run, as a queue error message. */
+export function describeQueuedYaCommandProblem(
+  command: QueuedYaCommand,
+  problem: QueuedYaCommandProblem,
+): string {
+  if (problem === "clear-zero") {
+    return "Queued /clear needs a turn number: /clear 0 starts a new session, so queue a new session instead";
+  }
+  const commandText = command.argument
+    ? `/${command.name} ${command.argument}`
+    : `/${command.name}`;
+  return `Cannot read queued ${commandText}; use /clear N or /clearloop [N] M: prompt`;
+}
+
+/**
+ * The YA command a tagged item runs, derived from `message.text` alone, or
+ * undefined for an untagged item. An edit or retarget therefore changes what
+ * runs together with what the queue shows. Throws when the text no longer
+ * spells the tagged command, its argument cannot run, or the target is not an
+ * existing session: a command line must never reach a provider as a prompt,
+ * and a malformed one is refused when queued, not when the project goes quiet.
+ */
+export function queuedYaCommandToRun(item: {
+  target: ProjectQueueTarget;
+  message: ProjectQueueMessage;
+}): QueuedYaCommand | undefined {
+  const tag = item.message.yaCommand;
+  if (!tag) return undefined;
+  const command = queuedYaCommandForText(item.message.text);
+  if (!command || command.name !== tag.name) {
+    throw new ProjectQueueValidationError(
+      `Queued /${tag.name} item text no longer spells /${tag.name}; edit the text or remove the command tag to queue it as a prompt`,
+    );
+  }
+  if (item.target.type !== "existing-session") {
+    throw new ProjectQueueValidationError(
+      `Queued /${command.name} runs against an existing session and cannot target a new session`,
+    );
+  }
+  const reading = readQueuedYaCommand(command);
+  if (!reading.ok) {
+    throw new ProjectQueueValidationError(
+      describeQueuedYaCommandProblem(command, reading.problem),
+    );
+  }
+  return command;
+}
+
+/** The message with its tag re-derived from its text, or unchanged. */
+function withDerivedYaCommand(
+  target: ProjectQueueTarget,
+  message: ProjectQueueMessage,
+): ProjectQueueMessage {
+  const yaCommand = queuedYaCommandToRun({ target, message });
+  return yaCommand ? { ...message, yaCommand } : message;
 }
 
 function normalizeTarget(raw: unknown): ProjectQueueTarget {
@@ -522,23 +609,37 @@ function normalizeProjectQueueItem(
       optionalString(raw.createdAt, "createdAt") ?? new Date().toISOString();
     const updatedAt = optionalString(raw.updatedAt, "updatedAt") ?? createdAt;
     const rawStatus = optionalString(raw.status, "status");
-    const status =
+    let status: StoredProjectQueueItem["status"] =
       rawStatus === "failed"
         ? "failed"
         : // A restart means no dispatch is in progress anymore.
           "queued";
+    let lastError = optionalString(raw.lastError, "lastError");
+
+    const target = normalizeTarget(raw.target);
+    let message = normalizeMessage(raw.message);
+    try {
+      message = withDerivedYaCommand(target, message);
+    } catch (error) {
+      // Kept rather than dropped so the user can edit it; dispatch refuses
+      // the same inconsistency if it is retried unchanged.
+      if (!(error instanceof ProjectQueueValidationError)) throw error;
+      status = "failed";
+      lastError = error.message;
+    }
 
     return {
       id,
       projectId,
       projectPath,
-      target: normalizeTarget(raw.target),
-      message: normalizeMessage(raw.message),
+      target,
+      message,
       createdAt,
       updatedAt,
       createdFrom: normalizeCreatedFrom(raw.createdFrom),
+      createdByUser: optionalString(raw.createdByUser, "createdByUser"),
       status,
-      lastError: optionalString(raw.lastError, "lastError"),
+      lastError,
       lastAttemptAt: optionalString(raw.lastAttemptAt, "lastAttemptAt"),
       startupFailureCount: optionalNonNegativeInteger(raw.startupFailureCount),
     };
@@ -564,6 +665,7 @@ function summarizeItem(item: ProjectQueueItem): ProjectQueueItemSummary {
     createdAt: item.createdAt,
     updatedAt: item.updatedAt,
     createdFrom: item.createdFrom,
+    ...(item.createdByUser ? { createdByUser: item.createdByUser } : {}),
     status: item.status,
     attachmentCount,
     lastError: item.lastError,
@@ -760,13 +862,23 @@ export class ProjectQueueService {
     projectId: UrlProjectId;
     projectPath: string;
     request: CreateProjectQueueItemRequest;
+    /** The limited user queuing it; absent for the superuser. */
+    createdByUser?: string;
+    launchPolicy?: ProjectQueueLaunchPolicy;
   }): Promise<ProjectQueueItemSummary> {
     return this.withMutation(async () => {
       this.ensureInitialized();
       const now = new Date().toISOString();
       const itemId = randomUUID();
-      const normalizedMessage = normalizeMessage(params.request.message);
       const target = normalizeTarget(params.request.target);
+      const normalizedMessage = withDerivedYaCommand(
+        target,
+        normalizeMessage(params.request.message),
+      );
+      applyLaunchPolicy(params.launchPolicy, {
+        target,
+        message: normalizedMessage,
+      });
       const createdFrom = normalizeCreatedFrom(params.request.createdFrom);
       const preparedMessage = await this.prepareMessageForItem(
         itemId,
@@ -781,6 +893,9 @@ export class ProjectQueueService {
         createdAt: now,
         updatedAt: now,
         createdFrom,
+        ...(params.createdByUser
+          ? { createdByUser: params.createdByUser }
+          : {}),
         status: "queued",
       };
       this.state.items.push(item);
@@ -800,6 +915,7 @@ export class ProjectQueueService {
     projectId: UrlProjectId,
     itemId: string,
     request: UpdateProjectQueueItemRequest,
+    launchPolicy?: ProjectQueueLaunchPolicy,
   ): Promise<ProjectQueueItemSummary | null> {
     return this.withMutation(async () => {
       this.ensureInitialized();
@@ -815,14 +931,27 @@ export class ProjectQueueService {
         request.target !== undefined
           ? normalizeTarget(request.target)
           : undefined;
-      const preparedMessage =
+      // Judged against the item as it will be: a retarget alone can make a
+      // queued command undeliverable.
+      const nextTarget = normalizedTarget ?? existing.target;
+      const normalizedMessage =
         request.message !== undefined
-          ? await this.prepareMessageForItem(
-              existing.id,
-              normalizeMessage(request.message),
-              existing.message.stagedAttachments,
-            )
+          ? withDerivedYaCommand(nextTarget, normalizeMessage(request.message))
           : undefined;
+      if (!normalizedMessage) {
+        queuedYaCommandToRun({ target: nextTarget, message: existing.message });
+      }
+      applyLaunchPolicy(launchPolicy, {
+        target: normalizedTarget ?? { ...existing.target },
+        message: normalizedMessage ?? existing.message,
+      });
+      const preparedMessage = normalizedMessage
+        ? await this.prepareMessageForItem(
+            existing.id,
+            normalizedMessage,
+            existing.message.stagedAttachments,
+          )
+        : undefined;
       const updated: StoredProjectQueueItem = {
         ...existing,
         ...(normalizedTarget ? { target: normalizedTarget } : {}),

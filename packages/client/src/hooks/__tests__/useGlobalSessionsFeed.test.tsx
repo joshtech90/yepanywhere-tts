@@ -32,6 +32,7 @@ const mocks = vi.hoisted(() => ({
   getGlobalSessionStats: vi.fn(),
   useFileActivity: vi.fn(),
   versionInfo: vi.fn(),
+  ensureVersionInfo: vi.fn(),
 }));
 
 vi.mock("../../api/client", () => ({
@@ -49,7 +50,7 @@ vi.mock("../useFileActivity", () => ({
 
 vi.mock("../useVersion", () => ({
   useRetainedVersionInfo: () => mocks.versionInfo(),
-  ensureVersionInfo: async () => mocks.versionInfo(),
+  ensureVersionInfo: (...args: unknown[]) => mocks.ensureVersionInfo(...args),
 }));
 
 interface Deferred<T> {
@@ -133,6 +134,8 @@ beforeEach(() => {
   mocks.useFileActivity.mockClear();
   mocks.versionInfo.mockReset();
   mocks.versionInfo.mockReturnValue(null);
+  mocks.ensureVersionInfo.mockReset();
+  mocks.ensureVersionInfo.mockImplementation(async () => mocks.versionInfo());
 });
 
 afterEach(() => {
@@ -312,6 +315,44 @@ describe("useGlobalSessionsFeed", () => {
       "summaryMode",
     );
   });
+
+  it("observes both abandoned reads when the source changes during the version read", async () => {
+    // The client tsconfig has no Node types; vitest runs it under Node.
+    type RejectionListener = (reason: unknown) => void;
+    const nodeProcess = (
+      globalThis as unknown as {
+        process: {
+          on(event: "unhandledRejection", listener: RejectionListener): void;
+          off(event: "unhandledRejection", listener: RejectionListener): void;
+        };
+      }
+    ).process;
+    const unhandled: unknown[] = [];
+    const recordUnhandled: RejectionListener = (reason) =>
+      unhandled.push(reason);
+    nodeProcess.on("unhandledRejection", recordUnhandled);
+    try {
+      mocks.ensureVersionInfo.mockRejectedValue(
+        new Error("Session source changed"),
+      );
+      const { result } = renderHook(() =>
+        useFeedWithRecords({ includeStats: true }),
+      );
+      await waitFor(() =>
+        expect(result.current.feed.error?.message).toBe(
+          "Session source changed",
+        ),
+      );
+      // Unhandled rejections are reported after a macrotask turn.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(unhandled).toEqual([]);
+      expect(mocks.getGlobalSessions).not.toHaveBeenCalled();
+      expect(mocks.getGlobalSessionStats).not.toHaveBeenCalled();
+    } finally {
+      nodeProcess.off("unhandledRejection", recordUnhandled);
+    }
+  });
+
   it("releases query and activity work while disabled", () => {
     const { result } = renderHook(() =>
       useGlobalSessionsFeed({ enabled: false, limit: 50 }),
@@ -475,8 +516,9 @@ describe("useGlobalSessionsFeed", () => {
 
     const metrics = getQueryRevalidationMetrics();
     expect(metrics.subscribers).toBe(3);
-    // One listener per event (reconnect and catalog publication), shared by all mounts.
-    expect(metrics.eventSubscriptions).toBe(2);
+    // One listener per event (reconnect, visibility restore, catalog
+    // publication, and project list changes), shared by all mounts.
+    expect(metrics.eventSubscriptions).toBe(4);
 
     const requestsBefore = mocks.getGlobalSessions.mock.calls.length;
     vi.useFakeTimers();
@@ -491,6 +533,30 @@ describe("useGlobalSessionsFeed", () => {
     // The widest subscriber runs, so the 15- and 50-row feeds are served by the
     // 100-row refetch instead of issuing their own.
     expect(refetches[0]?.[0]).toMatchObject({ limit: 100 });
+  });
+
+  it("refetches when a project is added, removed, or renamed", async () => {
+    mocks.getGlobalSessions.mockResolvedValue(
+      globalSessionsResponse(["session-a"]),
+    );
+    const feed = renderHook(() => useFeedWithRecords({ limit: 50 }));
+    await waitFor(() => expect(feed.result.current.feed.loading).toBe(false));
+
+    const requestsBefore = mocks.getGlobalSessions.mock.calls.length;
+    vi.useFakeTimers();
+    await act(async () => {
+      activityBus.emitLocal("projects-changed", {
+        type: "projects-changed",
+        projectIds: ["project-a"],
+        timestamp: new Date().toISOString(),
+      });
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    vi.useRealTimers();
+
+    expect(
+      mocks.getGlobalSessions.mock.calls.slice(requestsBefore),
+    ).toHaveLength(1);
   });
 
   it("returns the query to fresh after a reconnect refetch", async () => {
@@ -520,6 +586,63 @@ describe("useGlobalSessionsFeed", () => {
     );
     expect(states.length).toBeGreaterThan(0);
     expect(states.filter((state) => state.stale)).toEqual([]);
+  });
+
+  it("revalidates cached rows when the feed becomes active again", async () => {
+    mocks.versionInfo.mockReturnValue({
+      capabilities: [PROGRESSIVE_SESSION_CATALOG_CAPABILITY],
+    });
+    mocks.getGlobalSessions
+      .mockResolvedValueOnce(
+        globalSessionsResponse(["session-a"], { generation: 7 }),
+      )
+      .mockResolvedValueOnce(
+        globalSessionsResponse(["session-b", "session-a"], { generation: 8 }),
+      );
+
+    const feed = renderHook(
+      ({ enabled }) => useFeedWithRecords({ enabled, limit: 50 }),
+      { initialProps: { enabled: true } },
+    );
+    await waitFor(() => expect(feed.result.current.records).toHaveLength(1));
+
+    feed.rerender({ enabled: false });
+    feed.rerender({ enabled: true });
+
+    await waitFor(() =>
+      expect(feed.result.current.records.map((record) => record.id)).toEqual([
+        "session-b",
+        "session-a",
+      ]),
+    );
+    expect(mocks.getGlobalSessions).toHaveBeenCalledTimes(2);
+    expect(mocks.getGlobalSessions.mock.calls[1]?.[0]).toMatchObject({
+      knownGeneration: 7,
+    });
+  });
+
+  it("revalidates cached rows when a backgrounded client becomes visible", async () => {
+    mocks.getGlobalSessions
+      .mockResolvedValueOnce(globalSessionsResponse(["session-a"]))
+      .mockResolvedValueOnce(
+        globalSessionsResponse(["session-b", "session-a"]),
+      );
+
+    const feed = renderHook(() => useFeedWithRecords({ limit: 50 }));
+    await waitFor(() => expect(feed.result.current.records).toHaveLength(1));
+
+    vi.useFakeTimers();
+    await act(async () => {
+      activityBus.emitLocal("refresh", undefined as never);
+      await vi.advanceTimersByTimeAsync(600);
+    });
+    vi.useRealTimers();
+
+    expect(feed.result.current.records.map((record) => record.id)).toEqual([
+      "session-b",
+      "session-a",
+    ]);
+    expect(mocks.getGlobalSessions).toHaveBeenCalledTimes(2);
   });
 });
 

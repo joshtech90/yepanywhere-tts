@@ -67,9 +67,13 @@ export interface FilesDeps {
 
 type LocalResourcePathPolicy = ReturnType<typeof createLocalResourcePathPolicy>;
 
-/** Maximum file size to include content inline (1MB) */
-const MAX_INLINE_SIZE = 1024 * 1024;
-const MAX_TARGET_WINDOW_SIZE = MAX_INLINE_SIZE;
+/** Maximum text file size to include content inline (100MB) */
+const MAX_INLINE_SIZE = 100 * 1024 * 1024;
+/** Syntax highlighting and targeted windows stay bounded (1MB) */
+const MAX_HIGHLIGHT_SIZE = 1024 * 1024;
+// Self-contained HTML documents carry embedded assets, unlike source previews.
+const MAX_INLINE_HTML_SIZE = 200 * 1024 * 1024;
+const MAX_TARGET_WINDOW_SIZE = MAX_HIGHLIGHT_SIZE;
 const MAX_EMBEDDED_MARKDOWN_MEDIA_BYTES = 8 * 1024 * 1024;
 const MAX_EMBEDDED_MARKDOWN_MEDIA_FILE_BYTES = 2 * 1024 * 1024;
 const TEXT_SNIFF_BYTES = 8192;
@@ -195,7 +199,13 @@ const MIME_TYPES: Record<string, string> = {
   ".mp3": "audio/mpeg",
   ".wav": "audio/wav",
   ".ogg": "audio/ogg",
+  ".oga": "audio/ogg",
+  ".opus": "audio/ogg",
+  ".m4a": "audio/mp4",
+  ".aac": "audio/aac",
+  ".flac": "audio/flac",
   ".mp4": "video/mp4",
+  ".m4v": "video/mp4",
   ".webm": "video/webm",
   ".mov": "video/quicktime",
   ".avi": "video/x-msvideo",
@@ -912,6 +922,8 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
     const projectId = c.req.param("projectId");
     const relativePath = c.req.query("path");
     const highlight = c.req.query("highlight") === "true";
+    // A freshness probe: the same authorization and metadata, no content read.
+    const metadataOnly = c.req.query("metadata") === "only";
     const viewMode: FileViewMode =
       c.req.query("view") === "range" ? "range" : "full";
     const requestedRange = getLineRange(
@@ -974,6 +986,14 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
     const readSource = fileHandle ?? filePath;
     try {
       const mimeType = getMimeType(filePath);
+      // A targeted link into a file past the highlight bound gets a window
+      // around its target, which the bounded highlighting can still cover.
+      const inlineLimit =
+        mimeType === "text/html"
+          ? MAX_INLINE_HTML_SIZE
+          : requestedRange
+            ? MAX_TARGET_WINDOW_SIZE
+            : MAX_INLINE_SIZE;
       const knownText = isTextFile(filePath);
       const isText =
         knownText ||
@@ -985,6 +1005,7 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
         size: stats.size,
         mimeType,
         isText,
+        modifiedAt: Math.round(stats.mtimeMs),
       };
 
       // Build raw URL
@@ -994,17 +1015,17 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
         metadata,
         rawUrl,
       };
+      if (metadataOnly) return c.json(response);
       let deferredPathDiscoveryHtml: string | undefined;
 
       // For text files under size limit, include the whole file unless the link
       // explicitly asks for a compact range view. For targeted links into larger
       // files, include a bounded window centered on the target.
-      if (isText && (stats.size <= MAX_INLINE_SIZE || requestedRange)) {
+      if (isText && (stats.size <= inlineLimit || requestedRange)) {
         try {
           const fullInlineContent =
-            stats.size <= MAX_INLINE_SIZE
-              ? ((await readUtf8Bounded(readSource, MAX_INLINE_SIZE)) ??
-                undefined)
+            stats.size <= inlineLimit
+              ? ((await readUtf8Bounded(readSource, inlineLimit)) ?? undefined)
               : undefined;
           const slice =
             viewMode === "range" && requestedRange
@@ -1035,7 +1056,10 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
 
           // Add syntax highlighting if requested
           if (highlight) {
-            const result = await highlightFile(content, relativePath);
+            // Keep source rendering bounded even when the document preview
+            // needs all embedded assets. A minified HTML line can be huge.
+            const highlightContent = truncateUtf8(content, MAX_HIGHLIGHT_SIZE);
+            const result = await highlightFile(highlightContent, relativePath);
             if (result) {
               // A path in this file's text is a link when it names a real file
               // here, so an agent handing over a JSON manifest of run outputs
@@ -1066,7 +1090,8 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
               }
               deferredPathDiscoveryHtml = result.html;
               response.highlightedLanguage = result.language;
-              response.highlightedTruncated = result.truncated;
+              response.highlightedTruncated =
+                result.truncated || highlightContent.length < content.length;
             }
 
             // Render Markdown preview for supported document files.

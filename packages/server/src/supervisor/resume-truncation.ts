@@ -4,9 +4,9 @@
  * A rewind arms a pending truncating resume in session metadata; whichever
  * path next starts a Claude process for that session must apply it (the
  * `/resume` route, Project Queue dispatch, heartbeat and wake turns,
- * reactivate, a settings restart). The supervisor calls this at the single
- * point every one of those paths passes through, so the process can never
- * replay a tail the session view shows as dropped. Contract:
+ * reactivate, a settings restart). Every supervisor launcher, provider or
+ * real-SDK, resolves its truncation here before starting the process, so the
+ * process can never replay a tail the session view shows as dropped. Contract:
  * topics/session-rewind.md § Server rewind operation.
  */
 
@@ -61,6 +61,11 @@ export function resolveResumeTruncation(input: {
 export const RESUME_DROPS_TURN_REFUSAL_PREFIX =
   "Resume rejected by --resume-drops-turn:";
 
+/** Whether an error or result text reports a drop-guard refusal. */
+export function isResumeDropsTurnRefusalText(text: string): boolean {
+  return text.includes(RESUME_DROPS_TURN_REFUSAL_PREFIX);
+}
+
 export function isResumeDropsTurnRefusal(message: SDKMessage): boolean {
   if (message.type !== "result") return false;
   const texts: string[] = [];
@@ -71,5 +76,5 @@ export function isResumeDropsTurnRefusal(message: SDKMessage): boolean {
   push(message.result);
   push(message.errors);
   push(message.error);
-  return texts.some((text) => text.includes(RESUME_DROPS_TURN_REFUSAL_PREFIX));
+  return texts.some(isResumeDropsTurnRefusalText);
 }

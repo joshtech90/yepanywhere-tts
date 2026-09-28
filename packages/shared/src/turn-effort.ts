@@ -8,6 +8,30 @@ export const EFFORT_LEVEL_ORDER: EffortLevel[] = [
   "max",
 ];
 
+/**
+ * Whether an unknown value is a thinking option on the wire: `off`, `auto`,
+ * `on:<effort level>`, or a bare effort level.
+ */
+export function isThinkingOption(value: unknown): value is ThinkingOption {
+  if (value === "off" || value === "auto") return true;
+  if (typeof value !== "string") return false;
+  const level = value.startsWith("on:") ? value.slice(3) : value;
+  return EFFORT_LEVEL_ORDER.includes(level as EffortLevel);
+}
+
+/**
+ * The effort a thinking option asks for, or `undefined` when the option lets
+ * the provider choose (`auto`) or disables thinking (`off`).
+ */
+export function effortOfThinkingOption(
+  option: ThinkingOption | undefined,
+): string | undefined {
+  if (option === undefined || option === "off" || option === "auto") {
+    return undefined;
+  }
+  return option.startsWith("on:") ? option.slice(3) : option;
+}
+
 export type TurnEffort = "fast" | "slow" | "fastest" | "slowest";
 
 export function isTurnEffort(value: unknown): value is TurnEffort {

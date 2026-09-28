@@ -1,15 +1,14 @@
 import type { FileContentResponse } from "@yep-anywhere/shared";
 import {
-  buildPublicShareRawFileApiPath,
-  normalizePublicShareFilePath,
   type PublicShareContextValue,
   rewritePublicShareLocalAppLinks,
 } from "../contexts/PublicShareContext";
-import { getEmbeddedFileMediaBlob } from "../lib/embeddedFileMedia";
 import {
-  fetchPublicShareBlobViaRelay,
-  fetchPublicShareJsonViaRelay,
-} from "../lib/publicShareRelay";
+  buildPublicShareFileRoutePath,
+  buildPublicShareRawFileApiPath,
+  fetchPublicShareRawFileBlob,
+} from "../lib/publicShareFiles";
+import { fetchPublicShareJsonViaRelay } from "../lib/publicShareRelay";
 import type { FileViewerSource } from "./FileViewer";
 
 function rewriteRenderedMarkdownHtml(
@@ -25,30 +24,6 @@ function rewriteRenderedMarkdownHtml(
 export function createPublicShareFileViewerSource(
   context: PublicShareContextValue,
 ): FileViewerSource {
-  const fetchRawFileBlob = async (
-    fileData: FileContentResponse,
-    rawPath: string,
-  ): Promise<Blob> => {
-    const normalized = normalizePublicShareFilePath(rawPath, context.projectId);
-    const embedded =
-      (normalized
-        ? getEmbeddedFileMediaBlob(fileData, normalized.path)
-        : null) ?? getEmbeddedFileMediaBlob(fileData, rawPath);
-    if (embedded) {
-      return embedded;
-    }
-    if (!normalized) {
-      throw new Error("File is outside this public share");
-    }
-    const params = new URLSearchParams({ path: normalized.path });
-    if (context.viewerId) params.set("viewerId", context.viewerId);
-    return await fetchPublicShareBlobViaRelay({
-      relayUrl: context.relayUrl,
-      relayUsername: context.relayUsername,
-      path: `/public-api/shares/${encodeURIComponent(context.secret)}/files/raw?${params}`,
-    });
-  };
-
   return {
     loadFile: async (
       _projectId,
@@ -58,39 +33,33 @@ export function createPublicShareFileViewerSource(
       lineEnd,
       viewMode,
     ) => {
-      const params = new URLSearchParams({ path: rawPath });
-      if (context.viewerId) params.set("viewerId", context.viewerId);
+      const query: Record<string, string> = {};
       if (highlight) {
-        params.set("highlight", "true");
+        query.highlight = "true";
       }
       if (lineNumber !== undefined) {
-        params.set("line", String(lineNumber));
+        query.line = String(lineNumber);
       }
       if (lineEnd !== undefined) {
-        params.set("lineEnd", String(lineEnd));
+        query.lineEnd = String(lineEnd);
       }
       if (viewMode === "range") {
-        params.set("view", "range");
+        query.view = "range";
       }
       return await fetchPublicShareJsonViaRelay<FileContentResponse>({
         relayUrl: context.relayUrl,
         relayUsername: context.relayUsername,
-        path: `/public-api/shares/${encodeURIComponent(context.secret)}/files?${params}`,
+        path: buildPublicShareFileRoutePath(context, "content", rawPath, query),
       });
     },
     getRawFileUrl: () => null,
-    fetchRawFileBlob,
+    fetchRawFileBlob: (fileData, rawPath) =>
+      fetchPublicShareRawFileBlob(context, fileData, rawPath),
     createMediaSource: (fileData) => ({
       buildApiPath: (rawPath) =>
         buildPublicShareRawFileApiPath(context, rawPath),
-      fetchBlob: async (rawPath) =>
-        await fetchRawFileBlob(
-          fileData ??
-            ({
-              embeddedMedia: {},
-            } as FileContentResponse),
-          rawPath,
-        ),
+      fetchBlob: (rawPath) =>
+        fetchPublicShareRawFileBlob(context, fileData ?? null, rawPath),
     }),
     transformRenderedMarkdownHtml: (html) =>
       rewriteRenderedMarkdownHtml(html, context),

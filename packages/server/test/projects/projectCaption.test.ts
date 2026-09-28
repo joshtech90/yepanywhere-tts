@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -126,14 +126,32 @@ describe("deriveProjectCaption", () => {
     });
   });
 
-  it("caches per path for a day", async () => {
+  it("shows a caption written into a placeholder README on the next read", async () => {
     dir = await mkdtemp(join(tmpdir(), "caption-"));
-    expect(await getDerivedProjectCaption(dir, 1000)).toBeUndefined();
-    await writeFile(join(dir, "README.md"), `${SENTENCE}\n`);
-    expect(await getDerivedProjectCaption(dir, 2000)).toBeUndefined();
-    expect(
-      await getDerivedProjectCaption(dir, 1000 + 24 * 60 * 60 * 1000),
-    ).toEqual({ text: SENTENCE, source: "readme" });
+    expect(await getDerivedProjectCaption(dir)).toBeUndefined();
+    const readme = join(dir, "README.md");
+    await writeFile(readme, "# t\n\n<!-- Describe this project here. -->\n");
+    expect(await getDerivedProjectCaption(dir)).toBeUndefined();
+    await writeFile(readme, `# t\n\n${SENTENCE}\n`);
+    expect(await getDerivedProjectCaption(dir)).toEqual({
+      text: SENTENCE,
+      source: "readme",
+    });
+  });
+
+  it("reuses a cached caption while its inputs are unchanged", async () => {
+    dir = await mkdtemp(join(tmpdir(), "caption-"));
+    const readme = join(dir, "README.md");
+    await writeFile(readme, `${SENTENCE}\n`);
+    const expected = { text: SENTENCE, source: "readme" };
+    expect(await getDerivedProjectCaption(dir)).toEqual(expected);
+    // An unreadable README would derive nothing; the cache must not reread it.
+    await chmod(readme, 0o000);
+    try {
+      expect(await getDerivedProjectCaption(dir)).toEqual(expected);
+    } finally {
+      await chmod(readme, 0o644);
+    }
   });
 
   it("returns undefined for a missing directory", async () => {

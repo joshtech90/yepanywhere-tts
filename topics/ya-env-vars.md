@@ -177,7 +177,13 @@ in-process, and whether it is read from this marker or from own-session
 inspection. `AGENT_LAUNCH_MODEL` and
 `AGENT_LAUNCH_EFFORT` record the explicit model and effort selected at that
 launch; they are omitted when YA has no explicit value and intentionally remain
-unchanged after a live model or effort switch. The host replaces inherited
+unchanged after a live model or effort switch. When the provider's model catalog
+reports what a selected alias resolves to, `AGENT_LAUNCH_MODEL` carries that
+concrete id without a context-window suffix (Claude `opus` →
+`claude-opus-5-5`), so an agent can tell which model version it is. Otherwise it
+carries the selection as given. The server resolves the alias from its
+already-fetched catalog and never probes at launch, so a launch that happens
+before the first catalog fetch still publishes the alias. The host replaces inherited
 values at the worker boundary — including the pre-2026-08-17 `YEP_AGENT_HARNESS`
 / `YEP_AGENT_INITIAL_MODEL` / `YEP_AGENT_INITIAL_EFFORT` names, so a YA server
 running inside an older YA's session cannot pass the outer session's stale

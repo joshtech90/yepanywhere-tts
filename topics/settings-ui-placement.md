@@ -407,13 +407,26 @@ that when adding one.
 ## Categories (what each is *for*)
 
 The category registry is `CATEGORY_COMPONENTS` in
-`packages/client/src/pages/settings/SettingsLayout.tsx`; labels/descriptions come
-from `getSettingsCategories` in `packages/client/src/i18n-settings.ts`. Current
-inventory: `appearance`, `performance`, `toolbar`, `model`,
-`message-delivery`, `source-control`, `storage`, `agent-context`,
-`notifications`, `webhooks`, `devices`, `local-access`, `remote`, `providers`,
-`cache-miss-billing`, `speech`, `remote-executors`, `environment`,
-`development`, `about`; `emulator` is added when available.
+`packages/client/src/pages/settings/SettingsLayout.tsx`; labels, descriptions
+and order come from `getSettingsCategories` in
+`packages/client/src/i18n-settings.ts`. Current inventory: `appearance`,
+`performance`, `toolbar`, `model`, `message-delivery`, `source-control`,
+`issues`, `storage`, `computer-control`, `agent-context`, `notifications`,
+`webhooks`, `devices`, `local-access`, `users`, `project-templates`, `apps`,
+`remote`, `providers`, `cache-miss-billing`, `speech`, `remote-executors`,
+`environment`, `development`, `emulator`, `about`.
+
+A category whose pane needs server support declares it in its own entry
+(`requires`: the capabilities, any one of which serves the pane, and the
+message for a server with none). Settings, not the pane, answers an older
+server: the category is absent from the list and from search, and a typed
+URL shows that message under the category's title without mounting the pane,
+so the pane sends that server no request. While the server version is still
+unknown, the typed URL shows loading rather than calling the server
+unsupported. A pane therefore needs no whole-pane capability check of its own;
+capabilities that gate individual rows inside a served pane stay in the pane.
+Today `source-control`, `issues`, `computer-control`, `users`,
+`project-templates` and `emulator` are gated this way.
 
 Placement precedents (the load-bearing ones — choose by *what the user is
 conceptually adjusting*, not where the code lives):

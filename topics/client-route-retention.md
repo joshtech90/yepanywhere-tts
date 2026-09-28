@@ -273,6 +273,11 @@ furthest-seen ordering, and opportunistic cleanup retains a winning observation
 before removing dominated ones. An interleaved nearer write therefore cannot
 erase a farther cursor.
 
+A candidate that does not advance the stored position performs no storage
+writes, including observation creation or cleanup. Storage-event reconciliation
+uses the same writer as local scroll capture; writing a fresh observation for
+an equal position would cause visible tabs to notify each other indefinitely.
+
 The retained anchor remains authoritative while the initial transcript is
 still growing asynchronously. Before the reader takes control, every observed
 height change reapplies that anchor so an early browser clamp cannot strand the

@@ -213,6 +213,64 @@ describe.skipIf(!DatabaseSync)(
       });
     }
 
+    it("omits the unfinished assistant tail only while an owned turn streams it", async () => {
+      const unfinishedReply: MessageSpec = {
+        id: "msg_004",
+        data: { role: "assistant", time: { created: 4000 } },
+        parts: [
+          { id: "prt_004a", data: { type: "reasoning", text: "partial" } },
+        ],
+      };
+      buildDb(databasePath, {
+        worktree: projectPath,
+        sessionId: "ses_live",
+        title: "live",
+        model: { id: "scripted", providerID: "fake" },
+        messages: [
+          ...richMessages,
+          {
+            id: "msg_003",
+            data: { role: "user", time: { created: 3500 } },
+            parts: [{ id: "prt_003a", data: { type: "text", text: "again" } }],
+          },
+          unfinishedReply,
+        ],
+      });
+      const reader = await makeReader();
+      const ids = async (
+        afterMessageId?: string,
+        ownedTurnInProgress?: boolean,
+      ) => {
+        const loaded = await reader.getSession(
+          "ses_live",
+          projectId,
+          afterMessageId,
+          { ownedTurnInProgress },
+        );
+        return loaded?.data.provider === "opencode"
+          ? loaded.data.session.messages.map((entry) => entry.message.id)
+          : null;
+      };
+
+      // The live stream owns the unfinished row, so a mid-turn read leaves
+      // the catch-up cursor before it and the completed row arrives later.
+      expect(await ids(undefined, true)).toEqual([
+        "msg_001",
+        "msg_002",
+        "msg_003",
+      ]);
+      expect(await ids("msg_002", true)).toEqual(["msg_003"]);
+      // Without an owned turn (external owner, or a killed turn that never
+      // completes), the partial row stays visible.
+      expect(await ids(undefined, false)).toEqual([
+        "msg_001",
+        "msg_002",
+        "msg_003",
+        "msg_004",
+      ]);
+      expect(await ids("msg_003", false)).toEqual(["msg_004"]);
+    });
+
     it("renders a TUI-owned session from the DB with no subprocess", async () => {
       buildDb(databasePath, {
         worktree: projectPath,

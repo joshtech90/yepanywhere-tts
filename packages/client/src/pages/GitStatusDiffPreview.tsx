@@ -38,6 +38,7 @@ import { SideBySideDiff } from "./SideBySideDiff";
 import { CHANGED_DIFF_LINE_SELECTOR, UnifiedDiff } from "./UnifiedDiff";
 import type { MessageKey, TranslationFn } from "../i18n";
 import styles from "./GitStatusDiffPreview.module.css";
+import headerStyles from "../components/ViewerHeader.module.css";
 
 const GIT_DIFF_MAX_RENDERED_HTML_CHARS = 1_000_000 * 20;
 
@@ -1435,36 +1436,27 @@ function DiffPaneToolbar({
         : path
       : "";
   return (
-    <div className={`git-diff-pane-toolbar ${styles.toolbar}`}>
-      <span
-        className={`git-diff-file-identity ${styles.fileIdentity}`}
-        title={path || title}
-      >
-        {directoryPath && (
-          <>
-            <span className="git-diff-toolbar-path">{directoryPath}</span>
-            <span className="git-diff-toolbar-separator" aria-hidden="true">
-              /
-            </span>
-          </>
+    <div className={`git-diff-pane-toolbar ${headerStyles.header}`}>
+      <div className={headerStyles.identity}>
+        <span className="git-diff-file-identity" title={path || title}>
+          {directoryPath && (
+            <>
+              <span className="git-diff-toolbar-path">{directoryPath}</span>
+              <span className="git-diff-toolbar-separator" aria-hidden="true">
+                /
+              </span>
+            </>
+          )}
+          <h3 className="git-diff-preview-title">{title}</h3>
+        </span>
+        {revision}
+      </div>
+      <div className={headerStyles.actions}>
+        {children && <div className="diff-context-buttons">{children}</div>}
+        {actions && (
+          <div className="git-diff-preview-header-actions">{actions}</div>
         )}
-        <h3 className={`git-diff-preview-title ${styles.previewTitle}`}>
-          {title}
-        </h3>
-      </span>
-      {revision}
-      {children && (
-        <div className={`diff-context-buttons ${styles.controls}`}>
-          {children}
-        </div>
-      )}
-      {actions && (
-        <div
-          className={`git-diff-preview-header-actions ${styles.headerActions}`}
-        >
-          {actions}
-        </div>
-      )}
+      </div>
     </div>
   );
 }

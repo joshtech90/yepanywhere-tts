@@ -20,6 +20,7 @@ import {
   type PromptSuggestionMode,
   type RecapMode,
   type SessionClearloopJob,
+  type SessionCreationProvenance,
   type SessionPendingRewind,
   type SessionRewindRecord,
   type SessionSandboxLevel,
@@ -57,7 +58,15 @@ export type EffectiveSessionLaunchSettingsValue = Omit<
   "schemaVersion" | "revision"
 >;
 
+/** A fork number claimed from a lineage root's `forksCreated` count. */
+export interface ForkOrdinalClaim {
+  ordinal: number;
+  lineageRootId: string;
+}
+
 export interface SessionMetadata {
+  /** Client-declared UI that first created this YA-owned session. */
+  creationProvenance?: SessionCreationProvenance;
   /**
    * Limited user who started this session, when one did. Absent means the
    * superuser started it (or it predates limited users). A limited user can
@@ -801,13 +810,11 @@ export class SessionMetadataService {
    * "Fork: X", "Fork 2: X", "Fork 3: X" instead of naming them alike, and must
    * record the returned `lineageRootId` on the new fork (see `updateMetadata`'s
    * `forkLineageRootId`) so forking that fork continues the same sequence.
-   * The count only ever rises, so a deleted fork's number is not reissued.
+   * A deleted fork's number is not reissued; a fork that was never created
+   * gives its number back through `releaseForkOrdinal`.
    */
-  async nextForkOrdinal(
-    sessionId: string,
-  ): Promise<{ ordinal: number; lineageRootId: string }> {
-    const lineageRootId =
-      this.getMetadata(sessionId)?.forkLineageRootId ?? sessionId;
+  async nextForkOrdinal(sessionId: string): Promise<ForkOrdinalClaim> {
+    const lineageRootId = this.forkLineageRoot(sessionId);
     const ordinal = (this.getMetadata(lineageRootId)?.forksCreated ?? 0) + 1;
     this.updateSessionMetadata(lineageRootId, (metadata) => ({
       ...metadata,
@@ -815,6 +822,22 @@ export class SessionMetadataService {
     }));
     await this.save();
     return { ordinal, lineageRootId };
+  }
+
+  /**
+   * Return a fork ordinal whose fork was never created. Only the lineage's
+   * latest claim can be returned: once a later fork has taken a number, the
+   * failed one stays used rather than being handed out a second time.
+   */
+  async releaseForkOrdinal(claim: ForkOrdinalClaim): Promise<void> {
+    if (this.getMetadata(claim.lineageRootId)?.forksCreated !== claim.ordinal) {
+      return;
+    }
+    this.updateSessionMetadata(claim.lineageRootId, (metadata) => ({
+      ...metadata,
+      forksCreated: claim.ordinal - 1 || undefined,
+    }));
+    await this.save();
   }
 
   /**
@@ -983,9 +1006,24 @@ export class SessionMetadataService {
    * The session whose fork count numbers this session's forks: the lineage
    * root, or the session itself when it is one. Read-only companion to
    * `nextForkOrdinal` for callers that record lineage without claiming a number.
+   * A fork created before targets recorded `forkLineageRootId` still names its
+   * source in `forkedFromSessionId`, so the root is found by walking sources.
    */
   forkLineageRoot(sessionId: string): string {
-    return this.getMetadata(sessionId)?.forkLineageRootId ?? sessionId;
+    const visited = new Set<string>();
+    let current = sessionId;
+    for (;;) {
+      const metadata = this.getMetadata(current);
+      if (metadata?.forkLineageRootId) {
+        return metadata.forkLineageRootId;
+      }
+      visited.add(current);
+      const source = metadata?.forkedFromSessionId;
+      if (!source || visited.has(source)) {
+        return current;
+      }
+      current = source;
+    }
   }
 
   /**
@@ -1066,6 +1104,19 @@ export class SessionMetadataService {
       initialPrompt: prompt,
     }));
     await this.save();
+  }
+
+  /** Preserve the first client-declared creation source across later writes. */
+  async recordCreationProvenance(
+    sessionId: string,
+    provenance: SessionCreationProvenance,
+  ): Promise<void> {
+    if (this.getMetadata(sessionId)?.creationProvenance) return;
+    this.updateSessionMetadata(sessionId, (metadata) => ({
+      ...metadata,
+      creationProvenance: metadata.creationProvenance ?? provenance,
+    }));
+    await this.flushPendingWrites();
   }
 
   /** Record the limited user who started a session, at creation time. */
@@ -1233,6 +1284,9 @@ export class SessionMetadataService {
 
     // Remove undefined values and check if entry should be deleted
     const cleaned: SessionMetadata = {};
+    if (updated.creationProvenance) {
+      cleaned.creationProvenance = updated.creationProvenance;
+    }
     if (updated.nonHumanUserTurn) {
       cleaned.nonHumanUserTurn = updated.nonHumanUserTurn;
     }

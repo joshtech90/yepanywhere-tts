@@ -330,6 +330,10 @@
   white-space: nowrap;
 }
 
+.itemProvider {
+  flex-shrink: 0;
+}
+
 .itemTarget a {
   color: inherit;
   text-decoration: none;
@@ -508,7 +512,13 @@
   }
 
   .itemSide {
+    align-items: flex-start;
     justify-content: space-between;
+  }
+
+  .itemActions {
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .recoveredHeader,

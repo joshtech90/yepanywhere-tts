@@ -66,8 +66,8 @@ cancellation on activity) and the current trigger/threshold gaps.
   turns disabled by Terminate. See [heartbeat.md](heartbeat.md).
 - Recap configuration is durable. `recapAfterSeconds` and `recapMode` are
   persisted in session metadata, so a session's recap preference survives a
-  process death / reactivation and is what tells a cold session whether and how
-  to recap.
+  process death, a reactivation, and a resume whose request names no recap
+  setting, and is what tells a cold session whether and how to recap.
 - The hint suffix the Claude TUI appends to its first few recaps —
   ` (disable recaps in /config)` — is provider-specific noise. YA must
   strip it before rendering so users do not see CLI-only configuration

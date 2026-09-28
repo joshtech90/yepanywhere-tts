@@ -77,6 +77,30 @@ function cloneFileAccessSettings(
   return { ...settings, custom: [...settings.custom] };
 }
 
+/** Matches the server's `/api/auth/enable` and `/change-password` minimum. */
+const LOCAL_PASSWORD_MIN_LENGTH = 6;
+
+type PasswordFeedback =
+  | { kind: "short"; length: number }
+  | { kind: "mismatch" }
+  | { kind: "match" }
+  | null;
+
+/** Live feedback while a new password and its confirmation are typed. */
+function passwordFeedback(password: string, confirm: string): PasswordFeedback {
+  if (!password) return null;
+  if (password.length < LOCAL_PASSWORD_MIN_LENGTH) {
+    return { kind: "short", length: password.length };
+  }
+  if (!confirm) return null;
+  if (confirm === password) return { kind: "match" };
+  // A confirmation still being typed toward the password is not a mismatch yet.
+  if (confirm.length < password.length && password.startsWith(confirm)) {
+    return null;
+  }
+  return { kind: "mismatch" };
+}
+
 /** A custom line that grants whole-disk read, so the UI can flag it. */
 function isWholeDiskPath(line: string): boolean {
   const trimmed = line.trim();
@@ -143,6 +167,7 @@ export function LocalAccessSettings() {
 
   // Form state
   const [formError, setFormError] = useState<string | null>(null);
+  const [passwordError, setPasswordError] = useState<string | null>(null);
   const [hasChanges, setHasChanges] = useState(false);
   const [isApplying, setIsApplying] = useState(false);
 
@@ -237,6 +262,7 @@ export function LocalAccessSettings() {
     newAllowAllHosts: boolean,
     newAllowedHostsText: string,
     newLocalhostOpen: boolean,
+    authEnabledNow: boolean,
   ) => {
     if (!serverSettings) return false;
 
@@ -245,7 +271,7 @@ export function LocalAccessSettings() {
     const portChanged = newPort !== String(binding.localhost.port);
     const networkEnabledChanged = newNetworkEnabled !== binding.network.enabled;
     const interfaceChanged = newInterface !== (binding.network.host ?? "");
-    const authChanged = newRequirePassword !== auth.authEnabled;
+    const authChanged = newRequirePassword !== authEnabledNow;
     const passwordEntered = newPassword.length > 0;
     const localhostOpenChanged = newLocalhostOpen !== auth.localhostOpen;
     const newValue = getAllowedHostsValue(
@@ -275,6 +301,8 @@ export function LocalAccessSettings() {
     allowAll?: boolean;
     hostsText?: string;
     localhostOpen?: boolean;
+    /** The server's auth state when this render's context has not caught up. */
+    authEnabled?: boolean;
   }) => {
     setHasChanges(
       checkForChanges(
@@ -286,6 +314,7 @@ export function LocalAccessSettings() {
         overrides.allowAll ?? allowAllHostsToggle,
         overrides.hostsText ?? allowedHostsText,
         overrides.localhostOpen ?? localhostOpenToggle,
+        overrides.authEnabled ?? auth?.authEnabled ?? false,
       ),
     );
   };
@@ -386,6 +415,7 @@ export function LocalAccessSettings() {
       setAllowedHostsText(ah ?? "");
     }
     setFormError(null);
+    setPasswordError(null);
     setHasChanges(false);
   }, [auth, binding, serverSettings]);
 
@@ -625,6 +655,60 @@ export function LocalAccessSettings() {
     </SettingsItem>
   );
 
+  // The password choice staged by Require Password and its fields. Both the
+  // nested password block and Apply Changes validate and apply it here.
+  const enablingAuth = Boolean(auth && requirePassword && !auth.authEnabled);
+  const changingPassword = Boolean(
+    auth && requirePassword && auth.authEnabled && authPassword.length > 0,
+  );
+  const disablingAuth = Boolean(auth && !requirePassword && auth.authEnabled);
+  const passwordChoiceError = (): string | null => {
+    if (!enablingAuth && !changingPassword) return null;
+    if (authPassword.length < LOCAL_PASSWORD_MIN_LENGTH) {
+      return t("localAccessErrorPasswordLength");
+    }
+    if (authPassword !== authPasswordConfirm) {
+      return t("localAccessErrorPasswordMismatch");
+    }
+    return null;
+  };
+  const applyPasswordChoice = async (): Promise<void> => {
+    if (!auth) return;
+    if (enablingAuth) {
+      await auth.enableAuth(authPassword);
+    } else if (changingPassword) {
+      await auth.changePassword(authPassword);
+    } else if (disablingAuth) {
+      await auth.disableAuth();
+      return;
+    } else {
+      return;
+    }
+    setAuthPassword("");
+    setAuthPasswordConfirm("");
+  };
+
+  const handleApplyPasswordChoice = async () => {
+    setPasswordError(null);
+    const error = passwordChoiceError();
+    if (error) {
+      setPasswordError(error);
+      return;
+    }
+    setIsApplying(true);
+    try {
+      await applyPasswordChoice();
+      // Enabling redirects to login; the other two leave the pane open.
+      updateHasChanges({ password: "", authEnabled: requirePassword });
+    } catch (err) {
+      setPasswordError(
+        err instanceof Error ? err.message : t("localAccessErrorApplyFailed"),
+      );
+    } finally {
+      setIsApplying(false);
+    }
+  };
+
   const handleApplyChanges = async () => {
     if (!auth) return;
     setFormError(null);
@@ -636,19 +720,10 @@ export function LocalAccessSettings() {
       return;
     }
 
-    // Validate password if enabling or changing auth
-    const enablingAuth = requirePassword && !auth.authEnabled;
-    const changingPassword =
-      requirePassword && auth.authEnabled && authPassword.length > 0;
-    if (enablingAuth || changingPassword) {
-      if (authPassword.length < 6) {
-        setFormError(t("localAccessErrorPasswordLength"));
-        return;
-      }
-      if (authPassword !== authPasswordConfirm) {
-        setFormError(t("localAccessErrorPasswordMismatch"));
-        return;
-      }
+    const passwordProblem = passwordChoiceError();
+    if (passwordProblem) {
+      setFormError(passwordProblem);
+      return;
     }
 
     const effectiveInterface =
@@ -669,18 +744,7 @@ export function LocalAccessSettings() {
       }
       const result = await updateBinding(bindingUpdate);
 
-      // Apply auth changes
-      if (enablingAuth) {
-        await auth.enableAuth(authPassword);
-        setAuthPassword("");
-        setAuthPasswordConfirm("");
-      } else if (changingPassword) {
-        await auth.changePassword(authPassword);
-        setAuthPassword("");
-        setAuthPasswordConfirm("");
-      } else if (!requirePassword && auth.authEnabled) {
-        await auth.disableAuth();
-      }
+      await applyPasswordChoice();
 
       // Apply localhost access changes (desktop token floor bypass)
       if (localhostOpenToggle !== auth.localhostOpen) {
@@ -728,8 +792,7 @@ export function LocalAccessSettings() {
       return <SettingsSection description={t("localAccessLoading")} />;
     }
 
-    // Show password fields when auth is enabled or being enabled
-    const showPasswordFields = requirePassword;
+    const feedback = passwordFeedback(authPassword, authPasswordConfirm);
 
     return (
       <SettingsSection description={t("localAccessDescription")}>
@@ -962,6 +1025,7 @@ export function LocalAccessSettings() {
               <label className="toggle-switch">
                 <input
                   type="checkbox"
+                  aria-label={t("localAccessRequirePasswordTitle")}
                   checked={requirePassword}
                   onChange={(e) => {
                     setRequirePassword(e.target.checked);
@@ -973,71 +1037,163 @@ export function LocalAccessSettings() {
             </SettingsItem>
           )}
 
-          {/* Password fields - shown when auth is on */}
-          {showPasswordFields && (
-            <>
-              {/* Hidden username field to prevent Chrome from using port as username */}
+          {/* The password choice, nested under the toggle that gates it and
+              applied from its own button beside the fields. */}
+          {!auth.authDisabledByEnv && (requirePassword || auth.authEnabled) && (
+            <div
+              className={`settings-subsection ${styles.passwordBlock}`}
+              data-local-access-password-block="true"
+            >
               <HideInSettingsSearch>
-                <input
-                  type="text"
-                  name="username"
-                  autoComplete="username"
-                  style={{
-                    position: "absolute",
-                    visibility: "hidden",
-                    pointerEvents: "none",
-                  }}
-                  tabIndex={-1}
-                />
-              </HideInSettingsSearch>
-              <SettingsItem
-                label={t("localAccessPasswordTitle")}
-                description={
-                  auth.authEnabled
-                    ? t("localAccessPasswordKeepCurrent")
-                    : t("localAccessPasswordMinLength")
-                }
-                className="settings-item-inline-field"
-              >
-                <input
-                  type="password"
-                  className="settings-input"
-                  value={authPassword}
-                  onChange={(e) => {
-                    setAuthPassword(e.target.value);
-                    updateHasChanges({ password: e.target.value });
-                  }}
-                  autoComplete="new-password"
-                  placeholder={
-                    auth.authEnabled
-                      ? t("localAccessPasswordNewPlaceholder")
-                      : t("localAccessPasswordPlaceholder")
-                  }
-                />
-              </SettingsItem>
-              {authPassword.length > 0 && (
-                <SettingsItem
-                  label={t("localAccessConfirmPasswordTitle")}
-                  className="settings-item-inline-field"
+                <p
+                  className={`${styles.passwordState} ${
+                    !requirePassword
+                      ? styles.passwordStateWarning
+                      : auth.authEnabled
+                        ? styles.passwordStateActive
+                        : styles.passwordStatePending
+                  }`}
+                  role="status"
                 >
-                  <input
-                    type="password"
-                    className="settings-input"
-                    value={authPasswordConfirm}
-                    onChange={(e) => setAuthPasswordConfirm(e.target.value)}
-                    autoComplete="new-password"
-                    placeholder={t("localAccessConfirmPasswordPlaceholder")}
-                  />
-                </SettingsItem>
+                  {!requirePassword
+                    ? t("localAccessPasswordDisableWarning")
+                    : auth.authEnabled
+                      ? t("localAccessPasswordActive")
+                      : t("localAccessPasswordPending")}
+                </p>
+              </HideInSettingsSearch>
+              {requirePassword && (
+                <>
+                  {/* Hidden username field to prevent Chrome from using port as username */}
+                  <HideInSettingsSearch>
+                    <input
+                      type="text"
+                      name="username"
+                      autoComplete="username"
+                      style={{
+                        position: "absolute",
+                        visibility: "hidden",
+                        pointerEvents: "none",
+                      }}
+                      tabIndex={-1}
+                    />
+                  </HideInSettingsSearch>
+                  <SettingsItem
+                    label={
+                      auth.authEnabled
+                        ? t("localAccessPasswordNewTitle")
+                        : t("localAccessPasswordTitle")
+                    }
+                    description={
+                      auth.authEnabled
+                        ? t("localAccessPasswordKeepCurrent")
+                        : t("localAccessPasswordMinLength")
+                    }
+                    className="settings-item-inline-field"
+                  >
+                    <input
+                      type="password"
+                      className="settings-input"
+                      value={authPassword}
+                      onChange={(e) => {
+                        setAuthPassword(e.target.value);
+                        setPasswordError(null);
+                        updateHasChanges({ password: e.target.value });
+                      }}
+                      autoComplete="new-password"
+                      placeholder={
+                        auth.authEnabled
+                          ? t("localAccessPasswordNewPlaceholder")
+                          : t("localAccessPasswordPlaceholder")
+                      }
+                    />
+                  </SettingsItem>
+                  {(enablingAuth || changingPassword) && (
+                    <SettingsItem
+                      label={t("localAccessConfirmPasswordTitle")}
+                      className="settings-item-inline-field"
+                    >
+                      <input
+                        type="password"
+                        className={`settings-input ${
+                          feedback?.kind === "mismatch"
+                            ? styles.inputInvalid
+                            : feedback?.kind === "match"
+                              ? styles.inputValid
+                              : ""
+                        }`}
+                        aria-invalid={feedback?.kind === "mismatch"}
+                        aria-describedby="local-access-password-feedback"
+                        value={authPasswordConfirm}
+                        onChange={(e) => {
+                          setAuthPasswordConfirm(e.target.value);
+                          setPasswordError(null);
+                        }}
+                        autoComplete="new-password"
+                        placeholder={t("localAccessConfirmPasswordPlaceholder")}
+                      />
+                    </SettingsItem>
+                  )}
+                </>
               )}
-              {!auth.authEnabled && (
-                <HideInSettingsSearch>
-                  <p className="form-hint">
+              <HideInSettingsSearch>
+                <div className={styles.passwordActions}>
+                  <p
+                    id="local-access-password-feedback"
+                    className={`${styles.passwordFeedback} ${
+                      passwordError || feedback?.kind === "mismatch"
+                        ? styles.passwordFeedbackBad
+                        : feedback?.kind === "match"
+                          ? styles.passwordFeedbackGood
+                          : ""
+                    }`}
+                    aria-live="polite"
+                    data-local-access-password-feedback={
+                      passwordError ? "error" : (feedback?.kind ?? "none")
+                    }
+                  >
+                    {passwordError ??
+                      (feedback?.kind === "short"
+                        ? t("localAccessPasswordTooShortCount", {
+                            count: feedback.length,
+                            min: LOCAL_PASSWORD_MIN_LENGTH,
+                          })
+                        : feedback?.kind === "mismatch"
+                          ? t("localAccessErrorPasswordMismatch")
+                          : feedback?.kind === "match"
+                            ? t("localAccessPasswordMatch")
+                            : "")}
+                  </p>
+                  {(enablingAuth || changingPassword || disablingAuth) && (
+                    <button
+                      type="button"
+                      className={`settings-button ${
+                        disablingAuth
+                          ? "settings-button-danger"
+                          : styles.passwordApply
+                      }`}
+                      disabled={
+                        isApplying ||
+                        applying ||
+                        (!disablingAuth && passwordChoiceError() !== null)
+                      }
+                      onClick={() => void handleApplyPasswordChoice()}
+                    >
+                      {disablingAuth
+                        ? t("localAccessPasswordDisableAction")
+                        : enablingAuth
+                          ? t("localAccessPasswordEnableAction")
+                          : t("localAccessPasswordChangeAction")}
+                    </button>
+                  )}
+                </div>
+                {!auth.authEnabled && requirePassword && (
+                  <p className={styles.passwordHint}>
                     {t("localAccessPasswordResetHint")}
                   </p>
-                </HideInSettingsSearch>
-              )}
-            </>
+                )}
+              </HideInSettingsSearch>
+            </div>
           )}
 
           {/* Allow Localhost Access - shown in desktop mode when password auth is off */}

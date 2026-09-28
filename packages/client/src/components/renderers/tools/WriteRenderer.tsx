@@ -276,6 +276,14 @@ function WriteToolResult({
   );
 }
 
+function WriteCollapsedError({ message }: { message: string }) {
+  return (
+    <div className="write-collapsed-preview write-collapsed-error">
+      <span className="write-preview-error">{message}</span>
+    </div>
+  );
+}
+
 /**
  * Collapsed preview showing line count and code preview with fade
  * Clicking opens a modal with the full content
@@ -348,17 +356,9 @@ function WriteCollapsedPreview({
     );
   }, [input._highlightedContentHtml]);
 
+  // A checked rejection goes to `renderCollapsedFailure`; this error has none.
   if (isError) {
-    return (
-      <div className="write-collapsed-preview write-collapsed-error">
-        {showValidationWarning && validationErrors && (
-          <SchemaWarning toolName="Write" errors={validationErrors} />
-        )}
-        <span className="write-preview-error">
-          {result?.content || "Failed to write file"}
-        </span>
-      </div>
-    );
+    return <WriteCollapsedError message="Failed to write file" />;
   }
 
   return (
@@ -438,6 +438,14 @@ export const writeRenderer = defineTool(toolDisplayContracts.Write, {
       <div className="write-error">
         {failure.content || "Failed to write file"}
       </div>
+    );
+  },
+
+  renderCollapsedFailure(failure) {
+    return (
+      <WriteCollapsedError
+        message={failure.content || "Failed to write file"}
+      />
     );
   },
 

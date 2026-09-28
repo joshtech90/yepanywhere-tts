@@ -277,6 +277,35 @@ describe("ClaudeProvider model list", () => {
     });
   });
 
+  it("resolves a launch alias to the concrete model the SDK reports", async () => {
+    const provider = new ClaudeProvider();
+    expect(provider.resolveLaunchModel("opus")).toBeUndefined();
+
+    await (
+      provider as unknown as {
+        normalizeSupportedModels(models: unknown[]): Promise<unknown>;
+      }
+    ).normalizeSupportedModels([
+      {
+        value: "opus[1m]",
+        resolvedModel: "claude-opus-5-5[1m]",
+        displayName: "Opus",
+        description: "Opus 5.5",
+      },
+      {
+        value: "sonnet",
+        resolvedModel: "claude-sonnet-5",
+        displayName: "Sonnet",
+        description: "Sonnet 5",
+      },
+    ]);
+
+    expect(provider.resolveLaunchModel("opus")).toBe("claude-opus-5-5");
+    expect(provider.resolveLaunchModel("sonnet")).toBe("claude-sonnet-5");
+    expect(provider.resolveLaunchModel("haiku")).toBeUndefined();
+    expect(provider.resolveLaunchModel(undefined)).toBeUndefined();
+  });
+
   it("keeps the default option generic when SDK returns a concrete-looking label", () => {
     const models = mergeClaudeModels([
       {
@@ -357,6 +386,34 @@ describe("ClaudeProvider model list", () => {
     });
   });
 
+  it("keeps the current Fable row when the catalog also lists older Fables", () => {
+    // Claude Code 2.1.283 lists the previous Fable after the current one.
+    const models = mergeClaudeModels([
+      {
+        id: "claude-fable-5-1",
+        resolvedModel: "claude-fable-5-1",
+        name: "Fable 5.1",
+        description: "Fable 5.1 · Most capable for your hardest tasks",
+      },
+      {
+        id: "claude-fable-5",
+        resolvedModel: "claude-fable-5",
+        name: "Fable 5",
+        description: "Fable 5 · Previous Fable",
+      },
+    ]);
+
+    expect(models.find((model) => model.id === "fable")).toMatchObject({
+      name: "Fable",
+      resolvedModel: "claude-fable-5-1",
+      description: "Fable 5.1 · Most capable for your hardest tasks",
+    });
+    expect(models.find((model) => model.id === "claude-fable-5")).toMatchObject(
+      { name: "Fable 5", resolvedModel: "claude-fable-5" },
+    );
+    expect(models.map((model) => model.id)).not.toContain("claude-fable-5-1");
+  });
+
   it("merges the live Opus 5 extended row into the stable opus alias", () => {
     const models = mergeClaudeModels([
       {
@@ -394,7 +451,36 @@ describe("ClaudeProvider model list", () => {
     });
     expect(models.find((model) => model.id === "opus")).toMatchObject({
       name: "Opus",
-      description: "Opus 5 with the full 1M-token context window",
+      description: "Opus 5.5 with the full 1M-token context window",
+      contextWindow: 1_000_000,
+      supportsAdaptiveThinking: true,
+      supportsAutoMode: true,
+      supportsEffort: true,
+      supportsFastMode: true,
+      supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      defaultEffortLevel: "high",
+    });
+  });
+
+  it("keeps the live Opus 5.5 row on the stable opus alias", () => {
+    const models = mergeClaudeModels([
+      {
+        id: "opus",
+        name: "Opus",
+        description:
+          "Opus 5.5 · Best for everyday, complex tasks · ~2× usage vs Sonnet",
+        contextWindow: 1_000_000,
+        supportsAdaptiveThinking: true,
+        supportsAutoMode: true,
+        supportsEffort: true,
+        supportsFastMode: true,
+        supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"],
+      },
+    ]);
+
+    expect(models.find((model) => model.id === "opus")).toMatchObject({
+      name: "Opus",
+      description: "Opus 5.5 with the full 1M-token context window",
       contextWindow: 1_000_000,
       supportsAdaptiveThinking: true,
       supportsAutoMode: true,

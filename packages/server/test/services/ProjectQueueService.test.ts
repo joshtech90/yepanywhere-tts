@@ -525,6 +525,188 @@ describe("ProjectQueueService", () => {
     });
   });
 
+  describe("queued YA commands", () => {
+    const sessionTarget = {
+      type: "existing-session" as const,
+      sessionId: "session-1",
+    };
+
+    async function queueClearloop(service: ProjectQueueService) {
+      return service.createItem({
+        projectId,
+        projectPath: "/tmp/project-queue",
+        request: {
+          target: sessionTarget,
+          message: {
+            text: "/clearloop 3 2: p",
+            yaCommand: { name: "clearloop", argument: "3 2: p" },
+          },
+        },
+      });
+    }
+
+    it("derives the command from the text, not the tag's argument", async () => {
+      const service = await createService();
+      const created = await service.createItem({
+        projectId,
+        projectPath: "/tmp/project-queue",
+        request: {
+          target: sessionTarget,
+          message: {
+            text: "/clear 4",
+            yaCommand: { name: "clear", argument: "9" },
+          },
+        },
+      });
+      expect(created.message.yaCommand).toEqual({
+        name: "clear",
+        argument: "4",
+      });
+    });
+
+    it("runs an edited command as the queue now shows it", async () => {
+      const service = await createService();
+      const created = await queueClearloop(service);
+
+      // An editor spreads the old message, stale tag included.
+      const updated = await service.updateItem(projectId, created.id, {
+        message: { ...created.message, text: "/clearloop 3 5: q" },
+      });
+
+      expect(updated?.message).toEqual({
+        text: "/clearloop 3 5: q",
+        yaCommand: { name: "clearloop", argument: "3 5: q" },
+      });
+    });
+
+    it("refuses a tagged message whose text no longer spells the command", async () => {
+      const service = await createService();
+      const created = await queueClearloop(service);
+
+      await expect(
+        service.updateItem(projectId, created.id, {
+          message: { ...created.message, text: "summarize instead" },
+        }),
+      ).rejects.toBeInstanceOf(ProjectQueueValidationError);
+      await expect(
+        service.updateItem(projectId, created.id, {
+          message: { ...created.message, text: "/clear 2" },
+        }),
+      ).rejects.toBeInstanceOf(ProjectQueueValidationError);
+      expect(service.listProject(projectId).items[0]?.message.text).toBe(
+        "/clearloop 3 2: p",
+      );
+    });
+
+    it("refuses a malformed command when it is queued or edited, not at dispatch", async () => {
+      const service = await createService();
+      for (const [text, name, argument, reason] of [
+        ["/clear", "clear", "", "needs a turn number"],
+        ["/clear 0", "clear", "0", "needs a turn number"],
+        ["/clear abc", "clear", "abc", "Cannot read queued /clear abc"],
+        [
+          "/clearloop 3 go",
+          "clearloop",
+          "3 go",
+          "Cannot read queued /clearloop 3 go",
+        ],
+      ] as const) {
+        await expect(
+          service.createItem({
+            projectId,
+            projectPath: "/tmp/project-queue",
+            request: {
+              target: sessionTarget,
+              message: { text, yaCommand: { name, argument } },
+            },
+          }),
+        ).rejects.toThrow(reason);
+      }
+      expect(service.listProject(projectId).items).toEqual([]);
+
+      const created = await queueClearloop(service);
+      await expect(
+        service.updateItem(projectId, created.id, {
+          message: { ...created.message, text: "/clearloop 0: p" },
+        }),
+      ).rejects.toBeInstanceOf(ProjectQueueValidationError);
+      expect(service.listProject(projectId).items[0]?.message.text).toBe(
+        "/clearloop 3 2: p",
+      );
+    });
+
+    it("refuses a command bound for a new session, queued or retargeted", async () => {
+      const service = await createService();
+      await expect(
+        service.createItem({
+          projectId,
+          projectPath: "/tmp/project-queue",
+          request: {
+            target: { type: "new-session" },
+            message: {
+              text: "/clear 1",
+              yaCommand: { name: "clear", argument: "1" },
+            },
+          },
+        }),
+      ).rejects.toBeInstanceOf(ProjectQueueValidationError);
+
+      const created = await queueClearloop(service);
+      await expect(
+        service.updateItem(projectId, created.id, {
+          target: { type: "new-session" },
+        }),
+      ).rejects.toBeInstanceOf(ProjectQueueValidationError);
+      expect(service.listProject(projectId).items[0]?.target).toMatchObject(
+        sessionTarget,
+      );
+    });
+
+    it("keeps an inconsistent persisted command as a failed item", async () => {
+      const stored = (id: string, text: string, target: unknown) => ({
+        id,
+        projectId,
+        projectPath: "/tmp/project-queue",
+        target,
+        message: {
+          text,
+          yaCommand: { name: "clearloop", argument: "3 2: p" },
+        },
+        createdAt: "2026-06-01T00:00:00.000Z",
+        updatedAt: "2026-06-01T00:00:00.000Z",
+        status: "queued",
+      });
+      await fs.writeFile(
+        path.join(testDir, "project-queues.json"),
+        JSON.stringify({
+          version: 3,
+          items: [
+            stored("edited", "/clearloop 3 5: q", sessionTarget),
+            stored("prose", "summarize instead", sessionTarget),
+            stored("retargeted", "/clearloop 3 2: p", { type: "new-session" }),
+            stored("malformed", "/clearloop 3: ", sessionTarget),
+          ],
+        }),
+      );
+
+      const items = (await createService()).listProject(projectId).items;
+
+      expect(items.map((item) => [item.id, item.status])).toEqual([
+        ["edited", "queued"],
+        ["prose", "failed"],
+        ["retargeted", "failed"],
+        ["malformed", "failed"],
+      ]);
+      expect(items[3]?.lastError).toContain("Cannot read queued /clearloop 3:");
+      expect(items[0]?.message.yaCommand).toEqual({
+        name: "clearloop",
+        argument: "3 5: q",
+      });
+      expect(items[1]?.lastError).toContain("no longer spells /clearloop");
+      expect(items[2]?.lastError).toContain("cannot target a new session");
+    });
+  });
+
   it("serializes concurrent creates without dropping writes", async () => {
     const service = await createService();
 

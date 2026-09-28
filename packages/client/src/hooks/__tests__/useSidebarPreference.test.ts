@@ -52,22 +52,40 @@ describe("useSidebarPreference", () => {
   it("starts collapsed without changing other windows' saved preference", () => {
     localStorage.setItem(UI_KEYS.sidebarExpanded, "true");
     const { result, rerender } = renderHook(
-      ({ collapsed }) => useSidebarPreference(false, collapsed),
-      { initialProps: { collapsed: true } },
+      ({ initialMode }) => useSidebarPreference(false, initialMode),
+      { initialProps: { initialMode: "collapsed" as const } },
     );
     expect(result.current.isExpanded).toBe(false);
     expect(localStorage.getItem(UI_KEYS.sidebarExpanded)).toBe("true");
     act(() => result.current.toggleExpanded());
-    rerender({ collapsed: true });
+    rerender({ initialMode: "collapsed" });
     expect(result.current.isExpanded).toBe(true);
   });
 
   it("preserves minimized mode and honors the explicit expanded override", () => {
     localStorage.setItem(UI_KEYS.sidebarExpanded, "false");
     localStorage.setItem(UI_KEYS.sidebarMinimized, "true");
-    const minimized = renderHook(() => useSidebarPreference(false, true));
+    const minimized = renderHook(() =>
+      useSidebarPreference(false, "collapsed"),
+    );
     expect(minimized.result.current.isMinimized).toBe(true);
-    const expanded = renderHook(() => useSidebarPreference(true, true));
+    const expanded = renderHook(() => useSidebarPreference(true, "collapsed"));
     expect(expanded.result.current.isExpanded).toBe(true);
+  });
+
+  it("starts minimized for one mount and restores the stored mode unsaved", () => {
+    localStorage.setItem(UI_KEYS.sidebarExpanded, "true");
+    const { result } = renderHook(() =>
+      useSidebarPreference(false, "minimized"),
+    );
+    expect(result.current.isMinimized).toBe(true);
+    expect(localStorage.getItem(UI_KEYS.sidebarMinimized)).toBeNull();
+
+    act(() => result.current.restoreCollapsedSidebar());
+
+    expect(result.current.isMinimized).toBe(false);
+    expect(result.current.isExpanded).toBe(true);
+    expect(localStorage.getItem(UI_KEYS.sidebarExpanded)).toBe("true");
+    expect(localStorage.getItem(UI_KEYS.sidebarMinimized)).toBeNull();
   });
 });

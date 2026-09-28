@@ -28,27 +28,25 @@ const githubRepository =
   /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+(?:\.git)?$/;
 const sourceEntry = z.strictObject({
   id: z.string().regex(/^[a-z][a-z0-9-]*$/),
-  repository: z
-    .string()
-    .refine(
-      (value) =>
-        githubRepository.test(value) ||
-        (!/[\x00-\x1f]/.test(value) &&
-          (isAbsolute(value) || value.startsWith("~/"))),
-      "Expected a GitHub repository or an absolute local directory",
-    ),
-  contentPath: z
-    .string()
-    .refine(
-      (value) =>
-        value === "" ||
-        (!/[\\:\x00-\x1f]/.test(value) &&
-          value
-            .split("/")
-            .every(
-              (part) => !["", ".", "..", ".git"].includes(part.toLowerCase()),
-            )),
-    ),
+  repository: z.string().refine(
+    (value) =>
+      githubRepository.test(value) ||
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: Local paths must reject ASCII control bytes.
+      (!/[\x00-\x1f]/.test(value) && // oxlint-disable-line no-control-regex -- Reject ASCII control bytes.
+        (isAbsolute(value) || value.startsWith("~/"))),
+    "Expected a GitHub repository or an absolute local directory",
+  ),
+  contentPath: z.string().refine(
+    (value) =>
+      value === "" ||
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: Content paths must reject ASCII control bytes.
+      (!/[\\:\x00-\x1f]/.test(value) && // oxlint-disable-line no-control-regex -- Reject ASCII control bytes.
+        value
+          .split("/")
+          .every(
+            (part) => !["", ".", "..", ".git"].includes(part.toLowerCase()),
+          )),
+  ),
   revision: z
     .string()
     .min(1)
@@ -68,13 +66,78 @@ export const templateSourceConfig = z.strictObject({
     ),
 });
 
+/** The saved `state.json`, validated whole because retrieval reuses its snapshot. */
+const savedTemplateSourceState = z.object({
+  config: templateSourceConfig,
+  phase: z.enum(["disabled", "fetching", "ready", "error"]),
+  error: z.string().optional(),
+  result: z.enum(["updated", "up-to-date"]).optional(),
+  snapshot: z
+    .object({
+      sources: z.array(
+        z.object({
+          id: z.string(),
+          repository: z.string(),
+          contentPath: z.string(),
+          revision: z.string(),
+          commit: z.string().nullable(),
+          local: z.boolean().optional(),
+          rawDirectory: z.string(),
+          directory: z.string(),
+          rewrittenFiles: z.number(),
+        }),
+      ),
+      templates: z.array(
+        z.object({
+          id: z.string(),
+          sourceId: z.string(),
+          title: z.string(),
+          description: z.string(),
+          status: z.enum(["draft", "ready"]),
+        }),
+      ),
+    })
+    .optional(),
+});
+
+/**
+ * Runs git for a GitHub template source. The ref check and the download share
+ * one runner so they reach the remote the same way.
+ */
+export type TemplateSourceGit = (
+  args: string[],
+  options: { cwd?: string; timeout: number; maxBuffer: number },
+) => Promise<{ stdout: string }>;
+
+/**
+ * Git with the host's system and global Git config ignored: a user's URL
+ * rewrites, credential helpers, proxy and CA settings apply to neither call.
+ * `emptyConfig` names an empty file standing in for the global config.
+ */
+export function isolatedTemplateSourceGit(
+  emptyConfig: string,
+): TemplateSourceGit {
+  return (args, options) =>
+    execute("git", args, {
+      ...options,
+      env: {
+        ...process.env,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_CONFIG_GLOBAL: emptyConfig,
+        GIT_TERMINAL_PROMPT: "0",
+      },
+    });
+}
+
 /** Fetching is injectable so route tests use local fixtures without network. */
 export type FetchTemplateRepository = (
   config: ProjectTemplateSourceConfig,
   directory: string,
+  git: TemplateSourceGit,
 ) => Promise<string>;
 export type ResolveTemplateRevision = (
   config: ProjectTemplateSourceConfig,
+  git: TemplateSourceGit,
 ) => Promise<string>;
 
 export class TemplateSourceBusyError extends Error {
@@ -129,8 +192,10 @@ async function localSnapshot(
   };
 }
 
-async function resolveRevision(
+/** Resolves a GitHub source's branch, tag or HEAD to the commit ls-remote reports. */
+export async function resolveTemplateRevision(
   config: ProjectTemplateSourceConfig,
+  git: TemplateSourceGit,
 ): Promise<string> {
   if (/^[0-9a-f]{40}$/.test(config.revision)) return config.revision;
   const ref = config.revision;
@@ -138,14 +203,9 @@ async function resolveRevision(
     ref === "HEAD" || ref.startsWith("refs/")
       ? [ref, `${ref}^{}`]
       : [`refs/heads/${ref}`, `refs/tags/${ref}`, `refs/tags/${ref}^{}`];
-  const { stdout } = await execute(
-    "git",
+  const { stdout } = await git(
     ["ls-remote", "--exit-code", config.repository, ...patterns],
-    {
-      timeout: 30_000,
-      maxBuffer: 64 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
-    },
+    { timeout: 30_000, maxBuffer: 64 * 1024 },
   );
   const refs = new Map(
     stdout
@@ -169,23 +229,16 @@ async function resolveRevision(
 async function fetchRepository(
   config: ProjectTemplateSourceConfig,
   directory: string,
+  runGit: TemplateSourceGit,
 ): Promise<string> {
-  const emptyConfig = join(directory, "git-config");
-  await writeFile(emptyConfig, "", { mode: 0o600 });
   const checkout = join(directory, "repository");
   const hooks = join(directory, "empty-hooks");
   await mkdir(hooks, { mode: 0o700 });
-  const git = async (args: string[]) =>
-    execute("git", args, {
+  const git = (args: string[]) =>
+    runGit(args, {
       cwd: directory,
       timeout: 180_000,
       maxBuffer: 2 * 1024 * 1024,
-      env: {
-        ...process.env,
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: emptyConfig,
-        GIT_TERMINAL_PROMPT: "0",
-      },
     });
   await git(["init", checkout]);
   await git(["-C", checkout, "remote", "add", "origin", config.repository]);
@@ -290,21 +343,23 @@ export class TemplateSourceService {
   constructor(
     dataDir: string,
     private readonly fetch: FetchTemplateRepository = fetchRepository,
-    private readonly resolveRef: ResolveTemplateRevision = resolveRevision,
+    private readonly resolveRef: ResolveTemplateRevision = resolveTemplateRevision,
   ) {
     this.directory = join(dataDir, "project-templates-source");
   }
 
   private async load(): Promise<void> {
-    let saved: string;
+    const file = join(this.directory, "state.json");
+    let parsed: ProjectTemplateSourceState;
     try {
-      saved = await readFile(join(this.directory, "state.json"), "utf8");
+      parsed = savedTemplateSourceState.parse(
+        JSON.parse(await readFile(file, "utf8")),
+      );
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
-      throw error;
+      await this.setAsideUnreadableState(file, error);
+      return;
     }
-    const parsed = JSON.parse(saved) as ProjectTemplateSourceState;
-    templateSourceConfig.parse(parsed.config);
     this.state = parsed;
     if (this.state.phase === "fetching") {
       this.state = {
@@ -316,8 +371,53 @@ export class TemplateSourceService {
     }
   }
 
+  /**
+   * Moves an unreadable saved state out of the way and starts from the defaults
+   * in an explained error state, so a Save can replace it without a hand edit.
+   */
+  private async setAsideUnreadableState(
+    file: string,
+    cause: unknown,
+  ): Promise<void> {
+    const aside = `state.unreadable-${new Date().toISOString().replaceAll(":", "-")}.json`;
+    let error = `Saved template source settings could not be read and were set aside as ${aside}. Save to replace them with the settings shown.`;
+    let movedAside = true;
+    try {
+      await rename(file, join(this.directory, aside));
+      console.error(
+        `[TemplateSource] Unreadable saved state set aside as ${aside}:`,
+        cause,
+      );
+    } catch (renameError) {
+      movedAside = false;
+      error =
+        "Saved template source settings could not be read. Save to replace them with the settings shown.";
+      console.error(
+        "[TemplateSource] Unreadable saved state could not be set aside:",
+        cause,
+        renameError,
+      );
+    }
+    this.state = {
+      config: structuredClone(DEFAULT_PROJECT_TEMPLATE_SOURCES),
+      phase: "error",
+      error,
+    };
+    // Keep the explanation across a restart, but never write over the only copy.
+    if (!movedAside) return;
+    try {
+      await this.persist();
+    } catch (persistError) {
+      console.error(
+        "[TemplateSource] Cannot persist the unreadable-state notice:",
+        persistError,
+      );
+    }
+  }
+
   async current(): Promise<ProjectTemplateSourceState> {
-    await (this.initialized ??= this.load());
+    this.initialized ??= this.load();
+    await this.initialized;
     return structuredClone(this.state);
   }
 
@@ -332,7 +432,8 @@ export class TemplateSourceService {
 
   async configure(input: unknown): Promise<ProjectTemplateSourceState> {
     const config = templateSourceConfig.parse(input);
-    await (this.initialized ??= this.load());
+    this.initialized ??= this.load();
+    await this.initialized;
     if (this.saving || this.retrieving) throw new TemplateSourceBusyError();
     this.saving = true;
     const previous = this.state;
@@ -379,19 +480,52 @@ export class TemplateSourceService {
     await this.operation;
   }
 
+  /** Revalidates mutable sources and loads the admitted revisions for creation. */
+  async creationLibrary(): Promise<TemplateLibrary> {
+    const state = await this.current();
+    if (!state.config.enabled || state.phase !== "ready" || !state.snapshot)
+      throw new Error(
+        "Project template sources are not ready; check Settings → Project templates",
+      );
+    const admitted = this.state;
+    const library = await TemplateLibrary.loadSources(
+      state.snapshot.sources.map((source) => ({
+        id: source.id,
+        repository: source.directory,
+        contentPath: source.contentPath,
+      })),
+    );
+    if (this.state !== admitted)
+      throw new Error(
+        "Project template sources changed during validation; retry creation",
+      );
+    return library;
+  }
+
   private async retrieve(
     config: ProjectTemplateSourcesConfig,
     previous: ProjectTemplateSourceState,
   ): Promise<void> {
     const snapshots: ProjectTemplateSourceSnapshot[] = [];
+    // Set when a GitHub copy or a relocation target differs from the admitted
+    // snapshot; local working files are re-read below either way.
     let changed = false;
+    const emptyGitConfig = join(this.directory, "git-config");
+    await writeFile(emptyGitConfig, "", { mode: 0o600 });
+    const git = isolatedTemplateSourceGit(emptyGitConfig);
     for (const source of config.sources) {
       if (!githubRepository.test(source.repository)) {
-        snapshots.push(await localSnapshot(source));
-        changed = true;
+        const snapshot = await localSnapshot(source);
+        snapshots.push(snapshot);
+        // Relocation aliases a local source by its directory, never its files.
+        const admitted = previous.snapshot?.sources.find(
+          (item) => item.id === source.id,
+        );
+        if (!admitted?.local || admitted.directory !== snapshot.directory)
+          changed = true;
         continue;
       }
-      const resolved = await this.resolveRef(source);
+      const resolved = await this.resolveRef(source, git);
       const cached = previous.snapshot?.sources.find(
         (item) =>
           item.id === source.id &&
@@ -409,6 +543,7 @@ export class TemplateSourceService {
       const commit = await this.fetch(
         { ...source, revision: resolved },
         directory,
+        git,
       );
       if (commit !== resolved || !/^[0-9a-f]{40,64}$/.test(commit))
         throw new Error("Fetched revision differs from the resolved commit");
@@ -464,7 +599,6 @@ export class TemplateSourceService {
         description,
         status,
       }));
-    for (const template of templates) library.compose(template.id);
     this.state = {
       config,
       phase: "ready",

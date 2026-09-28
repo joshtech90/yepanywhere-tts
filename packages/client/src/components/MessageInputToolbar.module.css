@@ -120,7 +120,8 @@
   opacity: 0.6;
 }
 
-.doneButton {
+.doneButton,
+.transcriptSearchButton {
   appearance: none;
   display: inline-flex;
   box-sizing: border-box;
@@ -143,14 +144,18 @@
 }
 
 .doneButton:hover,
-.doneButton:focus-visible {
+.doneButton:focus-visible,
+.transcriptSearchButton:hover,
+.transcriptSearchButton:focus-visible,
+.transcriptSearchButton[aria-pressed="true"] {
   border-color: var(--border-input);
   background: var(--bg-hover);
   color: var(--text-primary);
   outline: none;
 }
 
-.doneButton > svg {
+.doneButton > svg,
+.transcriptSearchButton > svg {
   display: block;
 }
 

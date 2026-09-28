@@ -16,7 +16,8 @@ interface UseServerSettingsResult {
   settings: ServerSettings | null;
   isLoading: boolean;
   error: string | null;
-  updateSettings: (updates: Partial<ServerSettings>) => Promise<void>;
+  /** Resolves with the settings the server accepted, once they are applied. */
+  updateSettings: (updates: Partial<ServerSettings>) => Promise<ServerSettings>;
   updateSetting: <K extends keyof ServerSettings>(
     key: K,
     value: ServerSettings[K],
@@ -188,7 +189,7 @@ export function useServerSettings(): UseServerSettingsResult {
   }, [snapshot.observedAt]);
 
   const updateSettings = useCallback(
-    async (updates: Partial<ServerSettings>): Promise<void> => {
+    async (updates: Partial<ServerSettings>): Promise<ServerSettings> => {
       const requestSourceKey = sourceKey;
       try {
         setMutationError(null);
@@ -201,6 +202,7 @@ export function useServerSettings(): UseServerSettingsResult {
           response.settings,
           nextMutationObservedAt(requestSourceKey),
         );
+        return response.settings;
       } catch (err) {
         console.error("[useServerSettings] Failed to update settings:", err);
         setMutationError(

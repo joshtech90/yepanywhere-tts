@@ -334,6 +334,94 @@ describe("PiSessionReader", () => {
     ]);
   });
 
+  it("shows a turn refused over its thinking level once, with its refusal after the prompt", async () => {
+    const retrySessionId = "019pi-effort-retry";
+    const refusal =
+      "400 Unexpected reasoning effort high. Supported types are xhigh (default), medium, and low.";
+    const jsonl = [
+      jsonLine({
+        type: "session",
+        version: 3,
+        id: retrySessionId,
+        cwd: projectPath,
+        timestamp: "2026-09-27T00:00:00.000Z",
+      }),
+      // The refused turn, left on an abandoned branch by the set-aside.
+      jsonLine({
+        type: "message",
+        id: "u-refused",
+        parentId: null,
+        timestamp: "2026-09-27T00:00:01.000Z",
+        message: { role: "user", content: "ping" },
+      }),
+      jsonLine({
+        type: "message",
+        id: "a-refused",
+        parentId: "u-refused",
+        timestamp: "2026-09-27T00:00:02.000Z",
+        message: {
+          role: "assistant",
+          content: [],
+          stopReason: "error",
+          errorMessage: refusal,
+        },
+      }),
+      // What the set-aside and the resend append to the active branch.
+      jsonLine({
+        type: "custom",
+        id: "c-retry",
+        parentId: null,
+        timestamp: "2026-09-27T00:00:03.000Z",
+        customType: "yep-anywhere.effort-retry",
+        data: { refusedLevel: "high", retryLevel: "medium", error: refusal },
+      }),
+      jsonLine({
+        type: "thinking_level_change",
+        id: "t-medium",
+        parentId: "c-retry",
+        timestamp: "2026-09-27T00:00:04.000Z",
+        thinkingLevel: "medium",
+      }),
+      jsonLine({
+        type: "message",
+        id: "u-resent",
+        parentId: "t-medium",
+        timestamp: "2026-09-27T00:00:05.000Z",
+        message: { role: "user", content: "ping" },
+      }),
+      jsonLine({
+        type: "message",
+        id: "a-answer",
+        parentId: "u-resent",
+        timestamp: "2026-09-27T00:00:06.000Z",
+        message: { role: "assistant", content: textResult("pong") },
+      }),
+    ].join("\n");
+    await writeFile(
+      join(
+        sessionsDir,
+        "--fixture--",
+        `2026-09-27T00-00-00-000Z_${retrySessionId}.jsonl`,
+      ),
+      `${jsonl}\n`,
+    );
+
+    const reader = new PiSessionReader({ sessionsDir, projectPath });
+    const loaded = await reader.getSession(retrySessionId, projectId);
+    const messages =
+      loaded?.data.provider === "pi" ? loaded.data.session.messages : [];
+    expect(
+      messages.map((message) => [message.uuid, message.message?.content]),
+    ).toEqual([
+      ["u-resent", "ping"],
+      [
+        "c-retry",
+        `_This model refused thinking level **high**, so the turn was retried at **medium**._\n\n> ${refusal}`,
+      ],
+      ["a-answer", [{ type: "text", text: "pong" }]],
+    ]);
+  });
+
   it("uses visible assistant text, not hidden thinking, for lastAgentText", async () => {
     const visibleSessionId = "019pi-visible-last-agent";
     const jsonl = [

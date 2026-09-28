@@ -15,6 +15,7 @@ export interface SessionDetailRenderItemInput {
   markdownAugments?: MarkdownAugmentMap;
   activeToolApproval?: ActiveToolApproval;
   transcriptDisplayObjects?: readonly TranscriptDisplayObject[];
+  recoverUnanchoredBangCommands?: boolean;
   previousRenderItems?: readonly RenderItem[];
   recentProjectPathLinksEnabled?: boolean;
   workflowTagsEnabled?: boolean;
@@ -55,6 +56,7 @@ export function buildSessionDetailRenderItems({
   markdownAugments,
   activeToolApproval,
   transcriptDisplayObjects = [],
+  recoverUnanchoredBangCommands = false,
   previousRenderItems = [],
   recentProjectPathLinksEnabled = false,
   workflowTagsEnabled = false,
@@ -81,6 +83,7 @@ export function buildSessionDetailRenderItems({
   const inserted = insertTranscriptDisplayObjects(
     providerProjected,
     transcriptDisplayObjects,
+    recoverUnanchoredBangCommands,
   );
   return stabilizeRenderItems(previousRenderItems, inserted);
 }

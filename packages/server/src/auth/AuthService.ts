@@ -335,6 +335,22 @@ export class AuthService {
   }
 
   /**
+   * Invalidate every session a limited user logged in with, e.g. when their
+   * password is replaced. Returns how many were invalidated.
+   */
+  async invalidateUserSessions(username: string): Promise<number> {
+    let count = 0;
+    for (const [verifier, session] of Object.entries(this.state.sessions)) {
+      if (session.username === username) {
+        delete this.state.sessions[verifier];
+        count += 1;
+      }
+    }
+    if (count > 0) await this.save();
+    return count;
+  }
+
+  /**
    * Invalidate all sessions (logout everywhere).
    */
   async invalidateAllSessions(): Promise<void> {

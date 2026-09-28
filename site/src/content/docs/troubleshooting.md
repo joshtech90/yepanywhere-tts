@@ -45,6 +45,12 @@ providers may need additional executables, endpoints, or Settings values.
 Do not solve a relay problem by exposing the unauthenticated local server to
 the public internet.
 
+## Forgot the local password
+
+Stop the server, run `yepanywhere --setup-auth "your-new-password"`, then start
+it again. See [Local access and passwords](/docs/local-access#recover-a-lost-password)
+for the one-time `--auth-disable` bypass.
+
 ## Notifications do not arrive
 
 Check browser site permission, operating-system notification settings, the

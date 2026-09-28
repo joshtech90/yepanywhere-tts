@@ -16,6 +16,7 @@ const COMPOSER_OVERFLOW_TIERS: ComposerOverflowTier[] = [
 
 // Configured priority wins; this fixed order breaks ties, first hidden first.
 export const COMPOSER_OVERFLOW_ORDER: readonly SessionToolbarVisibilityKey[] = [
+  "transcriptSearch",
   "shortcutsHelp",
   "syntheticDone",
   "nudge",
@@ -89,6 +90,7 @@ export interface ComposerToolbarOverflowLayoutSignatureInput {
   syntheticDone: ComposerToolbarOverflowPriorityInput;
   sessionStatus: ComposerToolbarOverflowPriorityInput;
   shortcutsHelp: ComposerToolbarOverflowPriorityInput;
+  transcriptSearch: ComposerToolbarOverflowPriorityInput;
   contextUsage: ComposerToolbarOverflowPriorityInput;
   btw: ComposerToolbarOverflowPriorityInput;
   steerNow: ComposerToolbarOverflowPriorityInput;
@@ -118,6 +120,7 @@ export function getComposerToolbarOverflowLayoutSignature(
     `syntheticDone:${input.syntheticDone}`,
     `sessionStatus:${input.sessionStatus}`,
     `shortcutsHelp:${input.shortcutsHelp}`,
+    `transcriptSearch:${input.transcriptSearch}`,
     `contextUsage:${input.contextUsage}`,
     `btw:${input.btw}`,
     `steerNow:${input.steerNow}`,

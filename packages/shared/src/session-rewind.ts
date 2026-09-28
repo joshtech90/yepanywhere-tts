@@ -56,6 +56,13 @@ export interface SessionRewindRecord {
   cutTurnIndex: number;
   /** First dropped user request, when the tail had one. */
   droppedFromMessageId?: string;
+  /**
+   * Last transcript row present when the rewind was recorded: the dropped span
+   * is the file lines after the cut through this row. Absent on records made
+   * before the field existed or when no transcript file could be read at
+   * rewind time; those fall back to comparing row timestamps with `at`.
+   */
+  droppedThroughMessageId?: string;
   droppedTurnCount: number;
   reason: SessionRewindReason;
   /** For clearloop rewinds: the loop, the iteration, and its M and prompt. */
@@ -158,6 +165,16 @@ export function parseClearloopArguments(
   const turnIndex = Number.parseInt(turnIndexText, 10);
   if (!Number.isFinite(turnIndex) || turnIndex < 0) return null;
   return { turnIndex, total, prompt };
+}
+
+/**
+ * YA's same-session rewind commands. They exist only where rewind is
+ * supported; elsewhere the same text is the provider's own command.
+ */
+export const REWIND_SLASH_COMMANDS = ["clear", "fork", "clearloop"] as const;
+
+export function isRewindSlashCommand(command: string): boolean {
+  return (REWIND_SLASH_COMMANDS as readonly string[]).includes(command);
 }
 
 /** Parse the argument of `/clear [N]` or `/fork N`; bare `/clear` is 0. */

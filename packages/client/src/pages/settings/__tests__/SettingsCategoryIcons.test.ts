@@ -1,8 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  getEmulatorCategory,
-  getSettingsCategories,
-} from "../../../i18n-settings";
+import { getSettingsCategories } from "../../../i18n-settings";
 import {
   settingsCategoryEmojiIcons,
   settingsCategoryIcons,
@@ -14,10 +11,9 @@ import {
  * plain object keyed by id, so nothing else fails when one is forgotten.
  */
 describe("settings category icons", () => {
-  const ids = [
-    ...getSettingsCategories((key) => key).map((category) => category.id),
-    getEmulatorCategory((key) => key).id,
-  ];
+  const ids = getSettingsCategories((key) => key).map(
+    (category) => category.id,
+  );
 
   it("covers every category in both icon styles", () => {
     expect(ids.filter((id) => !settingsCategoryIcons[id])).toEqual([]);

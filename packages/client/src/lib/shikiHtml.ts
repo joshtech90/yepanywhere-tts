@@ -3,12 +3,7 @@ import {
   SOURCE_OFFSET_START_ATTR,
 } from "./sourceOffsetDom";
 
-export function compactShikiLineBreaks(
-  html: string | undefined,
-): string | undefined {
-  if (!html) {
-    return html;
-  }
+function compactShikiLineBreaks(html: string): string {
   return html.replace(/<\/span>\r?\n(?=<span class="line(?:\s|"))/g, "</span>");
 }
 
@@ -79,19 +74,27 @@ function annotateLineTokens(
 }
 
 /**
- * Carry exact source offsets through Shiki's block-per-line DOM. Shiki line
- * separators are layout, not text nodes, so selections spanning lines need
- * these offsets to recover source newlines and stable comment anchors.
+ * Prepare server Shiki HTML for display: remove the newline text between line
+ * spans, and when the source text is known, carry exact source offsets through
+ * the resulting block-per-line DOM. Line separators become layout, not text,
+ * so selections spanning lines need these offsets to recover source newlines
+ * and stable comment anchors.
+ *
+ * The output is only correct inside `ShikiHtml`, whose styles put each line
+ * back on its own row; render it there. Preparing prepared HTML again changes
+ * nothing.
  */
-export function annotateShikiSourceOffsets(
-  html: string | undefined,
-  source: string | undefined,
-): string | undefined {
-  if (!html || source === undefined || typeof document === "undefined") {
-    return html;
+export function prepareShikiHtml(html: string, source?: string): string {
+  const compacted = compactShikiLineBreaks(html);
+  if (source === undefined || typeof document === "undefined") {
+    return compacted;
   }
+  return annotateShikiSourceOffsets(compacted, source);
+}
+
+function annotateShikiSourceOffsets(html: string, source: string): string {
   const template = document.createElement("template");
-  template.innerHTML = compactShikiLineBreaks(html) ?? "";
+  template.innerHTML = html;
   const renderedLines = Array.from(
     template.content.querySelectorAll<HTMLElement>("code .line"),
   );

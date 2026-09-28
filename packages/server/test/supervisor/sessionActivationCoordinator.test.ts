@@ -95,6 +95,69 @@ describe("SessionActivationCoordinator", () => {
     expect(writes).toEqual(["default", "flushed", "default"]);
   });
 
+  describe("stopping process launch settings", () => {
+    function stoppingFixture() {
+      const gate = deferred<void>();
+      const writes: string[] = [];
+      let owner: Process | undefined;
+      const state = coordinator({
+        getProcessForSession: () => owner,
+        sessionMetadataService: {
+          recordEffectiveLaunchSettings: async (
+            _id: string,
+            value: { permissionMode: string },
+          ) => {
+            writes.push(value.permissionMode);
+          },
+        } as unknown as NonNullable<
+          SessionActivationCoordinatorOptions["sessionMetadataService"]
+        >,
+      });
+      const process = {
+        id: "process-1",
+        sessionId: "session-1",
+        permissionMode: "default",
+        isTerminated: false,
+      } as Process;
+      owner = process;
+      // A configuration transition still running holds the scheduled save.
+      const busy = state.enqueueConfiguration("session-1", () => gate.promise);
+      Object.assign(process, { permissionMode: "plan" });
+      state.scheduleLaunchSettingsPersistence(process, "permissionMode");
+      const stop = (successor?: Process) => {
+        Object.assign(process, { isTerminated: true });
+        owner = successor;
+        state.discardProcess(process);
+      };
+      return { state, process, writes, gate, busy, stop };
+    }
+
+    it("saves a mode change whose scheduled save the stop overtook", async () => {
+      const { state, process, writes, gate, busy, stop } = stoppingFixture();
+
+      const settled = state.settleStoppingProcessLaunchSettings(process);
+      expect(state.settleStoppingProcessLaunchSettings(process)).toBe(settled);
+      stop();
+      gate.resolve();
+      await busy;
+      await settled;
+
+      expect(writes).toEqual(["plan"]);
+    });
+
+    it("leaves the session to a successor that owns it by then", async () => {
+      const { state, process, writes, gate, busy, stop } = stoppingFixture();
+
+      const settled = state.settleStoppingProcessLaunchSettings(process);
+      stop({ id: "process-2", sessionId: "session-1" } as Process);
+      gate.resolve();
+      await busy;
+      await settled;
+
+      expect(writes).toEqual([]);
+    });
+  });
+
   it("runs configuration transitions in request order", async () => {
     const firstGate = deferred<void>();
     const state = coordinator();

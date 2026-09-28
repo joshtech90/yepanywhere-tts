@@ -1,9 +1,11 @@
 # Mid-session effort change
 
-> A mid-session effort change re-renders the provider's system prompt, so on
-> a long-context session the next request re-reads most of the cached prompt;
-> YA warns before such a change on enabled providers past a configurable
-> token threshold and offers a fork at the new effort instead.
+> A mid-session effort change misses the provider's prompt cache on most
+> models (Claude keys its cache by effort except on Opus 5.5; Codex sends
+> effort at request level), so on a long-context session the next request
+> re-reads the whole prompt; YA warns before such a change on enabled
+> providers past a configurable token threshold, skips models measured to
+> keep the cache, and offers a fork at the new effort instead.
 
 Topic: mid-session-effort-change
 
@@ -24,15 +26,19 @@ live effort control is applied), [provider-fork-support](provider-fork-support.m
 
 ## Why
 
-On Claude, the selected effort is part of the rendered system prompt, so
-changing it mid-session changes the cached prefix and the next request
-re-reads the whole conversation (user observation, 2026-09-19; the
-Anthropic cache is an exact-prefix match). On Codex the effort is the
-request-level `reasoning.effort`, and OpenAI's own guidance is to keep that
-unchanged to preserve the cached prefix. Either way a routine-looking control
-can silently cost a full re-read of a 200k-token session, which is the same
-class of cost the [cache-miss-accounting](cache-miss-accounting.md) monitor
-exists to surface after the fact. This topic surfaces it before.
+On Claude, the prompt cache is keyed by effort on most models: changing it
+mid-session makes the next request miss the whole cached prefix, tools and
+system prompt included, and re-read the conversation at cache-write price.
+The request text does not change; only the `output_config.effort` parameter
+does (measured on Sonnet 5; see the
+[evidence companion](mid-session-effort-change.evidence.md)). Opus 5.5 is
+the measured exception: its cache survives the same change. On Codex the
+effort is the request-level `reasoning.effort`, and OpenAI's own guidance
+is to keep that unchanged to preserve the cached prefix. Either way a
+routine-looking control can silently cost a full re-read of a 200k-token
+session, which is the same class of cost the
+[cache-miss-accounting](cache-miss-accounting.md) monitor exists to surface
+after the fact. This topic surfaces it before.
 
 ## Contract
 
@@ -48,8 +54,16 @@ exists to surface after the fact. This topic surfaces it before.
   including cached reads on Claude) is known and at least the threshold, and
   no cache-safe mechanism exists for the provider/model pair
   (`effortChangeKeepsPromptCache` in
-  `packages/shared/src/long-context-effort-warning.ts`, currently false for
-  every pair; see § Codex Astra below).
+  `packages/shared/src/long-context-effort-warning.ts`). The only cache-safe
+  pair today is the `claude` provider with the concrete id
+  `claude-opus-5-5`, ignoring a trailing `[1m]` or dated-snapshot suffix. The
+  session's resolved model decides; an unresolved selection alias such as
+  `opus` still warns, because it may later resolve to an unmeasured version.
+  Each exemption rests on a warm-session measurement recorded in the
+  evidence companion (`claude-opus-5-5`: 2026-09-24). The behavior belongs to
+  the provider API, not YA or Claude Code, so re-measure on a model or SDK
+  refresh before adding a model to, or keeping one in, that list.
+  Codex Astra is not yet exempt; see § Codex Astra below.
 - **Dialog.** States the last request size and the from/to efforts, and
   offers three choices: **Change anyway** applies the change exactly as it
   would have without the warning; **Fork at <effort>** creates a
@@ -57,11 +71,21 @@ exists to surface after the fact. This topic surfaces it before.
   option and navigates to it, leaving the source session untouched at its old
   effort; **Cancel** applies nothing. The fork choice is hidden when the
   session cannot be forked now (provider without fork support, session owned
-  elsewhere, or a turn in flight). Dismissing the dialog is Cancel.
+  elsewhere, or a turn in flight). It is also hidden when the same model-panel
+  save switches the model: the fork carries only the thinking option and
+  would keep the source's model, so the choices are Change anyway (both
+  changes) or Cancel. Fork eligibility remains live while the
+  dialog is open and is checked again on selection, including when initial
+  metadata reconciliation establishes that the session is idle. Dismissing
+  the dialog is Cancel.
 - **Fork launch settings.** The fork route accepts an optional `thinking`
   option and, when present, records it as the fork's effective launch
   settings with the inherited model and the source's permission mode and
-  service tier. The fork's composer therefore sends that effort on its first
+  service tier, by the same source-plus-overrides inheritance a restart or
+  handoff uses (`inheritSuccessorLaunchSettings`); `thinking` accepts the
+  same wire options as any other launch (`isThinkingOption`), and anything
+  else is refused before a fork is created. The fork's composer therefore
+  sends that effort on its first
   turn instead of the browser's per-model default, and server-side turns use
   it too. A fork without `thinking` keeps today's behavior.
 - **Setting.** `longContextEffortWarning` is a server-persisted setting
@@ -83,12 +107,15 @@ exists to surface after the fact. This topic surfaces it before.
 
 ## Provider notes
 
-- **Claude.** The fork keeps the source's prefix byte-identical and forks
-  within the cache window have been measured to hit the parent's cache
+- **Claude.** The fork keeps the source's prefix byte-identical, and forks
+  at the *same* effort within the cache window hit the parent's cache
   ([fork-is-the-only-rewind gap](../gaps/fork-is-the-only-rewind-and-changes-the-cache-key.md)
-  § Claude), so a fork at the new effort is the cheap path: the fork's first
-  request pays only for the new system prompt while the source session stays
-  warm at its old effort. The dialog says so.
+  § Claude). A fork at a *different* effort does not: the cache is keyed by
+  effort, so its first request re-reads the whole context just as an
+  in-place change would (see the measured forks in the evidence companion).
+  The fork saves nothing on the re-read; it only keeps the source session
+  unchanged and warm at its old effort. The dialog says so. On Opus 5.5
+  there is no dialog: the change keeps the cache in place.
 - **Codex.** A Codex fork changes the thread id and therefore the
   `prompt_cache_key`, and measured forks re-read most of the context
   ([quick-answer fork gap](../gaps/quick-answer-fork-cache-efficiency.md)),

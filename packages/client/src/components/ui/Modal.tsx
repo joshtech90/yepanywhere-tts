@@ -108,8 +108,16 @@ function latestModalOwner<T extends { id: number }>(
   return latest;
 }
 
-/** Own topmost Escape dismissal and one share of the document scroll lock. */
-export function useModalLayer(onClose: () => void, enabled = true): void {
+/**
+ * Own topmost Escape dismissal and one share of the document scroll lock.
+ * A control layered inside a viewer, such as its find field, can take the
+ * Escape slot without the scroll lock (`lockScroll: false`).
+ */
+export function useModalLayer(
+  onClose: () => void,
+  enabled = true,
+  { lockScroll = true }: { lockScroll?: boolean } = {},
+): void {
   const onCloseRef = useRef(onClose);
   const ownerIdRef = useRef<number | null>(null);
   onCloseRef.current = onClose;
@@ -131,11 +139,13 @@ export function useModalLayer(onClose: () => void, enabled = true): void {
     if (needsEscapeListener) {
       document.addEventListener("keydown", handleModalEscape, true);
     }
-    if (bodyScrollOwners === 0) {
-      bodyOverflowBeforeModal = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
+    if (lockScroll) {
+      if (bodyScrollOwners === 0) {
+        bodyOverflowBeforeModal = document.body.style.overflow;
+        document.body.style.overflow = "hidden";
+      }
+      bodyScrollOwners += 1;
     }
-    bodyScrollOwners += 1;
 
     return () => {
       const ownerIndex = modalLayerOwners.findIndex(
@@ -145,13 +155,14 @@ export function useModalLayer(onClose: () => void, enabled = true): void {
       if (modalLayerOwners.length === 0) {
         document.removeEventListener("keydown", handleModalEscape, true);
       }
+      if (!lockScroll) return;
       bodyScrollOwners -= 1;
       if (bodyScrollOwners === 0) {
         document.body.style.overflow = bodyOverflowBeforeModal ?? "";
         bodyOverflowBeforeModal = null;
       }
     };
-  }, [enabled]);
+  }, [enabled, lockScroll]);
 }
 
 /** Own the topmost Backspace dismissal slot while a viewer is visible. */
@@ -274,6 +285,100 @@ export function useModalBackGesture(
 }
 
 /**
+ * Modal header and content: title, the caller's actions, minimize and close,
+ * then the scrolling content. The covering modal and the session detail panel
+ * docked in the right pane both render it, so a panel looks the same in either.
+ */
+export function ModalChrome({
+  title,
+  actions,
+  headerClassName,
+  identityClassName,
+  headerActionsClassName,
+  onMinimize,
+  onClose,
+  closeButtonRef,
+  contentRef,
+  children,
+}: {
+  title: ReactNode;
+  actions?: ReactNode;
+  headerClassName?: string;
+  /** Wraps the title, for a header layout that gives it a column of its own. */
+  identityClassName?: string;
+  headerActionsClassName?: string;
+  onMinimize?: () => void;
+  onClose: () => void;
+  closeButtonRef?: RefObject<HTMLButtonElement | null>;
+  contentRef?: RefObject<HTMLDivElement | null>;
+  children: ReactNode;
+}) {
+  const { t } = useI18n();
+  const titleElement = <span className="modal-title">{title}</span>;
+  return (
+    <>
+      <div
+        className={`modal-header${headerClassName ? ` ${headerClassName}` : ""}`}
+      >
+        {identityClassName ? (
+          <span className={identityClassName}>{titleElement}</span>
+        ) : (
+          titleElement
+        )}
+        <span
+          className={`modal-header-actions${
+            headerActionsClassName ? ` ${headerActionsClassName}` : ""
+          }`}
+          style={
+            headerActionsClassName
+              ? undefined
+              : {
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.375rem",
+                  marginLeft: "auto",
+                  flexShrink: 0,
+                }
+          }
+        >
+          {actions}
+          {onMinimize && (
+            <button
+              type="button"
+              className="modal-close"
+              onClick={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                onMinimize();
+              }}
+              aria-label={t("modalMinimize")}
+            >
+              −
+            </button>
+          )}
+          <button
+            ref={closeButtonRef}
+            type="button"
+            className="modal-close"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onClose();
+            }}
+            aria-label={t("modalClose")}
+          >
+            ×
+          </button>
+        </span>
+      </div>
+      <div className="modal-content" ref={contentRef}>
+        {children}
+      </div>
+    </>
+  );
+}
+
+/**
  * Reusable modal component with overlay, header, and scrollable content area.
  * Renders via portal to avoid event bubbling issues.
  * Closes on Escape key or clicking the overlay.
@@ -294,7 +399,6 @@ export function Modal({
   contentRef,
   variant,
 }: ModalProps) {
-  const { t } = useI18n();
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const modalRef = useRef<HTMLDivElement>(null);
   const overlayPointerStartedOnOverlayRef = useRef(false);
@@ -412,59 +516,18 @@ export function Modal({
           isAnchored ? (anchorStyle ?? { visibility: "hidden" }) : undefined
         }
       >
-        <div
-          className={`modal-header${headerClassName ? ` ${headerClassName}` : ""}`}
+        <ModalChrome
+          title={title}
+          actions={actions}
+          headerClassName={headerClassName}
+          headerActionsClassName={headerActionsClassName}
+          onMinimize={onMinimize}
+          onClose={onClose}
+          closeButtonRef={closeButtonRef}
+          contentRef={contentRef}
         >
-          <span className="modal-title">{title}</span>
-          <span
-            className={`modal-header-actions${
-              headerActionsClassName ? ` ${headerActionsClassName}` : ""
-            }`}
-            style={
-              headerActionsClassName
-                ? undefined
-                : {
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.375rem",
-                    marginLeft: "auto",
-                    flexShrink: 0,
-                  }
-            }
-          >
-            {actions}
-            {onMinimize && (
-              <button
-                type="button"
-                className="modal-close"
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                  onMinimize();
-                }}
-                aria-label={t("modalMinimize")}
-              >
-                −
-              </button>
-            )}
-            <button
-              ref={closeButtonRef}
-              type="button"
-              className="modal-close"
-              onClick={(e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                onClose();
-              }}
-              aria-label={t("modalClose")}
-            >
-              ×
-            </button>
-          </span>
-        </div>
-        <div className="modal-content" ref={contentRef}>
           {children}
-        </div>
+        </ModalChrome>
       </div>
     </div>
   );

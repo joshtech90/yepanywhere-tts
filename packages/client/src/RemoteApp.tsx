@@ -47,6 +47,7 @@ import { SchemaValidationProvider } from "./contexts/SchemaValidationContext";
 import { CurrentSourceRuntimeProvider } from "./contexts/SourceRuntimeContext";
 import { ToastProvider } from "./contexts/ToastContext";
 import { useI18n } from "./i18n";
+import { useCanAdministerHost } from "./hooks/useActingPrincipal";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
 import { primeProviderCache } from "./hooks/useProviders";
@@ -114,20 +115,23 @@ function ConnectedAppContentInner({ children }: { children: ReactNode }) {
     backendReloadSafetyKnown,
   } = useReloadNotifications();
   const isSessionDetailRoute = /\/sessions\/[^/]+/.test(location.pathname);
+  const canAdministerHost = useCanAdministerHost();
   const visibleReloads = getVisibleReloadBanners(
     !!isManualReloadMode,
     pendingReloads,
-    { backendReloadSafetyKnown },
+    { backendReloadSafetyKnown, canRestartServer: canAdministerHost },
   );
 
   return (
     <>
-      <StorageFilesystemBanner />
-      <RemoteCompatibilityNotices
-        versionInfo={versionInfo}
-        runtimeNotice={{ runtime: versionInfo?.serverRuntime, sourceKey, t }}
-        relayUsername={currentRelayUsername}
-      />
+      {canAdministerHost && <StorageFilesystemBanner />}
+      {canAdministerHost && (
+        <RemoteCompatibilityNotices
+          versionInfo={versionInfo}
+          runtimeNotice={{ runtime: versionInfo?.serverRuntime, sourceKey, t }}
+          relayUsername={currentRelayUsername}
+        />
+      )}
       <ReloadBannerStack avoidSessionComposer={isSessionDetailRoute}>
         {visibleReloads.backend && (
           <ReloadBanner

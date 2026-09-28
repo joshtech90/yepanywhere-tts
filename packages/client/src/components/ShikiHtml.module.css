@@ -1,4 +1,4 @@
-/* `compactShikiLineBreaks` removes the newline between Shiki's line spans, so
+/* `prepareShikiHtml` removes the newline between Shiki's line spans, so
    the line separation is layout, not text. Any surface rendering that markup
    must give each line its own block, or the last word of one line joins the
    first word of the next. These rules travel with the container so a new

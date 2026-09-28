@@ -19,6 +19,7 @@ export interface BangCommandOutput {
 }
 
 export interface BangCommandHandlers {
+  shouldExpandOutput?: (objectId: string) => boolean;
   onKill?: (objectId: string) => void;
   onDelete?: (objectId: string) => void;
   onRerun?: (command: string) => void;
@@ -58,7 +59,10 @@ export function BangCommandDisplayObject({
 }) {
   const { t } = useI18n();
   const [output, setOutput] = useState<BangCommandOutput | null>(null);
-  const [locallyExpanded, setLocallyExpanded] = useState(false);
+  const [locallyExpanded, setLocallyExpanded] = useState(
+    () =>
+      handlers?.shouldExpandOutput?.(object.id) ?? object.status === "running",
+  );
   const [outputLoading, setOutputLoading] = useState(false);
   const [outputLoadFailed, setOutputLoadFailed] = useState(false);
   const [outputLoadAttempt, setOutputLoadAttempt] = useState(0);
@@ -186,7 +190,7 @@ export function BangCommandDisplayObject({
       ) : null}
 
       {finished && stderrText.trim() && (
-        <details className={styles.stderr}>
+        <details className={styles.stderr} open>
           <summary>{t("bangStderrLabel")}</summary>
           <pre className={styles.preview}>{stderrText}</pre>
         </details>

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoredSession } from "../connection/SecureConnection";
 import {
+  findRelayHostForIdentity,
   getHostByRelayUsername,
   loadSavedHosts,
   upsertRelayHost,
@@ -63,5 +64,28 @@ describe("upsertRelayHost", () => {
     expect(second.id).toBe(first.id);
     expect(second.session).toEqual(TEST_SESSION);
     expect(loadSavedHosts().hosts).toHaveLength(1);
+  });
+
+  it("finds the server for any identity that signed in to it", () => {
+    const relayUrl = "wss://relay.example/ws";
+    upsertRelayHost({
+      relayUrl,
+      relayUsername: "ygraehl",
+      srpUsername: "archer",
+    });
+    // The owner signing in later must not orphan the limited identity.
+    upsertRelayHost({
+      relayUrl,
+      relayUsername: "ygraehl",
+      srpUsername: "ygraehl",
+    });
+
+    expect(getHostByRelayUsername("ygraehl")?.srpUsernames).toEqual([
+      "archer",
+      "ygraehl",
+    ]);
+    expect(findRelayHostForIdentity("archer")?.relayUsername).toBe("ygraehl");
+    expect(findRelayHostForIdentity("ygraehl")?.relayUsername).toBe("ygraehl");
+    expect(findRelayHostForIdentity("nobody")).toBeUndefined();
   });
 });

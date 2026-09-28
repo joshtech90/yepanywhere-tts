@@ -6,6 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useI18n } from "../i18n";
 import { writeClipboardTextLater } from "../lib/clipboard";
+import { publicSharePlayUrlFromFileShareUrl } from "../lib/publicSharePlay";
 import {
   PublicShareFeedback,
   PublicShareInventoryCount,
@@ -22,6 +23,11 @@ interface PublicFileShareModalProps {
   filePath: string;
   projectId: string;
   title?: string | null;
+  /**
+   * Copy and show each link in its play form, which opens the document
+   * running, and say so. The grant itself is unchanged.
+   */
+  playLinks?: boolean;
   onClose: () => void;
 }
 
@@ -30,9 +36,12 @@ export function PublicFileShareModal({
   filePath,
   projectId,
   title,
+  playLinks = false,
   onClose,
 }: PublicFileShareModalProps) {
   const { t } = useI18n();
+  const transformUrl = (url: string) =>
+    (playLinks && publicSharePlayUrlFromFileShareUrl(url)) || url;
   const [items, setItems] = useState<PublicFileShareManagementItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [working, setWorking] = useState<string | null>(null);
@@ -82,14 +91,14 @@ export function PublicFileShareModal({
       ...(title ? { title } : {}),
     });
     const copy = writeClipboardTextLater(
-      request.then((created) => created.url),
+      request.then((created) => transformUrl(created.url)),
     );
     try {
       const created = await request;
       if (await copy) {
         setNotice(t("publicFileShareCopied"));
       } else {
-        setManualUrl(created.url);
+        setManualUrl(transformUrl(created.url));
         setNotice(t("publicFileShareManualCopy"));
       }
       await loadShares();
@@ -108,11 +117,12 @@ export function PublicFileShareModal({
     setError(null);
     setNotice(null);
     setManualUrl(null);
-    if (await writeClipboardTextLater(Promise.resolve(item.url))) {
+    const url = transformUrl(item.url);
+    if (await writeClipboardTextLater(Promise.resolve(url))) {
       setNotice(t("publicFileShareCopied"));
       return;
     }
-    setManualUrl(item.url);
+    setManualUrl(url);
     setNotice(t("publicFileShareManualCopy"));
   };
 
@@ -151,6 +161,9 @@ export function PublicFileShareModal({
           <span className={styles.liveBadge}>{t("publicShareLiveBadge")}</span>
         </div>
         <p className={styles.description}>{t("publicFileShareDescription")}</p>
+        {playLinks && (
+          <p className={styles.description}>{t("publicFileSharePlayLinks")}</p>
+        )}
         <div className={styles.warning} role="note">
           <WarningIcon />
           <span>{t("publicFileShareWarning")}</span>

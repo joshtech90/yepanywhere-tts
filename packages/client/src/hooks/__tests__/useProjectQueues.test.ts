@@ -577,6 +577,40 @@ describe("useProjectQueues", () => {
     ]);
   });
 
+  it("sends an edited queued command with the command its new text spells", async () => {
+    apiMock.getProjectQueueItems.mockResolvedValue({
+      items: [makeItem("1")],
+    });
+    apiMock.updateProjectQueueItem.mockResolvedValue({
+      item: makeItem("1", PROJECT_ID),
+      queue: { projectId: PROJECT_ID, items: [makeItem("1", PROJECT_ID)] },
+    });
+    const stale = { name: "clearloop" as const, argument: "3 2: p" };
+
+    const { result } = renderHook(() => useProjectQueues(["project-1"]));
+    await waitFor(() => expect(result.current.items).toHaveLength(1));
+    await act(async () => {
+      await result.current.updateItem("project-1", "1", {
+        message: { text: "/clearloop 3 5: q", yaCommand: stale },
+      });
+      await result.current.updateItem("project-1", "1", {
+        message: { text: "summarize instead", yaCommand: stale },
+      });
+    });
+
+    expect(
+      apiMock.updateProjectQueueItem.mock.calls.map((call) => call[2]),
+    ).toEqual([
+      {
+        message: {
+          text: "/clearloop 3 5: q",
+          yaCommand: { name: "clearloop", argument: "3 5: q" },
+        },
+      },
+      { message: { text: "summarize instead" } },
+    ]);
+  });
+
   it("preserves queue order from move-to-top responses", async () => {
     apiMock.getProjectQueueItems.mockResolvedValue({
       items: [makeItem("1"), makeItem("2")],

@@ -62,6 +62,36 @@ export interface LimitedUserLock {
   effort?: string;
 }
 
+export type TemplateCreationGrant =
+  | { mode: "none" }
+  | { mode: "any" }
+  | { mode: "selected"; templates: { sourceId: string; templateId: string }[] };
+
+/** Missing fields from older servers retain the configured-root default. */
+export function templateGrantFor(
+  grants: Pick<LimitedUserGrants, "projectRoot" | "templateCreation">,
+): TemplateCreationGrant {
+  return (
+    grants.templateCreation ?? { mode: grants.projectRoot ? "any" : "none" }
+  );
+}
+
+export function mayCreateTemplate(
+  grants: LimitedUserGrants,
+  sourceId: string,
+  templateId: string,
+): boolean {
+  if (!grants.projectRoot) return false;
+  const grant = templateGrantFor(grants);
+  return (
+    grant.mode === "any" ||
+    (grant.mode === "selected" &&
+      grant.templates.some(
+        (item) => item.sourceId === sourceId && item.templateId === templateId,
+      ))
+  );
+}
+
 /** The three per-project grants plus the session-shaping settings. */
 export interface LimitedUserGrants {
   /** Projects where the user may start (always sandboxed) sessions. */
@@ -81,6 +111,7 @@ export interface LimitedUserGrants {
    * topics/limited-users.md § Delivery v1 — Project creation.
    */
   projectRoot?: string;
+  templateCreation?: TemplateCreationGrant;
 }
 
 /** A limited user as any API returns it. Never carries credential material. */
@@ -106,10 +137,9 @@ export interface ActingPrincipal {
   /** Whether the feature is enabled at all on this server. */
   enabled: boolean;
   /**
-   * Whether this install has at least one limited user. The sidebar's Users
-   * shortcut appears only then, so turning the feature on does not by itself
-   * put an account control in front of a single-user install. It never
-   * discloses how many: a limited user sees only that they are one.
+   * Whether this install has at least one limited user, for a surface that
+   * needs to know an install has more than one principal. It never discloses
+   * how many: a limited user sees only that they are one.
    */
   hasLimitedUsers: boolean;
   /** Where logout should send this client. */

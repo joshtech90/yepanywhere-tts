@@ -36,6 +36,8 @@ interface AuthContextValue {
   hasDesktopToken: boolean;
   /** Whether unauthenticated localhost access is allowed */
   localhostOpen: boolean;
+  /** Whether a named (limited-user) login can succeed */
+  limitedUsersEnabled: boolean;
   /** Login with password */
   /** Log in; a username names a limited user (topics/limited-users.md). */
   login: (password: string, username?: string) => Promise<void>;
@@ -70,6 +72,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [authFilePath, setAuthFilePath] = useState("");
   const [hasDesktopToken, setHasDesktopToken] = useState(false);
   const [localhostOpen, setLocalhostOpenState] = useState(false);
+  const [limitedUsersEnabled, setLimitedUsersEnabled] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
 
@@ -83,6 +86,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       setIsSetupMode(status.setupRequired);
       setHasDesktopToken(status.hasDesktopToken ?? false);
       setLocalhostOpenState(status.localhostOpen ?? false);
+      setLimitedUsersEnabled(status.limitedUsersEnabled === true);
     } catch (error) {
       // If we get a network error or the endpoint doesn't exist,
       // assume auth is not enabled (for backward compatibility)
@@ -191,6 +195,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         authFilePath,
         hasDesktopToken,
         localhostOpen,
+        limitedUsersEnabled,
         login,
         logout,
         enableAuth,

@@ -3,6 +3,8 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { asClientSummarySourceKey } from "../../lib/clientSummaryStore";
+import { draftTextIsAccountedFor } from "../../lib/draftSendReconcile";
+import type { Message } from "../../types";
 import { useDraftPersistence } from "../useDraftPersistence";
 
 function readStoredText(key: string): string | null {
@@ -14,7 +16,10 @@ function readStoredText(key: string): string | null {
 function readStoredPendingSend(key: string): boolean {
   const raw = window.localStorage.getItem(key);
   if (!raw) return false;
-  return (JSON.parse(raw) as { pendingSend?: boolean }).pendingSend === true;
+  return (
+    typeof (JSON.parse(raw) as { pendingSendAt?: unknown }).pendingSendAt ===
+    "number"
+  );
 }
 
 function readStoredAttachmentCount(key: string): number {
@@ -149,7 +154,7 @@ describe("useDraftPersistence", () => {
     let discarded = false;
     act(() => {
       discarded = sibling.current[2].discardPendingSendDraft(
-        (text) => text === "submitted turn",
+        ({ text }) => text === "submitted turn",
       );
     });
 
@@ -216,7 +221,7 @@ describe("useDraftPersistence", () => {
     const marked = JSON.stringify({
       version: 1,
       text: "submitted turn",
-      pendingSend: true,
+      pendingSendAt: Date.now(),
     });
     act(() => {
       store.set("draft-test", marked);
@@ -231,7 +236,7 @@ describe("useDraftPersistence", () => {
     let discarded = false;
     act(() => {
       discarded = result.current[2].discardPendingSendDraft(
-        (text) => text === "submitted turn",
+        ({ text }) => text === "submitted turn",
       );
     });
 
@@ -261,7 +266,7 @@ describe("useDraftPersistence", () => {
     expect(result.current[0]).toBe("submitted turn");
   });
 
-  it("never discards text restored after a failed send", () => {
+  it("reconciles an untouched recovery copy when delivery is proven after failure", () => {
     const { result } = renderHook(() => useDraftPersistence("draft-test"));
 
     act(() => {
@@ -270,6 +275,78 @@ describe("useDraftPersistence", () => {
       result.current[2].restoreFromStorage();
     });
 
+    expect(result.current[0]).toBe("submitted turn");
+
+    let discarded = true;
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(() => true);
+    });
+
+    expect(discarded).toBe(true);
+    expect(result.current[0]).toBe("");
+  });
+
+  it("keeps a restored failed send when only an earlier identical prompt was delivered", () => {
+    vi.setSystemTime(Date.parse("2026-09-27T12:00:00.000Z"));
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
+    const earlierContinue: Message = {
+      uuid: "earlier-continue",
+      type: "user",
+      _source: "jsonl",
+      timestamp: "2026-09-27T11:55:00.000Z",
+      message: { role: "user", content: "continue" },
+    };
+
+    act(() => {
+      result.current[1]("continue");
+      result.current[2].clearInput();
+      // The request failed without delivery; the composer shows it again.
+      result.current[2].restoreFromStorage();
+    });
+    expect(result.current[0]).toBe("continue");
+
+    let discarded = true;
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(
+        ({ text, sentAtMs }) =>
+          draftTextIsAccountedFor({
+            draftText: text,
+            sentAtMs,
+            messages: [earlierContinue],
+          }),
+      );
+    });
+
+    expect(discarded).toBe(false);
+    expect(result.current[0]).toBe("continue");
+    expect(readStoredText("draft-test")).toBe("continue");
+
+    const deliveredNow: Message = {
+      ...earlierContinue,
+      uuid: "delivered-continue",
+      timestamp: "2026-09-27T12:00:02.000Z",
+    };
+    act(() => {
+      discarded = result.current[2].discardPendingSendDraft(
+        ({ text, sentAtMs }) =>
+          draftTextIsAccountedFor({
+            draftText: text,
+            sentAtMs,
+            messages: [earlierContinue, deliveredNow],
+          }),
+      );
+    });
+
+    expect(discarded).toBe(true);
+    expect(result.current[0]).toBe("");
+  });
+
+  it("reads an older client's undated recovery marker as an ordinary draft", () => {
+    store.set(
+      "draft-test",
+      JSON.stringify({ version: 1, text: "submitted turn", pendingSend: true }),
+    );
+    const { result } = renderHook(() => useDraftPersistence("draft-test"));
     expect(result.current[0]).toBe("submitted turn");
 
     let discarded = true;

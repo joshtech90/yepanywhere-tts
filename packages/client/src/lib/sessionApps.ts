@@ -3,7 +3,12 @@ import { getLocalStorage } from "./localStorageValue";
 import type { SessionVhostApp } from "./sessionVhostApps";
 
 export interface SessionApps {
-  latest?: SessionVhostApp;
+  /**
+   * The announcement id survives storage so a viewer-activated app (a play
+   * grant, `play:` prefixed) can be seeded back into a reopened session's
+   * app list, which transcript scanning alone would never rediscover.
+   */
+  latest?: SessionVhostApp & { announcementId?: string };
   dismissed: string[];
 }
 
@@ -173,13 +178,14 @@ export function dismissSessionApps(
 
 export function useSessionApps(key: string): {
   value: SessionApps;
-  save: (apps: SessionApps) => void;
+  saveLatest: (latest: SessionApps["latest"]) => void;
   dismiss: (announcementIds: readonly string[]) => void;
 } {
   const read = useCallback(() => readSessionApps(key), [key]);
   const value = useSyncExternalStore(subscribe, read, read);
-  const save = useCallback(
-    (apps: SessionApps) => writeSessionApps(key, apps),
+  const saveLatest = useCallback(
+    (latest: SessionApps["latest"]) =>
+      writeSessionApps(key, { ...readSessionApps(key), latest }),
     [key],
   );
   const dismiss = useCallback(
@@ -187,7 +193,7 @@ export function useSessionApps(key: string): {
       dismissSessionApps(key, announcementIds),
     [key],
   );
-  return { value, save, dismiss };
+  return { value, saveLatest, dismiss };
 }
 
 /**

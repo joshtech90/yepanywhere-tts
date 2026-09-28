@@ -11,6 +11,8 @@
     "codex:protocol:update": "node scripts/update-codex-protocol.mjs",
     "codex:protocol:check": "node scripts/update-codex-protocol.mjs --check",
     "codex:user-turns:audit": "tsx scripts/audit-codex-user-turn-provenance.ts",
+    "find-agent:generate": "node scripts/generate-frame-find-agent.mjs",
+    "find-agent:check": "node scripts/generate-frame-find-agent.mjs --check",
     "tools:audit": "tsx --conditions source scripts/audit-tool-displays.ts",
     "i18n:check": "node scripts/prune-i18n-placeholders.mjs --check",
     "i18n:health": "node scripts/prune-i18n-placeholders.mjs --health",
@@ -85,12 +87,12 @@
   },
   "yepAnywhere": {
     "codexCli": {
-      "expectedVersion": "0.154.0",
-      "compatibleThroughVersion": "0.155.1"
+      "expectedVersion": "0.157.0",
+      "compatibleThroughVersion": "0.157.0"
     },
     "claudeCode": {
-      "compatibleThroughVersion": "2.1.276",
-      "claudeAgentSdkVersion": "0.3.273"
+      "compatibleThroughVersion": "2.1.283",
+      "claudeAgentSdkVersion": "0.3.283"
     },
     "piCli": {
       "compatibleThroughVersion": "0.84.2"

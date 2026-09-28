@@ -166,6 +166,32 @@ describe("CodexSessionEntrySchema", () => {
     expect(parsed.payload).toMatchObject({ client_id: "ya-user-1" });
   });
 
+  it("preserves terminal errors persisted on task completion", () => {
+    const parsed = CodexSessionEntrySchema.parse({
+      timestamp: "2026-09-27T10:02:55.915Z",
+      type: "event_msg",
+      payload: {
+        type: "task_complete",
+        turn_id: "turn-1",
+        last_agent_message: null,
+        error: {
+          message: "The selected model is unavailable",
+          codex_error_info: "other",
+        },
+      },
+    });
+
+    expect(parsed.type).toBe("event_msg");
+    if (parsed.type !== "event_msg") return;
+    expect(parsed.payload).toMatchObject({
+      type: "task_complete",
+      error: {
+        message: "The selected model is unavailable",
+        codex_error_info: "other",
+      },
+    });
+  });
+
   it("preserves asynchronous question metadata on completed agent items", () => {
     const parsed = CodexSessionEntrySchema.parse({
       timestamp: "2026-09-04T00:00:00.000Z",

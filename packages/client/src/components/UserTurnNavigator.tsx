@@ -50,7 +50,8 @@ interface Props {
   messageListRef: RefObject<HTMLDivElement | null>;
   motionCue?: UserTurnNavMotionCue | null;
   onNavigateStart?: () => void;
-  onSearchMatchSelect?: (id: string, targetId: string) => void;
+  /** `close` jumps to the match and ends search, as Enter does. */
+  onSearchMatchSelect?: (id: string, targetId: string, close?: boolean) => void;
   /** "Show from": load the client transcript from this turn (drop earlier). */
   onTrimAnchor?: (id: string) => void;
   /** Whether "Show from" is valid for a particular loaded turn. */
@@ -1452,6 +1453,12 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
             aria-label={label.text}
             title={label.text}
             onClick={() => handleAnchorClick(label.id, label.targetId)}
+            onContextMenu={(event) => {
+              if (!hasSearchMatches || !onSearchMatchSelect) return;
+              event.preventDefault();
+              event.stopPropagation();
+              onSearchMatchSelect(label.id, label.targetId, true);
+            }}
             onMouseDown={keepSearchFocusOnMouseDown}
             onFocus={() => focusPreview(label.id, false)}
             onBlur={clearPreview}

@@ -93,6 +93,8 @@ for the storage choice:
 - `placementAfterMessageId` anchors the object after the source transcript tail
   observed when the job is accepted. Later turns render below it. A client with
   a compact scrollback window omits the object until that anchor is loaded.
+  The live window can recover older bang-command objects anchored to transient
+  events by their creation time; see [bang-commands](bang-commands.md#contracts).
 - Immutable provenance records the selected source request and the completed
   turn boundary retained by the target fork.
 - Mutable state records `generating | ready | error`, target session/title,

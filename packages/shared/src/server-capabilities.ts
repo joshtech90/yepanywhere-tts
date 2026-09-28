@@ -204,6 +204,96 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  sessionCreationProvenance: {
+    id: CAPABILITY_ID_ALLOCATIONS.sessionCreationProvenance.id,
+    name: "session-creation-provenance",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.3",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Persist client-declared web or desktop creation provenance and return it in session summaries.",
+    clientFallback:
+      "Omit creationProvenance from create requests and hide creation-source filters.",
+    serverContract: {
+      routes: [
+        "POST /api/projects/:projectId/sessions",
+        "POST /api/projects/:projectId/sessions/create",
+        "POST /api/sessions",
+        "POST /api/sessions/create",
+        "POST /api/projects/:projectId/sessions/:sessionId/restart",
+        "POST /api/projects/:projectId/sessions/:sessionId/fork",
+        "GET /api/sessions",
+        "GET /api/projects/:projectId/sessions",
+        "GET /api/projects/:projectId/sessions/:sessionId",
+        "GET /api/projects/:projectId/sessions/:sessionId/metadata",
+        "GET /api/inbox",
+      ],
+      requestFields: ["creationProvenance"],
+      responseFields: [
+        "sessions[].creationProvenance",
+        "session.creationProvenance",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers accept but discard unknown create fields and do not return provenance.",
+    },
+  },
+  fileSourceEditing: {
+    id: CAPABILITY_ID_ALLOCATIONS.fileSourceEditing.id,
+    name: "file-source-editing",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.9.1",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Read bounded original sources, save explicit revision-checked edits, including artifact source references, and run an artifact's approved rebuild hook.",
+    clientFallback:
+      "Hide Edit and make no file-edit requests; retain read and comment views.",
+    serverContract: {
+      routes: [
+        "GET /api/file-edit",
+        "PUT /api/file-edit",
+        "POST /api/file-edit/rebuild",
+      ],
+      routeModules: ["packages/server/src/routes/file-edit.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers do not provide conditional source writes.",
+    },
+  },
+  limitedUsers: {
+    id: CAPABILITY_ID_ALLOCATIONS.limitedUsers.id,
+    name: "limited-users",
+    kind: "permanent",
+    area: "security",
+    introducedIn: "0.9.0",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Enable limited users with the limitedUsersEnabled setting and manage their accounts, grants, logins, and usage.",
+    clientFallback:
+      "Hide Users settings and send no users request or limitedUsersEnabled write.",
+    serverContract: {
+      routes: [
+        "GET /api/users/me",
+        "POST /api/users/logout",
+        "POST /api/users/switch",
+        "GET /api/users",
+        "POST /api/users",
+        "PATCH /api/users/:username",
+        "GET /api/users/usage",
+        "DELETE /api/users/:username",
+      ],
+      requestFields: ["limitedUsersEnabled"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Servers before 0.9.0 have no limited users.",
+    },
+  },
   projectTemplateSources: {
     id: CAPABILITY_ID_ALLOCATIONS.projectTemplateSources.id,
     name: "project-template-sources",
@@ -226,6 +316,81 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Older servers have no template source retrieval or configuration surface.",
+    },
+  },
+  projectTemplateCreation: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectTemplateCreation.id,
+    name: "project-template-creation",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Superuser creation from ready templates with retained operation status and preparation dispatch.",
+    clientFallback:
+      "Keep directory creation and send no template choice or creation requests.",
+    serverContract: {
+      routes: [
+        "GET /api/project-templates/choices",
+        "GET /api/project-templates/operations/:id",
+        "POST /api/project-templates/operations",
+      ],
+      routeModules: ["packages/server/src/routes/project-templates.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers cannot create template projects.",
+    },
+  },
+  limitedUserProjectTemplates: {
+    id: CAPABILITY_ID_ALLOCATIONS.limitedUserProjectTemplates.id,
+    name: "limited-user-project-templates",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Per-user template creation grants, filtered choices, owned operations and sandboxed setup.",
+    clientFallback:
+      "Hide template grants and limited-user template creation; preserve older directory behavior.",
+    serverContract: {
+      routes: [
+        "GET /api/project-templates/choices",
+        "POST /api/project-templates/operations",
+        "GET /api/project-templates/operations/:id",
+      ],
+      routeModules: ["packages/server/src/routes/project-templates.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Superuser template creation does not imply limited-user authorization or confinement.",
+    },
+  },
+  templatePreparationAttachments: {
+    id: CAPABILITY_ID_ALLOCATIONS.templatePreparationAttachments.id,
+    name: "template-preparation-attachments",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Account-owned draft uploads and attachments in template preparation.",
+    clientFallback:
+      "Disable attachments for template creation on older servers.",
+    serverContract: {
+      routes: [
+        "POST /api/project-templates/operations",
+        "GET /api/attachments/staging/drafts/upload/ws",
+      ],
+      // These modules also serve earlier capabilities; only the listed
+      // attachment semantics belong to this capability.
+      requestFields: ["stagedAttachments"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Template creation alone does not imply attachment preparation support.",
     },
   },
   speechBackendSetup: {
@@ -2942,6 +3107,8 @@ export const NON_HUMAN_USER_TURN_CAPABILITY =
   SERVER_CAPABILITIES.nonHumanUserTurn.name;
 export const SESSION_CONTENT_SEARCH_CAPABILITY =
   SERVER_CAPABILITIES.sessionContentSearch.name;
+export const SESSION_CREATION_PROVENANCE_CAPABILITY =
+  SERVER_CAPABILITIES.sessionCreationProvenance.name;
 export const ACLI_COMMENTARY_RENDERING_CAPABILITY =
   SERVER_CAPABILITIES.acliCommentaryRendering.name;
 export const PROJECT_QUEUE_CAPABILITY = SERVER_CAPABILITIES.projectQueue.name;

@@ -7,12 +7,14 @@ import type { BangCommandTranscriptDisplayObject } from "@yep-anywhere/shared";
 import { describe, expect, it } from "vitest";
 import {
   applyBangCompletion,
+  applyBangCommandReceipt,
   buildBangEchoText,
   collectBangHistory,
   getBangCompletionQuery,
   longestCommonPrefix,
   resolveComposerBangDraft,
 } from "../bangCommands";
+import { getBangCommandAnchor } from "../transcriptDisplayObjects";
 
 function bangObject(
   overrides: Partial<BangCommandTranscriptDisplayObject> = {},
@@ -31,6 +33,32 @@ function bangObject(
 }
 
 describe("resolveComposerBangDraft", () => {
+  it("anchors to visible content before transient completion records", () => {
+    expect(
+      getBangCommandAnchor([
+        {
+          uuid: "assistant-1",
+          type: "assistant",
+          message: { role: "assistant", content: "Finished" },
+        },
+        { id: "msg-1790022203515", type: "result" },
+        { uuid: "turn-complete", type: "system", subtype: "turn_complete" },
+      ]),
+    ).toBe("assistant-1");
+  });
+
+  it("keeps completion and concurrent runs when a stale start receipt arrives", () => {
+    const finished = bangObject({ stdoutPreview: "finished output" });
+    const concurrent = bangObject({ id: "b2", status: "running" });
+    const current = [finished, concurrent];
+    expect(
+      applyBangCommandReceipt(current, bangObject({ status: "running" })),
+    ).toBe(current);
+    expect(
+      applyBangCommandReceipt(current, bangObject({ id: "b3" })),
+    ).toHaveLength(3);
+  });
+
   it("routes !!command drafts and trims the command", () => {
     expect(resolveComposerBangDraft("!!git status ")).toEqual({
       kind: "bang",

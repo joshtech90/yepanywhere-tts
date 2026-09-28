@@ -20,8 +20,16 @@ export interface DirtyFileSnapshot {
 }
 
 interface PendingFileMutation {
+  projectPath: string;
   directPaths?: string[];
   beforeShell?: Promise<DirtyFileSnapshot | null>;
+  /** Symlink-resolved project root and direct paths; never rejects. */
+  canonical: Promise<CanonicalMutationPaths>;
+}
+
+interface CanonicalMutationPaths {
+  projectRoot: string;
+  directPaths: string[];
 }
 
 export interface DirtyFileEditorProcessContext {
@@ -155,6 +163,50 @@ function normalizeRelativePath(
     return null;
   }
   return relative.split(path.sep).join("/");
+}
+
+/**
+ * Real path of a file that may not exist yet: a Write can name a new file, so
+ * the nearest existing ancestor is resolved and the missing tail kept. Any
+ * other resolution failure leaves the path as given.
+ */
+async function realpathAllowingMissing(absolutePath: string): Promise<string> {
+  try {
+    return await fs.realpath(absolutePath);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    const parent = path.dirname(absolutePath);
+    if ((code !== "ENOENT" && code !== "ENOTDIR") || parent === absolutePath)
+      return absolutePath;
+    return path.join(
+      await realpathAllowingMissing(parent),
+      path.basename(absolutePath),
+    );
+  }
+}
+
+async function canonicalMutationPaths(
+  projectPath: string,
+  directPaths: readonly string[],
+): Promise<CanonicalMutationPaths> {
+  const projectRoot = path.resolve(projectPath);
+  const [canonicalRoot, ...canonicalDirect] = await Promise.all([
+    realpathAllowingMissing(projectRoot),
+    ...directPaths.map((candidate) =>
+      realpathAllowingMissing(path.resolve(projectRoot, candidate)),
+    ),
+  ]);
+  return { projectRoot: canonicalRoot, directPaths: canonicalDirect };
+}
+
+function isInsideDirectory(candidate: string, directory: string): boolean {
+  const relative = path.relative(directory, candidate);
+  return (
+    relative !== "" &&
+    relative !== ".." &&
+    !relative.startsWith(`..${path.sep}`) &&
+    !path.isAbsolute(relative)
+  );
 }
 
 function validEditor(value: unknown): value is GitFileEditor {
@@ -324,6 +376,27 @@ export class DirtyFileEditorService {
     this.pendingByProcess.delete(processId);
   }
 
+  /**
+   * Detect active file writes before admitting a user source edit.
+   * `realPath` must be symlink-resolved; pending mutations are compared by
+   * their own resolved paths, so a project reached through a symlink matches.
+   */
+  async isWritePending(realPath: string): Promise<boolean> {
+    const mutations = [...this.pendingByProcess.values()].flatMap((pending) => [
+      ...pending.values(),
+    ]);
+    for (const mutation of mutations) {
+      const canonical = await mutation.canonical;
+      if (canonical.directPaths.includes(realPath)) return true;
+      if (
+        mutation.beforeShell &&
+        isInsideDirectory(realPath, canonical.projectRoot)
+      )
+        return true;
+    }
+    return false;
+  }
+
   reconcileGitStatus(
     projectPath: string,
     status: GitStatusInfo,
@@ -381,7 +454,7 @@ export class DirtyFileEditorService {
   }
 
   async idle(): Promise<void> {
-    await Promise.allSettled([...this.shellTasks]);
+    await Promise.allSettled(this.shellTasks);
     await this.saver.idle();
   }
 
@@ -410,6 +483,8 @@ export class DirtyFileEditorService {
     }
 
     pending.set(toolUseId, {
+      projectPath: process.projectPath,
+      canonical: canonicalMutationPaths(process.projectPath, directPaths),
       ...(directPaths.length > 0 ? { directPaths } : {}),
       ...(shellCandidate
         ? {

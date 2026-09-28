@@ -164,6 +164,87 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
+Current compatibility audit, 2026-09-25 (0.157.0):
+
+- Installed Codex is `codex-cli 0.157.0`. The official `rust-v0.157.0` tag
+  peels to commit `00c972ed5d6ff6499317fd41b7f23605b8e6850d`. Both root version
+  markers and the reference checkout record `0.157.0`. `expectedVersion`
+  advances without any source change because the checked-in subset was
+  re-audited against this release's own generator. Advancing it also clears the
+  server's startup mismatch warning.
+- `pnpm codex:protocol:check` passes with no generated subset drift.
+- App-server protocol changes are additive and outside what YA consumes. They
+  add gateway OAuth methods (`account/gatewayOAuth/{read,login,cancel}`), an
+  `account/gatewayOAuth/changed` notification, and an opt-in
+  `explicitGatewayOauth` initialize capability. `ThreadItemEntry` gains nullable
+  `startedAtMs` and `completedAtMs`, and MCP resource reads gain `target`. Core
+  gains an `InvalidPrompt` error, but the v2 wire maps it to `other`. YA's
+  terminal-reason mapping therefore sees no new value.
+- Durable transcripts gain only optional fields. `SessionMeta` adds
+  `creator_user_id` and `creator_account_id`, which YA's non-strict
+  session-meta schema ignores. Compacted items add `resume_metadata`, which the
+  passthrough `compacted` payload schema keeps. No 0.156.x or 0.157.0 rollout
+  exists locally yet, so the persisted-JSONL census is still deferred.
+- The authenticated no-token `model/list` returns the same eight models as
+  0.156.1 in the same order, with Astra as default at medium effort. The bundled
+  catalog changes only `gpt-5.6-sol`'s priority, from 6 to 4, which leaves its
+  rank unchanged. Context windows are unchanged.
+
+Status: no-op audit, with no YA source change. Re-run the persisted-JSONL
+census once a 0.156.1 or newer rollout exists.
+
+Previous source refresh, 2026-09-24 (0.156.1):
+
+- Installed Codex is `codex-cli 0.156.1`. The official `rust-v0.156.1` tag
+  peels to commit `b412ff32c417f855c2b2d1581b77058eed87c84b`. Root
+  `expectedVersion`, `compatibleThroughVersion`, and the reference checkout all
+  record `0.156.1`.
+- Codex removed `thread/rollback` from the app-server, including under the
+  experimental API. A live probe returns `unknown variant 'thread/rollback'`.
+  YA's legacy message-anchor fork called it on the fork child, so
+  `pnpm codex:protocol:check` failed on the missing `ThreadRollbackResponse`.
+  That fork now resolves the anchor's turn and passes it as
+  `thread/fork.lastTurnId`, the boundary typed forks already used
+  ([provider fork support](provider-fork-support.md#codex)). The rollback types
+  leave the checked-in subset. `thread/revert` and `ThreadForkParams`'
+  `lastTurnId`/`beforeTurnId` are unchanged.
+- The other generated changes are additive or deprecations YA does not use.
+  Images in `UserInput`, `ContentItem`, and function-call output may carry a
+  `file_id` instead of an inline URL. YA sends only inline and local images, and
+  its `input_image` transcript schema already makes `image_url` optional and
+  passes unknown keys through. Thread start, resume, and fork responses gain
+  `disabledPluginIds`; resume also gains `collaborationMode`, and
+  `turn/start` accepts `disabledPluginIds`. `thread/start` accepts
+  `daybreakEnabled`. MCP tool-call items gain `mcpAppUi`. `personality` is
+  deprecated on thread start, resume, and turn start; YA never sends it.
+- Durable transcripts: the legacy `ThreadRollback` event is gone from new
+  rollouts, and YA keeps `thread_rolled_back` parsing for older files. User
+  message events gain `file_ids`, `file_id_details`, and `image_order` for
+  file-backed images, which YA's own sends never create. Codex's rollout
+  compression worker gains trigger kinds, but the `.jsonl.zst` format YA already
+  reads is unchanged. No 0.156.1 rollout exists locally yet, so the deferred
+  0.155.1 census ran instead: 80,596 rows across 27 local 0.155.1 rollouts
+  parse against `CodexSessionEntrySchema` with no failures.
+- The authenticated no-token `model/list` returns eight models: Astra
+  (default, medium effort), GPT-6 Sol, GPT-6 Luna, GPT-5.6 Sol/Terra/Luna,
+  `gpt-daybreak-blue-latest`, and `gpt-5.5`. GPT-6 Sol and Luna are new. The
+  live catalog omits their context window, and the tagged bundled catalog
+  records 272,000 tokens for the whole GPT-6 family. YA now ranks them after
+  Astra in upstream's priority order, applies the 272K window to every
+  `gpt-6-` model, and renders them as `Cd So` and `Cd Lu`
+  ([provider model glyphs](provider-model-glyphs.md)). Both stay out of the
+  discovery-failure fallbacks, like Astra. Codex's catalog carries no prices,
+  so `model-prices.ts` takes their standard short-context rates from
+  OpenAI's API pricing page (read 2026-09-24): Sol $2 input, $0.20 cached,
+  $2.50 cache write, $10 output per million tokens; Luna $0.10, $0.01,
+  $0.125, $0.50. Their listed long-context rates match YA's existing OpenAI
+  long-context multiples.
+
+Status: Codex 0.156.1 fork compatibility, generated protocol, and model
+catalog are refreshed without raising the runtime floor. Typed forks already
+required `lastTurnId`, so legacy anchors need nothing newer. Re-run the
+persisted-JSONL census once a 0.156.1 rollout exists.
+
 Subset extension, 2026-09-19 (still 0.154.0 source, 0.155.1 binary): the
 checked-in subset gained `ThreadRevertParams`, `ThreadRevertResponse`, and
 `ThreadRevertedNotification` for the in-place `thread/revert` rewind
@@ -173,7 +254,7 @@ checked-in subset gained `ThreadRevertParams`, `ThreadRevertResponse`, and
 file moved and no version marker changes; `pnpm codex:protocol:check` is
 clean. Approved by graehl in the session-rewind follow-up request.
 
-Current compatibility audit, 2026-09-18 (0.155.1):
+Previous compatibility audit, 2026-09-18 (0.155.1):
 
 - Installed Codex is `codex-cli 0.155.1`. The official `rust-v0.155.1` tag peels
   to commit `be2951ea34f0d295ed0becf97079f92fa5f6950e`, 220 commits past
@@ -928,7 +1009,98 @@ Previous-model registry review:
 6. Use read-only catalog and lifecycle checks routinely. Do not spend tokens
    on live model turns without explicit approval.
 
-Current compatibility audit, 2026-09-18 (Claude Code 2.1.276):
+Current source refresh, 2026-09-26 (Claude Code 2.1.283 / SDK 0.3.283):
+
+- `@anthropic-ai/claude-agent-sdk` advances from `0.3.280` to `0.3.283`;
+  its native executable reports Claude Code `2.1.283`. The independently
+  installed `claude` still reports `2.1.280`; YA launches the bundled
+  executable first. Root compatibility and SDK markers advance together.
+- The declared SDK diff is additive for YA. The `SDKMessage` union and the
+  `query()`, `supportedModels()`, `supportedCommands()`, `setModel()`,
+  `setMaxThinkingTokens()`, `interrupt()`, `mcpServerStatus()`, and usage
+  controls YA consumes are not removed or renamed. `setMaxThinkingTokens()`
+  now rejects a `'highlights'` display it cannot send, where it previously fell
+  back silently. YA passes no display mode, so this does not affect YA.
+  Unused additions include the alpha `prewarm()` spare-process API,
+  `conversation_reset` `trigger`/`user_message_uuid`/`timestamp`, init
+  `plugin_errors` and `view_mode`, and managed `deniedModels`. `claude --help`
+  adds only `--client-data-url` and a file form of `--agents` under `--print`.
+- `resumeSessionAt`/`resumeDropsTurn` are unchanged. Their declared contract is
+  byte-identical, and the guard in the bundled executable has the same call
+  site and rule order. Any `queued_command` attachment in the discarded range
+  is still refused as absorbed queued content. That includes task
+  notifications, which persist as `queued_command` attachments with
+  `commandMode: "task-notification"`. The only drift is in what the guard
+  treats as skippable. `advisor_stripped` and `credential_org` attachments
+  become skippable, and `repl_mcp_needs_auth` no longer is. Two new synthetic
+  tool-result placeholders may precede the declared prompt: "session ended
+  before this call's result was recorded" and "result not in this copy".
+- An authenticated no-turn handshake returns 11 model rows and 92 commands.
+  SDK 0.3.280 returned five rows in the same minute. The catalog now uses
+  versioned display names (`Opus 5.5`, `Sonnet 5`, `Haiku 4.5`), drops the
+  `[1m]` spellings (`default` and `opus` resolve to `claude-opus-5-5`), and
+  lists previous versions: `claude-opus-5`, `claude-fable-5`,
+  `claude-opus-4-8`, `claude-opus-4-7`, `claude-opus-4-6`, and
+  `claude-sonnet-4-6`. `claude-fable-5` follows `claude-fable-5-1`, and
+  `mergeClaudeModels()` let that later row overwrite the stable `fable` row
+  with Fable 5 metadata. It now folds only the first Fable-family row. Showing
+  previous versions as primary rows conflicts with
+  [older-claude-models](older-claude-models.md) and is recorded in
+  `gaps/claude-live-catalog-lists-previous-models.md`. Plugin skills are now
+  listed by bare name, with the namespaced form kept as an alias. `/focus` is
+  new, and `/goal` and `/loop` remain native. The usage response has the same
+  field paths.
+- 194 transcript rows written by Claude Code 2.1.283 validate against
+  `claude-sdk-schema` without failures.
+- No real model turn was run. Authentication, model catalog, command
+  inventory, and subscription usage all come from no-turn control requests.
+
+Status: Claude Code 2.1.283 / SDK 0.3.283 package, declared surfaces, resume
+truncation guard, model discovery, commands, usage, and persisted-schema
+coverage are refreshed. The previous-model chooser placement awaits a product
+decision.
+
+Previous source refresh, 2026-09-22 (Claude Code 2.1.280 / SDK 0.3.280):
+
+- `@anthropic-ai/claude-agent-sdk` advances from `0.3.273` to `0.3.280`;
+  its native executable reports Claude Code `2.1.280`, matching the
+  independently installed binary. Root compatibility and SDK markers advance
+  together.
+- The declared SDK diff is additive for YA. The `SDKMessage` union and the
+  `query()`, `supportedModels()`, `supportedCommands()`, `setModel()`,
+  `setMaxThinkingTokens()`, `interrupt()`, `mcpServerStatus()`, and usage
+  controls YA consumes are not removed or renamed. New unused surfaces include
+  MCP provenance and tool `_meta`, `projectConfigRoot`, `verbatimPrompts`,
+  `readMcpResource()`, startup-failure reasons, and additional session/prompt
+  metadata.
+- An authenticated no-turn handshake returns five model rows and 61 commands.
+  Both `default` and `opus` resolve to `claude-opus-5-5`; the Opus row supports
+  adaptive thinking, fast and auto modes, and low through max effort. `/goal`
+  and `/loop` are native commands, so YA continues to omit its `/goal` alias.
+- The new live catalog can spell the stable Opus row as plain `opus`, rather
+  than supplying only an extended-context row. `mergeClaudeModels()` now keeps
+  fallback-only metadata while preferring every live field, so the visible row
+  retains its default high effort and describes Opus 5.5 without losing live
+  capabilities. The static context resolver recognizes minor-version Claude 5
+  ids such as `claude-opus-5-5` as native 1M models.
+- A real turn through an isolated YA API server requested `opus` at low effort,
+  resolved to `claude-opus-5-5`, returned the exact expected text, and reported
+  a 1,000,000-token context window with 128,000 maximum output tokens. The
+  post-refresh provider endpoint reports the same 1M default and Opus rows.
+  The no-turn subscription-usage endpoint also normalized the account's
+  five-hour and seven-day windows successfully.
+- Claude Code 2.1.280 writes two provider-metadata rows absent from the prior
+  transcript union: `atis-latch` and `cost-state`. YA now validates both without
+  treating either as a conversation/DAG row. The exact 28-line smoke transcript
+  validates completely. A whole-home baseline still has 170 older failures in
+  4,569,433 lines (`model_context_window: null` and 33 legacy unknown rows);
+  those pre-existing records are not caused by this refresh.
+
+Status: Claude Code 2.1.280 / SDK 0.3.280, model discovery, commands, usage,
+real-turn execution, context accounting, and the newly observed transcript
+metadata are refreshed. Publishing remains gated on maintainer confirmation.
+
+Previous compatibility audit, 2026-09-18 (Claude Code 2.1.276):
 
 - The independently installed `claude` is `2.1.276`; the SDK-native executable
   YA resolves first is still Claude Code `2.1.273` from
@@ -1515,7 +1687,7 @@ The server package currently pins provider-adjacent packages as follows:
 
 | package | current/wanted | latest observed | role |
 |---|---:|---:|---|
-| `@anthropic-ai/claude-agent-sdk` | `0.3.273` | `0.3.273` | Active Claude provider dependency |
+| `@anthropic-ai/claude-agent-sdk` | `0.3.283` | `0.3.283` | Active Claude provider dependency |
 | `@agentclientprotocol/sdk` | `0.12.0` | `0.24.0` | Active ACP client dependency for Grok/Gemini |
 
 Treat both rows as provider-refresh inputs.

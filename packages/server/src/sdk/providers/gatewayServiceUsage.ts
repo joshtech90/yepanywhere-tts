@@ -3,10 +3,11 @@
  *
  * Auto-stop asks a service to shut down once nothing is using it, so "in use"
  * has to mean a process that exists right now, not a recent launch. Sessions
- * are attributed by the model they were launched with, which is the same
- * routing the launch environment used. Both providers that reach these
- * endpoints count: Claude Gateway speaks the Anthropic wire to them and
- * CodexOSS the Responses API, and either one dies if the service stops.
+ * are attributed to the endpoint their launch used: the one a CodexOSS launch
+ * recorded, else the one their launch model resolves to. Both providers that
+ * reach these endpoints count: Claude Gateway speaks the Anthropic wire to
+ * them and CodexOSS the Responses API, and either one dies if the service
+ * stops.
  */
 
 import { ClaudeGatewayProvider } from "./claude-gateway.js";
@@ -44,10 +45,15 @@ function serviceForProcess(info: ProcessInfo): string | undefined {
     );
   }
   if (info.provider === "codex-oss") {
+    // The endpoint the launch was bound to, which no later catalog read can
+    // re-key. Resolving the model is only for a process that carries none.
     // No default-service fallback here, unlike above: CodexOSS also launches
     // against Ollama, so an unresolved model names a session that never opened
     // a service rather than one whose service was forgotten.
-    return codexOSSProvider.resolveServiceForModel(model)?.serviceId;
+    return (
+      info.gatewayServiceId ??
+      codexOSSProvider.resolveServiceForModel(model)?.serviceId
+    );
   }
   return undefined;
 }

@@ -14,15 +14,18 @@ import * as crypto from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import bcrypt from "bcrypt";
+import { z } from "zod";
 import {
   type LimitedUserGrants,
   type LimitedUserLock,
   type LimitedUserSummary,
+  type TemplateCreationGrant,
+  templateGrantFor,
   clampJoinStaleOffsetMinutes,
   limitedUserPasswordError,
   limitedUsernameError,
 } from "@yep-anywhere/shared";
-import { generateVerifier } from "../crypto/srp-server.js";
+import { deriveDecoySalt, generateVerifier } from "../crypto/srp-server.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 import {
   OWNER_READ_WRITE_FILE_MODE,
@@ -30,7 +33,22 @@ import {
 } from "../utils/filePermissions.js";
 
 const BCRYPT_ROUNDS = 12;
-const CURRENT_VERSION = 1;
+const CURRENT_VERSION = 2;
+const templateGrantSchema = z.discriminatedUnion("mode", [
+  z.strictObject({ mode: z.literal("none") }),
+  z.strictObject({ mode: z.literal("any") }),
+  z.strictObject({
+    mode: z.literal("selected"),
+    templates: z
+      .array(
+        z.strictObject({
+          sourceId: z.string().min(1),
+          templateId: z.string().min(1),
+        }),
+      )
+      .max(1000),
+  }),
+]);
 
 export interface LimitedUserRecord extends LimitedUserGrants {
   username: string;
@@ -43,8 +61,12 @@ export interface LimitedUserRecord extends LimitedUserGrants {
 
 interface LimitedUsersState {
   version: number;
-  /** Fixed SRP inputs answered for unknown identities, so timing matches. */
-  dummySrp?: { salt: string; verifier: string };
+  /**
+   * What an unknown identity's SRP challenge is computed from: a salt derived
+   * per identity from `secret`, and one verifier. The verifier never reaches
+   * the client, so sharing it discloses nothing; the salt does, so it varies.
+   */
+  decoySrp?: { secret: string; verifier: string };
   users: Record<string, LimitedUserRecord>;
 }
 
@@ -57,6 +79,7 @@ export interface LimitedUserInput {
   joinStaleOffsetMinutes?: number;
   lock?: LimitedUserLock;
   projectRoot?: string;
+  templateCreation?: TemplateCreationGrant;
   disabled?: boolean;
 }
 
@@ -112,6 +135,7 @@ export function toLimitedUserSummary(
     viewProjects: [...record.viewProjects],
     joinStaleOffsetMinutes: record.joinStaleOffsetMinutes,
     lock: { ...record.lock },
+    templateCreation: structuredClone(templateGrantFor(record)),
     ...(record.projectRoot ? { projectRoot: record.projectRoot } : {}),
   };
 }
@@ -143,7 +167,7 @@ export class LimitedUsersService {
       ) as LimitedUsersState;
       this.state = {
         version: CURRENT_VERSION,
-        dummySrp: parsed.dummySrp,
+        decoySrp: parsed.decoySrp,
         users: {},
       };
       for (const [username, record] of Object.entries(parsed.users ?? {})) {
@@ -157,8 +181,13 @@ export class LimitedUsersService {
             record.joinStaleOffsetMinutes ?? 0,
           ),
           lock: normalizeLock(record.lock),
+          templateCreation:
+            record.templateCreation === undefined
+              ? templateGrantFor(record)
+              : templateGrantSchema.parse(record.templateCreation),
         };
       }
+      if (parsed.version < CURRENT_VERSION) await this.save();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
         console.warn(
@@ -169,14 +198,19 @@ export class LimitedUsersService {
       this.state = { version: CURRENT_VERSION, users: {} };
     }
 
-    if (!this.state.dummySrp) {
-      // A fixed decoy credential, generated once, so an unknown identity can
-      // be answered with a real challenge computation instead of an early
-      // error that discloses which usernames exist.
-      this.state.dummySrp = await generateVerifier(
+    if (!this.state.decoySrp) {
+      // Generated once and persisted, so an unknown identity is answered with
+      // a real challenge computation instead of an early error that discloses
+      // which usernames exist, and with the same salt after a restart as a
+      // real user's is.
+      const { verifier } = await generateVerifier(
         `unknown-${crypto.randomBytes(8).toString("hex")}`,
         crypto.randomBytes(32).toString("hex"),
       );
+      this.state.decoySrp = {
+        secret: crypto.randomBytes(32).toString("hex"),
+        verifier,
+      };
       await this.save();
     }
   }
@@ -205,14 +239,15 @@ export class LimitedUsersService {
       viewProjects: [...record.viewProjects],
       joinStaleOffsetMinutes: record.joinStaleOffsetMinutes,
       lock: { ...record.lock },
+      templateCreation: structuredClone(templateGrantFor(record)),
       ...(record.projectRoot ? { projectRoot: record.projectRoot } : {}),
     };
   }
 
   /**
    * SRP challenge inputs for an identity. Unknown or disabled identities get
-   * the fixed decoy credential so the handshake proceeds identically and
-   * fails only at the proof step.
+   * a decoy credential whose salt is stable per identity, so the handshake
+   * proceeds identically and fails only at the proof step.
    */
   getSrpChallengeInputs(username: string): {
     salt: string;
@@ -223,11 +258,15 @@ export class LimitedUsersService {
     if (record && record.disabled !== true) {
       return { ...record.srp, known: true };
     }
-    const dummy = this.state.dummySrp;
-    if (!dummy) {
+    const decoy = this.state.decoySrp;
+    if (!decoy) {
       throw new Error("LimitedUsersService.initialize() was not awaited");
     }
-    return { ...dummy, known: false };
+    return {
+      salt: deriveDecoySalt(decoy.secret, username),
+      verifier: decoy.verifier,
+      known: false,
+    };
   }
 
   async create(input: LimitedUserInput): Promise<LimitedUserSummary> {
@@ -239,6 +278,12 @@ export class LimitedUsersService {
     const passwordError = limitedUserPasswordError(input.password ?? "");
     if (passwordError) throw new Error(passwordError);
     const password = input.password as string;
+    const templateCreation =
+      input.templateCreation === undefined
+        ? templateGrantFor({
+            projectRoot: normalizeProjectRoot(input.projectRoot),
+          })
+        : templateGrantSchema.parse(input.templateCreation);
 
     const record: LimitedUserRecord = {
       username: input.username,
@@ -252,6 +297,7 @@ export class LimitedUsersService {
         input.joinStaleOffsetMinutes ?? 0,
       ),
       lock: normalizeLock(input.lock),
+      templateCreation,
       ...(normalizeProjectRoot(input.projectRoot)
         ? { projectRoot: normalizeProjectRoot(input.projectRoot) }
         : {}),
@@ -268,6 +314,11 @@ export class LimitedUsersService {
   ): Promise<LimitedUserSummary> {
     const record = this.state.users[username];
     if (!record) throw new Error("User not found");
+
+    const templateCreation =
+      input.templateCreation === undefined
+        ? undefined
+        : templateGrantSchema.parse(input.templateCreation);
 
     if (input.password !== undefined) {
       const passwordError = limitedUserPasswordError(input.password);
@@ -297,6 +348,8 @@ export class LimitedUsersService {
     if (input.projectRoot !== undefined) {
       record.projectRoot = normalizeProjectRoot(input.projectRoot);
     }
+    if (templateCreation !== undefined)
+      record.templateCreation = templateCreation;
     if (input.disabled !== undefined) {
       if (input.disabled) {
         record.disabled = true;
@@ -306,6 +359,22 @@ export class LimitedUsersService {
     }
     await this.save();
     return toLimitedUserSummary(record);
+  }
+
+  /**
+   * Give a user the new-session grant on a project they just created, so it
+   * is theirs to use the moment it exists. It is an ordinary grant: listed in
+   * Settings → Users, and the superuser may revoke it like any other.
+   */
+  async grantNewSessionProject(
+    username: string,
+    projectId: string,
+  ): Promise<void> {
+    const record = this.state.users[username];
+    if (!record) throw new Error("User not found");
+    if (record.newSessionProjects.includes(projectId)) return;
+    record.newSessionProjects.push(projectId);
+    await this.save();
   }
 
   async remove(username: string): Promise<boolean> {

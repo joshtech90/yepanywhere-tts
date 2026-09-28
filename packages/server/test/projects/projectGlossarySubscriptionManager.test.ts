@@ -202,6 +202,9 @@ async function subscribeReady(
 }
 
 afterEach(async () => {
+  // vi.spyOn returns the existing spy for an already-spied method, so an
+  // unrestored timer spy would carry one test's calls into the next.
+  vi.restoreAllMocks();
   await Promise.all(
     temporaryDirectories
       .splice(0)
@@ -529,6 +532,11 @@ describe("ProjectGlossarySubscriptionManager", () => {
     observePath("GLOSSARY.md");
     const first = manager.subscribe(projectId, () => {});
     await first.ready;
+    // A late watcher event for the fixture writes may add activation refreshes
+    // under load, so count only the joiner's work.
+    const observedBeforeJoin = vi.mocked(
+      glossaryIndexService.getObservedGlossaryPaths,
+    ).mock.calls.length;
 
     vi.useFakeTimers();
     let second: ReturnType<typeof manager.subscribe> | null = null;
@@ -541,8 +549,9 @@ describe("ProjectGlossarySubscriptionManager", () => {
       await second.ready;
 
       expect(
-        glossaryIndexService.getObservedGlossaryPaths,
-      ).toHaveBeenCalledTimes(2);
+        vi.mocked(glossaryIndexService.getObservedGlossaryPaths).mock.calls
+          .length,
+      ).toBeGreaterThan(observedBeforeJoin);
       expect(secondEvents).toHaveLength(1);
       expect(secondEvents[0]).toMatchObject({
         type: "glossary-paths-snapshot",

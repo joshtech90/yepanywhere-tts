@@ -53,6 +53,7 @@ async function serverFixture({
   available = true,
   broken = false,
   healthy = true,
+  reused = false,
 } = {}) {
   const requests: {
     path: string;
@@ -94,6 +95,7 @@ async function serverFixture({
             id: "grant-id",
             url: `${artifactUrl}/a/token/index.html`,
             expiresAt: Date.now() + 86400000,
+            ...(reused ? { reused: true } : {}),
           }),
         );
         break;
@@ -247,6 +249,17 @@ describe("portable artifact capture", () => {
           item.method === "DELETE" && item.path === "/api/artifacts/grant-id",
       ),
     ).toBe(true);
+  });
+
+  it("leaves a reused grant alone when the capture fails", async () => {
+    const files = await fixture();
+    const server = await serverFixture({ broken: true, reused: true });
+    await expect(
+      captureArtifact({ ...files, yaUrl: server.yaUrl, ownArtifact: false }),
+    ).rejects.toThrow("HTTP 404");
+    expect(server.requests.some((item) => item.method === "DELETE")).toBe(
+      false,
+    );
   });
 
   it("revokes a created grant when the interaction fails without writing a successful manifest", async () => {

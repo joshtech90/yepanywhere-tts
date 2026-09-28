@@ -65,10 +65,20 @@ function getActivityConnected(): boolean {
 export function getVisibleReloadBanners(
   isManualReloadMode: boolean,
   pendingReloads: PendingReloads,
-  options: { backendReloadSafetyKnown?: boolean } = {},
+  options: {
+    backendReloadSafetyKnown?: boolean;
+    /**
+     * False for a limited user: the server refuses them its restart routes,
+     * so a server-changed notice would offer a button that cannot work.
+     */
+    canRestartServer?: boolean;
+  } = {},
 ): PendingReloads {
   if (!isManualReloadMode) {
     return { backend: false, frontend: false };
+  }
+  if (options.canRestartServer === false) {
+    return { backend: false, frontend: pendingReloads.frontend };
   }
   if (pendingReloads.backend) {
     if (options.backendReloadSafetyKnown === false) {

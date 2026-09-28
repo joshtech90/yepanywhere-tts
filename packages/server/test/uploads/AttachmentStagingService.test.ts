@@ -81,6 +81,40 @@ describe("AttachmentStagingService", () => {
     ).rejects.toThrow("Invalid staging batch id");
   });
 
+  it("isolates account drafts across validation, deletion, materialization and restart", async () => {
+    const service = new AttachmentStagingService({ stagingRoot });
+    const archer = service.forUser("archer");
+    const other = service.forUser("other");
+    const { batchId, ref } = await completeDraftUpload(
+      archer,
+      Buffer.from("private image"),
+    );
+    await expect(other.validateDraftRefs(batchId, [ref])).rejects.toThrow();
+    await expect(service.validateDraftRefs(batchId, [ref])).rejects.toThrow();
+    expect(await other.deleteDraftAttachment(batchId, ref.id)).toBe(false);
+    const reopened = new AttachmentStagingService({ stagingRoot }).forUser(
+      "archer",
+    );
+    expect(await reopened.validateDraftRefs(batchId, [ref])).toEqual([ref]);
+    const projectPath = join(stagingRoot, "project");
+    await mkdir(projectPath, { recursive: true });
+    await expect(
+      other.materializeDraftAttachmentsForSession({
+        batchId,
+        refs: [ref],
+        projectPath,
+        sessionId: "session",
+      }),
+    ).rejects.toThrow();
+    const files = await reopened.materializeDraftAttachmentsForSession({
+      batchId,
+      refs: [ref],
+      projectPath,
+      sessionId: "session",
+    });
+    expect(await readFile(files[0]!.path, "utf8")).toBe("private image");
+  });
+
   it("enforces max upload size before writing", async () => {
     const service = new AttachmentStagingService({
       stagingRoot,

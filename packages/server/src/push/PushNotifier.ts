@@ -9,7 +9,11 @@
 
 import { basename } from "node:path";
 import type { UrlProjectId } from "@yep-anywhere/shared";
-import { decodeProjectId, getProjectName } from "../projects/paths.js";
+import {
+  decodeProjectId,
+  getProjectName,
+  type ProjectDisplayNameResolver,
+} from "../projects/paths.js";
 import type { Process } from "../supervisor/Process.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { InputRequest } from "../supervisor/types.js";
@@ -30,6 +34,8 @@ export interface PushNotifierOptions {
   eventBus: EventBus;
   pushService: PushService;
   supervisor: Supervisor;
+  /** Names the project in a notification; defaults to the path's name. */
+  projectDisplayName?: ProjectDisplayNameResolver;
 }
 
 interface NotificationState {
@@ -42,6 +48,7 @@ export class PushNotifier {
   private eventBus: EventBus;
   private pushService: PushService;
   private supervisor: Supervisor;
+  private readonly projectDisplayName: ProjectDisplayNameResolver;
   private unsubscribe: (() => void) | null = null;
   /** Track sessions we've sent notifications for (to know when to send dismiss) */
   private sessionsWithNotification = new Set<string>();
@@ -54,6 +61,7 @@ export class PushNotifier {
     this.eventBus = options.eventBus;
     this.pushService = options.pushService;
     this.supervisor = options.supervisor;
+    this.projectDisplayName = options.projectDisplayName ?? getProjectName;
 
     // Subscribe to EventBus for process state changes
     this.unsubscribe = this.eventBus.subscribe((event: BusEvent) => {
@@ -304,8 +312,7 @@ export class PushNotifier {
    */
   private getProjectName(projectId: UrlProjectId): string {
     try {
-      const projectPath = decodeProjectId(projectId);
-      return getProjectName(projectPath);
+      return this.projectDisplayName(decodeProjectId(projectId));
     } catch {
       return "Unknown Project";
     }

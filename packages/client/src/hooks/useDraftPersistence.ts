@@ -14,6 +14,7 @@ import {
   readDraftTextValue,
 } from "../lib/draftEnvelope";
 import { publishDraftPresenceChange } from "../lib/draftPresenceEvents";
+import { getServerClockTimestamp } from "../lib/serverClock";
 import {
   createSessionDraftStorageKey,
   markSessionDraftPendingSend,
@@ -46,10 +47,11 @@ export interface DraftControls {
   confirmInputClear: () => void;
   /**
    * Discard an untouched post-submit recovery copy once `isAccountedFor`
-   * proves the session already holds that text. Returns true if it discarded.
+   * proves the session holds that text from this send or later. Returns true
+   * if it discarded.
    */
   discardPendingSendDraft: (
-    isAccountedFor: (text: string) => boolean,
+    isAccountedFor: (recovery: PendingSendRecovery) => boolean,
   ) => boolean;
   /** Clear both input state and localStorage (call on confirmed success) */
   clearDraft: () => void;
@@ -61,6 +63,12 @@ export interface DraftControls {
   isFocused?: () => boolean;
   /** Place the textarea caret/selection, if it is mounted. */
   setSelectionRange?: (start: number, end: number) => void;
+}
+
+/** A post-submit recovery copy and the server-clock time of its submit. */
+export interface PendingSendRecovery {
+  text: string;
+  sentAtMs: number;
 }
 
 export interface UseDraftPersistenceOptions {
@@ -142,16 +150,18 @@ function saveAttachmentStateToStorage(
  */
 function markPendingSendInStorage(
   key: string,
+  sentAtMs: number,
   sessionDraft?: UseDraftPersistenceOptions["sessionDraft"],
 ): void {
   if (sessionDraft) {
-    markSessionDraftPendingSend(sessionDraft);
+    markSessionDraftPendingSend(sessionDraft, sentAtMs);
     return;
   }
 
   try {
     const nextValue = draftStorageValueForPendingSend(
       localStorage.getItem(key),
+      sentAtMs,
     );
     if (nextValue) {
       localStorage.setItem(key, nextValue);
@@ -318,7 +328,7 @@ export function useDraftPersistence(
         return;
       }
       const storedText = stored?.text ?? "";
-      pendingSendRef.current = stored?.pendingSend === true;
+      pendingSendRef.current = stored?.pendingSendAt !== undefined;
       valueRef.current = storedText;
       setValueInternal(storedText);
     } catch {
@@ -456,10 +466,16 @@ export function useDraftPersistence(
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    // Label the surviving copy as post-submit recovery text. It stays visible
-    // to a reload or a sibling tab, but becomes eligible for discard once the
-    // session proves the same text was actually sent.
-    markPendingSendInStorage(keyRef.current, sessionDraftRef.current);
+    // Label the surviving copy as post-submit recovery text, dated on the
+    // server's clock so transcript and queue timestamps compare with it. It
+    // stays visible to a reload or a sibling tab, but becomes eligible for
+    // discard once the session proves this send, not an earlier identical one,
+    // actually landed.
+    markPendingSendInStorage(
+      keyRef.current,
+      getServerClockTimestamp(),
+      sessionDraftRef.current,
+    );
     // An empty composer leaves nothing to mark, so ask storage rather than
     // assuming the marker landed.
     pendingSendRef.current = readStoragePendingSend(keyRef.current);
@@ -472,12 +488,12 @@ export function useDraftPersistence(
    * submitting tab). Returns true when a draft was discarded.
    */
   const discardPendingSendDraft = useCallback(
-    (isAccountedFor: (text: string) => boolean): boolean => {
+    (isAccountedFor: (recovery: PendingSendRecovery) => boolean): boolean => {
       if (composerEditedSinceHydrationRef.current) return false;
       if (!pendingSendRef.current) return false;
       const key = keyRef.current;
       const stored = readStorageDraft(key);
-      if (stored?.pendingSend !== true) {
+      if (stored?.pendingSendAt === undefined) {
         pendingSendRef.current = false;
         return false;
       }
@@ -486,7 +502,11 @@ export function useDraftPersistence(
       if (valueRef.current !== "" && valueRef.current !== storedText) {
         return false;
       }
-      if (!isAccountedFor(storedText)) return false;
+      if (
+        !isAccountedFor({ text: storedText, sentAtMs: stored.pendingSendAt })
+      ) {
+        return false;
+      }
 
       valueRef.current = "";
       setValueInternal("");
@@ -530,9 +550,9 @@ export function useDraftPersistence(
     try {
       const storedText = readStorageText(keyRef.current);
       valueRef.current = storedText;
-      // The user has been told the send failed and is looking at their text
-      // again; never discard it out from under them.
-      composerEditedSinceHydrationRef.current = true;
+      // A failed response can precede proof of delivery. Restoring the
+      // recovery copy is not a user edit; keep it eligible for reconciliation.
+      // Actual edits since the optimistic clear keep their protection.
       setValueInternal(storedText);
     } catch {
       // Ignore errors

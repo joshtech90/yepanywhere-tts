@@ -55,7 +55,10 @@ or collapsing the sidebar, or switching connected sources, clears the hold.
 `sessionInteractionOrder.ts` keeps up to 1,000 latest distinct session
 submissions per connected source in browser-local storage. Same-tab consumers
 share the existing local-storage store; other tabs receive storage events.
-Invalid persisted entries are ignored. If persistence is unavailable, the
+Invalid persisted entries are ignored. Records kept under the former
+`yep-sidebar-interactions:*` key, which also held visits, are discarded when
+the source's store is first opened, so a pre-change visit cannot keep a row
+above later sends. If persistence is unavailable, the
 existing storage helper retains coherent in-memory state. Clearing browser
 storage or eviction of an old entry restores that row's creation-time fallback.
 
@@ -74,8 +77,11 @@ under the existing duplicate-hiding contract. `useHeldSidebarLists` holds layout
 identities independently of fresh row data.
 
 A minimized desktop sidebar or closed mobile sidebar still releases its feed
-interest under the existing sidebar-feed contract. Interaction tracking adds
-no server demand.
+interest under the existing sidebar-feed contract. When that feed becomes
+active again, it validates its cached membership against the server collection
+generation so sessions created while hidden appear without a project/search
+detour. Returning a connected tab from the background performs the same
+validation. Interaction tracking itself adds no server demand.
 
 ## Design decisions
 

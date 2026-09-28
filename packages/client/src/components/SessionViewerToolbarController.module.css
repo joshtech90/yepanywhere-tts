@@ -166,13 +166,6 @@
   }
 }
 
-@media (max-width: 1099px) {
-  .paneOpen {
-    /* The drawer covers the composer; its own header owns dismissal. */
-    display: none;
-  }
-}
-
 .close.kill {
   color: var(--error-color, #e05252);
 }

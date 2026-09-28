@@ -39,6 +39,7 @@ export interface MockClaudeSession {
   content: string;
   projectPath: string;
   sessionId: string;
+  timestamp?: string;
 }
 
 export interface YaServerProfilePaths {
@@ -134,6 +135,7 @@ function writeMockClaudeSession(
   claudeSessionsDir: string,
   fixture: MockClaudeSession,
 ): void {
+  const timestamp = fixture.timestamp ?? "2026-01-01T00:00:00.000Z";
   mkdirSync(fixture.projectPath, { recursive: true });
   const encodedPath = fixture.projectPath.replace(/\//g, "-");
   const sessionDir = join(claudeSessionsDir, hostname(), encodedPath);
@@ -143,7 +145,7 @@ function writeMockClaudeSession(
       type: "user",
       cwd: fixture.projectPath,
       message: { role: "user", content: fixture.content },
-      timestamp: "2026-01-01T00:00:00.000Z",
+      timestamp,
       uuid: "fixture-user-message",
     },
     ...(fixture.assistantContent
@@ -154,7 +156,7 @@ function writeMockClaudeSession(
               role: "assistant",
               content: [{ type: "text", text: fixture.assistantContent }],
             },
-            timestamp: "2026-01-01T00:00:01.000Z",
+            timestamp: fixture.timestamp ?? "2026-01-01T00:00:01.000Z",
             uuid: "fixture-assistant-message",
             parentUuid: "fixture-user-message",
           },

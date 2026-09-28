@@ -130,6 +130,10 @@ test("sidebar follows user sends while visits and background work stay put", asy
       { name: "desktop", width: 1000, height: 600 },
       { name: "phone", width: 375, height: 812 },
     ]) {
+      const resetRow = rows.find((row) => row.id === "sidebar-c");
+      if (!resetRow) throw new Error("Missing sidebar-c fixture row");
+      resetRow.title = "Session C";
+      resetRow.fullTitle = "Session C";
       await page.setViewportSize(viewport);
       activityListeners.length = 0;
       await page.goto(`${origin}/projects/${projectId}/sessions/sidebar-a`);
@@ -138,7 +142,7 @@ test("sidebar follows user sends while visits and background work stay put", asy
       // Sends from the previous viewport persist; start each from the
       // creation-time order the assertions below expect.
       await page.evaluate(() =>
-        localStorage.removeItem("yep-sidebar-interactions:local"),
+        localStorage.removeItem("yep-sidebar-submissions:local"),
       );
       await page.reload();
       await expect(composer).toBeVisible({ timeout: 30_000 });
@@ -160,9 +164,13 @@ test("sidebar follows user sends while visits and background work stay put", asy
       await target.hover();
       const before = await target.boundingBox();
       const visitsBeforeActivity = await page.evaluate(() =>
-        localStorage.getItem("yep-sidebar-interactions:local"),
+        localStorage.getItem("yep-sidebar-submissions:local"),
       );
       await expect.poll(() => activityListeners.length).toBeGreaterThan(0);
+      const updatedRow = rows.find((row) => row.id === "sidebar-c");
+      if (!updatedRow) throw new Error("Missing sidebar-c fixture row");
+      updatedRow.title = "Session C updated";
+      updatedRow.fullTitle = "Session C updated";
       for (const emit of activityListeners) {
         emit("process-state-changed", {
           type: "process-state-changed",
@@ -188,7 +196,7 @@ test("sidebar follows user sends while visits and background work stay put", asy
       expect(await target.boundingBox()).toEqual(before);
       expect(
         await page.evaluate(() =>
-          localStorage.getItem("yep-sidebar-interactions:local"),
+          localStorage.getItem("yep-sidebar-submissions:local"),
         ),
       ).toBe(visitsBeforeActivity);
       // Opening a session is reading, not activity: the row stays where it
@@ -208,7 +216,7 @@ test("sidebar follows user sends while visits and background work stay put", asy
       ]);
       expect(
         await page.evaluate(() =>
-          localStorage.getItem("yep-sidebar-interactions:local"),
+          localStorage.getItem("yep-sidebar-submissions:local"),
         ),
       ).toBe(visitsBeforeActivity);
       await expect(
@@ -235,9 +243,7 @@ test("sidebar follows user sends while visits and background work stay put", asy
       await expect
         .poll(() =>
           page.evaluate(() => {
-            const value = localStorage.getItem(
-              "yep-sidebar-interactions:local",
-            );
+            const value = localStorage.getItem("yep-sidebar-submissions:local");
             return value ? JSON.parse(value)[0][0] : null;
           }),
         )
@@ -247,7 +253,11 @@ test("sidebar follows user sends while visits and background work stay put", asy
       await page
         .getByRole("button", { name: "Open sidebar", exact: true })
         .click();
-      await expect(titles).toHaveText(["Session B", "Session A", "Session C"]);
+      await expect(titles).toHaveText([
+        "Session B",
+        "Session A",
+        "Session C updated",
+      ]);
     }
     expect(errors).toEqual([]);
   } finally {

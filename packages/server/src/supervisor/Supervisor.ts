@@ -28,6 +28,7 @@ import type { ClaudeGoalSnapshot } from "../sdk/providers/claude-goal.js";
 import { registerForkedSessionFile } from "../sessions/fork-discovery.js";
 import {
   isResumeDropsTurnRefusal,
+  type ResumeTruncation,
   resolveResumeTruncation,
 } from "./resume-truncation.js";
 import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
@@ -37,13 +38,20 @@ import { getLogger } from "../logging/logger.js";
 import type { SessionMetadataService } from "../metadata/index.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
 import type { NotificationService } from "../notifications/index.js";
-import { getProjectName } from "../projects/paths.js";
+import {
+  getProjectName,
+  type ProjectDisplayNameResolver,
+} from "../projects/paths.js";
 import {
   getSessionSandboxSettingsError,
   prepareSessionSandbox,
   type PrepareSessionSandboxOptions,
 } from "../session-sandbox.js";
 import { getProvider } from "../sdk/providers/index.js";
+import {
+  SessionTokenUsageRecorder,
+  type SessionTokenUsageRecord,
+} from "../auth/SessionTokenUsageRecorder.js";
 import { CacheMissBillingMonitor } from "../services/CacheMissBillingMonitor.js";
 import type { DirtyFileEditorService } from "../services/DirtyFileEditorService.js";
 import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
@@ -61,6 +69,10 @@ import {
   messageTimestampMs,
   toDurableRecapMessage,
 } from "../sessions/recap-overlays.js";
+import {
+  sessionActivityEventFromProcess,
+  sessionOwnershipFromProcess,
+} from "../sessions/session-runtime-overlay.js";
 import type {
   GetSessionSummaryOptions,
   RecoveredSessionLaunchSettings,
@@ -173,17 +185,6 @@ const ACTIVE_HEARTBEAT_DOUBT_STATUSES = new Set([
   "long-silent-unverified",
 ]);
 const RESUME_COMPACT_WAIT_MS = 3 * 60 * 1000;
-
-type SessionSandboxLaunchOptions = Omit<
-  PrepareSessionSandboxOptions,
-  "authEnforced"
->;
-
-interface SessionSandboxLaunchTransaction {
-  options: (
-    options: SessionSandboxLaunchOptions,
-  ) => PrepareSessionSandboxOptions;
-}
 
 export type ResumeMode = "full" | "compact-first";
 
@@ -539,6 +540,8 @@ export interface SupervisorOptions {
   /** Real SDK interface with full features */
   realSdk?: RealClaudeSDKInterface;
   idleTimeoutMs?: number;
+  /** Names a process's project; defaults to the path's name. */
+  projectDisplayName?: ProjectDisplayNameResolver;
   /** Default permission mode for new sessions */
   defaultPermissionMode?: PermissionMode;
   /** EventBus for emitting session status changes */
@@ -596,6 +599,11 @@ export interface SupervisorOptions {
   getPostCompactReplaySettings?: () => PostCompactReplaySettings | undefined;
   /** Callback to read live cache-miss billing monitor settings. */
   getCacheMissBillingSettings?: () => CacheMissBillingSettings | undefined;
+  /**
+   * Append a settled provider token charge to the per-user usage ledger.
+   * Absent on a server built without the ledger, which then records no tokens.
+   */
+  recordTokenUsage?: (record: SessionTokenUsageRecord) => void;
   /** Current install-wide Claude Bash re-foregrounding policy. */
   getClaudeSteerBackgroundBashSettings?: () =>
     | ClaudeSteerBackgroundBashSettings
@@ -614,8 +622,6 @@ export interface SupervisorOptions {
   dirtyFileEditorService?: DirtyFileEditorService;
   /** Root for persistent project-private provider state. */
   sandboxStateRoot?: string;
-  /** Whether local YA requests currently require non-readable credentials. */
-  isSessionSandboxAuthEnforced?: () => boolean;
 }
 
 export type { SessionDoneResult };
@@ -638,6 +644,7 @@ export class Supervisor {
   private sdk: ClaudeSDK | null;
   private realSdk: RealClaudeSDKInterface | null;
   private idleTimeoutMs: number;
+  private readonly projectDisplayName: ProjectDisplayNameResolver;
   private defaultPermissionMode: PermissionMode;
   private eventBus?: EventBus;
   private maxWorkers: number;
@@ -682,6 +689,7 @@ export class Supervisor {
     | ClaudeSteerBackgroundBashSettings
     | undefined;
   private cacheMissBillingMonitor: CacheMissBillingMonitor;
+  private tokenUsageRecorder: SessionTokenUsageRecorder;
   private heartbeatScheduler: HeartbeatSweepScheduler;
   /**
    * Instant the unowned-candidate half of the sweep is next due, or null once
@@ -732,8 +740,6 @@ export class Supervisor {
   private toolResultMediaStore?: ToolResultMediaStore;
   private dirtyFileEditorService?: DirtyFileEditorService;
   private sandboxStateRoot?: string;
-  private isSessionSandboxAuthEnforced?: () => boolean;
-  private pendingSessionSandboxAuthReservations = 0;
   // In-flight forked recaps, keyed by process id. The AbortController cancels
   // the generator-fork helper turn when the parent becomes active again, so a
   // returning user's new turn is never shadowed by a stale recap. See
@@ -748,6 +754,7 @@ export class Supervisor {
     this.sdk = options.sdk ?? null;
     this.realSdk = options.realSdk ?? null;
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
+    this.projectDisplayName = options.projectDisplayName ?? getProjectName;
     this.defaultPermissionMode = options.defaultPermissionMode ?? "default";
     this.eventBus = options.eventBus;
     this.maxWorkers = options.maxWorkers ?? 0; // 0 = unlimited
@@ -777,6 +784,11 @@ export class Supervisor {
       sessionMetadataService: options.sessionMetadataService,
       getSettings: options.getCacheMissBillingSettings,
     });
+    this.tokenUsageRecorder = new SessionTokenUsageRecorder({
+      record: options.recordTokenUsage ?? (() => {}),
+      resolveUsername: (sessionId) =>
+        options.sessionMetadataService?.getMetadata(sessionId)?.createdByUser,
+    });
     this.interruptTimeoutMs =
       options.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
     this.sessionMetadataService = options.sessionMetadataService;
@@ -786,7 +798,6 @@ export class Supervisor {
     this.toolResultMediaStore = options.toolResultMediaStore;
     this.dirtyFileEditorService = options.dirtyFileEditorService;
     this.sandboxStateRoot = options.sandboxStateRoot;
-    this.isSessionSandboxAuthEnforced = options.isSessionSandboxAuthEnforced;
     this.activationCoordinator = new SessionActivationCoordinator({
       defaultPermissionMode: this.defaultPermissionMode,
       sessionMetadataService: this.sessionMetadataService,
@@ -837,36 +848,23 @@ export class Supervisor {
     }
   }
 
-  /** Prevent local auth from being relaxed during or after a sandbox launch. */
-  isAuthenticationRelaxationBlocked(): boolean {
-    return (
-      this.pendingSessionSandboxAuthReservations > 0 ||
-      this.getAllProcesses().some(
-        (process) => process.sandboxEnforcement?.effective === "project-write",
-      )
-    );
-  }
-
-  private async withSessionSandboxLaunchTransaction<T>(
-    level: SessionSandboxLevel | undefined,
-    action: (transaction: SessionSandboxLaunchTransaction) => Promise<T>,
-  ): Promise<T> {
-    const authEnforced =
-      level === "project-write" &&
-      this.isSessionSandboxAuthEnforced?.() === true;
-    const transaction: SessionSandboxLaunchTransaction = {
-      options: (options) => ({ ...options, authEnforced }),
+  /** Sandbox request for a new or resumed provider process. */
+  private newSessionSandboxOptions(
+    provider: ProviderName,
+    projectPath: string,
+    modelSettings: ModelSettings | undefined,
+    resumeSessionId: string | undefined,
+  ): PrepareSessionSandboxOptions {
+    return {
+      level: modelSettings?.sandboxLevel,
+      networkFirewall: modelSettings?.sandboxNetworkFirewall,
+      provider,
+      projectPath,
+      executor: modelSettings?.executor,
+      stateKey: modelSettings?.sandboxStateKey,
+      resumeSessionId,
+      stateRoot: this.sandboxStateRoot,
     };
-    if (!authEnforced) {
-      return action(transaction);
-    }
-
-    this.pendingSessionSandboxAuthReservations++;
-    try {
-      return await action(transaction);
-    } finally {
-      this.pendingSessionSandboxAuthReservations--;
-    }
   }
 
   private resolveProvider(modelSettings?: ModelSettings): AgentProvider | null {
@@ -1216,34 +1214,12 @@ export class Supervisor {
    * Create a session using the real SDK without an initial message.
    * The session is created and waits for a message to be queued.
    */
-  private createRealSession(
+  private async createRealSession(
     projectPath: string,
     projectId: UrlProjectId,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
     resumeSessionId?: string,
-  ): Promise<Process> {
-    return this.withSessionSandboxLaunchTransaction(
-      modelSettings?.sandboxLevel,
-      (sandboxLaunch) =>
-        this.createRealSessionWithinSandboxLaunch(
-          projectPath,
-          projectId,
-          permissionMode,
-          modelSettings,
-          resumeSessionId,
-          sandboxLaunch,
-        ),
-    );
-  }
-
-  private async createRealSessionWithinSandboxLaunch(
-    projectPath: string,
-    projectId: UrlProjectId,
-    permissionMode: PermissionMode | undefined,
-    modelSettings: ModelSettings | undefined,
-    resumeSessionId: string | undefined,
-    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     if (!this.realSdk) {
       throw new Error("realSdk is not available");
@@ -1257,22 +1233,25 @@ export class Supervisor {
     );
     const tempSessionId = resumeSessionId ?? randomUUID();
     const sessionSandbox = await prepareSessionSandbox(
-      sandboxLaunch.options({
-        level: modelSettings?.sandboxLevel,
-        networkFirewall: modelSettings?.sandboxNetworkFirewall,
-        provider: "claude",
+      this.newSessionSandboxOptions(
+        "claude",
         projectPath,
-        executor: modelSettings?.executor,
-        stateKey: modelSettings?.sandboxStateKey,
+        modelSettings,
         resumeSessionId,
-        stateRoot: this.sandboxStateRoot,
-      }),
+      ),
+    );
+    const truncation = this.resolveLaunchTruncation(
+      resumeSessionId,
+      "claude",
+      modelSettings,
     );
     // Start session WITHOUT an initial message - agent will wait
     const result = await this.realSdk.startSession({
       cwd: projectPath,
       // No initialMessage - queue will block until one is pushed
       resumeSessionId,
+      resumeSessionAt: truncation.resumeSessionAt,
+      resumeDropsTurn: truncation.resumeDropsTurn,
       permissionMode: effectiveMode,
       model: modelSettings?.model,
       thinking: modelSettings?.thinking,
@@ -1323,6 +1302,7 @@ export class Supervisor {
       sessionId: tempSessionId,
       initialState: "idle",
       idleTimeoutMs: this.idleTimeoutMs,
+      projectDisplayName: this.projectDisplayName,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       toolResultMediaStore: this.toolResultMediaStore,
@@ -1386,6 +1366,7 @@ export class Supervisor {
     const process = new Process(iterator, options);
     processHolder.process = process;
     this.observeProcessEvents(process);
+    await this.consumePendingRewind(process, resumeSessionId, truncation);
 
     // Wait for the real session ID from the SDK
     if (!resumeSessionId) {
@@ -2030,37 +2011,13 @@ export class Supervisor {
   /**
    * Start a session using the real SDK with full features.
    */
-  private startRealSession(
+  private async startRealSession(
     projectPath: string,
     projectId: UrlProjectId,
     message: UserMessage,
     resumeSessionId?: string,
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
-  ): Promise<Process> {
-    return this.withSessionSandboxLaunchTransaction(
-      modelSettings?.sandboxLevel,
-      (sandboxLaunch) =>
-        this.startRealSessionWithinSandboxLaunch(
-          projectPath,
-          projectId,
-          message,
-          resumeSessionId,
-          permissionMode,
-          modelSettings,
-          sandboxLaunch,
-        ),
-    );
-  }
-
-  private async startRealSessionWithinSandboxLaunch(
-    projectPath: string,
-    projectId: UrlProjectId,
-    message: UserMessage,
-    resumeSessionId: string | undefined,
-    permissionMode: PermissionMode | undefined,
-    modelSettings: ModelSettings | undefined,
-    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     const tempSessionId = resumeSessionId ?? randomUUID();
 
@@ -2080,20 +2037,23 @@ export class Supervisor {
       { supportsNativePromptSuggestions: true },
     );
     const sessionSandbox = await prepareSessionSandbox(
-      sandboxLaunch.options({
-        level: modelSettings?.sandboxLevel,
-        networkFirewall: modelSettings?.sandboxNetworkFirewall,
-        provider: "claude",
+      this.newSessionSandboxOptions(
+        "claude",
         projectPath,
-        executor: modelSettings?.executor,
-        stateKey: modelSettings?.sandboxStateKey,
+        modelSettings,
         resumeSessionId,
-        stateRoot: this.sandboxStateRoot,
-      }),
+      ),
+    );
+    const truncation = this.resolveLaunchTruncation(
+      resumeSessionId,
+      "claude",
+      modelSettings,
     );
     const result = await this.realSdk.startSession({
       cwd: projectPath,
       resumeSessionId,
+      resumeSessionAt: truncation.resumeSessionAt,
+      resumeDropsTurn: truncation.resumeDropsTurn,
       permissionMode: effectiveMode,
       model: modelSettings?.model,
       thinking: modelSettings?.thinking,
@@ -2146,6 +2106,7 @@ export class Supervisor {
       projectId,
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
+      projectDisplayName: this.projectDisplayName,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       toolResultMediaStore: this.toolResultMediaStore,
@@ -2209,6 +2170,7 @@ export class Supervisor {
     const process = new Process(iterator, options);
     processHolder.process = process;
     this.observeProcessEvents(process);
+    await this.consumePendingRewind(process, resumeSessionId, truncation);
 
     // Wait for the real session ID from the SDK before registering
     // This ensures the client gets the correct ID to use for persistence
@@ -2239,7 +2201,7 @@ export class Supervisor {
    * Create a session using the provider interface without an initial message.
    * The session is created and waits for a message to be queued.
    */
-  private createProviderSession(
+  private async createProviderSession(
     projectPath: string,
     projectId: UrlProjectId,
     permissionMode?: PermissionMode,
@@ -2248,34 +2210,6 @@ export class Supervisor {
     resumeSessionId?: string,
     retryProviderStartupFailure = false,
     requireProviderSessionId = false,
-  ): Promise<Process> {
-    return this.withSessionSandboxLaunchTransaction(
-      modelSettings?.sandboxLevel,
-      (sandboxLaunch) =>
-        this.createProviderSessionWithinSandboxLaunch(
-          projectPath,
-          projectId,
-          permissionMode,
-          modelSettings,
-          provider,
-          resumeSessionId,
-          retryProviderStartupFailure,
-          requireProviderSessionId,
-          sandboxLaunch,
-        ),
-    );
-  }
-
-  private async createProviderSessionWithinSandboxLaunch(
-    projectPath: string,
-    projectId: UrlProjectId,
-    permissionMode: PermissionMode | undefined,
-    modelSettings: ModelSettings | undefined,
-    provider: AgentProvider | undefined,
-    resumeSessionId: string | undefined,
-    retryProviderStartupFailure: boolean,
-    requireProviderSessionId: boolean,
-    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     const activeProvider = provider ?? this.provider;
     if (!activeProvider) {
@@ -2303,16 +2237,12 @@ export class Supervisor {
       modelSettings,
     );
     const tempSessionId = resumeSessionId ?? randomUUID();
-    const sessionSandboxOptions = sandboxLaunch.options({
-      level: modelSettings?.sandboxLevel,
-      networkFirewall: modelSettings?.sandboxNetworkFirewall,
-      provider: activeProvider.name,
+    const sessionSandboxOptions = this.newSessionSandboxOptions(
+      activeProvider.name,
       projectPath,
-      executor: modelSettings?.executor,
-      stateKey: modelSettings?.sandboxStateKey,
+      modelSettings,
       resumeSessionId,
-      stateRoot: this.sandboxStateRoot,
-    });
+    );
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     // Start session WITHOUT an initial message - agent will wait
@@ -2321,14 +2251,11 @@ export class Supervisor {
       modelSettings,
       activeProvider,
     );
-    const truncation = resolveResumeTruncation({
+    const truncation = this.resolveLaunchTruncation(
       resumeSessionId,
-      providerName: activeProvider.name,
-      pendingRewind: resumeSessionId
-        ? this.sessionMetadataService?.getPendingRewind?.(resumeSessionId)
-        : undefined,
-      requested: modelSettings,
-    });
+      activeProvider.name,
+      modelSettings,
+    );
     const start = activeProvider.startSession({
       computerControl,
       cwd: projectPath,
@@ -2406,6 +2333,7 @@ export class Supervisor {
       sessionId: tempSessionId,
       initialState: "idle",
       idleTimeoutMs: this.idleTimeoutMs,
+      projectDisplayName: this.projectDisplayName,
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
       toolResultMediaStore: this.toolResultMediaStore,
@@ -2454,6 +2382,7 @@ export class Supervisor {
       provider: activeProvider.name,
       model: modelSettings?.model,
       requestedModel: modelSettings?.requestedModel,
+      gatewayServiceId: result.gatewayServiceId,
       compactAtContextPercent: modelSettings?.compactAtContextPercent,
       compactAtContextWindow: modelSettings?.compactAtContextWindow,
       forceYaOrchestratedCompaction:
@@ -2501,7 +2430,7 @@ export class Supervisor {
   /**
    * Start a session using the provider interface with full features.
    */
-  private startProviderSession(
+  private async startProviderSession(
     projectPath: string,
     projectId: UrlProjectId,
     message: UserMessage,
@@ -2511,36 +2440,6 @@ export class Supervisor {
     provider?: AgentProvider,
     retryProviderStartupFailure = false,
     requireProviderSessionId = false,
-  ): Promise<Process> {
-    return this.withSessionSandboxLaunchTransaction(
-      modelSettings?.sandboxLevel,
-      (sandboxLaunch) =>
-        this.startProviderSessionWithinSandboxLaunch(
-          projectPath,
-          projectId,
-          message,
-          resumeSessionId,
-          permissionMode,
-          modelSettings,
-          provider,
-          retryProviderStartupFailure,
-          requireProviderSessionId,
-          sandboxLaunch,
-        ),
-    );
-  }
-
-  private async startProviderSessionWithinSandboxLaunch(
-    projectPath: string,
-    projectId: UrlProjectId,
-    message: UserMessage,
-    resumeSessionId: string | undefined,
-    permissionMode: PermissionMode | undefined,
-    modelSettings: ModelSettings | undefined,
-    provider: AgentProvider | undefined,
-    retryProviderStartupFailure: boolean,
-    requireProviderSessionId: boolean,
-    sandboxLaunch: SessionSandboxLaunchTransaction,
   ): Promise<Process> {
     const activeProvider = provider ?? this.provider;
     if (!activeProvider) {
@@ -2581,16 +2480,12 @@ export class Supervisor {
       modelSettings,
     );
     const tempSessionId = resumeSessionId ?? randomUUID();
-    const sessionSandboxOptions = sandboxLaunch.options({
-      level: modelSettings?.sandboxLevel,
-      networkFirewall: modelSettings?.sandboxNetworkFirewall,
-      provider: activeProvider.name,
+    const sessionSandboxOptions = this.newSessionSandboxOptions(
+      activeProvider.name,
       projectPath,
-      executor: modelSettings?.executor,
-      stateKey: modelSettings?.sandboxStateKey,
+      modelSettings,
       resumeSessionId,
-      stateRoot: this.sandboxStateRoot,
-    });
+    );
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     const computerControl = this.selectComputerControl(
@@ -2598,14 +2493,11 @@ export class Supervisor {
       modelSettings,
       activeProvider,
     );
-    const truncation = resolveResumeTruncation({
+    const truncation = this.resolveLaunchTruncation(
       resumeSessionId,
-      providerName: activeProvider.name,
-      pendingRewind: resumeSessionId
-        ? this.sessionMetadataService?.getPendingRewind?.(resumeSessionId)
-        : undefined,
-      requested: modelSettings,
-    });
+      activeProvider.name,
+      modelSettings,
+    );
     const start = activeProvider.startSession({
       computerControl,
       cwd: projectPath,
@@ -2680,6 +2572,7 @@ export class Supervisor {
       projectId,
       sessionId: tempSessionId,
       idleTimeoutMs: this.idleTimeoutMs,
+      projectDisplayName: this.projectDisplayName,
       initialState: result.initialTurnState ?? "idle",
       queue,
       sessionQueuePersistenceService: this.sessionQueuePersistenceService,
@@ -2729,6 +2622,7 @@ export class Supervisor {
       provider: activeProvider.name,
       model: modelSettings?.model,
       requestedModel: modelSettings?.requestedModel,
+      gatewayServiceId: result.gatewayServiceId,
       compactAtContextPercent: modelSettings?.compactAtContextPercent,
       compactAtContextWindow: modelSettings?.compactAtContextWindow,
       forceYaOrchestratedCompaction:
@@ -2818,6 +2712,7 @@ export class Supervisor {
       projectId,
       sessionId,
       idleTimeoutMs: this.idleTimeoutMs,
+      projectDisplayName: this.projectDisplayName,
       permissionMode: effectiveMode,
       provider: "claude", // Legacy mock SDK simulates Claude
       model: modelSettings?.model,
@@ -3143,7 +3038,7 @@ export class Supervisor {
    * primitive — fork must not be emulated (see
    * topics/session-context-actions.md).
    */
-  forkSession(options: {
+  async forkSession(options: {
     sessionId: string;
     projectPath: string;
     providerName?: ProviderName;
@@ -3158,31 +3053,6 @@ export class Supervisor {
     sandboxStateKey?: string;
     sessionSandbox?: Awaited<ReturnType<typeof prepareSessionSandbox>>;
   }> {
-    return this.withSessionSandboxLaunchTransaction(
-      options.sandboxLevel,
-      (sandboxLaunch) =>
-        this.forkSessionWithinSandboxLaunch(options, sandboxLaunch),
-    );
-  }
-
-  private async forkSessionWithinSandboxLaunch(
-    options: {
-      sessionId: string;
-      projectPath: string;
-      providerName?: ProviderName;
-      upToMessageId?: string;
-      boundary?: ProviderForkBoundary;
-      title?: string;
-      sandboxLevel?: SessionSandboxLevel;
-      sandboxNetworkFirewall?: boolean;
-      sandboxStateKey?: string;
-    },
-    sandboxLaunch: SessionSandboxLaunchTransaction,
-  ): Promise<{
-    sessionId: string;
-    sandboxStateKey?: string;
-    sessionSandbox?: Awaited<ReturnType<typeof prepareSessionSandbox>>;
-  }> {
     const provider = this.resolveProvider(
       options.providerName ? { providerName: options.providerName } : undefined,
     );
@@ -3192,16 +3062,14 @@ export class Supervisor {
     if (typeof provider.forkSession !== "function") {
       throw new Error(`${provider.name} does not support transcript fork`);
     }
-    const sessionSandbox = await prepareSessionSandbox(
-      sandboxLaunch.options({
-        level: options.sandboxLevel,
-        networkFirewall: options.sandboxNetworkFirewall,
-        provider: provider.name,
-        projectPath: options.projectPath,
-        stateKey: options.sandboxStateKey,
-        stateRoot: this.sandboxStateRoot,
-      }),
-    );
+    const sessionSandbox = await prepareSessionSandbox({
+      level: options.sandboxLevel,
+      networkFirewall: options.sandboxNetworkFirewall,
+      provider: provider.name,
+      projectPath: options.projectPath,
+      stateKey: options.sandboxStateKey,
+      stateRoot: this.sandboxStateRoot,
+    });
     // A full copy of a session whose rewind has not yet been applied would
     // carry the dropped tail as its own tip and resume the dropped branch.
     // The SDK fork slices by file position and remaps uuids, so the rewind
@@ -3798,14 +3666,11 @@ export class Supervisor {
       throw new Error(sandboxError);
     }
     process.setRecapConfig(config);
-    this.emitOwnershipChange(process.sessionId, process.projectId, {
-      owner: "self",
-      processId: process.id,
-      permissionMode: process.permissionMode,
-      appliedPermissionMode: process.appliedPermissionMode,
-      modeVersion: process.modeVersion,
-      recapAfterSeconds: process.recapAfterSeconds,
-    });
+    this.emitOwnershipChange(
+      process.sessionId,
+      process.projectId,
+      sessionOwnershipFromProcess(process),
+    );
     return process;
   }
 
@@ -4774,6 +4639,9 @@ export class Supervisor {
     this.emitSessionAborted(process.sessionId, process.projectId);
 
     const result = await process.abort();
+    await this.activationCoordinator.settleStoppingProcessLaunchSettings(
+      process,
+    );
     this.unregisterProcess(process);
     log.info(
       {
@@ -4788,6 +4656,26 @@ export class Supervisor {
         : `Session abort verified: ${result.sessionId} (PID ${result.pid})`,
     );
     return result;
+  }
+
+  /**
+   * The resume truncation every launcher passes to its provider: the
+   * session's pending rewind, else the caller's own cut. Paired with
+   * `consumePendingRewind` once the process exists.
+   */
+  private resolveLaunchTruncation(
+    resumeSessionId: string | undefined,
+    providerName: ProviderName,
+    modelSettings: ModelSettings | undefined,
+  ): ResumeTruncation {
+    return resolveResumeTruncation({
+      resumeSessionId,
+      providerName,
+      pendingRewind: resumeSessionId
+        ? this.sessionMetadataService?.getPendingRewind?.(resumeSessionId)
+        : undefined,
+      requested: modelSettings,
+    });
   }
 
   /**
@@ -4836,13 +4724,6 @@ export class Supervisor {
       rewindRecordRemoved: recordId,
       timestamp: new Date().toISOString(),
     });
-  }
-
-  /** Persist the live process's current settings before a planned restart. */
-  async persistLiveLaunchSettings(sessionId: string): Promise<void> {
-    const process = this.getProcessForSession(sessionId);
-    if (!process || process.isTerminated) return;
-    await this.activationCoordinator.persistLiveProcessLaunchSettings(process);
   }
 
   async abortSessionWithVerification(
@@ -4921,6 +4802,9 @@ export class Supervisor {
     const deferredMessages = await process.drainPendingUserMessages("promoted");
     this.emitSessionAborted(process.sessionId, process.projectId);
     await process.terminateAndWait("interrupt fallback abort");
+    await this.activationCoordinator.settleStoppingProcessLaunchSettings(
+      process,
+    );
     this.unregisterProcess(process);
     this.recoverDeferredMessagesAfterHardAbort(process, deferredMessages);
     return { success: false, supported: true, hardAborted: true };
@@ -5221,6 +5105,9 @@ export class Supervisor {
             );
           });
       } else if (event.type === "provider-turn-started") {
+        // A provider that never emits a `result` frame would otherwise let one
+        // turn's charge run into the next; the new turn's start closes it.
+        this.tokenUsageRecorder.flush(process);
         this.cacheMissBillingMonitor.observeProviderTurnStarted(
           process,
           event.turnKind,
@@ -5244,6 +5131,16 @@ export class Supervisor {
           process,
           event.type === "mode-change" ? "permissionMode" : event.setting,
         );
+      } else if (event.type === "model-resolved") {
+        // Clients opened on the launch alias learn the served model now,
+        // rather than only on their next reload.
+        this.eventBus?.emit({
+          type: "session-updated",
+          sessionId: process.sessionId,
+          projectId: process.projectId,
+          model: event.model,
+          timestamp: new Date().toISOString(),
+        });
       } else if (event.type === "idle-reap") {
         this.emitSessionAborted(
           process.sessionId,
@@ -5252,6 +5149,9 @@ export class Supervisor {
         );
       } else if (event.type === "complete") {
         this.dirtyFileEditorService?.forgetProcess(process.id);
+        void this.activationCoordinator.settleStoppingProcessLaunchSettings(
+          process,
+        );
         this.unregisterProcess(process);
       } else if (event.type === "message") {
         this.dirtyFileEditorService?.observeMessage(process, event.message);
@@ -5283,6 +5183,10 @@ export class Supervisor {
           }
         }
         this.cacheMissBillingMonitor.observeMessage(process, event.message);
+        this.tokenUsageRecorder.observeMessage(process, event.message);
+        if (event.message.type === "result") {
+          this.tokenUsageRecorder.flush(process);
+        }
         if (
           isAwaySummaryMessage(event.message) &&
           event.message.isSynthetic !== true
@@ -5396,18 +5300,10 @@ export class Supervisor {
         }
 
         // Emit ownership change for new session ID so clients can update
-        const ownership: SessionOwnership = {
-          owner: "self",
-          processId: process.id,
-          permissionMode: process.permissionMode,
-          appliedPermissionMode: process.appliedPermissionMode,
-          modeVersion: process.modeVersion,
-          recapAfterSeconds: process.recapAfterSeconds,
-        };
         this.emitOwnershipChange(
           event.newSessionId,
           process.projectId,
-          ownership,
+          sessionOwnershipFromProcess(process),
         );
 
         // Retry early metadata reconciliation with authoritative session ID.
@@ -5423,28 +5319,7 @@ export class Supervisor {
           event.state.type === "waiting-input" ||
           event.state.type === "idle"
         ) {
-          // Convert InputRequest.type to PendingInputType when waiting for input
-          // "tool-approval" stays as-is, "question" or "choice" becomes "user-question"
-          let pendingInputType: PendingInputType | undefined;
-          if (event.state.type === "waiting-input") {
-            const requestType = event.state.request.type;
-            pendingInputType =
-              requestType === "tool-approval"
-                ? "tool-approval"
-                : "user-question";
-          }
-          // A turn that settles to idle while the provider still has background
-          // work retained should report as active, not idle.
-          const activity: AgentActivity =
-            event.state.type === "idle" && process.isRetainingProviderWork()
-              ? "in-turn"
-              : event.state.type;
-          this.emitAgentActivityChange(
-            process.sessionId,
-            process.projectId,
-            activity,
-            pendingInputType,
-          );
+          this.emitProcessActivity(process);
         }
         // Emit worker activity on any state change (affects hasActiveWork)
         this.emitWorkerActivity();
@@ -5470,7 +5345,10 @@ export class Supervisor {
         if (event.state.type === "in-turn") {
           this.cancelInFlightForkedRecap(process);
         }
-      } else if (event.type === "deferred-queue") {
+      } else if (event.type === "deferred-queue" && !event.republished) {
+        // A republished entry moved no queue, so it is not worker activity:
+        // Project Queue restarts its quiet window on every such event, and a
+        // held patient /clearloop republishes on each of its re-checks.
         if (
           event.reason === "queued" &&
           process.state.type === "idle" &&
@@ -5481,6 +5359,21 @@ export class Supervisor {
         this.emitWorkerActivity();
       } else if (event.type === "terminated") {
         this.dirtyFileEditorService?.forgetProcess(process.id);
+        if (event.failureNotice) {
+          void this.sessionMetadataService
+            ?.addLocalCommandMessage(process.sessionId, event.failureNotice)
+            .catch((error: unknown) => {
+              getLogger().warn(
+                {
+                  event: "provider_failure_notice_persist_failed",
+                  sessionId: process.sessionId,
+                  errorMessage:
+                    error instanceof Error ? error.message : String(error),
+                },
+                `Failed to persist provider failure notice: ${process.sessionId}`,
+              );
+            });
+        }
         this.emitProcessTerminated(
           process.sessionId,
           process.projectId,
@@ -5499,6 +5392,14 @@ export class Supervisor {
         );
       }
     });
+    // After subscribing, so a launch alias resolved here is published too.
+    const provider =
+      this.provider?.name === process.provider
+        ? this.provider
+        : getProvider(process.provider);
+    if (provider?.resolveLaunchModel) {
+      process.useModelResolver((model) => provider.resolveLaunchModel?.(model));
+    }
   }
 
   private registerProcess(process: Process, isNewSession: boolean): void {
@@ -5524,14 +5425,7 @@ export class Supervisor {
     this.sessionDone.recoverPendingDone(process);
     this.onProcessInventoryChanged?.();
 
-    const ownership: SessionOwnership = {
-      owner: "self",
-      processId: process.id,
-      permissionMode: process.permissionMode,
-      appliedPermissionMode: process.appliedPermissionMode,
-      modeVersion: process.modeVersion,
-      recapAfterSeconds: process.recapAfterSeconds,
-    };
+    const ownership = sessionOwnershipFromProcess(process);
 
     // Emit session created event for new sessions
     if (isNewSession) {
@@ -5546,24 +5440,11 @@ export class Supervisor {
     this.emitOwnershipChange(process.sessionId, process.projectId, ownership);
 
     // Emit initial agent activity (process starts in in-turn state)
-    const initialState = process.state;
     if (
-      initialState.type === "in-turn" ||
-      initialState.type === "waiting-input"
+      process.state.type === "in-turn" ||
+      process.state.type === "waiting-input"
     ) {
-      // Convert InputRequest.type to PendingInputType if waiting for input at start
-      let pendingInputType: PendingInputType | undefined;
-      if (initialState.type === "waiting-input") {
-        const requestType = initialState.request.type;
-        pendingInputType =
-          requestType === "tool-approval" ? "tool-approval" : "user-question";
-      }
-      this.emitAgentActivityChange(
-        process.sessionId,
-        process.projectId,
-        initialState.type,
-        pendingInputType,
-      );
+      this.emitProcessActivity(process);
     }
 
     // Emit worker activity after registering (new worker added)
@@ -5641,6 +5522,7 @@ export class Supervisor {
     this.thresholdCompactionInFlight.delete(process.id);
     this.pendingPostCompactReplay.delete(process.id);
     this.cacheMissBillingMonitor.forgetProcess(process.id);
+    this.tokenUsageRecorder.forgetProcess(process);
     this.activationCoordinator.discardProcess(process);
     this.pendingForkedRecapRequests.delete(process.id);
     this.forkedRecapInFlight.get(process.id)?.abort();
@@ -5696,9 +5578,11 @@ export class Supervisor {
     }
 
     // Emit ownership change event (back to none)
-    this.emitOwnershipChange(process.sessionId, process.projectId, {
-      owner: "none",
-    });
+    this.emitOwnershipChange(
+      process.sessionId,
+      process.projectId,
+      sessionOwnershipFromProcess(undefined),
+    );
 
     // Emit agent activity change to notify clients that this session is no longer running
     // This is needed for real-time updates (e.g., AgentsNavItem indicator)
@@ -5790,7 +5674,7 @@ export class Supervisor {
     const session: SessionSummary = {
       id: process.sessionId,
       projectId: process.projectId,
-      projectName: getProjectName(process.projectPath),
+      projectName: info.projectName,
       title: optimistic.title,
       fullTitle: optimistic.fullTitle,
       createdAt: now,
@@ -5894,6 +5778,18 @@ export class Supervisor {
     this.eventBus.emit(event);
   }
 
+  /** Publish a live process's activity exactly as its session rows show it. */
+  private emitProcessActivity(process: Process): void {
+    const { activity, pendingInputType } =
+      sessionActivityEventFromProcess(process);
+    this.emitAgentActivityChange(
+      process.sessionId,
+      process.projectId,
+      activity,
+      pendingInputType,
+    );
+  }
+
   private emitProcessTerminated(
     sessionId: string,
     projectId: UrlProjectId,
@@ -5942,11 +5838,7 @@ export class Supervisor {
     // and truly idle without a state-change event. Surface that so inbox/sidebar
     // activity indicators update live rather than only on the next refresh.
     if (process && process.state.type === "idle") {
-      this.emitAgentActivityChange(
-        process.sessionId,
-        process.projectId,
-        process.isRetainingProviderWork() ? "in-turn" : "idle",
-      );
+      this.emitProcessActivity(process);
       if (!process.isRetainingProviderWork()) {
         void this.finalizePendingDone(process);
         void this.maybeCompactAfterIdle(process);

@@ -1,9 +1,19 @@
+import type { ChildProcess } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
+import { MessageQueue } from "../../../src/sdk/messageQueue.js";
+import { PI_EFFORT_RETRY_COMMAND } from "../../../src/sdk/providers/pi-effort-retry.js";
+import {
+  attachJsonlLineReader,
+  PiRpcClient,
+} from "../../../src/sdk/providers/pi-rpc-client.js";
 import {
   PiProvider,
   loweredEffortForRejection,
   piVersionUsesAgentSettled,
 } from "../../../src/sdk/providers/pi.js";
+import type { SDKMessage } from "../../../src/sdk/types.js";
 
 type PiEvent = { type: string; [key: string]: unknown };
 
@@ -22,8 +32,8 @@ function makeStream(terminalEvent: "agent_end" | "agent_settled") {
     currentAssistantId: null,
     text: "",
     thinking: "",
-    lastUsage: null,
-    lastCostUsd: null,
+    runUsage: null,
+    runCostUsd: null,
     terminalEvent,
     turnError: null,
     toolStates: new Map(),
@@ -105,6 +115,51 @@ describe("PiProvider event mapping", () => {
     ]);
   });
 
+  it("reports every model request of the run on its result, not the last", () => {
+    const provider = new PiProvider();
+    const stream = makeStream("agent_settled");
+    const mapEvent = (event: PiEvent) =>
+      mapPiEvent(provider, event, "pi-session", stream);
+
+    // A tool round makes a second request; both are charged.
+    mapEvent({
+      type: "turn_end",
+      message: {
+        usage: { input: 11, output: 7, cacheRead: 5, cacheWrite: 3 },
+      },
+    });
+    mapEvent({
+      type: "turn_end",
+      message: {
+        usage: {
+          input: 2,
+          output: 4,
+          cacheRead: 19,
+          cacheWrite: 0,
+          cost: { total: 0.004 },
+        },
+      },
+    });
+
+    expect(mapEvent({ type: "agent_settled" })).toEqual([
+      {
+        type: "result",
+        session_id: "pi-session",
+        usage: {
+          input_tokens: 13,
+          output_tokens: 11,
+          cache_read_input_tokens: 24,
+          cache_creation_input_tokens: 3,
+        },
+        total_cost_usd: 0.004,
+      },
+    ]);
+    // The next run starts from nothing.
+    expect(mapEvent({ type: "agent_settled" })).toEqual([
+      { type: "result", session_id: "pi-session" },
+    ]);
+  });
+
   it("keeps agent_end as the legacy pre-0.80.4 boundary", () => {
     const provider = new PiProvider();
     const stream = makeStream("agent_end");
@@ -121,15 +176,15 @@ describe("PiProvider event mapping", () => {
   });
 });
 
-describe("thinking level a rejected pi turn retries at", () => {
-  // Captured from pi 0.85.1 driving vLLM 0.29 with reasoning_effort "high":
-  // the failure arrives as an assistant message_end, not as an event of its
-  // own, and the server names the whole set it does accept.
-  const VLLM_REFUSAL =
-    '400: {"message":"Unexpected reasoning effort high. Supported types are ' +
-    'xhigh (default), medium, and low.","type":"BadRequestError",' +
-    '"param":null,"code":400}';
+// Captured from pi 0.85.1 driving vLLM 0.29 with reasoning_effort "high": the
+// failure arrives as an assistant message_end, not as an event of its own, and
+// the server names the whole set it does accept.
+const VLLM_REFUSAL =
+  '400: {"message":"Unexpected reasoning effort high. Supported types are ' +
+  'xhigh (default), medium, and low.","type":"BadRequestError",' +
+  '"param":null,"code":400}';
 
+describe("thinking level a rejected pi turn retries at", () => {
   it("takes the highest accepted level at or below the one refused", () => {
     expect(loweredEffortForRejection(VLLM_REFUSAL, "high")).toBe("medium");
     expect(loweredEffortForRejection(VLLM_REFUSAL, "max")).toBe("xhigh");
@@ -152,6 +207,189 @@ describe("thinking level a rejected pi turn retries at", () => {
     // A level the server does accept is not a reason to lower anything.
     expect(loweredEffortForRejection(VLLM_REFUSAL, "medium")).toBeUndefined();
     expect(loweredEffortForRejection(VLLM_REFUSAL, undefined)).toBeUndefined();
+  });
+});
+
+/**
+ * A stand-in `pi --mode rpc` child: it answers commands the way pi 0.85.1 does
+ * and refuses the first prompt over its thinking level, so the provider's
+ * retry sequence can be read back from what it wrote to stdin.
+ */
+function refusingPiProcess(options: {
+  extensionLoaded: boolean;
+  commandFails?: boolean;
+}) {
+  const stdin = new PassThrough();
+  const stdout = new PassThrough();
+  const proc = Object.assign(new EventEmitter(), {
+    stdin,
+    stdout,
+    stderr: new PassThrough(),
+    killed: false,
+    exitCode: null,
+    signalCode: null,
+    kill() {
+      proc.killed = true;
+      proc.emit("exit", 0, null);
+      return true;
+    },
+  });
+  const commands: string[] = [];
+  const send = (line: object) => stdout.write(`${JSON.stringify(line)}\n`);
+  let prompts = 0;
+  attachJsonlLineReader(stdin, (line) => {
+    const command = JSON.parse(line) as {
+      type: string;
+      id?: string;
+      message?: string;
+      level?: string;
+    };
+    const reply = (data?: object) =>
+      send({
+        type: "response",
+        id: command.id,
+        command: command.type,
+        success: true,
+        ...(data ? { data } : {}),
+      });
+    if (command.type === "prompt" && command.message?.startsWith("/")) {
+      commands.push(`command ${command.message.split(" ")[0]}`);
+      if (options.commandFails) {
+        send({
+          type: "extension_error",
+          extensionPath: `command:${PI_EFFORT_RETRY_COMMAND}`,
+          event: "command",
+          error:
+            "Yep Anywhere effort retry: the session does not end in a failed reply",
+        });
+      }
+      reply();
+      return;
+    }
+    if (command.type === "prompt") {
+      commands.push(`prompt ${command.message}`);
+      prompts += 1;
+      if (prompts === 1) {
+        send({
+          type: "message_end",
+          message: {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: VLLM_REFUSAL,
+          },
+        });
+      } else {
+        send({
+          type: "message_update",
+          assistantMessageEvent: { type: "text_delta", delta: "pong" },
+        });
+        send({ type: "message_end", message: { role: "assistant" } });
+      }
+      send({ type: "agent_settled" });
+      return;
+    }
+    commands.push(
+      command.level ? `${command.type} ${command.level}` : command.type,
+    );
+    if (command.type === "get_commands") {
+      reply({
+        commands: options.extensionLoaded
+          ? [{ name: PI_EFFORT_RETRY_COMMAND, source: "extension" }]
+          : [],
+      });
+      return;
+    }
+    reply();
+  });
+  return { proc, commands };
+}
+
+async function runRefusedTurn(
+  pi: ReturnType<typeof refusingPiProcess>,
+): Promise<SDKMessage[]> {
+  const provider = new PiProvider();
+  const queue = new MessageQueue();
+  queue.push({ text: "ping" });
+  const abort = new AbortController();
+  const run = (
+    provider as unknown as {
+      runSession(...args: unknown[]): AsyncIterableIterator<SDKMessage>;
+    }
+  ).runSession(
+    new PiRpcClient(pi.proc as unknown as ChildProcess),
+    pi.proc,
+    "pi-session",
+    queue,
+    abort.signal,
+    { cwd: "/tmp", effort: "high" },
+    { lastRawProviderEventAt: null, lastRawProviderEventSource: null },
+    "agent_settled",
+  );
+  const yielded: SDKMessage[] = [];
+  for await (const message of run) {
+    yielded.push(message);
+    if (message.type === "result") break;
+  }
+  abort.abort();
+  return yielded;
+}
+
+function textOf(message: SDKMessage | undefined): string {
+  return String(message?.message?.content ?? "");
+}
+
+describe("PiProvider turn refused over its thinking level", () => {
+  it("sets the refused turn aside before lowering the level and resending", async () => {
+    const pi = refusingPiProcess({ extensionLoaded: true });
+    const yielded = await runRefusedTurn(pi);
+    expect(pi.commands).toEqual([
+      "prompt ping",
+      "get_commands",
+      `command /${PI_EFFORT_RETRY_COMMAND}`,
+      "set_thinking_level medium",
+      "prompt ping",
+    ]);
+    expect(yielded.map((message) => message.type)).toEqual([
+      "system",
+      "user",
+      "assistant",
+      "assistant",
+      "result",
+    ]);
+    expect(textOf(yielded[2])).toContain("retried at **medium**");
+    expect(textOf(yielded[3])).toBe("pong");
+    expect(yielded.at(-1)).not.toHaveProperty("error");
+  });
+
+  it("ends the turn with the refusal when pi did not load YA's extension", async () => {
+    const pi = refusingPiProcess({ extensionLoaded: false });
+    const yielded = await runRefusedTurn(pi);
+    // The command would otherwise have reached the model as a prompt.
+    expect(pi.commands).toEqual([
+      "prompt ping",
+      "get_commands",
+      "set_thinking_level medium",
+    ]);
+    expect(textOf(yielded.at(-2))).toContain("Later turns ask for **medium**");
+    expect(yielded.at(-1)).toMatchObject({
+      type: "result",
+      error: VLLM_REFUSAL,
+    });
+  });
+
+  it("does not resend a prompt the extension could not set aside", async () => {
+    const pi = refusingPiProcess({ extensionLoaded: true, commandFails: true });
+    const yielded = await runRefusedTurn(pi);
+    expect(pi.commands).toEqual([
+      "prompt ping",
+      "get_commands",
+      `command /${PI_EFFORT_RETRY_COMMAND}`,
+      "set_thinking_level medium",
+    ]);
+    expect(yielded.at(-1)).toMatchObject({
+      type: "result",
+      error: VLLM_REFUSAL,
+    });
   });
 });
 

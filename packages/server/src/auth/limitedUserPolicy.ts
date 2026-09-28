@@ -9,8 +9,14 @@
  * session outside the user's grants answers 404 rather than 403, because
  * whether a project exists is itself not the user's business.
  *
- * This module is pure: it decides from the method, the path, and the query,
- * and hands back what the caller must still resolve (a session's project).
+ * This module is pure: it decides from the method and the path, and hands
+ * back what the caller must still resolve (a session's project). The path
+ * must be the one the router matches handlers against (Hono's `c.req.path`,
+ * already percent-decoded), never the raw URL pathname: `/api/%69ssues`
+ * reaches the `/api/issues` handler, so the decision has to see it as that.
+ *
+ * A project grant comes only from the path. No route is opened by a
+ * `projectId` query parameter, because most handlers ignore one.
  */
 
 import type {
@@ -27,11 +33,17 @@ export type LimitedRouteDecision =
   /** Allowed with no project scope (identity, version, catalogs). */
   | { kind: "allow" }
   /** Allowed when the named project grants at least `required`. */
-  | { kind: "project"; projectId: string; required: RequiredAccess }
+  | {
+      kind: "project";
+      projectId: string;
+      required: RequiredAccess;
+      /** Optional projection for a successful project-scoped response. */
+      filter?: FilteredListKind;
+    }
   /**
    * Allowed when the session's project grants at least `required`. A `join`
-   * requirement additionally needs the session to be fresh unless the user
-   * started it.
+   * requirement additionally needs the session to run sandboxed, and to be
+   * fresh unless the user started it.
    */
   | { kind: "session"; sessionId: string; required: RequiredAccess }
   /** Allowed, and the response is a list the caller must filter. */
@@ -39,6 +51,7 @@ export type LimitedRouteDecision =
 
 export type FilteredListKind =
   | "projects"
+  | "project-queue"
   | "sessions"
   | "inbox"
   | "recents"
@@ -49,8 +62,11 @@ export type FilteredListKind =
  * allowances so a project-scoped-looking path cannot sneak one in.
  *
  * Issues & PRs spend the host's ticket-system credentials; bang commands run
- * outside the provider sandbox; the rest are host administration, other
- * people's devices, or grant machinery.
+ * outside the provider sandbox; file editing reads and writes any absolute
+ * path in the host-wide local-file allow-set, which no project grant scopes,
+ * and its rebuild route runs a registered command outside any session
+ * sandbox; the rest are host administration, other people's devices, or grant
+ * machinery.
  */
 const DENIED_PREFIXES: readonly string[] = [
   "/api/issues",
@@ -71,6 +87,7 @@ const DENIED_PREFIXES: readonly string[] = [
   "/api/agents",
   "/api/local-file",
   "/api/local-image",
+  "/api/file-edit",
   "/api/artifacts",
   "/api/glossary-artifacts",
   "/api/debug",
@@ -98,12 +115,13 @@ const PUBLIC_GET_PREFIXES: readonly string[] = [
   "/api/provider-host",
   "/api/auth/status",
   "/api/users/me",
-  "/api/settings",
   "/api/push/vapid-public-key",
   "/api/push/settings",
   "/api/push/subscriptions",
   "/api/browser-profiles",
   "/api/client",
+  // Pinned third-party renderer code; no project content.
+  "/api/pdfjs",
 ];
 
 /** Writes that only touch the caller's own device or identity. */
@@ -139,8 +157,9 @@ function hasPrefix(path: string, prefixes: readonly string[]): boolean {
 
 /**
  * Session-scoped mutations a joiner may perform: sending and shaping turns in
- * an existing session. Anything else about a session (terminate, rewind,
- * fork, clone, archive, move) needs the project's new-session grant.
+ * an existing session, which must run sandboxed (the middleware checks). The
+ * few others a limited user may perform need the project's new-session grant
+ * and are listed below.
  */
 const JOIN_SESSION_ACTIONS = new Set([
   "messages",
@@ -159,12 +178,58 @@ const JOIN_SESSION_ACTIONS = new Set([
   "upload",
 ]);
 
+/**
+ * Session-scoped mutations a new-session grant adds to the join actions.
+ * Every one here that starts or resumes a provider process applies the
+ * limited launch policy at its route (auth/limitedLaunchPolicy.ts):
+ * resume and reactivate, while fork and clone record the user as creator of
+ * a transcript that only a policy-checked resume can run. Any other session
+ * action is refused, including restart, recap, retitle, fork-summary, rewind,
+ * clearloop, recovered-queue resume, session bang commands, and moving a
+ * session between projects, so a launching route added later stays out of a
+ * limited user's reach until it applies the policy and is listed here.
+ */
+const NEW_SESSION_SESSION_ACTIONS = new Set([
+  "resume",
+  "reactivate",
+  "fork",
+  "clone",
+  "terminate",
+  "archive",
+  "done",
+  "metadata",
+  // Materializing staged attachments into a session's first turn.
+  "attachments",
+]);
+
+/** What a session-scoped mutation needs, or null when it is refused. */
+function sessionMutationRequirement(
+  action: string,
+  method: string,
+): RequiredAccess | null {
+  if (JOIN_SESSION_ACTIONS.has(action)) return "join";
+  if (NEW_SESSION_SESSION_ACTIONS.has(action)) return "new-session";
+  // Dropping a restart-paused queued message launches nothing; resuming or
+  // steering it does, through a path without the launch policy.
+  if (action === "recovered-queue" && method === "DELETE") {
+    return "new-session";
+  }
+  return null;
+}
+
 export interface LimitedRouteRequest {
   method: string;
-  /** Request pathname, without query. */
+  /** The routed path: percent-decoded as the router matches it, no query. */
   path: string;
-  /** Parsed query parameters. */
-  query: URLSearchParams;
+}
+
+/** One path segment as the router's param decoding reads it, or null. */
+function decodeSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment);
+  } catch {
+    return null;
+  }
 }
 
 /** Decide what a limited principal's request needs, or that it is refused. */
@@ -195,6 +260,16 @@ export function decideLimitedRoute(
   if (hasPrefix(path, DENIED_PREFIXES)) return { kind: "deny" };
 
   if (SELF_WRITE_PATHS.includes(path)) return { kind: "allow" };
+  // The staging service isolates drafts by the authenticated acting account.
+  if (
+    (method === "GET" &&
+      path === "/api/attachments/staging/drafts/upload/ws") ||
+    (method === "POST" &&
+      /^\/api\/attachments\/staging\/drafts\/[^/]+\/validate$/.test(path)) ||
+    (method === "DELETE" &&
+      /^\/api\/attachments\/staging\/drafts\/[^/]+\/[^/]+$/.test(path))
+  )
+    return { kind: "allow" };
   if (path.startsWith("/api/users")) {
     // Everything else under user administration is the superuser's.
     return path === "/api/users/me" && isRead
@@ -206,8 +281,12 @@ export function decideLimitedRoute(
       ? { kind: "allow" }
       : { kind: "deny" };
   }
-  if (path.startsWith("/api/settings")) {
-    // Read the settings document, never write it.
+  if (path === "/api/settings") {
+    // Read the settings document, never write it. The route answers a
+    // limited user with its projection, which withholds secrets and host
+    // inventory. Every settings subpath (browser backup, remote executors,
+    // cache-billing events, file-access and host-awake status) is host
+    // administration and falls to the default deny below.
     return isRead ? { kind: "allow" } : { kind: "deny" };
   }
   if (hasPrefix(path, PUBLIC_GET_PREFIXES)) {
@@ -216,7 +295,8 @@ export function decideLimitedRoute(
 
   const projectScoped = path.match(/^\/api\/projects\/([^/]+)(\/.*)?$/);
   if (projectScoped) {
-    const projectId = decodeURIComponent(projectScoped[1] as string);
+    const projectId = decodeSegment(projectScoped[1] as string);
+    if (projectId === null) return { kind: "deny" };
     const rest = projectScoped[2] ?? "";
     if (rest === "/sessions" || rest === "/sessions/create") {
       // Creating a session in this project. Checked before the session-scoped
@@ -227,16 +307,16 @@ export function decideLimitedRoute(
     }
     const sessionScoped = rest.match(/^\/sessions\/([^/]+)(\/(.*))?$/);
     if (sessionScoped) {
-      const sessionId = decodeURIComponent(sessionScoped[1] as string);
+      const sessionId = decodeSegment(sessionScoped[1] as string);
+      if (sessionId === null) return { kind: "deny" };
       const action = (sessionScoped[3] ?? "").split("/")[0] ?? "";
       if (isRead) {
         return { kind: "session", sessionId, required: "view" };
       }
-      return {
-        kind: "session",
-        sessionId,
-        required: JOIN_SESSION_ACTIONS.has(action) ? "join" : "new-session",
-      };
+      const required = sessionMutationRequirement(action, method);
+      return required
+        ? { kind: "session", sessionId, required }
+        : { kind: "deny" };
     }
     return {
       kind: "project",
@@ -255,6 +335,15 @@ export function decideLimitedRoute(
     return { kind: "deny" };
   }
 
+  // The creation route enforces template/root grants and operation ownership.
+  if (
+    (isRead && path === "/api/project-templates/choices") ||
+    (method === "POST" && path === "/api/project-templates/operations") ||
+    (isRead && /^\/api\/project-templates\/operations\/[^/]+$/.test(path))
+  ) {
+    return { kind: "allow" };
+  }
+
   if (path === "/api/sessions") {
     // GET is the global session list; POST would start a detached session in
     // the hidden "No Project" workspace, which is the superuser's.
@@ -265,56 +354,62 @@ export function decideLimitedRoute(
 
   const sessionScoped = path.match(/^\/api\/sessions\/([^/]+)(\/(.*))?$/);
   if (sessionScoped) {
-    const sessionId = decodeURIComponent(sessionScoped[1] as string);
+    const sessionId = decodeSegment(sessionScoped[1] as string);
+    if (sessionId === null) return { kind: "deny" };
     const action = (sessionScoped[3] ?? "").split("/")[0] ?? "";
     if (isRead) return { kind: "session", sessionId, required: "view" };
-    return {
-      kind: "session",
-      sessionId,
-      required: JOIN_SESSION_ACTIONS.has(action) ? "join" : "new-session",
-    };
+    const required = sessionMutationRequirement(action, method);
+    return required
+      ? { kind: "session", sessionId, required }
+      : { kind: "deny" };
   }
   if (path === "/api/inbox" || path.startsWith("/api/inbox/")) {
     return isRead
       ? { kind: "allow-filtered", filter: "inbox" }
       : { kind: "deny" };
   }
-  if (path.startsWith("/api/recents")) {
-    return { kind: "allow-filtered", filter: "recents" };
+  if (path === "/api/recents") {
+    // The recents list is the install's, shared with the superuser: reading
+    // it is filtered, clearing it is refused.
+    return isRead
+      ? { kind: "allow-filtered", filter: "recents" }
+      : { kind: "deny" };
+  }
+  if (path === "/api/recents/visit" && method === "POST") {
+    // Every session page posts its visit. The route records nothing for a
+    // limited user and says so, rather than every open drawing a 403.
+    return { kind: "allow" };
   }
   if (path === "/api/processes") {
     return isRead
       ? { kind: "allow-filtered", filter: "processes" }
       : { kind: "deny" };
   }
-  if (path.startsWith("/api/activity")) {
+  // `/api/activity/*` is not listed: its REST reads are watcher status and
+  // every connected tab and browser profile, host inventory that carries no
+  // project to filter by. The activity channel itself runs over /api/ws.
+  if (path === "/api/project-queue") {
+    // The route already builds the global queue from the caller's granted
+    // projects (routes/project-queue.ts), so other projects' statuses and
+    // titles are never computed for them; this allowlist projection is the
+    // fail-closed backstop for any response field added later.
     return isRead
-      ? { kind: "allow-filtered", filter: "sessions" }
+      ? { kind: "allow-filtered", filter: "project-queue" }
       : { kind: "deny" };
   }
-  if (path.startsWith("/api/project-queue")) {
-    const projectId = request.query.get("projectId");
-    if (!projectId) {
-      return isRead
-        ? { kind: "allow-filtered", filter: "projects" }
-        : { kind: "deny" };
-    }
+  const promoteNow = path.match(/^\/api\/project-queue\/([^/]+)\/promote-now$/);
+  if (promoteNow && method === "POST") {
+    const projectId = decodeSegment(promoteNow[1] as string);
+    if (projectId === null) return { kind: "deny" };
     return {
       kind: "project",
       projectId,
-      required: isRead ? "view" : "new-session",
+      required: "new-session",
+      filter: "project-queue",
     };
   }
-
-  // A query-scoped project route (git status, file completion, ...).
-  const queryProjectId = request.query.get("projectId");
-  if (queryProjectId) {
-    return {
-      kind: "project",
-      projectId: queryProjectId,
-      required: isRead ? "view" : "new-session",
-    };
-  }
+  // Pausing and resuming dispatch are host-wide, and nothing else under
+  // /api/project-queue is listed.
 
   return { kind: "deny" };
 }

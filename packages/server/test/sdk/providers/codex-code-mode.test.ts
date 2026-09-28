@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { CodexProvider } from "../../../src/sdk/providers/codex.js";
+import {
+  type CodexLiveToolOutput,
+  CodexProvider,
+} from "../../../src/sdk/providers/codex.js";
 
 function createLiveEventState() {
   return {
     streamingTextByItemKey: new Map<string, string>(),
     streamingReasoningSummaryByItemKey: new Map<string, string[]>(),
-    streamingToolOutputByItemKey: new Map<string, string>(),
+    streamingToolOutputByItemKey: new Map<string, CodexLiveToolOutput>(),
     toolCallContexts: new Map<string, unknown>(),
     resultBackedToolItemsByTurnId: new Map<string, Set<string>>(),
   };

@@ -282,13 +282,15 @@ test("opens original interactive files through relay grants and a separate HTTPS
   );
   expect(await fileResponse?.text()).toContain("/src/remote-main.tsx");
   expect(artifactRequests).toEqual([]);
+  // HTML opens in the confined static preview; the play toggle admits the
+  // interactive grant through the relay rather than a direct API call.
   await page
     .locator(".file-viewer-header")
-    .getByRole("button", { name: "Raw source", exact: true })
+    .getByRole("button", { name: "Run full HTML/CSS/JavaScript preview" })
     .click();
   await expect(
-    page.getByRole("button", { name: "Run interactive preview" }),
-  ).toHaveCount(0);
+    page.getByRole("button", { name: "Stop interactive preview" }),
+  ).toHaveAttribute("aria-pressed", "true");
   const frame = page.frameLocator("iframe");
   await expect(frame.getByRole("status")).toHaveText("3 sample notes");
   const child = page
@@ -338,7 +340,10 @@ test("opens original interactive files through relay grants and a separate HTTPS
   await page.setViewportSize({ width: 375, height: 812 });
   await child.evaluate(() => window.scrollTo(0, 0));
   const phoneFrame = await page.locator("iframe").boundingBox();
-  expect(phoneFrame?.height).toBeGreaterThan(600);
+  // The stacked phone header holds the Edit and play toggles plus the zoom
+  // group, which wrap to a second action row at 375px; the artifact still
+  // keeps roughly two thirds of an 812px viewport.
+  expect(phoneFrame?.height).toBeGreaterThan(520);
   await page.screenshot({ path: join(captures, "phone.png") });
   await frame.getByRole("link", { name: "Project details" }).click();
   await expect(
@@ -349,7 +354,7 @@ test("opens original interactive files through relay grants and a separate HTTPS
     .poll(
       async () => (await instance.artifactServer.app.request(grantUrl)).status,
     )
-    .toBe(404);
+    .toBe(200);
   expect(directGrantRequests).toEqual([]);
   expect(artifactRequests[0]?.path).toBe("/health");
   expect(
@@ -412,7 +417,9 @@ test("runs the generated YA mockup through the hosted relay viewer", async ({
   await page.goto(
     `${clientOrigin}/-/relay/${username}/projects/${projectId}/file?path=mockup/index.html`,
   );
-  await page.getByRole("button", { name: "Raw source", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Run full HTML/CSS/JavaScript preview" })
+    .click();
   await expect(
     page
       .frameLocator("iframe")
@@ -472,7 +479,7 @@ test("runs the generated YA mockup through the hosted relay viewer", async ({
     .poll(
       async () => (await instance.artifactServer.app.request(grantUrl)).status,
     )
-    .toBe(404);
+    .toBe(200);
   // Reproduce the stale localhost document policy, then exercise the real
   // top-level fallback without changing or weakening either origin's CSP.
   await page.evaluate(() => {
@@ -506,7 +513,7 @@ test("runs the generated YA mockup through the hosted relay viewer", async ({
       async () =>
         (await instance.artifactServer.app.request(fallbackUrl)).status,
     )
-    .toBe(404);
+    .toBe(200);
 });
 
 test("keeps the mobile session mounted through artifact open, park, and Back", async ({

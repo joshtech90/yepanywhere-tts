@@ -539,6 +539,48 @@ describe("Processes Routes", () => {
     expect(getMetadata).toHaveBeenCalledWith("sess-1");
   });
 
+  it("shows the clearloop badge the loop owner reports, not a stored record", async () => {
+    const project = createProject();
+    const process = createProcessInfo();
+    const badge = {
+      remaining: 2,
+      total: 3,
+      completed: 1,
+      cutTurnIndex: 4,
+      prompt: "again",
+      windowSeconds: 60,
+    };
+    const leftover = { ...badge, state: "running" };
+    const request = async (getClearloopBadge?: () => typeof badge) => {
+      const routes = createProcessesRoutes({
+        supervisor: {
+          getProcessInfoList: vi.fn(() => [process]),
+          getRecentlyTerminatedProcesses: vi.fn(() => []),
+        } as unknown as Supervisor,
+        scanner: {
+          getProject: vi.fn(async () => project),
+        } as unknown as ProjectScanner,
+        readerFactory: vi.fn(
+          () =>
+            ({
+              getSessionSummary: vi.fn(async () => createSummary()),
+            }) as unknown as ISessionReader,
+        ),
+        sessionMetadataService: {
+          getMetadata: vi.fn(() => ({ clearloop: leftover })),
+        } as unknown as SessionMetadataService,
+        ...(getClearloopBadge ? { getClearloopBadge } : {}),
+      });
+      const json = await (await routes.request("/")).json();
+      return json.processes[0]?.clearloop;
+    };
+
+    // A running record no loop on this server owns (left by a previous
+    // server process) gets no badge.
+    expect(await request()).toBeUndefined();
+    expect(await request(() => badge)).toEqual(badge);
+  });
+
   it("wires app session metadata into process title enrichment", async () => {
     const project = createProject();
     const process = createProcessInfo();
@@ -554,6 +596,7 @@ describe("Processes Routes", () => {
       } as unknown as SessionIndexService,
       sessionMetadataService: {
         getProvider: vi.fn(() => undefined),
+        getClearloop: vi.fn(() => undefined),
         getMetadata,
       } as unknown as SessionMetadataService,
     });

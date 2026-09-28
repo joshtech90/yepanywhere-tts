@@ -2,9 +2,10 @@
  * Project captions: a one- or two-sentence description shown beside a
  * project's short name on Projects and in the session breadcrumb tooltip.
  *
- * The server derives the caption from the project directory (README front
- * matter, else a known manifest's description field) and lets the user
- * override it in YA app data. See topics/project-captions.md.
+ * The server derives the caption from the project directory (the README's
+ * first sentence-length paragraph or heading, else a known manifest's
+ * description field) and lets the user override it in YA app data. See
+ * topics/project-captions.md.
  */
 
 export const MAX_PROJECT_CAPTION_LENGTH = 300;

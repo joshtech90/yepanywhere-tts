@@ -108,6 +108,27 @@ describe("sessionScrollMemoryStorage", () => {
     expect(readSessionScrollMemory(reference)).toEqual(farther);
   });
 
+  it("does not publish another observation when a storage event repeats the winner", () => {
+    const farther = snapshot({ id: "turn-2", timestampMs: 200 });
+    writeSessionScrollMemory(reference, farther);
+    const setItem = vi.spyOn(localStorage, "setItem");
+    const removeItem = vi.spyOn(localStorage, "removeItem");
+
+    expect(writeSessionScrollMemory(reference, { ...farther })?.written).toBe(
+      false,
+    );
+    expect(
+      writeSessionScrollMemory(
+        reference,
+        snapshot({ id: "turn-1", timestampMs: 100 }),
+      )?.written,
+    ).toBe(false);
+
+    expect(setItem).not.toHaveBeenCalled();
+    expect(removeItem).not.toHaveBeenCalled();
+    expect(readSessionScrollMemory(reference)).toEqual(farther);
+  });
+
   it("compacts immutable observations to a bounded winning entry", () => {
     for (let index = 1; index <= 12; index += 1) {
       writeSessionScrollMemory(

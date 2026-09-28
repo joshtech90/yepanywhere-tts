@@ -243,6 +243,154 @@ describe("observed Conversation source", () => {
     source.close();
   });
 
+  it("keeps refusing when an unusable live record arrives during the durable read", async () => {
+    const h = harness();
+    h.event({
+      type: "state-change",
+      state: { type: "idle", since: new Date() },
+    });
+    const source = await h.open("s", h.invalidate, h.abort.signal);
+    h.readFile.mockImplementationOnce(async () => {
+      h.event({
+        type: "message",
+        message: {
+          type: "assistant",
+          message: { role: "assistant", content: "No identity" },
+        },
+      });
+      return {
+        sessionId: "s",
+        messages: [{ type: "user", uuid: "u", content: "Hello" }],
+        activity: "unknown",
+        pendingRequests: [],
+        sourceCoverage: { complete: true, earlierOutsideScope: "no" },
+      };
+    });
+    await expect(source.read(h.abort.signal)).rejects.toThrow(
+      "Unreconciled live conversation",
+    );
+    h.setDurable({
+      sessionId: "s",
+      messages: [
+        { type: "user", uuid: "u", content: "Hello" },
+        {
+          type: "assistant",
+          uuid: "persisted",
+          message: { role: "assistant", content: "No identity" },
+        },
+      ],
+      activity: "unknown",
+      pendingRequests: [],
+      sourceCoverage: { complete: true, earlierOutsideScope: "no" },
+    });
+    expect(
+      (await source.read(h.abort.signal)).messages.map((m) => m.uuid),
+    ).toEqual(["u", "persisted"]);
+    source.close();
+  });
+
+  it("does not lose a record that arrives while an earlier drop is being reconciled", async () => {
+    const h = harness();
+    h.event({
+      type: "state-change",
+      state: { type: "idle", since: new Date() },
+    });
+    const source = await h.open("s", h.invalidate, h.abort.signal);
+    await source.read(h.abort.signal);
+    h.event({
+      type: "message",
+      message: {
+        type: "assistant",
+        message: { role: "assistant", content: "No identity" },
+      },
+    });
+    h.readFile.mockImplementationOnce(async () => {
+      h.event({
+        type: "message",
+        message: {
+          type: "user",
+          uuid: "later",
+          message: { role: "user", content: "Later" },
+        },
+      });
+      return {
+        sessionId: "s",
+        messages: [{ type: "user", uuid: "u", content: "Hello" }],
+        activity: "unknown",
+        pendingRequests: [],
+        sourceCoverage: { complete: true, earlierOutsideScope: "no" },
+      };
+    });
+    await expect(source.read(h.abort.signal)).rejects.toThrow(
+      "Unreconciled live conversation",
+    );
+    h.setDurable({
+      sessionId: "s",
+      messages: [
+        { type: "user", uuid: "u", content: "Hello" },
+        { type: "user", uuid: "later", content: "Later" },
+      ],
+      activity: "unknown",
+      pendingRequests: [],
+      sourceCoverage: { complete: true, earlierOutsideScope: "no" },
+    });
+    expect(
+      (await source.read(h.abort.signal)).messages.map((m) => m.uuid),
+    ).toEqual(["u", "later"]);
+    source.close();
+  });
+
+  it("does not treat a read while the turn awaits input as covering a dropped record", async () => {
+    const h = harness();
+    const source = await h.open("s", h.invalidate, h.abort.signal);
+    await source.read(h.abort.signal);
+    h.event({
+      type: "message",
+      message: {
+        type: "assistant",
+        message: { role: "assistant", content: "No identity" },
+      },
+    });
+    h.event({
+      type: "state-change",
+      state: {
+        type: "waiting-input",
+        request: {
+          id: "r",
+          sessionId: "s",
+          type: "tool-approval",
+          prompt: "Allow?",
+          timestamp: "2026-09-27T00:00:00.000Z",
+        },
+      },
+    });
+    await expect(source.read(h.abort.signal)).rejects.toThrow(
+      "Unreconciled live conversation",
+    );
+    h.setDurable({
+      sessionId: "s",
+      messages: [
+        { type: "user", uuid: "u", content: "Hello" },
+        {
+          type: "assistant",
+          uuid: "persisted",
+          message: { role: "assistant", content: "No identity" },
+        },
+      ],
+      activity: "unknown",
+      pendingRequests: [],
+      sourceCoverage: { complete: true, earlierOutsideScope: "no" },
+    });
+    h.event({
+      type: "state-change",
+      state: { type: "idle", since: new Date() },
+    });
+    expect(
+      (await source.read(h.abort.signal)).messages.map((m) => m.uuid),
+    ).toEqual(["u", "persisted"]);
+    source.close();
+  });
+
   it("does not acquire a file after cancellation during catalog resolution", async () => {
     const abort = new AbortController();
     const readFile = vi.fn();

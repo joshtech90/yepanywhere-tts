@@ -96,6 +96,10 @@ describe("stall recording", () => {
         );
       });
       await stop();
+      // A loaded runner can stall again before shutdown, and stop() awaits
+      // that capture, so compare against what shutdown left rather than
+      // assuming the fixture's stall was the only one.
+      const atShutdown = await readdir(directory);
       const contents = await readFile(
         join(directory, "event-loop-stall-0.cpuprofile"),
         "utf8",
@@ -105,9 +109,7 @@ describe("stall recording", () => {
       expect(JSON.stringify(profile.nodes)).toContain("recordedStallFixture");
       blockEventLoopForTest();
       await delay(150);
-      expect(await readdir(directory)).toEqual([
-        "event-loop-stall-0.cpuprofile",
-      ]);
+      expect(await readdir(directory)).toEqual(atShutdown);
     } finally {
       await stop();
       await rm(dataDir, { recursive: true });

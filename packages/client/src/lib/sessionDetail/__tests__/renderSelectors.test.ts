@@ -16,6 +16,7 @@ import {
   getComposerTailLanePositions,
   getDisplayRenderItems,
   getFullSessionSearchAnchors,
+  getLinkSearchAnchors,
   getLastTimestampedRenderItem,
   getLatestThinkingItemId,
   getLatestVisibleTimestampMs,
@@ -47,10 +48,7 @@ import {
   type RenderTimelineEntry,
   type RenderTurnGroup,
 } from "../renderSelectors";
-import {
-  applyRewindToMessages,
-  createInitialSessionDetailState,
-} from "../transcriptReducer";
+import { createInitialSessionDetailState } from "../transcriptReducer";
 
 function displayObject(
   id: string,
@@ -224,12 +222,14 @@ describe("session detail render selectors", () => {
     };
     const untimestamped: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-untimed",
       text: "No timestamp",
       sourceMessages: [],
     };
     const answer: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-1",
       text: "Answer",
       sourceMessages: [
@@ -268,6 +268,7 @@ describe("session detail render selectors", () => {
     const displayRenderItems: RenderItem[] = [
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "assistant-1",
         text: "Earlier answer",
         sourceMessages: [
@@ -276,6 +277,7 @@ describe("session detail render selectors", () => {
       },
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "assistant-2",
         text: "Later answer",
         sourceMessages: [
@@ -689,6 +691,7 @@ describe("session detail render selectors", () => {
       },
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "assistant-1",
         text: "The answer is stable",
         sourceMessages: [assistantMessage],
@@ -756,6 +759,7 @@ describe("session detail render selectors", () => {
     };
     const thinking: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-1",
       thinking: "Checking the answer",
       status: "complete",
@@ -940,6 +944,7 @@ describe("session detail render selectors", () => {
     };
     const thinking: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-1",
       thinking: "Checking the answer",
       status: "complete",
@@ -949,6 +954,7 @@ describe("session detail render selectors", () => {
     };
     const answer: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "answer-1",
       text: "Done",
       sourceMessages: [sourceMessage("answer-msg", "2026-07-02T12:04:00.000Z")],
@@ -1036,6 +1042,7 @@ describe("session detail render selectors", () => {
     };
     const assistant: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-1",
       text: "Done",
       sourceMessages: [
@@ -1214,6 +1221,7 @@ describe("session detail render selectors", () => {
     };
     const assistant1: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-1",
       text: "First answer",
       sourceMessages: [
@@ -1304,6 +1312,7 @@ describe("session detail render selectors", () => {
     };
     const assistantWithoutTimestamp: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-1",
       text: "No timestamp yet",
       sourceMessages: [],
@@ -1515,6 +1524,7 @@ describe("session detail render selectors", () => {
   it("derives thinking duration from surrounding render item timestamps", () => {
     const thinking: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-1",
       thinking: "Checking",
       status: "complete",
@@ -1525,6 +1535,7 @@ describe("session detail render selectors", () => {
     };
     const answer: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "answer-1",
       text: "Done",
       sourceMessages: [sourceMessage("answer", "2026-07-02T12:00:10.000Z")],
@@ -1537,6 +1548,7 @@ describe("session detail render selectors", () => {
   it("derives thinking duration from own latest timestamp or streaming now", () => {
     const completeThinking: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-complete",
       thinking: "Done thinking",
       status: "complete",
@@ -1547,6 +1559,7 @@ describe("session detail render selectors", () => {
     };
     const streamingThinking: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-streaming",
       thinking: "Still thinking",
       status: "streaming",
@@ -1571,12 +1584,14 @@ describe("session detail render selectors", () => {
   it("returns undefined for non-thinking and invalid thinking durations", () => {
     const text: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "text-1",
       text: "Answer",
       sourceMessages: [sourceMessage("answer", "2026-07-02T12:00:00.000Z")],
     };
     const tooShort: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-short",
       thinking: "Fast",
       status: "streaming",
@@ -1586,6 +1601,7 @@ describe("session detail render selectors", () => {
     };
     const tooLong: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-long",
       thinking: "Long",
       status: "streaming",
@@ -1616,12 +1632,14 @@ describe("session detail render selectors", () => {
   it("derives thinking item count and latest thinking item id", () => {
     const text: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "text-1",
       text: "Answer",
       sourceMessages: [],
     };
     const thinking1: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-1",
       thinking: "First",
       status: "complete",
@@ -1629,6 +1647,7 @@ describe("session detail render selectors", () => {
     };
     const thinking2: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-2",
       thinking: "Second",
       status: "streaming",
@@ -1645,12 +1664,14 @@ describe("session detail render selectors", () => {
   it("filters display render items by thinking visibility", () => {
     const text: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "text-1",
       text: "Answer",
       sourceMessages: [],
     };
     const thinking: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-1",
       thinking: "Hidden when disabled",
       status: "complete",
@@ -1669,12 +1690,14 @@ describe("session detail render selectors", () => {
   it("derives thinking id and text-length summaries", () => {
     const text: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "text-1",
       text: "Answer",
       sourceMessages: [],
     };
     const thinking1: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-1",
       thinking: "First",
       status: "complete",
@@ -1682,6 +1705,7 @@ describe("session detail render selectors", () => {
     };
     const thinking2: RenderItem = {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking-2",
       thinking: "Second thought",
       status: "streaming",
@@ -1824,7 +1848,13 @@ describe("session detail render selectors", () => {
     expect(getSearchReady({ active: true, query: " prompt " })).toBe(true);
     expect(
       hasSearchableUserTurn([
-        { type: "text", id: "text-1", text: "answer", sourceMessages: [] },
+        {
+          type: "text",
+          sourceBlockIndex: 0,
+          id: "text-1",
+          text: "answer",
+          sourceMessages: [],
+        },
       ]),
     ).toBe(false);
     expect(
@@ -1842,6 +1872,7 @@ describe("session detail render selectors", () => {
       getActiveSearchAnchors({
         allAnchors: allTurnAnchors,
         fullAnchors: fullSessionAnchors,
+        linkAnchors: [],
         scope: "user",
         userAnchors: userOnlyAnchors,
       }),
@@ -1850,6 +1881,7 @@ describe("session detail render selectors", () => {
       getActiveSearchAnchors({
         allAnchors: allTurnAnchors,
         fullAnchors: fullSessionAnchors,
+        linkAnchors: [],
         scope: "all",
         userAnchors: userOnlyAnchors,
       }),
@@ -1858,6 +1890,7 @@ describe("session detail render selectors", () => {
       getActiveSearchAnchors({
         allAnchors: allTurnAnchors,
         fullAnchors: fullSessionAnchors,
+        linkAnchors: [],
         scope: "full",
         userAnchors: userOnlyAnchors,
       }),
@@ -2037,6 +2070,7 @@ describe("session detail render selectors", () => {
       },
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "assistant-1",
         text: "answer",
         sourceMessages: [],
@@ -2093,148 +2127,56 @@ describe("session detail render selectors", () => {
   });
 });
 
-describe("applyRewindToMessages", () => {
-  const record = {
-    id: "rw-1",
-    at: "2026-09-18T20:00:00.000Z",
-    cutMessageId: "a1",
-    cutTurnIndex: 1,
-    droppedTurnCount: 1,
-    reason: "clear" as const,
-  };
-  const rows = [
-    { type: "user", uuid: "u1", message: { role: "user", content: "one" } },
-    {
-      type: "assistant",
-      uuid: "a1",
-      message: { role: "assistant", content: "r" },
-    },
-    { type: "user", uuid: "u2", message: { role: "user", content: "two" } },
-    {
-      type: "assistant",
-      uuid: "a2",
-      message: { role: "assistant", content: "s" },
-    },
-  ] as unknown as Message[];
+describe("getLinkSearchAnchors", () => {
+  const at = sourceMessage("m", "2026-07-02T12:00:00.000Z");
 
-  it("groups rows after the cut behind a synthetic header", () => {
-    const next = applyRewindToMessages(rows, record);
-    expect(next.map((m) => m.uuid)).toEqual([
-      "u1",
-      "a1",
-      "rewound-group-rw-1",
-      "u2",
-      "a2",
-    ]);
-    expect(
-      next
-        .slice(2)
-        .every(
-          (m) => (m as { rewoundGroupId?: string }).rewoundGroupId === "rw-1",
-        ),
-    ).toBe(true);
-    expect((next[2] as { subtype?: string }).subtype).toBe("rewound_group");
-  });
-
-  it("returns the same array when the cut is not loaded or nothing follows it", () => {
-    expect(applyRewindToMessages(rows, { ...record, cutMessageId: "zz" })).toBe(
-      rows,
-    );
-    const prefixOnly = rows.slice(0, 2);
-    expect(applyRewindToMessages(prefixOnly, record)).toBe(prefixOnly);
-  });
-
-  it("makes repeated rewinds to one live cut siblings, in order", () => {
-    const first = applyRewindToMessages(rows, record);
-    const looped = [
-      ...first,
-      { type: "user", uuid: "u3", message: { role: "user", content: "three" } },
+  it("searches link labels, not surrounding prose or glossary terms", () => {
+    const anchors = getLinkSearchAnchors([
       {
-        type: "assistant",
-        uuid: "a3",
-        message: { role: "assistant", content: "t" },
+        isUserPrompt: true,
+        items: [
+          {
+            type: "user_prompt",
+            id: "user-1",
+            content: "see https://example.com/x and src/app/main.ts please",
+            sourceMessages: [at],
+          },
+        ],
       },
-    ] as unknown as Message[];
-    const second = applyRewindToMessages(looped, {
-      ...record,
-      id: "rw-2",
-      at: "2026-09-18T21:00:00.000Z",
-    });
-    // The same order the server's projection produces for this shape; see
-    // "makes repeated rewinds to one live cut siblings" in
-    // packages/server/test/sessions/claude-messages.test.ts.
-    expect(second.map((m) => m.uuid)).toEqual([
-      "u1",
-      "a1",
-      "rewound-group-rw-1",
-      "u2",
-      "a2",
-      "rewound-group-rw-2",
-      "u3",
-      "a3",
+      {
+        isUserPrompt: false,
+        items: [
+          {
+            type: "text",
+            sourceBlockIndex: 0,
+            id: "rendered",
+            text: "[Design notes](topics/design.md) about the relay",
+            augmentHtml:
+              '<p><a href="/api/f" data-ya-resource="project-file">Design &amp; notes</a> about <span data-glossary-term="relay">relay</span></p>',
+            sourceMessages: [at],
+          },
+          {
+            type: "text",
+            sourceBlockIndex: 0,
+            id: "streaming",
+            text: "Read [the spec](https://example.com/spec) now",
+            sourceMessages: [at],
+          },
+          {
+            type: "text",
+            sourceBlockIndex: 0,
+            id: "plain",
+            text: "no links here",
+            sourceMessages: [at],
+          },
+        ],
+      },
     ]);
-    // The first group kept a live cut, so the second does not enclose it.
-    expect(
-      second.some(
-        (m) => (m as { rewoundParentGroupId?: string }).rewoundParentGroupId,
-      ),
-    ).toBe(false);
-    expect(
-      second
-        .filter(
-          (m) => (m as { rewoundGroupId?: string }).rewoundGroupId === "rw-2",
-        )
-        .map((m) => m.uuid),
-    ).toEqual(["rewound-group-rw-2", "u3", "a3"]);
-  });
 
-  it("encloses an earlier group whose own cut this rewind dropped", () => {
-    const withEarlier = applyRewindToMessages(
-      [
-        ...rows,
-        {
-          type: "user",
-          uuid: "u3",
-          message: { role: "user", content: "three" },
-        },
-      ] as unknown as Message[],
-      { ...record, id: "rw-inner", cutMessageId: "a2" },
-    );
-    const outer = applyRewindToMessages(withEarlier, {
-      ...record,
-      id: "rw-outer",
-      at: "2026-09-18T21:00:00.000Z",
-    });
-    const inner = outer.filter(
-      (m) => (m as { rewoundGroupId?: string }).rewoundGroupId === "rw-inner",
-    );
-    expect(inner.length).toBeGreaterThan(0);
-    expect(
-      inner.every(
-        (m) =>
-          (m as { rewoundParentGroupId?: string }).rewoundParentGroupId ===
-          "rw-outer",
-      ),
-    ).toBe(true);
-  });
-
-  it("leaves rows written after the rewind on the live branch", () => {
-    const timestamped = [
-      { ...rows[0], timestamp: "2026-09-18T19:00:00.000Z" },
-      { ...rows[1], timestamp: "2026-09-18T19:00:05.000Z" },
-      { ...rows[2], timestamp: "2026-09-18T19:30:00.000Z" },
-      { ...rows[3], timestamp: "2026-09-18T20:30:00.000Z" },
-    ] as unknown as Message[];
-    const next = applyRewindToMessages(timestamped, record);
-    expect(next.map((m) => m.uuid)).toEqual([
-      "u1",
-      "a1",
-      "rewound-group-rw-1",
-      "u2",
-      "a2",
+    expect(anchors.map((anchor) => [anchor.id, anchor.searchText])).toEqual([
+      ["user-1", "https://example.com/x\nsrc/app/main.ts"],
+      ["rendered", "Design & notes"],
+      ["streaming", "the spec"],
     ]);
-    expect(
-      next.map((m) => (m as { rewoundGroupId?: string }).rewoundGroupId),
-    ).toEqual([undefined, undefined, "rw-1", "rw-1", undefined]);
   });
 });

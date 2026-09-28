@@ -34,6 +34,15 @@ The full run also emitted these unasserted warning diagnostics:
   corresponding `ya-deepgram` / `YEP_STT_DEEPGRAM_API_KEY` warning in
   `test/services/voice-registry.test.ts`.
 
+On Linux (2026-09-27, 16 cores, load average about 18 from peer sessions), one
+root `pnpm test` failed `test/scripts/provider-host-system.test.mjs` with
+`Assembled provider-host barrier timed out` at its first barrier, the 60 s wait
+for the assembled server's `/version`, although that server's log reports
+startup complete in 205 ms. The run before it passed that test, and two isolated
+reruns passed in about 9 s. Whether the probe reached the logged port, or the
+server stalled after startup, is undiagnosed; do not raise the budget until one
+of those is shown.
+
 These need focused fixture/diagnostic assertions rather than blanket log
 suppression. They are deferred because fixing the timer lifecycle and auditing
 provider/auth failure diagnostics crosses independent behavioral boundaries;

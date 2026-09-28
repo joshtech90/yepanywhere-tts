@@ -1,0 +1,170 @@
+.regular {
+  --delivery-color: #078466;
+}
+.patient {
+  --delivery-color: var(--project-queue-action-bg);
+}
+.form {
+  padding: var(--space-3);
+  border-top: 1px solid
+    color-mix(in srgb, var(--delivery-color) 65%, var(--border-color));
+  background: color-mix(in srgb, var(--delivery-color) 7%, var(--bg-secondary));
+}
+.fields {
+  display: grid;
+  grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr) minmax(90px, 0.55fr);
+  gap: var(--space-3);
+}
+.field {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: var(--space-1);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+.field select,
+.modelInput {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  background: var(--bg-tertiary);
+  font-size: var(--font-size-base);
+}
+.project select {
+  border-color: color-mix(
+    in srgb,
+    var(--delivery-color) 65%,
+    var(--border-color)
+  );
+  font-weight: 600;
+}
+.model {
+  position: relative;
+}
+.modelInput {
+  display: flex;
+}
+.modelInput:focus-within {
+  outline: 2px solid var(--delivery-color);
+}
+.modelInput input {
+  min-width: 0;
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  outline: none;
+}
+.modelInput button {
+  width: 34px;
+  flex-shrink: 0;
+  border: 0;
+  border-left: 1px solid var(--border-color);
+  background: transparent;
+  color: inherit;
+}
+.models {
+  position: absolute;
+  z-index: 30;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  width: max(100%, 280px);
+  max-width: calc(100vw - 32px);
+  max-height: min(240px, 35dvh);
+  overflow-y: auto;
+  padding: var(--space-1);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-secondary);
+  box-shadow: var(--shadow-lg);
+}
+.models button {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-2);
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  text-align: left;
+}
+.models button[aria-selected="true"],
+.models button:hover {
+  background: var(--bg-hover);
+}
+.models small {
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.empty {
+  display: block;
+  padding: var(--space-2);
+}
+.actions {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+}
+.status {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.close {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  flex-shrink: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-secondary);
+}
+.sendActions {
+  margin-left: auto;
+  display: flex;
+  gap: var(--space-2);
+}
+.send {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 36px;
+  border: 1px solid color-mix(in srgb, var(--delivery-color) 60%, white);
+  border-radius: var(--radius-sm);
+  background: var(--delivery-color);
+  color: white;
+}
+.send:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+@media (max-width: 600px) {
+  .fields {
+    grid-template-columns: minmax(0, 1fr) minmax(90px, 0.6fr);
+  }
+  .project {
+    grid-column: 1 / -1;
+  }
+  .field select,
+  .modelInput,
+  .send {
+    min-height: 42px;
+  }
+  .models {
+    width: calc(100vw - 32px);
+  }
+  .models button {
+    min-height: 42px;
+  }
+}

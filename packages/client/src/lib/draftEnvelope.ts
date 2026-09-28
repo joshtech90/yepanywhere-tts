@@ -13,14 +13,16 @@ export interface DraftEnvelopeV1 {
   text: string;
   attachments?: DraftAttachmentState;
   /**
-   * The composer cleared this text optimistically on submit and kept it only
-   * as a recovery copy. It stays visible like any other draft — a send that
-   * never landed must remain recoverable from a reload or a second tab — but
-   * it is the only kind of draft eligible for automatic discard once the same
-   * text is proven sent (see `lib/draftSendReconcile.ts`). A draft the user
-   * typed or recalled carries no marker and is never discarded automatically.
+   * Server-clock milliseconds at which the composer cleared this text
+   * optimistically on submit, keeping it only as a recovery copy. It stays
+   * visible like any other draft — a send that never landed must remain
+   * recoverable from a reload or a second tab — but it is the only kind of
+   * draft eligible for automatic discard, and only on proof of that same text
+   * dated no earlier than this send (see `lib/draftSendReconcile.ts`). A draft
+   * the user typed or recalled carries no marker and is never discarded
+   * automatically.
    */
-  pendingSend?: true;
+  pendingSendAt?: number;
 }
 
 export interface DraftEnvelopeReadResult {
@@ -110,11 +112,14 @@ function normalizeEnvelope(value: unknown): DraftEnvelopeV1 | null {
   if (typeof value.text !== "string") return null;
 
   const attachments = normalizeAttachmentState(value.attachments);
+  // A bare `pendingSend: true` from an older client carries no send time, so
+  // nothing could prove it sent; it reads as an ordinary draft.
+  const pendingSendAt = optionalFiniteNumber(value.pendingSendAt);
   return {
     version: DRAFT_ENVELOPE_VERSION,
     text: value.text,
     ...(attachments ? { attachments } : {}),
-    ...(value.pendingSend === true ? { pendingSend: true as const } : {}),
+    ...(pendingSendAt !== undefined ? { pendingSendAt } : {}),
   };
 }
 
@@ -179,7 +184,7 @@ export function readDraftAttachmentStateValue(
 export function readDraftPendingSendValue(
   raw: string | null | undefined,
 ): boolean {
-  return readDraftEnvelopeValue(raw).envelope?.pendingSend === true;
+  return readDraftEnvelopeValue(raw).envelope?.pendingSendAt !== undefined;
 }
 
 export function serializeDraftEnvelope(
@@ -205,19 +210,20 @@ export function draftStorageValueForText(
 }
 
 /**
- * Mark the stored text as a post-submit recovery copy without changing it.
- * Returns null when there is no text to mark; callers fall back to the
- * previous raw value so an empty composer's storage is left untouched rather
- * than deleted.
+ * Mark the stored text as a post-submit recovery copy sent at `sentAtMs`
+ * (server clock) without changing it. Returns null when there is no text to
+ * mark; callers fall back to the previous raw value so an empty composer's
+ * storage is left untouched rather than deleted.
  */
 export function draftStorageValueForPendingSend(
-  existingRaw?: string | null,
+  existingRaw: string | null | undefined,
+  sentAtMs: number,
 ): string | null {
   const existing = readDraftEnvelopeValue(existingRaw).envelope;
   if (!existing?.text.trim()) {
     return null;
   }
-  return serializeDraftEnvelope({ ...existing, pendingSend: true });
+  return serializeDraftEnvelope({ ...existing, pendingSendAt: sentAtMs });
 }
 
 export function draftStorageValueForAttachments(
@@ -233,6 +239,8 @@ export function draftStorageValueForAttachments(
     ...(nextAttachments ? { attachments: nextAttachments } : {}),
     // Attachment bookkeeping runs after an optimistic submit clear; it must not
     // strip the recovery marker off text it did not touch.
-    ...(existing?.pendingSend ? { pendingSend: true as const } : {}),
+    ...(existing?.pendingSendAt !== undefined
+      ? { pendingSendAt: existing.pendingSendAt }
+      : {}),
   });
 }

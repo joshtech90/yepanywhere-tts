@@ -169,6 +169,12 @@ export interface SessionCatalogServiceOptions {
   retainedGenerations?: number;
   now?: () => number;
   createEpoch?: () => string;
+  /**
+   * Called when a read finds the current generation unreadable and ends the
+   * lineage. The catalog is then empty until its owner reconciles, and
+   * nothing else will ask it to.
+   */
+  onLineageReset?: () => void;
 }
 
 interface ProjectRowsValue {
@@ -341,8 +347,11 @@ export class SessionCatalogService {
   private readonly maxRecentBytes: number;
   private readonly maxRowBytes: number;
   private readonly retainedGenerations: number;
+  /** Generation directories with in-flight readers, by reader count. */
+  private readonly pinnedGenerations = new Map<string, number>();
   private readonly now: () => number;
   private readonly createEpoch: () => string;
+  private readonly onLineageReset?: () => void;
   private readonly projectRowsOwner: SourceVersionedSingleFlight<
     string,
     ProjectRowsValue
@@ -403,6 +412,7 @@ export class SessionCatalogService {
     );
     this.now = options.now ?? Date.now;
     this.createEpoch = options.createEpoch ?? randomUUID;
+    this.onLineageReset = options.onLineageReset;
     this.projectRowsOwner = new SourceVersionedSingleFlight({
       maxRetainedBytes: nonNegativeInteger(
         options.maxHotBytes ?? DEFAULT_HOT_BYTES,
@@ -426,13 +436,24 @@ export class SessionCatalogService {
       // unreadable or incompatible ends this lineage: the catalog restarts at
       // a fresh epoch and reconciliation refills it.
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT") {
-        this.resetFailures += 1;
-        this.lastResetReason =
-          error instanceof Error ? error.message : String(error);
-      }
+      if (code !== "ENOENT") this.recordReset(error);
     }
-    this.manifest = {
+    return this.snapshotFrom(await this.startLineage());
+  }
+
+  private recordReset(reason: unknown): void {
+    this.resetFailures += 1;
+    this.lastResetReason =
+      reason instanceof Error ? reason.message : String(reason);
+  }
+
+  /**
+   * End the current lineage at a fresh epoch and generation 0. The in-memory
+   * manifest is replaced before any await, so concurrent callers observe the
+   * reset at once and no reader returns to the abandoned generation.
+   */
+  private async startLineage(): Promise<PersistedSessionCatalogManifest> {
+    const manifest: PersistedSessionCatalogManifest = {
       schemaVersion: MANIFEST_SCHEMA_VERSION,
       bucketCount: this.bucketCount,
       catalogEpoch: this.createEpoch(),
@@ -446,9 +467,37 @@ export class SessionCatalogService {
       recentRows: [],
       deltas: [],
     };
-    await this.persistManifest(this.manifest);
+    this.manifest = manifest;
+    await this.persistManifest(manifest);
     await this.cleanupGenerationDirectories(null);
-    return this.snapshotFrom(this.manifest);
+    return manifest;
+  }
+
+  /**
+   * A shard the current manifest names but cannot be read back (a torn or
+   * interrupted write, a full disk, outside damage) is the same unreadable
+   * cache state `initialize` recovers from. Rethrowing it would fail every
+   * collection read and, because reconciliation starts with a read, keep the
+   * catalog from ever rebuilding itself.
+   */
+  private async resetUnreadableGeneration(
+    manifest: PersistedSessionCatalogManifest,
+    error: unknown,
+  ): Promise<boolean> {
+    if (
+      !(error instanceof SessionCatalogCorruptionError || isMissingFile(error))
+    )
+      return false;
+    // Concurrent readers of one generation fail together; one reset serves all.
+    if (this.manifest !== manifest) return true;
+    this.recordReset(error);
+    try {
+      await this.startLineage();
+    } finally {
+      // The empty generation is already current even if persisting it failed.
+      this.onLineageReset?.();
+    }
+    return true;
   }
 
   getSnapshot(): SessionCatalogSnapshot {
@@ -456,6 +505,30 @@ export class SessionCatalogService {
   }
 
   /** Read one coherent compact generation without consulting provider storage. */
+  /**
+   * Hold a generation directory against cleanup while a reader walks it.
+   *
+   * Retention counts directories, not readers: with two generations
+   * published back to back, the directory a whole-catalog read started from
+   * is the one cleanup removes, and the read then failed mid-walk with
+   * ENOENT on a later bucket. A pinned directory outlives retention until
+   * its last reader releases it; the next publication's cleanup removes it.
+   */
+  pinGeneration(directory: string): () => void {
+    this.pinnedGenerations.set(
+      directory,
+      (this.pinnedGenerations.get(directory) ?? 0) + 1,
+    );
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const remaining = (this.pinnedGenerations.get(directory) ?? 1) - 1;
+      if (remaining > 0) this.pinnedGenerations.set(directory, remaining);
+      else this.pinnedGenerations.delete(directory);
+    };
+  }
+
   async readRows(): Promise<{
     snapshot: SessionCatalogSnapshot;
     rows: ReadonlyArray<Readonly<SessionCatalogRow>>;
@@ -463,24 +536,38 @@ export class SessionCatalogService {
     for (let attempt = 0; attempt < MAX_PROJECT_READ_RETARGETS; attempt += 1) {
       this.ensureRunning();
       const manifest = this.requireManifest();
-      const result = await this.projectRowsOwner.run({
-        key: `${manifest.catalogEpoch}:all`,
-        sourceVersion: String(manifest.catalogGeneration),
-        compute: async () => {
-          const rows: SessionCatalogRow[] = [];
-          if (manifest.generationDirectory) {
-            for (const shard of manifest.shards) {
-              const path = this.shardPath(
-                manifest.generationDirectory,
-                shard.file,
-              );
-              for await (const { row } of readShardRows(path)) rows.push(row);
+      let result: Awaited<ReturnType<typeof this.projectRowsOwner.run>>;
+      try {
+        result = await this.projectRowsOwner.run({
+          key: `${manifest.catalogEpoch}:all`,
+          sourceVersion: String(manifest.catalogGeneration),
+          compute: async () => {
+            const rows: SessionCatalogRow[] = [];
+            if (manifest.generationDirectory) {
+              const release = this.pinGeneration(manifest.generationDirectory);
+              try {
+                for (const shard of manifest.shards) {
+                  const path = this.shardPath(
+                    manifest.generationDirectory,
+                    shard.file,
+                  );
+                  for await (const { row } of readShardRows(path))
+                    rows.push(row);
+                }
+              } finally {
+                release();
+              }
             }
-          }
-          return { rows: Object.freeze(rows), bytes: manifest.rowsBytes };
-        },
-        isCurrent: () => this.manifest === manifest && !this.stopped,
-      });
+            return { rows: Object.freeze(rows), bytes: manifest.rowsBytes };
+          },
+          isCurrent: () => this.manifest === manifest && !this.stopped,
+        });
+      } catch (error) {
+        // A shard that vanished under a superseded manifest is a retarget;
+        // under the current manifest it is corruption, and ends the lineage.
+        if (await this.resetUnreadableGeneration(manifest, error)) continue;
+        throw error;
+      }
       if (result.status !== "stale") {
         return {
           snapshot: this.snapshotFrom(manifest),
@@ -589,16 +676,27 @@ export class SessionCatalogService {
     // Keyed by shard content, not by generation: a new generation that leaves
     // this bucket byte-identical reuses the retained rows instead of re-reading.
     const key = `${manifest.catalogEpoch}:${projectIdentityKey}`;
-    const result = await this.projectRowsOwner.run({
-      key,
-      sourceVersion: shard.contentHash,
-      compute: async () => {
-        this.projectDiskReads += 1;
-        return readProjectRowsFromShard(filePath, projectIdentityKey);
-      },
-      isCurrent: (candidate) =>
-        this.currentShardContentHash(token.bucket) === candidate,
-    });
+    let result: Awaited<ReturnType<typeof this.projectRowsOwner.run>>;
+    try {
+      result = await this.projectRowsOwner.run({
+        key,
+        sourceVersion: shard.contentHash,
+        compute: async () => {
+          this.projectDiskReads += 1;
+          const release = this.pinGeneration(manifest.generationDirectory!);
+          try {
+            return await readProjectRowsFromShard(filePath, projectIdentityKey);
+          } finally {
+            release();
+          }
+        },
+        isCurrent: (candidate) =>
+          this.currentShardContentHash(token.bucket) === candidate,
+      });
+    } catch (error) {
+      if (await this.resetUnreadableGeneration(manifest, error)) return null;
+      throw error;
+    }
     if (result.status === "stale") {
       if (this.requireManifest() !== manifest) return null;
       throw new Error(`Session catalog shard disappeared: ${filePath}`);
@@ -779,6 +877,11 @@ export class SessionCatalogService {
           this.maxDeltaBytes,
         ),
       };
+      // A reader that found this pass's base generation unreadable ended its
+      // lineage; publishing onto the abandoned epoch would resurrect it.
+      if (this.manifest !== previous) {
+        throw new Error("Session catalog lineage was reset during reconcile");
+      }
       await this.persistManifest(manifest);
       this.manifest = manifest;
       cleanupFailures =
@@ -924,7 +1027,9 @@ export class SessionCatalogService {
     for (const entry of entries) {
       const removable =
         entry.startsWith(".staging-") ||
-        (/^gen-\d+-[0-9a-f-]+$/.test(entry) && !retained.has(entry));
+        (/^gen-\d+-[0-9a-f-]+$/.test(entry) &&
+          !retained.has(entry) &&
+          !this.pinnedGenerations.has(entry));
       if (!removable) continue;
       try {
         await rm(join(this.generationsDir, entry), {
@@ -1090,6 +1195,14 @@ function normalizeRow(
     );
   }
   requireBoundedString(row.sourceVersion, "row sourceVersion", 16_384);
+  if (
+    row.rowFormat !== undefined &&
+    !(Number.isSafeInteger(row.rowFormat) && row.rowFormat > 0)
+  ) {
+    throw new Error(
+      `Invalid session catalog rowFormat: ${String(row.rowFormat)}`,
+    );
+  }
   validateLocation(row);
   return cloneRow(row);
 }
@@ -1128,6 +1241,7 @@ function cloneRow(row: SessionCatalogRow): SessionCatalogRow {
       : {}),
     fidelity: row.fidelity,
     sourceVersion: row.sourceVersion,
+    ...(row.rowFormat !== undefined ? { rowFormat: row.rowFormat } : {}),
     location: { ...row.location },
   };
 }
@@ -1247,6 +1361,8 @@ async function readProjectRowsFromShard(
   };
 }
 
+class SessionCatalogCorruptionError extends Error {}
+
 async function* readShardRows(filePath: string): AsyncGenerator<ShardLine> {
   const input = createReadStream(filePath, { encoding: "utf-8" });
   const lines = createInterface({ input, crlfDelay: Number.POSITIVE_INFINITY });
@@ -1259,7 +1375,7 @@ async function* readShardRows(filePath: string): AsyncGenerator<ShardLine> {
       try {
         parsed = JSON.parse(line);
       } catch (error) {
-        throw new Error(
+        throw new SessionCatalogCorruptionError(
           `Invalid session catalog row at ${filePath}:${lineNumber}: ${
             error instanceof Error ? error.message : String(error)
           }`,
@@ -1279,6 +1395,10 @@ function projectBucket(
 ): number {
   const digest = createHash("sha256").update(projectIdentityKey).digest();
   return digest.readUInt32BE(0) % bucketCount;
+}
+
+function isMissingFile(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException)?.code === "ENOENT";
 }
 
 function shardFileName(bucket: number): string {

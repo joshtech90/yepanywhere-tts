@@ -165,6 +165,21 @@ File-viewer modals own one same-URL browser-history entry: Back dismisses the
 viewer without leaving the underlying session, while opening or React effect
 replay must never traverse pre-modal history.
 
+The project file metadata/content endpoint includes complete HTML documents
+(`.html` and `.htm`) up to 200 MiB, including embedded assets. The ordinary
+source/preview viewer can display them without enabling an artifact service;
+the existing scriptless sandbox still governs Preview. Source highlighting
+uses at most the first 1 MiB and reports truncation independently of the complete
+preview content. Other text files retain their 1 MiB inline limit and bounded
+line-target windows. Above the HTML limit, metadata and the download remain
+available. The document limit does not enlarge transport message limits;
+particularly large relay responses remain subject to transport reassembly.
+
+**Separate document and highlighting limits** (vs. applying the source-preview
+limit to embedded assets): a self-contained paper must arrive intact for HTML
+layout, while tokenizing its full asset payload adds work without helping source
+inspection.
+
 The visible file-viewer body is the document's normal scroll owner at every
 supported width. When an input, textarea, select, or editable region does not
 own focus, wheel/trackpad input and ordinary keyboard navigation scroll that
@@ -181,6 +196,47 @@ responsive allocation, and the alternative session-list drawer design live in
 [`parked-file-viewer.md`](parked-file-viewer.md). Public-share viewers do not
 offer parking because they have no authenticated session composer.
 
+### PDFs in the file viewer
+
+By default the file viewer frames a PDF for the browser's built-in viewer:
+the raw file URL when the server origin is addressable, so the viewer reads
+the response directly, otherwise a `blob:` URL of the relayed bytes.
+Chromium refuses that viewer in some framings and when it is set to download
+PDFs rather than open them, and substitutes a "This content is blocked" page.
+`FileViewerEmbeddedMedia` treats a loaded frame that exposes no PDF document as
+refused and shows the binary card plus an **Open in new tab** link. A new
+tab has no framing ancestry, but a browser set to download PDFs downloads
+there too.
+
+**Draw PDFs with pdf.js** (Appearance, off by default) replaces the browser
+viewer with pages drawn on canvases by pdf.js. YA does not bundle pdf.js:
+`/api/pdfjs/<version>/` serves a pinned release that the server downloads on
+first demand, verifies against the npm integrity hash before extracting, and
+caches under `<data-dir>/pdfjs/<version>/` (`PdfjsAssetCache`;
+the trust decision is in
+[`active-content-security.md`](active-content-security.md)). The client
+imports it only when a PDF is shown, from the same origin, so the app's
+script policy is unchanged. The view is its own two-axis scroll area in the
+same box as the frame it replaces. Pages are laid out at their own aspect
+ratio when the document opens; a canvas is drawn while its page is within a
+screen of view and released beyond that, so memory stays bounded on long
+documents, and no canvas exceeds 16 megapixels. If pdf.js fails to load or
+render, the browser viewer is tried next.
+
+YA's viewport disables page-level pinch zoom app-wide, and that default
+stays. The pdf.js view owns zoom instead (50–500%): a two-finger pinch,
+ctrl+wheel (how trackpads report a pinch; a mouse notch is one 1.25× step),
+or its −/percentage/+ buttons, where the percentage resets to fit-width.
+A gesture previews with a transform about its focal point and redraws the
+pages sharp at the new width when it settles, keeping the focal point in
+place. pdf.js has no reflow, so a two-column paper on a phone is read by
+zooming into a column.
+
+Current pdf.js limits: it needs the same-origin server, so the relay client
+and public shares keep the browser viewer; pages are images, with no text
+selection, find, or links; and `LocalFileModal` still frames its PDFs
+directly. These are tracked in `gaps/file-viewer-relay-pdf.md`.
+
 ### Resource actions and file presentation choice
 
 Project-file links and rendered local-file links share one client context-menu
@@ -194,15 +250,60 @@ vocabulary even though their authorization routes remain distinct:
   and highlights that branch. Click opens the same flyout. Coarse pointers and
   narrow viewports use the compact replacement panel with an explicit **Back**
   action, so hover is never the only route to the presentation choice.
-- HTML is source-first. Its explicit Preview is a client-owned `srcdoc`
-  document under an empty iframe sandbox, no-referrer policy, and restrictive
-  meta CSP. Markdown remains preview-first and may be opened as source. Both
+- HTML defaults to a rendered Preview, a client-owned `srcdoc`
+  document under an `allow-same-origin`-only iframe sandbox (scripts stay
+  denied by both the sandbox and the CSP; see
+  [active-content security](active-content-security.md)), no-referrer policy,
+  and restrictive meta CSP. Markdown remains preview-first and may be opened as source. Both
   representations remain toggleable inside the project `FileViewer` through
   one **Raw source** icon button whose pressed state means the source is
   showing; the local-file modal takes its initial representation from the
   context menu in this first convergence step.
+- The viewer does not watch the file, deliberately: a reader chooses when the
+  view changes. A **Reload from disk** refresh button beside the mode toggles
+  refetches the file in source and preview modes and remounts a running
+  interactive frame on its existing grant so the document is fetched again.
+  The loaded copy stays on screen until the fresh read arrives; a read that
+  answers after the viewer has moved to another file, line range or view, or
+  after a later reload, is discarded rather than shown under the new name.
+  The session-opened artifact viewer and the session right pane carry the
+  same reload among their window actions; the artifact origin serves from
+  disk per request, so a remount is a fresh read and nothing refreshes
+  without that click. In the right pane a running app's frame reloads the
+  same way, labelled **Reload app** because nothing is read from disk.
+  Hovering or focusing the button probes current metadata without reading
+  content (`metadata=only`) and the tooltip reports whether the loaded copy
+  is unchanged or was changed on disk at a given time; the icon takes the
+  warning color when stale. Servers without `modifiedAt` in file metadata
+  keep the plain tooltip.
+- **Find in this view.** The project `FileViewer`, the local-file modal, the
+  session artifact viewer and artifact frames in the session right pane carry
+  an isearch-style find field in their header. It searches only what that
+  viewer shows: rendered source, text, Markdown or diff; the scriptless HTML
+  preview, searched directly because it is same-origin; or a running artifact,
+  through the find agent the artifact server appends to framed HTML. After the
+  reader clicks or focuses inside the viewer's content, Ctrl/Cmd+F opens the
+  field instead of the browser's page-wide find, which still owns every other
+  part of the page; a proxied live app and PDFs keep the browser's own find.
+  The idle field is shown only when the header has room for it on its first
+  row; Ctrl+F shows it regardless. Matching is smart-case, lets any
+  whitespace match any whitespace, and never spans two blocks. Enter or
+  Ctrl+S steps forward, Shift+Enter or Ctrl+R back, and Escape clears the
+  highlights and returns focus to the content. Matches are painted with the
+  CSS Custom Highlight API, so the searched document is never modified. One
+  engine, `packages/shared/src/find/documentFind.ts`, serves every host; the
+  agent is generated from it (`pnpm find-agent:generate`, checked by a shared
+  test).
+- Authenticated ordinary file and artifact viewers offer
+  [source editing](file-source-editing.md). HTML Edit mode selects producer-mapped
+  original file locations; without mappings it edits HTML directly. Editing
+  temporarily covers the session and sidebar, and saving leaves HTML at its
+  pre-rebuild revision.
 - When isolated artifact serving is enabled, the HTML preview offers an
-  explicit **Run interactive preview** action. Both static and interactive
+  explicit square play toggle, **Run interactive preview**, beside the square
+  Edit pencil in the viewer header. Both expose pressed state and real mode
+  links: Shift-click or middle-click opens a new tab without changing the
+  original viewer. Both static and interactive
   frames fill the file viewer's available document area beneath its controls;
   longer documents scroll inside the frame. The preview owns its internal
   toolbar/frame layout, so host placement styles must preserve that layout.
@@ -225,6 +326,13 @@ vocabulary even though their authorization routes remain distinct:
   `/api/local-file` or project raw-file response is never presented as a
   viewer link. Relay and direct clients therefore use the same meaning rather
   than changing the label according to transport.
+- **Download** is a direct root-menu action for every local-file and
+  project-file link. It fetches the original bytes through the active source
+  transport and saves them under the path basename; opening a viewer is not a
+  prerequisite. When the bytes cannot be fetched — the file is gone, outside
+  the allow-set, or the transport fails — nothing is saved and an error toast
+  names the file and the reason. Image menus' **Download** follows the same
+  rule.
 - Public shares may expose their share-scoped viewer link and project-relative
   path, but the file action menu does not derive or copy the host's absolute
   project path.
@@ -236,6 +344,11 @@ project's owner, and broker relative preview assets across direct and relay
 transports. Until those contracts exist, an outside-project local file has no
 copyable Viewer link, and static preview assets are limited to data/blob
 resources admitted by the client preview CSP.
+
+Interactive artifact-domain links also expose **Download** beside **Open** in
+their transcript context menu. The action requests the linked artifact entry
+as an attachment from the isolated artifact origin, without first opening its
+managed viewer, a modal, or a new tab.
 
 Images use the same callback-driven resource menu without pretending that
 every byte source is a file:

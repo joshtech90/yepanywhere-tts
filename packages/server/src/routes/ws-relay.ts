@@ -3,6 +3,7 @@ import type { HttpBindings } from "@hono/node-server";
 import type { Context, Hono } from "hono";
 import type { WSEvents } from "hono/ws";
 import type { WebSocket as RawWebSocket } from "ws";
+import { DIRECT_LOGIN_VARIABLE } from "../auth/principal.js";
 import type { DeviceBridgeService } from "../device/DeviceBridgeService.js";
 import { isAllowedOrigin } from "../middleware/allowed-hosts.js";
 import type { ProjectGlossarySubscriptionManager } from "../projects/projectGlossarySubscriptionManager.js";
@@ -48,7 +49,7 @@ export interface WsRelayDeps {
   /** Limited-user SRP verifiers and subscription authorization. */
   limitedUsers?: RelayHandlerDeps["limitedUsers"];
   authorizeSubscription?: RelayHandlerDeps["authorizeSubscription"];
-  isActivityEventVisible?: RelayHandlerDeps["isActivityEventVisible"];
+  activityEventForIdentity?: RelayHandlerDeps["activityEventForIdentity"];
   conversationSubscriptions?: ConversationSubscriptions;
   upgradeWebSocket: UpgradeWebSocketFn;
   /** The main Hono app to route requests through */
@@ -103,7 +104,7 @@ export interface AcceptRelayConnectionDeps {
   /** Limited-user SRP verifiers and subscription authorization. */
   limitedUsers?: RelayHandlerDeps["limitedUsers"];
   authorizeSubscription?: RelayHandlerDeps["authorizeSubscription"];
-  isActivityEventVisible?: RelayHandlerDeps["isActivityEventVisible"];
+  activityEventForIdentity?: RelayHandlerDeps["activityEventForIdentity"];
   conversationSubscriptions?: ConversationSubscriptions;
   /** The main Hono app to route requests through */
   app: Hono<{ Bindings: HttpBindings }>;
@@ -268,7 +269,7 @@ export function createWsRelayRoutes(
     conversationSubscriptions,
     limitedUsers,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
   } = deps;
 
   // Build handler dependencies
@@ -296,7 +297,7 @@ export function createWsRelayRoutes(
     conversationSubscriptions,
     limitedUsers,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
   };
 
   // Return the WebSocket handler with origin validation
@@ -381,6 +382,13 @@ export function createWsRelayRoutes(
         // Avoid treating AUTH_DISABLED/middleware bypass as WS authentication.
         if (isPolicyTrustedWithoutSrp(connectionPolicy)) {
           connState.authState = "authenticated";
+          // The upgrade's cookie login is this socket's login for its whole
+          // lifetime; a cookie header on a tunneled request cannot change it.
+          const directLoginUsername = c.get(DIRECT_LOGIN_VARIABLE);
+          connState.directLoginUsername =
+            typeof directLoginUsername === "string"
+              ? directLoginUsername
+              : null;
         }
 
         // Start WebSocket ping every 30s for dead connection detection
@@ -488,7 +496,7 @@ export function createAcceptRelayConnection(
     conversationSubscriptions,
     limitedUsers,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
   } = deps;
 
   // Build handler dependencies
@@ -516,7 +524,7 @@ export function createAcceptRelayConnection(
     conversationSubscriptions,
     limitedUsers,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
   };
 
   // Return the accept relay connection handler

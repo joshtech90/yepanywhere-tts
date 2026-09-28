@@ -53,7 +53,10 @@ import {
 import type { SrpServerSession } from "../crypto/index.js";
 import type { DeviceBridgeService } from "../device/DeviceBridgeService.js";
 import { getLogger } from "../logging/logger.js";
-import { AUTHENTICATED_SRP_TRANSPORT } from "../middleware/authenticated-transport.js";
+import {
+  AUTHENTICATED_DIRECT_LOGIN,
+  AUTHENTICATED_SRP_TRANSPORT,
+} from "../middleware/authenticated-transport.js";
 import { WS_INTERNAL_AUTHENTICATED } from "../middleware/internal-auth.js";
 import type { ProjectGlossarySubscriptionManager } from "../projects/projectGlossarySubscriptionManager.js";
 import {
@@ -83,7 +86,11 @@ import {
 import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type { UploadManager } from "../uploads/manager.js";
-import type { EventBus, FocusedSessionWatchManager } from "../watcher/index.js";
+import type {
+  BusEvent,
+  EventBus,
+  FocusedSessionWatchManager,
+} from "../watcher/index.js";
 import { isPolicySrpRequired } from "./ws-auth-policy.js";
 import {
   type SpeechWebSocketSession,
@@ -106,6 +113,7 @@ import {
 import {
   type WsTransportAuthState,
   hasEstablishedSrpTransport,
+  isTrustedWithoutSrpTransport,
   shouldMarkInternalWsAuthenticated,
   tryLockWsConnectionMode,
 } from "./ws-transport-auth.js";
@@ -170,6 +178,11 @@ export interface ConnectionState extends WsTransportAuthState {
   requiresEncryptedMessages: boolean;
   /** Username if authenticated */
   username: string | null;
+  /**
+   * Limited username on the cookie session that upgraded a trusted-local
+   * socket, bound once at upgrade; null for the superuser or an SRP socket.
+   */
+  directLoginUsername: string | null;
   /** Persistent session ID for resumption (set after successful auth) */
   sessionId: string | null;
   /** Transport nonce retained for the lifetime of an established SRP socket. */
@@ -229,6 +242,7 @@ export interface RelayUploadState {
   clientUploadId: string;
   /** Upload storage backend */
   uploadKind: "session" | "draft-staging";
+  stagingService?: AttachmentStagingService;
   /** Server-generated upload ID from UploadManager */
   serverUploadId: string;
   /** Expected total size */
@@ -353,11 +367,14 @@ export interface RelayHandlerDeps {
   remoteAccessService?: RemoteAccessService;
   /** Limited-user SRP verifiers, selected by srp_hello identity. */
   limitedUsers?: SrpLimitedUserLookup;
-  /** Whether one activity event is visible to an authenticated identity. */
-  isActivityEventVisible?: (
+  /**
+   * One activity event as an authenticated identity may receive it, or null
+   * when it is hidden from them.
+   */
+  activityEventForIdentity?: (
     username: string | null,
-    event: { projectId?: string },
-  ) => boolean;
+    event: BusEvent,
+  ) => BusEvent | null;
   /**
    * Whether the authenticated identity may open this subscription. Absent
    * means every authenticated connection may (the single-superuser case).
@@ -365,9 +382,7 @@ export interface RelayHandlerDeps {
    */
   authorizeSubscription?: (params: {
     username: string | null;
-    channel: string;
-    sessionId?: string;
-    projectId?: string;
+    target: SubscriptionAccessTarget;
   }) => Promise<boolean>;
   /** Remote session service for session persistence (optional for direct, required for relay) */
   remoteSessionService?: RemoteSessionService;
@@ -400,6 +415,19 @@ export interface RelayHandlerDeps {
 }
 
 /**
+ * The identity whose grants govern what this socket may subscribe to: the
+ * SRP identity once its proof established the transport, else the direct
+ * login bound at upgrade. Null means the superuser. An `srp_hello` identity
+ * that is still awaiting proof counts for nothing.
+ */
+export function authenticatedConnectionIdentity(
+  connState: ConnectionState,
+): string | null {
+  if (hasEstablishedSrpTransport(connState)) return connState.username;
+  return connState.directLoginUsername;
+}
+
+/**
  * Create an initial connection state.
  */
 export function createConnectionState(options?: {
@@ -416,6 +444,7 @@ export function createConnectionState(options?: {
     connectionMode: "unselected",
     requiresEncryptedMessages: false,
     username: null,
+    directLoginUsername: null,
     sessionId: null,
     transportNonce: null,
     authenticationMethod: null,
@@ -840,6 +869,14 @@ export async function handleRequest(
           ...(srpTransport
             ? { [AUTHENTICATED_SRP_TRANSPORT]: srpTransport }
             : {}),
+          ...(!srpTransport && isTrustedWithoutSrpTransport(connState)
+            ? {
+                [AUTHENTICATED_DIRECT_LOGIN]: {
+                  kind: "direct-login" as const,
+                  username: connState.directLoginUsername,
+                },
+              }
+            : {}),
         }
       : {};
     const response = await app.fetch(fetchRequest, internalEnv);
@@ -933,6 +970,7 @@ export async function handleRequest(
       contentType.startsWith("image/") ||
       contentType.startsWith("audio/") ||
       contentType.startsWith("video/") ||
+      contentType.startsWith("font/") ||
       contentType === "application/pdf" ||
       contentType === "application/octet-stream"
     ) {
@@ -1114,11 +1152,12 @@ export function handleActivitySubscribe(
   browserProfileService?: BrowserProfileService,
   closeConnection?: () => void,
   /**
-   * Whether this connection's identity may see one activity event. Absent
-   * means every event is visible, which is the single-superuser case.
+   * One activity event as this connection's identity may receive it, or null
+   * when hidden. Absent means every event is delivered as is, which is the
+   * single-superuser case.
    * See topics/limited-users.md § Delivery v1 — Authorization.
    */
-  isEventVisible?: (event: { projectId?: string }) => boolean,
+  eventForViewer?: (event: BusEvent) => BusEvent | null,
 ): void {
   const { subscriptionId, browserProfileId, originMetadata } = msg;
 
@@ -1143,12 +1182,6 @@ export function handleActivitySubscribe(
 
   let eventId = 0;
   const sendEvent = (eventType: string, data: unknown) => {
-    if (
-      isEventVisible &&
-      !isEventVisible((data ?? {}) as { projectId?: string })
-    ) {
-      return;
-    }
     send({
       type: "event",
       subscriptionId,
@@ -1159,6 +1192,7 @@ export function handleActivitySubscribe(
   };
 
   const { cleanup } = createActivitySubscription(eventBus, sendEvent, {
+    eventForSubscriber: eventForViewer,
     logLabel: subscriptionId,
     onError: (err) => {
       console.error("[WS Relay] Error in activity subscription:", err);
@@ -1625,6 +1659,50 @@ export function handleWorktreeSubscribe(
 /**
  * Handle a subscribe message.
  */
+/**
+ * The projects and sessions a subscription reads: exactly the ids its channel
+ * handler below uses, so authorization judges what the stream will deliver
+ * rather than whichever id a client puts beside it. `global` is the activity
+ * channel, whose events are filtered one by one; `unknown` is a channel this
+ * server does not serve.
+ */
+export type SubscriptionAccessTarget =
+  | { kind: "global" }
+  | { kind: "scoped"; projectIds: string[]; sessionIds: string[] }
+  | { kind: "unknown" };
+
+export function subscriptionAccessTarget(
+  msg: RelaySubscribe,
+): SubscriptionAccessTarget {
+  const ids = (...values: unknown[]): string[] =>
+    values.filter(
+      (value): value is string => typeof value === "string" && value !== "",
+    );
+  switch (msg.channel) {
+    case "activity":
+      return { kind: "global" };
+    case "session":
+      return { kind: "scoped", projectIds: [], sessionIds: ids(msg.sessionId) };
+    case "/api/experimental/conversation/subscribe":
+      return {
+        kind: "scoped",
+        projectIds: [],
+        sessionIds: ids(msg.query?.sessionId),
+      };
+    case "session-watch":
+      return {
+        kind: "scoped",
+        projectIds: ids(msg.projectId),
+        sessionIds: ids(msg.sessionId),
+      };
+    case "glossary":
+    case "worktree":
+      return { kind: "scoped", projectIds: ids(msg.projectId), sessionIds: [] };
+    default:
+      return { kind: "unknown" };
+  }
+}
+
 export function handleSubscribe(
   subscriptions: Map<string, () => void>,
   msg: RelaySubscribe,
@@ -1643,7 +1721,7 @@ export function handleSubscribe(
     paths: readonly string[],
   ) => Promise<ReadonlySet<string>>,
   conversationSubscriptions?: ConversationSubscriptions,
-  isActivityEventVisible?: (event: { projectId?: string }) => boolean,
+  activityEventForViewer?: (event: BusEvent) => BusEvent | null,
 ): void {
   const { subscriptionId, channel } = msg;
 
@@ -1687,7 +1765,7 @@ export function handleSubscribe(
         connectedBrowsers,
         browserProfileService,
         closeConnection,
-        isActivityEventVisible,
+        activityEventForViewer,
       );
       break;
 
@@ -1751,6 +1829,7 @@ async function writeRelayUploadChunk(
   attachmentStagingService?: AttachmentStagingService,
 ): Promise<number> {
   if (state.uploadKind === "draft-staging") {
+    attachmentStagingService = state.stagingService ?? attachmentStagingService;
     if (!attachmentStagingService) {
       throw new Error("Attachment staging is unavailable");
     }
@@ -1766,7 +1845,9 @@ async function cancelRelayUpload(
   attachmentStagingService?: AttachmentStagingService,
 ): Promise<void> {
   if (state.uploadKind === "draft-staging") {
-    await attachmentStagingService?.cancelUpload(state.serverUploadId);
+    await (state.stagingService ?? attachmentStagingService)?.cancelUpload(
+      state.serverUploadId,
+    );
     return;
   }
 
@@ -1880,6 +1961,7 @@ export async function handleStagedUploadStart(
     uploads.set(uploadId, {
       clientUploadId: uploadId,
       uploadKind: "draft-staging",
+      stagingService: attachmentStagingService,
       serverUploadId,
       expectedSize: size,
       bytesReceived: 0,
@@ -2074,6 +2156,8 @@ export async function handleUploadEnd(
 
   try {
     if (state.uploadKind === "draft-staging") {
+      attachmentStagingService =
+        state.stagingService ?? attachmentStagingService;
       if (!attachmentStagingService) {
         throw new Error("Attachment staging is unavailable");
       }
@@ -2179,12 +2263,15 @@ export async function handleMessage(
     supervisor,
     eventBus,
     uploadManager,
-    attachmentStagingService,
+    attachmentStagingService: sharedAttachmentStagingService,
     remoteAccessService,
     remoteSessionService,
     securityClientService,
     limitedUsers,
   } = deps;
+  const attachmentStagingService = sharedAttachmentStagingService?.forUser(
+    authenticatedConnectionIdentity(connState),
+  );
   const srpRequiredPolicy = isPolicySrpRequired(connState.connectionPolicy);
   const getSpeechSession = (): SpeechWebSocketSession | null => {
     if (!options.speechSessionRef) {
@@ -2272,16 +2359,9 @@ export async function handleMessage(
       },
       onSubscribe: async (subscribeMsg) => {
         if (deps.authorizeSubscription) {
-          const params = subscribeMsg as unknown as {
-            channel: string;
-            sessionId?: string;
-            projectId?: string;
-          };
           const permitted = await deps.authorizeSubscription({
-            username: connState.username ?? null,
-            channel: params.channel,
-            sessionId: params.sessionId,
-            projectId: params.projectId,
+            username: authenticatedConnectionIdentity(connState),
+            target: subscriptionAccessTarget(subscribeMsg),
           });
           if (!permitted) {
             send({
@@ -2309,13 +2389,13 @@ export async function handleMessage(
           () => ws.close(4004, "Legacy browser profile revoked"),
           deps.resolveAbsoluteFilePaths,
           deps.conversationSubscriptions,
-          deps.isActivityEventVisible
+          deps.activityEventForIdentity
             ? (event) =>
                 (
-                  deps.isActivityEventVisible as NonNullable<
-                    RelayHandlerDeps["isActivityEventVisible"]
+                  deps.activityEventForIdentity as NonNullable<
+                    RelayHandlerDeps["activityEventForIdentity"]
                   >
-                )(connState.username ?? null, event)
+                )(authenticatedConnectionIdentity(connState), event)
             : undefined,
         );
       },

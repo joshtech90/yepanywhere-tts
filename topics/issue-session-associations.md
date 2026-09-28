@@ -166,8 +166,13 @@ order. Expand loads further mentions through session-filtered
 `GET /api/issues/evidence`, in bounded pages. Collapsing preserves loaded mentions,
 and so does a refresh: a confirm, dismiss, title save, or the Refresh button
 reloads the rows in place, leaving every row expanded over the mentions it has
-already loaded, with the initial mention replaced by the reloaded one. Only
-choosing a different issue empties the pane back to its loading state.
+already loaded, with the initial mention replaced by the reloaded one. Each
+reloaded answer, including one for a changed dismissed filter, re-fetches as
+many further mentions as the row had loaded, under that answer's filter and
+ordering, so loaded pages never mix two lists; a page requested before the
+reload is discarded, and an expanded row still waiting for its first page asks
+again. Only choosing a different issue empties the pane back to
+its loading state.
 Dismissed evidence stays hidden unless the filter includes it. Unavailable source
 sessions keep historical excerpts but have no navigation or preview request.
 Selections, expansions and asynchronous responses belong to the selected source;
@@ -201,7 +206,11 @@ again by itself. Nothing polls. `POST /api/issues/confirm` is the only second
 question and belongs to an explicit user action. It also asks the first
 question for a reference that has no row, because it was captured while
 confirmation was off: the automatic path leaves that backlog alone, and the
-explicit request is what authorizes the one lookup. Overlapping drains coalesce:
+explicit request is what authorizes the one lookup. It asks only about a
+reference YA captured: when no evidence in that project holds that provider and
+key, it answers 404, writes no row and sends nothing to a tracker, so a typo or
+a stale client cannot spend the user's credentials on a key YA never saw.
+Overlapping drains coalesce:
 a recheck arriving while a capture-triggered lookup is still out joins that
 work instead of starting a second pass over the same pending references, so
 one reference costs one request however many drains overlap, and the recheck
@@ -213,7 +222,9 @@ Credentials resolve from a key stored in Settings, then environment variables
 (`YEP_GITHUB_TOKEN`, `GITHUB_TOKEN`, `GH_TOKEN`; `YEP_JIRA_API_TOKEN`,
 `JIRA_API_TOKEN`, `ATLASSIAN_API_TOKEN`), then, for GitHub, the signed-in `gh`
 CLI. The settings pane names every source and says whether it is present; no
-route returns a key to a client. Stored keys are written to
+route returns a key to a client. The pane requests that inventory only while
+confirmation is on, the only state in which it is shown, so a reader who never
+opts in never causes the sources to be probed. Stored keys are written to
 `{dataDir}/issue-credentials.json` with owner-only permissions rather than into
 server settings, which the settings route hands to any authenticated client.
 Both credential routes stay reachable while discovery is off, so an

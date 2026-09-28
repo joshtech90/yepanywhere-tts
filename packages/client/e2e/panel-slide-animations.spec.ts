@@ -159,6 +159,19 @@ for (const animations of [false, true]) {
         return bounds?.width;
       })
       .toBeGreaterThan(280);
+    const [workspaceBounds, sessionBounds, paneBounds] = await Promise.all([
+      page.locator(".main-content-constrained").boundingBox(),
+      page.locator('[class*="sessionColumn"]').boundingBox(),
+      pane.boundingBox(),
+    ]);
+    expect(workspaceBounds).not.toBeNull();
+    expect(sessionBounds).not.toBeNull();
+    expect(paneBounds).not.toBeNull();
+    expect(paneBounds!.width).toBeLessThan(workspaceBounds!.width * 0.61);
+    expect(sessionBounds!.width).toBeGreaterThan(workspaceBounds!.width * 0.39);
+    expect(sessionBounds!.x + sessionBounds!.width).toBeLessThanOrEqual(
+      paneBounds!.x + 1,
+    );
     await recordUiCapture(page, `file-pane-desktop-${animations}`);
 
     const body = viewer.locator(".file-viewer-body");

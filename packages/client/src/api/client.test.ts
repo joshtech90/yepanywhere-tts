@@ -658,6 +658,9 @@ describe("api file facade", () => {
     expect(rawUrl).toBe(
       "/api/projects/project-a/files/raw?path=media%2Fa+b.png&download=true",
     );
+    expect(api.getFileRawUrl("host/-work", "a.png")).toBe(
+      "/api/projects/host%2F-work/files/raw?path=a.png",
+    );
     expect(
       fetchMock.mock.calls.map(([url, request]) => ({
         url,

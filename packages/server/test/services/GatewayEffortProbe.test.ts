@@ -1,7 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   GatewayEffortProbeCache,
   detectEndpointEffort,
+  gatewayEffortProbeCache,
+  probeServiceEffort,
 } from "../../src/services/GatewayEffortProbe.js";
 
 const REJECTION = JSON.stringify({
@@ -21,7 +23,8 @@ function rejecting(): Response {
  *
  * Asking is two stages: the schema stage that provokes the accepted literals,
  * and the chat-template stage that checks whether the model behind the endpoint
- * narrows them. Both run for every endpoint that answers the first.
+ * narrows them. Asking about one model of an endpoint that answers the first
+ * stage runs both.
  */
 const FETCHES_PER_ASK = 2;
 
@@ -129,6 +132,57 @@ describe("GatewayEffortProbeCache", () => {
     });
   });
 
+  it("keeps the schema's answer when asking the template fails", async () => {
+    // The likeliest failure: the template accepted the top level, and its
+    // one-token completion is still queued behind real work when the probe's
+    // deadline expires. What the schema stage learned still stands, and is not
+    // paid for again on the next catalog read.
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        reasoning_effort: string;
+      };
+      if (body.reasoning_effort === "ya-capability-probe") return rejecting();
+      throw new DOMException("The operation timed out.", "TimeoutError");
+    });
+    const cache = new GatewayEffortProbeCache(
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    const schemaAnswer = { levels: ["low", "high"], noThinking: true };
+    expect(await cache.probe("http://host:1", "m")).toEqual(schemaAnswer);
+    expect(await cache.probe("http://host:1", "m")).toEqual(schemaAnswer);
+    expect(fetchImpl).toHaveBeenCalledTimes(FETCHES_PER_ASK);
+  });
+
+  it("asks each model's chat template, and the endpoint's schema once", async () => {
+    // One vLLM serving two models: the schema is the server's, the template is
+    // each model's own. The narrow model's answer must not become the other's.
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        model: string;
+        reasoning_effort: string;
+      };
+      if (body.reasoning_effort === "ya-capability-probe") return rejecting();
+      return body.model === "narrow"
+        ? templateRejecting()
+        : new Response("{}", { status: 200 });
+    });
+    const cache = new GatewayEffortProbeCache(
+      fetchImpl as unknown as typeof fetch,
+    );
+
+    expect(await cache.probe("http://host:1", "narrow")).toEqual({
+      levels: ["low", "medium", "xhigh"],
+      defaultLevel: "xhigh",
+      noThinking: false,
+    });
+    expect(await cache.probe("http://host:1", "wide")).toEqual({
+      levels: ["low", "high"],
+      noThinking: true,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
   it("asks again once a cached answer has aged out", async () => {
     const fetchImpl = vi.fn(async () => rejecting());
     let now = 0;
@@ -193,6 +247,73 @@ describe("GatewayEffortProbeCache", () => {
     );
 
     expect(await cache.probe("http://host:1", "m")).toBeUndefined();
+  });
+});
+
+describe("probeServiceEffort", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    gatewayEffortProbeCache.forget();
+  });
+
+  it("gives each listed model its own answer, asking templates only where they decide", async () => {
+    const asked: string[] = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (_input: unknown, init?: RequestInit) => {
+        const body = JSON.parse(String(init?.body)) as {
+          model: string;
+          reasoning_effort: string;
+        };
+        if (body.reasoning_effort === "ya-capability-probe") return rejecting();
+        asked.push(body.model);
+        return body.model === "narrow"
+          ? templateRejecting()
+          : new Response("{}", { status: 200 });
+      }),
+    );
+
+    const answers = await probeServiceEffort(
+      {},
+      "http://127.0.0.1:8001",
+      {
+        data: [
+          { id: "narrow" },
+          { id: "wide" },
+          // A family YA knows and a row stating its own levels take their
+          // levels from those, so no template answer could change them.
+          { id: "deepseek-v4-flash" },
+          {
+            id: "advertised",
+            capabilities: { supports: { reasoning_effort: ["low"] } },
+          },
+          { id: "unlisted" },
+        ],
+      },
+      (_row, id) => id !== "unlisted",
+    );
+
+    expect(asked.sort()).toEqual(["narrow", "wide"]);
+    expect(answers.get("narrow")?.levels).toEqual(["low", "medium", "xhigh"]);
+    expect(answers.get("wide")?.levels).toEqual(["low", "high"]);
+    // The endpoint's schema answer still says whether thinking can stop.
+    expect(answers.get("deepseek-v4-flash")?.noThinking).toBe(true);
+    expect(answers.get("advertised")?.noThinking).toBe(true);
+    expect(answers.has("unlisted")).toBe(false);
+  });
+
+  it("asks nothing for an entry that states its own levels", async () => {
+    const fetchImpl = vi.fn(async () => rejecting());
+    vi.stubGlobal("fetch", fetchImpl);
+
+    const answers = await probeServiceEffort(
+      { effortLevels: ["high"] },
+      "http://127.0.0.1:8001",
+      { data: [{ id: "m" }] },
+    );
+
+    expect(answers.size).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
 

@@ -21,6 +21,7 @@ function user(
 function text(id: string, isStreaming = false): RenderItem {
   return {
     type: "text",
+    sourceBlockIndex: 0,
     id,
     text: "done",
     sourceMessages,

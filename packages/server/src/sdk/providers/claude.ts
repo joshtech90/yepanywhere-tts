@@ -672,17 +672,17 @@ async function* withCleanup<T>(
  * SDK, because older `supportedModels()` responses reported the `sonnet` alias
  * as "Sonnet 4.6" even when it routed to Sonnet 5 at runtime.
  *
- * Opus deliberately stays bare. SDK 0.3.220 resolves both `opus` and
- * `opus[1m]` to Opus 5 with the same 1M context window, so rewriting the
- * stable alias adds no capability and couples launch behavior to a historical
- * spelling. See topics/claude-1m-context.md.
+ * Opus deliberately stays bare. SDK 0.3.280 resolves bare `opus` to Opus 5.5
+ * with a 1M context window, so rewriting the stable alias adds no capability
+ * and couples launch behavior to a historical spelling. See
+ * topics/claude-1m-context.md.
  */
 const CLAUDE_LAUNCH_MODEL_ALIASES: Record<string, string> = {
   sonnet: "sonnet[1m]",
 };
 
 const ALWAYS_EXTENDED_DESCRIPTIONS: Record<string, string> = {
-  opus: "Opus 5 with the full 1M-token context window",
+  opus: "Opus 5.5 with the full 1M-token context window",
   sonnet:
     "Sonnet 5 with the full 1M-token context window · newer tokenizer bills ~30% more tokens",
 };
@@ -840,6 +840,7 @@ function enrichClaudeModel(model: ModelInfo): ModelInfo {
 function mapClaudeSdkModel(model: ClaudeSdkModelInfo): ModelInfo {
   return {
     id: model.value,
+    resolvedModel: model.resolvedModel,
     name: model.displayName,
     description: model.description,
     contextWindow: model.resolvedModel
@@ -874,6 +875,11 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
     byId.set(model.id, enrichClaudeModel(model));
   }
 
+  // The catalog lists the current Fable row before any previous Fable
+  // versions (Claude Code 2.1.283 adds `claude-fable-5` after
+  // `claude-fable-5-1`). Only that first row speaks for the stable `fable`
+  // selection; later ones stay concrete rows like `claude-opus-5`.
+  let fableFolded = false;
   for (const model of models) {
     if (model.id === "default") {
       const fallback = byId.get("default");
@@ -889,7 +895,8 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
       );
       continue;
     }
-    if (model.id !== "fable" && claudeModelFamily(model.id) === "fable") {
+    if (!fableFolded && claudeModelFamily(model.id) === "fable") {
+      fableFolded = true;
       const fallback = byId.get("fable");
       byId.set(
         "fable",
@@ -902,7 +909,13 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
       );
       continue;
     }
-    byId.set(model.id, enrichClaudeModel(model));
+    byId.set(
+      model.id,
+      enrichClaudeModel({
+        ...byId.get(model.id),
+        ...model,
+      }),
+    );
   }
 
   const orderedIds = [
@@ -916,8 +929,8 @@ export function mergeClaudeModels(models: ModelInfo[]): ModelInfo[] {
 
   // Drop the redundant "opus[1m]"/"sonnet[1m]" rows and surface their live
   // capability metadata on the stable family aliases. This catalog projection
-  // is independent of launch spelling: bare `opus` already launches Opus 5
-  // with the same 1M window.
+  // is independent of launch spelling: bare `opus` already launches the
+  // current Opus generation with the same 1M window.
   return merged
     .filter((model) => model.id !== "opus[1m]" && model.id !== "sonnet[1m]")
     .map((model) => {
@@ -1072,6 +1085,15 @@ export class ClaudeProvider implements AgentProvider {
 
   getModelCatalogCacheKey(): string {
     return getClaudeModelCatalogCacheKey(this.getAdditionalModelSelections());
+  }
+
+  resolveLaunchModel(model: string | undefined): string | undefined {
+    const resolved = this.cachedModels?.find(
+      (entry) => entry.id === model,
+    )?.resolvedModel;
+    // "[1m]" selects a context window, not a different model; drop it so the
+    // id matches the one the provider records on each response.
+    return resolved?.replace(/\[[^\]]*\]$/u, "") || undefined;
   }
 
   protected invalidateModelCache(): void {

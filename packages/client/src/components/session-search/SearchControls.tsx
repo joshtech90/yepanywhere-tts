@@ -405,19 +405,21 @@ function StatusIcon({ status }: { status: SearchStatus }) {
   );
 }
 
-function SelectionArrow({ size = 20 }: { size?: number }) {
+function SelectAllIcon() {
   return (
     <svg
-      className={styles.selectionArrowIcon}
-      width={size}
-      height={size}
+      width="16"
+      height="16"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2.4"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
       aria-hidden="true"
     >
-      <path d="M20 12H4m7-7-7 7 7 7" />
+      <polyline points="9 11 12 14 22 4" />
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
     </svg>
   );
 }
@@ -447,10 +449,6 @@ export function SearchHelp() {
         <CheckIcon size={14} />
       </span>{" "}
       {t("sessionSearchHelp")}{" "}
-      <span role="img" aria-label={t("sessionSearchHelpArrow")}>
-        <SelectionArrow size={14} />
-      </span>{" "}
-      {t("sessionSearchHelpReplace")}{" "}
       <span role="img" aria-label={t("sessionSearchHelpCancel")}>
         <SelectionCancel size={14} />
       </span>
@@ -462,30 +460,33 @@ export function SearchHelp() {
 export function SearchSelection({
   count,
   shown,
+  allShownSelected,
   filters,
   onToggle,
-  onReplace,
+  onSelectShown,
   onClear,
+  onlySelected,
+  onOnlySelected,
   onManage,
-  onApply,
   pending,
   helpInline,
   onHelpInline,
 }: {
   count: number;
   shown: number;
+  allShownSelected: boolean;
   filters: SearchStatus[];
   onToggle(status: SearchStatus): void;
-  onReplace(): void;
+  onSelectShown(): void;
   onClear(): void;
+  onlySelected: boolean;
+  onOnlySelected(value: boolean): void;
   onManage(): void;
-  onApply(): void;
   pending: boolean;
   helpInline: boolean;
   onHelpInline(value: boolean): void;
 }) {
   const { t } = useI18n();
-  const action = filters.at(-1);
   const help = useRef<HTMLDivElement>(null);
   useEffect(() => {
     const slot = help.current;
@@ -528,11 +529,7 @@ export function SearchSelection({
         <button
           type="button"
           className={styles.selectionCount}
-          title={t("sessionSearchSelectionHelp", {
-            count,
-            shown,
-            hidden: Math.max(0, count - shown),
-          })}
+          title={t("sessionSearchSelectionHelp", { count })}
           onClick={onManage}
         >
           <CheckIcon />
@@ -541,14 +538,22 @@ export function SearchSelection({
         <button
           type="button"
           className={styles.selectMatched}
-          onClick={onReplace}
-          disabled={!shown || pending}
-          title={t("sessionSearchKeep", { count: shown })}
-          aria-label={t("sessionSearchKeep", { count: shown })}
+          onClick={onSelectShown}
+          disabled={!shown || allShownSelected || pending}
+          title={t("sessionSearchSelectShownTitle", { count: shown })}
         >
-          <SelectionArrow />
+          <SelectAllIcon />
+          <span>{t("sessionSearchSelectShown", { count: shown })}</span>
         </button>
-        <span>{shown}</span>
+        <button
+          type="button"
+          className={styles.onlySelected}
+          aria-pressed={onlySelected}
+          onClick={() => onOnlySelected(!onlySelected)}
+          title={t("sessionSearchOnlySelectedTitle")}
+        >
+          {t("sessionSearchOnlySelected")}
+        </button>
         {count > 0 && (
           <button
             type="button"
@@ -581,26 +586,6 @@ export function SearchSelection({
           </button>
         ))}
       </div>
-      {action && (
-        <button
-          type="button"
-          className={styles.applyStatus}
-          onClick={onApply}
-          disabled={!count || pending}
-          title={t("sessionSearchApplyHelp", {
-            status: t(`sessionSearchStatus_${action}`),
-            count,
-          })}
-        >
-          <span>
-            {t("sessionSearchMake", {
-              status: t(`sessionSearchStatus_${action}`),
-            })}
-          </span>
-          <CheckIcon />
-          {count}
-        </button>
-      )}
       <div
         ref={help}
         className={styles.helpSlot}

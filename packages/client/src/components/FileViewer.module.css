@@ -3,6 +3,10 @@
   container-name: file-viewer;
 }
 
+.context {
+  display: contents;
+}
+
 .body {
   position: relative;
 }
@@ -23,6 +27,10 @@
 .diffBody {
   min-height: 100%;
   background: var(--bg-code);
+}
+
+.reloadStale {
+  color: var(--warning-color, #d08a00);
 }
 
 .rawToggle[aria-pressed="true"] {
@@ -63,6 +71,11 @@
   align-items: baseline;
   flex-wrap: nowrap;
   gap: 0.375rem;
+  /* Sized to its content, not stretched across the info column: the header
+     measures this box to decide whether the actions fit beside it, and a
+     stretched box reports the space it was given rather than what it needs. */
+  width: fit-content;
+  max-width: 100%;
 }
 
 .quoteReplySurface:hover :global(.text-block-quote),
@@ -71,42 +84,67 @@
   pointer-events: auto;
 }
 
-@container file-viewer (max-width: 800px) {
-  .info :global(.file-viewer-path) {
-    word-break: break-word;
+@container file-viewer (max-width: 960px) {
+  .header {
+    display: grid;
+    grid-template-areas:
+      "path path path"
+      "context provenance actions";
+    grid-template-columns: auto auto minmax(0, 1fr);
+    align-items: start;
   }
 
-  .info :global(.file-viewer-meta) {
+  .context {
+    grid-area: context;
+    display: flex;
+    align-items: center;
+    gap: 0.125rem;
+    min-height: 32px;
+  }
+
+  .info {
+    display: contents;
+  }
+
+  .info :global(.file-viewer-path) {
+    display: block;
+    grid-area: path;
+    min-width: 0;
+    overflow: visible;
+    word-break: break-word;
+    -webkit-line-clamp: unset;
+  }
+
+  .provenanceRow {
+    grid-area: provenance;
+    align-items: center;
+    justify-self: start;
+    min-height: 32px;
+  }
+
+  .provenanceRow :global(.file-viewer-meta) {
     white-space: nowrap;
+  }
+
+  .actions {
+    grid-area: actions;
+    min-width: 0;
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .header[data-actions-below="true"] {
+    grid-template-areas:
+      "path path path"
+      "context provenance provenance"
+      "actions actions actions";
   }
 }
 
-@container file-viewer (max-width: 480px) {
-  .actions {
-    display: grid;
-    grid-template-columns: repeat(3, max-content) repeat(4, 32px);
-    grid-template-rows: 32px 26px;
-    grid-auto-flow: row;
-    align-items: center;
-    gap: 2px;
-  }
-
-  .windowActions {
-    grid-row: 1;
-    grid-column: 4 / 8;
-  }
-
-  .actions :global(.file-viewer-density-controls) {
-    grid-row: 2;
-    grid-column: 4 / 8;
-    justify-self: stretch;
-    height: 26px;
-    box-sizing: border-box;
-  }
-
-  .fullscreenButton,
-  .actions :global(.file-viewer-density-controls .file-viewer-action) {
-    width: 32px;
-    height: 26px;
-  }
+/* These compound controls stay atomic within the measured action rows, so a
+   wrap never splits `− N +` or the window block across rows. */
+.windowActions,
+.fullscreenButton,
+.actions :global(.file-viewer-density-controls) {
+  flex: 0 0 auto;
 }

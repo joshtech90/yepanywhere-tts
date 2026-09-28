@@ -33,9 +33,15 @@ function saveTheme(theme: Theme) {
   localStorage.setItem(UI_KEYS.theme, theme);
 }
 
+/** Another tab saved a theme, or cleared storage (a `null` key). */
+function isThemeStorageEvent(event: StorageEvent): boolean {
+  return event.key === null || event.key === UI_KEYS.theme;
+}
+
 /**
  * Hook to manage theme preference.
- * Persists to localStorage and applies data-theme attribute.
+ * Persists to localStorage and applies data-theme attribute; follows a theme
+ * another tab saves.
  */
 export function useTheme() {
   const [theme, setThemeState] = useState<Theme>(loadTheme);
@@ -43,6 +49,16 @@ export function useTheme() {
   useEffect(() => {
     applyTheme(theme);
   }, [theme]);
+
+  useEffect(() => {
+    const follow = (event: StorageEvent) => {
+      if (isThemeStorageEvent(event)) {
+        setThemeState(loadTheme());
+      }
+    };
+    window.addEventListener("storage", follow);
+    return () => window.removeEventListener("storage", follow);
+  }, []);
 
   const setTheme = useCallback((newTheme: Theme) => {
     setThemeState(newTheme);
@@ -52,13 +68,28 @@ export function useTheme() {
   return { theme, setTheme };
 }
 
+let followingOtherTabs = false;
+
 /**
  * Initialize theme on app load (call once at startup).
  * This runs before React renders to avoid flash of wrong theme.
+ *
+ * Also keeps the page's data-theme equal to the stored preference when
+ * another tab changes it, whether or not a theme picker is mounted here:
+ * surfaces that read the preference (`getResolvedTheme`) and the page's CSS
+ * must never show two appearances in one tab.
  */
 export function initializeTheme() {
-  const theme = loadTheme();
-  applyTheme(theme);
+  applyTheme(loadTheme());
+  if (followingOtherTabs) {
+    return;
+  }
+  followingOtherTabs = true;
+  window.addEventListener("storage", (event) => {
+    if (isThemeStorageEvent(event)) {
+      applyTheme(loadTheme());
+    }
+  });
 }
 
 /**

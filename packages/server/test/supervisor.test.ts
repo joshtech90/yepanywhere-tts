@@ -3,7 +3,10 @@ import {
   POST_COMPACT_REPLAY_CONTINUE,
   POST_COMPACT_REPLAY_PREAMBLE,
 } from "@yep-anywhere/shared";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ComputerSession } from "../src/computer-control/contract.js";
 import type { ComputerControlService } from "../src/computer-control/service.js";
 import { MessageQueue } from "../src/sdk/messageQueue.js";
@@ -13,6 +16,7 @@ import type {
   SessionMetadataService,
 } from "../src/metadata/index.js";
 import { getLogger } from "../src/logging/logger.js";
+import { ProjectMetadataService } from "../src/metadata/ProjectMetadataService.js";
 import { dispatchProviderCommand } from "../src/supervisor/provider-command.js";
 import type { NotificationService } from "../src/notifications/index.js";
 import { MockClaudeSDK, createMockScenario } from "../src/sdk/mock.js";
@@ -29,6 +33,7 @@ import {
   encodeProjectId,
 } from "../src/supervisor/types.js";
 import { type BusEvent, EventBus } from "../src/watcher/EventBus.js";
+import { sessionRowRuntimeOverlay } from "../src/sessions/session-runtime-overlay.js";
 
 function createLaunchSettingsMetadata(
   initial?: EffectiveSessionLaunchSettings,
@@ -57,6 +62,9 @@ function createLaunchSettingsMetadata(
     recordSyntheticDone: vi.fn<SessionMetadataService["recordSyntheticDone"]>(
       async () => undefined,
     ),
+    addLocalCommandMessage: vi.fn<
+      SessionMetadataService["addLocalCommandMessage"]
+    >(async () => undefined),
   };
   const service = {
     getMetadata: () => undefined,
@@ -119,6 +127,12 @@ describe("Supervisor", () => {
   beforeEach(() => {
     mockSdk = new MockClaudeSDK();
     supervisor = new Supervisor({ sdk: mockSdk, idleTimeoutMs: 100 });
+  });
+
+  // vi.spyOn returns the existing spy for an already-spied method, so an
+  // unrestored logger spy would carry one test's calls into the next.
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   describe("startSession", () => {
@@ -787,6 +801,52 @@ describe("Supervisor", () => {
         }),
       );
       expect(metadata.current()?.revision).toBe(7);
+    });
+
+    it("persists the notice for an unrequested provider death", async () => {
+      vi.spyOn(getLogger(), "error").mockImplementation(() => undefined);
+      vi.spyOn(getLogger(), "warn").mockImplementation(() => undefined);
+      const startSession = vi.fn(
+        async (options: Parameters<AgentProvider["startSession"]>[0]) => {
+          const queue = new MessageQueue();
+          async function* iterator() {
+            yield {
+              type: "system" as const,
+              subtype: "init" as const,
+              session_id: options.resumeSessionId ?? "new-session",
+            };
+            for await (const message of queue) {
+              void message;
+              throw new Error(
+                "Provider worker process exited: Provider reload replay buffer exceeded its bound",
+              );
+            }
+          }
+          return { iterator: iterator(), queue, abort: () => {} };
+        },
+      );
+      const metadata = createLaunchSettingsMetadata();
+      const supervisorWithMetadata = new Supervisor({
+        provider: testProvider(startSession),
+        sessionMetadataService: metadata.service,
+      });
+
+      const process = await supervisorWithMetadata.resumeSession(
+        "worker-dies",
+        "/tmp/test",
+        { text: "continue" },
+      );
+
+      expect("id" in process).toBe(true);
+      await vi.waitFor(() =>
+        expect(metadata.writes.addLocalCommandMessage).toHaveBeenCalledWith(
+          "worker-dies",
+          expect.objectContaining({
+            subtype: "local_command",
+            content: expect.stringContaining("not interrupted by you"),
+          }),
+        ),
+      );
     });
 
     it("does not persist a model change rejected by the provider", async () => {
@@ -3566,15 +3626,18 @@ describe("Supervisor", () => {
           requestedModel: "haiku",
         }),
       ).rejects.toThrow("metadata unavailable");
-      const callsAfterFailedSave =
-        recordEffectiveLaunchSettings.mock.calls.length;
+      expect(durable?.requestedModel).toBe("opus");
 
+      // Stopping retries the applied-but-unsaved change before it returns.
+      persistenceAvailable = true;
       await serialized.abortProcess(process.id);
+      expect(durable?.requestedModel).toBe("haiku");
+      const callsAfterStop = recordEffectiveLaunchSettings.mock.calls.length;
 
       process.setPermissionMode("plan");
       await Promise.resolve();
       expect(recordEffectiveLaunchSettings).toHaveBeenCalledTimes(
-        callsAfterFailedSave,
+        callsAfterStop,
       );
     });
 
@@ -3827,6 +3890,91 @@ describe("Supervisor", () => {
       );
       expect(process.launchCompactPercentOverride).toBe(60);
       await supervisorWithRealSdk.abortProcess(process.id);
+    });
+
+    describe("a pending rewind on the real SDK launch path", () => {
+      const pending = {
+        recordId: "rewind-1",
+        cutMessageId: "assistant-1",
+        dropsTurnPromptId: "user-2",
+      };
+
+      function createRewindingSupervisor() {
+        let aborted = false;
+        let armed: typeof pending | undefined = pending;
+        const startSession = vi.fn<RealClaudeSDKInterface["startSession"]>(
+          async (options) => {
+            async function* iterator() {
+              yield {
+                type: "system",
+                subtype: "init",
+                session_id: options.resumeSessionId ?? "fresh",
+              };
+              while (!aborted) {
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              }
+            }
+            return {
+              iterator: iterator(),
+              queue: new MessageQueue(),
+              abort: () => {
+                aborted = true;
+              },
+            };
+          },
+        );
+        const clearPendingRewind = vi.fn(async () => {
+          armed = undefined;
+        });
+        const metadata = createLaunchSettingsMetadata();
+        const service = {
+          ...metadata.service,
+          getPendingRewind: () => armed,
+          clearPendingRewind,
+        } as unknown as SessionMetadataService;
+        const supervisor = new Supervisor({
+          realSdk: { startSession },
+          sessionMetadataService: service,
+          idleTimeoutMs: 100,
+        });
+        return { supervisor, startSession, clearPendingRewind };
+      }
+
+      const truncated = expect.objectContaining({
+        resumeSessionId: "rewound-session",
+        resumeSessionAt: "assistant-1",
+        resumeDropsTurn: "user-2",
+      });
+
+      it("truncates a resume and disarms the rewind", async () => {
+        const { supervisor, startSession, clearPendingRewind } =
+          createRewindingSupervisor();
+        const process = await supervisor.resumeSession(
+          "rewound-session",
+          "/tmp/test",
+          { text: "next" },
+        );
+        if (!("id" in process)) throw new Error("resume was queued");
+
+        expect(startSession).toHaveBeenCalledWith(truncated);
+        expect(clearPendingRewind).toHaveBeenCalledWith("rewound-session");
+        expect(process.appliedRewindRecordId).toBe("rewind-1");
+        await supervisor.abortProcess(process.id);
+      });
+
+      it("truncates a reactivation and disarms the rewind", async () => {
+        const { supervisor, startSession, clearPendingRewind } =
+          createRewindingSupervisor();
+        const process = await supervisor.reactivateSession(
+          "/tmp/test",
+          "rewound-session",
+        );
+
+        expect(startSession).toHaveBeenCalledWith(truncated);
+        expect(clearPendingRewind).toHaveBeenCalledWith("rewound-session");
+        expect(process.appliedRewindRecordId).toBe("rewind-1");
+        await supervisor.abortProcess(process.id);
+      });
     });
 
     it("keeps one canonical row when the same session is restarted", async () => {
@@ -6900,6 +7048,34 @@ describe("Supervisor", () => {
       });
     });
 
+    it("counts a republished clearloop queue entry as no worker activity", async () => {
+      // Project Queue restarts its quiet window on worker activity, and a held
+      // patient /clearloop republishes its entry on every re-check.
+      const eventBus = new EventBus();
+      const events: BusEvent[] = [];
+      eventBus.subscribe((event) => events.push(event));
+      const supervisorWithBus = new Supervisor({
+        sdk: mockSdk,
+        idleTimeoutMs: 100,
+        eventBus,
+      });
+      mockSdk.addScenario(createMockScenario("sess-123", "Hello!"));
+      const process = await supervisorWithBus.startSession("/tmp/test", {
+        text: "hi",
+      });
+      if ("queued" in process || "error" in process) {
+        throw new Error("expected a started process");
+      }
+      const workerActivityEvents = () =>
+        events.filter((event) => event.type === "worker-activity-changed")
+          .length;
+      const before = workerActivityEvents();
+
+      process.notifyQueueProjectionChanged("clearloop");
+
+      expect(workerActivityEvents()).toBe(before);
+    });
+
     it("emits session-status-changed event when session starts", async () => {
       const eventBus = new EventBus();
       const events: BusEvent[] = [];
@@ -6925,6 +7101,59 @@ describe("Supervisor", () => {
         type: "session-status-changed",
         ownership: { owner: "self" },
       });
+    });
+
+    it("reports live ownership and activity exactly as the session rows do", async () => {
+      const eventBus = new EventBus();
+      const events: BusEvent[] = [];
+      eventBus.subscribe((event) => events.push(event));
+      const controller = createControllableIterator();
+      let retentionChanged: (() => void) | undefined;
+      const supervisorWithBus = new Supervisor({
+        provider: testProvider(async (options) => {
+          retentionChanged = options.onProviderRetentionChange;
+          return {
+            iterator: controller.iterator,
+            queue: new MessageQueue(),
+            abort: () => controller.finish(),
+          };
+        }),
+        eventBus,
+      });
+      const starting = supervisorWithBus.startSession("/tmp/test", {
+        text: "hi",
+      });
+      controller.push({
+        type: "system",
+        subtype: "init",
+        session_id: "sess-rows",
+      });
+      const process = await starting;
+      if ("queued" in process || "error" in process) {
+        throw new Error("expected a started process");
+      }
+      controller.push({ type: "result", session_id: "sess-rows" });
+      await waitFor(() => expect(process.state.type).toBe("idle"));
+      vi.spyOn(process, "isRetainingProviderWork").mockReturnValue(true);
+      retentionChanged?.();
+
+      const row = sessionRowRuntimeOverlay(process, {
+        sessionId: process.sessionId,
+        providerUpdatedAt: new Date().toISOString(),
+      });
+      const lastOf = <T extends BusEvent["type"]>(type: T) =>
+        events.findLast(
+          (event): event is Extract<BusEvent, { type: T }> =>
+            event.type === type,
+        );
+      expect(row.activity).toBe("in-turn");
+      expect(lastOf("process-state-changed")).toMatchObject({
+        activity: row.activity,
+        pendingInputType: row.pendingInputType,
+      });
+      expect(lastOf("session-status-changed")?.ownership).toEqual(
+        row.ownership,
+      );
     });
 
     it("emits optimistic title/messageCount in session-created for real SDK sessions", async () => {
@@ -6975,6 +7204,51 @@ describe("Supervisor", () => {
       expect(events.some((event) => event.type === "session-id-remapped")).toBe(
         false,
       );
+    });
+
+    it("names a new session's project by its chosen name, following a rename", async () => {
+      const dataDir = await mkdtemp(join(tmpdir(), "supervisor-project-name-"));
+      try {
+        const projectMetadata = new ProjectMetadataService({ dataDir });
+        await projectMetadata.initialize();
+        await projectMetadata.setProjectNameOverride(
+          encodeProjectId("/tmp/yepanywhere"),
+          "YA",
+        );
+        const eventBus = new EventBus();
+        const events: BusEvent[] = [];
+        eventBus.subscribe((event) => events.push(event));
+        const supervisorWithNames = new Supervisor({
+          sdk: new MockClaudeSDK(),
+          idleTimeoutMs: 100,
+          eventBus,
+          projectDisplayName: (projectPath) =>
+            projectMetadata.getProjectDisplayName(projectPath),
+        });
+
+        const process = await supervisorWithNames.startSession(
+          "/tmp/yepanywhere",
+          { text: "hello" },
+        );
+
+        const created = events.find(
+          (e): e is Extract<BusEvent, { type: "session-created" }> =>
+            e.type === "session-created",
+        );
+        expect(created?.session.projectName).toBe("YA");
+        expect(process.getInfo().projectName).toBe("YA");
+        await projectMetadata.setProjectNameOverride(
+          encodeProjectId("/tmp/yepanywhere"),
+          "Yep",
+        );
+        expect(
+          supervisorWithNames
+            .getProcessInfoList()
+            .find((info) => info.id === process.id)?.projectName,
+        ).toBe("Yep");
+      } finally {
+        await rm(dataDir, { recursive: true });
+      }
     });
 
     it("emits a public remap when init follows the provisional ID timeout", async () => {

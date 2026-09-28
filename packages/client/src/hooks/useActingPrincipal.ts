@@ -79,3 +79,13 @@ export function useActingPrincipal(): ActingPrincipalState {
 export function isLimitedPrincipal(principal: ActingPrincipal): boolean {
   return principal.username !== null;
 }
+
+/**
+ * Whether this client may be shown host-administration notices — a server
+ * restart, a Codex or YA server update — that only the superuser can act on.
+ * False until the principal is known, so a limited user never sees one flash.
+ */
+export function useCanAdministerHost(): boolean {
+  const { principal, resolved } = useActingPrincipal();
+  return resolved && !isLimitedPrincipal(principal);
+}

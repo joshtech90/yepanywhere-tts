@@ -77,3 +77,22 @@ export interface Message {
 export function getMessageId(message: Message): string {
   return message.uuid ?? message.id ?? "";
 }
+
+/** Collapse message snapshots by identity, retaining the first position and latest value. */
+export function collapseMessageSnapshots<
+  T extends Pick<Message, "uuid" | "id">,
+>(messages: T[]): T[] {
+  const positions = new Map<string, number>();
+  const result: T[] = [];
+  for (const message of messages) {
+    const id = message.uuid ?? message.id;
+    const position = id ? positions.get(id) : undefined;
+    if (position !== undefined) {
+      result[position] = message;
+    } else {
+      if (id) positions.set(id, result.length);
+      result.push(message);
+    }
+  }
+  return result.length === messages.length ? messages : result;
+}

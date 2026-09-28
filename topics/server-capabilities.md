@@ -10,6 +10,20 @@ Topic: server-capabilities
 
 ## Source Of Truth
 
+`session-creation-provenance` (permanent ID 84, version-implied from v0.9.3)
+owns the optional `creationProvenance` field on session starts, restarts, and
+forks, plus its session summary/detail projections. Hosted clients omit the
+request field and hide creation-source filtering without it. See
+[session creation provenance](session-creation-provenance.md).
+
+`file-source-editing` (permanent ID 82, version-implied from 0.9.1) owns
+authenticated GET/PUT `/api/file-edit`, source revisions and conditional saves,
+and artifact source-target resolution. The maintainer approved this additive
+contract on 2026-09-22 after checking stable v0.8.1 and v0.9.0. Both lack it;
+clients hide Edit and make no new requests while preserving read/comment
+behavior. No existing capability changes meaning. See
+[file source editing](file-source-editing.md).
+
 `speech-backend-setup` (permanent ID 74, version-implied from 0.8.2) owns
 the Speech settings local-backend table: `speechVoiceBackends` on
 `GET`/`PUT /api/settings`, `GET /api/speech/backends`,
@@ -549,9 +563,26 @@ the same ledger:
 | 78 | server | 0.8.2 | `session-rewind` |
 | 79 | server | 0.8.2 | `project-captions` |
 | 80 | server | 0.8.2 | `project-names` |
+| 81 | server | 0.8.2 | `project-template-sources` |
+| 82 | server | 0.9.1 | `file-source-editing` |
+| 83 | server | 0.9.0 | `limited-users` |
 
 The code ledger is authoritative. The next client or server capability takes
-ID 81; retired rows stay in the ledger as reserved IDs.
+ID 84; retired rows stay in the ledger as reserved IDs.
+
+`limited-users` (ID 83, permanent, version-implied from 0.9.0) owns the
+`limitedUsersEnabled` setting and the `/api/users` routes. It was allocated
+after v0.9.0 and v0.9.1 shipped the feature, so those releases infer it from
+their version, and 0.9.0 precedes the ID 82 allocation's 0.9.1. The
+2026-09-26 optional-feature horizon is v0.9.0 and v0.9.1; both have the
+contract, and v0.8.1 and older have none of it. Without the capability the
+client drops Settings → Users from the category list, a typed URL reports an
+unsupported server without mounting the pane, and it sends no users request
+and no `limitedUsersEnabled` write. The same review added the additive
+`limitedUsersEnabled` boolean to `GET /api/auth/status` without a capability:
+only the local login page reads it, served by the same server, and an absent
+field hides the limited-user Username field. See
+[limited users](limited-users.md#login-switching-and-logout).
 
 `project-names` (ID 80, permanent, version-implied from 0.8.2) owns the
 `name` and `codeName` request fields on `POST /api/projects`,

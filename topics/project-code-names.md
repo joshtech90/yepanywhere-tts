@@ -18,9 +18,13 @@ Status: **implemented.**
   vanilla presentation for fresh browser profiles.
 - Enabling **Short Project Code Names** displays the code on Projects as a
   small outlined chip beside the full name, on the same line. Clicking it opens
-  an inline editor, leaving the field commits, and the adjacent × cancels. The
+  an inline editor; Enter or leaving the field commits, and the adjacent ×
+  cancels. After Enter the field keeps focus, so a refused code is corrected
+  at once; a commit started by leaving the field does not take focus back. The
   name yields space before the chip does, so the code stays readable on a
-  narrow card.
+  narrow card. A code the naming rule or the server refuses keeps the field
+  open and states the reason in full on its own line under the title line,
+  wrapping within the card; editing the field clears it.
 - Code names are unique across the projects visible to one YA server. A
   generated value remains stable across project ordering and visible-session
   changes, but is regenerated if another project's name introduces a generated
@@ -142,6 +146,10 @@ server corpus is `v0.7.0` and `v0.6.2`; without the capability, a current client
 uses full project names, preserves the released title format and activity
 frames, hides editing, and sends no code-name request. Enabling the browser
 preference against such a server does not weaken that fallback.
+
+The edit route accepts only a listed project (404 otherwise, nothing stored),
+and a limited user may edit only a project they own
+([limited users](limited-users.md) § Authorization).
 
 ## Related contracts
 

@@ -72,7 +72,10 @@ import { useI18n } from "../i18n";
 import type { BtwToolbarMode } from "../lib/btwAsideRouting";
 import { writeClipboardTextLater } from "../lib/clipboard";
 import { BROWSER_DEBUG_LEASE_TTL_MS } from "../lib/browserDebugLease";
-import { sessionViewerUsesRightPane } from "../lib/sessionViewerPlacement";
+import {
+  sessionViewerShowsBottomController,
+  sessionViewerUsesRightPane,
+} from "../lib/sessionViewerPlacement";
 import {
   type SessionViewerControllerState,
   useSessionViewerController,
@@ -99,6 +102,7 @@ import {
 import { getPermissionModeOptions } from "../lib/permissionModes";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import {
+  requestSessionIsearchOpen,
   SESSION_ISEARCH_GUIDE_EVENT,
   type SessionIsearchGuideState,
   type SessionIsearchScope,
@@ -171,6 +175,9 @@ function priorityToTierClass(priority: ToolbarNarrowingPriority): string {
 }
 
 function getIsearchPreviousKeys(scope: SessionIsearchScope): string[] {
+  if (scope === "links") {
+    return ["Ctrl", "Alt", "K"];
+  }
   if (scope === "full") {
     return ["Ctrl", "Alt", "S"];
   }
@@ -214,6 +221,15 @@ function getIsearchAlternateRows(
             scope: "full" as const,
             keys: ["Ctrl", "Alt", "S"],
             label: t("toolbarShortcutFullSession"),
+          },
+        ]),
+    ...(scope === "links"
+      ? []
+      : [
+          {
+            scope: "links" as const,
+            keys: ["Ctrl", "Alt", "K"],
+            label: t("toolbarShortcutLinks"),
           },
         ]),
   ];
@@ -321,6 +337,9 @@ export interface MessageInputToolbarProps {
   onProjectQueue?: () => void;
   /** Queue the draft as a new session after the project becomes idle. */
   onProjectQueueNewSession?: () => void;
+  /** Right-click/long-press on the new-session action: choose its target. */
+  onProjectQueueNewSessionOptions?: () => void;
+  onSendOptions?: () => void;
   /** Steer the current turn. Used as the alternate action when Enter queues. */
   onSteer?: () => void;
   primaryActionKind?: "send" | "steer" | "queue";
@@ -667,6 +686,7 @@ interface ToolbarQueueControl {
 
 interface ToolbarSendControl {
   onSend?: () => void;
+  onSendOptions?: () => void;
   onSteer?: () => void;
   canSend?: boolean;
   primaryActionKind: "send" | "steer" | "queue";
@@ -690,6 +710,7 @@ interface ToolbarSendControl {
 interface ToolbarProjectQueueControl {
   onProjectQueue?: () => void;
   onProjectQueueNewSession?: () => void;
+  onProjectQueueNewSessionOptions?: () => void;
   canSend?: boolean;
   tooltip?: string;
   newSessionTooltip?: string;
@@ -1600,6 +1621,40 @@ export function MessageInputToolbarView({
       </button>
     );
   };
+  const renderTranscriptSearchButton = (className: string, menu = false) => {
+    if (!visibility.transcriptSearch) {
+      return null;
+    }
+    return (
+      <button
+        type="button"
+        className={className}
+        {...toolbarControlMarker("transcriptSearch")}
+        onClick={() => {
+          setBottomOverflowOpen(false);
+          requestSessionIsearchOpen();
+        }}
+        aria-label={t("toolbarTranscriptSearch")}
+        aria-pressed={menu ? undefined : shortcutsControl.isearchScope !== null}
+        title={t("toolbarTranscriptSearch")}
+        role={menu ? "menuitem" : undefined}
+      >
+        <svg
+          width="16"
+          height="16"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          aria-hidden="true"
+        >
+          <circle cx="11" cy="11" r="7" />
+          <path d="M20 20l-4-4" />
+        </svg>
+      </button>
+    );
+  };
   const renderSteerNowToggle = (className: string) => {
     if (!canToggleSteerNow || !actionsControl.send) {
       return null;
@@ -1631,6 +1686,7 @@ export function MessageInputToolbarView({
     }
     const projectQueue = actionsControl.projectQueue;
     const disabled = actionsControl.disabled || !projectQueue.canSend;
+    const openNewSessionOptions = projectQueue.onProjectQueueNewSessionOptions;
     const speechPrefix = actionsControl.send.speechMessagePrefix;
     const deliveryLabel = (label: string) =>
       speechPrefix
@@ -1679,8 +1735,35 @@ export function MessageInputToolbarView({
             isPriorityCollapsible("projectQueueNewSessionShortcut")) && (
             <button
               type="button"
-              {...toolbarControlMarker("projectQueueNewSessionShortcut")}
-              onClick={projectQueue.onProjectQueueNewSession}
+              {...toolbarControlMarker(
+                "projectQueueNewSessionShortcut",
+                !!openNewSessionOptions,
+              )}
+              onClick={() => {
+                if (suppressNewSessionQueueClickRef.current) {
+                  suppressNewSessionQueueClickRef.current = false;
+                  return;
+                }
+                projectQueue.onProjectQueueNewSession?.();
+              }}
+              onContextMenu={
+                openNewSessionOptions
+                  ? (event) => {
+                      event.preventDefault();
+                      clearNewSessionOptionsLongPress();
+                      openNewSessionOptions();
+                    }
+                  : undefined
+              }
+              onTouchStart={
+                openNewSessionOptions
+                  ? () => startNewSessionOptionsLongPress(openNewSessionOptions)
+                  : undefined
+              }
+              onTouchEnd={clearNewSessionOptionsLongPress}
+              onTouchCancel={clearNewSessionOptionsLongPress}
+              onTouchMove={clearNewSessionOptionsLongPress}
+              aria-haspopup={openNewSessionOptions ? "dialog" : undefined}
               disabled={disabled}
               className={classNameFor(
                 "projectQueueNewSessionShortcut",
@@ -1730,6 +1813,8 @@ export function MessageInputToolbarView({
       statusControl &&
       isPriorityCollapsible("sessionStatus")) ||
     (visibility.shortcutsHelp && isPriorityCollapsible("shortcutsHelp")) ||
+    (visibility.transcriptSearch &&
+      isPriorityCollapsible("transcriptSearch")) ||
     (visibility.contextUsage &&
       actionsControl.contextUsage &&
       isPriorityCollapsible("contextUsage")) ||
@@ -1782,6 +1867,9 @@ export function MessageInputToolbarView({
         : "off",
     shortcutsHelp: visibility.shortcutsHelp
       ? effectivePriority("shortcutsHelp")
+      : "off",
+    transcriptSearch: visibility.transcriptSearch
+      ? effectivePriority("transcriptSearch")
       : "off",
     contextUsage:
       visibility.contextUsage && actionsControl.contextUsage
@@ -1840,6 +1928,26 @@ export function MessageInputToolbarView({
   const shortcutsLongPressTimerRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
+  const newSessionOptionsLongPressTimerRef = useRef<ReturnType<
+    typeof setTimeout
+  > | null>(null);
+  // A long-press that opened the options must not also queue on release.
+  const suppressNewSessionQueueClickRef = useRef(false);
+  const clearNewSessionOptionsLongPress = () => {
+    if (newSessionOptionsLongPressTimerRef.current) {
+      clearTimeout(newSessionOptionsLongPressTimerRef.current);
+      newSessionOptionsLongPressTimerRef.current = null;
+    }
+  };
+  const startNewSessionOptionsLongPress = (open: () => void) => {
+    clearNewSessionOptionsLongPress();
+    suppressNewSessionQueueClickRef.current = false;
+    newSessionOptionsLongPressTimerRef.current = setTimeout(() => {
+      newSessionOptionsLongPressTimerRef.current = null;
+      suppressNewSessionQueueClickRef.current = true;
+      open();
+    }, 520);
+  };
 
   const openShortcutSettings = () => {
     shortcutsControl.setOpen(true);
@@ -2454,6 +2562,11 @@ export function MessageInputToolbarView({
                       <ToolbarDoneIcon />
                     </button>
                   )}
+                {isPriorityCollapsible("transcriptSearch") &&
+                  renderTranscriptSearchButton(
+                    `${menuTierClass("transcriptSearch")} ${toolbarModuleStyles.transcriptSearchButton}`,
+                    true,
+                  )}
                 {visibility.shortcutsHelp &&
                   isPriorityCollapsible("shortcutsHelp") && (
                     <button
@@ -2526,6 +2639,9 @@ export function MessageInputToolbarView({
                 : t("toolbarQuestion")}
             </span>
           </button>
+        )}
+        {renderTranscriptSearchButton(
+          `${inlineTierClass("transcriptSearch")} ${toolbarModuleStyles.transcriptSearchButton}`,
         )}
         {visibility.shortcutsHelp && (
           // biome-ignore lint/a11y/noStaticElementInteractions: pointer leave only hides the adjacent shortcuts popover
@@ -2681,6 +2797,14 @@ export function MessageInputToolbarView({
                       <span>
                         {t("toolbarShortcutFullSessionReverseSearch")}
                       </span>
+                    </div>
+                    <div className="session-shortcuts-row">
+                      <span className="session-shortcuts-keys">
+                        <kbd>Ctrl</kbd>
+                        <kbd>Alt</kbd>
+                        <kbd>K</kbd>
+                      </span>
+                      <span>{t("toolbarShortcutLinkReverseSearch")}</span>
                     </div>
                     <div className="session-shortcuts-row">
                       <span className="session-shortcuts-keys">
@@ -2959,6 +3083,14 @@ export function MessageInputToolbarView({
               <button
                 type="button"
                 onClick={actionsControl.send?.onSend}
+                onContextMenu={
+                  actionsControl.send.onSendOptions
+                    ? (event) => {
+                        event.preventDefault();
+                        actionsControl.send?.onSendOptions?.();
+                      }
+                    : undefined
+                }
                 disabled={
                   actionsControl.disabled || !actionsControl.send.canSend
                 }
@@ -3064,6 +3196,8 @@ export function MessageInputToolbar({
   onQueue,
   onProjectQueue,
   onProjectQueueNewSession,
+  onProjectQueueNewSessionOptions,
+  onSendOptions,
   onSteer,
   primaryActionKind,
   sendOverride,
@@ -3081,7 +3215,8 @@ export function MessageInputToolbar({
   const showToast = useOptionalToastContext()?.showToast;
   const sessionViewerController = useSessionViewerController();
   const fileViewerController =
-    sessionViewerController?.sessionId === (sessionId ?? "")
+    sessionViewerController?.sessionId === (sessionId ?? "") &&
+    sessionViewerShowsBottomController(sessionViewerController)
       ? sessionViewerController
       : null;
   const {
@@ -3968,6 +4103,7 @@ export function MessageInputToolbar({
         send: showSendButton
           ? {
               onSend,
+              onSendOptions,
               onSteer,
               canSend,
               primaryActionKind: effectivePrimaryActionKind,
@@ -3996,6 +4132,7 @@ export function MessageInputToolbar({
             ? {
                 onProjectQueue,
                 onProjectQueueNewSession,
+                onProjectQueueNewSessionOptions,
                 canSend,
                 tooltip: onProjectQueue
                   ? showProjectQueueShortcut
@@ -4003,7 +4140,9 @@ export function MessageInputToolbar({
                     : t("toolbarProjectQueueTooltip")
                   : undefined,
                 newSessionTooltip: onProjectQueueNewSession
-                  ? t("toolbarProjectQueueNewSessionTooltip")
+                  ? onProjectQueueNewSessionOptions
+                    ? t("toolbarProjectQueueNewSessionOptionsTooltip")
+                    : t("toolbarProjectQueueNewSessionTooltip")
                   : undefined,
               }
             : null,

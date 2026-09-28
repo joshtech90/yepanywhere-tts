@@ -67,11 +67,17 @@ import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
 import type { UserUsageService } from "./auth/UserUsageService.js";
 import type { LimitedUsersService } from "./auth/LimitedUsersService.js";
+import { limitedActivityEvent } from "./auth/activityEventAccess.js";
 import { SessionAccessResolver } from "./auth/sessionAccess.js";
+import type { SubscriptionAccessTarget } from "./routes/ws-relay-handlers.js";
 import type { SrpLimitedUserLookup } from "./routes/ws-srp-handlers.js";
 import { createLimitedUsersMiddleware } from "./middleware/limited-users.js";
 import { createUsersRoutes } from "./routes/users.js";
+import { createPdfjsRoutes } from "./routes/pdfjs.js";
 import { createProjectTemplateSourceRoutes } from "./routes/project-template-source.js";
+import { createProjectTemplateRoutes } from "./routes/project-templates.js";
+import { TemplateSourceService } from "./projects/TemplateSourceService.js";
+import { TemplateCreationService } from "./projects/TemplateCreationService.js";
 import { SESSION_COOKIE_NAME } from "./auth/routes.js";
 import { getCookie as getRequestCookie } from "hono/cookie";
 import { levelFor } from "./auth/limitedUserPolicy.js";
@@ -88,7 +94,6 @@ import type {
 } from "./metadata/index.js";
 import { ToolResultMediaStore } from "./media/ToolResultMediaStore.js";
 import {
-  applySessionSandboxAuthRequirement,
   getClaudeSandboxProjectDir,
   getCodexSandboxSessionsDir,
   getSessionSandboxAvailability,
@@ -120,7 +125,9 @@ import {
   GROK_SESSIONS_DIR,
   PI_SESSIONS_DIR,
   decodeProjectId,
+  getProjectName,
   grokSessionMediaRoots,
+  type ProjectDisplayNameResolver,
 } from "./projects/paths.js";
 import { ProjectScanner } from "./projects/scanner.js";
 import {
@@ -130,6 +137,7 @@ import {
 } from "./push/index.js";
 import { createPushRoutes } from "./push/routes.js";
 import { ProjectStoragePolicy } from "./projects/projectStoragePolicy.js";
+import { settleGitAuthorPaletteRefreshes } from "./git/authorPalette.js";
 import type { RecentsService } from "./recents/index.js";
 import type {
   RemoteAccessService,
@@ -153,7 +161,10 @@ import { createFilesRoutes } from "./routes/files.js";
 import { canonicalizeManagedAttachmentPath } from "./uploads/attachmentAccess.js";
 import { createBangCommandsRoutes } from "./routes/bang-commands.js";
 import { BangCommandService } from "./services/BangCommandService.js";
-import { ClearloopService } from "./services/ClearloopService.js";
+import {
+  type ClearloopBadgeResolver,
+  ClearloopService,
+} from "./services/ClearloopService.js";
 import { createGitBrowseRoutes } from "./routes/git-browse.js";
 import { createGitFileRevisionRoutes } from "./routes/git-file-revision.js";
 import { createGitFileProjectionRoutes } from "./routes/git-file-projections.js";
@@ -229,6 +240,8 @@ import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 
 import { createLocalFileRoutes } from "./routes/local-file.js";
+import { createFileEditRoutes } from "./routes/file-edit.js";
+import { ArtifactRebuildService } from "./services/ArtifactRebuildService.js";
 import { createLocalImageRoutes } from "./routes/local-image.js";
 import { createLocalResourcePathPolicy } from "./routes/local-resource-policy.js";
 import { type UploadDeps, createUploadRoutes } from "./routes/upload.js";
@@ -280,6 +293,7 @@ import type { ModelInfoService } from "./services/ModelInfoService.js";
 import type { NetworkBindingService } from "./services/NetworkBindingService.js";
 import { buildProviderProjectCatalog } from "./routes/provider-catalog.js";
 import { AutoSessionTitleService } from "./services/AutoSessionTitleService.js";
+import { PdfjsAssetCache } from "./services/PdfjsAssetCache.js";
 import { ProjectQueueScheduler } from "./services/ProjectQueueScheduler.js";
 import { initializeSessionHeartbeatDefaults } from "./services/sessionHeartbeatDefaults.js";
 import type { ProjectQueueService } from "./services/ProjectQueueService.js";
@@ -335,7 +349,11 @@ import {
   type HeartbeatTurnCandidate,
 } from "./supervisor/Supervisor.js";
 import type { Message, Project } from "./supervisor/types.js";
-import { FocusedSessionWatchManager, type EventBus } from "./watcher/index.js";
+import {
+  type BusEvent,
+  FocusedSessionWatchManager,
+  type EventBus,
+} from "./watcher/index.js";
 import { LifecycleWebhookService } from "./webhooks/LifecycleWebhookService.js";
 
 export interface AppOptions {
@@ -551,15 +569,13 @@ export interface AppResult {
    */
   authorizeSubscription: (params: {
     username: string | null;
-    channel: string;
-    sessionId?: string;
-    projectId?: string;
+    target: SubscriptionAccessTarget;
   }) => Promise<boolean>;
-  /** Whether one activity event is visible to an authenticated identity. */
-  isActivityEventVisible: (
+  /** One activity event as an authenticated identity may receive it. */
+  activityEventForIdentity: (
     username: string | null,
-    event: { projectId?: string },
-  ) => boolean;
+    event: BusEvent,
+  ) => BusEvent | null;
 }
 
 function getMessageContentBlocks(message: Message): AppContentBlock[] {
@@ -614,14 +630,12 @@ function getPreservedRestartWork(
 export function createApp(options: AppOptions): AppResult {
   let artifactServer: ArtifactServer;
   let supervisor!: Supervisor;
-  const isSessionSandboxAuthEnforced = (): boolean =>
+  const isLocalAuthEnforced = (): boolean =>
     options.authDisabled !== true &&
     options.authService !== undefined &&
     !options.authService.isLocalhostOpen() &&
     (options.authService.isEnabled() ||
       Boolean(options.desktopAuthToken || options.desktopBootstrapService));
-  const isAuthenticationRelaxationBlocked = (): boolean =>
-    supervisor.isAuthenticationRelaxationBlocked();
   const getConfiguredSubagentMaxDepth = () => {
     const configured =
       options.serverSettingsService?.getSetting("subagentMaxDepth");
@@ -731,10 +745,6 @@ export function createApp(options: AppOptions): AppResult {
         effectiveDataDir,
       )
     : undefined;
-  if (computerControl) {
-    app.route("/api", createComputerControlRoutes(computerControl));
-    app.route("/api", createComputerControlReleaseRoutes(computerControl));
-  }
   const discoverySqlite = new DiscoverySqliteService({
     dataDir: effectiveDataDir,
     mode: options.sqliteMode ?? "auto",
@@ -804,6 +814,11 @@ export function createApp(options: AppOptions): AppResult {
   const isLimitedUsersEnabled = (): boolean =>
     limitedUsersService !== undefined &&
     options.serverSettingsService?.getSetting("limitedUsersEnabled") === true;
+  // Turning the feature off keeps the records but lets no limited login act.
+  const getActiveLimitedGrants = (username: string) =>
+    isLimitedUsersEnabled()
+      ? (limitedUsersService?.getActiveGrants(username) ?? null)
+      : null;
   const sessionAccessResolver = new SessionAccessResolver({
     getLiveSession: (sessionId) => {
       const process = supervisor?.getProcessForSession(sessionId);
@@ -811,10 +826,23 @@ export function createApp(options: AppOptions): AppResult {
       return {
         projectId: process.projectId,
         provider: process.provider,
-        lastActivityMs: Date.now(),
+        lastActivityMs: process.lastProviderMessageTime?.getTime() ?? null,
+        sandboxed: process.sandboxEnforcement?.effective === "project-write",
       };
     },
-    readCatalogRows: async () => [],
+    // The one retained catalog All Sessions and Inbox read, built below.
+    readCatalogRows: async () => {
+      if (!retainedCollections) {
+        throw new Error("Session catalog read before the app was built");
+      }
+      const { rows } = await retainedCollections.read();
+      return rows.map((row) => ({
+        sessionId: row.sessionId,
+        projectId: row.projectId,
+        provider: row.provider ?? row.catalogFamily,
+        updatedAt: row.updatedAt,
+      }));
+    },
     getSessionMetadata: (sessionId) =>
       options.sessionMetadataService?.getMetadata(sessionId),
   });
@@ -823,9 +851,8 @@ export function createApp(options: AppOptions): AppResult {
     app.use(
       "/api/*",
       createLimitedUsersMiddleware({
-        limitedUsers: limitedUsersService,
+        getActiveGrants: getActiveLimitedGrants,
         sessionAccess: sessionAccessResolver,
-        isEnabled: isLimitedUsersEnabled,
         getSuperuserIdentity: () =>
           options.remoteAccessService?.getUsername() ?? null,
         getCookieSessionUsername: async (c) =>
@@ -849,11 +876,64 @@ export function createApp(options: AppOptions): AppResult {
         ...(options.userUsageService
           ? { userUsage: options.userUsageService }
           : {}),
+        revokeUserLogins: async (username) => {
+          await authService.invalidateUserSessions(username);
+          // Relay sessions are keyed by SRP identity, and a limited name equal
+          // to the superuser's relay identity logs in as the superuser.
+          if (username === options.remoteAccessService?.getUsername()) return;
+          await options.remoteSessionService?.invalidateUserSessions(username);
+        },
+        revokeRelaySession: async (sessionId) => {
+          await options.remoteSessionService?.deleteSession(sessionId);
+        },
       }),
     );
   }
 
-  app.route("/api", createProjectTemplateSourceRoutes(effectiveDataDir));
+  // Mount /api routers only after the security and auth middleware above:
+  // Hono runs only the middleware registered before a route, so an earlier
+  // mount answers without them (test/auth/api-auth-boundary.test.ts).
+  if (computerControl) {
+    app.route("/api", createComputerControlRoutes(computerControl));
+    app.route("/api", createComputerControlReleaseRoutes(computerControl));
+  }
+  const templateSources = new TemplateSourceService(effectiveDataDir);
+  const templateCreations = new TemplateCreationService(
+    effectiveDataDir,
+    templateSources,
+  );
+  app.route(
+    "/api",
+    createProjectTemplateSourceRoutes(effectiveDataDir, templateSources),
+  );
+  app.route(
+    "/api",
+    createProjectTemplateRoutes(
+      templateSources,
+      templateCreations,
+      async (context, path, body) => {
+        const headers = new Headers(context.req.raw.headers);
+        headers.set("Content-Type", "application/json");
+        headers.delete("Content-Length");
+        // In-process responses are consumed directly, without fetch's decompression.
+        headers.delete("Accept-Encoding");
+        return app.request(
+          new Request(new URL(path, context.req.url), {
+            method: "POST",
+            headers,
+            body: JSON.stringify(body),
+          }),
+          undefined,
+          context.env,
+        );
+      },
+      (username) =>
+        isLimitedUsersEnabled()
+          ? (limitedUsersService?.getActiveGrants(username) ?? null)
+          : null,
+    ),
+  );
+  app.route("/api", createPdfjsRoutes(new PdfjsAssetCache(effectiveDataDir)));
   // Auth routes (always mounted if authService is provided)
   // This allows checking auth status and enabling/disabling from settings
   if (options.authService) {
@@ -864,9 +944,10 @@ export function createApp(options: AppOptions): AppResult {
         authDisabled: options.authDisabled,
         desktopAuthToken: options.desktopAuthToken,
         desktopBootstrapService: options.desktopBootstrapService,
-        isAuthenticationRelaxationBlocked,
         limitedUsers: limitedUsersService,
         isLimitedUsersEnabled,
+        getOwnerRelayUsername: () =>
+          options.remoteAccessService?.getUsername() ?? null,
       }),
     );
   }
@@ -961,6 +1042,19 @@ export function createApp(options: AppOptions): AppResult {
       locked: options.artifacts !== undefined,
     }),
   );
+  app.route(
+    "/api",
+    createFileEditRoutes({
+      policy: localResourcePathPolicy,
+      scanner,
+      resolveArtifactUrl: (url) => artifactServer.resolveSourceUrl(url),
+      isWritePending: async (path) =>
+        (await options.dirtyFileEditorService?.isWritePending(path)) ?? false,
+      rebuild: new ArtifactRebuildService(
+        join(effectiveDataDir, "artifact-rebuild"),
+      ),
+    }),
+  );
   const vhostAppControl = new VhostAppControl(
     () => artifactServer.config.vhosts ?? [],
   );
@@ -1021,6 +1115,7 @@ export function createApp(options: AppOptions): AppResult {
   let vocabularyKeyterms: VocabularyKeyterms | undefined;
   let unsubscribeVocabulary: (() => void) | undefined;
   const disposeSessionReaders = async (): Promise<void> => {
+    await templateCreations.close();
     await computerControl?.close();
     conversationSubscriptions?.close();
     focusedSessionWatchManager.dispose();
@@ -1038,6 +1133,7 @@ export function createApp(options: AppOptions): AppResult {
     await projectFileCompletion.dispose();
     await bangCommandService?.dispose();
     await scanner.dispose();
+    await settleGitAuthorPaletteRefreshes();
     const entries = Array.from(readerCache.entries());
     readerCache.clear();
     await Promise.all(entries.map(([key, reader]) => closeReader(key, reader)));
@@ -1520,7 +1616,9 @@ export function createApp(options: AppOptions): AppResult {
         getProjectIdleStatus:
           options.eventBus && options.projectQueueService
             ? (projectId) =>
-                projectQueueScheduler?.getProjectWorkStatus(projectId) ??
+                projectQueueScheduler?.getProjectWorkStatusYieldingToQueue(
+                  projectId,
+                ) ??
                 Promise.resolve({
                   idle: false,
                   blockers: ["project-scheduler-unavailable"],
@@ -1531,8 +1629,20 @@ export function createApp(options: AppOptions): AppResult {
   // Session metadata is initialized before createApp; loops left running by
   // a previous server process are closed out here.
   void clearloopService?.reconcileAfterRestart();
+  const getClearloopBadge: ClearloopBadgeResolver | undefined = clearloopService
+    ? (sessionId) => clearloopService.getBadge(sessionId)
+    : undefined;
+
+  // Every server surface names a project the same way: its chosen name, else
+  // its path's (topics/project-names.md).
+  const projectMetadataForNames = options.projectMetadataService;
+  const projectDisplayName: ProjectDisplayNameResolver = projectMetadataForNames
+    ? (projectPath) =>
+        projectMetadataForNames.getProjectDisplayName(projectPath)
+    : getProjectName;
 
   supervisor = new Supervisor({
+    projectDisplayName,
     onProcessInventoryChanged: () => {
       // Gateway services that opted into auto-stop need to know when their
       // last session goes away; the live process list is that answer.
@@ -1551,6 +1661,13 @@ export function createApp(options: AppOptions): AppResult {
     eventBus: options.eventBus,
     sessionMetadataService: options.sessionMetadataService,
     notificationService: options.notificationService,
+    ...(options.userUsageService
+      ? {
+          recordTokenUsage: (record) => {
+            void options.userUsageService?.recordTokens(record);
+          },
+        }
+      : {}),
     maxWorkers: options.maxWorkers,
     idlePreemptThresholdMs: options.idlePreemptThresholdMs,
     maxQueueSize: options.maxQueueSize,
@@ -1558,7 +1675,6 @@ export function createApp(options: AppOptions): AppResult {
     toolResultMediaStore,
     dirtyFileEditorService: options.dirtyFileEditorService,
     sandboxStateRoot: join(effectiveDataDir, "session-sandboxes"),
-    isSessionSandboxAuthEnforced,
     // Save executor for remote sessions to support resume
     onSessionExecutor: options.sessionMetadataService
       ? (sessionId, executor) =>
@@ -1687,6 +1803,7 @@ export function createApp(options: AppOptions): AppResult {
         eventBus: options.eventBus,
         supervisor,
         scanner,
+        projectDisplayName,
         decayMs: 30000, // 30 seconds
         // Callback to get session summary for new external sessions
         // projectId is now UrlProjectId (base64url) - ExternalSessionTracker converts it
@@ -1821,11 +1938,33 @@ export function createApp(options: AppOptions): AppResult {
       isSessionAutomationPaused: (sessionId) =>
         options.sessionMetadataService?.getMetadata(sessionId)
           ?.automationPausedUntilUserTurn === true,
+      getSessionLaunchMetadata: (sessionId) => {
+        const metadata = options.sessionMetadataService?.getMetadata(sessionId);
+        if (!metadata) return undefined;
+        return {
+          sandboxLevel: metadata.sandboxLevel,
+          sandboxNetworkFirewall: metadata.sandboxNetworkFirewall,
+          sandboxStateKey: metadata.sandboxStateKey,
+          sandboxProjectPath: metadata.sandboxProjectPath,
+          workingProjectId: metadata.workingProjectId,
+          createdByUser: metadata.createdByUser,
+          provider: options.sessionMetadataService?.getProvider(sessionId),
+        };
+      },
+      getLimitedUserGrants: getActiveLimitedGrants,
       onSessionStarted: async ({ item, process }) => {
         if (item.target.type !== "new-session") return;
         const metadata = options.sessionMetadataService;
         if (!metadata) return;
 
+        if (item.createdByUser) {
+          // A limited user's queued session is theirs, like one they start
+          // directly (topics/limited-users.md § Delivery v1).
+          await metadata.recordSessionCreator(
+            process.sessionId,
+            item.createdByUser,
+          );
+        }
         await initializeSessionHeartbeatDefaults({
           sessionId: process.sessionId,
           projectId: item.projectId,
@@ -1909,6 +2048,7 @@ export function createApp(options: AppOptions): AppResult {
       eventBus: options.eventBus,
       pushService: options.pushService,
       supervisor,
+      projectDisplayName,
     });
   }
 
@@ -1919,6 +2059,7 @@ export function createApp(options: AppOptions): AppResult {
       supervisor,
       projectQueueService: options.projectQueueService,
       externalTracker,
+      projectDisplayName,
     });
   }
 
@@ -1978,11 +2119,10 @@ export function createApp(options: AppOptions): AppResult {
         options.speechBackendRegistry?.enabledCapabilities() ?? {},
       getClientDefaults: () =>
         options.serverSettingsService?.getSetting("clientDefaults"),
-      getSessionSandboxAvailability: async (availabilityOptions) =>
-        applySessionSandboxAuthRequirement(
-          await getSessionSandboxAvailability(availabilityOptions),
-          isSessionSandboxAuthEnforced(),
-        ),
+      getSessionSandboxAvailability: async (availabilityOptions) => ({
+        ...(await getSessionSandboxAvailability(availabilityOptions)),
+        localAuthEnforced: isLocalAuthEnforced(),
+      }),
       desktopRuntime: options.desktopRuntime,
       providerHostControlAvailable: isProviderRuntimeHostAvailable(),
       isLiveWorktreeMonitoringEnabled: () =>
@@ -2104,6 +2244,7 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionMetadataService: options.sessionMetadataService,
       projectMetadataService: options.projectMetadataService,
+      limitedUsersService,
       eventBus: options.eventBus,
       projectQueueService: options.projectQueueService,
       sessionIndexService: options.sessionIndexService,
@@ -2168,6 +2309,7 @@ export function createApp(options: AppOptions): AppResult {
         piSessionsDir,
         piReaderFactory,
         sessionMetadataService: options.sessionMetadataService,
+        userUsageService: options.userUsageService,
       }),
     );
   }
@@ -2308,6 +2450,7 @@ export function createApp(options: AppOptions): AppResult {
       },
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
+      getClearloopBadge,
       // Explicit Kill blocks YA's automatic resume gate while preserving the
       // provider transcript for history and deliberate manual continuation.
       blockSessionResume: async ({ sessionId }) => {
@@ -2578,6 +2721,7 @@ export function createApp(options: AppOptions): AppResult {
       piReaderFactory,
       eventBus: options.eventBus,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
+      projectDisplayName,
     }),
   );
 
@@ -2593,6 +2737,7 @@ export function createApp(options: AppOptions): AppResult {
       notificationService: options.notificationService,
       sessionIndexService: options.sessionIndexService,
       sessionMetadataService: options.sessionMetadataService,
+      getClearloopBadge,
       codexScanner,
       codexSessionsDir,
       codexReaderFactory,
@@ -2605,6 +2750,7 @@ export function createApp(options: AppOptions): AppResult {
       piReaderFactory,
       eventBus: options.eventBus,
       sessionAutoArchiveDays: options.sessionAutoArchiveDays,
+      projectDisplayName,
     }),
   );
 
@@ -3166,8 +3312,11 @@ export function createApp(options: AppOptions): AppResult {
 
     const publicShareDeps = {
       publicShareService: options.publicShareService,
+      listProjectRoots: async () =>
+        (await scanner.listProjects()).map((project) => project.path),
       loadSession: loadPublicShareSession,
       loadCompleteSession: loadCompletePublicShareSession,
+      projectDisplayName,
       loadSessionUpdatedAt: loadPublicShareSessionUpdatedAt,
       loadSessionSummary: loadPublicShareSessionSummary,
       fetchProjectFile: fetchPublicShareProjectFile,
@@ -3356,45 +3505,49 @@ export function createApp(options: AppOptions): AppResult {
     resolveAbsoluteFilePaths: localResourcePathPolicy.findAllowedFilePaths,
     limitedUsers: limitedUsersService
       ? {
+          isEnabled: isLimitedUsersEnabled,
           getSrpChallengeInputs: (username) =>
-            isLimitedUsersEnabled()
-              ? limitedUsersService.getSrpChallengeInputs(username)
-              : undefined,
+            limitedUsersService.getSrpChallengeInputs(username),
         }
       : undefined,
-    isActivityEventVisible: (username, event) => {
-      if (!isLimitedUsersEnabled() || !username) return true;
-      if (username === options.remoteAccessService?.getUsername()) return true;
-      const grants = limitedUsersService?.getActiveGrants(username);
-      if (!grants) return false;
-      return (
-        typeof event.projectId !== "string" ||
-        levelFor(grants, event.projectId) !== "none"
-      );
+    activityEventForIdentity: (username, event) => {
+      if (!username) return event;
+      if (username === options.remoteAccessService?.getUsername()) return event;
+      const grants = getActiveLimitedGrants(username);
+      if (!grants) return null;
+      return limitedActivityEvent(event, {
+        isProjectAccessible: (projectId) =>
+          levelFor(grants, projectId) !== "none",
+        knownSessionProject: (sessionId) =>
+          sessionAccessResolver.resolveKnown(sessionId)?.projectId,
+      });
     },
-    authorizeSubscription: async ({
-      username,
-      channel,
-      sessionId,
-      projectId,
-    }) => {
+    authorizeSubscription: async ({ username, target }) => {
       // The superuser (no limited identity on the socket) subscribes freely.
-      if (!isLimitedUsersEnabled() || !username) return true;
+      if (!username) return true;
       if (username === options.remoteAccessService?.getUsername()) return true;
-      const grants = limitedUsersService?.getActiveGrants(username);
+      const grants = getActiveLimitedGrants(username);
       if (!grants) return false;
-      if (projectId) return levelFor(grants, projectId) !== "none";
-      if (sessionId) {
+      // The activity channel carries events for every project; its rows are
+      // filtered by the same grants downstream.
+      if (target.kind === "global") return true;
+      if (target.kind === "unknown") return false;
+      const { projectIds, sessionIds } = target;
+      if (projectIds.length === 0 && sessionIds.length === 0) return false;
+      if (projectIds.some((id) => levelFor(grants, id) === "none")) {
+        return false;
+      }
+      for (const sessionId of sessionIds) {
         const facts = await sessionAccessResolver.resolve(sessionId);
         if (!facts) return false;
-        return (
-          facts.createdByUser === username ||
-          levelFor(grants, facts.projectId) !== "none"
-        );
+        if (
+          facts.createdByUser !== username &&
+          levelFor(grants, facts.projectId) === "none"
+        ) {
+          return false;
+        }
       }
-      // Channels with no id of their own (activity) carry events for every
-      // project; their rows are filtered by the same grants downstream.
-      return channel === "activity";
+      return true;
     },
   };
 }

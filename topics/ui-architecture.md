@@ -121,6 +121,12 @@ preferences or change another open window. A saved minimized mode stays
 minimized, and an explicit `?sidebar=expanded` takes precedence. The reader
 can expand the rail normally; same-window navigation retains its current mode.
 
+A tab opened directly on the new-session page, where the HTML's pre-boot
+composer was shown ([early typing handoff](early-typing-handoff.md#pre-boot-composer)),
+starts minimized the same unsaved way. Its floating toggle restores the saved
+mode rather than the collapsed rail, since the reader never chose to
+minimize; `?sidebar=expanded` still wins.
+
 ## Public Share Example
 
 Public shares have a valid reason for an independent unauthenticated top-level
@@ -158,6 +164,18 @@ Structured explanatory tooltips use the same timing coordinator explicitly.
 Interactive help panels remain popovers with their own state. The observable
 contract and native fallback are in
 [tooltip-interactions](tooltip-interactions.md).
+
+## Desktop Dropdown Panel Placement
+
+A desktop `FilterDropdown` panel (the model picker, session filters, and the
+other shared selection menus) must fit inside the visible area of the window
+and of every scrolling or clipping ancestor. It opens below its trigger unless
+its content does not fit there and the space above is larger; then it opens
+above. Its height is capped to the room on the chosen side (and never more
+than 480px or 60% of the window), and a longer list scrolls inside the panel.
+Every option must be reachable by scrolling inside the panel. Opening the panel
+must not scroll the page or lengthen its scrollable area. The mobile bottom
+sheet is separate and unaffected.
 
 ## Global Reload Notice Placement
 

@@ -20,6 +20,7 @@ import { InboxProvider } from "./contexts/InboxContext";
 import { SchemaValidationProvider } from "./contexts/SchemaValidationContext";
 import { CurrentSourceRuntimeProvider } from "./contexts/SourceRuntimeContext";
 import { ToastProvider } from "./contexts/ToastContext";
+import { useCanAdministerHost } from "./hooks/useActingPrincipal";
 import { useActivityBusConnection } from "./hooks/useActivityBusConnection";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
@@ -110,20 +111,21 @@ function AppContent({ children, showCodexUpdatePrompt }: AppContentProps) {
     safeRestartMutating,
     backendReloadSafetyKnown,
   } = useReloadNotifications();
+  const canAdministerHost = useCanAdministerHost();
   const visibleReloads = getVisibleReloadBanners(
     !!isManualReloadMode,
     pendingReloads,
-    { backendReloadSafetyKnown },
+    { backendReloadSafetyKnown, canRestartServer: canAdministerHost },
   );
 
   return (
     <>
       <ConnectionBar />
-      <StorageFilesystemBanner />
-      <DesktopProviderNotice />
-      {!authLoading && (!authEnabled || isAuthenticated) && (
-        <LocalRuntimeNotice />
-      )}
+      {canAdministerHost && <StorageFilesystemBanner />}
+      {canAdministerHost && <DesktopProviderNotice />}
+      {!authLoading &&
+        (!authEnabled || isAuthenticated) &&
+        canAdministerHost && <LocalRuntimeNotice />}
       <CacheMissBillingToasts />
       {!isSessionDetailRoute && <ClientLogRecordingBadge />}
       <ReloadBannerStack avoidSessionComposer={isSessionDetailRoute}>

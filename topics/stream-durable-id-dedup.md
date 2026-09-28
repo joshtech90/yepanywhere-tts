@@ -24,6 +24,27 @@ re-subscribe -> `connected` -> `fetchNewMessages()` -> merge of the
 now-persisted post-interrupt rows. Hence the report "every message after I
 interrupted to deliver a queued steer is double-displayed."
 
+## Snapshot identity at bulk boundaries
+
+A transcript contains at most one current message per canonical ID. A new
+session's REST fallback projects process replay history into that shape:
+same-ID snapshots retain the first position and the latest complete value.
+Distinct IDs remain distinct even when their text is identical. Client bulk
+loading, tail replacement, pagination and route restoration enforce the same
+identity invariant before rendering, including responses from older servers.
+This is exact identity reconciliation, independent of approximate-dedup gates.
+
+An unfinished `_isStreaming` row obtained through REST remains live data; the
+transport does not make it authoritative disk content. Later stream snapshots
+can replace it. Durable catch-up clears the transient streaming flag, so the
+next assistant event cannot remove a completed row as a placeholder.
+
+The first-turn prefix ladder was reproduced with four same-ID process-history
+snapshots. Initial loading previously rendered duplicate React keys; durable
+catch-up reduced message state to one record while stale DOM paragraphs
+survived until remount. The route, reducer/render reconciliation and browser
+regressions cover that boundary without changing Codex provider IDs.
+
 ## Two-layer remedy
 
 1. **Deterministic id alignment (preferred).** Make the streamed id equal

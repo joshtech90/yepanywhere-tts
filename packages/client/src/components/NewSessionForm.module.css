@@ -20,10 +20,6 @@
   background: color-mix(in srgb, var(--app-yep-green) 10%, transparent);
 }
 
-.optionsWithCaptionToggle {
-  position: relative;
-}
-
 .projectControlsSlot,
 .secondaryOptions {
   display: grid;
@@ -34,14 +30,121 @@
 
 .secondaryOptions {
   grid-area: secondary;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.secondaryOptions[hidden] {
+  display: none;
+}
+
+.advancedSection {
+  grid-area: advanced;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.65rem;
+}
+
+.advancedSummary {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  line-height: 1.35;
+}
+
+.advancedToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 2.25rem;
+  padding: 0.35rem 0.6rem;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  background: var(--bg-code);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.advancedToggle:hover,
+.advancedToggle[aria-expanded="true"] {
+  border-color: var(--app-yep-green);
+  color: var(--text-primary);
+}
+
+.selectedChoice {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-width: 0;
+  text-align: left;
+}
+
+.leftAlignedTrigger {
+  text-align: left;
+}
+
+.selectedChoice :global(.mode-option-dot),
+.selectedChoice :global(.model-switch-indicator-dot) {
+  width: 10px;
+  height: 10px;
+}
+
+.selectedChoiceText {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.selectedChoiceText > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.choiceStatus {
+  color: var(--warning-color);
+  font-size: var(--font-size-xs);
+  line-height: 1.2;
+}
+
+.effortSection {
+  grid-column: auto;
+}
+
+.optionLayout :global(.new-session-provider-slot) {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.optionLayout :global(.new-session-provider-slot) .compactProviderSection {
+  grid-column: auto;
 }
 
 .secondaryOptions > * {
   min-width: 0;
 }
 
+.secondaryOptions > :global(.new-session-helper-section),
+.secondaryOptions > :global(.new-session-mode-section) {
+  margin-bottom: 0;
+}
+
 .secondaryOptionsHidden {
   visibility: hidden;
+}
+
+.templateProjectSlot {
+  grid-area: template;
+  min-width: 0;
+  padding: 16px;
+  border: 1px solid var(--border-input);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+.templateProjectSlot[hidden] {
+  display: none;
 }
 
 @media (max-width: 899px) {
@@ -49,7 +152,9 @@
     grid-template-areas:
       "main"
       "project"
+      "template"
       "provider"
+      "advanced"
       "secondary";
   }
 
@@ -57,6 +162,8 @@
     grid-template-areas:
       "main"
       "project"
+      "template"
+      "advanced"
       "secondary";
   }
 
@@ -66,45 +173,58 @@
   }
 }
 
+@media (max-width: 600px) {
+  .optionLayout :global(.new-session-provider-slot) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .secondaryOptions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 @media (min-width: 900px) {
   .optionLayout.optionLayout {
     grid-template-areas:
       "main project"
-      "provider secondary";
+      "template template"
+      "provider provider"
+      "advanced advanced"
+      "secondary secondary";
   }
 
   .optionLayoutWithoutProject.optionLayoutWithoutProject {
     grid-template-areas:
       "main main"
-      "provider secondary";
+      "provider provider"
+      "advanced advanced"
+      "secondary secondary";
   }
 
-  /* Every picker in the provider slot was withheld — a locked provider, model,
-     and effort with no permission control left. The remaining options take the
-     full row instead of sitting beside a hole where the slot would have been. */
+  /* A limited user's fixed launch can leave no provider picker in this slot. */
   .optionLayoutWithoutProvider.optionLayoutWithoutProvider {
     grid-template-areas:
       "main project"
+      "template template"
+      "advanced advanced"
       "secondary secondary";
   }
 
   .optionLayoutWithoutProject.optionLayoutWithoutProvider {
     grid-template-areas:
       "main main"
+      "advanced advanced"
       "secondary secondary";
   }
 }
 
 .captionToggle {
-  position: absolute;
-  z-index: 1;
-  inset-block-start: -0.2rem;
-  inset-inline-end: 0;
   display: inline-grid;
   place-items: center;
   width: 2rem;
   height: 2rem;
   padding: 0;
+  margin-inline-start: auto;
   border: 1px solid var(--border-color);
   border-radius: 50%;
   background: var(--bg-surface);
@@ -123,11 +243,17 @@
 }
 
 .optionCaption {
-  margin: calc(var(--space-1) * -1) 0 var(--space-2);
+  margin: var(--space-2) 0 0;
   color: var(--text-muted);
   font-size: var(--font-size-sm);
   line-height: 1.35;
   overflow-wrap: anywhere;
+}
+
+/* A risk the selected option carries; shown whether or not captions are. */
+.optionWarning {
+  composes: optionCaption;
+  color: var(--warning-color);
 }
 
 .captionedRecapDuration {
@@ -197,7 +323,8 @@
 .fullPane > :global(.new-session-header),
 .fullPane :global(.new-session-project-slot),
 .fullPane :global(.new-session-provider-slot),
-.fullPane :global(.new-session-thinking-controls) {
+.fullPane .advancedSection,
+.fullPane .secondaryOptions {
   display: none;
 }
 

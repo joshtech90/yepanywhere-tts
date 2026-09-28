@@ -14,8 +14,10 @@
 - Public share content censorship
 - Approval and local access security hardening
 - Security trust boundaries
-- Active content security (confirmed same-origin HTML execution, source-first
+- Active content security (confirmed same-origin HTML execution, scriptless
   file viewing, and isolated origins for agent-built applications)
+- [File source editing](file-source-editing.md) (conditional saves and HTML
+  comment targets opening approximate original-source locations)
 - Trusted client packaging for signed/local app installs
 - [Optional computer control](optional-computer-control.md) (on-demand local
   native control, session eligibility, MCP spike evidence and Codex/Sky mechanics)

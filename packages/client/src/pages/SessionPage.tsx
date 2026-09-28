@@ -35,8 +35,8 @@ import {
   thinkingOptionToConfig,
   SERVER_CAPABILITIES,
   isTurnEffort,
-  parseClearloopArguments,
-  parseTurnIndexArgument,
+  isRewindSlashCommand,
+  REWIND_SLASH_COMMANDS,
 } from "@yep-anywhere/shared";
 import {
   type ComponentProps,
@@ -52,6 +52,7 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
+import { getUiCreationProvenance } from "../lib/sessionCreationProvenance";
 import { createSessionApi } from "../api/sessionClient";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
 import {
@@ -61,11 +62,13 @@ import {
 import sessionHeaderStyles from "../components/SessionHeader.module.css";
 import styles from "./SessionPage.module.css";
 import { GoalFlag } from "../components/GoalNotice";
+import { ClearloopRemainingBadge } from "../components/ClearloopRemainingBadge";
 import {
-  type ClearloopBadgeControls,
-  ClearloopRemainingBadge,
-} from "../components/ClearloopRemainingBadge";
-import { buildBangEchoText, collectBangHistory } from "../lib/bangCommands";
+  applyBangCommandReceipt,
+  buildBangEchoText,
+  collectBangHistory,
+} from "../lib/bangCommands";
+import { getBangCommandAnchor } from "../lib/transcriptDisplayObjects";
 import { serverSupportsBangCommands } from "../lib/bangCommandAvailability";
 import { BtwAsidePane } from "../components/BtwAsidePane";
 import {
@@ -89,6 +92,10 @@ import type {
   UploadProgress,
 } from "../components/MessageInput";
 import { MessageInputToolbar } from "../components/MessageInputToolbar";
+import type {
+  ChosenNewSessionQueueTarget,
+  NewSessionQueueTarget,
+} from "../components/NewSessionQueueOptions";
 import { ModelSwitchModal } from "../components/ModelSwitchModal";
 import { ProcessInfoBody } from "../components/ProcessInfoModal";
 import { ProjectSessionDefaultsModal } from "../components/ProjectSessionDefaultsModal";
@@ -230,8 +237,8 @@ import {
   appendSlashCommandDraft,
   collectComposerAttachmentsForSubmission as collectComposerAttachmentsForSubmissionHelper,
   createComposerDraftAttachmentState,
-  getComposerTransferReplacement,
   hasComposerDraftContent,
+  insertComposerTransferText,
   materializeComposerAttachmentsForSubmission,
   splitComposerAttachmentsForSubmission,
   type PreparedComposerSubmission,
@@ -246,11 +253,10 @@ import {
 import { createSessionDraftStorageKey } from "../lib/sessionDraftStorage";
 import {
   type ComposerTurnRecallCache,
-  type ComposerTurnRecallEntry,
-  createCommandRecallEntry,
   createComposerTurnRecallCache,
   mergeCommandRecallEntries,
 } from "../lib/composerTurnRecall";
+import { useSessionCommandRecall } from "../lib/sessionCommandRecall";
 import { turnContentText } from "../lib/sessionMessageText";
 import {
   getEstimatedServerOffsetMs,
@@ -265,14 +271,9 @@ import {
 } from "../lib/sessionNavigationState";
 import { getPublicShareInitialPrompt } from "../lib/sessionPublicSharePrompt";
 import { getUnifiedSessionForkAvailability } from "../lib/sessionForkAvailability";
-import {
-  SessionRewindProvider,
-  type SessionRewindContextValue,
-} from "../contexts/SessionRewindContext";
-import {
-  getSessionTurnIndex,
-  supportsSessionRewind,
-} from "../lib/sessionRewind";
+import { SessionRewindProvider } from "../contexts/SessionRewindContext";
+import { supportsSessionRewind } from "../lib/sessionRewind";
+import { useSessionRewindControls } from "../hooks/useSessionRewindControls";
 import { isBtwAsideSession } from "../lib/btwAsideSessions";
 import {
   composeGeneratedRetitle,
@@ -282,9 +283,7 @@ import {
 } from "../lib/sessionTitleHelpers";
 import {
   CLIENT_SLASH_COMMANDS,
-  REWIND_SLASH_COMMANDS,
   createClientSlashCommand,
-  isRewindSlashCommand,
   normalizeSlashCommandForMatch,
   resolveComposerDoneTarget,
   resolveComposerSessionOperation,
@@ -683,8 +682,7 @@ function SessionPageContent({
   const {
     session,
     updateSession,
-    reloadSession,
-    applyRewindLocally,
+    refreshTranscriptTail,
     messages,
     agentContent,
     mergeLoadedAgentContent,
@@ -711,6 +709,7 @@ function SessionPageContent({
     pendingMessages,
     addPendingMessage,
     removePendingMessage,
+    isMessageDelivered,
     updatePendingMessage,
     deferredMessages,
     setDeferredMessages,
@@ -1390,6 +1389,7 @@ function SessionPageContent({
           projectId,
           actualSessionId,
           thinking,
+          getUiCreationProvenance(versionInfo),
         );
         showToast(t("forkFromTurnStarted"), "success");
         navigate(
@@ -1404,7 +1404,7 @@ function SessionPageContent({
         );
       }
     },
-    [actualSessionId, basePath, navigate, projectId, showToast, t],
+    [actualSessionId, basePath, navigate, projectId, showToast, t, versionInfo],
   );
   const {
     guardEffortChange,
@@ -1413,7 +1413,8 @@ function SessionPageContent({
   } = useLongContextEffortGuard({
     provider: effectiveProvider,
     providerInfo: currentProviderInfo,
-    model: effectiveModelConfig?.requestedModel ?? effectiveModelConfig?.model,
+    // The resolved id, not a selection alias, decides the cache-safe exemption.
+    model: effectiveModelConfig?.model ?? effectiveModelConfig?.requestedModel,
     contextTokens: session?.contextUsage?.inputTokens,
     settings: serverSettings?.longContextEffortWarning,
     canFork: supportsForkFromTurn && !forkAfterDisabled,
@@ -1493,6 +1494,7 @@ function SessionPageContent({
         const result = await api.forkSession(projectId, actualSessionId, {
           forkKind: "after-user-turn",
           sourceMessageId,
+          creationProvenance: getUiCreationProvenance(versionInfo),
         });
         if (nextTurnText.trim()) {
           await api.queueMessage(
@@ -1523,6 +1525,7 @@ function SessionPageContent({
       showToast,
       t,
       uploadProgress.length,
+      versionInfo,
     ],
   );
   const createDirectTurnFork = useCallback(
@@ -1538,6 +1541,7 @@ function SessionPageContent({
         const result = await api.forkSession(projectId, actualSessionId, {
           forkKind,
           sourceMessageId,
+          creationProvenance: getUiCreationProvenance(versionInfo),
         });
         showToast(t("forkFromTurnStarted"), "success");
         navigate(
@@ -1558,6 +1562,7 @@ function SessionPageContent({
       projectId,
       showToast,
       t,
+      versionInfo,
     ],
   );
   const cloneSession = useCallback(async () => {
@@ -1568,6 +1573,7 @@ function SessionPageContent({
     try {
       const result = await api.forkSession(projectId, actualSessionId, {
         forkKind: "clone-latest-complete",
+        creationProvenance: getUiCreationProvenance(versionInfo),
       });
       showToast(t("sessionCloneCreated"), "success");
       navigate(
@@ -1587,6 +1593,7 @@ function SessionPageContent({
     projectId,
     showToast,
     t,
+    versionInfo,
   ]);
   const cancelForkSummaryJob = useCallback(
     async (objectId: string) => {
@@ -2274,7 +2281,9 @@ function SessionPageContent({
       }
     };
 
-    const slashTurn = resolveComposerSlashTurn(text);
+    const slashTurn = resolveComposerSlashTurn(text, {
+      rewindSupported: supportsRewind,
+    });
     if (slashTurn.kind === "custom") {
       const sessionOperation = resolveComposerSessionOperation({
         text,
@@ -2600,6 +2609,17 @@ function SessionPageContent({
       : [...attachmentsRef.current];
     let uploadedAttachments: UploadedFile[] = [];
 
+    const confirmSubmission = () => {
+      if (!preserveComposer) {
+        rememberSentSubmission(text, tempId);
+        draftControlsRef.current?.confirmInputClear();
+        revokeAttachmentPreviewUrls(currentAttachments);
+        setCorrectionDraft(null);
+        clearQuoteAnchors();
+      }
+      return true;
+    };
+
     try {
       if (!preserveComposer) {
         currentAttachments = await collectComposerAttachmentsForSubmission({
@@ -2716,16 +2736,19 @@ function SessionPageContent({
           reconnectStream();
         }
       }
-      // Success - clear the draft from localStorage
-      if (!preserveComposer) {
-        rememberSentSubmission(text, tempId);
-        draftControlsRef.current?.confirmInputClear();
-        revokeAttachmentPreviewUrls(currentAttachments);
-        setCorrectionDraft(null);
-        clearQuoteAnchors();
-      }
-      return true;
+      return confirmSubmission();
     } catch (err) {
+      // An aborted HTTP response does not undo delivery already observed on
+      // the session stream or in durable history. Never restore or retry it.
+      if (
+        isMessageDelivered({
+          tempId,
+          content: outgoingText,
+          timestamp: clientTimestampIso,
+        })
+      ) {
+        return confirmSubmission();
+      }
       console.error("Failed to send:", err);
       let finalError: unknown = err;
       logSessionUiTrace("composer-send-error", {
@@ -2787,14 +2810,7 @@ function SessionPageContent({
             modeVersion: result.modeVersion,
             recapAfterSeconds: result.recapAfterSeconds,
           });
-          if (!preserveComposer) {
-            rememberSentSubmission(text, tempId);
-            draftControlsRef.current?.confirmInputClear();
-            revokeAttachmentPreviewUrls(currentAttachments);
-            setCorrectionDraft(null);
-            clearQuoteAnchors();
-          }
-          return true;
+          return confirmSubmission();
         } catch (retryErr) {
           console.error("Failed to resume session:", retryErr);
           finalError = retryErr;
@@ -2847,11 +2863,7 @@ function SessionPageContent({
   messagesRef.current = messages;
   const runBangCommand = useCallback(
     async (command: string) => {
-      const currentMessages = messagesRef.current;
-      const lastMessage = currentMessages[currentMessages.length - 1];
-      const placementAfterMessageId = lastMessage
-        ? ((lastMessage.uuid ?? lastMessage.id) as string | undefined) || ""
-        : "";
+      const placementAfterMessageId = getBangCommandAnchor(messagesRef.current);
       try {
         const result = await api.runBangCommand(
           projectId,
@@ -2859,9 +2871,8 @@ function SessionPageContent({
           command,
           placementAfterMessageId,
         );
-        updateTranscriptDisplayObjectsForSession(
-          sessionId,
-          () => result.transcriptDisplayObjects,
+        updateTranscriptDisplayObjectsForSession(sessionId, (current) =>
+          applyBangCommandReceipt(current, result.displayObject),
         );
         setScrollTrigger((prev) => prev + 1);
       } catch (error) {
@@ -2894,8 +2905,25 @@ function SessionPageContent({
     [projectId, sessionId, showToast, t],
   );
 
+  const initialDisplayObjectsRef = useRef<{
+    sessionId: string;
+    ids: Set<string>;
+  } | null>(null);
+  if (
+    session?.id === sessionId &&
+    initialDisplayObjectsRef.current?.sessionId !== sessionId
+  ) {
+    initialDisplayObjectsRef.current = {
+      sessionId,
+      ids: new Set(
+        session.transcriptDisplayObjects?.map((object) => object.id),
+      ),
+    };
+  }
   const bangCommandHandlers = useMemo<BangCommandHandlers>(
     () => ({
+      shouldExpandOutput: (objectId) =>
+        !initialDisplayObjectsRef.current?.ids.has(objectId),
       onKill: (objectId) => {
         void api
           .killBangCommand(projectId, sessionId, objectId)
@@ -2960,45 +2988,9 @@ function SessionPageContent({
     composerTurnRecallCacheRef.current = createComposerTurnRecallCache();
   }
   const composerTurnRecallCache = composerTurnRecallCacheRef.current;
-  // Accepted YA commands never become turns; keep them recallable per session
-  // (browser-local, newest first) and merge them ahead of the transcript turns.
-  const commandRecallStorageKey = `ya:command-recall:${actualSessionId}`;
-  const [commandRecallEntries, setCommandRecallEntries] = useState<
-    ComposerTurnRecallEntry[]
-  >(() => {
-    try {
-      const raw = window.localStorage.getItem(commandRecallStorageKey);
-      const parsed: unknown = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed)
-        ? parsed.filter(
-            (entry): entry is ComposerTurnRecallEntry =>
-              typeof entry?.id === "string" && typeof entry?.text === "string",
-          )
-        : [];
-    } catch {
-      return [];
-    }
-  });
-  const recordCommandRecall = useCallback(
-    (text: string) => {
-      setCommandRecallEntries((previous) => {
-        const next = [
-          createCommandRecallEntry(text),
-          ...previous.filter((entry) => entry.text !== text),
-        ].slice(0, 50);
-        try {
-          window.localStorage.setItem(
-            commandRecallStorageKey,
-            JSON.stringify(next),
-          );
-        } catch {
-          // Browser storage is best effort; the in-memory list still serves.
-        }
-        return next;
-      });
-    },
-    [commandRecallStorageKey],
-  );
+  // Accepted YA commands never become turns; they are recalled ahead of them.
+  const { entries: commandRecallEntries, record: recordCommandRecall } =
+    useSessionCommandRecall(actualSessionId);
   const composerTurnRecallEntries = useMemo(
     () =>
       mergeCommandRecallEntries(
@@ -3420,11 +3412,14 @@ function SessionPageContent({
     text: string,
     targetType: "existing-session" | "new-session",
     metadata?: MessageSubmissionMetadata,
+    newSessionTarget?: ChosenNewSessionQueueTarget,
   ) => {
     // Project Queue is a delayed lane, so a YA-emulated command must be
     // carried to the scheduler rather than run now the way the composer's
     // direct paths run it (topics/project-queue.md § Queued YA commands).
-    const classified = classifyQueuedYaCommand(text);
+    const classified = classifyQueuedYaCommand(text, {
+      rewindSupported: supportsRewind,
+    });
     const refuseCommand = (message: string) => {
       draftControlsRef.current?.setDraft(text);
       showToast(message, "error");
@@ -3441,6 +3436,16 @@ function SessionPageContent({
       );
       return;
     }
+    if (classified.kind === "invalid") {
+      refuseCommand(
+        classified.problem === "clear-zero"
+          ? t("projectQueueClearZero")
+          : t("projectQueueCommandSyntax", {
+              command: classified.command.name,
+            }),
+      );
+      return;
+    }
     const yaCommand =
       classified.kind === "queueable" ? classified.command : undefined;
     if (yaCommand) {
@@ -3448,10 +3453,6 @@ function SessionPageContent({
         refuseCommand(
           t("projectQueueCommandNeedsSession", { command: yaCommand.name }),
         );
-        return;
-      }
-      if (!supportsRewind) {
-        refuseCommand(t("rewindUnavailable"));
         return;
       }
       if (
@@ -3485,12 +3486,98 @@ function SessionPageContent({
     const actionAtMs = Date.now();
     const clientTimestamp = getServerClockTimestamp(actionAtMs);
 
+    // A new session chosen from the options may go to another project or
+    // provider. This session's settings still apply where they can: its
+    // executor and implicit effort only to the same provider, since another
+    // provider's catalog may not accept them.
+    const queueProjectId =
+      targetType === "new-session"
+        ? (newSessionTarget?.projectId ?? projectId)
+        : projectId;
+    const newSessionProvider = newSessionTarget?.provider ?? effectiveProvider;
+    const keepsProvider = newSessionProvider === effectiveProvider;
+    const newSessionModel =
+      newSessionTarget?.model ??
+      (keepsProvider ? (session?.model ?? getModelSetting()) : undefined);
+
     let currentAttachments = [...attachmentsRef.current];
     let uploadedAttachments: UploadedFile[] = [];
     let stagedAttachments: ProjectQueueStagedAttachments | undefined;
 
     try {
       currentAttachments = await collectComposerAttachmentsForSubmission();
+      if (
+        targetType === "new-session" &&
+        newSessionTarget?.delivery === "now"
+      ) {
+        const options = {
+          mode: permissionMode,
+          model: newSessionModel,
+          thinking: keepsProvider ? thinking : prepared.thinking,
+          showThinking,
+          provider: newSessionProvider,
+          executor: keepsProvider ? session?.executor : undefined,
+        };
+        const messageMetadata = {
+          ...metadata,
+          deliveryIntent: "direct" as const,
+          clientTimestamp,
+        };
+        const started =
+          currentAttachments.length > 0
+            ? await api.createSession(queueProjectId, options)
+            : await api.startSession(
+                queueProjectId,
+                outgoingText,
+                options,
+                undefined,
+                clientTimestamp,
+                messageMetadata,
+              );
+        if (currentAttachments.length > 0) {
+          const files = await materializeComposerAttachmentsForSubmission({
+            attachments: currentAttachments,
+            sourceTransport,
+            projectId: started.projectId,
+            sessionId: started.sessionId,
+          });
+          await api.queueMessage(
+            started.sessionId,
+            outgoingText,
+            permissionMode,
+            files,
+            undefined,
+            options.thinking,
+            undefined,
+            clientTimestamp,
+            messageMetadata,
+            undefined,
+            showThinking,
+          );
+        }
+        draftControlsRef.current?.confirmInputClear();
+        revokeAttachmentPreviewUrls(currentAttachments);
+        setCorrectionDraft(null);
+        clearQuoteAnchors();
+        navigate(
+          `${basePath}/projects/${started.projectId}/sessions/${started.sessionId}`,
+          {
+            state: createSessionNavigationState({
+              initialStatus: {
+                owner: "self",
+                processId: started.processId,
+                permissionMode: started.permissionMode,
+                appliedPermissionMode: started.appliedPermissionMode,
+                modeVersion: started.modeVersion,
+              },
+              initialTitle: outgoingText,
+              initialModel: newSessionModel,
+              initialProvider: newSessionProvider,
+            }),
+          },
+        );
+        return;
+      }
       if (targetType === "new-session") {
         const splitAttachments =
           splitComposerAttachmentsForSubmission(currentAttachments);
@@ -3502,7 +3589,7 @@ function SessionPageContent({
       }
       logSessionUiTrace("composer-project-queue-start", {
         sessionId,
-        projectId,
+        projectId: queueProjectId,
         targetType,
         permissionMode,
         thinking,
@@ -3513,17 +3600,17 @@ function SessionPageContent({
         serverOffsetMs: getEstimatedServerOffsetMs(),
       });
       const requestSentAtMs = Date.now();
-      const response = await api.createProjectQueueItem(projectId, {
+      const response = await api.createProjectQueueItem(queueProjectId, {
         target:
           targetType === "new-session"
             ? {
                 type: "new-session",
                 mode: permissionMode,
-                model: session?.model ?? getModelSetting(),
-                thinking,
+                model: newSessionModel,
+                thinking: keepsProvider ? thinking : prepared.thinking,
                 showThinking,
-                provider: effectiveProvider,
-                executor: session?.executor,
+                provider: newSessionProvider,
+                executor: keepsProvider ? session?.executor : undefined,
                 title: outgoingText,
               }
             : {
@@ -3558,7 +3645,7 @@ function SessionPageContent({
       sourceSummary.reportProjectQueueCollectionSnapshot(response.queue);
       logSessionUiTrace("composer-project-queue-result", {
         sessionId,
-        projectId,
+        projectId: queueProjectId,
         targetType,
         uploadWaitMs: requestSentAtMs - actionAtMs,
       });
@@ -3567,11 +3654,15 @@ function SessionPageContent({
       setCorrectionDraft(null);
       clearQuoteAnchors();
       showToast(
-        t(
-          targetType === "new-session"
-            ? "projectQueueNewSessionQueuedToast"
-            : "projectQueueSessionQueuedToast",
-        ),
+        targetType === "new-session" && queueProjectId !== projectId
+          ? t("projectQueueNewSessionQueuedInProjectToast", {
+              project: newSessionTarget?.projectName ?? queueProjectId,
+            })
+          : t(
+              targetType === "new-session"
+                ? "projectQueueNewSessionQueuedToast"
+                : "projectQueueSessionQueuedToast",
+            ),
         "success",
       );
     } catch (err) {
@@ -3585,7 +3676,12 @@ function SessionPageContent({
       draftControlsRef.current?.restoreFromStorage();
       setComposerAttachments(currentAttachments, { persistDraft: false });
       const errorMsg = err instanceof Error ? err.message : String(err);
-      showToast(t("projectQueueSubmitFailed", { message: errorMsg }), "error");
+      showToast(
+        newSessionTarget?.delivery === "now"
+          ? `${t("newSessionStartError")}: ${errorMsg}`
+          : t("projectQueueSubmitFailed", { message: errorMsg }),
+        "error",
+      );
     }
   };
 
@@ -3597,7 +3693,14 @@ function SessionPageContent({
   const handleProjectQueueNewSession = (
     text: string,
     metadata?: MessageSubmissionMetadata,
-  ) => queueComposerForProject(text, "new-session", metadata);
+    target?: ChosenNewSessionQueueTarget,
+  ) => queueComposerForProject(text, "new-session", metadata, target);
+
+  const projectQueueNewSessionTarget: NewSessionQueueTarget = {
+    projectId,
+    provider: effectiveProvider,
+    model: session?.model ?? getModelSetting(),
+  };
 
   const handleResumeProjectQueueDispatch = useCallback(async () => {
     try {
@@ -4206,25 +4309,11 @@ function SessionPageContent({
         showToast(t("sessionQuoteComposerUnavailable"), "error");
         return null;
       }
-      const insertedText = quotedText.trimEnd();
-      const currentDraft = controls.getDraft();
-      const transfer = getComposerTransferReplacement(
-        currentDraft,
-        insertedText,
+      const finalDraft = insertComposerTransferText(
+        controls,
+        quotedText.trimEnd(),
+        quotedText.endsWith("\n") ? "\n" : "",
       );
-      const replacement = quotedText.endsWith("\n")
-        ? `${transfer.replacement}\n`
-        : transfer.replacement;
-      const nextDraft = `${currentDraft.slice(0, transfer.start)}${replacement}${currentDraft.slice(transfer.end)}`;
-      const undoableDraft = controls.replaceDraftRangeUndoably?.(
-        transfer.start,
-        transfer.end,
-        replacement,
-      );
-      const finalDraft = undoableDraft ?? nextDraft;
-      if (undoableDraft === null || !controls.replaceDraftRangeUndoably) {
-        controls.setDraft(nextDraft);
-      }
       requestAnimationFrame(() => {
         controls.focus?.();
         controls.setSelectionRange?.(finalDraft.length, finalDraft.length);
@@ -4320,8 +4409,13 @@ function SessionPageContent({
   // its tab may be gone before its own confirm ever runs.
   const reconcilePendingSendDraftRef = useRef<() => void>(() => {});
   const reconcilePendingSendDraft = useCallback(() => {
-    draftControlsRef.current?.discardPendingSendDraft((draftText) =>
-      draftTextIsAccountedFor({ draftText, messages, deferredMessages }),
+    draftControlsRef.current?.discardPendingSendDraft(({ text, sentAtMs }) =>
+      draftTextIsAccountedFor({
+        draftText: text,
+        sentAtMs,
+        messages,
+        deferredMessages,
+      }),
     );
   }, [deferredMessages, messages]);
   reconcilePendingSendDraftRef.current = reconcilePendingSendDraft;
@@ -4378,326 +4472,23 @@ function SessionPageContent({
     [applyMotherComposerTransfer, mainComposerForAside, setFocusedBtwAsideId],
   );
 
-  // Same-session rewind (topics/session-rewind.md): the stable turn index N,
-  // the turn-menu Clear entries, /clear N, /fork N, and /clearloop.
-  const sessionTurnIndex = useMemo(
-    () => getSessionTurnIndex(messages),
-    [messages],
-  );
-  const [expandedRewoundGroups, setExpandedRewoundGroups] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
-  const toggleRewoundGroup = useCallback((groupId: string) => {
-    setExpandedRewoundGroups((previous) => {
-      const next = new Set(previous);
-      if (next.has(groupId)) next.delete(groupId);
-      else next.add(groupId);
-      return next;
-    });
-  }, []);
-  const rewindToCut = useCallback(
-    async (
-      cut: {
-        kind: "after-user-turn" | "before-user-turn";
-        sourceMessageId: string;
-      },
-      cutTurnIndex: number,
-    ): Promise<boolean> => {
-      try {
-        const result = await api.rewindSession(projectId, actualSessionId, {
-          cut,
-          cutTurnIndex,
-        });
-        if (result.noop) {
-          showToast(t("rewindNoop"), "success");
-          return true;
-        }
-        showToast(
-          t("rewindDone", {
-            count: String(result.record?.droppedTurnCount ?? 0),
-          }),
-          "success",
-        );
-        // Restructure the loaded transcript in place; only a cut older than
-        // the loaded window needs the server's projection refetched.
-        if (!result.record || !applyRewindLocally(result.record)) {
-          reloadSession();
-        }
-        return true;
-      } catch (error) {
-        showToast(
-          t("rewindFailed", {
-            message: error instanceof Error ? error.message : String(error),
-          }),
-          "error",
-        );
-        return false;
-      }
-    },
-    [
-      actualSessionId,
-      applyRewindLocally,
-      projectId,
-      reloadSession,
-      showToast,
-      t,
-    ],
-  );
-  const clearAfterUserMessage = useCallback(
-    (messageId: string) => {
-      const index = sessionTurnIndex.indexById.get(messageId) ?? 0;
-      void rewindToCut(
-        { kind: "after-user-turn", sourceMessageId: messageId },
-        index,
-      );
-    },
-    [rewindToCut, sessionTurnIndex],
-  );
-  const clearReplacingUserMessage = useCallback(
-    (messageId: string) => {
-      const index = sessionTurnIndex.indexById.get(messageId) ?? 1;
-      if (index <= 1) {
-        // Turn 1 has no earlier boundary; an empty prefix is the
-        // new-session Clear (topics/session-rewind.md § Commands).
-        showToast(t("rewindClearZero"), "error");
-        return;
-      }
-      const source = messages.find((m) => (m.uuid ?? m.id) === messageId);
-      const promptText = turnContentText(source?.message?.content).trim();
-      if (promptText) {
-        // Persist the draft before the reload that follows the rewind.
-        draftControlsRef.current?.setDraft(promptText);
-        draftControlsRef.current?.flushDraft();
-      }
-      void rewindToCut(
-        { kind: "before-user-turn", sourceMessageId: messageId },
-        index - 1,
-      );
-    },
-    [messages, rewindToCut, sessionTurnIndex, showToast, t],
-  );
-  const startClearloop = useCallback(
-    async (
-      sourceMessageId: string,
-      cutTurnIndex: number,
-      parsed: { total: number; prompt: string },
-      commandText: string,
-    ) => {
-      try {
-        await api.startClearloop(projectId, actualSessionId, {
-          cut: { kind: "after-user-turn", sourceMessageId },
-          cutTurnIndex,
-          prompt: parsed.prompt,
-          total: parsed.total,
-          commandText,
-        });
-        showToast(
-          t("clearloopStarted", {
-            total: String(parsed.total),
-            index: String(cutTurnIndex),
-          }),
-          "success",
-        );
-      } catch (error) {
-        showToast(
-          t("clearloopFailed", {
-            message: error instanceof Error ? error.message : String(error),
-          }),
-          "error",
-        );
-      }
-    },
-    [actualSessionId, projectId, showToast, t],
-  );
-  // A rewind performed elsewhere (a clearloop iteration, another tab) arrives
-  // on the metadata event; apply it to the loaded transcript in place.
-  useEffect(
-    () =>
-      activityBus.on("session-metadata-changed", (data) => {
-        if (data.sessionId !== actualSessionId) return;
-        // A refused rewind deletes its record; the grouped rows are live
-        // again and only the server projection knows the result.
-        if (data.rewindRecordRemoved) {
-          reloadSession();
-          return;
-        }
-        if (!data.rewindRecord) return;
-        if (!applyRewindLocally(data.rewindRecord)) reloadSession();
-      }),
-    [actualSessionId, applyRewindLocally, reloadSession],
-  );
-  const handleCancelClearloop = useCallback(async () => {
-    try {
-      await api.cancelClearloop(projectId, actualSessionId);
-    } catch (error) {
-      showToast(
-        t("clearloopCancelFailed", {
-          message: error instanceof Error ? error.message : String(error),
-        }),
-        "error",
-      );
-    }
-  }, [actualSessionId, projectId, showToast, t]);
-  const clearloopControls = useMemo<ClearloopBadgeControls>(
-    () => ({
-      onCancel: () => {
-        if (window.confirm(t("clearloopCancelConfirm"))) {
-          void handleCancelClearloop();
-        }
-      },
-      onSetPatient: (patient: boolean) => {
-        void (async () => {
-          try {
-            await api.updateClearloop(projectId, actualSessionId, { patient });
-          } catch (error) {
-            showToast(
-              t("clearloopPatienceFailed", {
-                message: error instanceof Error ? error.message : String(error),
-              }),
-              "error",
-            );
-          }
-        })();
-      },
-      onStartNow: () => {
-        void (async () => {
-          try {
-            await api.updateClearloop(projectId, actualSessionId, {
-              startNow: true,
-            });
-          } catch (error) {
-            showToast(
-              t("clearloopStartNowFailed", {
-                message: error instanceof Error ? error.message : String(error),
-              }),
-              "error",
-            );
-          }
-        })();
-      },
-    }),
-    [actualSessionId, handleCancelClearloop, projectId, showToast, t],
-  );
-  const clearToNewSession = useCallback(() => {
-    const params = new URLSearchParams({ projectId });
-    if (effectiveProvider) params.set("provider", effectiveProvider);
-    if (session?.model) params.set("model", session.model);
-    navigate(`${basePath}/new-session?${params.toString()}`);
-  }, [basePath, effectiveProvider, navigate, projectId, session?.model]);
-  const sessionRewindContextValue = useMemo<SessionRewindContextValue>(
-    () => ({
-      turnIndexById: sessionTurnIndex.indexById,
-      onClearAfter: supportsRewind ? clearAfterUserMessage : undefined,
-      onClearReplacing: supportsRewind ? clearReplacingUserMessage : undefined,
-      expandedRewoundGroups,
-      toggleRewoundGroup,
-    }),
-    [
-      clearAfterUserMessage,
-      clearReplacingUserMessage,
-      expandedRewoundGroups,
-      sessionTurnIndex,
-      supportsRewind,
-      toggleRewoundGroup,
-    ],
-  );
-  const handleRewindCommand = useCallback(
-    (command: "clear" | "fork" | "clearloop", argument: string): boolean => {
-      if (!supportsRewind) {
-        showToast(t("rewindUnavailable"), "error");
-        return true;
-      }
-      const { idByIndex, clearedIds, lastLiveIndex } = sessionTurnIndex;
-      const turnMissing = (index: number) => {
-        showToast(
-          lastLiveIndex === 0
-            ? t("rewindNoTurns")
-            : t("rewindTurnNotFound", { index: String(index) }),
-          "error",
-        );
-      };
-      // Turn N over the full sequence; a turn inside a cleared span is not
-      // a rewind target yet (tree hops are unspecified).
-      const resolveTurn = (index: number): string | null => {
-        const id = idByIndex.get(index);
-        if (index < 1 || !id) {
-          turnMissing(index);
-          return null;
-        }
-        if (command !== "fork" && clearedIds.has(id)) {
-          showToast(t("rewindTurnCleared", { index: String(index) }), "error");
-          return null;
-        }
-        return id;
-      };
-      // A malformed command is handed back to the composer rather than lost.
-      const restoreDraft = () => {
-        draftControlsRef.current?.setDraft(
-          `/${command}${argument ? ` ${argument}` : ""}`,
-        );
-        showToast(t("rewindCommandSyntax"), "error");
-      };
-      const commandText = `/${command}${argument ? ` ${argument.trim()}` : ""}`;
-      if (command === "clearloop") {
-        const parsed = parseClearloopArguments(argument);
-        if (!parsed) {
-          restoreDraft();
-          return true;
-        }
-        // No N means "loop from here": the last turn still in the
-        // conversation, which is the N its own Clear-after entry offers. A
-        // dropped turn holds a higher ordinal and is not a rewind target.
-        const index = parsed.turnIndex ?? lastLiveIndex;
-        const sourceMessageId = resolveTurn(index);
-        if (!sourceMessageId) return true;
-        recordCommandRecall(commandText);
-        draftControlsRef.current?.confirmInputClear();
-        void startClearloop(
-          sourceMessageId,
-          index,
-          parsed,
-          `/clearloop ${argument.trim()}`,
-        );
-        return true;
-      }
-      const index = parseTurnIndexArgument(argument, {
-        allowEmpty: command === "clear",
-      });
-      if (index === null) {
-        restoreDraft();
-        return true;
-      }
-      if (command === "clear" && index === 0) {
-        recordCommandRecall(commandText);
-        draftControlsRef.current?.confirmInputClear();
-        clearToNewSession();
-        return true;
-      }
-      const sourceMessageId = resolveTurn(index);
-      if (!sourceMessageId) return true;
-      recordCommandRecall(commandText);
-      // The command was consumed here, so the persisted draft is cleared as
-      // a sent message would be; otherwise a reload restores it.
-      draftControlsRef.current?.confirmInputClear();
-      if (command === "fork") {
-        void createDirectTurnFork(sourceMessageId, "after-user-turn");
-        return true;
-      }
-      void rewindToCut({ kind: "after-user-turn", sourceMessageId }, index);
-      return true;
-    },
-    [
-      clearToNewSession,
-      createDirectTurnFork,
-      recordCommandRecall,
-      rewindToCut,
-      sessionTurnIndex,
-      showToast,
-      startClearloop,
-      supportsRewind,
-      t,
-    ],
-  );
+  const {
+    contextValue: sessionRewindContextValue,
+    handleRewindCommand,
+    clearloopControls,
+    cancelClearloop: handleCancelClearloop,
+  } = useSessionRewindControls({
+    projectId,
+    sessionId: actualSessionId,
+    messages,
+    supportsRewind,
+    provider: effectiveProvider,
+    model: session?.model,
+    refreshTranscriptTail,
+    draftControlsRef,
+    recordCommandRecall,
+    createDirectTurnFork,
+  });
 
   const handleCustomCommand = useCallback(
     (command: string, argument = "") => {
@@ -6319,7 +6110,6 @@ function SessionPageContent({
 
         {longContextEffortWarning && (
           <LongContextEffortWarningModal
-            provider={longContextEffortWarning.provider}
             contextTokens={longContextEffortWarning.contextTokens}
             currentEffortLabel={longContextEffortWarning.currentEffortLabel}
             nextEffortLabel={longContextEffortWarning.nextEffortLabel}
@@ -6486,8 +6276,10 @@ function SessionPageContent({
                       onOpenApp={
                         rightPane.enabled ? rightPane.select : undefined
                       }
+                      onAnnounceApp={rightPane.announce}
                       appConfig={rightPane.config}
                       rightPaneTarget={rightPaneTarget}
+                      rightPaneWide={isWideScreen}
                     >
                       <MessageList
                         messages={messages}
@@ -6832,6 +6624,7 @@ function SessionPageContent({
                       ? handleProjectQueueNewSession
                       : undefined
                   }
+                  projectQueueNewSessionTarget={projectQueueNewSessionTarget}
                   primaryActionKind={
                     mainComposerForAside ? "send" : primaryComposerAction
                   }

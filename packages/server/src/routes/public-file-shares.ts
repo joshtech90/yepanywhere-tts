@@ -2,6 +2,7 @@ import {
   DEFAULT_RELAY_URL,
   isUrlProjectId,
   normalizeRelayUrl,
+  toUrlProjectId,
   type CreatePublicFileShareRequest,
   type CreatePublicFileShareResponse,
   type PublicFileShareListResponse,
@@ -22,6 +23,12 @@ import {
 
 export interface PublicFileShareRoutesDeps {
   publicShareService: PublicShareService;
+  /**
+   * Registered project roots, so an absolute path viewed from another
+   * project's viewer is shared under the project that owns it. A path inside
+   * no registered project is refused.
+   */
+  listProjectRoots?: () => Promise<readonly string[]>;
   fetchProjectFile?: (
     projectId: UrlProjectId,
     path: string,
@@ -35,10 +42,11 @@ export interface PublicFileShareRoutesDeps {
   getPublicShareViewerBaseUrl?: () => string | null | undefined;
 }
 
-function parseFileTarget(
+async function parseFileTarget(
+  deps: PublicFileShareRoutesDeps,
   projectId: unknown,
   rawPath: unknown,
-): { path: string; projectId: UrlProjectId } | { error: string } {
+): Promise<{ path: string; projectId: UrlProjectId } | { error: string }> {
   if (typeof projectId !== "string" || !isUrlProjectId(projectId)) {
     return { error: "Invalid project ID format" };
   }
@@ -52,19 +60,32 @@ function parseFileTarget(
     return { error: "Invalid project ID format" };
   }
   const normalized = normalizePublicShareProjectFilePath(rawPath, projectRoot);
-  return normalized
-    ? { projectId, path: normalized }
-    : { error: "Invalid file path" };
+  if (normalized) return { projectId, path: normalized };
+  // The viewer may show an absolute path from another project; the grant
+  // belongs to the project that owns the file. Deepest root wins so a nested
+  // project claims its own files.
+  if (deps.listProjectRoots) {
+    const roots = [...(await deps.listProjectRoots())].sort(
+      (left, right) => right.length - left.length,
+    );
+    for (const root of roots) {
+      const relative = normalizePublicShareProjectFilePath(rawPath, root);
+      if (relative) return { projectId: toUrlProjectId(root), path: relative };
+    }
+    return { error: "This file is outside every registered project" };
+  }
+  return { error: "Invalid file path" };
 }
 
-function parseCreateRequest(
+async function parseCreateRequest(
+  deps: PublicFileShareRoutesDeps,
   value: unknown,
-): { request: CreatePublicFileShareRequest } | { error: string } {
+): Promise<{ request: CreatePublicFileShareRequest } | { error: string }> {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return { error: "Request body must be an object" };
   }
   const body = value as Record<string, unknown>;
-  const target = parseFileTarget(body.projectId, body.path);
+  const target = await parseFileTarget(deps, body.projectId, body.path);
   if ("error" in target) return target;
   if (body.title !== undefined && typeof body.title !== "string") {
     return { error: "title must be a string" };
@@ -114,13 +135,14 @@ export function createPublicFileShareRoutes(
 ): Hono {
   const routes = new Hono();
 
-  routes.get("/public-file-shares", (c) => {
+  routes.get("/public-file-shares", async (c) => {
     const unavailable = storageUnavailable(deps);
     if (unavailable) {
       if (unavailable.retryable) c.header("Retry-After", "2");
       return c.json(unavailable, 503);
     }
-    const target = parseFileTarget(
+    const target = await parseFileTarget(
+      deps,
       c.req.query("projectId"),
       c.req.query("path"),
     );
@@ -146,7 +168,7 @@ export function createPublicFileShareRoutes(
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
-    const parsed = parseCreateRequest(rawBody);
+    const parsed = await parseCreateRequest(deps, rawBody);
     if ("error" in parsed) return c.json({ error: parsed.error }, 400);
     if (!(deps.getPublicSharesEnabled?.() ?? false)) {
       return c.json(

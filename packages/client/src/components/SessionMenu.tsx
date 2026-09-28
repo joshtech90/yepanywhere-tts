@@ -123,7 +123,9 @@ export function SessionMenu({
   // A copied id leaves nothing on screen to confirm it, so the entry reports
   // the outcome in place and closes the menu once the reader has seen it.
   const [copiedSessionId, setCopiedSessionId] = useState<"ok" | "failed">();
-  const copyFeedbackTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  // Identifies the current opening, so a copy that finishes after its menu
+  // closed cannot report into, or close, a later one.
+  const openingRef = useRef<object | null>(null);
   const [dropdownPosition, setDropdownPosition] = useState<{
     top: number;
     left?: number;
@@ -178,8 +180,21 @@ export function SessionMenu({
   }, [isOpen, onOpenChange]);
 
   useEffect(() => {
+    openingRef.current = isOpen ? {} : null;
     if (!isOpen) setCopiedSessionId(undefined);
   }, [isOpen]);
+
+  // A failure stays on the entry until the menu closes; only success is
+  // transient, because the clipboard already carries the proof.
+  useEffect(() => {
+    if (!isOpen || copiedSessionId !== "ok") return;
+    const timer = setTimeout(() => {
+      setIsOpen(false);
+      setDropdownPosition(null);
+      triggerRef.current?.blur();
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [isOpen, copiedSessionId]);
 
   const handleToggleOpen = () => {
     if (isOpen) {
@@ -253,21 +268,11 @@ export function SessionMenu({
     }
   };
 
-  useEffect(() => () => clearTimeout(copyFeedbackTimer.current), []);
-
   const handleCopySessionId = async () => {
+    const opening = openingRef.current;
     const copied = await writeClipboardText(sessionId);
+    if (openingRef.current !== opening) return;
     setCopiedSessionId(copied ? "ok" : "failed");
-    clearTimeout(copyFeedbackTimer.current);
-    // A failure stays on the entry until the menu closes; only success is
-    // transient, because the clipboard already carries the proof.
-    if (!copied) return;
-    copyFeedbackTimer.current = setTimeout(() => {
-      setCopiedSessionId(undefined);
-      setIsOpen(false);
-      setDropdownPosition(null);
-      triggerRef.current?.blur();
-    }, 1000);
   };
 
   const handleClone = async () => {

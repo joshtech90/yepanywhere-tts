@@ -1,10 +1,6 @@
 import {
-  SERVER_CAPABILITIES,
-  DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
-  DEVICE_BRIDGE_CAPABILITY,
-  DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
   BROWSER_SETTINGS_BACKUP_CAPABILITY,
-  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
+  type ServerCapabilitySource,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import {
@@ -24,10 +20,7 @@ import { useActingPrincipal } from "../../hooks/useActingPrincipal";
 import { useVersion } from "../../hooks/useVersion";
 import { limitedUserMaySeeSettingsCategory } from "../../lib/limitedUserSettings";
 import { useI18n } from "../../i18n";
-import {
-  getEmulatorCategory,
-  getSettingsCategories,
-} from "../../i18n-settings";
+import { getSettingsCategories } from "../../i18n-settings";
 import { MainContent, useNavigationLayout } from "../../layouts";
 import { SettingsBackupActions } from "./SettingsBackupActions";
 import { SettingsCategoryItem } from "./SettingsCategoryItem";
@@ -38,6 +31,7 @@ import {
 } from "./SettingsSearchBar";
 import { SettingsJumpTargetProvider } from "./SettingsSearchContext";
 import { SettingsSearchResults } from "./SettingsSearchResults";
+import { SettingsSection } from "./SettingsSection";
 import {
   SettingsPaneTitleProvider,
   useSettingsPaneTitleRegistration,
@@ -233,6 +227,19 @@ function useSettingsContainerWidth(): [
   return [setContainer, width];
 }
 
+/** Whether the connected server serves this settings category's pane. */
+function settingsCategoryServed(
+  category: SettingsCategory,
+  versionInfo: ServerCapabilitySource | null | undefined,
+): boolean {
+  return (
+    !category.requires ||
+    category.requires.anyCapability.some((capability) =>
+      serverHasCapability(versionInfo, capability),
+    )
+  );
+}
+
 function scrollElementToTop(element: HTMLElement): void {
   if (typeof element.scrollTo === "function") {
     element.scrollTo({ top: 0, behavior: "auto" });
@@ -255,8 +262,9 @@ export function SettingsLayout() {
   const useTwoColumnSettings = shouldUseSettingsTwoColumn(
     settingsContainerWidth,
   );
-  const { version: versionInfo } = useVersion();
-  const { principal: actingPrincipal } = useActingPrincipal();
+  const { version: versionInfo, loading: versionLoading } = useVersion();
+  const { principal: actingPrincipal, resolved: principalResolved } =
+    useActingPrincipal();
   const serverBacksUpBrowserSettings = serverHasCapability(
     versionInfo,
     BROWSER_SETTINGS_BACKUP_CAPABILITY,
@@ -288,68 +296,25 @@ export function SettingsLayout() {
     [jumpTarget, consumeJumpTarget],
   );
 
-  const categories: SettingsCategory[] = [
-    ...getSettingsCategories((key) => t(key as never)),
-  ];
-  if (
-    !serverHasCapability(
-      versionInfo,
-      SERVER_CAPABILITIES.projectTemplateSources.name,
-    )
-  ) {
-    const index = categories.findIndex(
-      (item) => item.id === "project-templates",
-    );
-    if (index >= 0) categories.splice(index, 1);
-  }
-  if (
-    !serverHasCapability(versionInfo, SERVER_CAPABILITIES.computerControl.name)
-  ) {
-    const index = categories.findIndex(
-      (item) => item.id === "computer-control",
-    );
-    if (index >= 0) categories.splice(index, 1);
-  }
-  if (
-    !serverHasCapability(versionInfo, GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY)
-  ) {
-    const sourceControlIndex = categories.findIndex(
-      (item) => item.id === "source-control",
-    );
-    if (sourceControlIndex >= 0) categories.splice(sourceControlIndex, 1);
-  }
-  if (
-    serverHasCapability(versionInfo, DEVICE_BRIDGE_CAPABILITY) ||
-    serverHasCapability(versionInfo, DEVICE_BRIDGE_DOWNLOAD_CAPABILITY) ||
-    serverHasCapability(versionInfo, DEVICE_BRIDGE_AVAILABLE_CAPABILITY)
-  ) {
-    const aboutIndex = categories.findIndex((c) => c.id === "about");
-    categories.splice(
-      aboutIndex >= 0 ? aboutIndex : categories.length,
-      0,
-      getEmulatorCategory((key) => t(key as never)),
-    );
-  }
-  if (
-    !serverHasCapability(
-      versionInfo,
-      SERVER_CAPABILITIES.issueSessionAssociations.name,
-    )
-  ) {
-    const index = categories.findIndex((item) => item.id === "issues");
-    if (index >= 0) categories.splice(index, 1);
-  }
+  const allCategories = getSettingsCategories((key) => t(key as never));
+  const categories = allCategories.filter((item) =>
+    settingsCategoryServed(item, versionInfo),
+  );
   // A limited user keeps only the categories they can actually operate; the
   // rest are inert or never finish loading for them. topics/limited-users.md
-  // § Delivery v1.
+  // § Delivery v1. Until the server names the principal, its placeholder is
+  // the superuser, so no category is offered or mounted: a superuser-only
+  // pane would otherwise send its refused requests first.
   const actingAsLimitedUser = actingPrincipal.username !== null;
-  const visibleCategories = actingAsLimitedUser
-    ? categories.filter((item) => limitedUserMaySeeSettingsCategory(item.id))
-    : categories;
+  const visibleCategories = !principalResolved
+    ? []
+    : actingAsLimitedUser
+      ? categories.filter((item) => limitedUserMaySeeSettingsCategory(item.id))
+      : categories;
   // The backup slot is server-wide and `/api/browser-settings-backup` is
   // denied for a limited user, so the buttons would only ever fail for them.
   const canBackUpBrowserSettings =
-    serverBacksUpBrowserSettings && !actingAsLimitedUser;
+    serverBacksUpBrowserSettings && principalResolved && !actingAsLimitedUser;
 
   // Two-column settings can fit before the persistent app sidebar can.
   const effectiveCategory =
@@ -426,36 +391,67 @@ export function SettingsLayout() {
     />
   );
 
-  const searchResults = searchActive ? (
-    <SettingsSearchResults
-      categories={visibleCategories}
-      components={CATEGORY_COMPONENTS}
-      query={deferredSearchQuery || searchQuery.trim()}
-      matchValues={matchValues}
-      onJumpToItem={handleSearchJumpToItem}
-      onOpenCategory={handleSearchOpenCategory}
-    />
-  ) : null;
+  const searchResults =
+    searchActive && principalResolved ? (
+      <SettingsSearchResults
+        categories={visibleCategories}
+        components={CATEGORY_COMPONENTS}
+        query={deferredSearchQuery || searchQuery.trim()}
+        matchValues={matchValues}
+        onJumpToItem={handleSearchJumpToItem}
+        onOpenCategory={handleSearchOpenCategory}
+      />
+    ) : null;
 
   const handleBack = () => {
     navigateToSettingsRoot();
   };
 
-  const activeCategory = visibleCategories.find(
-    (c) => c.id === effectiveCategory,
-  );
   // A category withheld from this principal does not render even when its URL
   // is typed directly: the pane behind it cannot load for them. A category the
-  // server's capabilities dropped still renders, because that pane's own
-  // unsupported-server message is the answer a typed URL deserves.
+  // server does not serve answers a typed URL with its own unsupported-server
+  // message, and its pane never mounts to send requests that server lacks.
+  // Until the version arrives, "unsupported" is not yet known.
   const withheldFromPrincipal =
     actingAsLimitedUser &&
     effectiveCategory !== undefined &&
     !limitedUserMaySeeSettingsCategory(effectiveCategory);
+  const unservedCategory =
+    principalResolved && !withheldFromPrincipal
+      ? allCategories.find(
+          (c) =>
+            c.id === effectiveCategory &&
+            !settingsCategoryServed(c, versionInfo),
+        )
+      : undefined;
+  const activeCategory =
+    visibleCategories.find((c) => c.id === effectiveCategory) ??
+    unservedCategory;
   const CategoryComponent =
-    effectiveCategory && !withheldFromPrincipal
+    effectiveCategory &&
+    principalResolved &&
+    !withheldFromPrincipal &&
+    !unservedCategory
       ? CATEGORY_COMPONENTS[effectiveCategory]
       : null;
+  const unservedCategoryAnswer =
+    !unservedCategory?.requires ? null : !versionInfo && versionLoading ? (
+      <SettingsSection description={t("loading")} />
+    ) : (
+      <SettingsSection
+        title={unservedCategory.label}
+        description={unservedCategory.description}
+      >
+        <p className="settings-hint">
+          {unservedCategory.requires.unsupportedMessage}
+        </p>
+      </SettingsSection>
+    );
+  const categoryPane = CategoryComponent ? (
+    <CategoryComponent />
+  ) : (
+    unservedCategoryAnswer
+  );
 
   // Top-strip title for the open pane: the pane registers it via
   // useSettingsPaneTitle; fall back to the category label until that
@@ -560,7 +556,7 @@ export function SettingsLayout() {
               <SettingsPaneTitleProvider value={setPaneTitle}>
                 <SettingsUndoProvider value={setUndoRegistration}>
                   <SettingsPane key={effectiveCategory}>
-                    {CategoryComponent && <CategoryComponent />}
+                    {categoryPane}
                   </SettingsPane>
                 </SettingsUndoProvider>
               </SettingsPaneTitleProvider>
@@ -606,7 +602,7 @@ export function SettingsLayout() {
                 <SettingsPaneTitleProvider value={setPaneTitle}>
                   <SettingsUndoProvider value={setUndoRegistration}>
                     <SettingsPane key={effectiveCategory}>
-                      {CategoryComponent && <CategoryComponent />}
+                      {categoryPane}
                     </SettingsPane>
                   </SettingsUndoProvider>
                 </SettingsPaneTitleProvider>

@@ -483,21 +483,48 @@ coverage explicitly removed `PI_EXECUTABLE`.
 
 pi's own `THINKING_LEVELS` are `off`, `minimal`, `low`, `medium`, `high`,
 `xhigh` and `max` (installed Pi 0.85.1; `--thinking` states the same set), so
-every effort level YA names maps straight through. YA used to fold `max` onto
-`xhigh` from when xhigh was pi's top level, and the client's generic level list
-omitted `xhigh` entirely, which left Extra unreachable for pi sessions.
+every effort level YA names, `xhigh` included, passes through unchanged.
 
-A failed turn arrives as an ordinary assistant `message_end` (and `turn_end`)
-carrying `stopReason: "error"` and `errorMessage` — pi has no error event of its
-own — so reading only the terminal event ended the turn with nothing said. That
-message now reaches the YA turn result, and a turn the model server refused over
-the thinking level is retried lower: the refusal usually names the accepted set,
-and the retry takes the highest of those at or below the level asked for,
-stepping down one level when the server says only that the level is wrong.
-Capped at three retries per turn, with the refusal and the new level stated in
-the transcript. Observed refusal, pi 0.85.1 over vLLM 0.29 serving
-Qwen3.8-Flash-Next: `400: {"message":"Unexpected reasoning effort high.
-Supported types are xhigh (default), medium, and low."…}`.
+pi reports a failed turn as an ordinary assistant `message_end` (and
+`turn_end`) carrying `stopReason: "error"` and `errorMessage`; it has no error
+event of its own. That message is the YA turn result's `error`.
+
+A turn the model server refused over its thinking level is retried lower. The
+refusal usually names the accepted set, and the retry takes the highest of
+those at or below the level asked for; when the server says only that the level
+is wrong, it steps down one level. At most three retries per turn. Observed
+refusal, pi 0.85.1 over vLLM 0.29 serving Qwen3.8-Flash-Next:
+`400: {"message":"Unexpected reasoning effort high. Supported types are xhigh
+(default), medium, and low."…}`.
+
+The retry holds the prompt once, in the model context and in pi's session file:
+
+- YA launches every pi session with `--extension` naming
+  `packages/server/src/sdk/providers/pi-yep-anywhere-extension.mjs`. It
+  registers one command, `/yep-anywhere-effort-retry`, which only YA sends, and
+  changes nothing else. pi's RPC has no continue, retry or tree-navigation
+  command; an extension command's context has `navigateTree`.
+- On a refusal, YA sends that command. It moves pi's leaf to before the refused
+  prompt, leaving the prompt and its error reply on an abandoned branch, and
+  appends a `custom` entry (`customType` `yep-anywhere.effort-retry`, data
+  `{refusedLevel, retryLevel, error}`), which never enters the model context.
+  YA then sets the lower thinking level and sends the prompt again, so the
+  level change and the resent prompt start the active branch.
+- The transcript says the model refused the level and the turn was retried
+  lower, quoting the refusal, right after the prompt. Live this is a streamed
+  assistant message; on reload `PiSessionReader` renders the same text from the
+  custom entry, placed after the prompt it precedes in the file.
+- YA sends the command only after `get_commands` lists it as an extension
+  command, since an unknown `/name` would reach the model as prompt text. If
+  the extension is not loaded, or the command fails (pi's `extension_error`
+  line precedes the command's response), YA does not resend: the turn ends
+  with the refusal, later turns ask for the lower level, and the transcript
+  says so. That notice is live-only, because pi's session holds only the error
+  reply.
+
+`pi-effort-retry.e2e.test.ts` (opt-in with `PI_CONTRACT_TEST=true`) runs the
+installed pi against a local server that refuses one level and checks the
+retried request and the reloaded transcript.
 
 ## Model registry export
 

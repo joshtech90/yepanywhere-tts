@@ -5,7 +5,7 @@ import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
 import { writeClipboardText } from "../lib/clipboard";
-import { downloadBlob, writeClipboardImageLater } from "../lib/imageActions";
+import { writeClipboardImageLater } from "../lib/imageActions";
 import {
   getAbsoluteFilePath,
   getProjectRelativePath,
@@ -137,15 +137,7 @@ export function useImageResourceActions({
       dismissLabel={t("imageResourceDismissMenu" as never)}
       onClose={() => setContextMenu(null)}
       onOpen={onOpen}
-      onDownload={
-        loadBlob
-          ? () => {
-              void loadBlob()
-                .then((blob) => downloadBlob(blob, fileName))
-                .catch(() => {});
-            }
-          : undefined
-      }
+      download={loadBlob ? { fileName, loadBlob } : undefined}
       onCopyImage={
         loadBlob
           ? () => {

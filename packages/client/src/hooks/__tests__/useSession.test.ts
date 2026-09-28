@@ -1584,9 +1584,21 @@ describe("useSession completion reconciliation", () => {
       },
     ];
 
+    // The send request can still be awaiting its response after a long reply.
+    const pending = result.current.pendingMessages[0]!;
+    const delivered = result.current.isMessageDelivered;
+    sessionMessagesMock.messages.push(
+      ...Array.from({ length: 80 }, (_, index) => ({
+        type: "assistant",
+        uuid: `reply-${index}`,
+        content: "More tool activity",
+      })),
+    );
+
     rerender();
 
     expect(result.current.pendingMessages).toEqual([]);
+    expect(delivered(pending)).toBe(true);
   });
 
   it("keeps pending direct sends when only older duplicate history matches", () => {

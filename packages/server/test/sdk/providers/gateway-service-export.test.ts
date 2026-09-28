@@ -203,6 +203,35 @@ describe("gateway service export", () => {
     await expect(readFile(handWritten, "utf8")).resolves.toContain("mine");
   });
 
+  it("still runs when pi's registry is not plain JSON", async () => {
+    // Startup awaits this sync and exits on a rejection, so a commented pi
+    // registry must not stop a server whose user never enabled the export.
+    await writeFile(
+      join(piAgentDir, "models.json"),
+      '{\n  // mine\n  "providers": {},\n}\n',
+    );
+
+    await expect(
+      syncGatewayServiceExports({
+        services: [service()],
+        enabled: false,
+        paths,
+        piAgentDir,
+      }),
+    ).resolves.toMatchObject({ written: [] });
+    await expect(
+      syncGatewayServiceExports({
+        services: [service()],
+        enabled: true,
+        paths,
+        piAgentDir,
+      }),
+    ).resolves.toMatchObject({ written: expect.any(Array) });
+    await expect(readdir(paths.claudeHome)).resolves.toEqual([
+      "ya-vllm.settings.json",
+    ]);
+  });
+
   it("exports nothing for a disabled service", async () => {
     const result = await syncGatewayServiceExports({
       services: [service({ enabled: false })],

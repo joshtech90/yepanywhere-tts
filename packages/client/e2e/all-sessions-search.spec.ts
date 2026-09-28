@@ -78,7 +78,7 @@ test("All Sessions keeps every typed character with a large title catalog", asyn
   const search = page.getByRole("searchbox", { name: "Search sessions..." });
   await expect(search).toBeVisible();
   await expect(
-    page.getByRole("button", { name: /Keep just 100\d matching/ }),
+    page.getByRole("button", { name: /^Select all 100\d$/ }),
   ).toBeVisible();
   await search.evaluate((node) => {
     const samples: Array<{
@@ -149,24 +149,31 @@ test("All Sessions preserves copying and returns to the query end only when typi
   const search = page.getByRole("searchbox", { name: "Search sessions..." });
   const query = "Search fixture soft focus";
   await search.fill(query);
+  // A triple-click selection ends at the boundary of the following block, so
+  // rows still arriving move it. Select only once the list has settled: the
+  // fixture listed and no scan running.
+  await expect(
+    page.getByRole("checkbox", { name: "Select Search fixture soft focus" }),
+  ).toBeVisible();
+  await expect(page.locator('[data-search-scanning="true"]')).toHaveCount(0);
   await search.evaluate((node: HTMLInputElement) =>
     node.setSelectionRange(0, 0),
   );
   const help = page
     .locator("p:visible")
-    .filter({ hasText: "count is pre-filter;" });
+    .filter({ hasText: "count includes selections the search hides;" });
   await help.click({ clickCount: 3 });
   const selection = await page.evaluate(() =>
     window.getSelection()!.toString(),
   );
-  expect(selection).toContain("count is pre-filter");
+  expect(selection).toContain("count includes selections the search hides");
   await expect(search).not.toBeFocused();
   await help.click({ button: "right" });
   expect(await page.evaluate(() => window.getSelection()!.toString())).toBe(
     selection,
   );
   await page.keyboard.press("Escape");
-  await page.keyboard.press("Control+c");
+  await page.keyboard.press("ControlOrMeta+c");
   expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
     selection,
   );
@@ -246,6 +253,64 @@ for (const viewport of [
   { name: "desktop", width: 1000, height: 600 },
   { name: "phone", width: 375, height: 812 },
 ]) {
+  test(`All Sessions filters creation provenance on ${viewport.name}`, async ({
+    page,
+    baseURL,
+  }) => {
+    saveSession(`provenance-${viewport.name}`, `provenance ${viewport.name}`);
+    await page.setViewportSize(viewport);
+    await page.route(/\/api\/sessions\?/, async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const seed = data.sessions?.find(
+        (session: { id: string }) =>
+          session.id === `provenance-${viewport.name}`,
+      );
+      if (!seed) return route.fulfill({ response });
+      await route.fulfill({
+        response,
+        json: {
+          ...data,
+          hasMore: false,
+          sessions: [
+            {
+              ...seed,
+              id: `provenance-web-${viewport.name}`,
+              title: "Web provenance fixture",
+              fullTitle: "Web provenance fixture",
+              creationProvenance: { surface: "web" },
+            },
+            {
+              ...seed,
+              id: `provenance-desktop-${viewport.name}`,
+              title: "Desktop provenance fixture",
+              fullTitle: "Desktop provenance fixture",
+              creationProvenance: { surface: "desktop" },
+            },
+            {
+              ...seed,
+              id: `provenance-unmarked-${viewport.name}`,
+              title: "Unmarked provenance fixture",
+              fullTitle: "Unmarked provenance fixture",
+            },
+          ],
+        },
+      });
+    });
+    await page.goto(`${baseURL}/sessions?status=&created=web`);
+    await expect(page.getByText("Web provenance fixture")).toBeVisible();
+    await expect(page.getByText("Desktop provenance fixture")).toHaveCount(0);
+    await expect(page.getByText("Unmarked provenance fixture")).toHaveCount(0);
+    await page.getByRole("button", { name: "Filter by Created from" }).click();
+    await expect(page.getByText("Desktop app", { exact: true })).toBeVisible();
+    await expect(page.getByText("Unspecified", { exact: true })).toBeVisible();
+    await recordUiCapture(
+      page,
+      `session-creation-provenance-${viewport.name}`,
+      viewport,
+    );
+  });
+
   test(`All Sessions fans out, retains both roles, and refines cached turns on ${viewport.name}`, async ({
     page,
     baseURL,
@@ -265,10 +330,10 @@ for (const viewport of [
     const search = page.getByRole("searchbox", { name: "Search sessions..." });
     await search.fill(`Search fixture ${fixture}`);
     await page
-      .getByRole("button", {
-        name: "Keep just 6 matching sessions selected",
-        exact: true,
-      })
+      .getByRole("button", { name: "Select all 6", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Only selected", exact: true })
       .click();
     const requests: Array<{
       sessionId: string;
@@ -372,13 +437,45 @@ for (const viewport of [
     page,
     baseURL,
   }) => {
+    // Catalog discovery has reached the 30s fixture wait on CI; leave twice
+    // that observed ceiling for discovery and the browser assertions.
+    test.setTimeout(60_000);
     saveSession(`coverage-valid-${viewport.name}`, "coverage valid");
     saveSession(
       `coverage-error-${viewport.name}`,
       "A transcript with a malformed record",
     );
+    const fixtureIds = [
+      `coverage-valid-${viewport.name}`,
+      `coverage-error-${viewport.name}`,
+    ];
+    await expect
+      .poll(
+        async () => {
+          const response = await fetch(
+            `${baseURL}/api/sessions?summaryMode=retained&limit=500&includeArchived=true`,
+            { headers: { "X-Yep-Anywhere": "true" } },
+          );
+          if (!response.ok) return [];
+          const data = (await response.json()) as {
+            sessions: Array<{ id: string }>;
+          };
+          return fixtureIds.filter((id) =>
+            data.sessions.some((session) => session.id === id),
+          );
+        },
+        { timeout: 30_000 },
+      )
+      .toEqual(fixtureIds);
     const requested = new Set<string>();
     await page.route(/\/api\/sessions\?/, async (route) => {
+      // The sidebar's starred feed uses this endpoint too. It has no seed
+      // session and does not need the injected unsupported-provider row.
+      if (
+        new URL(route.request().url()).searchParams.get("starred") === "true"
+      ) {
+        return route.continue();
+      }
       const response = await route.fetch();
       const data = await response.json();
       const seed = data.sessions?.find(
@@ -470,7 +567,7 @@ for (const viewport of [
     ).toHaveCount(0);
     const help = page
       .locator("p:visible")
-      .filter({ hasText: "count is pre-filter;" });
+      .filter({ hasText: "count includes selections the search hides;" });
     expect((await help.boundingBox())!.y).toBeLessThan(
       (await diagnostic.boundingBox())!.y,
     );
@@ -497,7 +594,7 @@ for (const viewport of [
       .poll(async () => {
         const help = page
           .locator("p:visible")
-          .filter({ hasText: "count is pre-filter;" });
+          .filter({ hasText: "count includes selections the search hides;" });
         return help.evaluate((node) => {
           const box = node.getBoundingClientRect();
           return box.right <= document.documentElement.clientWidth;
@@ -521,6 +618,9 @@ for (const viewport of [
       `all-sessions-provider-support-${viewport.name}`,
       viewport,
     );
+    // The session list keeps polling. Let intercepted requests finish before
+    // Playwright closes the page, or a route can be fulfilled after teardown.
+    await page.unrouteAll({ behavior: "wait" });
   });
 
   test(`All Sessions expands retained matches through scanning and live updates on ${viewport.name}`, async ({
@@ -811,21 +911,22 @@ for (const viewport of [
     });
     expect(requests.length).toBeGreaterThan(2);
     await page
-      .getByRole("button", {
-        name: "Keep just 2 matching sessions selected",
-        exact: true,
-      })
+      .getByRole("button", { name: "Select all 2", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Only selected", exact: true })
       .click();
     await search.fill("quasarneedle alpha");
     await expect(rows).toHaveCount(1, { timeout: 30000 });
     await expect(
       page.getByRole("button", { name: "Clear 2 selected", exact: true }),
     ).toBeVisible();
+    // Narrow by clearing, then selecting what is shown; Only selected stays on.
     await page
-      .getByRole("button", {
-        name: "Keep just 1 matching sessions selected",
-        exact: true,
-      })
+      .getByRole("button", { name: "Clear 2 selected", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Select all 1", exact: true })
       .click();
     await search.fill("matching answer");
     await expect(rows).toHaveCount(1, { timeout: 30000 });
@@ -844,17 +945,18 @@ for (const viewport of [
     await search.fill("quasarneedle");
     await expect(rows).toHaveCount(2, { timeout: 30000 });
     await page
-      .getByRole("button", {
-        name: "Keep just 2 matching sessions selected",
-        exact: true,
-      })
+      .getByRole("button", { name: "Select all 2", exact: true })
       .click();
     await expect(
       page.getByRole("button", { name: "Filter: Unarchived", exact: true }),
     ).toHaveAttribute("aria-pressed", "true");
+    // Actions live in the selection bar, offering only what applies.
     await expect(
-      page.getByRole("button", { name: "Make Unarchived 2", exact: true }),
+      page.getByRole("button", { name: "Archive", exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Unarchive", exact: true }),
+    ).toHaveCount(0);
     const from = page.getByRole("textbox", { name: /^Minimum age/ });
     const initialWidth = await from.evaluate(
       (element) => element.getBoundingClientRect().width,

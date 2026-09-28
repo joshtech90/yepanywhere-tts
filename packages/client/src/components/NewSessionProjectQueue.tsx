@@ -4,6 +4,7 @@ import type {
 } from "@yep-anywhere/shared";
 import { useId } from "react";
 import { useI18n } from "../i18n";
+import { ProviderBadge } from "./ProviderBadge";
 import styles from "./NewSessionProjectQueue.module.css";
 
 type Translate = ReturnType<typeof useI18n>["t"];
@@ -111,7 +112,16 @@ export function NewSessionProjectQueue({
                     {statusLabel(item.status, t)}
                   </span>
                 </span>
-                <span className={styles.target}>{targetLabel(item, t)}</span>
+                <span className={styles.targetRow}>
+                  <span className={styles.target}>{targetLabel(item, t)}</span>
+                  {item.target.provider && (
+                    <ProviderBadge
+                      provider={item.target.provider}
+                      model={item.target.model}
+                      className={styles.provider}
+                    />
+                  )}
+                </span>
                 {item.lastError && (
                   <span className={styles.itemError}>{item.lastError}</span>
                 )}

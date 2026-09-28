@@ -6,11 +6,14 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LimitedUsersService } from "../../src/auth/LimitedUsersService.js";
 import { decideLimitedRoute } from "../../src/auth/limitedUserPolicy.js";
 import { SessionAccessResolver } from "../../src/auth/sessionAccess.js";
+import { AUTHENTICATED_SRP_TRANSPORT } from "../../src/middleware/authenticated-transport.js";
 import { createLimitedUsersMiddleware } from "../../src/middleware/limited-users.js";
 import {
   actingUsername,
   applyLimitedLaunchPolicy,
-} from "../../src/routes/limited-session-launch.js";
+  applyLimitedResumePolicy,
+} from "../../src/auth/limitedLaunchPolicy.js";
+import type { ModelSettings } from "../../src/supervisor/Supervisor.js";
 import { buildUserMessageMetadata } from "../../src/routes/session-request-helpers.js";
 import {
   PRINCIPAL_VARIABLE,
@@ -19,12 +22,11 @@ import {
 
 /** topics/limited-users.md § Delivery v1 — Authorization. */
 
+/** The query is dropped: the policy never reads it. */
 function decide(method: string, url: string) {
-  const parsed = new URL(url, "http://127.0.0.1");
   return decideLimitedRoute({
     method,
-    path: parsed.pathname,
-    query: parsed.searchParams,
+    path: new URL(url, "http://127.0.0.1").pathname,
   });
 }
 
@@ -46,9 +48,51 @@ describe("limited-user route policy", () => {
     });
   });
 
+  it("refuses file editing and artifact rebuild on every method", () => {
+    for (const [method, url] of [
+      ["GET", "/api/file-edit?path=/elsewhere/x.ts"],
+      ["PUT", "/api/file-edit"],
+      ["POST", "/api/file-edit/rebuild"],
+    ] as const) {
+      expect(decide(method, url), `${method} ${url}`).toEqual({
+        kind: "deny",
+      });
+    }
+  });
+
   it("reads settings but never writes them", () => {
     expect(decide("GET", "/api/settings")).toEqual({ kind: "allow" });
     expect(decide("PATCH", "/api/settings")).toEqual({ kind: "deny" });
+  });
+
+  it("refuses every settings subpath, which is host administration", () => {
+    for (const url of [
+      "/api/settings/browser-backup",
+      "/api/settings/remote-executors",
+      "/api/settings/cache-miss-billing/events",
+      "/api/settings/file-access",
+      "/api/settings/host-awake/status",
+    ]) {
+      expect(decide("GET", url), url).toEqual({ kind: "deny" });
+    }
+  });
+
+  it("reads recents filtered, never clears them, and lets a visit through", () => {
+    expect(decide("GET", "/api/recents?limit=5")).toEqual({
+      kind: "allow-filtered",
+      filter: "recents",
+    });
+    expect(decide("DELETE", "/api/recents")).toEqual({ kind: "deny" });
+    // The route records nothing for a limited user.
+    expect(decide("POST", "/api/recents/visit")).toEqual({ kind: "allow" });
+    expect(decide("GET", "/api/recents/visit")).toEqual({ kind: "deny" });
+  });
+
+  it("refuses the activity REST reads, which list every connected tab", () => {
+    expect(decide("GET", "/api/activity/connections")).toEqual({
+      kind: "deny",
+    });
+    expect(decide("GET", "/api/activity/status")).toEqual({ kind: "deny" });
   });
 
   it("scopes a project path by method", () => {
@@ -77,6 +121,53 @@ describe("limited-user route policy", () => {
     });
   });
 
+  it("allows only listed session actions, whose launches apply the launch policy", () => {
+    for (const action of [
+      "resume",
+      "reactivate",
+      "fork",
+      "clone",
+      "attachments/staging/materialize",
+    ]) {
+      expect(
+        decide("POST", `/api/projects/abc/sessions/s1/${action}`),
+        action,
+      ).toEqual({ kind: "session", sessionId: "s1", required: "new-session" });
+    }
+    for (const action of ["terminate", "archive", "done"]) {
+      expect(decide("POST", `/api/sessions/s1/${action}`), action).toEqual({
+        kind: "session",
+        sessionId: "s1",
+        required: "new-session",
+      });
+    }
+    expect(decide("DELETE", "/api/sessions/s1/recovered-queue/q1")).toEqual({
+      kind: "session",
+      sessionId: "s1",
+      required: "new-session",
+    });
+  });
+
+  it("refuses session actions that launch a process without the launch policy", () => {
+    for (const [method, url] of [
+      ["POST", "/api/projects/abc/sessions/s1/restart"],
+      ["POST", "/api/projects/abc/sessions/s1/recap"],
+      ["POST", "/api/projects/abc/sessions/s1/retitle"],
+      ["POST", "/api/projects/abc/sessions/s1/fork-summary"],
+      ["POST", "/api/projects/abc/sessions/s1/rewind"],
+      ["POST", "/api/projects/abc/sessions/s1/clearloop"],
+      ["POST", "/api/projects/abc/sessions/s1/bang-commands"],
+      ["PUT", "/api/projects/abc/sessions/s1/project"],
+      ["POST", "/api/sessions/s1/recovered-queue/q1/resume"],
+      ["POST", "/api/sessions/s1/recovered-queue/q1/steer"],
+      ["POST", "/api/sessions/s1/some-new-launcher"],
+    ] as const) {
+      expect(decide(method, url), `${method} ${url}`).toEqual({
+        kind: "deny",
+      });
+    }
+  });
+
   it("allows the status polls every client makes, and only as reads", () => {
     expect(decide("GET", "/api/onboarding")).toEqual({ kind: "allow" });
     expect(decide("POST", "/api/onboarding/complete")).toEqual({
@@ -102,6 +193,69 @@ describe("limited-user route policy", () => {
       filter: "sessions",
     });
     expect(decide("POST", "/api/sessions")).toEqual({ kind: "deny" });
+  });
+
+  it("refuses restarting the server and updating host software", () => {
+    // The client hides these notices from a limited user; the server is what
+    // stops a script from firing them anyway.
+    for (const [method, url] of [
+      ["POST", "/api/server/restart"],
+      ["POST", "/api/dev/safe-restart"],
+      ["DELETE", "/api/dev/safe-restart"],
+      ["POST", "/api/dev/frontend-changed"],
+      ["GET", "/api/codex/updates"],
+      ["POST", "/api/codex/updates/install"],
+    ] as const) {
+      expect(decide(method, url), `${method} ${url}`).toEqual({
+        kind: "deny",
+      });
+    }
+  });
+
+  it("takes no project grant from a query parameter the route ignores", () => {
+    // Each of these handlers ignores `projectId`; a granted id in the query
+    // must not open them.
+    for (const [method, url] of [
+      ["POST", "/api/processes/p1/abort?projectId=granted"],
+      ["POST", "/api/codex/updates/install?projectId=granted"],
+      ["PUT", "/api/speech/vocabulary?projectId=granted"],
+      ["GET", "/api/file-edit?projectId=granted&path=/elsewhere/x.ts"],
+      ["PUT", "/api/file-edit?projectId=granted"],
+      ["POST", "/api/file-edit/rebuild?projectId=granted"],
+    ] as const) {
+      expect(decide(method, url), `${method} ${url}`).toEqual({
+        kind: "deny",
+      });
+    }
+  });
+
+  it("scopes a queue operation by the project in its path", () => {
+    expect(
+      decide("POST", "/api/project-queue/other/promote-now?projectId=granted"),
+    ).toEqual({
+      kind: "project",
+      projectId: "other",
+      required: "new-session",
+      filter: "project-queue",
+    });
+    expect(decide("GET", "/api/project-queue")).toEqual({
+      kind: "allow-filtered",
+      filter: "project-queue",
+    });
+    // Pausing or resuming dispatch is host-wide.
+    expect(
+      decide("POST", "/api/project-queue/pause?projectId=granted"),
+    ).toEqual({ kind: "deny" });
+    expect(
+      decide("POST", "/api/project-queue/resume?projectId=granted"),
+    ).toEqual({ kind: "deny" });
+  });
+
+  it("refuses an id segment that is not valid percent-encoding", () => {
+    expect(decide("GET", "/api/projects/%E0%A4%A/files")).toEqual({
+      kind: "deny",
+    });
+    expect(decide("GET", "/api/sessions/%E0%A4%A")).toEqual({ kind: "deny" });
   });
 });
 
@@ -136,6 +290,53 @@ describe("LimitedUsersService", () => {
     expect(record?.srp.salt).toBeTypeOf("string");
   });
 
+  it("defaults and migrates template grants once, preserving explicit restrictions", async () => {
+    const allowed = await service.create({
+      username: "alice",
+      password: "correct-horse",
+      projectRoot: "~/alice",
+    });
+    const denied = await service.create({
+      username: "reader",
+      password: "correct-horse",
+    });
+    expect(allowed.templateCreation).toEqual({ mode: "any" });
+    expect(denied.templateCreation).toEqual({ mode: "none" });
+    await service.flushPendingWrites();
+    const file = path.join(dir, "limited-users.json");
+    const legacy = JSON.parse(await fs.readFile(file, "utf8"));
+    legacy.version = 1;
+    delete legacy.users.alice.templateCreation;
+    delete legacy.users.reader.templateCreation;
+    await fs.writeFile(file, JSON.stringify(legacy));
+    const migrated = new LimitedUsersService({ dataDir: dir });
+    await migrated.initialize();
+    expect(migrated.getActiveGrants("alice")?.templateCreation).toEqual({
+      mode: "any",
+    });
+    expect(migrated.getActiveGrants("reader")?.templateCreation).toEqual({
+      mode: "none",
+    });
+    await migrated.update("alice", { templateCreation: { mode: "none" } });
+    await migrated.flushPendingWrites();
+    const restarted = new LimitedUsersService({ dataDir: dir });
+    await restarted.initialize();
+    expect(restarted.getActiveGrants("alice")?.templateCreation).toEqual({
+      mode: "none",
+    });
+    await expect(
+      restarted.update("alice", {
+        templateCreation: {
+          mode: "selected",
+          templates: [{ sourceId: "", templateId: "app" }],
+        },
+      }),
+    ).rejects.toThrow();
+    expect(restarted.getActiveGrants("alice")?.templateCreation).toEqual({
+      mode: "none",
+    });
+  });
+
   it("verifies the right password and refuses the wrong one", async () => {
     await service.create({ username: "alice", password: "correct-horse" });
     expect(await service.verifyPassword("alice", "correct-horse")).toBe(true);
@@ -154,6 +355,40 @@ describe("LimitedUsersService", () => {
     // The decoy is stable, so repeated probing cannot distinguish it by
     // watching the challenge change.
     expect(service.getSrpChallengeInputs("mallory")).toEqual(unknown);
+  });
+
+  it("gives each unknown identity its own salt, so a real one does not stand out", async () => {
+    await service.create({ username: "alice", password: "correct-horse" });
+    const alice = service.getSrpChallengeInputs("alice").salt;
+    const first = service.getSrpChallengeInputs("mallory").salt;
+    const second = service.getSrpChallengeInputs("trudy").salt;
+
+    // Probing two random names and then a real one used to show the two
+    // random names sharing a salt that the real name did not.
+    expect(first).not.toBe(second);
+    expect(new Set([alice, first, second]).size).toBe(3);
+    // Same hex form and size as a salt generated for a real password: 128
+    // bytes, leading zero nibbles dropped.
+    for (const salt of [alice, first, second]) {
+      expect(salt).toMatch(/^[0-9a-f]{240,256}$/);
+    }
+  });
+
+  it("keeps an unknown identity's salt across a restart, as a real user's is", async () => {
+    const before = service.getSrpChallengeInputs("mallory");
+    await service.flushPendingWrites();
+    const restarted = new LimitedUsersService({ dataDir: dir });
+    await restarted.initialize();
+    expect(restarted.getSrpChallengeInputs("mallory")).toEqual(before);
+  });
+
+  it("answers a disabled user with a decoy, not the user's own salt", async () => {
+    await service.create({ username: "alice", password: "correct-horse" });
+    const enabled = service.getSrpChallengeInputs("alice");
+    await service.update("alice", { disabled: true });
+    const disabled = service.getSrpChallengeInputs("alice");
+    expect(disabled.known).toBe(false);
+    expect(disabled.salt).not.toBe(enabled.salt);
   });
 
   it("refuses a disabled user's login and grants", async () => {
@@ -215,6 +450,100 @@ describe("limited-user launch policy", () => {
     expect(outcome.kind).toBe("error");
   });
 
+  it("refuses a remote executor or computer control, which leave the sandbox", () => {
+    expect(
+      applyLimitedLaunchPolicy(contextFor(alice), { executor: "devbox" }),
+    ).toEqual({
+      kind: "error",
+      error:
+        "This user's sessions run only on this host, not on a remote executor",
+    });
+    expect(
+      applyLimitedLaunchPolicy(contextFor(alice), { computerControl: true })
+        .kind,
+    ).toBe("error");
+  });
+
+  describe("resuming an existing session", () => {
+    const sandboxed = (): ModelSettings => ({
+      providerName: "codex",
+      model: "gpt-4",
+      requestedModel: "gpt-4",
+      sandboxLevel: "project-write",
+    });
+
+    it("leaves the superuser's settings untouched", () => {
+      const settings: ModelSettings = { sandboxLevel: "none" };
+      expect(
+        applyLimitedResumePolicy(
+          contextFor({ kind: "superuser" }),
+          settings,
+          {},
+        ),
+      ).toEqual({ kind: "superuser" });
+      expect(settings.sandboxLevel).toBe("none");
+    });
+
+    it("refuses a session that runs outside the sandbox", () => {
+      for (const sandboxLevel of [undefined, "none"] as const) {
+        const outcome = applyLimitedResumePolicy(
+          contextFor(alice),
+          { ...sandboxed(), sandboxLevel },
+          {},
+        );
+        expect(outcome.kind, String(sandboxLevel)).toBe("error");
+      }
+    });
+
+    it("refuses a session on a remote executor", () => {
+      expect(
+        applyLimitedResumePolicy(
+          contextFor(alice),
+          { ...sandboxed(), executor: "devbox" },
+          {},
+        ).kind,
+      ).toBe("error");
+    });
+
+    it("refuses a session whose provider is outside the lock", () => {
+      expect(
+        applyLimitedResumePolicy(
+          contextFor(alice),
+          { ...sandboxed(), providerName: "claude" },
+          {},
+        ).kind,
+      ).toBe("error");
+    });
+
+    it("refuses a requested model outside the lock", () => {
+      expect(
+        applyLimitedResumePolicy(contextFor(alice), sandboxed(), {
+          model: "gpt-4",
+        }).kind,
+      ).toBe("error");
+    });
+
+    it("replaces the session's persisted model and effort with the locked ones", () => {
+      const withEffort = {
+        ...alice,
+        grants: {
+          ...alice.grants,
+          lock: { ...alice.grants.lock, effort: "medium" },
+        },
+      };
+      const settings = sandboxed();
+      expect(
+        applyLimitedResumePolicy(contextFor(withEffort), settings, {}),
+      ).toEqual({
+        kind: "applied",
+        username: "alice",
+      });
+      expect(settings.model).toBe("gpt-5");
+      expect(settings.requestedModel).toBe("gpt-5");
+      expect(settings.effort).toBe("medium");
+    });
+  });
+
   describe("a locked effort against the request's thinking option", () => {
     const withEffort = {
       ...alice,
@@ -259,10 +588,24 @@ describe("limited-user middleware", () => {
     const app = new Hono();
     const sessions = new Map<
       string,
-      { projectId: string; provider: string; lastActivityMs: number }
+      {
+        projectId: string;
+        provider: string;
+        lastActivityMs: number;
+        sandboxLevel?: string;
+      }
     >([
       [
         "fresh",
+        {
+          projectId: "join-project",
+          provider: "codex",
+          lastActivityMs: 0,
+          sandboxLevel: "project-write",
+        },
+      ],
+      [
+        "unsandboxed",
         { projectId: "join-project", provider: "codex", lastActivityMs: 0 },
       ],
     ]);
@@ -273,18 +616,19 @@ describe("limited-user middleware", () => {
         [...sessions].map(([sessionId, row]) => ({
           sessionId,
           projectId: row.projectId,
-          catalogFamily: row.provider,
+          provider: row.provider,
           updatedAt: new Date(row.lastActivityMs).toISOString(),
         })),
-      getSessionMetadata: () => undefined,
+      getSessionMetadata: (sessionId) => ({
+        sandboxLevel: sessions.get(sessionId)?.sandboxLevel,
+      }),
       now,
     });
     app.use(
       "/api/*",
       createLimitedUsersMiddleware({
-        limitedUsers: service,
+        getActiveGrants: (username) => service.getActiveGrants(username),
         sessionAccess: resolver,
-        isEnabled: () => true,
         getSuperuserIdentity: () => "owner",
         getCookieSessionUsername: async () => "alice",
         getCookieSecret: () => "secret",
@@ -301,10 +645,63 @@ describe("limited-user middleware", () => {
           { id: "a", projectId: "view-project" },
           { id: "b", projectId: "secret-project" },
         ],
+        projects: [
+          { id: "view-project", name: "Visible" },
+          { id: "secret-project", name: "Secret" },
+        ],
+      }),
+    );
+    const queueResponse = {
+      items: [
+        {
+          id: "visible-q",
+          projectId: "view-project",
+          message: { text: "Visible work" },
+        },
+        {
+          id: "hidden-q",
+          projectId: "secret-project",
+          message: {
+            text: "Secret owner instruction",
+            attachments: [{ path: "/secret/upload.txt" }],
+          },
+        },
+      ],
+      recoveredSessionQueues: [
+        {
+          id: "visible-r",
+          projectId: "view-project",
+          content: "Visible recovered work",
+        },
+        {
+          id: "hidden-r",
+          projectId: "secret-project",
+          content: "Secret recovered work",
+        },
+      ],
+      projectStatuses: {
+        "view-project": { projectId: "view-project", state: "ready" },
+        "secret-project": { projectId: "secret-project", state: "blocked" },
+      },
+      dispatchState: { status: "paused", reason: "manual" },
+      futureHostField: { secret: true },
+    };
+    app.get("/api/project-queue", (c) => c.json(queueResponse));
+    app.post("/api/project-queue/:projectId/promote-now", (c) =>
+      c.json({
+        ...queueResponse,
+        promoteResult: {
+          promoted: true,
+          reason: "promoted",
+          status: { projectId: c.req.param("projectId"), state: "empty" },
+        },
       }),
     );
     app.get("/api/projects/:projectId/files", (c) => c.json({ ok: true }));
+    app.get("/api/sessions/:sessionId", (c) => c.json({ ok: true }));
     app.post("/api/sessions/:sessionId/messages", (c) => c.json({ ok: true }));
+    app.put("/api/sessions/:sessionId/mode", (c) => c.json({ ok: true }));
+    app.post("/api/sessions/:sessionId/input", (c) => c.json({ ok: true }));
     app.get("/api/issues", (c) => c.json({ issues: [] }));
     return app;
   };
@@ -316,7 +713,7 @@ describe("limited-user middleware", () => {
     await service.create({
       username: "alice",
       password: "correct-horse",
-      viewProjects: ["view-project"],
+      newSessionProjects: ["view-project"],
       joinProjects: ["join-project"],
       joinStaleOffsetMinutes: 0,
     });
@@ -346,11 +743,81 @@ describe("limited-user middleware", () => {
       sessions: Array<{ id: string }>;
     };
     expect(sessions.sessions.map((s) => s.id)).toEqual(["a"]);
+    expect(
+      (sessions as unknown as { projects: Array<{ id: string }> }).projects.map(
+        (project) => project.id,
+      ),
+    ).toEqual(["view-project"]);
+  });
+
+  it.each(["direct", "relay"] as const)(
+    "projects the global queue for a %s limited login",
+    async (via) => {
+      const app = await buildApp();
+      const env =
+        via === "relay"
+          ? {
+              [AUTHENTICATED_SRP_TRANSPORT]: {
+                kind: "srp" as const,
+                username: "alice",
+              },
+            }
+          : {};
+      const response = await app.request("/api/project-queue", {}, env);
+      const body = (await response.json()) as Record<string, unknown> & {
+        items: Array<{ id: string }>;
+        recoveredSessionQueues: Array<{ id: string }>;
+        projectStatuses: Record<string, unknown>;
+      };
+      expect(body.items.map((item) => item.id)).toEqual(["visible-q"]);
+      expect(body.recoveredSessionQueues.map((item) => item.id)).toEqual([
+        "visible-r",
+      ]);
+      expect(Object.keys(body.projectStatuses)).toEqual(["view-project"]);
+      expect(body.dispatchState).toEqual({
+        status: "paused",
+        reason: "manual",
+      });
+      expect(body).not.toHaveProperty("futureHostField");
+    },
+  );
+
+  it("projects the global snapshot returned by promote-now", async () => {
+    const app = await buildApp();
+    const response = await app.request(
+      "/api/project-queue/view-project/promote-now",
+      { method: "POST" },
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      items: Array<{ id: string }>;
+      promoteResult?: { status?: { projectId?: string } };
+    };
+    expect(body.items.map((item) => item.id)).toEqual(["visible-q"]);
+    expect(body.promoteResult?.status?.projectId).toBe("view-project");
   });
 
   it("refuses Issues & PRs at the operation, not only in the nav", async () => {
     const app = await buildApp();
     expect((await app.request("/api/issues")).status).toBe(403);
+  });
+
+  it("judges the path Hono routes, not its percent-encoded spelling", async () => {
+    const app = await buildApp();
+    // Hono decodes these onto the /api/issues and project-files handlers.
+    expect(
+      (await app.request("/api/%69ssues?projectId=view-project")).status,
+    ).toBe(403);
+    expect(
+      (
+        await app.request(
+          "/api/%70rojects/secret-project/files?projectId=view-project",
+        )
+      ).status,
+    ).toBe(404);
+    expect(
+      (await app.request("/api/%70rojects/view-project/files")).status,
+    ).toBe(200);
   });
 
   it("allows a turn in a fresh joinable session and refuses a cold one", async () => {
@@ -372,6 +839,27 @@ describe("limited-user middleware", () => {
     );
   });
 
+  it("refuses every join action on a fresh session outside the sandbox", async () => {
+    const app = await buildApp({ now: () => 5 * 60 * 1000 });
+    for (const [method, action] of [
+      ["POST", "messages"],
+      ["PUT", "mode"],
+      ["POST", "input"],
+    ] as const) {
+      const response = await app.request(
+        `/api/sessions/unsandboxed/${action}`,
+        { method },
+      );
+      expect(response.status, action).toBe(403);
+      expect(
+        ((await response.json()) as { reason?: string }).reason,
+        action,
+      ).toBe("unsandboxed-session");
+    }
+    // Reading it stays open to a joiner.
+    expect((await app.request("/api/sessions/unsandboxed")).status).toBe(200);
+  });
+
   it("answers 401 once the logged-in user is disabled", async () => {
     await service.update("alice", { disabled: true });
     const app = await buildApp();
@@ -379,18 +867,47 @@ describe("limited-user middleware", () => {
     expect(response.status).toBe(401);
   });
 
-  it("acts as the superuser when the acting cookie names nobody", async () => {
+  it("refuses a limited relay login that has no active grants", async () => {
+    // With the feature off no limited user has active grants.
     const app = new Hono();
     app.use(
       "/api/*",
       createLimitedUsersMiddleware({
-        limitedUsers: service,
+        getActiveGrants: () => null,
         sessionAccess: new SessionAccessResolver({
           getLiveSession: () => undefined,
           readCatalogRows: async () => [],
           getSessionMetadata: () => undefined,
         }),
-        isEnabled: () => true,
+        getSuperuserIdentity: () => "owner",
+        getCookieSessionUsername: async () => null,
+        getCookieSecret: () => "secret",
+      }),
+    );
+    app.get("/api/issues", (c) => c.json({ ok: true }));
+    const relayLogin = (username: string) => ({
+      [AUTHENTICATED_SRP_TRANSPORT]: { kind: "srp", username },
+    });
+
+    expect(
+      (await app.request("/api/issues", {}, relayLogin("alice"))).status,
+    ).toBe(401);
+    expect(
+      (await app.request("/api/issues", {}, relayLogin("owner"))).status,
+    ).toBe(200);
+  });
+
+  it("acts as the superuser when the acting cookie names nobody", async () => {
+    const app = new Hono();
+    app.use(
+      "/api/*",
+      createLimitedUsersMiddleware({
+        getActiveGrants: (username) => service.getActiveGrants(username),
+        sessionAccess: new SessionAccessResolver({
+          getLiveSession: () => undefined,
+          readCatalogRows: async () => [],
+          getSessionMetadata: () => undefined,
+        }),
         getSuperuserIdentity: () => "owner",
         getCookieSessionUsername: async () => null,
         getCookieSecret: () => "secret",
@@ -415,13 +932,12 @@ describe("limited-user middleware", () => {
     app.use(
       "/api/*",
       createLimitedUsersMiddleware({
-        limitedUsers: service,
+        getActiveGrants: (username) => service.getActiveGrants(username),
         sessionAccess: new SessionAccessResolver({
           getLiveSession: () => undefined,
           readCatalogRows: async () => [],
           getSessionMetadata: () => undefined,
         }),
-        isEnabled: () => true,
         getSuperuserIdentity: () => "owner",
         getCookieSessionUsername: async () => null,
         getCookieSecret: () => "secret",
@@ -441,6 +957,85 @@ describe("limited-user middleware", () => {
       headers: { Cookie: "yep-anywhere-acting-user=alice.deadbeef" },
     });
     expect(forged.status).toBe(200);
+  });
+});
+
+describe("session access resolver", () => {
+  /** topics/limited-users.md § Delivery v1 — Freshness. */
+  const hours = (count: number) => count * 60 * 60 * 1000;
+  const now = hours(10);
+
+  it("dates a live process that has seen no provider message by its catalog row", async () => {
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => ({
+        projectId: "join-project",
+        provider: "claude",
+        lastActivityMs: null,
+      }),
+      readCatalogRows: async () => [
+        {
+          sessionId: "resumed",
+          projectId: "join-project",
+          provider: "claude",
+          updatedAt: new Date(now - hours(3)).toISOString(),
+        },
+      ],
+      getSessionMetadata: () => undefined,
+      now: () => now,
+    });
+    const facts = await resolver.resolve("resumed");
+    expect(facts?.lastActivityMs).toBe(now - hours(3));
+    expect(
+      facts && resolver.canJoin(facts, { username: "alice", offsetMinutes: 0 }),
+    ).toBe(false);
+  });
+
+  it("dates a live process by its last provider message", async () => {
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => ({
+        projectId: "join-project",
+        provider: "claude",
+        lastActivityMs: now - hours(2),
+      }),
+      readCatalogRows: async () => [],
+      getSessionMetadata: () => undefined,
+      now: () => now,
+    });
+    const facts = await resolver.resolve("running");
+    expect(
+      facts && resolver.canJoin(facts, { username: "alice", offsetMinutes: 0 }),
+    ).toBe(false);
+  });
+
+  it("takes a live process's sandbox over the level its metadata recorded", async () => {
+    const resolverFor = (sandboxed: boolean) =>
+      new SessionAccessResolver({
+        getLiveSession: () => ({
+          projectId: "join-project",
+          provider: "claude",
+          lastActivityMs: now,
+          sandboxed,
+        }),
+        readCatalogRows: async () => [],
+        getSessionMetadata: () => ({ sandboxLevel: "project-write" }),
+        now: () => now,
+      });
+    expect((await resolverFor(false).resolve("running"))?.sandboxed).toBe(
+      false,
+    );
+    expect((await resolverFor(true).resolve("running"))?.sandboxed).toBe(true);
+  });
+
+  it("resolves no project for a session the catalog files under two", async () => {
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      readCatalogRows: async () => [
+        { sessionId: "twice", projectId: "view-project" },
+        { sessionId: "twice", projectId: "secret-project" },
+      ],
+      getSessionMetadata: () => undefined,
+    });
+    expect(await resolver.resolve("twice")).toBeNull();
   });
 });
 

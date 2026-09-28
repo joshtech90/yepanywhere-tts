@@ -40,6 +40,12 @@ export interface SessionCatalogRow {
   fidelity: SessionCatalogFidelity;
   /** Exact provider source identity that established this row. */
   sourceVersion: string;
+  /**
+   * Version of the adapter projection that built this row. An adapter that
+   * reuses a row while its source is unchanged must also require its current
+   * format, or rows an older build stored keep that build's facts forever.
+   */
+  rowFormat?: number;
   location: SessionCatalogLocation;
 }
 

@@ -64,6 +64,7 @@ interface ModelSwitchModalProps {
   guardEffortChange?: (
     nextThinking: ThinkingOption,
     currentThinking: ThinkingOption,
+    options: { changesModel: boolean },
   ) => Promise<"apply" | "skip">;
   /** When provided, renders an "Info" tab whose pane is this node. */
   infoPane?: ReactNode;
@@ -280,6 +281,7 @@ export function ModelSwitchModal({
         const verdict = await guardEffortChange(
           thinking,
           toThinkingOption(currentThinkingMode, currentEffortLevel),
+          { changesModel: selectedModel !== currentModelId },
         );
         if (verdict === "skip") {
           if (!dismissedRef.current) setSwitching(false);

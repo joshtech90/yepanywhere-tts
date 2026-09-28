@@ -5,8 +5,10 @@ import {
   useRef,
   useSyncExternalStore,
 } from "react";
+import { projectRawFileApiPath } from "../api/fileClient";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
 import type { WorkflowSchemaFiles } from "@yep-anywhere/shared/transcript/workflowTags";
 import { WorkflowSchemaFileStore } from "../lib/workflowSchemaFiles";
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
@@ -31,7 +33,7 @@ export function useWorkflowSchemaFiles(enabled: boolean) {
     return new WorkflowSchemaFileStore(
       (path, init) =>
         runtime.transport.fetchResponse(
-          `/projects/${projectId}/files/raw?${new URLSearchParams({ path })}`,
+          toSourceTransportApiPath(projectRawFileApiPath(projectId, path)),
           init,
         ),
       `ya:workflow-schema-files:v1:${JSON.stringify([runtime.sourceKey, projectId, sessionId])}`,

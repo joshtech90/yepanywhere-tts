@@ -112,6 +112,11 @@ export function isCodexReasoningSummary(
 export interface ModelInfo {
   /** Model identifier (e.g., "sonnet", "qwen2.5-coder:0.5b") */
   id: string;
+  /**
+   * Provider-reported concrete model an alias `id` currently resolves to
+   * (e.g. "opus[1m]" → "claude-opus-5-5[1m]"), when the provider reports it.
+   */
+  resolvedModel?: string;
   /** Human-readable name */
   name: string;
   /** Description of the model's capabilities (optional) */
@@ -588,6 +593,7 @@ export interface SessionSandboxEnforcement {
 
 export type SessionSandboxAvailabilityState =
   | "available"
+  /** Older servers only: they refused the sandbox without local auth. */
   | "auth-required"
   | "unsupported-platform"
   | "missing-bubblewrap"
@@ -604,7 +610,42 @@ export interface SessionSandboxAvailability {
   platform: string;
   backend?: "bubblewrap";
   version?: string;
+  /**
+   * Whether local YA requests require authentication: password or desktop
+   * auth on, localhost-open and --auth-disable off. When false, a sandboxed
+   * agent that can reach YA (e.g. with the network firewall off) can drive
+   * it and escape, so clients warn; it never blocks a launch. Older servers
+   * omit it.
+   */
+  localAuthEnforced?: boolean;
+  /**
+   * Host fix that would clear a failed preflight, when the server can name
+   * one. Fixed vocabulary only: never raw probe output, which can carry host
+   * detail this pre-auth route must not publish. Older servers omit it.
+   */
+  blocker?: SessionSandboxBlocker;
 }
+
+/** Actionable cause of an unavailable Linux session sandbox. */
+export type SessionSandboxBlocker =
+  | {
+      /** Required host packages are absent (distribution package names). */
+      kind: "missing-packages";
+      packages: SessionSandboxHostPackage[];
+    }
+  | {
+      /**
+       * The kernel's AppArmor policy denies unprivileged user namespaces to
+       * the `unshare` helper (Ubuntu 23.10+ default).
+       */
+      kind: "userns-restricted";
+    };
+
+export type SessionSandboxHostPackage =
+  | "bubblewrap"
+  | "slirp4netns"
+  | "util-linux"
+  | "iproute2";
 
 /**
  * Saved defaults for the new session form.
@@ -924,6 +965,8 @@ export interface FileMetadata {
   mimeType: string;
   /** Whether the file is a text file (can be displayed inline) */
   isText: boolean;
+  /** Last modification time in epoch milliseconds; absent from older servers. */
+  modifiedAt?: number;
 }
 
 /**

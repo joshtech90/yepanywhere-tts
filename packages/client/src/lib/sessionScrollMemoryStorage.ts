@@ -300,6 +300,12 @@ export function writeSessionScrollMemory(
       selectFurthestSessionScrollMemory(stored, candidate) ?? candidate;
     const candidateAdvanced =
       stored === null || compareSessionScrollMemory(candidate, stored) > 0;
+    // Storage notifications reconcile visible tabs through this same writer.
+    // Re-publishing an equal/older position creates a fresh observation key
+    // and another notification forever, even though the cursor never moves.
+    if (stored && !candidateAdvanced) {
+      return { snapshot: stored, written: false };
+    }
     const observationKey = createObservationStorageKey(reference);
     storage.setItem(observationKey, JSON.stringify(selectedBeforeWrite));
 

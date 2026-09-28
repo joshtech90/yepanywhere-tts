@@ -182,6 +182,21 @@ SDK 0.3.220 turn verified that `opus` and `opus[1m]` both select Opus 5 with a
 provider catalog still copies the SDK's extended-row capability fields onto
 the one visible `opus` row before dropping the redundant extended row.
 
+### Update 2026-09-22: Opus 5.5 remains native 1M
+
+An authenticated no-turn handshake through SDK 0.3.280 / Claude Code 2.1.280
+reported both `default` and `opus` as `claude-opus-5-5`, with adaptive thinking,
+fast and auto modes, and five effort levels. Unlike the earlier catalog, this
+one reports the stable `opus` row directly rather than requiring an
+`opus[1m]` row to supply its capabilities.
+
+A real isolated YA API turn requested `opus` at low effort. The process and
+result both identified `claude-opus-5-5`; `modelUsage` reported a 1,000,000-token
+context window and 128,000 maximum output tokens. The model id carries no
+`[1m]` suffix, so YA's static fallback now recognizes Claude 5 minor-version
+ids such as `claude-opus-5-5` as native 1M models while still preferring an
+observed live window.
+
 ## How yepanywhere consumes this
 
 yepanywhere never persists a session's real context window. It derives the

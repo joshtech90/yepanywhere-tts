@@ -14,12 +14,29 @@ Topic: limited-users
 Status: **v1 delivered (2026-09-20); the rest remains proposal.** See
 § Delivery v1 — Settings → Users for the committed contract.
 
-The next template-creation extension is specified in
+The implemented template-creation extension is specified in
 [project templates](project-templates.md#limited-user-permissions): server-enforced
-None / Selected / Any permissions, with App canvas, Storybook and Web page
-selected for new limited users (user-directed 2026-09-21). It is not delivered
-in v1; the
-[stand-up gap](../gaps/project-template-standup.md) tracks its implementation.
+None / Selected / Any permissions in Settings → Users. A configured creation
+root defaults to Any, otherwise None (user-directed 2026-09-28); existing
+records migrate once, retaining later explicit administrator choices. Creation
+uses project-confined setup and the existing locked session launch policy. The
+[stand-up gap](../gaps/project-template-standup.md) tracks the remaining App,
+workspace, identity and recovery integration.
+
+Settings hidden from limited users inherit the superuser's effective server
+configuration; hiding a control does not select a separate default. Explicit
+per-user grants and locks remain authoritative. Optional personal controls to
+turn off part of an allowed feature set are only a
+[sketch](../gaps/sketches/limited-user-preference-narrowing.md), not implemented
+preferences or an additional source of authority.
+
+The same extension adds a superuser-managed **Private apps only** ceiling,
+default-on for new and migrated limited users. It is a negative authority cap:
+when enabled, project-template creation and later app-row mutations for that
+user's projects must remain bearer-protected. When disabled, the user may opt a
+new template app into Public access; private remains the default. The server
+checks the ceiling at reservation creation/update, independently of the client
+control.
 
 ### Approved workspace direction (2026-09-21; not implemented)
 
@@ -41,10 +58,13 @@ Creation permission is independent: a user can be allowed to create projects
 while locked to Current project only. A view/join grant is not a new-session
 grant; entering an already-running session must not bypass its principal or
 write-scope enforcement. Limited users never select an unsandboxed state.
-Approved migration (2026-09-21): existing users retain project-only confinement
-and have template creation disabled until explicitly granted. Apply personal
-directory and template-selection defaults only to newly created users; do not
-broaden an existing session's sandbox.
+Approved migration (user-directed 2026-09-23): apply the new defaults to existing
+limited users too. Set Personal directory scope and Selected App canvas,
+Storybook and Web page; fill an absent Create in root with `~/username`,
+preserving a configured custom root and unrelated grants/provider locks.
+Apply once; later administrator choices survive
+restarts. Existing running sessions keep their established sandbox until
+relaunched; migration does not broaden live provider mounts.
 
 Other host files remain readable under the existing filesystem sandbox
 contract. For the household use case, siblings can be consulted from an agent
@@ -137,7 +157,11 @@ makes.
 **Feature gate.** `limitedUsersEnabled` in server settings, default off
 ([[vanilla-defaults]]). Off means no principal other than the superuser and
 no limited-user login; turning it off while limited users exist keeps the
-records but refuses their logins. Settings → Users stays reachable either
+records but refuses their logins. That includes logins already signed in: a
+live limited cookie, relay, or websocket login answers 401 and its
+subscriptions are refused, never falling back to superuser authority. Their
+unexpired sessions act again if the feature is turned back on. Settings →
+Users stays reachable either
 way, because it is where the switch and the first user both live.
 
 ### v1 user record
@@ -150,12 +174,22 @@ way, because it is where the switch and the first user both live.
 - `srp` — `{ salt, verifier }` generated from the same password with the
   username as SRP identity, so the relay path verifies without a second
   credential. Changing the password rewrites both forms; neither form is
-  ever returned by an API.
+  ever returned by an API. It also ends every login the user holds: their
+  direct cookie sessions, and their relay sessions, whose saved resume
+  credentials stop working. Deleting the user ends them too, and a new user
+  starts with none, even one reusing a deleted user's name. A connection
+  already open keeps acting until it reconnects; disabling the user refuses
+  it at once.
 - `newSessionProjects: string[]` — projects where the user may start
   sessions. Every session they start is forced to `sandboxLevel:
   "project-write"`; the request cannot select `none`.
-- `joinProjects: string[]` — projects where the user may send turns to a
-  **fresh** existing session started by anyone.
+- `joinProjects: string[]` — projects where the user may act in a
+  **fresh**, **sandboxed** existing session started by anyone: send and
+  shape turns, attach files, answer and approve tool requests, interrupt,
+  and change its permission mode. That is the authority of the session's
+  process, so it is granted only where that process runs in the
+  project-write sandbox; a session running outside it stays read-only for
+  the user, whoever started it.
 - `viewProjects: string[]` — projects whose sessions the user may read.
 - `joinStaleOffsetMinutes` — −5 to +60, default 0 (see freshness below).
 - `lock: { provider?, model?, effort? }` — any subset; an absent field is
@@ -170,6 +204,10 @@ only needs the read-only extras.
 
 A session in a join project is joinable while
 `now − lastActivity ≤ providerCacheWarmMinutes + joinStaleOffsetMinutes`.
+`lastActivity` is the running process's last provider message; before the
+process has seen one (a session just resumed) and for a session with no
+process, it is the session catalog's last-update time. A session with
+neither is not fresh.
 `providerCacheWarmMinutes` is a believed prompt-cache-warm window per
 provider, shipped as **60 for Claude-family providers and 10 for everything
 else, Codex included** — the same zero point the stale-session cutoff above
@@ -186,22 +224,39 @@ a route added later is refused for limited users until it is listed. It is
 allowed gets 403, and a project or session outside the user's grants gets
 404 (existence is not disclosed).
 
+The decision is made on the path the router dispatches, after
+percent-decoding, so an encoded spelling such as `/api/%69ssues` is judged
+as the `/api/issues` route it reaches. A project grant comes only from a
+project or session id in that path: a `projectId` query parameter opens
+nothing, since most routes ignore one. An id segment that is not valid
+percent-encoding is refused.
+
 | operation | limited user |
 |---|---|
 | any API path not on the v1 allowlist | 403 |
 | `GET` of a project-scoped path | allowed when the project is in any of the three lists, else 404 |
-| session create in a project | `newSessionProjects` only; sandbox forced; lock applied |
-| turn/approval/interrupt on a session | the session's project in `newSessionProjects` or `joinProjects`, **and** the session is fresh or started by this user |
+| rename, caption, code name, or remove a project | only a project the user owns, which also needs its `newSessionProjects` grant, else 403: these are one value every principal sees, so a grant to start sessions in someone else's project is no say in how it is presented. For every principal, an id naming no listed project is 404 and nothing is stored |
+| session create in a project | `newSessionProjects` only; sandbox forced; lock applied; a remote executor or computer control is refused |
+| resume or reactivate a session | `newSessionProjects` on its project; the session must already run sandboxed and on this host, else 403; the lock applies as at create, replacing the session's model and effort with locked ones |
+| fork or clone a session | `newSessionProjects` on its project; the copy is recorded as the user's own; running it is a resume, under the row above |
+| any other session action that starts a provider process (restart, recap, retitle, fork-after-summary, rewind, clearloop, resuming or steering a restart-paused queued message, session bang commands) and moving a session to another project | 403: only listed session actions are open, and each listed one that launches applies this launch policy |
+| turn/approval/interrupt/permission-mode change on a session | the session's project in `newSessionProjects` or `joinProjects`, **and** the session runs sandboxed (its live process enforces project-write, or with no process its last launch recorded it), else 403 with reason `unsandboxed-session`, **and** it is fresh or started by this user, else 403 with reason `stale-session` |
 | any session the user started | always at least readable, including after its project grant is removed |
 | Issues & PRs (`/api/issues*`) | 403, and the nav entry is hidden: it spends the host's ticket-system credentials |
-| Inbox, Projects, Source Control, All Sessions | served, with every project and session outside the user's grants removed from the response |
-| settings | `GET` of the client-facing settings document; every write 403 |
+| Inbox, Projects, Source Control, All Sessions | served, with every project and session outside the user's grants removed before pagination; All Sessions project options and aggregate statistics use the same scope |
+| Project Queue | global list and promote-now responses include only ordinary items, recovered items and project statuses (including blocker session titles) in granted projects; the route builds them from the user's grants so other projects' entries are never read for them, and a response-field allowlist backs that up. The global dispatch pause remains visible because it gates the user's own items. Promote-now needs `newSessionProjects` on the project in its path; pausing or resuming dispatch 403 |
+| Project Queue items | queuing needs `newSessionProjects`; a new-session target is held to the create rule (sandbox forced, lock applied, remote executor refused) and an existing-session target may name neither a remote executor nor a value outside the lock; a queued YA command 403. The item records the user, who alone may edit, retry, reorder, or delete it (404 otherwise). At dispatch their grants are read again: without `newSessionProjects` the item fails, an existing-session target must run sandboxed and be in the item's project or one they started, and the turn and any new session are attributed to them |
+| settings | `GET /api/settings` only, answered with a projection holding the fields their client reads to render and default their own work; secrets and host inventory (webhook URL and token, remote executors, gateway and Ollama endpoints and start commands, file-access rules, the readiness command, global instructions) are withheld, and a field added later is withheld until listed. Every write and every settings subpath (browser-settings backup, remote executors, cache-billing events, file-access and host-awake status) 403 |
+| recents | the install's shared list, read filtered; clearing 403; `POST /api/recents/visit` answers `{recorded: false}` and records nothing |
+| activity REST (`/api/activity/*`) | 403: watcher status and every connected tab and browser profile are host inventory with no project to filter by |
 | user administration | 403 except `GET /api/users/me` and `POST /api/users/logout` |
-| public shares, app links, devices, bang commands, absolute-path file reads, uploads outside a session, server admin, relay/remote-access config | 403 |
+| public shares, app links, devices, bang commands, absolute-path file reads, file editing and artifact rebuild (`/api/file-edit*`), server admin, relay/remote-access config | 403 |
+| pre-session draft uploads, validation and deletion | allowed only in the acting account's isolated draft store |
 
 Session-to-project resolution for session-scoped paths uses the live process
-first and the session catalog second; a session that resolves to no project is
-refused. List filtering is by project only: a session the user started in a
+first and the session catalog second — the same retained catalog All Sessions
+and Inbox read, re-read at most every few seconds. A session that resolves to
+no project, including one the catalog files under two projects, is refused. List filtering is by project only: a session the user started in a
 project whose grant was later removed stays directly readable but no longer
 appears in their lists. Sessions the user starts are recorded with `createdByUser` in
 session metadata at create time, which is what makes the "always readable"
@@ -209,18 +264,67 @@ row above durable.
 
 The same principal check gates websocket subscriptions: a limited user may
 subscribe to a session channel only for sessions they may read, and the
-global activity channel is filtered to their accessible projects.
+global activity channel is filtered to their accessible projects. A
+subscription is judged by exactly the ids its channel reads: the session for
+the session and Conversation channels, both session and project for the
+session-watch channel, the project for the glossary and worktree channels.
+Every one of them must be readable; another id beside them, such as a granted
+`projectId` on a session subscription, opens nothing. A subscription naming
+none of its ids, or on a channel the server does not serve, is refused.
+
+The activity channel is filtered by event type, by default deny. An event
+reaches a limited user only when it names a project they may read: directly,
+through the session it creates, or through the session it is about, resolved
+from what the server already holds in memory (live process, session metadata,
+last catalog read); a session that resolves to no project hides its event.
+Filtering never waits on the catalog: a session the last read lacked starts a
+background read, so that session's later events resolve.
+An event listing several projects arrives listing only the readable ones, or
+not at all. Signals that carry no project data (backend reload, restart-queue
+and catalog refresh counters, minus the catalog's refresh error) arrive so
+the client refetches its filtered lists. Host inventory never arrives: watched
+provider file paths, YA's own source changes, network binding, browser tabs,
+and worker counts. As for lists, the rule is by project only; a session the
+user started stays readable through its own channels. A new event type is
+hidden until classified.
+
+A `/api/ws` socket acts as the login that opened it, for its whole lifetime.
+An SRP socket acts as its proven identity; a directly opened socket acts as
+the cookie login of its upgrade request. Its tunneled requests and its
+subscriptions are both judged as that login, and a cookie header a client
+puts on a tunneled request changes nothing. A limited user's direct socket
+therefore gets exactly the 403/404 answers above, never superuser authority.
 
 ### Login, switching, and logout
 
 - **Relay.** `srp_hello.identity` selects the verifier: the remote-access
   record for the superuser, else the limited user of that name. An unknown
-  identity gets a challenge computed against a fixed dummy salt and verifier
-  and fails only at the proof step, and every hello response is padded to a
-  fixed floor, so response timing does not disclose which usernames exist.
-  This closes the existing early "unknown identity" leak as well.
-- **Direct.** The login page accepts an optional username; blank is the
-  superuser. The cookie session records which principal it authenticated.
+  or disabled identity gets a challenge computed against a decoy salt and
+  verifier and fails only at the proof step. The decoy salt is derived per
+  identity from a persisted server secret, so it is stable for a name across
+  hellos and restarts, as a real salt is, and differs between names, as real
+  salts do: neither a salt shared by every unknown name nor one that changes
+  on each hello can pick out the names that exist. Every hello response is
+  padded to a fixed floor, and every identity has its own hello limiter, so
+  neither response timing nor rate limiting discloses them either. This
+  closes the existing early "unknown identity" leak as well. All of this
+  applies only while limited users are enabled; with the feature off the
+  server answers `srp_hello` exactly as before it existed — an unknown
+  identity is refused at once, unpadded, and only the configured superuser
+  name has a per-identity limiter. The per-identity limiters are capped;
+  at the cap the least recently seen go first, and a limiter currently
+  blocking its name goes only when nothing else can, so spraying fresh names
+  does not lift a lockout.
+- **Direct.** While limited users are enabled, the login page accepts an
+  optional username; blank is the superuser. With the feature off it asks for
+  the password alone, exactly as before limited users existed, and sends no
+  username. It learns which before sign-in from `limitedUsersEnabled` on the
+  unauthenticated `GET /api/auth/status`; a server that omits the field reads
+  as off. The cookie session records which principal it authenticated.
+  The owner's Remote Access username also means the superuser here, matched
+  case-insensitively, unless a limited user holds that name: browsers
+  autofill the saved relay credential into the username field, and the relay
+  already reads that identity as the superuser.
 - **A relay-authenticated limited user is locked to that user** for the life
   of the connection: no switch control, and `POST /api/users/switch` is
   refused.
@@ -232,8 +336,11 @@ global activity channel is filtered to their accessible projects.
   browser.
 - **Logout.** In Settings → Users. For a switched superuser it clears the
   acting-user cookie and returns them to full access. For a limited user it
-  invalidates their session and returns them to the login they arrived by:
-  the relay login page for a relay session, the direct login page otherwise.
+  ends the session they logged in with — the relay session, including the
+  resume credential their browser saved, or the direct cookie session — and
+  returns them to the login they arrived by: the relay login page for a relay
+  session, the direct login page otherwise, under the client's application
+  base path.
 
 ### Settings → Users
 
@@ -272,7 +379,9 @@ for, so nothing about limited users appears anywhere else until one exists.
   lock leaves a field free, that field keeps its ordinary picker; a lock that
   empties the whole provider/model/thinking column gives the column's width
   back rather than leaving a hole. The composer's model chip keeps its badge
-  and loses its menu.
+  and loses its menu. A locked provider or effort this client cannot name,
+  such as one a newer server knows, is still locked: its picker is withheld,
+  the caption states the value as stored, and the launch sends it verbatim.
 
   The lock also outranks saved and per-project defaults in the form, and is
   reapplied over the launch body at submit, so a submit racing the
@@ -296,16 +405,29 @@ for, so nothing about limited users appears anywhere else until one exists.
   Notifications, Users, and About. Like the route policy, the list is
   default-deny: a category added later is hidden from limited users until
   someone lists it. A hidden category does not render from a typed URL
-  either. That suppression is about the principal alone: a category the
-  server's capabilities dropped still renders its pane from a typed URL,
-  because that pane's unsupported-server message is the answer the reader
-  came for.
-- **An older server** without `/api/users` makes the page say so rather than
-  report a failure; no other client behavior depends on the route existing.
+  either. Until the server has named the acting principal, Settings offers
+  and mounts no category at all, since the client's placeholder principal is
+  the superuser and a superuser-only pane would otherwise send its refused
+  requests before being hidden. That suppression is about the principal
+  alone: a typed URL for a category the server does not serve still gets an
+  answer, the category's unsupported-server message
+  ([settings placement](settings-ui-placement.md#categories-what-each-is-for)).
+- **An older server** without the `limited-users` capability (before
+  v0.9.0) loses the category from the Settings list; a typed URL says the
+  server lacks limited users, and the Users pane does not mount. The client
+  then sends that server no users request and no `limitedUsersEnabled` write,
+  which it would drop silently. No other client behavior depends on the
+  capability. See [server capabilities](server-capabilities.md).
 
 Nav entries a limited user cannot use are hidden, and the sidebar session
 list shows only sessions in their accessible projects plus sessions they
-started. Hiding is cosmetic; the middleware above is the enforcement.
+started. Host-administration notices are not shown to a limited user: the
+server-changed reload banner, the Codex update prompt, the YA server
+update/compatibility notices, the desktop missing-provider notice, and the
+network-filesystem storage warning (`useCanAdministerHost`). The frontend-changed
+reload banner stays, since reloading their own page is theirs to do. Hiding is
+cosmetic; the middleware above is the enforcement, and it refuses the restart,
+safe-restart, and Codex update routes.
 
 ### Usage
 
@@ -319,22 +441,144 @@ this install and how much.
   superuser** — which is also what every session and turn predating this
   means. A YA-injected prompt is nobody's turn and carries no sender.
 - **The ledger.** `user-usage.jsonl` in the data directory, one short
-  append-only record per session start and per user turn: timestamp,
-  username (absent for the superuser), and a turn's word count. Appending is
-  the only write on the turn path. A torn record from an interrupted append
-  costs itself and nothing else. The file is capped at 50,000 records,
-  trimmed oldest-first, so a report's reach shrinks rather than its recent
-  numbers going wrong. Deleting a user deletes their records.
+  append-only record per session start, per user turn, and per settled
+  provider turn's token charge: timestamp, username (absent for the
+  superuser), and then a turn's word count or a charge's model short name,
+  project name, and input/output token counts. A record is written when the
+  server accepts the action:
+  - **A session start** is any request that creates a session: start or
+    create, with or without a project and including one the supervisor
+    holds for a free worker; fork; clone, which includes a `/btw` aside;
+    restart, in either mode; fork-after-summary, once its fork exists; and a
+    Project Queue new-session item when it is queued. Resume and reactivate
+    continue a session and start none.
+  - **A user turn** is counted when accepted, whether sent at once, deferred,
+    or queued in Project Queue, so a queued turn later deleted still counts.
+    A YA command (`/clear`, `/clearloop`, and the like) is no turn, and
+    neither is a YA-injected prompt or a recovered queue entry being
+    delivered again.
+
+  Appending is the only write on the turn path. A torn record from an
+  interrupted append costs itself and nothing else, and so does a failed
+  append: it is logged,
+  the action it records still succeeds, and later appends proceed. The file
+  keeps the newest 50,000 records: once it holds 1,000 more it is trimmed
+  oldest-first, so a report's reach shrinks rather than its recent numbers
+  going wrong. The count comes from the file on a process's first write, so
+  a server restarted before that many appends still trims. Deleting a user
+  deletes their records.
 - **Interaction time** is the union of the five-minute windows each action
   opens: one lone turn counts five minutes, two turns two minutes apart count
   as one continuous stretch rather than two, and a gap longer than five
   minutes starts a new stretch. This is the whole definition of "presumed
   away after five minutes"; no other idle signal feeds it.
+- **Tokens** are what the providers charged for that principal's work, over
+  every request their sessions made. Attribution is the session's recorded
+  creator, so a charge lands on the principal who started the session that
+  caused it. A token record is **nobody's action**: it moves no session count,
+  no turn count, and no interaction time.
+  - **Four classes, kept apart.** Prompt tokens the provider processed, prompt
+    tokens it served from cache, prompt tokens it wrote to cache, and tokens it
+    generated. They cost between a fiftieth and one times each other, so one
+    summed "tokens" number is a **volume, not a cost** — that is what the page
+    labels it, and every cost figure comes from the classes.
+  - **Binned by provider, model and context tier**, which is everything the
+    price of those counts depends on. The recorder accumulates per live process
+    and appends **once per settled provider turn and tier** — on the turn's
+    `result` frame, on the next turn starting, or when the process goes away.
+  - **One billing frame per provider**, owned by `readBillableUsage`
+    (`packages/server/src/sdk/billableUsage.ts`) and separate from the
+    cache-miss monitor's growth filter. Claude's assistant frames and Codex's
+    out-of-band `token_usage` report each request; codex-oss's
+    `turn_complete` and the `result` of pi, OpenCode and Gemini report the
+    turn's total. Claude's `result` and Codex's `turn_complete` restate
+    requests already reported, so they are not read. **Subagent requests
+    count**: a Claude Task subagent's frames are billed to the session that
+    delegated to it. Grok and Gemini ACP report no usage YA can read and
+    record nothing.
+  - **Deduped per turn by response id.** One streaming Claude response repeats
+    its usage on every completed content block, and a subagent's frames
+    interleave with the main thread's, so each response id counts once per
+    turn. A provider that names no response, such as Codex's `token_usage`,
+    has each frame taken as its own request, since two real requests may
+    legitimately report equal counts.
+  - **Cached reads follow the provider's protocol.** OpenAI and Google report
+    cached reads inside `input_tokens`; Anthropic-protocol providers, pi and
+    OpenCode report them disjointly. The convention is declared per provider,
+    so codex-oss is read the OpenAI way like Codex.
+  - **The tier is decided at record time**, from the prompt one request
+    actually sent, because no later reader can recover a single request's
+    length from a sum. **The threshold is the provider's own, and most
+    providers have none**: OpenAI reprices the whole request above 272k prompt
+    tokens (prompt classes ×2, output ×1.5), while **Anthropic prices its full
+    1M window flat** — it removed its own over-200k premium on 2026-03-13, so
+    `sonnet[1m]`, `opus[1m]` and `fable[1m]` cost exactly what their short
+    requests cost. A record carries the tier only when it is the long one, so an
+    install on a provider without one pays nothing for the distinction, and a
+    long-context flag on such a provider changes no price. **A turn total is
+    recorded at the standard tier**, since its sum names no single request;
+    of the providers reporting totals, only codex-oss reads a price list with
+    a tier.
+- **Cost is reported two ways, from one calculation.** The headline is
+  **standard-tier output tokens of the model itself**: the charge's dollars
+  divided by the one constant that model charges per output token. It leads
+  because it keeps meaning the same thing when a price changes. Dollars are the
+  **supplement** — the same calculation before that division.
+  - Prices come from two tables, in order. `PUBLISHED_MODEL_PRICES` in
+    `packages/shared/src/model-prices.ts` holds rates read from the providers'
+    own pricing pages on a stated date, covering the models YA launches that the
+    extract does not name — Opus 5, Sonnet 5, Fable/Mythos 5.1, the GPT-5.6
+    family, GPT-6 Astra, and the Daybreak alias, which **is** GPT-5.6 Sol and
+    carries its rates. Behind it, `packages/shared/src/vendor/pi-model-prices/`
+    is a mechanical extract of the `pi` project's per-model rates; its
+    `VENDORED.md` owns the upstream revision, and
+    `scripts/generate-vendored-model-prices.mjs` refreshes it from a local `pi`
+    checkout when someone chooses to.
+  - **Per model, not per provider ratio.** Claude Fable 5.1 and Mythos 5.1
+    price a cache read at 0.025x base input where every other Claude model is at
+    0.1x, and OpenAI bills cache writes on GPT-5.6 and later but not on GPT-5.4
+    or 5.5. A per-provider ratio table would price those models wrong by a
+    factor of four.
+  - **A model the table does not name still gets an output-token equivalent**,
+    from generic ratios midway between the two listed families — output at 5.5
+    fresh prompt tokens, a cache read at a tenth of one, a cache write at
+    0.625. **It gets no dollar figure**, which is simply not shown rather than
+    guessed. Those ratios track real compute asymmetry only roughly, which is
+    why they yield a relative unit and never money.
+  - **Dollars add across models; output-token equivalents do not.** So a
+    per-model bucket shows both, and a per-project or whole-user bucket shows
+    dollars alone — one model's output token is not another's, and summing them
+    would not be a quantity. A bucket with any unpriced model shows no dollars
+    at all, rather than a partial total that reads as the whole.
+  - **A fast-mode Claude turn is under-reported.** Anthropic charges Opus 5
+    and Opus 4.8 at $10/$50 rather than $5/$25 with `speed: "fast"`, and the
+    ledger records no speed, so such a turn is priced at half. Noted in
+    gaps/usage-cost-price-table.md.
+- **The split is by model and, separately, by project** — never by the two
+  together, which multiplies rows without answering a question anybody asked.
+  A charge is named by the model that served it (`claude-opus-5-5`): the
+  model each Claude frame names, so a subagent on another model is priced at
+  that model, else the session's resolved model (see
+  [provider abstraction](provider-abstraction.md)). The report groups and
+  prices by that id, with a dated snapshot joining its model's row, and shows
+  it without the vendor name (`opus-5-5`). The launch alias (`opus`) is kept
+  on the record for reference and names rows only for records that predate
+  the served id (2026-09-28). Either name may be absent, and an unnamed
+  charge collects in one bucket rather than being dropped. Buckets are ranked
+  costliest first, with unpriced ones after the priced ones by raw volume.
 - **The report.** `GET /api/users/usage`, superuser only, returns per-user
   totals and the same totals restricted to the last seven days, plus the
-  timestamp of the earliest record. Settings → Users renders it as one row
-  per principal with the superuser included, headed by how many weeks the
-  ledger actually covers. A user with a record of nothing is listed by the
+  timestamp of the earliest record. Settings → Users renders it as tables
+  for one window at a time, chosen by a switch: a totals table with one row
+  per principal (superuser included) and a column each for time, sessions,
+  turns, words and tokens, then per-principal tables splitting tokens by
+  model and by project, with a column each for the output-token equivalent,
+  the estimated dollars and the volume. A missing figure shows as "—" rather
+  than disappearing. The all-recorded window names the
+  **calendar days** the ledger spans, counting both ends, because the reader's
+  question is which days are in here; the other window says "7 days" rather
+  than "last week", which a reader otherwise takes for the last whole calendar
+  week. A user with a record of nothing is listed by the
   report but not shown in the table; the ledger starts empty on an existing
   install, so the page says what it covers rather than implying all time.
 
@@ -352,7 +596,11 @@ A limited user creates projects only where the superuser said they may.
   see a path carried in the body: `POST /api/projects` reaches the route for
   a limited user and is refused there unless the path is under their root.
   The root itself is the parent directory, not a project, and `..` cannot
-  walk out of it. The superuser may still add anything.
+  walk out of it. Nor can a symbolic link: containment is decided on the
+  path as the filesystem resolves it, a project path that is itself a link is
+  refused even when it points back inside, and the check is repeated after
+  the directory is made and before it is registered. The superuser may still
+  add anything.
 - **A directory that does not exist yet** is offered rather than refused.
   The client asks, and only a request that explicitly says `create` makes
   it: YA creates the directory, runs `git init`, and leaves one empty commit
@@ -362,12 +610,23 @@ A limited user creates projects only where the superuser said they may.
   alone. Without that
   flag a missing path is still a 404, so nothing creates a directory by
   accident. An existing directory is never touched — YA does not run
-  `git init` over somebody's tree. Only the leaf is created: a missing
-  parent is an error, because building a whole tree from one typed path
-  turns a typo into directories nobody meant to make.
+  `git init` over somebody's tree. For limited users, creation also makes a
+  missing configured root and parent directories below it. Before making
+  anything, containment follows the nearest existing ancestors, including
+  symlinks; a missing descendant cannot hide an escaping ancestor. Template
+  creation likewise creates missing parents. Files, dangling symlinks and
+  inaccessible parents remain errors.
 - **Ownership.** The project records `ownerUsername`, absent for the
-  superuser, and it survives the project being rediscovered by a
-  session-directory scan once it has sessions.
+  superuser, and it survives a restart, the project being rediscovered by a
+  session-directory scan once it has sessions, and the superuser hiding the
+  project or adding it again. A limited user adds a directory, never an
+  existing project: adding a path that is already a project with another
+  owner or none, or one the superuser hid, is refused, while their own
+  project may be added again. Ownership is not itself
+  access: creating the project also adds it to the creator's new-session
+  grants, so it is theirs to list, open, and start sessions in the moment it
+  exists. That is an ordinary grant, shown in Settings → Users, and the
+  superuser may revoke it like any other.
 - **Display.** A project a limited user owns reads as `owner/name` wherever
   a project is named for a person to pick — the Projects page, the project
   selector, the sidebar — because two people's `notes` are otherwise the
@@ -415,12 +674,20 @@ effort changes made by the superuser.
   noisy guest can throttle the host; the server's own per-identity SRP
   limiter already exists to contain that.
 
+  **Password managers (2026-09-28).** The form labels the routing field
+  **Server name** and keeps it out of autofill; **Log in as** is the visible
+  `autocomplete="username"` field, so a browser saves and restores the
+  identity with its password. A blank identity signs in as the owner and is
+  filled with the server name before the browser records the login. This
+  browser's saved relay hosts remember every identity used per server, so a
+  restored identity also restores the server name, on edit or at submit.
+
   **Identity lookup and timing.** The server resolves the `srp_hello`
   identity by a constant-time map lookup of username to salt and verifier
   before the one modular exponentiation SRP needs per attempt, so cost does
   not grow with the number of users. Response time must not reveal whether
   a username exists (decided 2026-09-19): an unknown identity runs the
-  same challenge computation against a fixed dummy salt and verifier and
+  same challenge computation against a decoy salt and verifier and
   returns an indistinguishable error only at the proof step, and the
   handler pads every hello response to a minimum elapsed time (sleep to a
   floor such as the observed p95 of a real challenge) so a fast path cannot
@@ -449,8 +716,8 @@ effort changes made by the superuser.
   operator credential never travels as a header. Basic is refused on plain
   HTTP except loopback.
 - **Localhost-open and auth-disabled** are superuser-only modes; enabling a
-  limited user requires enforced authentication, the same interlock
-  [[session-sandboxing]] already applies.
+  limited user requires enforced authentication. (Session sandboxing once
+  shared this interlock; since 2026-09-27 it only warns.)
 
 ## Authorization
 
@@ -467,7 +734,7 @@ user may do:
 | Sessions elsewhere | 404 |
 | Files, source control, git status | within member projects only; the same sandbox roots the session sees |
 | Server-wide settings | read where harmless, write refused |
-| Apps settings | only rows reserved for their projects ([[project-templates]] § App name reservation); no `public` toggle |
+| Apps settings | only rows reserved for their projects ([[project-templates]] § Persistent app-name reservations); Public is available only when the superuser has disabled Private apps only, and remains explicit opt-in |
 | Public shares, app links | within member projects only |
 | Devices, push, browser profile | their own |
 | Agents/process view, Inbox, All Sessions | filtered to member projects |
@@ -635,8 +902,8 @@ sandbox or be refused for limited users.
 
 Sessions of different users on one host share YA's process, event bus, and
 data dir. The isolation claim is authorization plus per-session filesystem
-confinement, not process-level tenancy; [[security]] should say so in its
-trust-boundary section when this lands.
+confinement, not process-level tenancy; [[security]] § Limited Users states
+that boundary and its exclusions.
 
 ## App access for members and the public
 

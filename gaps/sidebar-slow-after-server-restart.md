@@ -28,4 +28,11 @@ The reported live restart still needs a browser timing check after the user
 restarts with this change. Keep that verification open: the isolated checks
 prove work separation, not an end-to-end latency bound on the affected tab.
 
+On 2026-09-21, a full restart reached application startup in about 528 ms, then
+14 WebSocket clients reconnected together and one event-loop delay reached
+1.148 seconds. The affected session detail was 3.28 MB and took about 720 ms to
+serve. The steered prompt reached the provider during that interval; its missing
+visibility instead came from artifact-viewer transcript freezing. The reconnect
+herd remains a separate, shorter latency source covered by this gap.
+
 Found 2026-09-07 while fixing metadata loss exposing recap-helper duplicates.

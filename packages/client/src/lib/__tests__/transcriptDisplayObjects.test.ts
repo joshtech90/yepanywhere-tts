@@ -20,11 +20,55 @@ function displayObject(
 }
 
 describe("insertTranscriptDisplayObjects", () => {
+  it("recovers old bang blocks by run time only in the live window", () => {
+    const items: RenderItem[] = [
+      {
+        type: "text",
+        sourceBlockIndex: 0,
+        id: "answer",
+        text: "done",
+        sourceMessages: [
+          {
+            uuid: "answer",
+            type: "assistant",
+            timestamp: "2026-09-21T20:23:23Z",
+          },
+        ],
+      },
+      {
+        type: "user_prompt",
+        id: "later",
+        content: "next",
+        sourceMessages: [
+          { uuid: "later", type: "user", timestamp: "2026-09-21T20:30:00Z" },
+        ],
+      },
+    ];
+    const run: TranscriptDisplayObject = {
+      id: "run",
+      kind: "bang-command",
+      command: "fgerrit",
+      cwd: "/project",
+      status: "done",
+      exitCode: 127,
+      placementAfterMessageId: "msg-1790022203515",
+      createdAt: "2026-09-21T20:25:26Z",
+    };
+    expect(
+      insertTranscriptDisplayObjects(items, [run], true).map((item) => item.id),
+    ).toEqual(["answer", "run", "later"]);
+    expect(insertTranscriptDisplayObjects(items, [run])).toBe(items);
+    expect(insertTranscriptDisplayObjects(items.slice(1), [run], true)).toEqual(
+      items.slice(1),
+    );
+  });
+
   it("places objects after the last render item sourced from the anchor", () => {
     const anchor: Message = { id: "assistant-1", type: "assistant" };
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "thinking-1",
         thinking: "working",
         status: "complete",
@@ -32,6 +76,7 @@ describe("insertTranscriptDisplayObjects", () => {
       },
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "text-1",
         text: "done",
         sourceMessages: [anchor],

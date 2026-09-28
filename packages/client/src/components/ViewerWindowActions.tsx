@@ -13,19 +13,25 @@ export function ViewerWindowActions({
   className,
   minimizeLabel,
   closeLabel,
+  reloadLabel,
   moveOut = true,
   onMoveOut = onClose,
   destructiveClose = false,
   closeDisabled = false,
+  onReload,
 }: {
   url: string;
   copyUrl?: string;
   onClose?: () => void;
   onMinimize?: () => void;
+  /** Refetch the viewed document from disk; viewers never watch files. */
+  onReload?: () => void;
   closeRef?: Ref<HTMLButtonElement>;
   className?: string;
   minimizeLabel?: string;
   closeLabel?: string;
+  /** Names what a reload refetches when it is not a file on disk. */
+  reloadLabel?: string;
   moveOut?: boolean;
   onMoveOut?: () => void;
   destructiveClose?: boolean;
@@ -59,6 +65,29 @@ export function ViewerWindowActions({
   );
   return (
     <div className={`${styles.actions} ${className ?? ""}`}>
+      {onReload && (
+        <button
+          type="button"
+          aria-label={reloadLabel ?? t("fileViewerReload" as never)}
+          title={reloadLabel ?? t("fileViewerReload" as never)}
+          onClick={onReload}
+        >
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" />
+            <path d="M13.5 2.5v3.2h-3.2" />
+          </svg>
+        </button>
+      )}
       <a
         href={absoluteUrl}
         target="_blank"

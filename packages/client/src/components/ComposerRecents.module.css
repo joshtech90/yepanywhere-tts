@@ -1,0 +1,59 @@
+.recents {
+  position: relative;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+.recents button {
+  font: inherit;
+  color: var(--text-primary);
+  border: 1px solid var(--border-input);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  padding: 6px 9px;
+  cursor: pointer;
+}
+.heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+.recents small {
+  display: block;
+  color: var(--text-secondary);
+  margin: 6px 0;
+}
+.gallery {
+  padding: 12px;
+  margin: 8px 0;
+  border: 1px solid var(--border-input);
+  background: var(--bg-primary);
+  border-radius: 8px;
+}
+.tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 8px;
+  max-height: 300px;
+  overflow: auto;
+  margin-top: 8px;
+}
+.tiles button {
+  min-width: 0;
+  text-align: left;
+}
+.tiles img,
+.file {
+  display: block;
+  width: 100%;
+  height: 85px;
+  object-fit: contain;
+  background: var(--bg-tertiary);
+}
+.tiles span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  margin-top: 5px;
+}

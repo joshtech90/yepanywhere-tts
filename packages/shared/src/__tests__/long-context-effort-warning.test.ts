@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_LONG_CONTEXT_EFFORT_WARNING_TOKENS,
-  effortOfThinkingOption,
   parseLongContextEffortWarningSettings,
   shouldWarnLongContextEffortChange,
 } from "../long-context-effort-warning.js";
@@ -38,16 +37,6 @@ describe("parseLongContextEffortWarningSettings", () => {
     expect(
       parseLongContextEffortWarningSettings({ thresholdTokens: 750_000 }),
     ).toEqual({ providers: {}, thresholdTokens: 750_000 });
-  });
-});
-
-describe("effortOfThinkingOption", () => {
-  it("reads the effort component and treats auto/off as none", () => {
-    expect(effortOfThinkingOption("on:high")).toBe("high");
-    expect(effortOfThinkingOption("max")).toBe("max");
-    expect(effortOfThinkingOption("auto")).toBeUndefined();
-    expect(effortOfThinkingOption("off")).toBeUndefined();
-    expect(effortOfThinkingOption(undefined)).toBeUndefined();
   });
 });
 
@@ -112,6 +101,29 @@ describe("shouldWarnLongContextEffortChange", () => {
         settings: { providers: {}, thresholdTokens: 0 },
       }),
     ).toBe(false);
+  });
+
+  it("stays quiet on Opus 5.5, whose cache survives an effort change", () => {
+    for (const model of [
+      "claude-opus-5-5",
+      "claude-opus-5-5[1m]",
+      "claude-opus-5-5-20260801",
+    ]) {
+      expect(shouldWarnLongContextEffortChange({ ...base, model })).toBe(false);
+    }
+  });
+
+  it("still warns on other Claude models, an unresolved alias, or another provider", () => {
+    for (const model of ["claude-sonnet-5", "claude-opus-5-6", "opus"]) {
+      expect(shouldWarnLongContextEffortChange({ ...base, model })).toBe(true);
+    }
+    expect(
+      shouldWarnLongContextEffortChange({
+        ...base,
+        provider: "codex",
+        model: "claude-opus-5-5",
+      }),
+    ).toBe(true);
   });
 
   it("warns on Codex Astra until its in-place effort update is usable", () => {

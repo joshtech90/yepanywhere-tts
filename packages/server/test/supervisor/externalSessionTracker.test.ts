@@ -208,6 +208,173 @@ describe("ExternalSessionTracker", () => {
     }
   });
 
+  it("reports a Pi session we just forked as unowned, not external", async () => {
+    const eventBus = new EventBus();
+    const events: BusEvent[] = [];
+    eventBus.subscribe((event) => events.push(event));
+
+    const projectPath = "/tmp/pi-fork-project";
+    const projectId = encodeProjectId(projectPath);
+    const sessionId = "pi-fresh-fork-session";
+    const tempDir = join(tmpdir(), `pi-fork-${randomUUID()}`);
+    const sessionFile = join(tempDir, "2026-09-27_pi-fresh-fork-session.jsonl");
+
+    await mkdir(tempDir, { recursive: true });
+    await writeFile(
+      sessionFile,
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        cwd: projectPath,
+        timestamp: "2026-09-27T00:00:00.000Z",
+      })}\n`,
+    );
+
+    const supervisor = {
+      getProcessForSession: vi.fn(() => undefined),
+    } as unknown as Supervisor;
+    const scanner = {
+      getProjectBySessionDirSuffix: vi.fn(),
+    } as unknown as ProjectScanner;
+
+    const tracker = new ExternalSessionTracker({
+      eventBus,
+      supervisor,
+      scanner,
+      decayMs: 100,
+      forkGraceMs: 1000,
+    });
+
+    try {
+      eventBus.emit({
+        type: "session-forked",
+        sessionId,
+        sourceSessionId: "pi-source-session",
+        projectId,
+        timestamp: new Date().toISOString(),
+      });
+      eventBus.emit({
+        type: "file-change",
+        provider: "pi",
+        path: sessionFile,
+        relativePath: "encoded/2026-09-27_pi-fresh-fork-session.jsonl",
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+
+      await vi.waitFor(() => {
+        expect(
+          events.some(
+            (event) =>
+              event.type === "session-created" &&
+              event.session.id === sessionId,
+          ),
+        ).toBe(true);
+      });
+
+      const creation = events.find(
+        (event) =>
+          event.type === "session-created" && event.session.id === sessionId,
+      );
+      expect(creation).toMatchObject({
+        session: { provider: "pi", ownership: { owner: "none" } },
+      });
+      expect(tracker.isExternal(sessionId)).toBe(false);
+    } finally {
+      tracker.dispose();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("ignores a recently aborted Codex session's cleanup writes", async () => {
+    const eventBus = new EventBus();
+    const events: BusEvent[] = [];
+    eventBus.subscribe((event) => events.push(event));
+
+    const projectPath = "/tmp/codex-aborted-project";
+    const projectId = encodeProjectId(projectPath);
+    const sessionId = "019f28d9-2dff-7dd2-8326-4b0e6093aed6";
+    const tempDir = join(tmpdir(), `codex-aborted-${randomUUID()}`);
+    const sessionFile = join(tempDir, `rollout-${sessionId}.jsonl`);
+    // Positive control: an unaborted rollout written alongside it.
+    const controlId = "019f28d9-2dff-7dd2-8326-4b0e6093aed7";
+    const controlFile = join(tempDir, `rollout-${controlId}.jsonl`);
+
+    await mkdir(tempDir, { recursive: true });
+    for (const file of [sessionFile, controlFile]) {
+      await writeFile(
+        file,
+        `${JSON.stringify({
+          type: "session_meta",
+          payload: { cwd: projectPath, timestamp: "2026-09-27T00:00:00.000Z" },
+        })}\n`,
+      );
+    }
+
+    const supervisor = {
+      getProcessForSession: vi.fn(() => undefined),
+    } as unknown as Supervisor;
+    const scanner = {
+      getProjectBySessionDirSuffix: vi.fn(),
+    } as unknown as ProjectScanner;
+
+    const tracker = new ExternalSessionTracker({
+      eventBus,
+      supervisor,
+      scanner,
+      decayMs: 100,
+      abortGraceMs: 1000,
+    });
+
+    try {
+      eventBus.emit({
+        type: "session-aborted",
+        sessionId,
+        projectId,
+        timestamp: new Date().toISOString(),
+      });
+      eventBus.emit({
+        type: "file-change",
+        provider: "codex",
+        path: sessionFile,
+        relativePath: `2026/09/27/rollout-${sessionId}.jsonl`,
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+      eventBus.emit({
+        type: "file-change",
+        provider: "codex",
+        path: controlFile,
+        relativePath: `2026/09/27/rollout-${controlId}.jsonl`,
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+
+      // The same header read settles the control, which is not aborted.
+      await vi.waitFor(() => {
+        expect(tracker.isExternal(controlId)).toBe(true);
+      });
+
+      expect(tracker.isExternal(sessionId)).toBe(false);
+      expect(
+        events.some(
+          (event) =>
+            (event.type === "session-created" &&
+              event.session.id === sessionId) ||
+            (event.type === "session-status-changed" &&
+              event.sessionId === sessionId),
+        ),
+      ).toBe(false);
+    } finally {
+      tracker.dispose();
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("emits only bounded fields for owned Codex file changes", async () => {
     const eventBus = new EventBus();
     const events: BusEvent[] = [];

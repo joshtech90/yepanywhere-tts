@@ -16,6 +16,7 @@ function textItem(id: string, augmentHtml: string): RenderItem {
     sourceMessages: [],
     text: "media",
     type: "text",
+    sourceBlockIndex: 0,
   };
 }
 

@@ -11,6 +11,8 @@ import {
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
+import { TemplateProjectForm } from "../components/TemplateProjectForm";
+import { useProjectTemplateChoices } from "../hooks/useProjectTemplateChoices";
 import {
   AddProjectForm,
   type AddProjectRequest,
@@ -20,6 +22,7 @@ import { PageHeader } from "../components/PageHeader";
 import { ProjectCard } from "../components/ProjectCard";
 import { ProjectQueueSection } from "../components/ProjectQueueSection";
 import { ProjectSessionDefaultsModal } from "../components/ProjectSessionDefaultsModal";
+import { useActingPrincipal } from "../hooks/useActingPrincipal";
 import { useProjectCodeNamePreferences } from "../hooks/useProjectCodeNamePreferences";
 import { useProjectQueues } from "../hooks/useProjectQueues";
 import { useProjects } from "../hooks/useProjects";
@@ -28,6 +31,7 @@ import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { useInboxCountsByProject } from "../lib/clientSummaryStore";
+import { newProjectBaseFor } from "../lib/newProjectPath";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import type { Project } from "../types";
 
@@ -59,8 +63,17 @@ export function ProjectsPage() {
     PROJECT_NAMES_CAPABILITY,
   );
   const { projectCodeNamesEnabled } = useProjectCodeNamePreferences();
+  const { principal } = useActingPrincipal();
+  const newProjectBase = newProjectBaseFor(principal);
   const inboxCountsByProject = useInboxCountsByProject();
   const [showAddForm, setShowAddForm] = useState(false);
+  const {
+    choices: templateChoices,
+    error: templateError,
+    emptyMessageKey,
+  } = useProjectTemplateChoices(showAddForm);
+  const [existingDirectory, setExistingDirectory] = useState(false);
+  const [templateProjectBusy, setTemplateProjectBusy] = useState(false);
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -345,22 +358,86 @@ export function ProjectsPage() {
                 {t("projectsAdd")}
               </button>
             ) : (
-              <AddProjectForm
-                projects={projects}
-                chooseName={supportsProjectNames}
-                chooseCodeName={
-                  supportsProjectNames &&
-                  supportsProjectCodeNames &&
-                  projectCodeNamesEnabled
+              <div
+                className={
+                  templateChoices?.enabled ? formStyles.form : undefined
                 }
-                adding={adding}
-                error={addError}
-                onSubmit={(request) => void handleAddProject(request)}
-                onCancel={() => {
-                  setShowAddForm(false);
-                  setAddError(null);
-                }}
-              />
+              >
+                {templateChoices?.enabled && principal.username === null && (
+                  <div className={formStyles.actions}>
+                    <button
+                      type="button"
+                      aria-pressed={!existingDirectory}
+                      onClick={() => setExistingDirectory(false)}
+                    >
+                      {t("templateFromTemplate")}
+                    </button>
+                    <button
+                      type="button"
+                      aria-pressed={existingDirectory}
+                      disabled={templateProjectBusy}
+                      onClick={() => setExistingDirectory(true)}
+                    >
+                      {t("templateExistingDirectory")}
+                    </button>
+                  </div>
+                )}
+                {templateError && <p role="alert">{templateError}</p>}
+                {templateChoices?.enabled && (
+                  <div
+                    hidden={existingDirectory && principal.username === null}
+                  >
+                    <TemplateProjectForm
+                      templates={templateChoices.templates}
+                      emptyMessage={templateError ?? t(emptyMessageKey)}
+                      projects={projects}
+                      pathBase={newProjectBase}
+                      onBusyChange={setTemplateProjectBusy}
+                      onStarted={(projectId, sessionId) => {
+                        void refetch();
+                        navigate(
+                          `${basePath}/projects/${projectId}/sessions/${sessionId}`,
+                        );
+                      }}
+                    />
+                  </div>
+                )}
+                <div
+                  hidden={
+                    templateChoices?.enabled &&
+                    (!existingDirectory || principal.username !== null)
+                  }
+                >
+                  <AddProjectForm
+                    projects={projects}
+                    pathBase={newProjectBase}
+                    chooseName={supportsProjectNames}
+                    chooseCodeName={
+                      supportsProjectNames &&
+                      supportsProjectCodeNames &&
+                      projectCodeNamesEnabled
+                    }
+                    adding={adding}
+                    error={addError}
+                    onSubmit={(request) => void handleAddProject(request)}
+                    onCancel={() => {
+                      setShowAddForm(false);
+                      setAddError(null);
+                    }}
+                  />
+                </div>
+                {templateChoices?.enabled && !existingDirectory && (
+                  <div className={formStyles.actions}>
+                    <button
+                      type="button"
+                      disabled={templateProjectBusy}
+                      onClick={() => setShowAddForm(false)}
+                    >
+                      {t("projectsCancel")}
+                    </button>
+                  </div>
+                )}
+              </div>
             )}
           </div>
           {deleteError && <div className={formStyles.error}>{deleteError}</div>}

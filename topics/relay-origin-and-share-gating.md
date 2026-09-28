@@ -25,7 +25,10 @@ public-share transport.
 
 A dedicated public file share is a separate bearer grant for one current
 project-relative file. It does not depend on a session grant or reveal a
-session identity. The grant remains valid until revoked, while the served root
+session identity. The create and list routes resolve an absolute path to the
+registered project that owns it, deepest root first, so a file viewed from
+another project's viewer is shared under its own project and its retained
+links are found again; a path inside no registered project is refused. The grant remains valid until revoked, while the served root
 file and its allowed render assets remain live project content.
 
 Client fatal-render diagnostics capture only a route identity: query and hash
@@ -219,19 +222,89 @@ Markdown behavior, local-media modal, copy affordances, and line/source toggle
 behavior where those affordances are read-only.
 
 A dedicated live file share authorizes exactly its root file. When that root is
-a bounded Markdown, MDX, Quarto Markdown, or HTML source, it also authorizes
+a bounded Markdown, MDX, or Quarto Markdown source, it also authorizes
 directly referenced SVG, raster-image, and supported video assets one level
-deep. It never authorizes another linked document, a nested asset referenced by
-an asset, a project scan, source-control data, or an app-data attachment. Each
+deep. An HTML root instead authorizes what its elements load, which is what
+the viewer's **play** action below inlines: `link rel=stylesheet` CSS,
+`script src` JavaScript, `link rel=icon`, `img`, `source`, and `video` media
+and `video poster` images. One shared decision, `findHtmlRootAssetReferences`
+in `packages/shared`, serves both the server's authorization and the play
+page's inlining, so play never requests a file the share refuses. A reference
+made any other way — an `<a href>`, a CSS `url()`, a preload hint — gains no
+authority, even for a file of an asset type. The root's own directory is its
+site root: `/assets/app.js` in `dist/index.html` names `dist/assets/app.js`,
+as a browser serving that directory would load it. A Markdown root gains no
+script or stylesheet authority. A share never authorizes another linked
+document, a nested asset referenced by an asset, a project scan,
+source-control data, or an app-data attachment. Each
 asset request rereads the current root before authorizing the target, so editing
 the root immediately removes stale references and admits current ones. Root and
 asset responses keep the existing no-store and active-content hardening.
+
+**Play for public file viewers.** The hosted share viewer shows an HTML root
+as a scriptless preview and offers a play toggle: an ordinary link that opens
+the hosted client's static `play.html` in a new tab. A play URL carries the
+same grant as the file-share link, and nothing more: the relay username, a
+non-default relay URL, the project id and the root path in the query, and the
+share secret in the fragment (`#share=`). Browsers send neither a fragment nor
+a fragment-bearing `Referer` with a request, so the secret stays out of the
+static host's access log; like any share link it remains in the address bar
+and browser history. A play link can be reloaded, pasted into a fresh tab, or
+passed on, and it authorizes exactly what its file share does — the root and
+its directly referenced assets, read live — until that share is revoked.
+
+The play page loads the share itself. The relay has no HTTP path to the host,
+so the page opens its own relay WebSocket to the named host and makes the same
+secret-only reads the share viewer makes: the root through
+`/public-api/shares/:secret/files` and each asset the root's elements load
+through the share's raw file route. Those
+requests are plaintext share requests with the relay-operator visibility
+described above. It inlines the assets as data URLs, capped at 48 MiB in
+total; a reference the share does not serve (a missing file, or a server
+older than this rule) stays as written and fails inside the sandbox. Fonts and
+images named in CSS, whether in a stylesheet or the root's own `style`, are
+not inlined yet, so the share does not authorize them.
+
+`play.html` is a separate entry of the hosted client build, outside the app's
+routes, so it never meets the login gate. It carries its own Content Security
+Policy, permissive for the document's resources: a `srcdoc` frame inherits
+its parent's policy, and the app's strict one would block the untrusted
+document's own stylesheets and scripts. The CSP plugin skips the page by name.
+Its policy forbids plugins, nested frames (`frame-src 'none'`; the page's own
+`srcdoc` frame is not a framed URL) and form navigation, and admits a `<base>`
+only on its own origin. The document inherits that policy, so it can frame
+nothing, including the hosted client. The page renders the document
+full-window in an iframe with `sandbox="allow-scripts allow-popups
+allow-downloads allow-forms allow-modals"` and no `allow-same-origin`, so the
+document has an opaque origin and cannot read the hosted client's storage or
+credentials. `allow-forms` stays so the document's scripted forms receive
+their submit events; the policy still refuses every form navigation.
+
+A `srcdoc` document's base URL falls back to the play page's, so before
+rendering the page sets its own base to its address without the fragment: the
+document can observe the query's coordinates but never the share secret.
+Relative URLs in the document therefore resolve against the play page, so a
+fragment-only link would navigate the frame to `play.html` without its grant;
+a click handler injected ahead of the document's own scripts resolves such
+links on the frame's own location instead, including links the document
+creates at runtime.
 
 The File Viewer creation action is visible only for the ordinary live working
 file when Public Read-Only Share can currently create links and the server has
 the permanent `public-file-shares` capability. It is absent from diffs,
 historical projections, and public views. A client without the capability makes
-no file-share management request. File links reuse the established public-share
+no file-share management request. Under the same two conditions, the
+authenticated project-file link context menu offers **Copy public URL** beside
+**Copy viewer link**: it copies the file's existing live grant URL, or mints
+one first when none exists. It is a separate entry because the bearer link is
+read-only and never reaches Edit. An absolute path is filed under the
+registered project that owns it, as the share routes do for File Viewer. The
+running interactive preview's toggle menu offers the same **Copy public URL**,
+copying that file share in play form, so every **Copy public URL** for a file
+names one bounded, revocable file grant. While that preview is running, the
+File Viewer's share dialog also copies its links in play form and says so, so
+a recipient opens straight into the running document; otherwise it copies the
+ordinary file link. File links reuse the established public-share
 relay registration and secret-only `/public-api/shares/:secret/files` reads;
 they do not add a relay protocol or registration mode.
 

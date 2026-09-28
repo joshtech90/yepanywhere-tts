@@ -125,6 +125,7 @@ describe("projectConversationView", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "thinking",
         thinking: "Planning",
         status: "complete",
@@ -138,6 +139,7 @@ describe("projectConversationView", () => {
       }),
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "answer",
         text: "Here is the result.",
         sourceMessages: [source("answer-source", 3_000)],
@@ -264,6 +266,7 @@ describe("projectConversationView", () => {
       tool("read-before", 1_000),
       {
         type: "text",
+        sourceBlockIndex: 0,
         id: "answer",
         text: "Done.",
         sourceMessages: [source("answer-source", 2_000)],
@@ -337,6 +340,7 @@ describe("projectConversationView", () => {
         tool("visible-tail-activity", 1_000),
         {
           type: "text",
+          sourceBlockIndex: 0,
           id: "answer",
           text: "Done.",
           sourceMessages: [source("answer-source", 3_000)],
@@ -398,6 +402,7 @@ describe("windowConversationViewItems", () => {
       },
       {
         type: "text" as const,
+        sourceBlockIndex: 0,
         id: `answer-${index + 1}`,
         text: `Answer ${index + 1}`,
         sourceMessages: [],
@@ -470,6 +475,7 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "older",
         thinking: "Older",
         status: "complete",
@@ -477,6 +483,7 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "previous",
         thinking: "Previous",
         status: "complete",
@@ -484,6 +491,7 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "current",
         thinking: "Current",
         status: "streaming",
@@ -515,6 +523,7 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "previous",
         thinking: "Previous",
         status: "complete",
@@ -522,6 +531,7 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "latest",
         thinking: "Latest",
         status: "complete",
@@ -543,6 +553,7 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "previous",
         thinking: "Previous",
         status: "complete",
@@ -556,6 +567,7 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "current",
         thinking: "Current",
         status: "streaming",
@@ -583,6 +595,7 @@ describe("selectConversationThinkingPreviews", () => {
       [
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "previous",
           thinking: "Previous",
           status: "complete",
@@ -590,6 +603,7 @@ describe("selectConversationThinkingPreviews", () => {
         },
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "latest",
           thinking: "Latest",
           status: "complete",
@@ -613,6 +627,7 @@ describe("selectConversationThinkingPreviews", () => {
       [
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "thinking",
           thinking: "Planning",
           status: "complete",
@@ -620,6 +635,7 @@ describe("selectConversationThinkingPreviews", () => {
         },
         {
           type: "text",
+          sourceBlockIndex: 0,
           id: "answer",
           text: "Here is the result.",
           sourceMessages: [],
@@ -638,6 +654,7 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "previous",
         thinking: "Previous",
         status: "complete",
@@ -645,6 +662,7 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "latest",
         thinking: "Latest",
         status: "complete",
@@ -681,6 +699,7 @@ describe("selectConversationThinkingPreviews", () => {
         }),
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "thinking",
           thinking: "Plan",
           status: "complete",
@@ -720,6 +739,7 @@ describe("selectConversationThinkingPreviews", () => {
         }),
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "thinking",
           thinking: "Plan",
           status: "complete",
@@ -747,6 +767,7 @@ describe("selectConversationThinkingPreviews", () => {
         }),
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "previous",
           thinking: "Earlier",
           status: "complete",
@@ -758,6 +779,7 @@ describe("selectConversationThinkingPreviews", () => {
         }),
         {
           type: "thinking",
+          sourceBlockIndex: 0,
           id: "current",
           thinking: "Now",
           status: "streaming",
@@ -805,6 +827,7 @@ describe("selectConversationThinkingPreviews", () => {
       }),
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "latest",
         thinking: "Done",
         status: "complete",
@@ -839,6 +862,7 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "earlier",
         thinking: "Earlier",
         status: "complete",
@@ -846,12 +870,19 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "stale",
         thinking: "Stale",
         status: "complete",
         sourceMessages: [],
       },
-      { type: "text", id: "answer", text: "Here it is.", sourceMessages: [] },
+      {
+        type: "text",
+        sourceBlockIndex: 0,
+        id: "answer",
+        text: "Here it is.",
+        sourceMessages: [],
+      },
       tool("run", 3_000, {
         toolName: "Bash",
         toolInput: { command: "pnpm test" },
@@ -871,14 +902,22 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "stale",
         thinking: "Stale",
         status: "complete",
         sourceMessages: [],
       },
-      { type: "text", id: "answer", text: "Here it is.", sourceMessages: [] },
+      {
+        type: "text",
+        sourceBlockIndex: 0,
+        id: "answer",
+        text: "Here it is.",
+        sourceMessages: [],
+      },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "previous",
         thinking: "Previous",
         status: "complete",
@@ -886,6 +925,7 @@ describe("selectConversationThinkingPreviews", () => {
       },
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "current",
         thinking: "Current",
         status: "streaming",
@@ -902,6 +942,7 @@ describe("selectConversationThinkingPreviews", () => {
     const items: RenderItem[] = [
       {
         type: "thinking",
+        sourceBlockIndex: 0,
         id: "latest",
         thinking: "Planning",
         status: "complete",
@@ -911,7 +952,13 @@ describe("selectConversationThinkingPreviews", () => {
         toolName: "Bash",
         toolInput: { command: "pnpm test" },
       }),
-      { type: "text", id: "answer", text: "Here it is.", sourceMessages: [] },
+      {
+        type: "text",
+        sourceBlockIndex: 0,
+        id: "answer",
+        text: "Here it is.",
+        sourceMessages: [],
+      },
     ];
 
     // Nothing resumed after the answer, so the thought is still the freshest

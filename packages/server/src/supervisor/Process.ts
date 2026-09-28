@@ -50,7 +50,10 @@ import { DEFAULT_IDLE_TIMEOUT_MS } from "../defaults.js";
 import { getLogger } from "../logging/logger.js";
 import type { ToolResultMediaMessageMaterializer } from "../media/ToolResultMediaMessageMaterializer.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
-import { getProjectName } from "../projects/paths.js";
+import {
+  getProjectName,
+  type ProjectDisplayNameResolver,
+} from "../projects/paths.js";
 import { concatUserMessages, INTERRUPT_PREAMBLE } from "../sdk/messageQueue.js";
 import type { AgentMessageQueue } from "../sdk/messageQueue.js";
 import type {
@@ -71,6 +74,7 @@ import type {
   PromptCacheRefreshResult,
   SessionExecution,
 } from "../sdk/providers/types.js";
+import { coalesceStreamingSnapshots } from "../sdk/providers/streaming-snapshot-coalescing.js";
 import { expandSlashCommandEmulation } from "../sdk/slashCommandEmulation.js";
 import type {
   PermissionMode,
@@ -94,6 +98,7 @@ import {
   type LivenessProbeResult,
   type LivenessProcessState,
 } from "./liveness.js";
+import { isResumeDropsTurnRefusalText } from "./resume-truncation.js";
 import type {
   AgentActivity,
   InputRequest,
@@ -886,6 +891,8 @@ export interface ProcessConstructorOptions extends ProcessOptions {
   isProcessAlive?: () => boolean;
   /** Return true when an idle process should stay owned for an explicit feature. */
   shouldRetainIdleProcess?: (sessionId: string) => boolean;
+  /** Names the project in `getInfo()`; defaults to the path's name. */
+  projectDisplayName?: ProjectDisplayNameResolver;
   /** Terminal provider incident retained by Supervisor across process reaping. */
   initialProviderRuntimeStatus?: ProviderRuntimeStatus;
   /** Actively query provider/session status when passive evidence is stale. */
@@ -978,6 +985,7 @@ export class Process {
   private _sessionId: string;
   readonly projectPath: string;
   readonly projectId: UrlProjectId;
+  private readonly projectDisplayName: ProjectDisplayNameResolver;
   readonly startedAt: Date;
   readonly provider: ProviderName;
   readonly model: string | undefined;
@@ -1047,8 +1055,8 @@ export class Process {
    * streaming-text catch-up buffer correct for multi-client sessions.
    */
   private _activeStreamingMessageId: string | null = null;
-  /** Preserve provider/receipt ordering while a local command is saved. */
-  private commandOutputPublication: Promise<void> | null = null;
+  /** Preserve provider/notice ordering while a local notice is saved. */
+  private localNoticePublication: Promise<void> | null = null;
 
   /**
    * Rolling buffer of recent assistant text turns used as context for
@@ -1190,8 +1198,15 @@ export class Process {
   private _pidResolver: number | (() => number | undefined) | undefined;
   private _lastKnownPid: number | undefined;
 
-  /** Resolved model name from the first assistant message (e.g., "claude-sonnet-4-5-20250929") */
+  /**
+   * The model the provider is serving (e.g. "claude-opus-5-5"): resolved from
+   * the selection through the provider's catalog at launch and on each switch,
+   * then kept current by each main-thread reply. `null` means an explicit
+   * return to the provider default, whose model is not yet known.
+   */
   private _resolvedModel: string | null | undefined;
+  /** See `useModelResolver`. */
+  private resolveModel?: (model: string | undefined) => string | undefined;
   /**
    * Current requested YA model id (launch alias, e.g. "opus"). Starts at the
    * exact launch request and follows mid-session model switches (which leave the
@@ -1211,6 +1226,8 @@ export class Process {
   private _forceYaOrchestratedCompaction: boolean;
   readonly compactAtContextTokenLimit: number | undefined;
   readonly launchCompactPercentOverride: number | undefined;
+  /** Configured model endpoint the provider bound this session to at launch. */
+  readonly gatewayServiceId: string | undefined;
 
   /** Deferred message queue — messages queued while agent is in-turn, auto-sent when turn ends */
   private deferredQueue: DeferredQueueEntry[] = [];
@@ -1224,14 +1241,18 @@ export class Process {
   /** Registry release is one event, regardless of which terminal path finishes. */
   private completionEmitted = false;
 
+  private readonly sdkIterator: AsyncIterator<SDKMessage>;
+
   constructor(
-    private sdkIterator: AsyncIterator<SDKMessage>,
+    sdkIterator: AsyncIterator<SDKMessage>,
     options: ProcessConstructorOptions,
   ) {
+    this.sdkIterator = coalesceStreamingSnapshots(sdkIterator);
     this.id = randomUUID();
     this._sessionId = options.sessionId;
     this.projectPath = options.projectPath;
     this.projectId = options.projectId;
+    this.projectDisplayName = options.projectDisplayName ?? getProjectName;
     this.startedAt = new Date();
     this._state =
       options.initialState === "idle"
@@ -1266,6 +1287,7 @@ export class Process {
       options.forceYaOrchestratedCompaction === true;
     this.compactAtContextTokenLimit = options.compactAtContextTokenLimit;
     this.launchCompactPercentOverride = options.launchCompactPercentOverride;
+    this.gatewayServiceId = options.gatewayServiceId;
     this.serviceTier = options.serviceTier;
     this.executor = options.executor;
     this.execution =
@@ -1427,6 +1449,25 @@ export class Process {
       return undefined;
     }
     return this._resolvedModel ?? this.model;
+  }
+
+  /**
+   * Adopt the provider's resolver for model selections ("opus" →
+   * "claude-opus-5-5", from its already-fetched catalog; undefined when it does
+   * not know). Resolves the launch model now, unless a reply already named
+   * one, and each later switch, so the process reports the served model
+   * rather than an alias before the next reply.
+   */
+  useModelResolver(
+    resolve: (model: string | undefined) => string | undefined,
+  ): void {
+    this.resolveModel = resolve;
+    if (this._resolvedModel !== undefined) return;
+    const resolved = resolve(this.requestedModel);
+    if (resolved) {
+      this._resolvedModel = resolved;
+      this.emit({ type: "model-resolved", model: resolved });
+    }
   }
 
   /**
@@ -2391,51 +2432,78 @@ export class Process {
     }
     const result = await this.runProviderCommandFn(command, argument);
     if (result.handled && result.output) {
-      const previousPublication = this.commandOutputPublication;
-      let releasePublication!: () => void;
-      const publication = new Promise<void>((resolve) => {
-        releasePublication = resolve;
-      });
-      this.commandOutputPublication = publication;
-      if (previousPublication) await previousPublication;
-      try {
-        const placementAfterMessageId =
-          this._streamingMessageId ??
-          this.getMessageHistory()
-            .reverse()
-            .find(
-              (message) =>
-                typeof message.uuid === "string" &&
-                !message.isSynthetic &&
-                (message.type === "assistant" || message.type === "user"),
-            )?.uuid;
-        const id = randomUUID();
-        const synthetic: DurableLocalCommandMessage = {
-          type: "system",
-          subtype: "local_command",
+      await this.publishLocalNotice(
+        {
           content: result.output.summary,
-          ...(result.output.details ? { details: result.output.details } : {}),
-          session_id: this._sessionId,
-          uuid: id,
-          id,
-          timestamp: new Date().toISOString(),
+          details: result.output.details,
           tempId: options?.tempId,
-          ...(typeof placementAfterMessageId === "string"
-            ? { placementAfterMessageId }
-            : {}),
-          isMeta: false,
-          isSynthetic: true,
-        };
-        await options?.persistOutput?.(synthetic);
-        this.currentBucket.push(synthetic as SDKMessage);
-        this.emit({ type: "message", message: synthetic as SDKMessage });
-      } finally {
-        releasePublication();
-        if (this.commandOutputPublication === publication)
-          this.commandOutputPublication = null;
-      }
+        },
+        options?.persistOutput,
+      );
     }
     return result;
+  }
+
+  /**
+   * Publish a YA local notice row into the live transcript, after the latest
+   * turn content (or the message still streaming). Publications run one at a
+   * time in call order, and a notice with `persist` is shown only once
+   * persisted, so a reload never shows less than the live view did.
+   */
+  private async publishLocalNotice(
+    notice: {
+      content: string;
+      details?: string[];
+      detailsOpen?: boolean;
+      tempId?: string;
+    },
+    persist?: (message: DurableLocalCommandMessage) => Promise<void>,
+  ): Promise<DurableLocalCommandMessage> {
+    const previousPublication = this.localNoticePublication;
+    let releasePublication!: () => void;
+    const publication = new Promise<void>((resolve) => {
+      releasePublication = resolve;
+    });
+    this.localNoticePublication = publication;
+    if (previousPublication) await previousPublication;
+    try {
+      const placementAfterMessageId =
+        this._streamingMessageId ??
+        this.getMessageHistory()
+          .reverse()
+          .find(
+            (message) =>
+              typeof message.uuid === "string" &&
+              !message.isSynthetic &&
+              (message.type === "assistant" || message.type === "user"),
+          )?.uuid;
+      const id = randomUUID();
+      const message: DurableLocalCommandMessage = {
+        type: "system",
+        subtype: "local_command",
+        content: notice.content,
+        ...(notice.details ? { details: notice.details } : {}),
+        ...(notice.detailsOpen ? { detailsOpen: true } : {}),
+        session_id: this._sessionId,
+        uuid: id,
+        id,
+        timestamp: new Date().toISOString(),
+        ...(notice.tempId !== undefined ? { tempId: notice.tempId } : {}),
+        ...(typeof placementAfterMessageId === "string"
+          ? { placementAfterMessageId }
+          : {}),
+        isMeta: false,
+        isSynthetic: true,
+      };
+      await persist?.(message);
+      this.currentBucket.push(message as SDKMessage);
+      this.emit({ type: "message", message: message as SDKMessage });
+      return message;
+    } finally {
+      releasePublication();
+      if (this.localNoticePublication === publication)
+        this.localNoticePublication = null;
+    }
   }
 
   get supportsNativeCommands(): boolean {
@@ -2584,8 +2652,10 @@ export class Process {
     }
 
     // Follow switches, including an explicit return to provider default.
-    // The readonly `model` remains the original launch value.
-    this._resolvedModel = model ?? null;
+    // The readonly `model` remains the original launch value. An alias the
+    // catalog cannot resolve stands only until the next reply names the model.
+    this._resolvedModel =
+      model === undefined ? null : (this.resolveModel?.(model) ?? model);
     this._requestedModel = requestedModel;
     this.emit({ type: "configuration-applied", setting: "model" });
     return true;
@@ -2647,10 +2717,36 @@ export class Process {
   }
 
   /**
+   * An unrequested provider death during a turn tears that turn down, and
+   * some providers (Codex) then persist it as an ordinary interrupt. Publish
+   * a notice row so the transcript attributes the stop; Supervisor persists it
+   * with the session's local-command rows from the terminated event. A death
+   * between turns interrupted nothing, so its caller publishes no notice.
+   */
+  private publishProviderFailureNotice(
+    error: Error,
+  ): Promise<DurableLocalCommandMessage> {
+    // A refused rewind also ends the process, but deliberately: the dropped
+    // range held content outside the declared turn, so the turns were kept.
+    const content = isResumeDropsTurnRefusalText(error.message)
+      ? "Claude refused the rewind and exited; the dropped turns were kept"
+      : "Provider process ended unexpectedly; this turn was not interrupted by you";
+    return this.publishLocalNotice({
+      content,
+      details: [error.message],
+      detailsOpen: true,
+    });
+  }
+
+  /**
    * Mark the process as terminated due to an error or external termination.
    * Emits a terminated event and cleans up resources.
    */
-  private markTerminated(reason: string, error?: Error): void {
+  private markTerminated(
+    reason: string,
+    error?: Error,
+    options?: { failureNotice?: DurableLocalCommandMessage },
+  ): void {
     if (this._state.type === "terminated") {
       return; // Already terminated
     }
@@ -2694,7 +2790,14 @@ export class Process {
     });
 
     this.setState({ type: "terminated", reason, error });
-    this.emit({ type: "terminated", reason, error });
+    this.emit({
+      type: "terminated",
+      reason,
+      error,
+      ...(options?.failureNotice
+        ? { failureNotice: options.failureNotice }
+        : {}),
+    });
     if (this.viewerLifecycle.hasUnverifiedProviderOwnership) return;
 
     this.emitCompletion();
@@ -2819,7 +2922,7 @@ export class Process {
       sessionId: this._sessionId,
       projectId: this.projectId,
       projectPath: this.projectPath,
-      projectName: getProjectName(this.projectPath),
+      projectName: this.projectDisplayName(this.projectPath),
       sessionTitle: null, // Will be populated by Supervisor with session data
       state: activity,
       startedAt: this.startedAt.toISOString(),
@@ -2830,6 +2933,9 @@ export class Process {
       // model above. Keys per-model settings; the route enrichment fills the
       // persisted/helper fallback when this is absent (non-YA-started sessions).
       requestedModel: this.requestedModel,
+      ...(this.gatewayServiceId
+        ? { gatewayServiceId: this.gatewayServiceId }
+        : {}),
       serviceTier: this.serviceTier,
       thinking: this._thinking,
       effort: this.effort,
@@ -2891,12 +2997,16 @@ export class Process {
   }
 
   /**
-   * Accumulate streaming text from a delta.
-   * Called by stream routes when processing stream_event messages.
+   * Keep catch-up text current: append native deltas or replace snapshots.
+   * Called by subscriptions while processing provider messages.
    */
-  accumulateStreamingText(messageId: string, text: string): void {
-    if (this._streamingMessageId !== messageId) {
-      // New streaming message, reset accumulator
+  accumulateStreamingText(
+    messageId: string,
+    text: string,
+    mode: "delta" | "snapshot" = "delta",
+  ): void {
+    if (mode === "snapshot" || this._streamingMessageId !== messageId) {
+      // A snapshot contains the whole message, including its previous prefix.
       this._streamingMessageId = messageId;
       this._streamingText = text;
     } else {
@@ -2930,13 +3040,21 @@ export class Process {
       this._activeStreamingMessageId = startMessageId;
     }
 
-    const textDelta =
-      extractTextDelta(record) ?? extractTextFromAssistant(record);
-    if (textDelta && this._activeStreamingMessageId) {
-      this.accumulateStreamingText(this._activeStreamingMessageId, textDelta);
+    const snapshot = extractTextFromAssistant(record);
+    const textDelta = extractTextDelta(record);
+    const text = snapshot ?? textDelta;
+    if (text !== null && this._activeStreamingMessageId) {
+      this.accumulateStreamingText(
+        this._activeStreamingMessageId,
+        text,
+        snapshot !== null ? "snapshot" : "delta",
+      );
     }
 
-    if (isStreamingComplete(record)) {
+    if (
+      isStreamingComplete(record) ||
+      (snapshot !== null && record._isStreaming !== true)
+    ) {
       this.clearStreamingText();
     }
   }
@@ -3571,7 +3689,9 @@ export class Process {
       return `Process terminated: ${this._state.reason}`;
     }
     if (this.transportFailed) {
-      return "Process transport failed";
+      // Terminated in all but state while its failure notice publishes; say
+      // so, since clients resume a session whose process is terminated.
+      return "Process terminated: provider transport failed";
     }
     return null;
   }
@@ -4280,7 +4400,12 @@ export class Process {
    * since the transport re-queries the canonical projection on this event.
    */
   notifyQueueProjectionChanged(yaCommand?: SessionQueuedYaCommand): void {
-    this.emitDeferredQueueChange("queued", undefined, yaCommand);
+    this.emit({
+      type: "deferred-queue",
+      reason: "queued",
+      yaCommand,
+      republished: true,
+    });
   }
 
   private emitDeferredQueueChange(
@@ -4915,8 +5040,8 @@ export class Process {
         }
         // A receipt reserves its visible position before awaiting disk. Let it
         // publish before provider output that arrived during that save.
-        while (this.commandOutputPublication) {
-          await this.commandOutputPublication;
+        while (this.localNoticePublication) {
+          await this.localNoticePublication;
         }
         const receivedAt = new Date();
         this._lastMessageTime = receivedAt;
@@ -5018,14 +5143,17 @@ export class Process {
           this.sessionIdResolvers = [];
         }
 
-        // Capture resolved model from first assistant message
+        // The served model, as each main-thread reply names it. A subagent's
+        // reply may run another model and says nothing about this session's.
         if (
-          !this._resolvedModel &&
           message.type === "assistant" &&
+          !message.parent_tool_use_id &&
           message.message?.model &&
-          message.message.model !== "<synthetic>"
+          message.message.model !== "<synthetic>" &&
+          message.message.model !== this._resolvedModel
         ) {
           this._resolvedModel = message.message.model;
+          this.emit({ type: "model-resolved", model: this._resolvedModel });
         }
 
         this.promoteIdleForProviderWork(message, receivedAt);
@@ -5142,7 +5270,16 @@ export class Process {
       // to prevent race where queueMessage is called before state changes to terminated
       if (this.isProcessTerminationError(err)) {
         this.transportFailed = true;
-        this.markTerminated("underlying process terminated", err);
+        const turnWasRunning =
+          this._state.type === "in-turn" ||
+          this._state.type === "waiting-input";
+        const failureNotice =
+          turnWasRunning && !this.abortInFlight
+            ? await this.publishProviderFailureNotice(err)
+            : undefined;
+        this.markTerminated("underlying process terminated", err, {
+          failureNotice,
+        });
         return;
       }
 

@@ -61,7 +61,12 @@ window the trim dot controls).
   its number, and Clone shares the same count. Every fork target records its
   root in `forkLineageRootId`, so forking a fork continues the original
   session's sequence instead of restarting at `Fork:`; the whole tree therefore
-  numbers `Fork:`, `Fork 2:`, `Fork 3:` with no repeats. A source title that
+  numbers `Fork:`, `Fork 2:`, `Fork 3:` with no repeats. A fork that lacks
+  `forkLineageRootId` (created before targets recorded it) finds its root by
+  following `forkedFromSessionId` back to the first session without a source.
+  The number is claimed before the provider fork, since the provider writes the
+  title into the fork; a fork that fails gives its number back unless a later
+  fork has already claimed the next one. A source title that
   already carries a `Fork`/`Clone` prefix has it replaced, not stacked, so a
   fork of `Fork 2: X` is `Fork 3: X`, never `Fork 3: Fork 2: X`.
   Fork-after-summary titles from the generated summary line and only claims an

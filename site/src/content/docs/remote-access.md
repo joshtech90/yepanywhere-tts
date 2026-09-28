@@ -58,7 +58,8 @@ phone a private address without exposing a public port.
 
 Do not publish an unauthenticated local listener directly to the internet.
 Terminate HTTPS and require authentication when using your own public reverse
-proxy.
+proxy. [Local access and passwords](/docs/local-access) covers setting the
+password, limited users, and recovery.
 
 ## Self-hosted infrastructure
 

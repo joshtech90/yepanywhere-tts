@@ -4,10 +4,10 @@ import type {
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import { PRINCIPAL_VARIABLE, type Principal } from "../auth/principal.js";
 import type { ISessionIndexService } from "../indexes/types.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
-import { decodeProjectId, getProjectName } from "../projects/paths.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { RecentsService } from "../recents/index.js";
 import type { CodexSessionReader } from "../sessions/codex-reader.js";
@@ -35,8 +35,10 @@ export interface RecentsDeps {
   piReaderFactory?: (projectPath: string) => PiSessionReader;
 }
 
-export function createRecentsRoutes(deps: RecentsDeps): Hono {
-  const routes = new Hono();
+export function createRecentsRoutes(deps: RecentsDeps) {
+  const routes = new Hono<{
+    Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+  }>();
 
   // GET /api/recents - Get recent session visits with enriched data
   // Optional query param: ?limit=N (default: 50)
@@ -65,8 +67,7 @@ export function createRecentsRoutes(deps: RecentsDeps): Hono {
         continue;
       }
 
-      const projectPath = decodeProjectId(projectId);
-      const projectName = getProjectName(projectPath);
+      const projectName = project.name;
       const resolved = await findSessionListSummaryAcrossProviders(
         project,
         entry.sessionId,
@@ -111,7 +112,13 @@ export function createRecentsRoutes(deps: RecentsDeps): Hono {
 
   // POST /api/recents/visit - Record a session visit
   // Body: { sessionId: string, projectId: string }
+  // The list is the install's, shared with the superuser, so a limited user's
+  // visit is not recorded (topics/limited-users.md § Delivery v1).
   routes.post("/visit", async (c) => {
+    const principal = c.get(PRINCIPAL_VARIABLE) as Principal | undefined;
+    if (principal && principal.kind !== "superuser") {
+      return c.json({ recorded: false });
+    }
     let body: { sessionId?: string; projectId?: string } = {};
     try {
       body = await c.req.json();

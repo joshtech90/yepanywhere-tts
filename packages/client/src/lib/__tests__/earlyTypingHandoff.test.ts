@@ -134,6 +134,23 @@ describe("early typing handoff", () => {
     expect(press("o")).toBe(true);
   });
 
+  it("keeps what it held for a field that claims after the hold expired", () => {
+    vi.useFakeTimers();
+    const handoff = start(undefined, { expireMs: 1000 });
+    press("h");
+    press("o");
+    vi.advanceTimersByTime(1000);
+    expect(handoff.active()).toBe(false);
+    expect(press("x")).toBe(true);
+    expect(handoff.buffered()).toBe("ho");
+    const { sink, state } = field();
+    handoff.claim(sink);
+    expect(state.text).toBe("ho");
+    expect(handoff.active()).toBe(false);
+    expect(press("w")).toBe(true);
+    expect(state.text).toBe("ho");
+  });
+
   it("stops expiring once a field has claimed the keys", () => {
     vi.useFakeTimers();
     const handoff = start(undefined, { expireMs: 1000 });
@@ -148,5 +165,17 @@ describe("early typing handoff", () => {
     handoff.cancel();
     expect(press("h")).toBe(true);
     expect(handoff.buffered()).toBe("");
+  });
+
+  it("forgets what it held when cancelled, even after expiring", () => {
+    vi.useFakeTimers();
+    const handoff = start(undefined, { expireMs: 1000 });
+    press("h");
+    vi.advanceTimersByTime(1000);
+    handoff.cancel();
+    expect(handoff.buffered()).toBe("");
+    const { sink, state } = field();
+    handoff.claim(sink);
+    expect(state.text).toBe("");
   });
 });

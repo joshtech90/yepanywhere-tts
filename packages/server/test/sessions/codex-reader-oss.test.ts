@@ -945,6 +945,7 @@ describe("CodexSessionReader - OSS Support", () => {
     });
     expect(Object.keys(listSummary ?? {}).sort()).toEqual([
       "asyncQuestions",
+      "createdAt",
       "fullTitle",
       "id",
       "projectId",

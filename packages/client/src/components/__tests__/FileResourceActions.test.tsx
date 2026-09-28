@@ -106,7 +106,6 @@ describe("FilePathContextMenu", () => {
 
   it("adds capability-shaped image actions without file-only entries", () => {
     const onCopyImage = vi.fn();
-    const onDownload = vi.fn();
     render(
       <I18nProvider>
         <ResourceContextMenu
@@ -116,7 +115,7 @@ describe("FilePathContextMenu", () => {
           dismissLabel="Dismiss image actions"
           onClose={vi.fn()}
           onCopyImage={onCopyImage}
-          onDownload={onDownload}
+          download={{ fileName: "plot.png", loadBlob: vi.fn() }}
           onOpen={vi.fn()}
         />
       </I18nProvider>,
@@ -131,6 +130,28 @@ describe("FilePathContextMenu", () => {
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy image" }));
     expect(onCopyImage).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers a public URL copy action when the caller resolves one", () => {
+    const onCopyPublicUrl = vi.fn();
+    render(
+      <I18nProvider>
+        <ResourceContextMenu
+          x={10}
+          y={10}
+          canStartNewSession={false}
+          onClose={vi.fn()}
+          onCopyPublicUrl={onCopyPublicUrl}
+          onOpen={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getAllByRole("menuitem").map((item) => item.textContent),
+    ).toEqual(["Open", "Copy public URL"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Copy public URL" }));
+    expect(onCopyPublicUrl).toHaveBeenCalledTimes(1);
   });
 
   it("opens adjacent submenus on hover-capable pointers", () => {

@@ -40,7 +40,7 @@ pnpm lint             # Lint diagnostics
 pnpm format:check     # Non-writing formatter verification
 pnpm typecheck        # TypeScript checking, no emit
 pnpm test             # Non-Android workspace unit tests
-pnpm test:e2e         # Required for UI source changes
+pnpm test:e2e         # Full browser suite; CI runs it, local scope is risk-based
 ```
 
 See [local development](docs/development/local-development.md) for cloning,
@@ -150,6 +150,7 @@ are not a requirement to read every neighboring document.
 | When the task involves… | Read / required action |
 | --- | --- |
 | Source edits or OS-sensitive behavior | [Testing](docs/development/testing.md): required checks, Linux/macOS/Windows coverage, and platform limitations. |
+| Choosing a test level, adding or changing browser tests, or deciding local E2E scope | [E2E testing](topics/e2e-testing.md): unique boundary, cost, retry evidence, and focused local verification. |
 | Source formatting, warning cleanup, or a commit | [Code quality](docs/development/code-quality.md): warning-free checks, exact-file formatting, and no routine import/export reordering. |
 | Authentication, named principals, project/session access grants, hosted issuer trust, or peer authorization | [Security](topics/security.md) and [principals and grants](topics/principals-and-grants.md): state how the proposed slice relates to the shared vocabulary before choosing a feature-local identity or authorization shape. |
 | Any change in `packages/client`, UI copy, or a chatty client console | [Client development](docs/development/client.md): English-only i18n additions and `pnpm console:scan`. |
@@ -175,8 +176,11 @@ are not a requirement to read every neighboring document.
 ## Before Finishing
 
 After editing TypeScript or other source files, pass `pnpm lint`,
-`pnpm format:check`, `pnpm typecheck`, and `pnpm test`; also run
-`pnpm test:e2e` for UI changes. Site source changes require `pnpm site:build`.
+`pnpm format:check`, `pnpm typecheck`, and `pnpm test`; for UI changes, run
+relevant focused browser checks under [E2E testing](topics/e2e-testing.md).
+The full E2E suite remains a CI gate and a local check for changes whose
+affected browser cases cannot be bounded reliably. Site source changes require
+`pnpm site:build`.
 Fix errors before considering the task complete. Follow the
 [testing guide](docs/development/testing.md) for platform-specific requirements.
 Before committing, checks must be warning-free; follow

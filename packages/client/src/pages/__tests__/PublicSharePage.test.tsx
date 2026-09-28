@@ -17,11 +17,11 @@ import {
 import { Link, MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  buildPublicShareRawFileApiPath,
   rewritePublicShareLocalAppHref,
   rewritePublicShareLocalAppLinks,
 } from "../../contexts/PublicShareContext";
 import { I18nProvider } from "../../i18n";
+import { buildPublicShareRawFileApiPath } from "../../lib/publicShareFiles";
 import {
   fetchPublicShareV2ViaRelay,
   fetchPublicShareViaRelay,

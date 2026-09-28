@@ -35,6 +35,7 @@ import {
   SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
   SESSION_FORK_TURN_INTENTS_CAPABILITY,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
   SIDEBAR_SESSION_RESUME_CAPABILITY,
   SECURITY_CLIENT_AUDIT_CAPABILITY,
 } from "@yep-anywhere/shared";
@@ -43,6 +44,11 @@ import { getServerCapabilities } from "../../src/routes/version.js";
 describe("Version Routes", () => {
   it("advertises recent local speech model selection", () => {
     expect(getServerCapabilities()).toContain("local-speech-model-selection");
+  });
+  it("advertises session creation provenance", () => {
+    expect(getServerCapabilities()).toContain(
+      SESSION_CREATION_PROVENANCE_CAPABILITY,
+    );
   });
   it("advertises compiled glossary artifacts", () => {
     expect(getServerCapabilities()).toContain(GLOSSARY_TOOLTIPS_CAPABILITY);

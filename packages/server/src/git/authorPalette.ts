@@ -62,6 +62,16 @@ export async function warmGitAuthorPalette(
   await getGitAuthorPalette(projectPath, storagePolicy);
 }
 
+/**
+ * Wait for palette refreshes already running, including warms nobody awaits,
+ * so a disposed app leaves no palette write behind in its data directory.
+ */
+export async function settleGitAuthorPaletteRefreshes(): Promise<void> {
+  while (inFlight.size > 0) {
+    await Promise.allSettled([...inFlight.values()]);
+  }
+}
+
 export function getGitAuthorIdentity(name: string, email: string): string {
   return `${name.trim()}\0${email.trim().replace(/^<|>$/g, "")}`;
 }

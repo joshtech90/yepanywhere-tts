@@ -148,6 +148,12 @@ describe("artifact capture command", () => {
 
   it("runs from another working directory and emits parseable JSON plus Markdown files", async () => {
     const directory = await mkdtemp(join(tmpdir(), "ya-artifact-cli-"));
+    // Node's tsx loader can emit runtime deprecation warnings on stderr;
+    // these assertions check the CLI's protocol output only.
+    const commandOptions = {
+      cwd: directory,
+      env: { ...process.env, NODE_NO_WARNINGS: "1" },
+    };
     try {
       await writeFile(
         join(directory, "page with spaces.html"),
@@ -180,7 +186,7 @@ describe("artifact capture command", () => {
           "--ready-selector",
           "[data-ready]",
         ],
-        { cwd: directory },
+        commandOptions,
       );
       const data = JSON.parse(result.stdout);
       expect(data.kind).toBe("artifact-capture");
@@ -208,7 +214,7 @@ describe("artifact capture command", () => {
           "--no-commentary",
           "--local-only",
         ],
-        { cwd: directory },
+        commandOptions,
       );
       expect(JSON.parse(suppressed.stdout)._acli).toBeUndefined();
       expect(JSON.parse(suppressed.stdout).screenshots).toHaveLength(2);
@@ -220,7 +226,7 @@ describe("artifact capture command", () => {
       const usage = await exec(
         process.execPath,
         ["--import", loader, script, "--help"],
-        { cwd: directory },
+        commandOptions,
       );
       expect(usage.stdout.trim().split("\n").at(-1)).toBe(
         "acli: 1 +commentary",

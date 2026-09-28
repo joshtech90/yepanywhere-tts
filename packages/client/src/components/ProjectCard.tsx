@@ -1,4 +1,5 @@
 import { projectDisplayName } from "@yep-anywhere/shared";
+import { useId, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useI18n } from "../i18n";
 import { shortenPath } from "../lib/text";
@@ -69,6 +70,8 @@ export function ProjectCard({
 }: ProjectCardProps) {
   const { t } = useI18n();
   const navigate = useNavigate();
+  const [codeNameError, setCodeNameError] = useState<string | null>(null);
+  const codeNameErrorId = useId();
 
   const handleNewSession = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -180,9 +183,21 @@ export function ProjectCard({
                 <ProjectCodeNameEditor
                   project={project}
                   onUpdateCodeName={onUpdateCodeName}
+                  error={codeNameError}
+                  onErrorChange={setCodeNameError}
+                  errorId={codeNameErrorId}
                 />
               )}
             </strong>
+            {onUpdateCodeName && codeNameError && (
+              <span
+                id={codeNameErrorId}
+                className={styles.codeNameError}
+                role="alert"
+              >
+                {codeNameError}
+              </span>
+            )}
             <ProjectCaptionEditor
               project={project}
               onUpdateCaption={onUpdateCaption}

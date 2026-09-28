@@ -159,6 +159,130 @@ describe("IssuesPage associated sessions", () => {
     expect(screen.getByText("mention 2")).toBeTruthy();
   });
 
+  it("reloads an expanded row's mentions under the new dismissed filter", async () => {
+    const suppressed = {
+      ...evidence(2),
+      excerpt: "dismissed mention",
+      state: "dismissed" as const,
+    };
+    state.fetch.mockImplementation((path: string) => {
+      const includeDismissed = path.includes("dismissed=1");
+      if (path.startsWith("/issues/sessions"))
+        return Promise.resolve({
+          sessions: [{ ...session, evidenceCount: includeDismissed ? 3 : 2 }],
+          nextOffset: null,
+        });
+      if (path.startsWith("/issues/evidence"))
+        return Promise.resolve(
+          includeDismissed
+            ? { evidence: [suppressed, evidence(3)], nextOffset: null }
+            : { evidence: [evidence(3)], nextOffset: null },
+        );
+      return Promise.resolve(search);
+    });
+    renderPage();
+    const filter = screen.getByRole("checkbox", {
+      name: "Include dismissed associations",
+    });
+    fireEvent.click(filter);
+    await selectIssue(1);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more mentions/i }),
+    );
+    expect(await screen.findByText("dismissed mention")).toBeTruthy();
+
+    state.fetch.mockClear();
+    fireEvent.click(filter);
+
+    expect(await screen.findByText("mention 3")).toBeTruthy();
+    await vi.waitFor(() =>
+      expect(screen.queryByText("dismissed mention")).toBeNull(),
+    );
+    const reloads = state.fetch.mock.calls
+      .map(([path]) => path as string)
+      .filter((path) => path.startsWith("/issues/evidence"));
+    expect(reloads).toHaveLength(1);
+    expect(reloads[0]).toContain("dismissed=0");
+    expect(reloads[0]).toContain("offset=1");
+  });
+
+  it("shows a refreshed row's loaded range in the server's current order", async () => {
+    renderPage();
+    await expandFirstIssueSession();
+
+    // After the refresh the server orders the later mentions 3, 4, 5.
+    const later = [evidence(3), evidence(4), evidence(5)];
+    let answerMore: (result: IssueEvidenceResult) => void = () => {};
+    state.fetch.mockImplementation((path: string) => {
+      if (path.startsWith("/issues/sessions"))
+        return Promise.resolve({
+          sessions: [{ ...session, evidenceCount: 4 }],
+          nextOffset: null,
+        });
+      if (path.startsWith("/issues/evidence")) {
+        const query = new URLSearchParams(path.split("?")[1]);
+        const offset = Number(query.get("offset"));
+        const limit = query.get("limit");
+        if (!limit)
+          return new Promise<IssueEvidenceResult>((resolve) => {
+            answerMore = resolve;
+          });
+        const page = later.slice(offset - 1, offset - 1 + Number(limit));
+        return Promise.resolve({
+          evidence: page,
+          nextOffset:
+            page.length === Number(limit) ? offset + page.length : null,
+        });
+      }
+      return Promise.resolve(search);
+    });
+    const reloads = () =>
+      state.fetch.mock.calls.filter(([path]) =>
+        (path as string).includes("limit="),
+      ).length;
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    expect(await screen.findByText("mention 3")).toBeTruthy();
+    expect(screen.queryByText("mention 2")).toBeNull();
+
+    // A page requested before a refresh cannot land in the reloaded list.
+    fireEvent.click(screen.getByRole("button", { name: /more evidence/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+    await vi.waitFor(() => expect(reloads()).toBe(2));
+    answerMore({ evidence: [evidence(2)], nextOffset: null });
+    await screen.findByRole("button", { name: /more evidence/i });
+    expect(screen.queryByText("mention 2")).toBeNull();
+    expect(screen.getAllByText("mention 3")).toHaveLength(1);
+  });
+
+  it("still loads an expanded row's mentions when a refresh overtakes its first page", async () => {
+    let answerFirstPage: (result: IssueEvidenceResult) => void = () => {};
+    state.fetch.mockImplementation((path: string) => {
+      if (path.startsWith("/issues/sessions"))
+        return Promise.resolve({
+          sessions: [{ ...session }],
+          nextOffset: null,
+        });
+      if (path.startsWith("/issues/evidence") && !path.includes("limit="))
+        return new Promise<IssueEvidenceResult>((resolve) => {
+          answerFirstPage = resolve;
+        });
+      if (path.startsWith("/issues/evidence"))
+        return Promise.resolve(evidencePage);
+      return Promise.resolve(search);
+    });
+    renderPage();
+    await selectIssue(1);
+    fireEvent.click(
+      await screen.findByRole("button", { name: /more mentions/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+    expect(await screen.findByText("mention 2")).toBeTruthy();
+    answerFirstPage({ evidence: [evidence(9)], nextOffset: null });
+    await screen.findByRole("button", { name: /fewer mentions/i });
+    expect(screen.queryByText("mention 9")).toBeNull();
+  });
+
   it("empties the pane when another issue is picked", async () => {
     renderPage();
     await expandFirstIssueSession();

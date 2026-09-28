@@ -9,7 +9,11 @@ import type {
   ProjectQueueItemSummary,
   UrlProjectId,
 } from "@yep-anywhere/shared";
-import { decodeProjectId, getProjectName } from "../projects/paths.js";
+import {
+  decodeProjectId,
+  getProjectName,
+  type ProjectDisplayNameResolver,
+} from "../projects/paths.js";
 import {
   getProjectWorkIdleStatus,
   type ProjectWorkExternalTracker,
@@ -43,6 +47,8 @@ export interface InactivityPushNotifierOptions {
   projectQueueService?: ProjectQueueReader;
   externalTracker?: ProjectWorkExternalTracker;
   debounceMs?: number;
+  /** Names the project in a notification; defaults to the path's name. */
+  projectDisplayName?: ProjectDisplayNameResolver;
 }
 
 export class InactivityPushNotifier {
@@ -52,6 +58,7 @@ export class InactivityPushNotifier {
   private readonly projectQueueService?: ProjectQueueReader;
   private readonly externalTracker?: ProjectWorkExternalTracker;
   private readonly debounceMs: number;
+  private readonly projectDisplayName: ProjectDisplayNameResolver;
   private readonly unsubscribe: () => void;
   private readonly projectStates = new Map<UrlProjectId, EdgeState>();
   private readonly dirtyProjects = new Set<UrlProjectId>();
@@ -69,6 +76,7 @@ export class InactivityPushNotifier {
     this.projectQueueService = options.projectQueueService;
     this.externalTracker = options.externalTracker;
     this.debounceMs = options.debounceMs ?? DEFAULT_DEBOUNCE_MS;
+    this.projectDisplayName = options.projectDisplayName ?? getProjectName;
     this.unsubscribe = this.eventBus.subscribe((event) => {
       this.handleEvent(event);
     });
@@ -375,8 +383,7 @@ export class InactivityPushNotifier {
 
   private getProjectName(projectId: UrlProjectId): string {
     try {
-      const projectPath = decodeProjectId(projectId);
-      return getProjectName(projectPath);
+      return this.projectDisplayName(decodeProjectId(projectId));
     } catch {
       return "Unknown Project";
     }

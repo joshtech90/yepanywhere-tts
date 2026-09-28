@@ -3301,6 +3301,96 @@ describe("useSessionMessages cache", () => {
     expect(onTranscriptReconciled).not.toHaveBeenCalled();
   });
 
+  it("takes a rewind's regrouping from the server's tail projection in place", async () => {
+    const row = (uuid: string, type: "user" | "assistant", extra = {}) => ({
+      uuid,
+      type,
+      timestamp: "2026-05-04T00:00:00.000Z",
+      message: { role: type, content: uuid },
+      ...extra,
+    });
+    const loaded = sessionResponse("unused");
+    apiMocks.getSession.mockResolvedValueOnce({
+      ...loaded,
+      messages: [
+        row("u1", "user"),
+        row("a1", "assistant"),
+        row("u2", "user"),
+        row("a2", "assistant"),
+      ],
+    });
+    const { result } = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    // The server's projection groups the dropped turn behind its header; the
+    // client applies that membership as served rather than computing it.
+    const grouped = { rewoundGroupId: "rw-1" };
+    apiMocks.getSession.mockClear();
+    apiMocks.getSession.mockResolvedValueOnce({
+      ...loaded,
+      messages: [
+        row("u1", "user"),
+        row("a1", "assistant"),
+        {
+          type: "system",
+          subtype: "rewound_group",
+          uuid: "rewound-group-rw-1",
+          parentUuid: "a1",
+          timestamp: "2026-05-04T00:00:00.000Z",
+          isSynthetic: true,
+          ...grouped,
+        },
+        row("u2", "user", grouped),
+        row("a2", "assistant", grouped),
+      ],
+    });
+    await act(async () => result.current.refreshTranscriptTail());
+
+    expect(apiMocks.getSession).toHaveBeenCalledTimes(1);
+    expect(apiMocks.getSession).toHaveBeenCalledWith(
+      "proj-1",
+      "sess-1",
+      undefined,
+      expect.objectContaining({ tailCompactions: expect.any(Number) }),
+    );
+    expect(result.current.loading).toBe(false);
+    expect(
+      result.current.messages.map((message) => [
+        message.uuid,
+        (message as { rewoundGroupId?: string }).rewoundGroupId,
+      ]),
+    ).toEqual([
+      ["u1", undefined],
+      ["a1", undefined],
+      ["rewound-group-rw-1", "rw-1"],
+      ["u2", "rw-1"],
+      ["a2", "rw-1"],
+    ]);
+  });
+
+  it("reloads the session when the tail projection cannot be fetched", async () => {
+    apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));
+    const { result } = renderHook(() =>
+      useSessionMessages({ projectId: "proj-1", sessionId: "sess-1" }),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+
+    apiMocks.getSession.mockClear();
+    apiMocks.getSession
+      .mockRejectedValueOnce(new Error("offline"))
+      .mockResolvedValueOnce(sessionResponse("msg-2"));
+    await act(async () => result.current.refreshTranscriptTail());
+
+    await waitFor(() =>
+      expect(result.current.messages.map((message) => message.uuid)).toEqual([
+        "msg-2",
+      ]),
+    );
+    expect(apiMocks.getSession).toHaveBeenCalledTimes(2);
+  });
+
   it("coalesces concurrent incremental refreshes into one trailing pass", async () => {
     apiMocks.getSession.mockResolvedValueOnce({
       session: {

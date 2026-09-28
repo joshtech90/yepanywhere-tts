@@ -1,0 +1,29 @@
+.grant {
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  min-width: 0;
+}
+.option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 40px;
+  overflow-wrap: anywhere;
+}
+.option input,
+.option img {
+  flex: none;
+}
+.option small {
+  display: block;
+  color: var(--text-muted);
+}
+.choices {
+  margin-inline-start: var(--space-3);
+}
+.grant p {
+  font-size: var(--font-size-sm);
+  color: var(--text-muted);
+}

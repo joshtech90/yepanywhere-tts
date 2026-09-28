@@ -1,7 +1,8 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const projectPath = join(e2ePaths.tempDir, "source-control-toolbar-project");
 const fileName =
@@ -28,13 +29,7 @@ async function dismissOnboardingIfVisible(page: Page) {
 }
 
 async function capture(page: Page, name: string) {
-  const directory = process.env.YEP_E2E_UI_CAPTURE_DIR;
-  if (!directory) return;
-  mkdirSync(directory, { recursive: true });
-  await page.screenshot({
-    animations: "disabled",
-    path: join(directory, name),
-  });
+  await recordUiCapture(page, name);
 }
 
 async function narrowDetailPane(toolbar: Locator, splitter: Locator) {
@@ -46,7 +41,7 @@ async function narrowDetailPane(toolbar: Locator, splitter: Locator) {
   expect((await toolbar.boundingBox())?.width).toBeLessThan(500);
 }
 
-test("narrow diff panes put wrapping file identity below controls", async ({
+test("narrow diff panes keep wrapping identity and controls separate", async ({
   page,
   baseURL,
 }) => {
@@ -57,7 +52,7 @@ test("narrow diff panes put wrapping file identity below controls", async ({
   await dismissOnboardingIfVisible(page);
 
   const toolbar = page.locator(".git-diff-pane-toolbar");
-  const identity = toolbar.locator(":scope > .git-diff-file-identity");
+  const identity = toolbar.locator(".git-diff-file-identity");
   const title = identity.locator(".git-diff-preview-title");
   const splitter = page
     .locator(".source-pane-splitter-files .source-pane-splitter-handle.top")
@@ -69,20 +64,34 @@ test("narrow diff panes put wrapping file identity below controls", async ({
 
   const identityBox = await identity.boundingBox();
   const controlBoxes = await toolbar
-    .locator(
-      ":scope > .diff-context-buttons, :scope > .git-diff-preview-header-actions",
-    )
+    .locator(".diff-context-buttons, .git-diff-preview-header-actions")
     .evaluateAll((groups) =>
       groups.map((group) => {
         const box = group.getBoundingClientRect();
-        return { bottom: box.bottom, top: box.top };
+        return {
+          bottom: box.bottom,
+          top: box.top,
+          left: box.left,
+          right: box.right,
+        };
       }),
     );
   expect(identityBox).not.toBeNull();
   expect(controlBoxes.length).toBeGreaterThan(0);
-  expect(identityBox?.y ?? 0).toBeGreaterThanOrEqual(
-    Math.max(...controlBoxes.map((box) => box.bottom)) - 0.5,
-  );
+  const toolbarBox = await toolbar.boundingBox();
+  if (!identityBox || !toolbarBox) throw new Error("Missing viewer header");
+  // The shared viewer header places identity first and greedily wraps actions.
+  // Controls may sit beside it or below it, but never overlap or escape it.
+  for (const box of controlBoxes) {
+    expect(
+      box.left >= identityBox.x + identityBox.width - 0.5 ||
+        box.top >= identityBox.y + identityBox.height - 0.5,
+    ).toBe(true);
+    expect(box.left).toBeGreaterThanOrEqual(toolbarBox.x - 0.5);
+    expect(box.right).toBeLessThanOrEqual(
+      toolbarBox.x + toolbarBox.width + 0.5,
+    );
+  }
   await expect
     .poll(() =>
       title.evaluate((element) => ({
@@ -93,10 +102,13 @@ test("narrow diff panes put wrapping file identity below controls", async ({
     )
     .toMatchObject({ overflowWrap: "anywhere", whiteSpace: "normal" });
   expect((await title.boundingBox())?.height).toBeGreaterThan(20);
-  await capture(page, "source-control-toolbar-desktop-1200x600.png");
+  await capture(page, "source-control-toolbar-desktop-1200x600");
 
   await page.setViewportSize({ width: 375, height: 812 });
   await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByRole("dialog")).toContainText(fileName);
-  await capture(page, "source-control-toolbar-mobile-375x812.png");
+  await expect(
+    page.getByRole("dialog").locator("[data-diff-line]").first(),
+  ).toBeVisible();
+  await capture(page, "source-control-toolbar-mobile-375x812");
 });

@@ -1,6 +1,21 @@
 import type { FileContentResponse } from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
 
+/**
+ * Project raw-file API path: the original bytes of a project file, as an
+ * attachment when `download` is set. Source transports take it after
+ * `toSourceTransportApiPath`.
+ */
+export function projectRawFileApiPath(
+  projectId: string,
+  path: string,
+  download = false,
+): string {
+  const params = new URLSearchParams({ path });
+  if (download) params.set("download", "true");
+  return `/api/projects/${encodeURIComponent(projectId)}/files/raw?${params.toString()}`;
+}
+
 export const fileApi = {
   getFile: (
     projectId: string,
@@ -20,11 +35,15 @@ export const fileApi = {
     );
   },
 
-  getFileRawUrl: (projectId: string, path: string, download = false) => {
-    const params = new URLSearchParams({ path });
-    if (download) params.set("download", "true");
-    return `/api/projects/${projectId}/files/raw?${params.toString()}`;
+  /** Metadata only, for freshness checks; the server reads no content. */
+  getFileMetadata: (projectId: string, path: string) => {
+    const params = new URLSearchParams({ path, metadata: "only" });
+    return fetchJSON<FileContentResponse>(
+      `/projects/${projectId}/files?${params.toString()}`,
+    );
   },
+
+  getFileRawUrl: projectRawFileApiPath,
 
   /**
    * Expand diff context to show full file.

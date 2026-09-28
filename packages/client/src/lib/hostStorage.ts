@@ -24,6 +24,12 @@ export interface SavedHost {
 
   // Auth
   srpUsername: string;
+  /**
+   * Every identity that has signed in to this relay host from this browser,
+   * most recent last. Lets the relay login restore the server name when the
+   * browser's password manager fills only the identity.
+   */
+  srpUsernames?: string[];
   session?: StoredSession;
 
   // Stable server-advertised identity, learned during auth/pairing. When
@@ -90,11 +96,18 @@ export function upsertRelayHost(params: {
   session?: StoredSession;
 }): SavedHost {
   const existing = getHostByRelayUsername(params.relayUsername);
+  const srpUsernames = [
+    ...(existing?.srpUsernames ?? [existing?.srpUsername]).filter(
+      (name): name is string => !!name && name !== params.srpUsername,
+    ),
+    params.srpUsername,
+  ];
   const host: SavedHost = existing
     ? {
         ...existing,
         relayUrl: params.relayUrl,
         srpUsername: params.srpUsername,
+        srpUsernames,
         session: params.session ?? existing.session,
         lastConnected: params.session
           ? new Date().toISOString()
@@ -102,6 +115,7 @@ export function upsertRelayHost(params: {
       }
     : {
         ...createRelayHost(params),
+        srpUsernames,
         session: params.session,
         lastConnected: params.session ? new Date().toISOString() : undefined,
       };
@@ -164,6 +178,27 @@ export function getHostByRelayUsername(
   return data.hosts.find(
     (h) => h.mode === "relay" && h.relayUsername === username,
   );
+}
+
+/**
+ * The relay host an identity last signed in to from this browser. The owner's
+ * identity is the server name itself, so that also matches a host directly.
+ */
+export function findRelayHostForIdentity(
+  identity: string,
+): SavedHost | undefined {
+  const matches = loadSavedHosts().hosts.filter(
+    (h) =>
+      h.mode === "relay" &&
+      (h.relayUsername === identity ||
+        h.srpUsername === identity ||
+        h.srpUsernames?.includes(identity)),
+  );
+  return matches.sort((a, b) =>
+    (b.lastConnected ?? b.createdAt).localeCompare(
+      a.lastConnected ?? a.createdAt,
+    ),
+  )[0];
 }
 
 /** Find a host by ID */

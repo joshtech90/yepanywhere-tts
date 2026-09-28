@@ -75,7 +75,7 @@ vi.mock("../../i18n", () => ({
         hostOfflineTitleRelayUnreachable: "Relay Unreachable",
         modalClose: "Close",
         relayLoginCustomRelayUrl: "Custom Relay URL",
-        relayLoginUsername: "Username",
+        relayLoginServerName: "Server name",
       };
       return translations[key] ?? key;
     },

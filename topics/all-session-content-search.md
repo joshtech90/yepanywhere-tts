@@ -75,7 +75,7 @@ reservation. Enabling turn search for the first time or changing the needle
 starts the initial layout.
 
 The reserved space to the right of the needle always says "in N sessions".
-N is the eligible catalog scope after explicit selection and session filters,
+N is the eligible catalog scope after Only selected and session filters,
 before needle matching. With Title enabled it includes title-only providers;
 with only turn roles it excludes providers lacking bounded turn search; with
 no field enabled it is zero. Turn-time bounds filter content inside that scope,
@@ -201,23 +201,27 @@ point-in-time completion, not a claim that no future match can arrive.
 ## Selection and actions
 
 Let S be explicit selected session IDs and F the current query and filters.
-Displayed sessions are (S when nonempty, otherwise the whole catalog)
-intersected with F. Typing, clearing text, changing filters, and excluding rows
-never change S.
+Displayed sessions are the whole catalog intersected with F. Checking a row
+adds it to S without hiding any other row, and typing, clearing text, changing
+filters, and excluding rows never change S. S therefore can include sessions
+the current search hides.
 
-This is selected-sessions narrowing, not a same-turn or same-line intersection
-of old and new needles. After keeping sessions matching A, B can match anywhere
-in those sessions. Clearing the needle preserves S; the red X clears S.
-Browser Back restores the needle, filters, field checkboxes, preview limit and
-explicit selection from the URL and source-scoped history entry. Leaving the
-page stops its scans; Back does not keep transcript caches or subscriptions alive.
+Only selected is an explicit, default-off toggle that restricts displayed
+sessions and acquisition to S intersected with F. It restricts nothing while S
+is empty and resumes once S is nonempty again. With it on, narrowing is
+selected-sessions narrowing, not a same-turn or same-line intersection of old
+and new needles: after keeping sessions matching A, B can match anywhere in
+those sessions. Clearing the needle preserves S; the red X clears S.
+Browser Back restores the needle, filters, field checkboxes, preview limit,
+explicit selection and Only selected from the URL and source-scoped history
+entry. Leaving the page stops its scans; Back does not keep transcript caches
+or subscriptions alive.
 
-The summary displays a checkmark N, a bordered left-arrow action, and result
-count M. N opens selection management. The arrow replaces S with the current
-result session IDs, including matches below the viewport; it does not add to
-S. It is disabled for zero results because assigning an empty set would remove
-the selection restriction. The larger red X clears S. With no selection,
-M can exceed N; there is no separate hidden count.
+The summary displays a checkmark N, a labelled Select all M button, Only
+selected, and the red X while S is nonempty. N opens selection management.
+Select all M adds the current result session IDs, including matches below the
+viewport, to S. It is disabled for zero results and when every result is
+already selected.
 
 Selection management appears after results, before the diagnostic log. At wide
 desktop widths they occupy adjacent columns and the management list uses page
@@ -233,15 +237,18 @@ coverage, errors, and completed nonmatches. All fields unchecked produces an
 explicit field-choice hint. Keeping results during a scan takes a snapshot of
 matches found so far; late arrivals do not add to that selection.
 
-Archive/unarchive, star/unstar and read/unread icons filter their statuses.
-Opposites are exclusive; different pairs intersect. The most recently active
-filter exposes Make [status] followed by the checkmark and N. This action
-updates the complete explicit selection, including currently excluded rows.
-An operation keeps its original server transport across all batches, even
-when the user switches servers while it runs.
-Its tooltip names the action and selected count. No selection disables the
-action. The action sits to the right on desktop and occupies a normal-height
-full row on phones. Filter is omitted only when the compact row lacks room.
+Archive/unarchive, star/unstar and read/unread icons filter their statuses and
+never choose an action. Opposites are exclusive; different pairs intersect.
+
+While S is nonempty a bar fixed to the bottom of the page shows the selected
+count, a clear control, and labelled icon-and-text actions: Archive, Unarchive,
+Star, Unstar, Mark read and Mark unread. Each action appears only when at least
+one selected session can change under it, so a selection of unarchived sessions
+offers no Unarchive. An action updates the complete explicit selection,
+including rows the current search hides, and clears S when it succeeds. An
+operation keeps its original server transport across all batches, even when
+the user switches servers while it runs. The page reserves bottom space while
+the bar is shown so the last results and selection management stay reachable.
 
 The checkbox owns a wide, full-height selection column. Role/ordinal chips
 visually occupy that column and align against the preview's blue rule.
@@ -402,7 +409,7 @@ within its existing bounds, but a hidden or closed page requests no successor.
 
 The existing source activity subscription supplies catalog and new-session
 changes. Search has one eligible session-ID set, reconciled before scheduling:
-project, provider, executor, status, explicit selection and session-time filters
+project, provider, executor, status, Only selected and session-time filters
 exclude sessions from content traversal. Counts use that same eligible set.
 Unchanged sessions retain matches and coverage; changed sessions resume their
 tail, and newly eligible sessions join the queue. No per-session network

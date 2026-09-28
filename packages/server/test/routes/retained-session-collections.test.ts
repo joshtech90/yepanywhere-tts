@@ -1,8 +1,17 @@
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readdir,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { toUrlProjectId, truncateSessionTitle } from "@yep-anywhere/shared";
 import { afterEach, expect, it, vi } from "vitest";
+import { ProjectMetadataService } from "../../src/metadata/ProjectMetadataService.js";
 import { SessionCatalogService } from "../../src/services/SessionCatalogService.js";
 import { RetainedSessionCollections } from "../../src/services/RetainedSessionCollections.js";
 import { createGlobalSessionsRoutes } from "../../src/routes/global-sessions.js";
@@ -17,7 +26,10 @@ import { ClaudeSessionReader } from "../../src/sessions/reader.js";
 import { EventBus } from "../../src/watcher/EventBus.js";
 import { collectionCatalogAdapters } from "../../src/sessions/catalog-adapters/collection-catalog-adapters.js";
 import { CodexSessionReader } from "../../src/sessions/codex-reader.js";
-import { catalogProjectIdentity } from "../../src/sessions/catalog-adapters/row.js";
+import {
+  catalogFileVersion,
+  catalogProjectIdentity,
+} from "../../src/sessions/catalog-adapters/row.js";
 import type { Project } from "../../src/supervisor/types.js";
 import type { ISessionIndexService } from "../../src/indexes/types.js";
 import {
@@ -162,6 +174,7 @@ it("publishes native heads before questions and refreshes only a modified sessio
       `${[
         {
           type: "session_meta",
+          timestamp: "2026-09-08T00:00:00.000Z",
           payload: {
             id: ids[index],
             cwd: projectPath,
@@ -170,6 +183,7 @@ it("publishes native heads before questions and refreshes only a modified sessio
         },
         {
           type: "event_msg",
+          timestamp: "2026-09-08T00:01:00.000Z",
           payload: { type: "user_message", message: `Work ${index}` },
         },
       ]
@@ -221,6 +235,10 @@ it("publishes native heads before questions and refreshes only a modified sessio
   await collections.refresh();
   const base = await publications[0]!;
   expect(base.rows).toHaveLength(2);
+  expect(base.rows.map((row) => row.createdAt)).toEqual([
+    "2026-09-08T00:00:00.000Z",
+    "2026-09-08T00:00:00.000Z",
+  ]);
   expect(base.rows.every((row) => row.asyncQuestions === undefined)).toBe(true);
   const ready = await collections.read();
   expect(
@@ -237,6 +255,7 @@ it("publishes native heads before questions and refreshes only a modified sessio
     files[0]!,
     `${JSON.stringify({
       type: "event_msg",
+      timestamp: "2026-09-08T00:02:00.000Z",
       payload: { type: "user_message", message: "More work" },
     })}\n`,
   );
@@ -323,6 +342,51 @@ it("keeps a retained row's whole title searchable and truncates for display", as
   expect(row?.initialPrompt).toBe(long);
   expect(row?.title).toBe(truncateSessionTitle(long));
   expect(row?.title).not.toContain("quasarneedle");
+});
+
+it("names retained rows and the project filter by the project's current chosen name", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-project-name-"));
+  const projectPath = join(dataDir, "yepanywhere");
+  const identity = catalogProjectIdentity(projectPath);
+  const projectMetadata = new ProjectMetadataService({ dataDir });
+  await projectMetadata.initialize();
+  await projectMetadata.setProjectNameOverride(identity.projectId, "YA");
+  // A row stored before the rename still carries the directory name, and an
+  // unchanged file is never read again to replace it.
+  const service = {
+    read: async () => ({
+      rows: [
+        {
+          catalogFamily: "claude" as const,
+          storeKey: "store",
+          sessionId: "session",
+          ...identity,
+          projectName: "yepanywhere",
+          updatedAt: "2026-09-08T00:00:00.000Z",
+          fidelity: "head" as const,
+          sourceVersion: "v1",
+          location: {
+            kind: "file" as const,
+            path: join(projectPath, "session.jsonl"),
+          },
+        } satisfies SessionCatalogRow,
+      ],
+      catalog: {},
+    }),
+  } as unknown as RetainedSessionCollections;
+  const deps = {
+    projectDisplayName: (path: string) =>
+      projectMetadata.getProjectDisplayName(path),
+  } as Parameters<typeof readRetainedSessionItems>[1];
+
+  const named = await readRetainedSessionItems(service, deps);
+  expect(named.sessions[0]?.projectName).toBe("YA");
+  expect(named.projects).toEqual([{ id: identity.projectId, name: "YA" }]);
+
+  await projectMetadata.setProjectNameOverride(identity.projectId, null);
+  const cleared = await readRetainedSessionItems(service, deps);
+  expect(cleared.sessions[0]?.projectName).toBe("yepanywhere");
+  expect(cleared.projects[0]?.name).toBe("yepanywhere");
 });
 
 it("bounds Claude recency discovery to the latest conversation row", async () => {
@@ -452,6 +516,163 @@ it("keeps a reaped Claude session at its content time, not its shutdown mtime", 
       ?.updatedAt,
   ).toBe(contentAt);
 });
+
+it("reads a row an older build stored for an unchanged file once more", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-row-format-"));
+  const projectPath = join(dataDir, "project");
+  const project: Project = {
+    id: catalogProjectIdentity(projectPath).projectId,
+    path: projectPath,
+    name: "Project",
+    provider: "codex",
+    sessionDir: dataDir,
+    sessionCount: 1,
+    activeOwnedCount: 0,
+    activeExternalCount: 0,
+    lastActivity: null,
+  };
+  const sessionId = "44444444-4444-4444-8444-444444444444";
+  const file = join(dataDir, `rollout-2026-09-08T00-00-00-${sessionId}.jsonl`);
+  const long = `${"Context before ".repeat(30)}quasarneedle`;
+  const createdAt = "2026-09-08T00:00:00.000Z";
+  await writeFile(
+    file,
+    `${[
+      {
+        type: "session_meta",
+        timestamp: createdAt,
+        payload: { id: sessionId, cwd: projectPath, timestamp: createdAt },
+      },
+      {
+        type: "event_msg",
+        timestamp: "2026-09-08T00:01:00.000Z",
+        payload: { type: "user_message", message: long },
+      },
+    ]
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  // What a build before whole titles and summary creation times persisted for
+  // this file: the display cut, no createdAt, and the file's current version.
+  const stale: SessionCatalogRow = {
+    catalogFamily: "codex",
+    storeKey: dataDir,
+    sessionId,
+    ...catalogProjectIdentity(projectPath),
+    projectName: "Project",
+    provider: "codex",
+    updatedAt: "2026-09-08T00:01:00.000Z",
+    title: truncateSessionTitle(long),
+    fidelity: "head",
+    sourceVersion: catalogFileVersion(await stat(file)),
+    location: { kind: "file", path: file },
+  };
+  const seed = new SessionCatalogService({ dataDir });
+  await seed.initialize();
+  await seed.reconcile([
+    {
+      catalogFamily: "codex",
+      storeKey: dataDir,
+      scan: async () => ({ sourceVersion: "old-build", rows: [stale] }),
+    },
+  ]);
+  seed.stop();
+
+  const scanner = new ProjectScanner({ projectsDir: join(dataDir, "unused") });
+  vi.spyOn(scanner, "listProjects").mockResolvedValue([project]);
+  const reader = new CodexSessionReader({ sessionsDir: dataDir, projectPath });
+  const headReads = vi.spyOn(reader, "getSessionListSummary");
+  collections = new RetainedSessionCollections({
+    dataDir,
+    eventBus: new EventBus(),
+    adapters: (rows, signal, paths) =>
+      collectionCatalogAdapters(
+        {
+          scanner,
+          readerFactory: () => {
+            throw new Error("Unexpected Claude reader");
+          },
+          codexSessionsDir: dataDir,
+          codexReaderFactory: () => reader,
+          geminiScanner: {
+            getHashToCwd: async () => {
+              throw new Error("Unexpected Gemini lookup");
+            },
+          },
+          getCatalogFamilies: () => ["codex"],
+        },
+        rows,
+        signal,
+        paths,
+      ),
+  });
+  await collections.refresh();
+  const reread = (await collections.read()).rows.find(
+    (row) => row.sessionId === sessionId,
+  );
+  expect(reread?.title).toBe(long);
+  expect(reread?.createdAt).toBe(createdAt);
+  expect(reread?.sourceVersion).toBe(stale.sourceVersion);
+  expect(headReads).toHaveBeenCalledTimes(1);
+
+  // Once current, an unchanged file is still answered from its row.
+  headReads.mockClear();
+  await collections.refresh();
+  expect(headReads).not.toHaveBeenCalled();
+  expect(
+    (await collections.read()).rows.find((row) => row.sessionId === sessionId)
+      ?.title,
+  ).toBe(long);
+});
+
+it("rebuilds at once after an ordinary read finds its shard unreadable", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-reset-"));
+  // Past the 8 MiB hot-set budget, so every list read streams the shard from
+  // disk instead of answering from memory.
+  const rows: SessionCatalogRow[] = Array.from({ length: 540 }, (_, index) => ({
+    ...catalogProjectIdentity(join(dataDir, "project")),
+    catalogFamily: "claude",
+    storeKey: "store",
+    sessionId: `saved-${index}`,
+    updatedAt: new Date().toISOString(),
+    title: "t".repeat(16_384),
+    fidelity: "head",
+    sourceVersion: "v1",
+    location: { kind: "provider", recordId: `saved-${index}` },
+  }));
+  const adapters = vi.fn(
+    async (): Promise<NativeSessionCatalogAdapter[]> => [
+      {
+        catalogFamily: "claude",
+        storeKey: "store",
+        scan: async () => ({ sourceVersion: "v1", rows }),
+      },
+    ],
+  );
+  collections = new RetainedSessionCollections({
+    dataDir,
+    eventBus: new EventBus(),
+    adapters,
+  });
+  await collections.refresh();
+  expect((await collections.read()).rows).toHaveLength(rows.length);
+  adapters.mockClear();
+
+  // No session file changes after this: only the reset itself can ask for
+  // the rebuild.
+  const generations = join(dataDir, "session-catalog", "generations");
+  const [generation] = await readdir(generations);
+  const [shard] = await readdir(join(generations, generation!));
+  await writeFile(join(generations, generation!, shard!), "{ torn", "utf-8");
+  expect((await collections.read()).rows).toEqual([]);
+
+  await vi.waitFor(() => expect(adapters).toHaveBeenCalled(), {
+    timeout: 3_000,
+    interval: 20,
+  });
+  await collections.refresh();
+  expect((await collections.read()).rows).toHaveLength(rows.length);
+}, 20_000);
 
 it("keeps the last accepted rows on failure and stops publication after disposal", async () => {
   dataDir = await mkdtemp(join(tmpdir(), "retained-failure-"));

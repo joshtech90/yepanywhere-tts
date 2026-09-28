@@ -3,10 +3,14 @@ import type {
   LimitedUserSummary,
   ProjectAccessLevel,
   UsageReport,
+  TemplateCreationGrant,
 } from "@yep-anywhere/shared";
 import {
   JOIN_STALE_OFFSET_MAX_MINUTES,
   JOIN_STALE_OFFSET_MIN_MINUTES,
+  SERVER_CAPABILITIES,
+  serverHasCapability,
+  templateGrantFor,
 } from "@yep-anywhere/shared";
 import { api } from "../../api/client";
 import { useActingPrincipal } from "../../hooks/useActingPrincipal";
@@ -14,11 +18,14 @@ import { useProjects } from "../../hooks/useProjects";
 import { useProviders } from "../../hooks/useProviders";
 import { useServerSettings } from "../../hooks/useServerSettings";
 import { useI18n } from "../../i18n";
+import { toBrowserAppHref } from "../../lib/appHref";
 import { SettingsItem } from "./SettingsItem";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { SettingsSection } from "./SettingsSection";
 import { UserUsageTable } from "./UserUsageTable";
 import styles from "./UsersSettings.module.css";
+import { UserTemplateGrant } from "./UserTemplateGrant";
+import { useVersion } from "../../hooks/useVersion";
 
 /**
  * Settings → Users: the superuser's user-management surface.
@@ -41,6 +48,7 @@ interface DraftState {
   model: string;
   effort: string;
   projectRoot: string;
+  templateCreation?: TemplateCreationGrant;
 }
 
 const EMPTY_DRAFT: DraftState = {
@@ -68,10 +76,11 @@ function draftFromUser(user: LimitedUserSummary): DraftState {
     model: user.lock.model ?? "",
     effort: user.lock.effort ?? "",
     projectRoot: user.projectRoot ?? "",
+    templateCreation: templateGrantFor(user),
   };
 }
 
-function grantsFromDraft(draft: DraftState) {
+function grantsFromDraft(draft: DraftState, supportsTemplates: boolean) {
   const newSessionProjects: string[] = [];
   const joinProjects: string[] = [];
   const viewProjects: string[] = [];
@@ -92,6 +101,7 @@ function grantsFromDraft(draft: DraftState) {
     },
     // Always sent, so clearing the field revokes the grant.
     projectRoot: draft.projectRoot.trim(),
+    ...(supportsTemplates ? { templateCreation: templateGrantFor(draft) } : {}),
   };
 }
 
@@ -107,6 +117,11 @@ type EditorTarget = { kind: "create" } | { kind: "edit"; username: string };
 
 export function UsersSettings() {
   const { t } = useI18n();
+  const { version } = useVersion();
+  const supportsTemplates = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.limitedUserProjectTemplates.name,
+  );
   useSettingsPaneTitle(t("settingsUsersTitle"));
   const {
     settings,
@@ -121,8 +136,6 @@ export function UsersSettings() {
 
   const [users, setUsers] = useState<LimitedUserSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
-  /** Null while unknown; false once the server answers that it has no surface. */
-  const [supported, setSupported] = useState<boolean | null>(null);
   const [editor, setEditor] = useState<EditorTarget | null>(null);
   const [draft, setDraft] = useState<DraftState>(EMPTY_DRAFT);
   const [error, setError] = useState<string | null>(null);
@@ -145,13 +158,7 @@ export function UsersSettings() {
     try {
       const response = await api.listUsers();
       setUsers(response.users);
-      setSupported(true);
     } catch (loadError) {
-      // Only a missing route means the server lacks the surface. A refusal
-      // means it has one and this principal may not use it, which the
-      // acting-principal branches above already handle.
-      const status = (loadError as { status?: number }).status;
-      setSupported(status !== 404);
       setError((loadError as Error).message);
     } finally {
       setLoaded(true);
@@ -183,7 +190,7 @@ export function UsersSettings() {
     setBusy(true);
     setError(null);
     try {
-      const grants = grantsFromDraft(draft);
+      const grants = grantsFromDraft(draft, supportsTemplates);
       if (editor?.kind === "edit") {
         await api.updateUser(editor.username, {
           ...grants,
@@ -243,9 +250,9 @@ export function UsersSettings() {
     try {
       const result = await api.logoutUser();
       if (result.redirect === "relay-login")
-        window.location.href = "/login/relay";
+        window.location.href = toBrowserAppHref("/login/relay");
       else if (result.redirect === "direct-login")
-        window.location.href = "/login";
+        window.location.href = toBrowserAppHref("/login");
       else window.location.reload();
     } catch (logoutError) {
       setError((logoutError as Error).message);
@@ -261,17 +268,6 @@ export function UsersSettings() {
 
   if (!canManage) {
     return <LimitedUserView onLogout={() => void logout()} busy={busy} />;
-  }
-
-  if (supported === false) {
-    return (
-      <SettingsSection
-        title={t("settingsUsersTitle")}
-        description={t("settingsUsersDescription")}
-      >
-        <p className="settings-hint">{t("usersUnsupportedServer")}</p>
-      </SettingsSection>
-    );
   }
 
   return (
@@ -301,6 +297,7 @@ export function UsersSettings() {
       </SettingsItem>
 
       <div className="settings-group">
+        <p className="settings-hint">{t("usersTrustWarning")}</p>
         {loaded && users.length === 0 ? (
           <p className="settings-hint">{t("usersEmpty")}</p>
         ) : (
@@ -372,6 +369,7 @@ export function UsersSettings() {
 
       {editor !== null && (
         <UserEditor
+          supportsTemplates={supportsTemplates}
           editing={editor.kind === "edit" ? editor.username : null}
           draft={draft}
           error={error}
@@ -449,7 +447,62 @@ function LimitedUserView({
   );
 }
 
+/**
+ * The project-root grant, with a hint saying what the current value grants.
+ * An empty field is no grant, and the server discards a relative path as no
+ * grant too, so both states are spelled out rather than left to a greyed
+ * placeholder that reads like a default.
+ */
+function ProjectRootField({
+  projectRoot,
+  username,
+  onChange,
+}: {
+  projectRoot: string;
+  username: string;
+  onChange: (projectRoot: string) => void;
+}) {
+  const { t } = useI18n();
+  const root = projectRoot.trim().replace(/\/+$/, "");
+  const suggestion = root === "" && username ? `~/${username}` : "";
+  const hint =
+    root === ""
+      ? t("usersProjectRootEmptyHint")
+      : !root.startsWith("/") && !root.startsWith("~")
+        ? t("usersProjectRootRelativeHint")
+        : t("usersProjectRootSetHint", { example: `${root}/my-project` });
+
+  return (
+    <>
+      <label className={styles.field}>
+        <span>{t("usersProjectRootLabel")}</span>
+        <span className={styles.inputRow}>
+          <input
+            className={styles.input}
+            value={projectRoot}
+            placeholder={t("usersProjectRootPlaceholder")}
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(event) => onChange(event.target.value)}
+          />
+          {suggestion && (
+            <button
+              type="button"
+              className="settings-button"
+              onClick={() => onChange(suggestion)}
+            >
+              {t("usersProjectRootUseSuggestion", { path: suggestion })}
+            </button>
+          )}
+        </span>
+      </label>
+      <p className="settings-hint">{hint}</p>
+    </>
+  );
+}
+
 interface UserEditorProps {
+  supportsTemplates: boolean;
   /** The username being edited, or null when creating. */
   editing: string | null;
   draft: DraftState;
@@ -461,6 +514,7 @@ interface UserEditorProps {
 }
 
 function UserEditor({
+  supportsTemplates,
   editing,
   draft,
   error,
@@ -557,20 +611,19 @@ function UserEditor({
       )}
 
       <p className={styles.subhead}>{t("usersProjectRootHeading")}</p>
-      <label className={styles.field}>
-        <span>{t("usersProjectRootLabel")}</span>
-        <input
-          className={styles.input}
-          value={draft.projectRoot}
-          placeholder={t("usersProjectRootPlaceholder")}
-          autoComplete="off"
-          spellCheck={false}
-          onChange={(event) =>
-            onDraftChange({ ...draft, projectRoot: event.target.value })
+      <ProjectRootField
+        projectRoot={draft.projectRoot}
+        username={editing ?? draft.username.trim()}
+        onChange={(projectRoot) => onDraftChange({ ...draft, projectRoot })}
+      />
+      {supportsTemplates && (
+        <UserTemplateGrant
+          value={templateGrantFor(draft)}
+          onChange={(templateCreation) =>
+            onDraftChange({ ...draft, templateCreation })
           }
         />
-      </label>
-      <p className="settings-hint">{t("usersProjectRootHint")}</p>
+      )}
 
       <label className={styles.field}>
         <span>{t("usersJoinOffsetLabel")}</span>

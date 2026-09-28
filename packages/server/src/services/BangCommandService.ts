@@ -28,6 +28,8 @@ const DEFAULT_FLUSH_INTERVAL_MS = 750;
 const SIGKILL_GRACE_MS = 2000;
 const MAX_BANG_OBJECTS_PER_SESSION = 100;
 const MAX_ACTIVE_BANG_COMMANDS_PER_SESSION = 4;
+const DEFAULT_LOGIN_STARTUP_TIMEOUT_MS = 30_000;
+const LOGIN_STARTUP_HELD_MAX_BYTES = 64 * 1024;
 export const BANG_OUTPUT_READ_MAX_BYTES = 2 * 1024 * 1024;
 
 /**
@@ -59,6 +61,8 @@ export interface BangCommandServiceOptions {
   eventBus?: BangEventSink;
   /** Wall-clock cap per command; the run is killed past it. */
   timeoutMs?: number;
+  /** Cap on login startup before the command; the run is killed past it. */
+  loginStartupTimeoutMs?: number;
   /** Coalescing interval for streaming preview updates. */
   flushIntervalMs?: number;
   /** Concurrent command cap per session. */
@@ -110,6 +114,56 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/**
+ * Holds one output stream until the run's start sentinel appears, so bytes
+ * written by login startup never reach the run's record. Startup output is
+ * kept, bounded, only for a run whose startup never returned.
+ */
+class LoginStartupGate {
+  passed = false;
+  private held = Buffer.alloc(0);
+  private searchTail = Buffer.alloc(0);
+  private droppedBytes = 0;
+
+  constructor(private readonly sentinel: Buffer) {}
+
+  /** The bytes after the sentinel, or null while startup is still running. */
+  admit(chunk: Buffer): Buffer | null {
+    if (this.passed) return chunk;
+    const overflowed = this.droppedBytes > 0;
+    const pending = Buffer.concat([
+      overflowed ? this.searchTail : this.held,
+      chunk,
+    ]);
+    const at = pending.indexOf(this.sentinel);
+    if (at >= 0) {
+      this.passed = true;
+      this.held = Buffer.alloc(0);
+      this.searchTail = Buffer.alloc(0);
+      return pending.subarray(at + this.sentinel.length);
+    }
+    const tailLength = this.sentinel.length - 1;
+    if (overflowed) {
+      this.droppedBytes += chunk.length;
+    } else if (pending.length > LOGIN_STARTUP_HELD_MAX_BYTES) {
+      this.held = pending.subarray(0, LOGIN_STARTUP_HELD_MAX_BYTES);
+      this.droppedBytes = pending.length - LOGIN_STARTUP_HELD_MAX_BYTES;
+    } else {
+      this.held = pending;
+      return null;
+    }
+    this.searchTail = pending.subarray(
+      Math.max(0, pending.length - tailLength),
+    );
+    return null;
+  }
+
+  /** What login startup wrote, for a run whose startup never returned. */
+  startupOutput(): { bytes: Buffer; truncated: boolean } {
+    return { bytes: this.held, truncated: this.droppedBytes > 0 };
+  }
+}
+
 function finishWritable(stream: Writable): Promise<void> {
   return new Promise((resolve) => {
     let settled = false;
@@ -137,6 +191,7 @@ export class BangCommandService {
   private readonly metadata: SessionMetadataService;
   private readonly eventBus?: BangEventSink;
   private readonly timeoutMs: number;
+  private readonly loginStartupTimeoutMs: number;
   private readonly flushIntervalMs: number;
   private readonly maxActivePerSession: number;
   private readonly maxObjectsPerSession: number;
@@ -151,6 +206,8 @@ export class BangCommandService {
     this.metadata = options.sessionMetadataService;
     this.eventBus = options.eventBus;
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    this.loginStartupTimeoutMs =
+      options.loginStartupTimeoutMs ?? DEFAULT_LOGIN_STARTUP_TIMEOUT_MS;
     this.flushIntervalMs = options.flushIntervalMs ?? DEFAULT_FLUSH_INTERVAL_MS;
     this.maxActivePerSession =
       options.maxActivePerSession ?? MAX_ACTIVE_BANG_COMMANDS_PER_SESSION;
@@ -240,10 +297,9 @@ export class BangCommandService {
     for (const name of SCRUBBED_ENV_VARS) {
       delete env[name];
     }
-    env.PATH = env.PATH
-      ? `${env.PATH}${path.delimiter}${projectPath}`
-      : projectPath;
 
+    // Letters, digits and hyphens only, so it needs no shell quoting.
+    const startSentinel = `ya-bang-start-${randomUUID()}`;
     let stdoutFile: Writable;
     let stderrFile: Writable;
     let child: ReturnType<typeof spawn>;
@@ -262,12 +318,32 @@ export class BangCommandService {
       try {
         // detached: the child leads its own process group so kill() can signal
         // the whole pipeline, not just the bash wrapper.
-        child = spawn("bash", ["-c", command], {
-          cwd: projectPath,
-          env,
-          detached: true,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+        // Login startup runs before this string. The sentinel on both streams
+        // marks where it returned: earlier bytes are startup's, and a run
+        // with no sentinel never reached its command. Apply cwd and the
+        // project PATH tail after startup, which may change both. Parse the
+        // command afterward so login aliases work too.
+        const shellCommand = [
+          `printf '%s' ${startSentinel}; printf '%s' ${startSentinel} >&2`,
+          `unset ${SCRUBBED_ENV_VARS.join(" ")}`,
+          'cd -- "$1" || exit',
+          // biome-ignore lint/suspicious/noTemplateCurlyInString: Bash parameter expansion, not JavaScript interpolation.
+          'export PATH="${PATH:+$PATH:}$PWD"',
+          "shopt -s expand_aliases",
+          "_ya_bang_command=$2",
+          "shift 2",
+          'eval -- "$_ya_bang_command"',
+        ].join("\n");
+        child = spawn(
+          "bash",
+          ["-lc", shellCommand, "bash", projectPath, command],
+          {
+            cwd: projectPath,
+            env,
+            detached: true,
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
       } catch (error) {
         stdoutFile.destroy();
         stderrFile.destroy();
@@ -341,12 +417,55 @@ export class BangCommandService {
       stderrCapture.truncated = true;
     });
 
+    const sentinelBytes = Buffer.from(startSentinel);
+    const stdoutGate = new LoginStartupGate(sentinelBytes);
+    const stderrGate = new LoginStartupGate(sentinelBytes);
+    const startupSeconds = Math.ceil(this.loginStartupTimeoutMs / 1000);
+    const startupTimer = setTimeout(() => {
+      this.killEntry(
+        id,
+        `Login startup did not return within ${startupSeconds}s`,
+      );
+    }, this.loginStartupTimeoutMs);
+
     child.stdout?.on("data", (chunk: Buffer) => {
-      captureOutput(stdoutCapture, stdoutFile, chunk, STDOUT_PREVIEW_MAX_CHARS);
+      const admitted = stdoutGate.admit(chunk);
+      if (stdoutGate.passed) clearTimeout(startupTimer);
+      if (admitted?.length) {
+        captureOutput(
+          stdoutCapture,
+          stdoutFile,
+          admitted,
+          STDOUT_PREVIEW_MAX_CHARS,
+        );
+      }
     });
     child.stderr?.on("data", (chunk: Buffer) => {
-      captureOutput(stderrCapture, stderrFile, chunk, STDERR_PREVIEW_MAX_CHARS);
+      const admitted = stderrGate.admit(chunk);
+      if (admitted?.length) {
+        captureOutput(
+          stderrCapture,
+          stderrFile,
+          admitted,
+          STDERR_PREVIEW_MAX_CHARS,
+        );
+      }
     });
+    // Keep startup's output as the only evidence for a run whose startup
+    // never returned.
+    const releaseStartupOutput = (
+      gate: LoginStartupGate,
+      capture: OutputCapture,
+      file: Writable,
+      previewMaxChars: number,
+    ) => {
+      if (gate.passed) return;
+      const { bytes, truncated } = gate.startupOutput();
+      if (bytes.length) {
+        captureOutput(capture, file, bytes, previewMaxChars);
+      }
+      if (truncated) capture.truncated = true;
+    };
     child.on("error", (error) => {
       spawnError = error.message;
     });
@@ -379,7 +498,21 @@ export class BangCommandService {
         child.once("close", (code, signal) => {
           clearInterval(flushTimer);
           clearTimeout(timeoutTimer);
+          clearTimeout(startupTimer);
           this.running.delete(id);
+          const startupReturned = stdoutGate.passed;
+          releaseStartupOutput(
+            stdoutGate,
+            stdoutCapture,
+            stdoutFile,
+            STDOUT_PREVIEW_MAX_CHARS,
+          );
+          releaseStartupOutput(
+            stderrGate,
+            stderrCapture,
+            stderrFile,
+            STDERR_PREVIEW_MAX_CHARS,
+          );
           void (async () => {
             await Promise.all([
               finishWritable(stdoutFile),
@@ -396,9 +529,13 @@ export class BangCommandService {
             ]
               .filter(Boolean)
               .join("; ");
+            const startupError = startupReturned
+              ? undefined
+              : "Login startup did not return to run the command; a login file may replace or exit the shell";
             const commandError =
               killedReason ??
               spawnError ??
+              startupError ??
               (storageError ||
                 (code === null && signal
                   ? `Terminated by signal ${signal}`

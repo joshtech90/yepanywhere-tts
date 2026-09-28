@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   CLAUDE_EXTENDED_CONTEXT_WINDOW,
   CODEX_DEFAULT_CONTEXT_WINDOW,
-  CODEX_GPT6_ASTRA_CONTEXT_WINDOW,
+  CODEX_GPT6_CONTEXT_WINDOW,
   CODEX_GPT56_CONTEXT_WINDOW,
   DEFAULT_CONTEXT_WINDOW,
   getModelContextWindow,
@@ -43,13 +43,15 @@ describe("getModelContextWindow", () => {
     );
   });
 
-  it("uses the bundled 272K window for GPT-6 Astra", () => {
+  it("uses the bundled 272K window for the GPT-6 family", () => {
     expect(getModelContextWindow("gpt-6-astra")).toBe(
-      CODEX_GPT6_ASTRA_CONTEXT_WINDOW,
+      CODEX_GPT6_CONTEXT_WINDOW,
     );
     expect(getModelContextWindow("openai/gpt-6-astra")).toBe(
-      CODEX_GPT6_ASTRA_CONTEXT_WINDOW,
+      CODEX_GPT6_CONTEXT_WINDOW,
     );
+    expect(getModelContextWindow("gpt-6-sol")).toBe(CODEX_GPT6_CONTEXT_WINDOW);
+    expect(getModelContextWindow("gpt-6-luna")).toBe(CODEX_GPT6_CONTEXT_WINDOW);
   });
 
   it("detects explicit Claude 1M model variants", () => {
@@ -69,10 +71,16 @@ describe("getModelContextWindow", () => {
     expect(getModelContextWindow("claude-opus-5")).toBe(
       CLAUDE_EXTENDED_CONTEXT_WINDOW,
     );
+    expect(getModelContextWindow("claude-opus-5-5")).toBe(
+      CLAUDE_EXTENDED_CONTEXT_WINDOW,
+    );
     expect(getModelContextWindow("claude-sonnet-5")).toBe(
       CLAUDE_EXTENDED_CONTEXT_WINDOW,
     );
     expect(getModelContextWindow("anthropic.claude-opus-5")).toBe(
+      CLAUDE_EXTENDED_CONTEXT_WINDOW,
+    );
+    expect(getModelContextWindow("anthropic.claude-opus-5-5")).toBe(
       CLAUDE_EXTENDED_CONTEXT_WINDOW,
     );
     expect(getModelContextWindow("claude-opus-4-8")).toBe(200_000);
@@ -136,6 +144,29 @@ describe("isAppMessage", () => {
         type: "summary",
         summary: "Earlier work",
         leafUuid: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toBe(true);
+    expect(
+      isAppMessage({
+        type: "atis-latch",
+        atis: "",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+      }),
+    ).toBe(true);
+    expect(
+      isAppMessage({
+        type: "cost-state",
+        sessionId: "00000000-0000-4000-8000-000000000001",
+        totalCostUSD: 0.1,
+        totalAPIDuration: 100,
+        totalAPIDurationWithoutRetries: 90,
+        totalToolDuration: 10,
+        totalLinesAdded: 2,
+        totalLinesRemoved: 1,
+        totalDuration: 200,
+        startTime: 1_790_102_688_745,
+        modelUsage: {},
+        hasUnknownModelCost: false,
       }),
     ).toBe(true);
   });

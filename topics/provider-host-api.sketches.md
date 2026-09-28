@@ -52,3 +52,54 @@ that factor is domain-separated from its boot token so Hono replacement does
 not strand retained agents. The provider-only design is for UI-less consumers
 of the separately startable provider host and can be specified when a concrete
 headless operation needs delegation.
+
+## Sandbox-scoped provider access
+
+Today a [project-write sandboxed session](session-sandboxing.md) has no
+provider-host access at all: the runtime directory is masked, the token
+variables are unset, and the network firewall isolates host sockets. An
+unsandboxed same-user process has full access through the token file. A
+sandboxed session that wants helper turns (batch annotation through
+`session-turn`, for example) needs something between those. Either of the
+following would do; the maintainer considers both acceptable (2026-09-28).
+
+### Per-session restricted endpoint
+
+The host opens a separate socket per sandboxed session and YA bind-mounts only
+that socket into the sandbox. Holding the endpoint is the capability. Every
+descendant inherits it, and nothing inside the sandbox can remove it or reach
+the unrestricted control socket.
+
+- On accept, the host confirms the caller from kernel credentials:
+  `SO_PEERPIDFD` (or `SO_PEERCRED` with a pid-reuse check), then the caller's
+  user and network namespace identities match the ones YA recorded for that
+  session. A copied endpoint therefore cannot be replayed from elsewhere.
+- The endpoint carries a policy fixed when the session was created, for
+  example: helper turns only in the same project, always launched with the
+  same sandbox and firewall, and a filtered permission set.
+- A session launched through a restricted endpoint receives its own endpoint
+  whose policy is no broader than its parent's, so authority only narrows
+  down the process tree.
+- The endpoint's lifetime is the session's. Revocation is closing the socket.
+
+### Signed capability for every caller
+
+Admission requires a host-signed capability in the style of
+[provider-issued capability instructions](#provider-issued-capability-instructions)
+for every operation, including callers holding the host token. Sandboxed
+sessions receive a narrow grant; ordinary sessions a broader one. This gives
+finer scopes than all-or-nothing, but an unsandboxed same-user process can read
+another process's environment and files. Only the sandbox makes a narrow grant
+non-removable, so this layer adds scoping, not a boundary, for unsandboxed
+callers.
+
+### Access mode setting
+
+A "YA only" mode that stops publishing the token file would remove the
+`session-turn` host path (it falls back to a native provider resume) without
+stopping a determined same-user process: `/proc/<pid>/environ` of the server,
+which receives the token by environment, is readable by the same user even
+with Yama `ptrace_scope=1`. Sandboxed sessions are already excluded in either
+mode, and both reload paths keep working because the dev wrapper holds the
+connection. Defer the setting until one of the designs above needs a
+distinct default.

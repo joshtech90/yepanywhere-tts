@@ -21,6 +21,11 @@ import {
 const TEST_USERNAME = "testuser";
 const TEST_PASSWORD = "testpassword123";
 
+// Open sockets from a YA-origin document, as the real client does. An
+// about:blank page sends `Origin: null`, which the server refuses once any
+// spec earlier in the shared run has configured an artifact origin.
+const SAME_ORIGIN_PAGE = "/api/version";
+
 test.describe("Secure WebSocket Transport E2E", () => {
   test.beforeAll(async ({ baseURL }) => {
     // Configure remote access with test credentials
@@ -35,9 +40,13 @@ test.describe("Secure WebSocket Transport E2E", () => {
     await disableRemoteAccess(baseURL);
   });
 
-  test("can complete SRP handshake in browser", async ({ page, wsURL }) => {
+  test("can complete SRP handshake in browser", async ({
+    page,
+    baseURL,
+    wsURL,
+  }) => {
     // Navigate to a simple page that we can use to inject our test code
-    await page.goto("about:blank");
+    await page.goto(`${baseURL}${SAME_ORIGIN_PAGE}`);
 
     // Perform SRP handshake in browser context using WebCrypto
     const result = await page.evaluate(
@@ -126,8 +135,8 @@ test.describe("Secure WebSocket Transport E2E", () => {
     expect(result.success).toBe(true);
   });
 
-  test("rejects unknown username", async ({ page, wsURL }) => {
-    await page.goto("about:blank");
+  test("rejects unknown username", async ({ page, baseURL, wsURL }) => {
+    await page.goto(`${baseURL}${SAME_ORIGIN_PAGE}`);
 
     const result = await page.evaluate(
       async ({ wsURL }) => {

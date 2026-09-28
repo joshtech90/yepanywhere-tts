@@ -217,6 +217,29 @@ equality is graded by whether the live item has a durable counterpart:
   snapshot preserves the existing transcript array and message identity.
   Replaceable same-id enrichment bursts publish their latest bounded snapshot,
   not every intermediate representation.
+- **Cumulative text is a snapshot.** Assistant string snapshots replace the
+  late-subscriber text accumulator; only native text deltas append. The
+  markdown coordinator consumes the new suffix of successive cumulative
+  snapshots, consumes completion once, and resets between messages. Catch-up
+  seeds that same state before later events run, so joining mid-message does
+  not append the already displayed prefix again. Snapshot identity and bulk
+  loading follow [stream/durable dedup](stream-durable-id-dedup.md#snapshot-identity-at-bulk-boundaries).
+- **Live tool-output snapshots are size-bounded.** A streaming tool result
+  replaces its predecessor wholesale, so an unbounded cumulative snapshot costs
+  quadratic bytes through provider replay, fan-out, and relay. Codex live
+  command/file-change output keeps its first and last 32 Ki characters with an
+  inline `… N characters omitted from the live preview …` marker; the completed
+  item carries the full output and settles the row.
+- **Streaming snapshots are rate-limited at the provider boundary.** Every
+  `_isStreaming` message with an id (assistant text and reasoning, tool
+  output, from any provider) passes through one coalescer before YA buffers,
+  fans out, or relays it: a snapshot arriving while its stream is quiet
+  publishes at once, and under a burst each message publishes at most one
+  snapshot per 100 ms, always its latest. Any other provider message first
+  publishes the held snapshots in arrival order; a message's own commit
+  replaces its held snapshot. The provider host's worker and the backend's
+  `Process` both apply it (`sdk/providers/streaming-snapshot-coalescing.ts`),
+  so live bytes grow with a message's duration, not its delta count.
 - **Reload-safe snapshots are reconciliation, not replay.** A native provider
   snapshot may contain the whole completed active-turn prefix. Reattaching YA
   must not publish that prefix as freshly observed live activity. Browser
@@ -227,6 +250,11 @@ equality is graded by whether the live item has a durable counterpart:
   progress, and other provider events that are never persisted may appear and
   disappear near the live tail when they are useful. They are not evidence
   that YA should invent a parallel persisted transcript.
+- **Persisted terminal errors stay visible.** When Codex records an error on a
+  `task_complete` rollout event, durable normalization emits the same
+  `codex-error-<turn id>` row as the live adapter in addition to the ordinary
+  turn-completion boundary. A completion without `error` remains only a
+  boundary; YA does not copy provider errors into a shadow transcript.
 
 The practical stability boundary is therefore `settled transcript | recently
 completed turn | active live tail`: the left side should be very stable; some
@@ -241,6 +269,31 @@ same local-command row used for live delivery in session metadata, with stable
 identity and placement, so reloading preserves the marker. See
 [emulated-slash-commands.md](emulated-slash-commands.md#codex-goal-commands).
 This does not authorize copying provider-only stream output into YA storage.
+
+Provider-failure notices are the second exception. When a provider process
+dies without a user or YA stop request, the live turn is torn down and a
+provider such as Codex persists it as an ordinary `interrupted` abort. YA
+publishes a `local_command` notice ("Provider process ended unexpectedly; this
+turn was not interrupted by you", with the error as detail) after the latest
+turn content, and stores it with the session's local-command rows, so the
+attribution survives reload. A requested stop or abort publishes no notice,
+and neither does a death between turns (the process idle, no turn running or
+waiting on the user), since no turn was interrupted.
+When the exit is Claude refusing a guarded rewind
+([session-rewind](session-rewind.md#server-rewind-operation)), the notice says
+so instead ("Claude refused the rewind and exited; the dropped turns were
+kept"). Both carry `detailsOpen`, so the error shows without a click; a
+local-command row without it keeps its details collapsed.
+
+Every such notice — command output, a goal receipt, a provider-failure
+notice — is placed by one rule: after the message still streaming, else the
+latest non-synthetic user or assistant row. Notices publish one at a time in
+the order raised, and provider output that arrives meanwhile waits behind
+them. A goal receipt is saved before it is shown; a failure notice is shown
+first and stored as the process ends. So a provider that dies while a goal
+receipt is saving shows the receipt, then its failure notice, and only then
+reports the process terminated. Input sent in between is already refused as
+sent to a terminated process, so a client resumes the session for it.
 
 ## Draft-first augmentation decision
 

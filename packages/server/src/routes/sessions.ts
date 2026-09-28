@@ -8,6 +8,7 @@ import {
   type PromptSuggestionMode,
   type ProviderName,
   type RecapMode,
+  type SessionCreationProvenance,
   type SessionMetadataResponse,
   type SessionEffectiveModelSettings,
   type SessionOwnership,
@@ -20,25 +21,24 @@ import {
   type UserMessageMetadata,
   type UrlProjectId,
   type WorkstreamId,
-  type EffortLevel,
-  EFFORT_LEVEL_ORDER,
   GOAL_COMMAND_NAME,
   SESSION_UNREAD_TIMESTAMP,
   agentHarness,
   buildEffectiveAgentContext,
   getModelContextWindow,
   readGoalDetails,
+  isThinkingOption,
   isUrlProjectId,
   isWorkstreamId,
   mainWorkstreamId,
   truncateSessionTitle,
-  isPostCompactReplayText,
-  parseClearloopArguments,
-  parseTurnIndexArgument,
+  readQueuedYaCommand,
   type SessionRewindReason,
   type SessionRewindRecord,
   type UpdateClearloopRequest,
 } from "@yep-anywhere/shared";
+import { isRealUserTurn } from "@yep-anywhere/shared/transcript/messageProjection";
+import { collapseMessageSnapshots } from "@yep-anywhere/shared/transcript/message";
 import { randomUUID } from "node:crypto";
 import {
   ClearloopConflictError,
@@ -58,6 +58,7 @@ import type {
 } from "../metadata/index.js";
 import type { ProjectMetadataService } from "../metadata/index.js";
 import {
+  type ForkOrdinalClaim,
   goalCommandOf,
   nonHumanUserTurnField,
 } from "../metadata/SessionMetadataService.js";
@@ -77,6 +78,7 @@ import { appendApprovalAuditLog } from "../security/approvalAuditLog.js";
 import { getSessionSandboxSettingsError } from "../session-sandbox.js";
 import type { ModelInfoService } from "../services/ModelInfoService.js";
 import type { ProjectQueueScheduler } from "../services/ProjectQueueScheduler.js";
+import { describeQueuedYaCommandProblem } from "../services/ProjectQueueService.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
 import type { SessionQueuePersistenceService } from "../services/SessionQueuePersistenceService.js";
 import type { WorkstreamService } from "../services/WorkstreamService.js";
@@ -91,6 +93,7 @@ import {
   readerForProviderChildren,
   resolveProviderChildSessions,
 } from "../sessions/provider-child-sessions.js";
+import { lastRewindableClaudeRowId } from "../sessions/claude-messages.js";
 import {
   detachSessionMessageProjection,
   getCodexMessageSourceByteCursor,
@@ -106,8 +109,8 @@ import {
   latestRecapMessage,
   mergeSessionOverlayMessages,
   mergeLocalCommandMessages,
-  sessionOwnershipFromProcess,
 } from "../sessions/recap-overlays.js";
+import { sessionOwnershipFromProcess } from "../sessions/session-runtime-overlay.js";
 import { isAutomaticSessionResumeAllowed } from "../sessions/resume-exemption.js";
 import {
   type PaginationInfo,
@@ -191,11 +194,13 @@ import {
   resolveRecoveredGroupForDelivery,
   resumeRecoveredGroup,
 } from "./session-recovered-queue.js";
+import { inheritSuccessorLaunchSettings } from "./session-launch-inheritance.js";
 import { buildThinkingOptions } from "./session-thinking-options.js";
 import {
   actingUsername,
   applyLimitedLaunchPolicy,
-} from "./limited-session-launch.js";
+  applyLimitedResumePolicy,
+} from "../auth/limitedLaunchPolicy.js";
 import type { UserUsageService } from "../auth/UserUsageService.js";
 import type { EventBus } from "../watcher/index.js";
 import { resolveExistingSessionIdentity } from "./session-existing-identity.js";
@@ -215,14 +220,6 @@ function effectiveModelSettingsFromMetadata(
     thinking: settings.thinking,
     effort: settings.effort,
   };
-}
-
-/** A fork body's optional launch thinking: `off`, `auto`, or `on:<level>`. */
-function isForkThinkingOption(value: unknown): value is ThinkingOption {
-  if (typeof value !== "string") return false;
-  if (value === "off" || value === "auto") return true;
-  const level = value.startsWith("on:") ? value.slice(3) : value;
-  return EFFORT_LEVEL_ORDER.includes(level as EffortLevel);
 }
 
 function permissionModeError(mode: unknown): string | undefined {
@@ -438,6 +435,7 @@ async function resolveSessionReader({
 }
 
 interface StartSessionBody {
+  creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
   message: string;
   images?: string[];
@@ -487,6 +485,7 @@ function hasSessionMessageContent(body: StartSessionBody): boolean {
 }
 
 interface CreateSessionBody {
+  creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
   mode?: PermissionMode;
   model?: string;
@@ -513,6 +512,47 @@ interface CreateSessionBody {
   helperSideModel?: string;
   /** Experimental workstream lane target for new project sessions. */
   workstreamId?: string;
+}
+
+function parseCreationProvenance(
+  value: unknown,
+): SessionCreationProvenance | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const input = value as Record<string, unknown>;
+  if (input.surface !== "web" && input.surface !== "desktop") {
+    return undefined;
+  }
+  const boundedString = (field: unknown): string | undefined => {
+    if (typeof field !== "string") return undefined;
+    const trimmed = field.trim();
+    return trimmed && trimmed.length <= 120 ? trimmed : undefined;
+  };
+  let clientOrigin: string | undefined;
+  if (
+    typeof input.clientOrigin === "string" &&
+    input.clientOrigin.length <= 512
+  ) {
+    try {
+      const url = new URL(input.clientOrigin);
+      if (url.protocol === "http:" || url.protocol === "https:") {
+        clientOrigin = url.origin;
+      }
+    } catch {
+      // Provenance is an optional hint; a malformed origin must not block launch.
+    }
+  }
+  return {
+    surface: input.surface,
+    ...(clientOrigin ? { clientOrigin } : {}),
+    ...(boundedString(input.clientVersion)
+      ? { clientVersion: boundedString(input.clientVersion) }
+      : {}),
+    ...(boundedString(input.clientCommit)
+      ? { clientCommit: boundedString(input.clientCommit) }
+      : {}),
+  };
 }
 
 interface InputResponseBody {
@@ -576,6 +616,29 @@ function persistedSandboxNetworkFirewall(
     metadata?.sandboxLevel === "project-write" &&
     metadata.sandboxNetworkFirewall !== false
   );
+}
+
+/**
+ * Launch choices one resume request makes for an existing session. An unset
+ * field falls back to what the session saved, so a resume with no client body
+ * (a `/clearloop` iteration, a body-less route call) keeps the session's
+ * standing settings.
+ */
+interface ResumeLaunchRequest {
+  /** YA model id the request names; absent recovers the saved one. */
+  model?: string;
+  serviceTier?: ModelSettings["serviceTier"];
+  thinking?: ModelSettings["thinking"];
+  effort?: ModelSettings["effort"];
+  /** SSH host alias the request names; absent recovers the saved one. */
+  executor?: string;
+  permissions?: ModelSettings["permissions"];
+  recapMode?: ModelSettings["recapMode"];
+  recapAfterSeconds?: number;
+  promptSuggestionMode?: ModelSettings["promptSuggestionMode"];
+  helperSideModel?: string;
+  resumeMode: NonNullable<ModelSettings["resumeMode"]>;
+  resumeSessionAt?: string;
 }
 
 function inheritedSandboxSettings(
@@ -647,20 +710,6 @@ function parseOptionalJsonObjectBody(
   return { body: parsed as Record<string, unknown> };
 }
 
-const REACTIVATE_THINKING_OPTIONS: ReadonlySet<unknown> = new Set([
-  "off",
-  "auto",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-  "max",
-  "on:low",
-  "on:medium",
-  "on:high",
-  "on:xhigh",
-  "on:max",
-]);
 const REACTIVATE_SHOW_THINKING_OPTIONS: ReadonlySet<unknown> = new Set([
   "default",
   "on",
@@ -708,10 +757,7 @@ function parseOptionalReactivateSessionBody(
   ) {
     return { error: "serviceTier must be a valid tier name" };
   }
-  if (
-    Object.hasOwn(body, "thinking") &&
-    !REACTIVATE_THINKING_OPTIONS.has(body.thinking)
-  ) {
+  if (Object.hasOwn(body, "thinking") && !isThinkingOption(body.thinking)) {
     return { error: "Invalid thinking option" };
   }
   if (
@@ -956,38 +1002,6 @@ function messageHasToolResult(message: Message): boolean {
         typeof block === "object" &&
         (block as ContentBlock).type === "tool_result",
     )
-  );
-}
-
-function messageTextContent(message: Message): string | undefined {
-  const content = messageContent(message);
-  if (typeof content === "string") {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return undefined;
-  }
-  const textBlocks = content
-    .map((block) =>
-      block &&
-      typeof block === "object" &&
-      (block as ContentBlock).type === "text" &&
-      typeof (block as { text?: unknown }).text === "string"
-        ? (block as { text: string }).text
-        : "",
-    )
-    .filter(Boolean);
-  return textBlocks.length > 0 ? textBlocks.join("\n") : undefined;
-}
-
-function isSlashCommandSkillBodyUserMessage(message: Message): boolean {
-  if ((message as { isMeta?: unknown }).isMeta !== true) {
-    return false;
-  }
-  return (
-    messageTextContent(message)
-      ?.trimStart()
-      .startsWith("Base directory for this skill:") === true
   );
 }
 
@@ -1402,20 +1416,6 @@ function isHumanUserMessage(message: Message): boolean {
   return role === "user" && !messageHasToolResult(message);
 }
 
-function isCompactSummaryUserMessage(message: Message): boolean {
-  return (message as { isCompactSummary?: unknown }).isCompactSummary === true;
-}
-
-function isUserAuthoredRequest(message: Message): boolean {
-  return (
-    isHumanUserMessage(message) &&
-    message.isSynthetic !== true &&
-    !isCompactSummaryUserMessage(message) &&
-    !isSlashCommandSkillBodyUserMessage(message) &&
-    !isPostCompactReplayText(renderRestartContent(messageContent(message)))
-  );
-}
-
 function completedPublicShareMessageCount(options: {
   messages: Message[];
   process?: Process;
@@ -1456,7 +1456,7 @@ function completedPublicShareMessageCount(options: {
   // retaining everything before it captures every completed turn.
   for (let index = messages.length - 1; index >= 0; index -= 1) {
     const message = messages[index];
-    if (message && isUserAuthoredRequest(message)) {
+    if (message && isRealUserTurn(message)) {
       return index;
     }
   }
@@ -1516,17 +1516,19 @@ function resolveForkAfterBoundary(
   if (sourceIndex < 0 || !sourceMessage) {
     return { error: "Selected source message was not found", status: 404 };
   }
-  if (!isUserAuthoredRequest(sourceMessage)) {
+  if (!isRealUserTurn(sourceMessage)) {
     return {
       error: "sourceMessageId must identify a user-authored request",
       status: 400,
     };
   }
 
+  const chain = sourceChainMessages(messages, sourceMessage);
+  const chainIndex = chain.indexOf(sourceMessage);
   let nextUserIndex = -1;
-  for (let index = sourceIndex + 1; index < messages.length; index += 1) {
-    const candidate = messages[index];
-    if (candidate && isUserAuthoredRequest(candidate)) {
+  for (let index = chainIndex + 1; index < chain.length; index += 1) {
+    const candidate = chain[index];
+    if (candidate && isRealUserTurn(candidate)) {
       nextUserIndex = index;
       break;
     }
@@ -1538,11 +1540,10 @@ function resolveForkAfterBoundary(
     };
   }
 
-  const searchEnd =
-    nextUserIndex >= 0 ? nextUserIndex - 1 : messages.length - 1;
+  const searchEnd = nextUserIndex >= 0 ? nextUserIndex - 1 : chain.length - 1;
   let hasAssistantResponse = false;
-  for (let index = sourceIndex + 1; index <= searchEnd; index += 1) {
-    const candidate = messages[index];
+  for (let index = chainIndex + 1; index <= searchEnd; index += 1) {
+    const candidate = chain[index];
     if (candidate && messageRole(candidate) === "assistant") {
       hasAssistantResponse = true;
       break;
@@ -1556,8 +1557,8 @@ function resolveForkAfterBoundary(
   }
 
   let boundary: Message | undefined;
-  for (let index = searchEnd; index > sourceIndex; index -= 1) {
-    const candidate = messages[index];
+  for (let index = searchEnd; index > chainIndex; index -= 1) {
+    const candidate = chain[index];
     const role = candidate ? messageRole(candidate) : undefined;
     if (
       candidate &&
@@ -1603,42 +1604,82 @@ function resolveForkAfterBoundary(
   };
 }
 
+/**
+ * The rows on a source turn's own provider chain. A cleared span is a dead
+ * branch: a live turn neither continues from nor is answered by its rows,
+ * while a cleared turn's chain is its own span, the spans enclosing it, and
+ * the live prefix before them (topics/session-rewind.md § Vocabulary).
+ */
+function sourceChainMessages(messages: Message[], source: Message): Message[] {
+  const groupOf = (message: Message): string | undefined =>
+    typeof message.rewoundGroupId === "string"
+      ? message.rewoundGroupId
+      : undefined;
+  const enclosingGroup = new Map<string, string>();
+  for (const message of messages) {
+    const group = groupOf(message);
+    const parent = message.rewoundParentGroupId;
+    if (group && typeof parent === "string") enclosingGroup.set(group, parent);
+  }
+  const chainGroups = new Set<string>();
+  for (
+    let group = groupOf(source);
+    group && !chainGroups.has(group);
+    group = enclosingGroup.get(group)
+  ) {
+    chainGroups.add(group);
+  }
+  return messages.filter((message) => {
+    const group = groupOf(message);
+    return !group || chainGroups.has(group);
+  });
+}
+
+/**
+ * The turn a "before this turn" cut keeps: the previous real turn on the
+ * source's chain, which is turn N−1 only when no clear dropped the turns
+ * between.
+ */
+function precedingChainTurn(
+  messages: Message[],
+  source: Message,
+): Message | undefined {
+  const chain = sourceChainMessages(messages, source);
+  for (let index = chain.indexOf(source) - 1; index >= 0; index -= 1) {
+    const candidate = chain[index];
+    if (candidate && messageId(candidate) && isRealUserTurn(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
 function resolveForkBeforeBoundary(
   messages: Message[],
   sourceMessageId: string,
   providerName: ProviderName,
 ): ReturnType<typeof resolveForkAfterBoundary> {
-  const sourceIndex = messages.findIndex(
+  const sourceMessage = messages.find(
     (message) => messageId(message) === sourceMessageId,
   );
-  const sourceMessage = messages[sourceIndex];
-  if (sourceIndex < 0 || !sourceMessage) {
+  if (!sourceMessage) {
     return { error: "Selected source message was not found", status: 404 };
   }
-  if (!isUserAuthoredRequest(sourceMessage)) {
+  if (!isRealUserTurn(sourceMessage)) {
     return {
       error: "sourceMessageId must identify a user-authored request",
       status: 400,
     };
   }
 
-  for (let index = sourceIndex - 1; index >= 0; index -= 1) {
-    const candidate = messages[index];
-    const candidateId = candidate ? messageId(candidate) : undefined;
-    if (candidate && candidateId && isUserAuthoredRequest(candidate)) {
-      return resolveForkAfterBoundary(
-        messages,
-        candidateId,
-        false,
-        providerName,
-      );
-    }
+  const keptTurnId = messageId(precedingChainTurn(messages, sourceMessage));
+  if (!keptTurnId) {
+    return {
+      error: "There is no completed turn before the selected request",
+      status: 409,
+    };
   }
-
-  return {
-    error: "There is no completed turn before the selected request",
-    status: 409,
-  };
+  return resolveForkAfterBoundary(messages, keptTurnId, false, providerName);
 }
 
 function forkSummaryTitleCandidate(summary: string): string | undefined {
@@ -1962,7 +2003,7 @@ function sdkMessagesToClientMessages(sdkMessages: SDKMessage[]): Message[] {
       });
     }
   }
-  return messages;
+  return collapseMessageSnapshots(messages);
 }
 
 /**
@@ -2053,6 +2094,23 @@ function extractContextUsageFromSDKMessages(
 
 export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const routes = new Hono();
+  const recordCreationProvenance = async (
+    sessionId: string,
+    value: unknown,
+  ): Promise<void> => {
+    const provenance = parseCreationProvenance(value);
+    if (!provenance || !deps.sessionMetadataService) return;
+    await deps.sessionMetadataService.recordCreationProvenance(
+      sessionId,
+      provenance,
+    );
+    deps.eventBus?.emit({
+      type: "session-metadata-changed",
+      sessionId,
+      creationProvenance: provenance,
+      timestamp: new Date().toISOString(),
+    });
+  };
   const activeForkSummaryJobs = new Map<
     string,
     { objectId: string; abortController: AbortController }
@@ -2238,6 +2296,78 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         deps.serverSettingsService?.getSetting("globalInstructions"),
       hints: deps.serverSettingsService?.getSetting("agentContextHints"),
     });
+
+  /**
+   * The one assembly of an existing session's resume launch: the request's
+   * choices over the session's saved model, executor, helper preferences and
+   * settled sandbox. The resume route and `/clearloop` iterations both use it.
+   */
+  const buildResumeLaunch = (input: {
+    sessionId: string;
+    providerName: ProviderName;
+    workingProjectPath: string;
+    /** Model the replaced process reported, a compact-window lookup key. */
+    previousResolvedModel?: string;
+    request: ResumeLaunchRequest;
+  }): { projectPath: string; settings: ModelSettings } | { error: string } => {
+    const { sessionId, providerName, request } = input;
+    const saved = deps.sessionMetadataService;
+    const metadata = saved?.getMetadata?.(sessionId);
+    const requestedModel = request.model ?? saved?.getRequestedModel(sessionId);
+    const model =
+      requestedModel && requestedModel !== "default"
+        ? requestedModel
+        : undefined;
+    let executor = request.executor;
+    if (!executor) {
+      const savedExecutor = parseOptionalExecutor(
+        saved?.getExecutor(sessionId),
+      );
+      if (savedExecutor.error) return { error: savedExecutor.error };
+      executor = savedExecutor.executor;
+    }
+    const recapMode = request.recapMode ?? metadata?.recapMode;
+    const sandboxLevel = metadata?.sandboxLevel ?? "none";
+    const sandboxError = getSessionSandboxSettingsError(
+      sandboxLevel,
+      recapMode,
+    );
+    if (sandboxError) return { error: sandboxError };
+    return {
+      projectPath:
+        sandboxLevel === "project-write"
+          ? (metadata?.sandboxProjectPath ?? input.workingProjectPath)
+          : input.workingProjectPath,
+      settings: {
+        model,
+        requestedModel,
+        serviceTier: request.serviceTier,
+        thinking: request.thinking,
+        effort: request.effort,
+        providerName,
+        executor,
+        sandboxLevel,
+        sandboxNetworkFirewall: persistedSandboxNetworkFirewall(metadata),
+        sandboxStateKey: metadata?.sandboxStateKey,
+        globalInstructions: getGlobalInstructions(),
+        permissions: request.permissions,
+        recapMode,
+        recapAfterSeconds:
+          request.recapAfterSeconds ?? saved?.getRecapAfterSeconds?.(sessionId),
+        promptSuggestionMode:
+          request.promptSuggestionMode ??
+          saved?.getPromptSuggestionMode?.(sessionId),
+        helperSideModel: request.helperSideModel,
+        resumeMode: request.resumeMode,
+        resumeSessionAt: request.resumeSessionAt,
+        ...resolveCompactModelSettings(deps, {
+          provider: providerName,
+          yaModelId: requestedModel,
+          modelCandidates: [requestedModel, model, input.previousResolvedModel],
+        }),
+      },
+    };
+  };
 
   const initializeProjectHeartbeatDefaults = async (
     sessionId: string,
@@ -2455,6 +2585,41 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
 
     return null;
+  };
+
+  /**
+   * The transcript's last row on disk, read once the session's process has
+   * stopped: every row up to it belongs to a rewind recorded now, and the
+   * resumed continuation is written after it.
+   */
+  const readRewindBoundRowId = async (
+    project: Project,
+    sessionId: string,
+    projectId: UrlProjectId,
+    providerName: ProviderName,
+  ): Promise<string | undefined> => {
+    const resolved = await findSessionListSummaryAcrossProviders(
+      project,
+      sessionId,
+      projectId,
+      providerResolutionDeps(deps),
+      providerName,
+    );
+    const loaded = await resolved?.source.reader.getSession(
+      sessionId,
+      projectId,
+      undefined,
+      { includeOrphans: false },
+    );
+    const data = loaded?.data;
+    switch (data?.provider) {
+      case "claude":
+      case "claude-gateway":
+      case "claude-ollama":
+        return lastRewindableClaudeRowId(data.session.messages);
+      default:
+        return undefined;
+    }
   };
 
   const interruptOldProcessForHandoff = async (
@@ -2805,6 +2970,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           metadata?.parentSessionKind ?? sessionSummary?.parentSessionKind,
         forkedFromSessionId:
           metadata?.forkedFromSessionId ?? sessionSummary?.forkedFromSessionId,
+        creationProvenance: metadata?.creationProvenance,
         initialPrompt:
           metadata?.initialPrompt ?? sessionSummary?.fullTitle ?? undefined,
         heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
@@ -3123,6 +3289,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         // 2. No active process (tools aren't potentially in progress)
         // When we own the session, tools without results might be pending approval
         includeOrphans: wasEverOwned && !process,
+        ...(process?.state.type === "in-turn" ||
+        process?.state.type === "waiting-input"
+          ? { ownedTurnInProgress: true }
+          : {}),
         ...(!fullHistory &&
         ((!afterMessageId && effectiveTailCompactions !== undefined) ||
           primaryReaderAfterMessageId)
@@ -3312,6 +3482,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             parentSessionId: metadata?.parentSessionId,
             parentSessionKind: metadata?.parentSessionKind,
             forkedFromSessionId: metadata?.forkedFromSessionId,
+            creationProvenance: metadata?.creationProvenance,
             initialPrompt: metadata?.initialPrompt,
             heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
             wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
@@ -3741,6 +3912,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           metadata?.parentSessionKind ?? session.parentSessionKind,
         forkedFromSessionId:
           metadata?.forkedFromSessionId ?? session.forkedFromSessionId,
+        creationProvenance: metadata?.creationProvenance,
         initialPrompt: metadata?.initialPrompt ?? session.fullTitle,
         heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
         wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
@@ -3907,8 +4079,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       {
         projectId: project.id,
         workstreamId: workstreamTarget.workstreamId,
-        onStarted: (sessionId) =>
-          initializeProjectHeartbeatDefaults(sessionId, project.id),
+        onStarted: async (sessionId) => {
+          await initializeProjectHeartbeatDefaults(sessionId, project.id);
+          await recordCreationProvenance(sessionId, body.creationProvenance);
+        },
       },
     );
 
@@ -3919,6 +4093,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         503,
       );
     }
+
+    // Accepted, whether it starts now or waits for a worker.
+    void deps.userUsageService?.recordSession(actingUsername(c));
+    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
 
     // Check if request was queued
     if (isQueuedResponse(result)) {
@@ -3933,8 +4111,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         limitedLaunch.username,
       );
     }
-    void deps.userUsageService?.recordSession(actingUsername(c));
-    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
 
     await persistLaunchMetadata(
       result.sessionId,
@@ -4069,8 +4245,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       {
         projectId: project.id,
         workstreamId: workstreamTarget.workstreamId,
-        onStarted: (sessionId) =>
-          initializeProjectHeartbeatDefaults(sessionId, project.id),
+        onStarted: async (sessionId) => {
+          await initializeProjectHeartbeatDefaults(sessionId, project.id);
+          await recordCreationProvenance(sessionId, body.creationProvenance);
+        },
       },
     );
 
@@ -4082,12 +4260,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
 
+    // Accepted, whether it starts now or waits for a worker.
+    void deps.userUsageService?.recordSession(actingUsername(c));
+
     // Check if request was queued
     if (isQueuedResponse(result)) {
       return c.json({ ...result, serverTimestamp: Date.now() }, 202); // 202 Accepted - queued for processing
     }
 
     await initializeProjectHeartbeatDefaults(result.sessionId, project.id);
+    await recordCreationProvenance(result.sessionId, body.creationProvenance);
 
     if (limitedLaunch.kind === "applied") {
       // Ownership survives a later grant change: a limited user can always
@@ -4097,7 +4279,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         limitedLaunch.username,
       );
     }
-    void deps.userUsageService?.recordSession(actingUsername(c));
 
     await persistLaunchMetadata(
       result.sessionId,
@@ -4216,6 +4397,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         promptSuggestionMode: helperSettings.promptSuggestionMode,
         helperSideModel: helperSettings.helperSideModel,
       },
+      {
+        onStarted: (sessionId) =>
+          recordCreationProvenance(sessionId, body.creationProvenance),
+      },
     );
 
     if (isQueueFullResponse(result)) {
@@ -4224,6 +4409,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         503,
       );
     }
+
+    // Accepted, whether it starts now or waits for a worker.
+    void deps.userUsageService?.recordSession(actingUsername(c));
+    void deps.userUsageService?.recordTurn(actingUsername(c), userMessage.text);
 
     if (isQueuedResponse(result)) {
       return c.json({ ...result, serverTimestamp: Date.now() }, 202);
@@ -4305,24 +4494,32 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body.model && body.model !== "default" ? body.model : undefined;
     const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
 
-    const result = await deps.supervisor.createSession(projectPath, body.mode, {
-      model,
-      requestedModel: body.model,
-      serviceTier,
-      thinking,
-      effort,
-      providerName: body.provider,
-      computerControl: body.computerControl,
-      executor,
-      sandboxLevel: sandboxSelection.sandboxLevel,
-      sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
-      globalInstructions: getGlobalInstructions(),
-      permissions: body.permissions,
-      recapMode: helperSettings.recapMode,
-      recapAfterSeconds: helperSettings.recapAfterSeconds,
-      promptSuggestionMode: helperSettings.promptSuggestionMode,
-      helperSideModel: helperSettings.helperSideModel,
-    });
+    const result = await deps.supervisor.createSession(
+      projectPath,
+      body.mode,
+      {
+        model,
+        requestedModel: body.model,
+        serviceTier,
+        thinking,
+        effort,
+        providerName: body.provider,
+        computerControl: body.computerControl,
+        executor,
+        sandboxLevel: sandboxSelection.sandboxLevel,
+        sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
+        globalInstructions: getGlobalInstructions(),
+        permissions: body.permissions,
+        recapMode: helperSettings.recapMode,
+        recapAfterSeconds: helperSettings.recapAfterSeconds,
+        promptSuggestionMode: helperSettings.promptSuggestionMode,
+        helperSideModel: helperSettings.helperSideModel,
+      },
+      {
+        onStarted: (sessionId) =>
+          recordCreationProvenance(sessionId, body.creationProvenance),
+      },
+    );
 
     if (isQueueFullResponse(result)) {
       return c.json(
@@ -4331,9 +4528,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
 
+    // Accepted, whether it starts now or waits for a worker.
+    void deps.userUsageService?.recordSession(actingUsername(c));
+
     if (isQueuedResponse(result)) {
       return c.json({ ...result, serverTimestamp: Date.now() }, 202);
     }
+
+    await recordCreationProvenance(result.sessionId, body.creationProvenance);
 
     await persistLaunchMetadata(
       result.sessionId,
@@ -4428,13 +4630,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
     const settledSandboxLevel = persistedMetadata?.sandboxLevel ?? "none";
     const settledSandboxNetworkFirewall =
-      settledSandboxLevel === "project-write" &&
-      persistedMetadata?.sandboxNetworkFirewall !== false;
-    const resumeProjectPath =
-      settledSandboxLevel === "project-write"
-        ? (persistedMetadata?.sandboxProjectPath ??
-          identity.workingProject.path)
-        : identity.workingProject.path;
+      persistedSandboxNetworkFirewall(persistedMetadata);
     if (
       body.sandboxLevel !== undefined ||
       body.sandboxNetworkFirewall !== undefined
@@ -4462,13 +4658,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       }
     }
-    const sandboxSettingsError = getSessionSandboxSettingsError(
-      settledSandboxLevel,
-      helperSettings.recapMode,
-    );
-    if (sandboxSettingsError) {
-      return c.json({ error: sandboxSettingsError }, 400);
-    }
 
     const serverTimestamp = Date.now();
     const userMessage: UserMessage = {
@@ -4485,56 +4674,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         actingUsername(c),
       ),
     };
-
-    const { thinking, effort } = buildThinkingOptions(body);
-
-    // Convert model option (undefined or "default" means use CLI default). When
-    // the client sends no model (e.g. resume after a server restart), recover the
-    // YA model id persisted at launch so the process keeps its requested alias
-    // and per-model settings stay keyed by it. See topics/provider-abstraction.md.
-    const requestedModel =
-      body.model ?? deps.sessionMetadataService?.getRequestedModel(sessionId);
-    const model =
-      requestedModel && requestedModel !== "default"
-        ? requestedModel
-        : undefined;
-    const serviceTier = normalizeOptionalServiceTier(body.serviceTier);
-
-    // Use client-provided executor, falling back to saved executor from metadata.
-    let executor = parsedBodyExecutor.executor;
-    if (!executor) {
-      const parsedSavedExecutor = parseOptionalExecutor(
-        deps.sessionMetadataService?.getExecutor(sessionId),
-      );
-      if (parsedSavedExecutor.error) {
-        return c.json({ error: parsedSavedExecutor.error }, 400);
-      }
-      executor = parsedSavedExecutor.executor;
-    }
-
-    // For remote sessions, sync local files TO remote before resuming
-    // This ensures the remote has the latest session state
-    if (executor) {
-      const projectDir = getProjectDirFromCwd(resumeProjectPath);
-      const syncResult = await syncSessions({
-        host: executor,
-        projectDir,
-        direction: "to-remote",
-      });
-      if (!syncResult.success) {
-        console.warn(
-          `[resume] Failed to pre-sync session to ${executor}: ${syncResult.error}`,
-        );
-        // Continue anyway - remote may have the files from before
-      }
-
-      // Save executor to metadata if not already saved (e.g. client provided it)
-      if (deps.sessionMetadataService) {
-        await deps.sessionMetadataService.setExecutor(sessionId, executor);
-      }
-    }
-
-    const globalInstructions = getGlobalInstructions();
 
     const providerName = body.provider ?? metadataProvider ?? identity.provider;
     const previousProcess = deps.supervisor.getProcessForSession?.(sessionId);
@@ -4621,6 +4760,59 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       }
     }
 
+    const launch = buildResumeLaunch({
+      sessionId,
+      providerName,
+      workingProjectPath: identity.workingProject.path,
+      previousResolvedModel: previousProcess?.resolvedModel,
+      request: {
+        model: body.model,
+        serviceTier: normalizeOptionalServiceTier(body.serviceTier),
+        ...buildThinkingOptions(body),
+        executor: parsedBodyExecutor.executor,
+        permissions: body.permissions,
+        recapMode: helperSettings.recapMode,
+        recapAfterSeconds: helperSettings.recapAfterSeconds,
+        promptSuggestionMode: helperSettings.promptSuggestionMode,
+        helperSideModel: helperSettings.helperSideModel,
+        resumeMode,
+        resumeSessionAt,
+      },
+    });
+    if ("error" in launch) {
+      return c.json({ error: launch.error }, 400);
+    }
+    const { settings: resumeSettings, projectPath: resumeProjectPath } = launch;
+    const executor = resumeSettings.executor;
+    // A limited user resumes only a sandboxed session, on this host, inside
+    // their lock (topics/limited-users.md § Delivery v1).
+    const limitedResume = applyLimitedResumePolicy(c, resumeSettings, body);
+    if (limitedResume.kind === "error") {
+      return c.json({ error: limitedResume.error }, 403);
+    }
+
+    // For remote sessions, sync local files TO remote before resuming
+    // This ensures the remote has the latest session state
+    if (executor) {
+      const projectDir = getProjectDirFromCwd(resumeProjectPath);
+      const syncResult = await syncSessions({
+        host: executor,
+        projectDir,
+        direction: "to-remote",
+      });
+      if (!syncResult.success) {
+        console.warn(
+          `[resume] Failed to pre-sync session to ${executor}: ${syncResult.error}`,
+        );
+        // Continue anyway - remote may have the files from before
+      }
+
+      // Save executor to metadata if not already saved (e.g. client provided it)
+      if (deps.sessionMetadataService) {
+        await deps.sessionMetadataService.setExecutor(sessionId, executor);
+      }
+    }
+
     let result: Awaited<ReturnType<Supervisor["resumeSession"]>>;
     try {
       result = await deps.supervisor.resumeSession(
@@ -4628,41 +4820,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         resumeProjectPath,
         userMessage,
         body.mode,
-        {
-          model,
-          requestedModel: body.model,
-          serviceTier,
-          thinking,
-          effort,
-          providerName,
-          executor,
-          sandboxLevel: settledSandboxLevel,
-          sandboxNetworkFirewall: settledSandboxNetworkFirewall,
-          sandboxStateKey: persistedMetadata?.sandboxStateKey,
-          globalInstructions,
-          permissions: body.permissions,
-          recapMode: helperSettings.recapMode,
-          recapAfterSeconds:
-            helperSettings.recapAfterSeconds ??
-            deps.sessionMetadataService?.getRecapAfterSeconds?.(sessionId),
-          // Body value wins; otherwise recover the per-session preference from
-          // metadata so a body-less resume does not default back to native.
-          promptSuggestionMode:
-            helperSettings.promptSuggestionMode ??
-            deps.sessionMetadataService?.getPromptSuggestionMode?.(sessionId),
-          helperSideModel: helperSettings.helperSideModel,
-          resumeMode,
-          resumeSessionAt,
-          ...resolveCompactModelSettings(deps, {
-            provider: providerName,
-            yaModelId: requestedModel,
-            modelCandidates: [
-              requestedModel,
-              model,
-              previousProcess?.resolvedModel,
-            ],
-          }),
-        },
+        resumeSettings,
         { requireProviderSessionId: true },
       );
     } catch (error) {
@@ -4954,6 +5112,27 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           ? { helperSideModel: helperSettings.helperSideModel }
           : {}),
       };
+      // A limited user reactivates only a sandboxed session, on this host,
+      // inside their lock (topics/limited-users.md § Delivery v1). The cold
+      // settings already carry every override the body named, so checking
+      // them covers both; an override the lock then replaced follows it.
+      const limitedReactivate = applyLimitedResumePolicy(c, coldSettings, body);
+      if (limitedReactivate.kind === "error") {
+        return c.json({ error: limitedReactivate.error }, 403);
+      }
+      if (limitedReactivate.kind === "applied") {
+        for (const field of [
+          "model",
+          "requestedModel",
+          "thinking",
+          "effort",
+        ] as const) {
+          if (Object.hasOwn(overrideModelSettings, field)) {
+            (overrideModelSettings as Record<string, unknown>)[field] =
+              coldSettings[field];
+          }
+        }
+      }
       const requestedOverrides: SessionReactivationOverrides = {
         ...(Object.hasOwn(body, "mode") && body.mode !== undefined
           ? { permissionMode: body.mode }
@@ -5427,46 +5606,42 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const providerName = body.provider ?? sourceProvider;
     const inheritsSourceProviderSettings = providerName === sourceProvider;
 
-    const sourceLaunchSettings = originalMetadata?.effectiveLaunchSettings;
-    const sourceProviderLaunchSettings = inheritsSourceProviderSettings
-      ? sourceLaunchSettings
-      : undefined;
-    const requestedModel =
-      body.model ??
-      sourceProviderLaunchSettings?.requestedModel ??
-      (inheritsSourceProviderSettings
-        ? deps.sessionMetadataService?.getRequestedModel(sessionId)
-        : undefined);
-    const parsedThinking = buildThinkingOptions(body);
-    const thinking =
-      body.thinking !== undefined
-        ? parsedThinking.thinking
-        : (sourceProviderLaunchSettings?.thinking ?? undefined);
-    const effort =
-      body.thinking !== undefined
-        ? parsedThinking.effort
-        : (sourceProviderLaunchSettings?.effort ?? undefined);
+    const {
+      requestedModel,
+      thinking,
+      effort,
+      serviceTier,
+      permissionMode: restartPermissionMode,
+    } = inheritSuccessorLaunchSettings(
+      originalMetadata?.effectiveLaunchSettings,
+      {
+        sameProvider: inheritsSourceProviderSettings,
+        legacyRequestedModel: () =>
+          deps.sessionMetadataService?.getRequestedModel(sessionId),
+      },
+      {
+        requestedModel: body.model,
+        thinking: body.thinking,
+        serviceTier:
+          body.serviceTier !== undefined
+            ? (normalizeOptionalServiceTier(body.serviceTier) ?? null)
+            : undefined,
+        permissionMode: body.mode,
+      },
+    );
     const model =
       requestedModel && requestedModel !== "default"
         ? requestedModel
         : undefined;
-    const serviceTier =
-      body.serviceTier !== undefined
-        ? normalizeOptionalServiceTier(body.serviceTier)
-        : (sourceProviderLaunchSettings?.serviceTier ?? undefined);
-    const restartPermissionMode =
-      body.mode ?? sourceLaunchSettings?.permissionMode;
 
     if (restartMode === "fork") {
-      const { ordinal, lineageRootId } =
-        (await deps.sessionMetadataService?.nextForkOrdinal(sessionId)) ?? {
-          ordinal: 1,
-          lineageRootId: sessionId,
-        };
+      const claimed =
+        await deps.sessionMetadataService?.nextForkOrdinal(sessionId);
+      const lineageRootId = claimed?.lineageRootId ?? sessionId;
       const forkTitle = deriveForkTitle({
         preferredTitle: originalMetadata?.customTitle,
         sourceSession,
-        ordinal,
+        ordinal: claimed?.ordinal ?? 1,
       });
       let fork: Awaited<ReturnType<Supervisor["forkSession"]>>;
       try {
@@ -5481,6 +5656,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           sandboxStateKey: originalMetadata?.sandboxStateKey,
         });
       } catch (error) {
+        if (claimed) {
+          await deps.sessionMetadataService?.releaseForkOrdinal(claimed);
+        }
         getLogger().warn(
           {
             event: "restart_fork_failed",
@@ -5561,6 +5739,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       }
 
+      void deps.userUsageService?.recordSession(actingUsername(c));
+      await recordCreationProvenance(result.sessionId, body.creationProvenance);
       await persistLaunchMetadata(
         result.sessionId,
         sourceProvider,
@@ -5701,6 +5881,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       );
     }
 
+    void deps.userUsageService?.recordSession(actingUsername(c));
+    await recordCreationProvenance(result.sessionId, body.creationProvenance);
     await persistLaunchMetadata(
       result.sessionId,
       providerName,
@@ -5777,6 +5959,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     processAborted: boolean;
   };
 
+  /** A session as one rewind command read it, shared by its steps. */
+  type RewindSource = {
+    providerName: ProviderName;
+    process: Process | undefined;
+    session: Session | null;
+  };
+
   const isRewindProvider = (providerName: ProviderName): boolean =>
     isClaudeSdkProviderName(providerName);
 
@@ -5820,13 +6009,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     clearloopIteration?: number;
     clearloopTotal?: number;
     clearloopPrompt?: string;
+    /** The session as the caller just resolved it; absent loads it here. */
+    source?: RewindSource;
   }): Promise<RewindFailure | RewindSuccess> => {
     const { project, projectId, sessionId } = input;
-    const { providerName, process } = await resolveRewindProvider(
-      project,
-      projectId,
-      sessionId,
-    );
+    const { providerName, process } =
+      input.source ??
+      (await resolveRewindProvider(project, projectId, sessionId));
     if (!isRewindProvider(providerName)) {
       return {
         ok: false,
@@ -5861,13 +6050,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         status: 409,
       };
     }
-    const session = await loadRestartSourceSession(
-      project,
-      sessionId,
-      projectId,
-      providerName,
-      process,
-    );
+    const session = input.source
+      ? input.source.session
+      : await loadRestartSourceSession(
+          project,
+          sessionId,
+          projectId,
+          providerName,
+          process,
+        );
     if (!session) {
       return { ok: false, error: "Session not found", status: 404 };
     }
@@ -5888,7 +6079,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     for (let index = cutIndex + 1; index < session.messages.length; index++) {
       const message = session.messages[index];
       if (!message || message.rewoundGroupId) continue;
-      if (isUserAuthoredRequest(message)) {
+      if (isRealUserTurn(message)) {
         droppedTurnCount += 1;
         const id = messageId(message);
         if (id) {
@@ -5910,16 +6101,28 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         processAborted: false,
       };
     }
-    if (droppedTurnCount > 1) droppedPromptIds = [];
+    // The drop guard protects a hand-picked `/clear N` from discarding what
+    // the user never saw. A clearloop iteration is discarded whole by
+    // contract, task notifications and absorbed queued messages included.
+    if (droppedTurnCount > 1 || input.reason === "clearloop") {
+      droppedPromptIds = [];
+    }
 
     let processAborted = false;
     if (process) {
-      // A mid-session effort/model/mode change lives only on the process;
-      // persist it so the resume after this rewind (and every clearloop
-      // iteration) launches with the current settings.
-      await deps.supervisor.persistLiveLaunchSettings(sessionId);
       await deps.supervisor.abortSessionWithVerification(sessionId);
       processAborted = true;
+    }
+    const droppedThroughMessageId = await readRewindBoundRowId(
+      project,
+      sessionId,
+      projectId,
+      providerName,
+    );
+    if (!droppedThroughMessageId) {
+      console.warn(
+        `Rewind of ${sessionId} found no transcript rows on disk; its group falls back to timestamps`,
+      );
     }
     const record: SessionRewindRecord = {
       id: randomUUID(),
@@ -5927,6 +6130,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       cutMessageId: input.cutMessageId,
       cutTurnIndex: input.cutTurnIndex,
       ...(droppedFromMessageId ? { droppedFromMessageId } : {}),
+      ...(droppedThroughMessageId ? { droppedThroughMessageId } : {}),
       droppedTurnCount,
       reason: input.reason,
       ...(input.clearloopId ? { clearloopId: input.clearloopId } : {}),
@@ -5963,34 +6167,19 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   };
 
   /** Resolve a turn-relative cut to the provider chain entry it keeps. */
-  const resolveRewindCut = async (input: {
-    project: Project;
-    projectId: UrlProjectId;
-    sessionId: string;
-    cut: RewindCut;
-  }): Promise<
-    RewindFailure | { ok: true; cutMessageId: string; cutTurnIndex: number }
-  > => {
-    const { providerName, process } = await resolveRewindProvider(
-      input.project,
-      input.projectId,
-      input.sessionId,
-    );
-    const session = await loadRestartSourceSession(
-      input.project,
-      input.sessionId,
-      input.projectId,
-      providerName,
-      process,
-    );
-    if (!session) {
-      return { ok: false, error: "Session not found", status: 404 };
-    }
+  const resolveRewindCut = (
+    source: RewindSource & { session: Session },
+    sessionId: string,
+    cut: RewindCut,
+  ):
+    | RewindFailure
+    | { ok: true; cutMessageId: string; cutTurnIndex: number } => {
+    const { providerName, process, session } = source;
     // Numbering spans the full sequence, cleared turns included, but a cut
     // inside a cleared span is a tree hop whose UI is unspecified; refuse it
     // (topics/session-rewind.md § Vocabulary).
     const sourceMessage = session.messages.find(
-      (message) => messageId(message) === input.cut.sourceMessageId,
+      (message) => messageId(message) === cut.sourceMessageId,
     );
     if (sourceMessage?.rewoundGroupId) {
       return {
@@ -6005,20 +6194,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         (message as { subtype?: unknown }).subtype !== "rewound_group",
     );
     const sourceIsBusy = Boolean(
-      deps.externalTracker?.isExternal(input.sessionId) ||
+      deps.externalTracker?.isExternal(sessionId) ||
         process?.state.type === "in-turn" ||
         process?.state.type === "waiting-input",
     );
     const boundary =
-      input.cut.kind === "before-user-turn"
-        ? resolveForkBeforeBoundary(
-            messages,
-            input.cut.sourceMessageId,
-            providerName,
-          )
+      cut.kind === "before-user-turn"
+        ? resolveForkBeforeBoundary(messages, cut.sourceMessageId, providerName)
         : resolveForkAfterBoundary(
             messages,
-            input.cut.sourceMessageId,
+            cut.sourceMessageId,
             sourceIsBusy,
             providerName,
           );
@@ -6034,13 +6219,22 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
     // The kept turn's stamped ordinal is the record's N: the same number the
     // turn menu shows, so `/clear N` and the label agree by construction.
-    const sourceIndex = turnIndexOf(sourceMessage);
-    const cutTurnIndex =
-      sourceIndex === undefined
-        ? 0
-        : input.cut.kind === "before-user-turn"
-          ? Math.max(0, sourceIndex - 1)
-          : sourceIndex;
+    // A before cut keeps the previous turn on the source's chain, which a
+    // clear may have put well below N−1. The boundary above already refused
+    // non-turns; a kept turn that still has no stamp came from an
+    // unnormalized history and has no N to record.
+    const keptTurn =
+      cut.kind === "before-user-turn" && sourceMessage
+        ? precedingChainTurn(messages, sourceMessage)
+        : sourceMessage;
+    const cutTurnIndex = turnIndexOf(keptTurn);
+    if (cutTurnIndex === undefined) {
+      return {
+        ok: false,
+        error: "That message is not a user turn",
+        status: 409,
+      };
+    }
     return {
       ok: true,
       cutMessageId: boundary.providerBoundary.messageId,
@@ -6077,62 +6271,35 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       projectId,
       sessionId,
     );
-    const persistedMetadata =
-      deps.sessionMetadataService?.getMetadata?.(sessionId);
-    const launch = persistedMetadata?.effectiveLaunchSettings;
-    const requestedModel =
-      deps.sessionMetadataService?.getRequestedModel(sessionId);
-    const model =
-      requestedModel && requestedModel !== "default"
-        ? requestedModel
-        : undefined;
-    const parsedExecutor = parseOptionalExecutor(
-      deps.sessionMetadataService?.getExecutor(sessionId),
-    );
-    if (parsedExecutor.error) throw new Error(parsedExecutor.error);
-    const settledSandboxLevel = persistedMetadata?.sandboxLevel ?? "none";
-    const resumeProjectPath =
-      settledSandboxLevel === "project-write"
-        ? (persistedMetadata?.sandboxProjectPath ?? project.path)
-        : project.path;
-    const serverTimestamp = Date.now();
-    const userMessage: UserMessage = {
-      text: input.prompt,
-      // YA-injected, not a principal's turn: no sender and no usage record.
-      metadata: buildUserMessageMetadata({}, serverTimestamp, "direct"),
-    };
-    const result = await deps.supervisor.resumeSession(
+    // No client asks for this turn, so the settings the session last applied
+    // stand in for the choices a resume request would carry.
+    const saved =
+      deps.sessionMetadataService?.getEffectiveLaunchSettings?.(sessionId);
+    const launch = buildResumeLaunch({
       sessionId,
-      resumeProjectPath,
-      userMessage,
-      launch?.permissionMode,
-      {
-        model,
-        requestedModel: requestedModel ?? undefined,
-        serviceTier: launch?.serviceTier ?? undefined,
-        thinking: launch?.thinking ?? undefined,
-        effort: launch?.effort ?? undefined,
-        providerName,
-        executor: parsedExecutor.executor,
-        sandboxLevel: settledSandboxLevel,
-        sandboxNetworkFirewall:
-          settledSandboxLevel === "project-write" &&
-          persistedMetadata?.sandboxNetworkFirewall !== false,
-        sandboxStateKey: persistedMetadata?.sandboxStateKey,
-        globalInstructions: getGlobalInstructions(),
-        recapAfterSeconds:
-          deps.sessionMetadataService?.getRecapAfterSeconds?.(sessionId),
-        promptSuggestionMode:
-          deps.sessionMetadataService?.getPromptSuggestionMode?.(sessionId),
+      providerName,
+      workingProjectPath: project.path,
+      request: {
+        serviceTier: saved?.serviceTier ?? undefined,
+        thinking: saved?.thinking ?? undefined,
+        effort: saved?.effort ?? undefined,
         // The iteration's rewind is armed as the session's pending rewind;
         // the supervisor applies it when this resume launches the process.
         resumeMode: "full",
-        ...resolveCompactModelSettings(deps, {
-          provider: providerName,
-          yaModelId: requestedModel,
-          modelCandidates: [requestedModel, model],
-        }),
       },
+    });
+    if ("error" in launch) throw new Error(launch.error);
+    const userMessage: UserMessage = {
+      text: input.prompt,
+      // YA-injected, not a principal's turn: no sender and no usage record.
+      metadata: buildUserMessageMetadata({}, Date.now(), "direct"),
+    };
+    const result = await deps.supervisor.resumeSession(
+      sessionId,
+      launch.projectPath,
+      userMessage,
+      saved?.permissionMode,
+      launch.settings,
       { requireProviderSessionId: true },
     );
     if (isQueueFullResponse(result)) {
@@ -6172,47 +6339,30 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   });
 
   /**
-   * The user turn a queued rewind command names: turn `N`, or the session's
+   * The user turn a typed rewind command names: turn `N`, or the session's
    * last real turn when the command gave no number. Queued commands resolve
    * this at dispatch, so `/clearloop 3: p` queued now loops over whatever the
    * tail is when the project finally goes quiet.
    */
-  const resolveQueuedTurnSource = async (input: {
-    project: Project;
-    projectId: UrlProjectId;
-    sessionId: string;
-    turnIndex?: number;
-  }): Promise<RewindFailure | { ok: true; sourceMessageId: string }> => {
-    const { providerName, process } = await resolveRewindProvider(
-      input.project,
-      input.projectId,
-      input.sessionId,
-    );
-    const session = await loadRestartSourceSession(
-      input.project,
-      input.sessionId,
-      input.projectId,
-      providerName,
-      process,
-    );
-    if (!session) {
-      return { ok: false, error: "Session not found", status: 404 };
-    }
+  const typedTurnSourceMessageId = (
+    session: Session,
+    turnIndex: number | undefined,
+  ): RewindFailure | { ok: true; sourceMessageId: string } => {
     const turns = session.messages.filter(
       (message) =>
         !message.rewoundGroupId && turnIndexOf(message) !== undefined,
     );
     const target =
-      input.turnIndex === undefined
+      turnIndex === undefined
         ? turns[turns.length - 1]
-        : turns.find((message) => turnIndexOf(message) === input.turnIndex);
+        : turns.find((message) => turnIndexOf(message) === turnIndex);
     if (!target) {
       return {
         ok: false,
         error:
-          input.turnIndex === undefined
+          turnIndex === undefined
             ? "The session has no turns to rewind to"
-            : `Turn ${input.turnIndex} is not in the session`,
+            : `Turn ${turnIndex} is not in the session`,
         status: 409,
       };
     }
@@ -6223,92 +6373,148 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     return { ok: true, sourceMessageId: id };
   };
 
+  /**
+   * The one server operation behind `/clear N` and `/clearloop`, whether the
+   * composer sent it or Project Queue dispatched it: refuse what rewind cannot
+   * do, read the session once, resolve the kept turn, then rewind or start the
+   * loop (topics/session-rewind.md).
+   */
+  const runRewindCommand = async (input: {
+    project: Project;
+    projectId: UrlProjectId;
+    sessionId: string;
+    /** An explicit cut, or typed turn N (the last real turn when absent). */
+    target: { cut: RewindCut } | { turnIndex?: number };
+    action:
+      | { name: "clear" }
+      | {
+          name: "clearloop";
+          prompt: string;
+          total: number;
+          commandText: string;
+          patient: boolean;
+        };
+  }): Promise<
+    | RewindFailure
+    | { ok: true; rewind: RewindSuccess }
+    | {
+        ok: true;
+        job: Awaited<ReturnType<ClearloopService["start"]>>;
+      }
+  > => {
+    const { project, projectId, sessionId, action } = input;
+    const clearloopService = deps.clearloopService;
+    if (action.name === "clear" && clearloopService?.isRunning(sessionId)) {
+      return {
+        ok: false,
+        error: "Cancel the running /clearloop before rewinding",
+        status: 409,
+      };
+    }
+    const { providerName, process } = await resolveRewindProvider(
+      project,
+      projectId,
+      sessionId,
+    );
+    if (!isRewindProvider(providerName)) {
+      return {
+        ok: false,
+        error: `${providerName} does not support same-session rewind`,
+        status: 409,
+      };
+    }
+    const session = await loadRestartSourceSession(
+      project,
+      sessionId,
+      projectId,
+      providerName,
+      process,
+    );
+    if (!session) {
+      return { ok: false, error: "Session not found", status: 404 };
+    }
+    const source = { providerName, process, session };
+    let cut: RewindCut;
+    if ("cut" in input.target) {
+      cut = input.target.cut;
+    } else {
+      const typed = typedTurnSourceMessageId(session, input.target.turnIndex);
+      if (!typed.ok) return typed;
+      cut = { kind: "after-user-turn", sourceMessageId: typed.sourceMessageId };
+    }
+    const resolved = resolveRewindCut(source, sessionId, cut);
+    if (!resolved.ok) return resolved;
+    if (action.name === "clear") {
+      const rewind = await rewindSessionToCut({
+        project,
+        projectId,
+        sessionId,
+        cutMessageId: resolved.cutMessageId,
+        cutTurnIndex: resolved.cutTurnIndex,
+        reason: "clear",
+        source,
+      });
+      return rewind.ok ? { ok: true, rewind } : rewind;
+    }
+    if (!clearloopService) {
+      return { ok: false, error: "clearloop is not available", status: 404 };
+    }
+    try {
+      const job = await clearloopService.start(sessionId, projectId, {
+        cutMessageId: resolved.cutMessageId,
+        cutTurnIndex: resolved.cutTurnIndex,
+        prompt: action.prompt,
+        total: action.total,
+        commandText: action.commandText,
+        ...(action.patient ? { patient: true } : {}),
+      });
+      return { ok: true, job };
+    } catch (error) {
+      if (error instanceof ClearloopConflictError) {
+        return { ok: false, error: error.message, status: 409 };
+      }
+      throw error;
+    }
+  };
+
   // Route tests supply a partial scheduler; the runner is optional like the
   // other scheduler hooks this module calls.
   deps.projectQueueScheduler?.setYaCommandRunner?.({
     run: async ({ sessionId, projectId, command, commandText }) => {
       const project = await deps.scanner.getOrCreateProject(projectId);
       if (!project) throw new Error("Project not found");
-      // The interactive routes refuse these two cases; a queued command has
-      // the same session in the same states, so it refuses them identically
-      // and keeps its text for Retry.
-      const { providerName } = await resolveRewindProvider(
-        project,
-        projectId,
-        sessionId,
-      );
-      if (!isRewindProvider(providerName)) {
-        throw new Error(`${providerName} does not support same-session rewind`);
-      }
-      if (deps.clearloopService?.isRunning(sessionId)) {
+      // The queue refused an unreadable argument when the item was queued,
+      // edited, or loaded; the scheduler hands over only commands that read.
+      const reading = readQueuedYaCommand(command);
+      if (!reading.ok) {
         throw new Error(
-          `Cancel the running /clearloop before ${commandText} runs`,
+          describeQueuedYaCommandProblem(command, reading.problem),
         );
       }
-      const parsed =
-        command.name === "clearloop"
-          ? parseClearloopArguments(command.argument)
-          : null;
-      if (command.name === "clearloop" && !parsed) {
-        throw new Error(`Cannot read the arguments of ${commandText}`);
-      }
+      const { action } = reading;
       const turnArgument =
-        command.name === "clearloop"
-          ? parsed?.turnIndex
-          : (parseTurnIndexArgument(command.argument, { allowEmpty: true }) ??
-            undefined);
-      if (command.name === "clear" && turnArgument === undefined) {
-        throw new Error(`Cannot read the turn number of ${commandText}`);
-      }
-      if (command.name === "clear" && turnArgument === 0) {
-        // `/clear 0` is the composer's "start a new session" navigation, not a
-        // session operation the scheduler can perform.
-        throw new Error("/clear 0 has no queued meaning; queue a new session");
-      }
-      const source = await resolveQueuedTurnSource({
+        action.name === "clear" ? action.turnIndex : action.arguments.turnIndex;
+      // A refusal fails the queued item, which keeps its text for Retry.
+      const result = await runRewindCommand({
         project,
         projectId,
         sessionId,
-        ...(turnArgument === undefined ? {} : { turnIndex: turnArgument }),
+        target: turnArgument === undefined ? {} : { turnIndex: turnArgument },
+        action:
+          action.name === "clearloop"
+            ? {
+                name: "clearloop",
+                prompt: action.arguments.prompt,
+                total: action.arguments.total,
+                commandText,
+                // The user chose a lane that waits for the project; the loop it
+                // starts keeps waiting (topics/project-queue.md § Queued YA
+                // commands).
+                patient: true,
+              }
+            : { name: "clear" },
       });
-      if (!source.ok) throw new Error(source.error);
-      const resolved = await resolveRewindCut({
-        project,
-        projectId,
-        sessionId,
-        cut: {
-          kind: "after-user-turn",
-          sourceMessageId: source.sourceMessageId,
-        },
-      });
-      if (!resolved.ok) throw new Error(resolved.error);
-      if (command.name === "clear") {
-        const result = await rewindSessionToCut({
-          project,
-          projectId,
-          sessionId,
-          cutMessageId: resolved.cutMessageId,
-          cutTurnIndex: resolved.cutTurnIndex,
-          reason: "clear",
-        });
-        if (!result.ok) throw new Error(result.error);
-        return;
-      }
-      if (!deps.clearloopService) {
-        throw new Error("clearloop is not available");
-      }
-      if (!parsed)
-        throw new Error(`Cannot read the arguments of ${commandText}`);
-      await deps.clearloopService.start(sessionId, projectId, {
-        cutMessageId: resolved.cutMessageId,
-        cutTurnIndex: resolved.cutTurnIndex,
-        prompt: parsed.prompt,
-        total: parsed.total,
-        commandText,
-        // The user chose a lane that waits for the project; the loop it starts
-        // keeps waiting (topics/project-queue.md § Queued YA commands).
-        patient: true,
-      });
+      if (!result.ok) throw new Error(result.error);
     },
   });
 
@@ -6331,37 +6537,25 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
     const cut = parseRewindCut(body);
     if ("error" in cut) return c.json({ error: cut.error }, 400);
-    if (deps.clearloopService?.isRunning(sessionId)) {
-      return c.json(
-        { error: "Cancel the running /clearloop before rewinding" },
-        409,
-      );
-    }
-    const resolved = await resolveRewindCut({
+    const result = await runRewindCommand({
       project,
       projectId,
       sessionId,
-      cut,
-    });
-    if (!resolved.ok) {
-      return c.json({ error: resolved.error }, resolved.status);
-    }
-    const result = await rewindSessionToCut({
-      project,
-      projectId,
-      sessionId,
-      cutMessageId: resolved.cutMessageId,
-      cutTurnIndex: resolved.cutTurnIndex,
-      reason: "clear",
+      target: { cut },
+      action: { name: "clear" },
     });
     if (!result.ok) {
       return c.json({ error: result.error }, result.status);
     }
+    if (!("rewind" in result)) {
+      throw new Error("A clear command returned no rewind result");
+    }
+    const { rewind } = result;
     return c.json({
-      record: result.record,
-      cutMessageId: result.cutMessageId,
-      noop: result.record === null,
-      processAborted: result.processAborted,
+      record: rewind.record,
+      cutMessageId: rewind.cutMessageId,
+      noop: rewind.record === null,
+      processAborted: rewind.processAborted,
     });
   });
 
@@ -6414,42 +6608,26 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         typeof record.commandText === "string" && record.commandText.trim()
           ? record.commandText.trim()
           : `/clearloop ${total}: ${prompt}`;
-      const { providerName } = await resolveRewindProvider(
+      const result = await runRewindCommand({
         project,
         projectId,
         sessionId,
-      );
-      if (!isRewindProvider(providerName)) {
-        return c.json(
-          { error: `${providerName} does not support same-session rewind` },
-          409,
-        );
-      }
-      const resolved = await resolveRewindCut({
-        project,
-        projectId,
-        sessionId,
-        cut,
-      });
-      if (!resolved.ok) {
-        return c.json({ error: resolved.error }, resolved.status);
-      }
-      try {
-        const job = await deps.clearloopService.start(sessionId, projectId, {
-          cutMessageId: resolved.cutMessageId,
-          cutTurnIndex: resolved.cutTurnIndex,
+        target: { cut },
+        action: {
+          name: "clearloop",
           prompt,
           total,
           commandText,
-          ...(record.patient === true ? { patient: true } : {}),
-        });
-        return c.json({ job }, 202);
-      } catch (error) {
-        if (error instanceof ClearloopConflictError) {
-          return c.json({ error: error.message }, 409);
-        }
-        throw error;
+          patient: record.patient === true,
+        },
+      });
+      if (!result.ok) {
+        return c.json({ error: result.error }, result.status);
       }
+      if (!("job" in result)) {
+        throw new Error("A clearloop command returned no job");
+      }
+      return c.json({ job: result.job }, 202);
     },
   );
 
@@ -6531,6 +6709,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       sourceMessageId?: unknown;
       upToMessageId?: unknown;
       thinking?: unknown;
+      creationProvenance?: unknown;
     } = {};
     try {
       const parsed = await c.req.json<unknown>();
@@ -6543,7 +6722,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     }
     let forkThinking: ThinkingOption | undefined;
     if (body.thinking !== undefined) {
-      if (!isForkThinkingOption(body.thinking)) {
+      if (!isThinkingOption(body.thinking)) {
         return c.json(
           { error: "thinking must be off, auto, or on:<effort level>" },
           400,
@@ -6708,6 +6887,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         ...inheritedSandboxSettings(originalMetadata),
       });
     } catch (error) {
+      if (claimed) {
+        await deps.sessionMetadataService?.releaseForkOrdinal(claimed);
+      }
       getLogger().warn(
         {
           event: "session_fork_failed",
@@ -6781,27 +6963,39 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           originalMetadata?.workingProjectId ?? (projectId as UrlProjectId),
       },
     );
+    await recordCreationProvenance(fork.sessionId, body.creationProvenance);
     if (deps.sessionMetadataService && forkThinking !== undefined) {
       // A fork asked to start at a different effort (the long-context
       // effort-change warning's "fork instead" path) records that choice as
       // the fork's launch settings, so its first send and every later
       // server-side turn use it rather than the browser's per-model default.
       // See topics/mid-session-effort-change.md.
-      const sourceLaunch = originalMetadata?.effectiveLaunchSettings;
-      const { thinking, effort } = buildThinkingOptions({
-        thinking: forkThinking,
-      });
+      const launch = inheritSuccessorLaunchSettings(
+        originalMetadata?.effectiveLaunchSettings,
+        { sameProvider: true },
+        { requestedModel: inheritedModel, thinking: forkThinking },
+      );
       await deps.sessionMetadataService.recordEffectiveLaunchSettings(
         fork.sessionId,
         {
-          permissionMode: sourceLaunch?.permissionMode ?? "default",
-          requestedModel: inheritedModel ?? null,
-          serviceTier: sourceLaunch?.serviceTier ?? null,
-          thinking: thinking ?? null,
-          effort: effort ?? null,
+          permissionMode: launch.permissionMode ?? "default",
+          requestedModel: launch.requestedModel ?? null,
+          serviceTier: launch.serviceTier ?? null,
+          thinking: launch.thinking ?? null,
+          effort: launch.effort ?? null,
         },
       );
     }
+    const forkCreator = actingUsername(c);
+    if (forkCreator) {
+      // A limited user's fork is theirs, like a session they start
+      // (topics/limited-users.md § Delivery v1).
+      await deps.sessionMetadataService?.recordSessionCreator(
+        fork.sessionId,
+        forkCreator,
+      );
+    }
+    void deps.userUsageService?.recordSession(forkCreator);
     if (deps.sessionMetadataService) {
       await deps.sessionMetadataService.updateMetadata(fork.sessionId, {
         title: forkTitle,
@@ -7187,11 +7381,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // lineage the target belongs to is recorded either way.
       const forkLineageRootId =
         deps.sessionMetadataService.forkLineageRoot(sessionId);
+      let fallbackClaim: ForkOrdinalClaim | undefined;
       const fallbackTitle = async (): Promise<string | undefined> => {
         if (!baseTitle) return undefined;
-        const claimed =
+        fallbackClaim =
           await deps.sessionMetadataService?.nextForkOrdinal(sessionId);
-        return forkTitleWithOrdinal(baseTitle, claimed?.ordinal ?? 1);
+        return forkTitleWithOrdinal(baseTitle, fallbackClaim?.ordinal ?? 1);
       };
       const savedExecutor = parseOptionalExecutor(
         deps.sessionMetadataService.getExecutor(sessionId),
@@ -7202,6 +7397,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         sourceSession.model,
         sourceProcess?.model,
       );
+      const forkSummaryActor = actingUsername(c);
 
       void (async () => {
         let generatorSessionId: string | undefined;
@@ -7284,6 +7480,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             ...inheritedSandboxSettings(originalMetadata),
           });
           targetSessionId = target.sessionId;
+          void deps.userUsageService?.recordSession(forkSummaryActor);
           await updateForkSummaryChildMetadata(
             target.sessionId,
             sessionId,
@@ -7443,6 +7640,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
               );
             } catch (cleanupError) {
               logCleanupFailure("archive-target", cleanupError);
+            }
+          } else if (fallbackClaim) {
+            try {
+              await deps.sessionMetadataService?.releaseForkOrdinal(
+                fallbackClaim,
+              );
+            } catch (cleanupError) {
+              logCleanupFailure("release-fork-ordinal", cleanupError);
             }
           }
           if (!completed && targetProcessId) {
@@ -8562,6 +8767,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       }
 
+      const cloneCreator = actingUsername(c);
+      if (cloneCreator) {
+        // A limited user's clone is theirs, like a session they start
+        // (topics/limited-users.md § Delivery v1).
+        await deps.sessionMetadataService?.recordSessionCreator(
+          result.newSessionId,
+          cloneCreator,
+        );
+      }
+      void deps.userUsageService?.recordSession(cloneCreator);
       // Set clone metadata. /btw asides pass parentSessionId so the child
       // can jump back into the parent viewport.
       if (deps.sessionMetadataService) {

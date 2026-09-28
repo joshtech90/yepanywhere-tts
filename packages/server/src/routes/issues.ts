@@ -305,7 +305,8 @@ export function createIssueRoutes(
       return c.json({ error: "Expected projectId, provider and key" }, 400);
     if (!confirmer || !indexer.settings().confirmation?.enabled)
       return c.json({ error: "Tracker confirmation is off" }, 403);
-    confirmer.recheck(body.projectId, body.provider, body.key);
+    if (!confirmer.recheck(body.projectId, body.provider, body.key))
+      return c.json({ error: "No captured reference has that key" }, 404);
     await confirmer.drain();
     return c.json({ ok: true });
   });

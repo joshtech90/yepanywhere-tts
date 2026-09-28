@@ -202,6 +202,28 @@ export class AttachmentStagingService {
   private readonly records = new Map<string, StagedAttachmentRecord>();
   private initialized = false;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private readonly userStores = new Map<string, AttachmentStagingService>();
+
+  /** Drafts belong to the acting account before they belong to a project. */
+  forUser(username: string | null): AttachmentStagingService {
+    if (username === null) return this;
+    let store = this.userStores.get(username);
+    if (!store) {
+      store = new AttachmentStagingService({
+        stagingRoot: join(
+          this.stagingRoot,
+          "users",
+          Buffer.from(username).toString("hex"),
+        ),
+        storagePolicy: this.storagePolicy,
+        maxUploadSizeBytes: this.maxUploadSizeBytes,
+        draftTtlMs: this.draftTtlMs,
+        now: this.now,
+      });
+      this.userStores.set(username, store);
+    }
+    return store;
+  }
 
   constructor(options: AttachmentStagingServiceOptions = {}) {
     const dataDir =

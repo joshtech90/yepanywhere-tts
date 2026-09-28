@@ -24,7 +24,7 @@ import {
   type Supervisor,
 } from "../supervisor/Supervisor.js";
 import type { ProcessInfo, Project } from "../supervisor/types.js";
-import { clearloopBadgeFromJob } from "../services/ClearloopService.js";
+import type { ClearloopBadgeResolver } from "../services/ClearloopService.js";
 
 export interface ProcessesDeps {
   supervisor: Supervisor;
@@ -36,6 +36,7 @@ export interface ProcessesDeps {
   ) => { reader: ISessionReader; sessionDir: string };
   sessionIndexService?: SessionIndexService;
   sessionMetadataService?: SessionMetadataService;
+  getClearloopBadge?: ClearloopBadgeResolver;
   /**
    * Exempt an explicitly killed session from YA-owned auto-resume. Invoked
    * only when the abort request opts in via `blockResume` and only after the
@@ -112,7 +113,7 @@ async function enrichProcessInfo(
       enriched.sessionTitle = displayTitle;
     }
 
-    const clearloop = clearloopBadgeFromJob(metadata?.clearloop, true);
+    const clearloop = deps.getClearloopBadge?.(process.sessionId);
     if (clearloop !== undefined) {
       enriched.clearloop = clearloop;
     }

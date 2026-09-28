@@ -682,8 +682,16 @@ function convertCodexEntries(
           state.closedToolResultIds,
           sessionId,
         );
-        if (msg) {
-          tagCodexMessageSourceByteOffset(msg, entry);
+        const eventMessages = msg ? [msg] : [];
+        const taskCompleteError = convertCodexTaskCompleteError(
+          entry,
+          sessionId,
+        );
+        if (taskCompleteError) {
+          eventMessages.push(taskCompleteError);
+        }
+        for (const eventMessage of eventMessages) {
+          tagCodexMessageSourceByteOffset(eventMessage, entry);
           if (isCodexCorrelationDebugEnabled()) {
             logCodexCorrelationDebug({
               sessionId,
@@ -694,12 +702,12 @@ function convertCodexEntries(
               eventKind: entry.payload.type,
               turnId: getCodexEventPayloadTurnId(entry.payload),
               itemId: getCodexEventPayloadItemId(entry.payload),
-              ...summarizeCodexNormalizedMessage(msg),
+              ...summarizeCodexNormalizedMessage(eventMessage),
             });
           }
-          messages.push(msg);
-          state.messagePositions.set(msg, messages.length - 1);
-          observeCodexToolLifecycleMessage(msg, state.openToolUses);
+          messages.push(eventMessage);
+          state.messagePositions.set(eventMessage, messages.length - 1);
+          observeCodexToolLifecycleMessage(eventMessage, state.openToolUses);
         }
       } else if (duplicateContextCompacted) {
         // This event would previously have consumed a normalized message index.
@@ -2026,6 +2034,28 @@ function convertCodexEventMsg(
     default:
       return null;
   }
+}
+
+function convertCodexTaskCompleteError(
+  entry: CodexEventMsgEntry,
+  sessionId: string,
+): Message | null {
+  const payload = entry.payload;
+  if (payload.type !== "task_complete" || !payload.error?.message) {
+    return null;
+  }
+
+  return {
+    type: "error",
+    uuid: `codex-error-${payload.turn_id}`,
+    session_id: sessionId,
+    error: payload.error.message,
+    codexErrorInfo: payload.error.codex_error_info ?? null,
+    codexWillRetry: false,
+    codexErrorScope: "turn",
+    codexTurnId: payload.turn_id,
+    timestamp: entry.timestamp,
+  };
 }
 
 // --- Gemini Conversion Logic ---

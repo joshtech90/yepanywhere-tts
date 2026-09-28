@@ -14,7 +14,11 @@ import {
   getDefaultRelayUrl,
   resolveLoginRelayUrl,
 } from "../lib/defaultRelayUrl";
-import { getHostByRelayUsername, upsertRelayHost } from "../lib/hostStorage";
+import {
+  findRelayHostForIdentity,
+  getHostByRelayUsername,
+  upsertRelayHost,
+} from "../lib/hostStorage";
 
 /**
  * Parse credentials from URL hash for auto-login via QR code.
@@ -74,9 +78,26 @@ export function RelayLoginPage() {
     () => searchParams.get("as") ?? "",
   );
   const [srpPassword, setSrpPassword] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(
-    !!initialRelayUrl || !!searchParams.get("as"),
-  );
+  const [showAdvanced, setShowAdvanced] = useState(!!initialRelayUrl);
+  // The server name this page filled in from an identity, so a later identity
+  // change may replace it without overwriting one the user typed.
+  const filledServerName = useRef<string | null>(null);
+
+  // The browser's password manager saves and restores the identity ("Log in
+  // as") with the password; this browser's saved hosts supply the server name.
+  const handleIdentityChange = (value: string) => {
+    setLimitedUsername(value);
+    const identity = value.trim().toLowerCase();
+    if (!identity) return;
+    if (relayUsername.trim() && relayUsername !== filledServerName.current) {
+      return;
+    }
+    const serverName = findRelayHostForIdentity(identity)?.relayUsername;
+    if (serverName) {
+      setRelayUsername(serverName);
+      filledServerName.current = serverName;
+    }
+  };
   const [customRelayUrl, setCustomRelayUrl] = useState(initialRelayUrl);
   const [rememberMe, setRememberMe] = useState(true);
 
@@ -184,18 +205,35 @@ export function RelayLoginPage() {
     e.preventDefault();
     setError(null);
 
+    // Read the fields themselves: a password manager's fill can reach the
+    // inputs before this component sees it as an edit.
+    const form = new FormData(e.currentTarget as HTMLFormElement);
+    const identityValue = String(form.get("username") ?? limitedUsername);
+    const passwordValue = String(form.get("password") ?? srpPassword);
+    const identity = identityValue.trim().toLowerCase();
+    const serverNameValue =
+      String(form.get("relay-server-name") ?? relayUsername).trim() ||
+      (identity
+        ? (findRelayHostForIdentity(identity)?.relayUsername ?? "")
+        : "");
+    if (serverNameValue !== relayUsername) setRelayUsername(serverNameValue);
+    if (passwordValue !== srpPassword) setSrpPassword(passwordValue);
+
     // Validate inputs
-    if (!relayUsername.trim()) {
-      setError(t("relayLoginErrorUsernameRequired"));
+    if (!serverNameValue) {
+      setError(t("relayLoginErrorServerNameRequired"));
       return;
     }
 
-    if (!srpPassword) {
+    if (!passwordValue) {
       setError(t("relayLoginErrorPasswordRequired"));
       return;
     }
 
-    const username = relayUsername.trim().toLowerCase();
+    const username = serverNameValue.toLowerCase();
+    // The owner's identity is the server name itself. Showing it in "Log in
+    // as" makes the password manager save the owner's password under it.
+    if (!identity) setLimitedUsername(username);
     let relayUrl: string;
     try {
       relayUrl = resolveLoginRelayUrl(
@@ -211,7 +249,7 @@ export function RelayLoginPage() {
     // later relay routes do not reuse a stale relay endpoint.
     // Blank means "this server's owner", which is the identity the server
     // name already implies.
-    const srpUsername = limitedUsername.trim().toLowerCase() || username;
+    const srpUsername = identity || username;
 
     if (rememberMe) {
       const host = upsertRelayHost({
@@ -228,7 +266,7 @@ export function RelayLoginPage() {
         relayUrl,
         relayUsername: username,
         srpUsername,
-        srpPassword,
+        srpPassword: passwordValue,
         rememberMe,
         onStatusChange: setStatus,
       });
@@ -263,26 +301,56 @@ export function RelayLoginPage() {
           className="login-form"
           data-testid="relay-login-form"
         >
+          {/* The server name routes to a machine; it is not an account, so
+              it is kept out of the password manager's username slot. */}
           <div className="login-field">
-            <label htmlFor="relayUsername">{t("relayLoginUsername")}</label>
+            <label htmlFor="relayUsername">{t("relayLoginServerName")}</label>
             <input
               id="relayUsername"
+              name="relay-server-name"
               type="text"
               value={relayUsername}
-              onChange={(e) => setRelayUsername(e.target.value)}
+              onChange={(e) => {
+                setRelayUsername(e.target.value);
+                filledServerName.current = null;
+              }}
               placeholder={t("relayLoginUsernamePlaceholder")}
+              disabled={isConnecting}
+              autoComplete="off"
+              autoCapitalize="none"
+              spellCheck={false}
+              data-testid="relay-username-input"
+            />
+            <p className="login-field-hint">{t("relayLoginServerNameHint")}</p>
+          </div>
+
+          <div className="login-field">
+            <label htmlFor="limitedUsername">
+              {t("relayLoginLimitedUsername")}
+            </label>
+            <input
+              id="limitedUsername"
+              name="username"
+              type="text"
+              value={limitedUsername}
+              onChange={(e) => handleIdentityChange(e.target.value)}
+              placeholder={t("relayLoginLimitedUsernamePlaceholder")}
               disabled={isConnecting}
               autoComplete="username"
               autoCapitalize="none"
-              data-testid="relay-username-input"
+              spellCheck={false}
+              data-testid="relay-limited-username-input"
             />
-            <p className="login-field-hint">{t("relayLoginUsernameHint")}</p>
+            <p className="login-field-hint">
+              {t("relayLoginLimitedUsernameHint")}
+            </p>
           </div>
 
           <div className="login-field">
             <label htmlFor="srpPassword">{t("relayLoginPassword")}</label>
             <input
               id="srpPassword"
+              name="password"
               type="password"
               value={srpPassword}
               onChange={(e) => setSrpPassword(e.target.value)}
@@ -316,29 +384,6 @@ export function RelayLoginPage() {
               ? t("relayLoginHideAdvanced")
               : t("relayLoginShowAdvanced")}
           </button>
-
-          {showAdvanced && (
-            <div className="login-field">
-              <label htmlFor="limitedUsername">
-                {t("relayLoginLimitedUsername")}
-              </label>
-              <input
-                id="limitedUsername"
-                type="text"
-                value={limitedUsername}
-                onChange={(e) => setLimitedUsername(e.target.value)}
-                placeholder={t("relayLoginLimitedUsernamePlaceholder")}
-                disabled={isConnecting}
-                autoComplete="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                data-testid="relay-limited-username-input"
-              />
-              <p className="login-field-hint">
-                {t("relayLoginLimitedUsernameHint")}
-              </p>
-            </div>
-          )}
 
           {showAdvanced && (
             <div className="login-field">

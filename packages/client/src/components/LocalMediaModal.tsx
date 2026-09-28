@@ -3,6 +3,7 @@ import {
   type LocalResourceMediaType,
   type LocalResourceRef,
   parseLocalResourceLink,
+  type UrlProjectId,
 } from "@yep-anywhere/shared";
 import {
   type MouseEvent,
@@ -16,19 +17,28 @@ import {
   useState,
 } from "react";
 import { api } from "../api/client";
+import { projectRawFileApiPath } from "../api/fileClient";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../hooks/useInlineMedia";
+import { usePublicFileSharesCreatable } from "../hooks/usePublicFileSharesCreatable";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { useRetainedVersionInfo } from "../hooks/useVersion";
+import { useViewerFind } from "../hooks/useViewerFind";
 import { useI18n } from "../i18n";
+import { isArtifactLink } from "../lib/artifactPreview";
+import { reuseOrCreatePublicFileShareUrl } from "../lib/publicFileShareLink";
+import type { ViewerFindSource } from "../lib/viewerFind";
 import {
   writeClipboardRichTextLater,
   writeClipboardText,
   writeClipboardTextLater,
 } from "../lib/clipboard";
-import { downloadBlob, writeClipboardImageLater } from "../lib/imageActions";
+import { writeClipboardImageLater } from "../lib/imageActions";
 import { ArtifactPreview } from "./ArtifactPreview";
+import { SourceEditAction } from "./SourceEditor";
+import { ViewerFindField } from "./ViewerFindField";
 import {
   requireRenderedFileClipboardPayload,
   requireRenderedHtmlClipboardPayload,
@@ -56,6 +66,7 @@ import {
 } from "../lib/vectorImageSizing";
 import {
   FilePathContextMenu,
+  ResourceContextMenu,
   type FileViewPresentation,
   supportsSourceAndPreview,
   useStartNewSessionFromFileAction,
@@ -76,6 +87,7 @@ import {
   useSessionViewerSessionId,
 } from "./SessionManagedViewer";
 import { Modal } from "./ui/Modal";
+import { useSessionAppPublicHref } from "./SessionAppLinks";
 
 export interface LocalMediaSource {
   buildApiPath?: (path: string) => string | null;
@@ -112,6 +124,7 @@ interface DisplayedLocalMedia {
 
 interface LocalFileModalProps {
   resource: LocalResourceRef;
+  initialMode?: "edit" | "interactive";
   initialPresentation?: FileViewPresentation;
   dismissOnBack?: boolean;
   onClose: () => void;
@@ -223,22 +236,24 @@ function localMediaApiPath(path: string): string {
 function localResourceApiPath(
   resource: LocalResourceRef,
   renderMarkdown: boolean,
+  download = resource.download,
 ): string {
-  if (resource.kind === "project-raw-file") {
-    const params = new URLSearchParams({ path: resource.path });
-    if (resource.download) {
-      params.set("download", "true");
-    }
-    return `/api/projects/${encodeURIComponent(
+  if (
+    resource.kind === "project-raw-file" ||
+    (resource.kind === "project-file" && resource.projectId)
+  ) {
+    return projectRawFileApiPath(
       resource.projectId ?? "",
-    )}/files/raw?${params.toString()}`;
+      resource.path,
+      download,
+    );
   }
 
   const params = new URLSearchParams({ path: resource.path });
   if (resource.renderMarkdown && renderMarkdown) {
     params.set("render", "1");
   }
-  if (resource.download) {
+  if (download) {
     params.set("download", "true");
   }
   if (resource.lineNumber !== undefined) {
@@ -778,6 +793,7 @@ function LocalMediaModalView({
 
 export function LocalFileModal({
   resource,
+  initialMode,
   initialPresentation,
   dismissOnBack,
   onClose,
@@ -785,7 +801,10 @@ export function LocalFileModal({
   const sessionMetadata = useOptionalSessionMetadata();
   const transport = useCurrentSourceRuntime().transport;
   const presentation =
-    initialPresentation ?? (resource.renderMarkdown ? "preview" : "source");
+    initialPresentation ??
+    (resource.renderMarkdown || /\.html?$/i.test(resource.path)
+      ? "preview"
+      : "source");
   const apiPath = localResourceApiPath(resource, presentation === "preview");
   const fileName = getFileName(resource.path);
   const locationSuffix = `${resource.lineNumber !== undefined ? `:${resource.lineNumber}` : ""}${
@@ -798,7 +817,27 @@ export function LocalFileModal({
   const [state, setState] = useState<LocalFileViewState>({
     status: "loading",
   });
+  const [sourceRevision, setSourceRevision] = useState(0);
+  const [modeControlsHost, setModeControlsHost] =
+    useState<HTMLSpanElement | null>(null);
+  // Find searches the shown text, or the HTML preview's frame.
+  const [textFrame, setTextFrame] = useState<HTMLDivElement | null>(null);
+  const [htmlFindSource, setHtmlFindSource] = useState<ViewerFindSource | null>(
+    null,
+  );
+  const find = useViewerFind(
+    useMemo(
+      () =>
+        state.status === "html"
+          ? htmlFindSource
+          : state.status === "text" && textFrame
+            ? ({ kind: "element", element: textFrame } as const)
+            : null,
+      [state.status, htmlFindSource, textFrame],
+    ),
+  );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: a successful explicit save invalidates the viewed source even when its URL is unchanged.
   useEffect(() => {
     let cancelled = false;
     let objectUrl: string | null = null;
@@ -848,7 +887,7 @@ export function LocalFileModal({
         URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [apiPath, presentation, transport]);
+  }, [apiPath, presentation, transport, sourceRevision]);
 
   return (
     <Modal
@@ -856,6 +895,32 @@ export function LocalFileModal({
       onClose={onClose}
       closeOnBackGesture={dismissOnBack}
       closeOnBackspace={dismissOnBack}
+      actions={
+        state.status === "text" || state.status === "html" ? (
+          <>
+            <ViewerFindField find={find} />
+            <SourceEditAction
+              initiallyOpen={initialMode === "edit"}
+              source={{
+                path: resource.path,
+                projectId:
+                  resource.kind === "project-file"
+                    ? resource.projectId
+                    : undefined,
+              }}
+              line={resource.lineNumber}
+              column={resource.columnNumber}
+              artifact={/\.html?$/i.test(resource.path)}
+              onSaved={
+                /\.html?$/i.test(resource.path)
+                  ? undefined
+                  : () => setSourceRevision((value) => value + 1)
+              }
+            />
+            <span ref={setModeControlsHost} />
+          </>
+        ) : undefined
+      }
     >
       <div className={styles.fileModalContent}>
         <div
@@ -872,7 +937,11 @@ export function LocalFileModal({
           <div className={styles.fileError}>{state.error}</div>
         )}
         {state.status === "text" && (
-          <div className={styles.fileTextFrame}>
+          <div
+            ref={setTextFrame}
+            className={styles.fileTextFrame}
+            tabIndex={-1}
+          >
             {/* The global class is the shared fixed-font hook in renderers.css. */}
             <pre className={`${styles.fileText} local-file-text`}>
               <code>{state.text}</code>
@@ -881,6 +950,8 @@ export function LocalFileModal({
         )}
         {state.status === "html" && (
           <ArtifactPreview
+            autoStart={initialMode === "interactive"}
+            toolbarHost={modeControlsHost}
             html={state.html}
             path={resource.path}
             projectId={
@@ -888,6 +959,7 @@ export function LocalFileModal({
             }
             className={styles.fileHtmlFrame}
             title={fileName}
+            onFindSource={setHtmlFindSource}
           />
         )}
         {state.status === "blob" && isPdfContentType(state.contentType) && (
@@ -949,6 +1021,12 @@ function getCurrentHref(): string | undefined {
   return typeof window === "undefined" ? undefined : window.location.href;
 }
 
+function artifactDownloadUrl(rawUrl: string): string {
+  const url = new URL(rawUrl);
+  url.searchParams.set("download", "true");
+  return url.href;
+}
+
 function isLocalFileResource(resource: LocalResourceRef): boolean {
   return resource.kind === "local-file" || resource.kind === "project-raw-file";
 }
@@ -1004,7 +1082,14 @@ function LocalResourceContextMenu({
   const publicShare = usePublicShareContext();
   const basePath = useRemoteBasePath();
   const startNewSessionFromFile = useStartNewSessionFromFileAction();
+  const canCreateFileShare = usePublicFileSharesCreatable();
   const isMedia = contextMenu.resource.kind === "local-media";
+  // A public-share counterpart to the private viewer link, kept as a separate
+  // entry because a bearer link is read-only and never reaches Edit. It is the
+  // same bearer the File Viewer's share button creates; the share routes file
+  // an absolute path under the registered project that owns it.
+  const publicFileShareTarget =
+    canCreateFileShare && !isMedia ? contextMenu.projectFileTarget : null;
   const mediaCoordinates = isMedia
     ? getImagePathCoordinates({
         exposeAbsolutePath: publicShare === null,
@@ -1057,22 +1142,24 @@ function LocalResourceContextMenu({
       }
       onClose={onClose}
       onOpen={() => openResource()}
-      onDownload={
-        isMedia
-          ? () => {
-              void fetchLocalMediaBlob(
-                contextMenu.resource.path,
-                undefined,
-                "modal",
+      download={{
+        fileName: getFileName(contextMenu.resource.path),
+        loadBlob: () => {
+          const { projectFileTarget, resource } = contextMenu;
+          return isMedia
+            ? fetchLocalMediaBlob(resource.path, undefined, "modal", transport)
+            : fetchLocalResourceBlob(
+                projectFileTarget
+                  ? projectRawFileApiPath(
+                      projectFileTarget.projectId,
+                      projectFileTarget.filePath,
+                      true,
+                    )
+                  : localResourceApiPath(resource, false, true),
                 transport,
-              )
-                .then((blob) =>
-                  downloadBlob(blob, getFileName(contextMenu.resource.path)),
-                )
-                .catch(() => {});
-            }
-          : undefined
-      }
+              );
+        },
+      }}
       onCopyImage={
         isMedia
           ? () => {
@@ -1125,6 +1212,17 @@ function LocalResourceContextMenu({
       }
       onCopyViewerLink={
         viewerLink ? () => void writeClipboardText(viewerLink) : undefined
+      }
+      onCopyPublicUrl={
+        publicFileShareTarget
+          ? () =>
+              void writeClipboardTextLater(
+                reuseOrCreatePublicFileShareUrl(
+                  publicFileShareTarget.projectId as UrlProjectId,
+                  publicFileShareTarget.filePath,
+                ),
+              )
+          : undefined
       }
       onCopyContents={
         isMedia
@@ -1196,8 +1294,11 @@ export function useLocalResourceClick(
 ): UseLocalResourceClickResult {
   const publicShare = usePublicShareContext();
   const openArtifact = useSessionArtifactLink();
+  const publicAppHref = useSessionAppPublicHref();
   const sessionMetadata = useOptionalSessionMetadata();
-  const transport = useCurrentSourceRuntime().transport;
+  const runtime = useCurrentSourceRuntime();
+  const transport = runtime.transport;
+  const version = useRetainedVersionInfo(runtime.sourceKey);
   const sameOriginUrls = transport.capabilities.sameOriginUrls;
   const projectContext = options.projectContext ?? sessionMetadata;
   const [modal, setModal] = useState<{
@@ -1214,6 +1315,13 @@ export function useLocalResourceClick(
     resource: LocalResourceRef;
     projectFileTarget: ProjectFileModalTarget | null;
     url: string | null;
+  } | null>(null);
+  const [artifactContextMenu, setArtifactContextMenu] = useState<{
+    label: string;
+    publicUrl?: string;
+    url: string;
+    x: number;
+    y: number;
   } | null>(null);
 
   const openResource = (
@@ -1365,6 +1473,22 @@ export function useLocalResourceClick(
     const target = getClickedAnchor(e.target);
     if (!target) return;
 
+    if (
+      publicShare === null &&
+      isArtifactLink(target.href, version?.artifactViewer, window.location.href)
+    ) {
+      e.preventDefault();
+      e.stopPropagation();
+      setArtifactContextMenu({
+        label: target.textContent?.trim() || target.hostname,
+        publicUrl: publicAppHref(target.href),
+        url: target.href,
+        x: e.clientX,
+        y: e.clientY,
+      });
+      return;
+    }
+
     const href = target.getAttribute("href");
     const resource = parseLocalResourceLink(
       {
@@ -1394,7 +1518,24 @@ export function useLocalResourceClick(
   const closeLocalFileModal = () => setLocalFileModal(null);
   const closeProjectFileModal = () => setProjectFileModal(null);
   const closeContextMenu = () => setContextMenu(null);
-  const contextMenuElement = contextMenu ? (
+  const closeArtifactContextMenu = () => setArtifactContextMenu(null);
+  const contextMenuElement = artifactContextMenu ? (
+    <ResourceContextMenu
+      x={artifactContextMenu.x}
+      y={artifactContextMenu.y}
+      canStartNewSession={false}
+      onClose={closeArtifactContextMenu}
+      onOpen={() =>
+        openArtifact?.(artifactContextMenu.url, artifactContextMenu.label)
+      }
+      download={{ url: artifactDownloadUrl(artifactContextMenu.url) }}
+      onCopyPublicUrl={
+        artifactContextMenu.publicUrl
+          ? () => void writeClipboardText(artifactContextMenu.publicUrl ?? "")
+          : undefined
+      }
+    />
+  ) : contextMenu ? (
     <LocalResourceContextMenu
       contextMenu={contextMenu}
       projectContext={projectContext}

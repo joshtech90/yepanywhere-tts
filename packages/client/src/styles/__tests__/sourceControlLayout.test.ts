@@ -21,6 +21,10 @@ const gitStatusDiffPreviewStylesheetUrl = new URL(
   "../../pages/GitStatusDiffPreview.module.css",
   import.meta.url,
 );
+const viewerHeaderStylesheetUrl = new URL(
+  "../../components/ViewerHeader.module.css",
+  import.meta.url,
+);
 const commitHistoryParentLinkStylesheetUrl = new URL(
   "../../pages/CommitHistoryParentLink.module.css",
   import.meta.url,
@@ -328,10 +332,7 @@ describe("Source Control workbench layout CSS contract", () => {
   });
 
   it("prioritizes the filename and uses compact diff controls", async () => {
-    const [css, previewCss] = await Promise.all([
-      readFile(rendererStylesheetUrl, "utf8"),
-      readFile(gitStatusDiffPreviewStylesheetUrl, "utf8"),
-    ]);
+    const css = await readFile(rendererStylesheetUrl, "utf8");
     const identity = getRuleDeclarationsContaining(
       css,
       ".git-diff-file-identity",
@@ -341,25 +342,9 @@ describe("Source Control workbench layout CSS contract", () => {
       css,
       ".git-diff-pane-toolbar .git-diff-preview-title",
     );
-    const narrowIdentity = getLastRuleDeclarations(
-      previewCss,
-      ".toolbar:global(.git-diff-pane-toolbar) .fileIdentity",
-    );
-    const narrowTitle = getLastRuleDeclarations(
-      previewCss,
-      ".toolbar:global(.git-diff-pane-toolbar) .previewTitle",
-    );
-    const narrowControlOrder = getLastRuleDeclarations(
-      previewCss,
-      ".toolbar:global(.git-diff-pane-toolbar) .controls, .toolbar:global(.git-diff-pane-toolbar) .headerActions",
-    );
-    const narrowControls = getLastRuleDeclarations(
-      previewCss,
-      ".toolbar:global(.git-diff-pane-toolbar) .controls",
-    );
-    const narrowActions = getLastRuleDeclarations(
-      previewCss,
-      ".toolbar:global(.git-diff-pane-toolbar) .headerActions",
+    const groups = getLastRuleDeclarations(
+      css,
+      ".git-diff-pane-toolbar .diff-context-buttons, .git-diff-pane-toolbar .git-diff-preview-header-actions",
     );
     const path = getLastRuleDeclarations(css, ".git-diff-toolbar-path");
     const icon = getLastRuleDeclarations(css, ".diff-toolbar-icon-button");
@@ -367,13 +352,12 @@ describe("Source Control workbench layout CSS contract", () => {
 
     expect(identity).toMatch(/min-width:\s*0\s*;/);
     expect(title).toMatch(/font-size:\s*0\.74rem\s*;/);
-    expect(narrowIdentity).toMatch(/flex-basis:\s*100%\s*;/);
-    expect(narrowIdentity).toMatch(/order:\s*2\s*;/);
-    expect(narrowTitle).toMatch(/overflow-wrap:\s*anywhere\s*;/);
-    expect(narrowTitle).toMatch(/white-space:\s*normal\s*;/);
-    expect(narrowControlOrder).toMatch(/order:\s*1\s*;/);
-    expect(narrowControls).toMatch(/flex-wrap:\s*wrap\s*;/);
-    expect(narrowActions).toMatch(/margin-left:\s*auto\s*;/);
+    // The filename wraps rather than reserving a row of its own: the shared
+    // viewer header decides where the controls land.
+    expect(title).toMatch(/overflow-wrap:\s*anywhere\s*;/);
+    // Each control group stays atomic, so a wrap never splits one of them.
+    expect(groups).toMatch(/flex:\s*0\s+0\s+auto\s*;/);
+    expect(groups).toMatch(/flex-wrap:\s*wrap\s*;/);
     expect(path).toMatch(/flex:\s*0\s+1000\s+auto\s*;/);
     expect(path).toMatch(/direction:\s*rtl\s*;/);
     expect(icon).toMatch(/width:\s*24px\s*;/);
@@ -381,27 +365,23 @@ describe("Source Control workbench layout CSS contract", () => {
     expect(hunk).toMatch(/min-width:\s*1\.9rem\s*;/);
   });
 
-  it("gives narrow diff toolbar rules more weight than the legacy stylesheet", async () => {
-    const previewCss = await readFile(
-      gitStatusDiffPreviewStylesheetUrl,
-      "utf8",
-    );
-    const container = previewCss.slice(previewCss.indexOf("@container"));
-    const selectors = [...container.matchAll(/(^|\})\s*([^{}@]+)\{/g)].flatMap(
-      (match) => (match[2] ?? "").split(",").map((one) => one.trim()),
-    );
+  it("takes the diff toolbar's reflow from the shared viewer header", async () => {
+    // The toolbar's reflow belongs to `ViewerHeader.module.css`, shared with
+    // the file viewer, so neither the diff preview module nor the legacy
+    // stylesheet may lay the toolbar out with rules of its own.
+    const [previewCss, css, headerCss] = await Promise.all([
+      readFile(gitStatusDiffPreviewStylesheetUrl, "utf8"),
+      readFile(rendererStylesheetUrl, "utf8"),
+      readFile(viewerHeaderStylesheetUrl, "utf8"),
+    ]);
+    const toolbar = getLastRuleDeclarations(css, ".git-diff-pane-toolbar");
+    const header = getLastRuleDeclarations(headerCss, ".header");
+    const actions = getLastRuleDeclarations(headerCss, ".actions");
 
-    expect(selectors.length).toBeGreaterThan(0);
-    for (const selector of selectors) {
-      // Each toolbar element also carries its legacy `git-diff-*` class, which
-      // renderers.css and index.css style with two-class selectors. Every
-      // replacement must have strictly greater specificity so chunk order is
-      // irrelevant.
-      expect(
-        (selector.match(/\./g) ?? []).length,
-        `${selector} must outrank the legacy two-class rule it replaces`,
-      ).toBeGreaterThan(2);
-    }
+    expect(previewCss).not.toContain("@container");
+    expect(toolbar).not.toMatch(/display:\s*flex\s*;/);
+    expect(header).toMatch(/flex-wrap:\s*wrap\s*;/);
+    expect(actions).toMatch(/flex-wrap:\s*wrap\s*;/);
   });
 
   it("uses compact blame columns and one scrollbar per provenance run", async () => {

@@ -25,6 +25,7 @@ import {
   resolveUploadStoragePath,
 } from "../uploads/index.js";
 import { createUntrustedFileResponseHeaders } from "./untrusted-file-response.js";
+import { actingUsername } from "../auth/limitedLaunchPolicy.js";
 
 /** Progress update interval in bytes (64KB) */
 const PROGRESS_INTERVAL_BYTES = 64 * 1024;
@@ -77,6 +78,8 @@ function isStagedAttachmentRefArray(
 
 export function createUploadRoutes(deps: UploadDeps): Hono {
   const routes = new Hono();
+  const stagingFor = (c: Context) =>
+    deps.attachmentStagingService?.forUser(actingUsername(c) ?? null);
   const storagePolicy =
     deps.storagePolicy ??
     new ProjectStoragePolicy({
@@ -376,16 +379,17 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
   // WebSocket endpoint: /attachments/staging/drafts/upload/ws
   routes.get(
     "/attachments/staging/drafts/upload/ws",
-    deps.upgradeWebSocket(() =>
-      createUploadWebSocketEvents(
-        async () => deps.attachmentStagingService !== undefined,
+    deps.upgradeWebSocket((c) => {
+      const staging = stagingFor(c);
+      return createUploadWebSocketEvents(
+        async () => staging !== undefined,
         "Attachment staging is unavailable",
         {
           startUpload: async (msg) => {
-            if (!deps.attachmentStagingService) {
+            if (!staging) {
               throw new Error("Attachment staging is unavailable");
             }
-            return deps.attachmentStagingService.startDraftUpload({
+            return staging.startDraftUpload({
               batchId: msg.batchId,
               originalName: msg.name,
               size: msg.size,
@@ -395,17 +399,16 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
             });
           },
           writeChunk: (uploadId, chunk) => {
-            if (!deps.attachmentStagingService) {
+            if (!staging) {
               throw new Error("Attachment staging is unavailable");
             }
-            return deps.attachmentStagingService.writeChunk(uploadId, chunk);
+            return staging.writeChunk(uploadId, chunk);
           },
           completeUpload: async (uploadId) => {
-            if (!deps.attachmentStagingService) {
+            if (!staging) {
               throw new Error("Attachment staging is unavailable");
             }
-            const stagedRef =
-              await deps.attachmentStagingService.completeUpload(uploadId);
+            const stagedRef = await staging.completeUpload(uploadId);
             return {
               type: "complete",
               stagedRef,
@@ -413,14 +416,14 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
             };
           },
           cancelUpload: (uploadId) => {
-            if (!deps.attachmentStagingService) {
+            if (!staging) {
               return Promise.resolve();
             }
-            return deps.attachmentStagingService.cancelUpload(uploadId);
+            return staging.cancelUpload(uploadId);
           },
         },
-      ),
-    ),
+      );
+    }),
   );
 
   // POST endpoint: /attachments/staging/drafts/:batchId/validate
@@ -440,7 +443,7 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
     }
 
     try {
-      const refs = await deps.attachmentStagingService.validateDraftRefs(
+      const refs = await stagingFor(c)!.validateDraftRefs(
         c.req.param("batchId"),
         body.refs,
       );
@@ -462,11 +465,10 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
       }
 
       try {
-        const deleted =
-          await deps.attachmentStagingService.deleteDraftAttachment(
-            c.req.param("batchId"),
-            c.req.param("attachmentId"),
-          );
+        const deleted = await stagingFor(c)!.deleteDraftAttachment(
+          c.req.param("batchId"),
+          c.req.param("attachmentId"),
+        );
         if (!deleted) {
           return c.json({ error: "Staged attachment not found" }, 404);
         }
@@ -513,15 +515,14 @@ export function createUploadRoutes(deps: UploadDeps): Hono {
       }
 
       try {
-        const files =
-          await deps.attachmentStagingService.materializeDraftAttachmentsForSession(
-            {
-              batchId: body.batchId,
-              refs: body.refs,
-              projectPath: project.path,
-              sessionId,
-            },
-          );
+        const files = await stagingFor(
+          c,
+        )!.materializeDraftAttachmentsForSession({
+          batchId: body.batchId,
+          refs: body.refs,
+          projectPath: project.path,
+          sessionId,
+        });
         return c.json({ files });
       } catch (error) {
         return c.json(

@@ -1,3 +1,5 @@
+import { isRecord } from "./plain-record.js";
+import { effortOfThinkingOption } from "./turn-effort.js";
 import {
   ALL_PROVIDERS,
   type ProviderName,
@@ -7,9 +9,9 @@ import {
 /**
  * Long-context effort-change warning: before a mid-session effort change on a
  * session whose prompt is already large, YA warns that the change re-reads
- * most of that prompt (the effort is part of the rendered system prompt on
- * the providers below, so the cached prefix no longer matches) and offers a
- * fork instead. Contract: topics/mid-session-effort-change.md.
+ * that whole prompt (the providers below cache the prompt per effort, so no
+ * cached prefix matches) and offers a fork instead. Contract:
+ * topics/mid-session-effort-change.md.
  */
 export type LongContextEffortWarningSettings = {
   /** Per-provider enablement. Absent or false means no warning. */
@@ -27,8 +29,9 @@ export const LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS = 500_000;
 export const LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS = 1_000;
 
 /**
- * Providers whose effort change is known to re-render the system prompt:
- * Claude (user-observed cache loss on effort change) and Codex (request-level
+ * Providers whose effort change is known to miss the prompt cache: Claude
+ * (the cache is keyed by effort; measured in
+ * topics/mid-session-effort-change.evidence.md) and Codex (request-level
  * reasoning effort; see gaps/codex-cache-features.md for the Astra exception
  * that is not yet usable).
  */
@@ -37,10 +40,6 @@ export const DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS: LongContextEffortWarn
     providers: { claude: true, codex: true },
     thresholdTokens: DEFAULT_LONG_CONTEXT_EFFORT_WARNING_TOKENS,
   };
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /**
  * Parse a stored or submitted setting. `undefined`/`null`/`""` yields the
@@ -88,32 +87,37 @@ export function parseLongContextEffortWarningSettings(
 }
 
 /**
- * The effort a thinking option asks for, or `undefined` when the option lets
- * the provider choose (`auto`) or disables thinking (`off`). Two options with
- * different results here are an effort change for the warning's purposes.
+ * Concrete Claude model ids whose prompt cache survives an effort change,
+ * each confirmed by a warm-session measurement recorded in
+ * topics/mid-session-effort-change.evidence.md. A bare alias such as `opus`
+ * is not listed: it can resolve to a later version that has not been
+ * measured.
  */
-export function effortOfThinkingOption(
-  option: ThinkingOption | undefined,
-): string | undefined {
-  if (option === undefined || option === "off" || option === "auto") {
-    return undefined;
-  }
-  return option.startsWith("on:") ? option.slice(3) : option;
+const CLAUDE_EFFORT_CACHE_SAFE_MODELS: readonly string[] = ["claude-opus-5-5"];
+
+/** Strips the extended-context and dated-snapshot suffixes of a Claude id. */
+function baseClaudeModelId(model: string): string {
+  return model
+    .trim()
+    .toLowerCase()
+    .replace(/\[[^\]]*\]$/, "")
+    .replace(/-\d{8}$/, "");
 }
 
 /**
  * Whether a mid-session effort change on this provider and model keeps the
- * provider's prompt cache. Today no wired provider does: Codex's
- * `configuration_update` path for GPT-6 Astra exists in the pinned source but
- * is behind a default-off Codex feature YA does not enable
+ * provider's prompt cache. On Claude, Opus 5.5 does; Sonnet 5 was measured
+ * not to. Codex's `configuration_update` path for GPT-6 Astra exists in the
+ * pinned source but is behind a default-off Codex feature YA does not enable
  * (gaps/codex-cache-features.md). Flip the Astra branch once that is enabled
  * and a warm-session measurement confirms the cache survives.
  */
 export function effortChangeKeepsPromptCache(
-  _provider: ProviderName,
-  _model: string | undefined,
+  provider: ProviderName,
+  model: string | undefined,
 ): boolean {
-  return false;
+  if (provider !== "claude" || !model) return false;
+  return CLAUDE_EFFORT_CACHE_SAFE_MODELS.includes(baseClaudeModelId(model));
 }
 
 export interface LongContextEffortChangeQuery {

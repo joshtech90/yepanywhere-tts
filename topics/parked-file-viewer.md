@@ -45,11 +45,12 @@ message or tool row that opened it.
 - **Open with Session right pane disabled (default)** — the viewer owns the
   session's transcript row. The live session
   remains mounted behind it, while the composer remains visible and operable
-  directly below it. The covered transcript keeps its last committed render
-  frame and pauses progressive hydration instead of reconciling hidden session
-  updates. Session data, status, composer controls, and managed-viewer sources
-  remain live; parking or closing the viewer reveals the latest buffered
-  transcript snapshot and resumes hydration.
+  directly below it. A covering file or detail modal keeps the transcript's
+  last committed render frame and pauses progressive hydration instead of
+  reconciling hidden session updates. Session data, status, composer controls,
+  and managed-viewer sources remain live; parking or closing the modal reveals
+  the latest buffered transcript snapshot and resumes hydration. An artifact
+  App iframe does not freeze the transcript.
 - **Parked** — the viewer remains mounted but is not interactive or visible;
   the live session and composer are visible and operable.
 - **Closed** — the viewer is destroyed and its controller disappears.
@@ -69,7 +70,10 @@ the same topmost-only rule. Backspace never dismisses a viewer while its event
 target is an input, textarea, select, editable region, or textbox. Each child
 file or resource modal owns its own browser-history entry so browser Back does
 not skip from a nested file past its parent. Escape likewise dismisses only the
-topmost visible modal. Every visible modal shares one reference-counted document
+topmost visible modal; a viewer docked in the wide session right pane is not a
+modal and answers Escape only from inside itself
+([session right pane](session-right-pane.md#file-viewers-and-detail-panels)).
+Every visible modal shares one reference-counted document
 scroll lock: dismissing a child keeps scrolling locked for its parent, and the
 last dismissal restores the body overflow value that preceded the stack.
 
@@ -80,9 +84,11 @@ session composer and their narrower file authority.
 ## First trial: persistent composer controller
 
 The first presentation to evaluate is one controller in the bottom composer
-toolbar. It is present while the viewer is open as well as while it is parked,
-so its position and meaning do not depend on remembering where the source link
-was.
+toolbar. For a covering viewer it is present while the viewer is open as well
+as while it is parked, so its position and meaning do not depend on
+remembering where the source link was. A right-pane viewer keeps its own
+header beside the transcript, so it has no bottom controller until it is
+minimized; the controller then appears and its restore returns the pane.
 
 - The controller occupies the toolbar's available center gap rather than a
   fixed-width pill. Its pathname portion flexes; the toggle and close controls
@@ -129,15 +135,24 @@ was.
   path keeps a readable column of its own, uses at most two lines, and the
   metrics stay on one line. When the controls no longer fit beside that column
   they move to a compact second header row rather than squeezing the path into
-  a one-glyph stack. At 480px and below the actions use a two-row grid. These
-  header cutoffs use the viewer's allocated width, so a narrow right pane
-  receives the same compact controls. The back control is an arrow with no
+  a one-glyph stack. Those controls then wrap greedily across the width the
+  header actually has, so widening the viewer only ever removes a row: it never
+  reserves columns a narrower layout once needed. A fixed grid or a private
+  width breakpoint is specifically ruled out — the file viewer used to pin
+  480px and below to a seven-column two-row grid, which capped each button row
+  at about half the header's width and spilled the rest into a third row beside
+  empty space. The `− N +` zoom control and the window block are each atomic, so
+  a wrap moves a whole group and never splits one. These header cutoffs use the
+  viewer's allocated width, so a narrow right pane receives the same compact
+  controls. The back control is an arrow with no
   label, matching the standalone file page's own back control.
-  The four-column window block keeps
-  link, move to new tab, minimize, and close on top and the atomic `− N +` zoom
-  control across the same columns below. Those equal-width window cells are short
-  rectangles whose combined width aligns with the zoom group, with close at
-  top-right; remaining actions fill the cells to their left. The scrollable
+  The window block keeps link, move to new tab, minimize and close together and
+  trailing, so close stays at the header's trailing edge on whichever row the
+  block lands. `packages/client/src/components/ViewerHeader.module.css` owns
+  this layout for every viewer header with a title, an optional revision or
+  metrics caption under it, and a control row — the session right pane, the
+  artifact link viewer, the session detail panel and the source diff pane
+  toolbar reflow on exactly these terms. The scrollable
   document ends above the separate composer row, so its final line can always
   scroll completely clear of those controls without overlay-compensation
   padding.
@@ -289,12 +304,20 @@ remain in place. Close and browser Back destroy only the preview; minimize and
 restore retain the same iframe, including its form state and scroll position.
 Tapping the original link while parked restores that same preview. Replacing
 the originating rich-text row does not own or end the preview's lifetime.
+Opening the link also records the artifact as the session's latest App, as a
+file viewer's play activation does, so the App action recalls it after Close
+([session right pane](session-right-pane.md)).
 
 The empty viewer layer is already present in session layouts. It contains no
 iframe and performs no artifact requests, probes, polling, or grant creation
 until a user opens an artifact. Opening an existing grant URL consumes that URL
-directly; closing it does not revoke someone else's shared grant. A file viewer
-that creates its own grant retains its existing close-and-revoke contract.
+directly; closing it does not revoke the grant. File-viewer interactive previews
+also leave their borrowed grants valid until expiry so a copied URL or separate
+browser tab keeps working after the originating viewer closes.
+
+Artifact App iframes never freeze transcript projection or progressive
+hydration. The iframe may cover the transcript visually, but opening, parking,
+or closing it does not own session reconciliation.
 
 Only grant paths on the current source's configured, isolated artifact origins
 are handled. Other external links, public-share links, downloads, and modified

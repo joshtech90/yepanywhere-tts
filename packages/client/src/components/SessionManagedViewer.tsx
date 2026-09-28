@@ -10,6 +10,9 @@ import {
   useRef,
 } from "react";
 import { createPortal } from "react-dom";
+import { QUOTE_SELECTION_ROOT_ATTRIBUTES } from "../lib/markdownSelectionCopy";
+import styles from "./SessionManagedViewer.module.css";
+import headerStyles from "./ViewerHeader.module.css";
 import { useSessionRightPaneSetting } from "../hooks/useSessionRightPaneSetting";
 import { usePanelSlideAnimations } from "../hooks/usePanelSlideAnimations";
 import { useClosingPaneContent } from "../hooks/useClosingPaneContent";
@@ -26,11 +29,19 @@ import {
   clearSessionViewer,
   presentSessionViewer,
   restoreSessionViewer,
+  sessionViewerFreezesTranscript,
+  type SessionViewerControllerState,
   useSessionViewerController,
 } from "../lib/sessionViewerController";
-import { Modal } from "./ui/Modal";
+import { Modal, ModalChrome, useModalLayer } from "./ui/Modal";
 import { SessionAppLinkContext } from "./SessionAppLinks";
-import type { SessionAppConfig } from "../lib/sessionVhostApps";
+import {
+  publicSessionLocalhostHref,
+  rewriteSessionLocalhostHref,
+  type SessionAppConfig,
+  sessionLocalhostRewriteApplies,
+} from "../lib/sessionVhostApps";
+import { useRelayUsername } from "../hooks/useRemoteBasePath";
 
 interface SessionManagedPanelProps {
   viewerId?: string;
@@ -48,6 +59,12 @@ const SessionViewerContext = createContext<string | null>(null);
 const SessionFileViewerHostContext = createContext<{
   target: HTMLElement | null;
   inactive: boolean;
+  /**
+   * The viewer is a column beside the live session (the wide right pane), not
+   * a layer over it, so it must not take document-level Escape or the scroll
+   * lock from the session's own controls.
+   */
+  docked: boolean;
 } | null>(null);
 
 export function useSessionFileViewerHost() {
@@ -124,25 +141,45 @@ export function SessionViewerProvider({
   inactive = false,
   onSendComment,
   onOpenApp,
+  onAnnounceApp,
   appConfig,
   rightPaneTarget,
+  rightPaneWide = false,
   children,
 }: {
   sessionId: string;
   inactive?: boolean;
   onSendComment?: SendSessionViewerComment;
   onOpenApp?: (url: string) => boolean;
+  onAnnounceApp?: (url: string, label: string) => void;
   appConfig?: SessionAppConfig;
   rightPaneTarget?: HTMLElement | null;
+  /** The right pane is a side-by-side column rather than a drawer over the session. */
+  rightPaneWide?: boolean;
   children: ReactNode;
 }) {
   const runtime = useCurrentSourceRuntime();
   const version = useRetainedVersionInfo(runtime.sourceKey);
+  const relayUsername = useRelayUsername();
   const viewerId = useId();
-  const appLinks = useMemo(
-    () => (inactive ? null : { config: appConfig, open: onOpenApp }),
-    [inactive, appConfig, onOpenApp],
-  );
+  const appLinks = useMemo(() => {
+    if (inactive) return null;
+    const relayed = relayUsername !== undefined;
+    const linkContext = () => ({ clientUrl: window.location.href, relayed });
+    return {
+      config: appConfig,
+      open: onOpenApp,
+      announce: onAnnounceApp,
+      // Without a rewriter, rendered HTML is not parsed at all; with one that
+      // could never change a destination, every streamed block would be.
+      rewriteHref: sessionLocalhostRewriteApplies(appConfig, linkContext())
+        ? (url: string) =>
+            rewriteSessionLocalhostHref(url, appConfig, linkContext())
+        : undefined,
+      publicHref: (url: string) =>
+        publicSessionLocalhostHref(url, appConfig, linkContext()),
+    };
+  }, [inactive, appConfig, onOpenApp, onAnnounceApp, relayUsername]);
   const openArtifact = useCallback(
     (url: string, label: string) => {
       if (
@@ -158,29 +195,35 @@ export function SessionViewerProvider({
         label,
       });
       restoreSessionViewer(viewerId);
+      // An opened artifact is an App the session recalls after this viewer
+      // closes, the same as a file viewer's play activation.
+      onAnnounceApp?.(url, label);
       return true;
     },
-    [inactive, sessionId, version?.artifactViewer, viewerId],
+    [inactive, onAnnounceApp, sessionId, version?.artifactViewer, viewerId],
   );
   return (
     <SessionViewerContext.Provider value={sessionId}>
       <SessionArtifactLinkContext.Provider value={openArtifact}>
         <SessionViewerCommentProvider onSendComment={onSendComment}>
+          {/* Viewers the host renders belong to the session: a play activation
+              inside one announces its App like any transcript content. */}
           <SessionAppLinkContext.Provider value={appLinks}>
             {children}
+            <SessionManagedViewerHost
+              sessionId={sessionId}
+              inactive={inactive}
+              rightPaneTarget={rightPaneTarget}
+              rightPaneWide={rightPaneWide}
+            />
           </SessionAppLinkContext.Provider>
-          <SessionManagedViewerHost
-            sessionId={sessionId}
-            inactive={inactive}
-            rightPaneTarget={rightPaneTarget}
-          />
         </SessionViewerCommentProvider>
       </SessionArtifactLinkContext.Provider>
     </SessionViewerContext.Provider>
   );
 }
 
-/** Keeps covered transcript props stable while its managed viewer is open. */
+/** Keeps covered transcript props stable behind an expensive covering modal. */
 export function SessionViewerTranscriptGate({
   children,
 }: {
@@ -191,8 +234,7 @@ export function SessionViewerTranscriptGate({
   useSessionRightPaneSetting();
   const viewerOpen = Boolean(
     controller?.sessionId === sessionId &&
-      !sessionViewerUsesRightPane(controller) &&
-      !controller.minimized,
+      sessionViewerFreezesTranscript(controller),
   );
   const renderedChildrenRef = useRef(children);
   if (!viewerOpen) {
@@ -205,10 +247,12 @@ export function SessionManagedViewerHost({
   sessionId,
   inactive = false,
   rightPaneTarget,
+  rightPaneWide = false,
 }: {
   sessionId: string;
   inactive?: boolean;
   rightPaneTarget?: HTMLElement | null;
+  rightPaneWide?: boolean;
 }) {
   const controller = useSessionViewerController();
   const { sessionRightPaneEnabled } = useSessionRightPaneSetting();
@@ -216,10 +260,16 @@ export function SessionManagedViewerHost({
   const controllerRef = useRef(controller);
   const lifecycleGenerationRef = useRef(0);
   controllerRef.current = controller;
-  const panel =
+  const activePanel =
     controller?.kind === "panel" && controller.sessionId === sessionId
       ? controller
       : null;
+  const panel = useClosingPaneContent(
+    activePanel,
+    sessionRightPaneEnabled && (!controller || activePanel)
+      ? panelSlideDurationMs
+      : 0,
+  );
   const activeFile =
     controller?.kind === "file" &&
     controller.sessionId === sessionId &&
@@ -259,6 +309,7 @@ export function SessionManagedViewerHost({
               ? (rightPaneTarget ?? null)
               : null,
             inactive: inactive || file.minimized || controller?.id !== file.id,
+            docked: sessionViewerUsesRightPane(file) && rightPaneWide,
           }}
         >
           {file.renderContent(inactive, sessionViewerUsesRightPane(file))}
@@ -280,6 +331,17 @@ export function SessionManagedViewerHost({
       />
     );
   if (!panel) return null;
+  if (sessionViewerUsesRightPane(panel)) {
+    if (!rightPaneTarget) return null;
+    return createPortal(
+      <SessionPanelPane
+        panel={panel}
+        inactive={inactive}
+        docked={rightPaneWide}
+      />,
+      rightPaneTarget,
+    );
+  }
   return (
     <Modal
       title={panel.title}
@@ -291,5 +353,56 @@ export function SessionManagedViewerHost({
     >
       {panel.content}
     </Modal>
+  );
+}
+
+/**
+ * The session's detail panel as a right-pane column, in the covering modal's
+ * chrome so a panel written for the modal needs no knowledge of where it is
+ * shown. Docked beside the session it answers Escape only from inside itself;
+ * as the narrow drawer over the session it is a modal layer.
+ */
+function SessionPanelPane({
+  panel,
+  inactive,
+  docked,
+}: {
+  panel: Extract<SessionViewerControllerState, { kind: "panel" }>;
+  inactive: boolean;
+  docked: boolean;
+}) {
+  const hidden = panel.minimized || inactive;
+  useModalLayer(panel.close, !hidden && !docked);
+  return (
+    <section
+      className={styles.panePanel}
+      role="dialog"
+      aria-label={panel.label}
+      hidden={hidden}
+      onKeyDown={
+        docked
+          ? (event) => {
+              if (event.key !== "Escape" || event.defaultPrevented) return;
+              event.preventDefault();
+              event.stopPropagation();
+              panel.close();
+            }
+          : undefined
+      }
+      {...QUOTE_SELECTION_ROOT_ATTRIBUTES}
+    >
+      <ModalChrome
+        title={panel.title}
+        actions={panel.actions}
+        headerClassName={headerStyles.header}
+        identityClassName={headerStyles.identity}
+        headerActionsClassName={headerStyles.actions}
+        onMinimize={panel.minimize}
+        onClose={panel.close}
+        contentRef={panel.contentRef}
+      >
+        {panel.content}
+      </ModalChrome>
+    </section>
   );
 }

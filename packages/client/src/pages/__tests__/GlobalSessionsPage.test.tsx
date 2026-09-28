@@ -7,9 +7,11 @@ import {
   render,
   screen,
   waitFor,
+  within,
 } from "@testing-library/react";
 import {
   SESSION_CONTENT_SEARCH_CAPABILITY,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
   type ProviderInfo,
 } from "@yep-anywhere/shared";
 import type { ReactNode } from "react";
@@ -100,10 +102,6 @@ vi.mock("../../hooks/useProviders", () => ({
   useProviders: () => providerState,
 }));
 
-vi.mock("../../components/BulkActionBar", () => ({
-  BulkActionBar: () => null,
-}));
-
 const filterDropdowns = vi.hoisted(
   () =>
     [] as Array<{
@@ -135,12 +133,22 @@ vi.mock("../../components/SessionListItem", () => ({
     sessionId,
     title,
     hasProjectQueue,
+    isSelected,
+    onSelect,
   }: {
     sessionId: string;
     title: string;
     hasProjectQueue?: boolean;
+    isSelected?: boolean;
+    onSelect?: (id: string, checked: boolean) => void;
   }) => (
     <div data-testid={`session-${sessionId}`}>
+      <input
+        type="checkbox"
+        aria-label={`Select ${title}`}
+        checked={!!isSelected}
+        onChange={(event) => onSelect?.(sessionId, event.target.checked)}
+      />
       {title}
       {hasProjectQueue ? (
         <span data-testid={`project-queue-${sessionId}`}>Q</span>
@@ -305,6 +313,14 @@ describe("GlobalSessionsPage", () => {
       },
     );
     vi.stubGlobal(
+      "IntersectionObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    vi.stubGlobal(
       "matchMedia",
       vi.fn(() => ({ matches: true })),
     );
@@ -338,7 +354,7 @@ describe("GlobalSessionsPage", () => {
   });
 
   function renderPage(initialEntry: string) {
-    render(
+    return render(
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/sessions" element={<GlobalSessionsPage />} />
@@ -371,6 +387,88 @@ describe("GlobalSessionsPage", () => {
     renderPage("/sessions?status=archived");
     expect(screen.getByTestId("session-archived")).toBeDefined();
     expect(screen.queryByTestId("session-active")).toBeNull();
+  });
+
+  it("filters recorded web sessions and keeps unmarked sessions distinct", () => {
+    versionState.version = {
+      capabilities: [SESSION_CREATION_PROVENANCE_CAPABILITY],
+    };
+    sessionCollectionState.records = [
+      makeSessionRecord("web", { creationProvenance: { surface: "web" } }),
+      makeSessionRecord("desktop", {
+        creationProvenance: { surface: "desktop" },
+      }),
+      makeSessionRecord("unmarked"),
+    ];
+    filterDropdowns.length = 0;
+    renderPage("/sessions?created=web&status=");
+
+    expect(screen.getByTestId("session-web")).toBeDefined();
+    expect(screen.queryByTestId("session-desktop")).toBeNull();
+    expect(screen.queryByTestId("session-unmarked")).toBeNull();
+    expect(
+      filterDropdowns.find((dropdown) => dropdown.label === "Created from")
+        ?.options,
+    ).toMatchObject([
+      { value: "web" },
+      { value: "desktop" },
+      { value: "unspecified" },
+    ]);
+  });
+
+  it("hides creation filtering and ignores its URL parameter on older servers", () => {
+    versionState.version = { current: "0.9.2" };
+    sessionCollectionState.records = [
+      makeSessionRecord("web", { creationProvenance: { surface: "web" } }),
+      makeSessionRecord("unmarked"),
+    ];
+    filterDropdowns.length = 0;
+    renderPage("/sessions?created=web&status=");
+
+    expect(screen.getByTestId("session-web")).toBeDefined();
+    expect(screen.getByTestId("session-unmarked")).toBeDefined();
+    expect(
+      filterDropdowns.find((dropdown) => dropdown.label === "Created from"),
+    ).toBeUndefined();
+  });
+
+  // The browser test in e2e/all-sessions-search.spec.ts measures key-to-frame
+  // latency. fireEvent also flushes deferred React work, so its return time
+  // cannot measure when the input acknowledged the key.
+  it("preserves sequential search typing while provenance filtering and the catalog update", () => {
+    versionState.version = {
+      capabilities: [SESSION_CREATION_PROVENANCE_CAPABILITY],
+    };
+    sessionCollectionState.records = Array.from({ length: 300 }, (_, index) =>
+      makeSessionRecord(`web-${index}`, {
+        creationProvenance: { surface: "web" },
+      }),
+    );
+    const page = () => (
+      <MemoryRouter initialEntries={["/sessions?created=web&status="]}>
+        <Routes>
+          <Route path="/sessions" element={<GlobalSessionsPage />} />
+        </Routes>
+      </MemoryRouter>
+    );
+    const view = render(page());
+    const input = screen.getByRole("searchbox") as HTMLInputElement;
+    input.focus();
+    let typed = "";
+    for (const char of "source") {
+      typed += char;
+      fireEvent.keyDown(input, { key: char });
+      fireEvent.change(input, { target: { value: typed } });
+      expect(input.value).toBe(typed);
+      sessionCollectionState.records = [
+        ...sessionCollectionState.records,
+        makeSessionRecord(`desktop-${typed}`, {
+          creationProvenance: { surface: "desktop" },
+        }),
+      ];
+      view.rerender(page());
+      expect(input.value).toBe(typed);
+    }
   });
 
   for (const release of ["0.8.0", "0.8.1"]) {
@@ -423,8 +521,14 @@ describe("GlobalSessionsPage", () => {
     });
     renderPage("/sessions?q=Session");
     fireEvent.click(screen.getByRole("checkbox", { name: /^User/ }));
-    await waitFor(() =>
-      expect(screen.getByText(/Malformed transcript record/)).toBeDefined(),
+    // The scan passes through real start, scheduling and publish timers. The
+    // whole test takes ~310ms on a development host; CI runs at 8bdd9063a and
+    // b4601c77a exceeded the 1000ms default wait with "0 / 1 sessions
+    // scanned" showing, so the budget is 4x that observed limit.
+    await waitFor(
+      () =>
+        expect(screen.getByText(/Malformed transcript record/)).toBeDefined(),
+      { timeout: 4_000 },
     );
     expect(runtime.transport.fetch).toHaveBeenCalledTimes(1);
     expect(
@@ -439,7 +543,7 @@ describe("GlobalSessionsPage", () => {
     ).toBeTruthy();
   });
 
-  it("intersects explicit selection without deleting hidden selections", async () => {
+  it("keeps unselected sessions listed and retains selections the search hides", async () => {
     sessionCollectionState.records = [
       makeSessionRecord("alpha"),
       makeSessionRecord("beta"),
@@ -447,67 +551,111 @@ describe("GlobalSessionsPage", () => {
     renderPage("/sessions");
     await act(async () => {
       fireEvent.click(
-        screen.getByRole("button", {
-          name: "Keep just 2 matching sessions selected",
-        }),
+        screen.getByRole("checkbox", { name: "Select Session alpha" }),
       );
     });
-    await act(async () => {
-      fireEvent.change(screen.getByRole("searchbox"), {
-        target: { value: "alpha" },
-      });
-    });
-    expect(screen.queryByTestId("session-beta")).toBeNull();
+    expect(screen.getByTestId("session-beta")).toBeDefined();
     expect(
-      screen.getByRole("button", { name: "Clear 2 selected" }),
+      screen.getByRole("button", { name: "Clear 1 selected" }),
     ).toBeDefined();
     await act(async () => {
       fireEvent.change(screen.getByRole("searchbox"), {
         target: { value: "beta" },
       });
     });
-    expect(screen.getByTestId("session-beta")).toBeDefined();
+    expect(screen.queryByTestId("session-alpha")).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Select all 1/ }));
+    });
     expect(
       screen.getByRole("button", { name: "Clear 2 selected" }),
     ).toBeDefined();
-    await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", {
-          name: "Keep just 1 matching sessions selected",
-        }),
-      );
-    });
     await act(async () => {
       fireEvent.change(screen.getByRole("searchbox"), {
         target: { value: "" },
       });
     });
-    expect(screen.queryByTestId("session-alpha")).toBeNull();
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Clear 1 selected" }));
-    });
     expect(screen.getByTestId("session-alpha")).toBeDefined();
     expect(screen.getByTestId("session-beta")).toBeDefined();
+    expect(
+      (
+        screen.getByRole("button", {
+          name: /Select all 2/,
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true);
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Clear 2 selected" }));
+    });
+    expect(screen.queryByRole("button", { name: "Archive" })).toBeNull();
     expect(runtime.transport.fetch).not.toHaveBeenCalled();
   });
 
-  it("applies status to hidden selections on the original transport across batches", async () => {
+  it("restricts results to the selection only while Only selected is on", async () => {
+    sessionCollectionState.records = [
+      makeSessionRecord("alpha"),
+      makeSessionRecord("beta"),
+    ];
+    renderPage("/sessions");
+    const only = screen.getByRole("button", { name: "Only selected" });
+    await act(async () => {
+      fireEvent.click(only);
+    });
+    // Nothing is selected yet, so nothing is hidden.
+    expect(screen.getByTestId("session-beta")).toBeDefined();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: "Select Session alpha" }),
+      );
+    });
+    expect(screen.queryByTestId("session-beta")).toBeNull();
+    await act(async () => {
+      fireEvent.click(only);
+    });
+    expect(only.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.getByTestId("session-beta")).toBeDefined();
+  });
+
+  it("offers only the bulk actions the selection can take", async () => {
+    sessionCollectionState.records = [
+      makeSessionRecord("plain"),
+      makeSessionRecord("starred", { isStarred: true }),
+    ];
+    renderPage("/sessions");
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: "Select Session plain" }),
+      );
+    });
+    expect(screen.getByRole("button", { name: "Archive" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Star" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Unarchive" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Unstar" })).toBeNull();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: "Select Session starred" }),
+      );
+    });
+    expect(screen.getByRole("button", { name: "Star" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Unstar" })).toBeDefined();
+    // Status filters no longer choose an action.
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Filter: Archived" }));
+    });
+    expect(screen.queryByRole("button", { name: /^Make / })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Unarchive" })).toBeNull();
+  });
+
+  it("applies bulk actions to hidden selections on the original transport across batches", async () => {
     sessionCollectionState.records = Array.from({ length: 10 }, (_, i) =>
       makeSessionRecord(`bulk-${i}`),
     );
     renderPage("/sessions");
     await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", {
-          name: "Keep just 10 matching sessions selected",
-        }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /Select all 10/ }));
       fireEvent.change(screen.getByRole("searchbox"), {
         target: { value: "bulk-0" },
       });
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole("button", { name: "Filter: Starred" }));
     });
     const originalFetch = runtime.transport.fetch;
     const replacementFetch = vi.fn();
@@ -517,9 +665,7 @@ describe("GlobalSessionsPage", () => {
     });
     try {
       await act(async () => {
-        fireEvent.click(
-          screen.getByRole("button", { name: "Make Starred 10" }),
-        );
+        fireEvent.click(screen.getByRole("button", { name: "Star" }));
       });
       expect(originalFetch).toHaveBeenCalledTimes(10);
       expect(replacementFetch).not.toHaveBeenCalled();
@@ -527,8 +673,8 @@ describe("GlobalSessionsPage", () => {
         expect(JSON.parse(options.body)).toEqual({ starred: true });
       }
       expect(
-        screen.getByRole("button", { name: "Clear 10 selected" }),
-      ).toBeDefined();
+        screen.queryByRole("button", { name: "Clear 10 selected" }),
+      ).toBeNull();
     } finally {
       runtime.transport.fetch = originalFetch;
     }
@@ -605,25 +751,26 @@ describe("GlobalSessionsPage", () => {
     ];
     renderPage("/sessions");
     await act(async () => {
-      fireEvent.click(
-        screen.getByRole("button", {
-          name: "Keep just 2 matching sessions selected",
-        }),
-      );
+      fireEvent.click(screen.getByRole("button", { name: /Select all 2/ }));
     });
     await act(async () => {
       fireEvent.click(screen.getByTitle(/Click to manage selection/));
     });
-    const row = screen.getByRole("checkbox", { name: /Session unsupported/ });
+    const manager = within(
+      screen.getByRole("region", {
+        name: "Selection — selected and turn-searchable sessions",
+      }),
+    );
+    const row = manager.getByRole("checkbox", { name: /Session unsupported/ });
     expect((row as HTMLInputElement).checked).toBe(true);
     await act(async () => {
       fireEvent.click(row);
     });
     expect(
-      screen.queryByRole("checkbox", { name: /Session unsupported/ }),
+      manager.queryByRole("checkbox", { name: /Session unsupported/ }),
     ).toBeNull();
     expect(
-      screen.getByRole("checkbox", { name: /Session supported/ }),
+      manager.getByRole("checkbox", { name: /Session supported/ }),
     ).toBeDefined();
     expect(runtime.transport.fetch).not.toHaveBeenCalled();
   });

@@ -365,7 +365,6 @@ export function CockpitModelControls({
           currentEffortLabel={guard.warning.currentEffortLabel}
           nextEffortLabel={guard.warning.nextEffortLabel}
           onChoose={(choice) => void guard.choose(choice)}
-          provider={guard.warning.provider}
         />
       )}
     </div>

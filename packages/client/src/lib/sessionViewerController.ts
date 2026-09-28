@@ -77,18 +77,31 @@ function emit(): void {
   for (const listener of listeners) listener();
 }
 
-function openSessionId(
+export function sessionViewerFreezesTranscript(
+  state: SessionViewerControllerState | null,
+): boolean {
+  return Boolean(
+    state &&
+      state.kind !== "artifact" &&
+      !sessionViewerUsesRightPane(state) &&
+      !state.minimized,
+  );
+}
+
+function frozenTranscriptSessionId(
   state: SessionViewerControllerState | null,
 ): string | null {
-  return state && !sessionViewerUsesRightPane(state) && !state.minimized
-    ? state.sessionId
-    : null;
+  if (!state || !sessionViewerFreezesTranscript(state)) return null;
+  return state.sessionId;
 }
 
 function replaceCurrent(next: SessionViewerControllerState | null): void {
-  const previousOpenSessionId = openSessionId(current);
-  const nextOpenSessionId = openSessionId(next);
-  if (previousOpenSessionId && previousOpenSessionId !== nextOpenSessionId) {
+  const previousFrozenSessionId = frozenTranscriptSessionId(current);
+  const nextFrozenSessionId = frozenTranscriptSessionId(next);
+  if (
+    previousFrozenSessionId &&
+    previousFrozenSessionId !== nextFrozenSessionId
+  ) {
     resumeRevision += 1;
   }
   current = next;
@@ -216,13 +229,15 @@ export function useSessionViewerController(): SessionViewerControllerState | nul
   return useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
 }
 
-export function isSessionViewerOpen(sessionId: string | null): boolean {
-  return sessionId !== null && openSessionId(current) === sessionId;
+export function isSessionViewerTranscriptFrozen(
+  sessionId: string | null,
+): boolean {
+  return sessionId !== null && frozenTranscriptSessionId(current) === sessionId;
 }
 
 /**
- * Notify transcript work only when a covering viewer stops being open.
- * Opening the viewer deliberately leaves the covered transcript unchanged.
+ * Notify transcript work only when a covering modal stops freezing it.
+ * Opening that modal deliberately leaves the covered transcript unchanged.
  */
 export function useSessionViewerResumeRevision(): number {
   return useSyncExternalStore(

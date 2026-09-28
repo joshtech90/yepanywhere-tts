@@ -31,6 +31,7 @@ function createService(
       | "createOutputStream"
       | "maxActivePerSession"
       | "maxObjectsPerSession"
+      | "loginStartupTimeoutMs"
       | "outputFileMaxBytes"
       | "timeoutMs"
     >
@@ -61,17 +62,110 @@ function bangObjects(): BangCommandTranscriptDisplayObject[] {
 beforeEach(async () => {
   dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-bang-data-"));
   projectDir = await fs.mkdtemp(path.join(os.tmpdir(), "ya-bang-proj-"));
+  vi.stubEnv("HOME", dataDir);
   metadata = new SessionMetadataService({ dataDir });
   await metadata.initialize();
   events = [];
 });
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await fs.rm(dataDir, { recursive: true, force: true });
   await fs.rm(projectDir, { recursive: true, force: true });
 });
 
 describe("BangCommandService", () => {
+  it("loads login functions and aliases while keeping the project cwd and PATH tail", async () => {
+    vi.stubEnv("HOME", dataDir);
+    await fs.writeFile(
+      path.join(dataDir, ".bash_profile"),
+      'bang_login_function() { printf "login-function\\n"; }\nalias bang_login_alias="bang_login_function"\nPATH=/usr/bin:/bin\ncd /\n',
+    );
+    await fs.writeFile(
+      path.join(projectDir, "local-tool"),
+      "#!/bin/sh\necho project-tool\n",
+      { mode: 0o755 },
+    );
+    try {
+      const { completion } = await createService().run({
+        sessionId: SESSION,
+        projectPath: projectDir,
+        command: 'bang_login_alias; local-tool; printf "%s\\n" "$PWD"',
+        placementAfterMessageId: "",
+      });
+      const final = await completion;
+      expect(final.exitCode).toBe(0);
+      expect(final.stderrPreview).toBeUndefined();
+      expect(final.stdoutPreview).toBe(
+        `login-function\nproject-tool\n${projectDir}\n`,
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("keeps login startup's own output out of the run", async () => {
+    await fs.writeFile(
+      path.join(dataDir, ".bash_profile"),
+      "echo 'Welcome banner'\necho 'profile warning' >&2\n",
+    );
+    const service = createService();
+    const { object, completion } = await service.run({
+      sessionId: SESSION,
+      projectPath: projectDir,
+      command: "echo out; echo err >&2",
+      placementAfterMessageId: "",
+    });
+    const final = await completion;
+    expect(final.status).toBe("done");
+    expect(final.stdoutPreview).toBe("out\n");
+    expect(final.stderrPreview).toBe("err\n");
+    expect(final.stdoutBytes).toBe(4);
+    const output = await service.readOutput(SESSION, object.id);
+    expect(output.stdout).toBe("out\n");
+    expect(output.stderr).toBe("err\n");
+  });
+
+  it("says the command never ran when login startup replaces the shell", async () => {
+    // A profile ending in `exec zsh` switches shells; with no terminal the
+    // new shell reads end of input and exits 0 before the command runs.
+    await fs.writeFile(
+      path.join(dataDir, ".bash_profile"),
+      "echo 'switching shells'\nexec sh\n",
+    );
+    const marker = path.join(projectDir, "ran");
+    const { completion } = await createService().run({
+      sessionId: SESSION,
+      projectPath: projectDir,
+      command: `touch ${marker}`,
+      placementAfterMessageId: "",
+    });
+    const final = await completion;
+    expect(final.status).toBe("error");
+    expect(final.error).toMatch(/^Login startup did not return/);
+    // Startup's output is the only evidence of what it did, so it stays.
+    expect(final.stdoutPreview).toBe("switching shells\n");
+    await expect(fs.access(marker)).rejects.toThrow();
+  });
+
+  it("stops a login startup that never returns", async () => {
+    await fs.writeFile(path.join(dataDir, ".bash_profile"), "sleep 30\n");
+    const startedAt = Date.now();
+    const { completion } = await createService({
+      loginStartupTimeoutMs: 300,
+    }).run({
+      sessionId: SESSION,
+      projectPath: projectDir,
+      command: "echo never",
+      placementAfterMessageId: "",
+    });
+    const final = await completion;
+    expect(final.status).toBe("killed");
+    expect(final.error).toMatch(/^Login startup did not return within/);
+    expect(final.stdoutPreview).toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(10_000);
+  });
+
   it("runs a command and records exit, previews, and full output", async () => {
     const service = createService();
     const { object, completion } = await service.run({

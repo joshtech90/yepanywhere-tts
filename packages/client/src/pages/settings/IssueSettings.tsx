@@ -1,7 +1,5 @@
 import {
   DEFAULT_JIRA_KEY_BLOCKLIST,
-  SERVER_CAPABILITIES,
-  serverHasCapability,
   type IssueCoverage,
   type KnownJiraProject,
   type IssueCredentialStatus,
@@ -11,7 +9,6 @@ import {
 import { useEffect, useRef, useState } from "react";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useServerSettings } from "../../hooks/useServerSettings";
-import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import { SettingsItem } from "./SettingsItem";
 import { SettingsSection } from "./SettingsSection";
@@ -20,23 +17,14 @@ import styles from "./IssueSettings.module.css";
 
 export function IssueSettings() {
   const { t } = useI18n();
-  const { version: versionInfo } = useVersion();
   const runtime = useCurrentSourceRuntime();
   useSettingsPaneTitle(t("issuesTitle"));
-  const supported = serverHasCapability(
-    versionInfo,
-    SERVER_CAPABILITIES.issueSessionAssociations.name,
-  );
   return (
     <SettingsSection
       title={t("issuesTitle")}
       description={t("issuesDescription")}
     >
-      {supported ? (
-        <IssueSettingsControls key={runtime.sourceKey} />
-      ) : (
-        <p>{t("issuesUnavailable")}</p>
-      )}
+      <IssueSettingsControls key={runtime.sourceKey} />
     </SettingsSection>
   );
 }
@@ -237,9 +225,12 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
   const confirmation = settings.confirmation ?? NO_CONFIRMATION;
   const update = (next: Partial<typeof confirmation>) =>
     void save({ ...settings, confirmation: { ...confirmation, ...next } });
+  // The inventory probes environment variables and the gh CLI; ask only once
+  // the reader has opted in, the only state in which it is shown.
   useEffect(() => {
     let disposed = false;
     setCredentials(undefined);
+    if (!confirmation.enabled) return;
     transport
       .fetch<IssueCredentialsResult>("/issues/credentials")
       .then((result) => {
@@ -251,7 +242,7 @@ function ConfirmationControls({ settings, busy, save }: ControlProps) {
     return () => {
       disposed = true;
     };
-  }, [transport]);
+  }, [transport, confirmation.enabled]);
   const storeKey = async (provider: string, key: string) => {
     setSaving(provider);
     try {

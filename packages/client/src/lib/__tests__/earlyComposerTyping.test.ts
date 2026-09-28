@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { DraftControls } from "../../hooks/useDraftPersistence";
 import { applyEarlyComposerTyping } from "../earlyComposerTyping";
 import { startEarlyTypingHandoff } from "../earlyTypingHandoff";
@@ -49,6 +49,24 @@ describe("applyEarlyComposerTyping", () => {
       "!!git statushi".length,
       "!!git statushi".length,
     ]);
+  });
+
+  it("still delivers keys typed before a slow load outlasted the hold", () => {
+    vi.useFakeTimers();
+    try {
+      const handoff = startEarlyTypingHandoff(undefined, { expireMs: 1000 });
+      press("h");
+      press("i");
+      vi.advanceTimersByTime(1000);
+      const { controls, state } = composer();
+
+      applyEarlyComposerTyping({ controls, handoff, prefill: "seed " });
+
+      expect(state.draft).toBe("seed hi");
+      expect(state.caret).toEqual(["seed hi".length, "seed hi".length]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("keeps taking keys until the composer shows the whole draft", () => {

@@ -23,15 +23,13 @@ import {
   vocabularyFrequency,
   VOCABULARY_FLUSH_COUNTS,
 } from "@yep-anywhere/shared";
+import { parseByteSize } from "../../lib/byteSize.js";
 import { createCoalescingSaver } from "../../lib/coalescingSaver.js";
 import { statFilesystem } from "../../lib/filesystemKind.js";
-import {
-  parseByteSize,
-  scratchSpaceDirectories,
-} from "../../lib/scratchSpace.js";
 import { getLogger } from "../../logging/logger.js";
 import { BlockedBloom, BloomFile, bloomLoadForRate } from "./blocked-bloom.js";
 import { DistinctiveTop } from "./distinctive-top.js";
+import { legacySpeechVocabularyDirectories } from "./legacy-vocabulary-directories.js";
 import {
   VocabularyDatabase,
   type VocabularyTable,
@@ -106,8 +104,6 @@ const DEFAULT_SESSION_SHARE = 0;
 const STATE_FILE = "speech-vocabulary-state.json";
 const DATABASE_FILE = "speech-vocabulary.sqlite";
 const SEEN_FILE = "speech-seen.bloom";
-/** Leaf of the reserved directory previous versions placed the big files in. */
-const SCRATCH_PURPOSE = "speech-vocabulary";
 
 /**
  * Bytes the filter may take without filling the disk it shares with the rest
@@ -558,8 +554,7 @@ export class VocabularyStore {
    * than made fatal; the cost is relearning, and the table is the small one.
    */
   private adoptReservedFiles(): void {
-    for (const candidate of scratchSpaceDirectories(
-      SCRATCH_PURPOSE,
+    for (const candidate of legacySpeechVocabularyDirectories(
       this.dataDir,
       this.env,
     )) {

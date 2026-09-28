@@ -1,8 +1,8 @@
 # Active Content Serving and Origin Isolation
 
 > Agent- or project-authored active content must never execute with YA's
-> authenticated server origin or hosted-client origin. File viewing is
-> source-first and scriptless; applications that intentionally execute need a
+> authenticated server origin or hosted-client origin. Ordinary HTML viewing is
+> rendered and scriptless; applications that intentionally execute need a
 > separate untrusted-content origin with no YA credentials or ambient API
 > authority.
 
@@ -57,11 +57,32 @@ viewer, preview, and isolated-application work lives in
 
 The shared file context menu now distinguishes Source from Preview without
 navigating either selection to a raw active response. Ordinary HTML opens as
-source; an explicit preview in either current client viewer uses the same
-client-owned `srcdoc` wrapper with an empty iframe sandbox, no-referrer policy,
-and a restrictive meta CSP that denies scripts, connections, frames, objects,
-workers, forms, base URLs, and ambient image/media loads. Markdown keeps its
-sanitized preview default and can be requested as source.
+a rendered preview; an explicit Source choice remains available. Either viewer uses the same
+client-owned `srcdoc` wrapper with a scriptless iframe sandbox, no-referrer
+policy, and a restrictive meta CSP that denies scripts, connections, frames,
+objects, workers, forms, base URLs, and ambient image/media loads. Markdown
+keeps its sanitized preview default and can be requested as source.
+
+Since 2026-09-25 that sandbox is `allow-same-origin` rather than empty, so the
+trusted viewer can search the preview (find in this view,
+[media rendering](media-rendering-and-routing.md)). This was a
+maintainer-approved trade. The preview still cannot run code: the sandbox
+withholds `allow-scripts` and the CSP denies scripts, and a browser test adds a
+script element to the preview and checks it does not run. What changes is that
+the preview's origin is YA's rather than opaque. A link the reader clicks
+inside it navigates the frame with YA cookies, so a GET to a YA route can
+display its response in the frame; nothing in the frame can read or act on
+it. `allow-same-origin` must never be combined with `allow-scripts` here:
+that pair would run previewed HTML with YA's authority.
+`SCRIPTLESS_PREVIEW_SANDBOX` in `ArtifactPreview.tsx` is the one definition,
+and component tests pin its literal value.
+
+A srcdoc document resolves URLs against the embedding YA page, and it
+inherits YA's own `base-uri` policy, which refuses a `<base href=
+"about:srcdoc">`. The wrapper therefore rewrites fragment-only link targets
+(`#section`) to `about:srcdoc#section` in an inert parse, so a
+table-of-contents or cross-reference link scrolls within the preview instead
+of navigating the frame to the YA route (2026-09-25).
 
 This is defense in depth at the client presentation boundary. The later server
 containment protects old clients, address-bar visits, modified browser
@@ -82,6 +103,19 @@ when they are shipped as reviewed build inputs and carry the intended
 production CSP. Project files, uploaded files, provider output, plugin output,
 and agent-created files never become trusted merely because a YA route serves
 them.
+
+A third-party library fetched at runtime is a build input on the same terms
+as a lockfile dependency only when the source pins both its version and its
+content hash, and the server verifies that hash before writing any of it to
+disk. The opt-in pdf.js renderer (2026-09-25,
+[media rendering](media-rendering-and-routing.md#pdfs-in-the-file-viewer)) is
+the one such input: `PdfjsAssetCache` pins the `pdfjs-dist` tarball's
+registry integrity, extracts only its runtime assets, and serves them from
+`/api/pdfjs/<version>/`, so the client loads them under the unchanged
+same-origin script policy. Loading them from a CDN was rejected because it
+would need the app policy to admit a third-party script origin, or `blob:`
+scripts for hash-checked text, for every page. Bumping the version is a code
+change that must carry the new hash.
 
 ### Sanitized rich-text fragments
 
@@ -119,8 +153,15 @@ See
 
 HTML, XHTML, SVG, and other browser-active formats supplied by a project,
 agent, upload, or share are data to YA's normal file-viewing surfaces. They are
-shown as source, downloaded, or rendered in a scriptless opaque sandbox. They
-must not execute as top-level documents on a YA origin.
+shown as source, downloaded, or rendered in a scriptless sandbox (same-origin
+for the file viewer's preview, so the viewer can search it). They
+must not execute as top-level documents on a YA origin. One viewer-chosen
+exception exists for a public file share's HTML root: the hosted play page
+runs it with scripts inside an opaque-origin `srcdoc` frame that lacks
+`allow-same-origin`, with its assets inlined as data URLs, so it is still
+never a top-level document on the hosted origin and has no reach to that
+origin's storage; see
+[Public File Views](relay-origin-and-share-gating.md#public-file-views).
 
 Initial active-type classification must include at least:
 
@@ -139,6 +180,13 @@ every file response. PDF and other document formats need an explicit browser-
 capability review; absence from the initial confirmed list is not a declaration
 that they are inert.
 
+The YA-origin file viewer (2026-09-24) frames a same-origin PDF's own inline
+`/files/raw` response, unsandboxed, so Chromium's viewer runs under that
+response's headers rather than the app document's; a `blob:` frame would
+inherit the app's `object-src 'none'` and be blocked. Audio, video, and font
+files render from typed `blob:` URLs (`media-src`, `font-src blob:`). The
+relay-only PDF path remains open in `gaps/file-viewer-relay-pdf.md`.
+
 ### Untrusted executable applications
 
 An Interactive or another deliberately runnable agent-built app is allowed to
@@ -154,8 +202,9 @@ relay, and public-share contexts.
 1. An ordinary click, modified click, context-menu open, viewer toolbar action,
    copied viewer URL, browser restore, or redirect must never turn an untrusted
    active file into a top-level document on a YA application origin.
-2. The normal action for an active file opens the unified viewer in source
-   mode. An explicit static preview may use a sandbox with scripts disabled.
+2. The normal action for HTML opens the unified viewer's static preview with
+   scripts disabled; an explicit Source choice shows its bytes. Other active
+   formats retain their source or confined-media presentation.
 3. "Open in new tab" means the standalone YA viewer route, not the raw-file
    endpoint. "Download" is the action that returns original active bytes.
 4. Raw active responses use attachment disposition, `nosniff`, and the inert
@@ -230,10 +279,29 @@ these constraints before it ships:
   `allow-scripts` only when execution is intended and without
   `allow-same-origin`. A dedicated untrusted origin may later receive narrowly
   justified sandbox tokens for storage/workers; it never gains YA origin.
+  The isolated artifact origin's frames and its response `sandbox` directive
+  share one token list, `ARTIFACT_SANDBOX` in `packages/shared`, and it grants
+  no popups, downloads, or top-level navigation. A popup allowed to escape the
+  sandbox would be same-origin with its opener frame, so it could reach
+  `opener.top`, the YA tab, and navigate it (reverse tabnabbing) even though
+  it never gains YA's origin.
+  Chromium refuses its PDF viewer inside any sandboxed frame, so a frame
+  navigation to a PDF is answered with a hand-off page. Its Open and Download
+  buttons post a `yep-artifact-tab/1` request to the parent; the viewer opens
+  the URL in a new tab with `noopener` only when the request comes from its
+  own frame and names a file of that frame's grant, plain or with
+  `?download=true`. The browser still requires the click in the frame that
+  sent it. The page also shows its own address for a parent that does not
+  answer. It takes that address from the browser's location, never from the
+  request URL the server saw, which behind a TLS-terminating tunnel is plain
+  `http://`.
 - **Brokered host communication.** `postMessage` is schema-validated,
   capability-scoped, and tied to the expected child window. With an opaque
   origin, `event.origin` is `"null"`, so the parent must verify `event.source`
-  and never send ambient secrets through a wildcard channel.
+  and never send ambient secrets through a wildcard channel. The find
+  protocol follows this: the viewer accepts `yep-find/1` reports only from its
+  own frame's window and sends requests to the frame's origin; the agent
+  accepts requests only from its parent window.
 - **Safe top-level opens.** A script-enabled new-tab view exists only on the
   isolated application host and is opened with `noopener`. A blob URL or
   `srcdoc` created by the trusted client is not used as an unsandboxed
@@ -297,6 +365,13 @@ files is sufficient; no YA manifest or ZIP packaging is required. Artifact
 producers provide compatible relative asset URLs and any mocked or real
 services needed by the application. YA serves original bytes; it does not
 rewrite JavaScript, emulate an application backend, or run a project's dev server.
+The one addition is find: an HTML response to a frame navigation
+(`Sec-Fetch-Dest: iframe`) gets a small script appended after the document,
+the find agent generated from `packages/shared/src/find/`. It lets the
+embedding viewer search that frame alone. It answers only its parent window,
+through the validated `yep-find/1` messages, and reports match counts plus
+the reader's selection when they press Ctrl+F. Downloads, top-level tabs,
+fetches, range reads and XHTML still receive the original bytes.
 
 ### Configuration and delivery
 
@@ -324,9 +399,14 @@ to new local provider sessions as that port. The computed child environment
 names these exports explicitly in `AGENT_VHOST_ENV_NAMES`; the provider-host
 boundary carries only those configured names and YA's fixed static markers.
 Unrelated environment variables and per-session wake credentials are excluded.
-Dynamic `ya-vhost` PATH helpers
-remain unimplemented. The operator must arrange
-client-side resolution if their browser/OS does not resolve `*.localhost`.
+Dynamic `ya-vhost` PATH helpers remain unimplemented. In a session opened
+through a public relay page, the client rewrites rendered anchor destinations
+from `name.localhost` to `https://name.<public root>`. It does not rewrite
+visible prose, code, or link labels, and a direct/local YA page keeps the
+localhost destination. **Always rewrite `*.localhost` app links** in Settings
+→ Apps deliberately extends that rewrite to direct/local pages for testing or
+operator preference; it still requires a configured public root. Browsers
+outside these YA transcript links still need ordinary hostname resolution.
 The local address's port is the browser's forwarded port, which can differ
 from YA's actual listening port.
 
@@ -368,6 +448,14 @@ again; cookie-only mutations require the same app Origin. The proxy removes
 its access query/cookie, YA session cookies, Authorization, desktop token and
 Referer before forwarding. Responses prohibit caching and referrer disclosure.
 Applications can see their own shared URL; it is intentionally transferable.
+Transcript rewriting maps any `name.localhost` anchor through the configured
+public root. When the name is a configured vhost, it waits for the access
+decision: private rows receive their app-scoped `ya_access` token, public rows
+rewrite without one, and a configured row with unavailable authorization stays
+local. Artifact-grant URLs preserve their bearer path while changing host.
+Their custom link menu includes **Copy public URL**, which forces this host
+mapping regardless of the automatic/always-rewrite choice; it appears only when
+the configured public root can produce a public destination.
 
 A proxied request tells the app how it was actually reached.
 `x-forwarded-host` is the Host the visitor used, and `x-forwarded-proto` is
@@ -410,20 +498,23 @@ authorization durability does not restart an exited Plannotator process.
 
 ### Preview and authority
 
-HTML continues to open as source or scriptless preview. An explicit **Run
-interactive preview** first performs one credential-free `/health` request to
-the selected origin, with redirects rejected and a 2.5-second deadline.
+HTML continues to open as source or scriptless preview. An explicit **Run full
+HTML/CSS/JavaScript preview (current view is sanitized)** action first performs
+one credential-free `/health` request to the selected origin, with redirects
+rejected and a 2.5-second deadline.
 Loopback browser access selects the local origin; other browser access selects
 the public origin. Failure leaves the static preview with an explicit Retry
 action; there is no polling, grant request, or interactive frame on failure.
 The client rejects a selected origin sharing YA's hostname and refuses mixed
 HTTPS-page/HTTP-frame configuration.
 
-In the full file viewer, the existing top-row source/preview toggle starts
+In the full file viewer, the existing toolbar source/preview toggle starts
 interactive HTML directly when clicked from source; no second Run button is
-needed. Switching back to source unmounts the preview and revokes its grant.
-The context menu's explicit Preview action uses the same path. Merely opening
-a file, restoring a source view, or receiving a link does not request a grant.
+needed. Switching back to source unmounts the preview but leaves its borrowed
+grant valid until expiry, so another pane or browser tab using that URL remains
+available. The context menu's explicit Preview action uses the same path.
+Merely opening a file, restoring a source view, or receiving a link does not
+request a grant.
 An initially requested scriptless presentation retains its explicit Run action.
 Older/disabled servers retain scriptless viewing without unsupported requests.
 
@@ -436,7 +527,8 @@ previewed with or without a project ID; expansion grants no extra file access.
 A browser-enforced parent `frame-src` violation replaces the broken frame with
 an explanation and an **Open interactive preview in a new tab** link to the
 same grant. The new tab has no opener or referrer; stopping/closing the owning
-viewer still revokes that grant. The viewer never relaxes the browser policy.
+viewer does not revoke that transferable grant. The viewer never relaxes the
+browser policy.
 A stale frontend policy requires an operator-owned restart and page reload
 for embedding to work; the separate artifact tab can be used independently.
 
@@ -445,7 +537,8 @@ classic scripts, modules/dynamic imports, JSON fetches, and linked HTML files.
 Root-relative paths address the artifact host itself and are not mapped to a
 grant. Directory indexes, history-router fallback, service workers, nested
 frames, popups, forms, downloads, native bridges, and device permissions are
-not supplied. External HTTP(S)/WebSocket services remain subject to the
+not supplied; a PDF reaches a new tab only through the viewer's hand-off
+described under *Sandboxed embedding*. External HTTP(S)/WebSocket services remain subject to the
 browser's ordinary network/CORS rules and the artifact author's setup.
 
 Both iframe sandbox and artifact response CSP allow scripts and same-origin
@@ -456,6 +549,12 @@ artifacts, not mutually hostile tenants. They never receive YA storage or a
 host bridge. YA's parent-document CSP permits HTTP(S) frames so configuration
 can change without reloading an already open document; only the validated
 artifact URL is used by the interactive viewer.
+
+The explicit [source editor](file-source-editing.md) uses a separate static
+selection snapshot, not the interactive application's frame. Its opaque sandbox
+permits only YA's nonce-authorized selection script and a validated target-id
+message to the parent. That message can open source; it cannot write or invoke
+a script. Producer scripts and event handlers are removed.
 
 The artifact handler exposes only GET/HEAD health and granted files. `/api`,
 `/public-api`, desktop bootstrap, and WebSocket upgrades are unavailable.
@@ -472,9 +571,23 @@ path components, and symlinks escaping that directory are rejected. A random
 or delivery reconfiguration;
 the application can disclose that URL, so it is not a secret from the artifact.
 Limits are 256 live grants, 1,024 distinct files per grant, and 64 MiB per file.
-Responses are streamed, range-capable, and marked `no-store`. Closing/stopping
-the preview revokes its grant; offline revocation falls back to expiry. This
-does not erase files already read or artifact-origin local storage.
+Responses are streamed, range-capable, and marked `no-store`. Borrowed preview
+grants remain valid across viewer close, pane replacement, and browser-tab
+handoff, then expire on the server's fixed deadline or explicit revocation.
+This does not erase files already read or artifact-origin local storage.
+
+Because borrowed grants outlive their viewers, a borrowing request for an entry
+file that already has a live borrowed grant receives that grant again, marked
+`reused`, instead of a new one. Reuse requires at least half the configured
+lifetime to remain and no more than all of it, so a newly opened viewer is not
+cut off soon after, and shortening the expiry setting is not undone by an older
+longer-lived link. Reopening a file therefore consumes no additional slot: the
+cap bounds distinct files previewed within one lifetime, at most two live
+grants each. A requester never revokes a `reused` grant it did not mint, since
+another viewer or tab may hold it; an explicit revocation by id still withdraws
+it for everyone. A request asking to own its directory always receives its own
+grant. At the cap, the refusal is HTTP 429 naming the time the next live grant
+expires.
 
 The saved **Link expiry (days)** slider and paired numeric field accept whole
 days from 1 through 30, defaulting to 7. The lifetime is fixed when each grant
@@ -555,7 +668,13 @@ refused, and the grant is created as borrowing instead, when the directory is
 a working tree's own root, a home directory, or a directory holding YA's data
 directory, and — outside any working tree, where nothing else distinguishes a
 bundle from ordinary content — when it sits under a home directory or under
-YA's state. `~/Downloads` is the case that decides that rule.
+YA's state. `~/Downloads` is the case that decides that rule. A working tree
+counts as that distinguishing context only when its root lies strictly inside
+the home directory or YA's state: a dotfiles repository at `~/.git` encloses
+everything in the home directory and leaves `~/Downloads` protected.
+These boundaries compare filesystem-resolved paths, including aliases such as
+macOS `/tmp` and `/private/tmp`; a protected path that has not been created
+yet is resolved through its nearest existing ancestor.
 
 Inside a working tree, location is not the evidence: a capture written to
 `<checkout>/.artifacts/` is still the caller's to clean up. There the frozen

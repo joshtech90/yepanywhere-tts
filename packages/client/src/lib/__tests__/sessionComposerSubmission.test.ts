@@ -8,6 +8,7 @@ import {
   createComposerDraftAttachmentState,
   getComposerTransferReplacement,
   hasComposerDraftContent,
+  insertComposerTransferText,
   materializeComposerAttachmentsForSubmission,
   splitComposerAttachmentsForSubmission,
   uploadComposerAttachmentFile,
@@ -57,6 +58,41 @@ describe("session composer submission helpers", () => {
     expect(appendComposerTransferDraft("", "  addition ")).toBe("addition");
     expect(appendSlashCommandDraft("/mo", "model")).toBe("/model ");
     expect(appendSlashCommandDraft("hello", "/fast")).toBe("hello /fast ");
+  });
+
+  it("inserts transfer text through the undoable range edit when mounted", () => {
+    const setDraft = vi.fn();
+    const replaceDraftRangeUndoably = vi.fn(
+      (start: number, end: number, replacement: string) =>
+        `typed ${start}-${end}${replacement}`,
+    );
+
+    expect(
+      insertComposerTransferText(
+        { getDraft: () => "typed ", setDraft, replaceDraftRangeUndoably },
+        "> quote",
+        "\n",
+      ),
+    ).toBe("typed 5-6\n\n> quote\n");
+    expect(replaceDraftRangeUndoably).toHaveBeenCalledWith(
+      5,
+      6,
+      "\n\n> quote\n",
+    );
+    expect(setDraft).not.toHaveBeenCalled();
+
+    const unmountedSetDraft = vi.fn();
+    expect(
+      insertComposerTransferText(
+        {
+          getDraft: () => "typed",
+          setDraft: unmountedSetDraft,
+          replaceDraftRangeUndoably: () => null,
+        },
+        "prompt",
+      ),
+    ).toBe("typed\n\nprompt");
+    expect(unmountedSetDraft).toHaveBeenCalledWith("typed\n\nprompt");
   });
 
   it("creates draft attachment state and rejects split staging batches", () => {

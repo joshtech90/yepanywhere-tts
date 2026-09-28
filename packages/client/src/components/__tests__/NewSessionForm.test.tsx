@@ -12,9 +12,11 @@ import {
 import {
   PROJECT_QUEUE_CAPABILITY,
   SERVER_CAPABILITIES,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
   SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
   SESSION_SANDBOXING_CAPABILITY,
   SESSION_SANDBOXING_STATUS_CAPABILITY,
+  type SessionSandboxBlocker,
 } from "@yep-anywhere/shared";
 import {
   Fragment,
@@ -46,6 +48,7 @@ const {
   mockGetProjectWorkstreams,
   mockReportProjectQueueCollectionSnapshot,
   mockAddProject,
+  mockShowToast,
   mockUpload,
   mockUploadStagedAttachment,
   mockConnectionFetch,
@@ -86,6 +89,7 @@ const {
   mockGetProjectWorkstreams: vi.fn(),
   mockReportProjectQueueCollectionSnapshot: vi.fn(),
   mockAddProject: vi.fn(),
+  mockShowToast: vi.fn(),
   mockUpload: vi.fn(),
   mockUploadStagedAttachment: vi.fn(),
   mockConnectionFetch: vi.fn(),
@@ -217,6 +221,8 @@ const {
         platform: string;
         backend?: "bubblewrap";
         version?: string;
+        localAuthEnforced?: boolean;
+        blocker?: SessionSandboxBlocker;
       };
       voiceBackends?: string[];
       voiceBackendCapabilities?: Record<
@@ -555,7 +561,7 @@ vi.mock("../../hooks/useVersion", () => ({
 
 vi.mock("../../contexts/ToastContext", () => ({
   useToastContext: () => ({
-    showToast: vi.fn(),
+    showToast: mockShowToast,
   }),
 }));
 
@@ -589,6 +595,8 @@ vi.mock("../../i18n", () => ({
         speechPrefixDeliveryTooltip: "{tooltip} Prepends {prefix}.",
         newSessionFixedTitle: "Set by your account",
         newSessionFixedSandboxValue: "Always on",
+        newSessionSandboxUnavailableMissingPackages:
+          "Unavailable: install {packages} on the server to enable sandboxed sessions.",
       };
       let translated = text[key] ?? key;
       if (!vars) return translated;
@@ -602,27 +610,39 @@ vi.mock("../../i18n", () => ({
 
 vi.mock("../FilterDropdown", () => ({
   FilterDropdown: ({
+    label,
     options,
     selected,
     onChange,
   }: {
+    label: string;
     options: Array<{
       value: string;
       label: string;
       groupLabelBefore?: string;
+      disabled?: boolean;
+      description?: string;
     }>;
     selected: string[];
     onChange: (selected: string[]) => void;
   }) => {
     filterDropdownState.selected = selected;
     return (
-      <div>
+      <div data-testid={`filter-${label}`}>
         <div data-testid="filter-selected">{selected[0] ?? ""}</div>
         {options.map((option) => (
           <Fragment key={option.value}>
             {option.groupLabelBefore && <p>{option.groupLabelBefore}</p>}
-            <button type="button" onClick={() => onChange([option.value])}>
+            <button
+              type="button"
+              className={selected.includes(option.value) ? "selected" : ""}
+              disabled={option.disabled}
+              onClick={() => onChange([option.value])}
+            >
               {option.label}
+              {option.description && (
+                <small aria-hidden="true">{option.description}</small>
+              )}
             </button>
           </Fragment>
         ))}
@@ -630,6 +650,24 @@ vi.mock("../FilterDropdown", () => ({
     );
   },
 }));
+
+function selectedDropdownValue(label: string): string | null {
+  return within(screen.getByTestId(`filter-${label}`)).getByTestId(
+    "filter-selected",
+  ).textContent;
+}
+
+function dropdownOption(label: string, option: string): HTMLButtonElement {
+  return within(screen.getByTestId(`filter-${label}`)).getByRole("button", {
+    name: option,
+  }) as HTMLButtonElement;
+}
+
+function openAdvancedOptions(): void {
+  fireEvent.click(
+    screen.getByRole("button", { name: "newSessionShowAdvancedOptions" }),
+  );
+}
 
 vi.mock("../../lib/newSessionPrefill", () => ({
   consumeNewSessionPrefill: () => null,
@@ -795,6 +833,7 @@ describe("NewSessionForm", () => {
     mockCreateProjectQueueItem.mockReset();
     mockGetProjectWorkstreams.mockReset();
     mockAddProject.mockReset();
+    mockShowToast.mockReset();
     mockUpload.mockReset();
     mockUploadStagedAttachment.mockReset();
     mockConnectionFetch.mockReset();
@@ -903,9 +942,7 @@ describe("NewSessionForm", () => {
     expect(screen.getByRole("button", { name: "Claude" }).className).toContain(
       "selected",
     );
-    expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
-      "opus",
-    );
+    expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
 
     serverSettingsState.settings = {
       newSessionDefaults: {
@@ -925,9 +962,7 @@ describe("NewSessionForm", () => {
       expect(
         screen.getByRole("button", { name: "Codex" }).className,
       ).not.toContain("selected");
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
-        "opus",
-      );
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
     });
   });
 
@@ -948,9 +983,7 @@ describe("NewSessionForm", () => {
       expect(screen.getByRole("button", { name: "Codex" }).className).toContain(
         "selected",
       );
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
-        "gpt-5.4",
-      );
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("gpt-5.4");
     });
   });
 
@@ -984,34 +1017,29 @@ describe("NewSessionForm", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
-        "opus",
-      );
-      expect(screen.getByRole("radio", { name: "Medium" }).className).toContain(
-        "active",
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
+      expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+        "on:medium",
       );
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe(
         "gpt-5.3-codex",
       );
-      expect(
-        screen.getByRole("radio", { name: "modelSettingsThinkingAutoLabel" })
-          .className,
-      ).toContain("active");
+      expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+        "auto",
+      );
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
-        "opus",
-      );
-      expect(screen.getByRole("radio", { name: "Medium" }).className).toContain(
-        "active",
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
+      expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+        "on:medium",
       );
     });
   });
@@ -1050,10 +1078,47 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    const merged = await screen.findByDisplayValue(
-      "Prepared handoffand also this",
+    // The typed text was written without seeing the seed, so it starts its
+    // own paragraph instead of running into the seed's last word.
+    await waitFor(() =>
+      expect(composer.value).toBe("Prepared handoff\n\nand also this"),
     );
-    expect(merged).toBe(composer);
+  });
+
+  it("does not add a separator after a seed that already ends in whitespace", async () => {
+    const submit = vi.fn(async () => {});
+    const launch = (initialMessage: string) => ({
+      draftKey: "draft-handoff:session-late-spaced",
+      initialMessage,
+      fixedProject: true,
+      allowAttachments: false,
+      allowProjectQueue: false,
+      submit,
+    });
+    const { rerender } = render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        launch={launch("")}
+      />,
+    );
+    const composer = document.querySelector<HTMLTextAreaElement>(
+      "textarea.new-session-form-textarea",
+    );
+    if (!composer) throw new Error("expected the new-session composer");
+    fireEvent.change(composer, { target: { value: "and also this" } });
+
+    rerender(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        launch={launch("Prepared handoff\n")}
+      />,
+    );
+
+    await waitFor(() =>
+      expect(composer.value).toBe("Prepared handoff\nand also this"),
+    );
   });
 
   it("reuses new-session selection semantics for a seeded launch", async () => {
@@ -1112,19 +1177,17 @@ describe("NewSessionForm", () => {
     expect(draftKeys).toContain("draft-handoff:session-1");
     expect(screen.queryByLabelText("newSessionAttachFiles")).toBeNull();
     expect(screen.queryByText("Alpha")).toBeNull();
-    expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
-      "opus",
-    );
+    expect(selectedDropdownValue("newSessionModelTitle")).toBe("opus");
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe(
         "gpt-5.3-codex",
       );
-      expect(
-        screen.getByRole("radio", { name: "Extra High" }).className,
-      ).toContain("active");
+      expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+        "on:xhigh",
+      );
     });
 
     fireEvent.click(
@@ -1199,7 +1262,7 @@ describe("NewSessionForm", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe(
         "removed-default",
       );
     });
@@ -1297,14 +1360,16 @@ describe("NewSessionForm", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getAllByTestId("filter-selected")[0]!.textContent).toBe(
+      expect(selectedDropdownValue("newSessionModelTitle")).toBe(
         "claude-opus-4-8",
       );
     });
     expect(
       screen.queryByText("newSessionGatewayCatalogUnavailable"),
     ).toBeNull();
-    expect(screen.getByRole("radio", { name: "Low" })).toBeDefined();
+    expect(
+      dropdownOption("newSessionThinkingEffortTitle", "Low"),
+    ).toBeDefined();
     expect(
       screen.getByRole("button", { name: "newSessionStartAction" }),
     ).toHaveProperty("disabled", false);
@@ -1340,18 +1405,15 @@ describe("NewSessionForm", () => {
       />,
     );
 
+    openAdvancedOptions();
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /modeAutoLabel/ }).className,
-      ).toContain("selected");
+      expect(selectedDropdownValue("newSessionModeTitle")).toBe("auto");
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /modeDefaultLabel/ }).className,
-      ).toContain("selected");
+      expect(selectedDropdownValue("newSessionModeTitle")).toBe("default");
       expect(mockUpdateSetting).toHaveBeenCalledWith(
         "newSessionDefaults",
         expect.objectContaining({
@@ -1444,6 +1506,47 @@ describe("NewSessionForm", () => {
     );
   });
 
+  it.each(["web", "desktop"] as const)(
+    "marks a %s launch when the server supports provenance",
+    async (surface) => {
+      versionState.version = {
+        capabilities: [SESSION_CREATION_PROVENANCE_CAPABILITY],
+      };
+      if (surface === "desktop") {
+        window.__YEP_DESKTOP_RUNTIME__ = {
+          desktopVersion: "0.3.22",
+          commit: "abc123",
+        };
+      }
+      try {
+        render(
+          <NewSessionForm
+            projectId="project-1"
+            selectedProject={chooserProjects[0]}
+            projects={[...chooserProjects]}
+          />,
+        );
+        fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+          target: { value: "hello" },
+        });
+        fireEvent.click(
+          screen.getByRole("button", { name: "newSessionStartAction" }),
+        );
+        await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+        expect(mockStartSession.mock.calls[0]?.[2]?.creationProvenance).toEqual(
+          {
+            surface,
+            clientOrigin: window.location.origin,
+            clientVersion: "unknown",
+            ...(surface === "desktop" ? { clientCommit: "abc123" } : {}),
+          },
+        );
+      } finally {
+        delete window.__YEP_DESKTOP_RUNTIME__;
+      }
+    },
+  );
+
   it("submits a one-turn modifier as metadata without changing normal thinking", async () => {
     versionState.version = { capabilities: ["turn-effort-modifiers"] };
     serverSettingsState.isLoading = false;
@@ -1503,7 +1606,7 @@ describe("NewSessionForm", () => {
     expect(codexButton).toHaveProperty("disabled", false);
     expect(
       within(codexButton).getByText(
-        "newSessionProviderStatusAuthenticationNeeded",
+        /newSessionProviderStatusAuthenticationNeeded/,
       ),
     ).toBeDefined();
 
@@ -1559,20 +1662,13 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    expect(
-      (
-        screen.getByRole("checkbox", {
-          name: "newSessionSandboxLabel",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
-    expect(
-      (
-        screen.getByRole("checkbox", {
-          name: "newSessionSandboxNetworkFirewallLabel",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
+    openAdvancedOptions();
+    expect(selectedDropdownValue("newSessionSandboxTitle")).toBe(
+      "project-write",
+    );
+    expect(selectedDropdownValue("newSessionSandboxNetworkFirewallLabel")).toBe(
+      "on",
+    );
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "sandbox this" },
     });
@@ -1589,6 +1685,47 @@ describe("NewSessionForm", () => {
         sandboxNetworkFirewall: true,
       }),
     );
+    // Local auth enforced (or unreported): no warning.
+    expect(
+      document.querySelector("[data-new-session-sandbox-local-auth-warning]"),
+    ).toBeNull();
+  });
+
+  it("warns, without blocking, when local access needs no authentication", () => {
+    versionState.version = {
+      capabilities: [
+        SESSION_SANDBOX_NETWORK_FIREWALL_CAPABILITY,
+        SESSION_SANDBOXING_CAPABILITY,
+        SESSION_SANDBOXING_STATUS_CAPABILITY,
+      ],
+      sessionSandboxing: {
+        state: "available",
+        platform: "linux",
+        backend: "bubblewrap",
+        localAuthEnforced: false,
+      },
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: { provider: "claude", sandboxLevel: "project-write" },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    openAdvancedOptions();
+    expect(selectedDropdownValue("newSessionSandboxTitle")).toBe(
+      "project-write",
+    );
+    expect(
+      document.querySelector("[data-new-session-sandbox-local-auth-warning]")
+        ?.textContent,
+    ).toBe("newSessionSandboxLocalAuthWarning");
   });
 
   describe("a limited user's locked launch fields", () => {
@@ -1659,17 +1796,17 @@ describe("NewSessionForm", () => {
       // sandbox toggle: a limited user cannot change any of them.
       expect(screen.queryByRole("button", { name: "Codex" })).toBeNull();
       expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
-      expect(screen.queryAllByTestId("filter-selected")).toHaveLength(0);
+      expect(screen.queryByTestId("filter-newSessionModelTitle")).toBeNull();
       expect(
-        screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
+        screen.queryByTestId("filter-newSessionThinkingEffortTitle"),
       ).toBeNull();
+      expect(screen.queryByTestId("filter-newSessionSandboxTitle")).toBeNull();
       expect(screen.getByText("Always on")).toBeTruthy();
       // The firewall is still theirs — the launch route honors it.
+      openAdvancedOptions();
       expect(
-        screen.getByRole("checkbox", {
-          name: "newSessionSandboxNetworkFirewallLabel",
-        }),
-      ).toBeTruthy();
+        selectedDropdownValue("newSessionSandboxNetworkFirewallLabel"),
+      ).toBe("on");
     });
 
     it("launches with the locked values and a forced sandbox", async () => {
@@ -1708,8 +1845,41 @@ describe("NewSessionForm", () => {
       });
       expect(screen.queryByRole("button", { name: "Codex" })).toBeNull();
       // Model stays choosable within the locked provider's catalog.
-      expect(screen.queryAllByTestId("filter-selected").length).toBeGreaterThan(
-        0,
+      expect(screen.getByTestId("filter-newSessionModelTitle")).toBeTruthy();
+    });
+
+    it("keeps a locked value this client cannot name, stated as stored", async () => {
+      actAsLimited({
+        provider: "newer-provider",
+        model: "newer-model",
+        effort: "colossal",
+      });
+      renderForm();
+
+      await waitFor(() => {
+        expect(screen.getByText("Set by your account")).toBeTruthy();
+      });
+      // Offering the provider picker would launch something the route refuses.
+      expect(screen.queryByRole("button", { name: "Claude" })).toBeNull();
+      expect(screen.getByText("newer-provider")).toBeTruthy();
+      expect(screen.getByText("colossal")).toBeTruthy();
+      fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+        target: { value: "locked launch" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "newSessionStartAction" }),
+      );
+
+      await waitFor(() => {
+        expect(mockStartSession).toHaveBeenCalledTimes(1);
+      });
+      expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({
+          provider: "newer-provider",
+          model: "newer-model",
+          thinking: "on:colossal",
+          sandboxLevel: "project-write",
+        }),
       );
     });
   });
@@ -1746,34 +1916,27 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    const sandbox = screen.getByRole("checkbox", {
-      name: "newSessionSandboxLabel",
-    });
-    const sideSession = screen.getByRole("button", {
-      name: "recapModeSideSession",
-    }) as HTMLButtonElement;
+    openAdvancedOptions();
+    const sandbox = dropdownOption(
+      "newSessionSandboxTitle",
+      "newSessionSandboxLabel",
+    );
+    const sideSession = dropdownOption(
+      "newSessionRecapTitle",
+      "recapModeSideSession",
+    );
     expect(sideSession.disabled).toBe(false);
 
     fireEvent.click(sandbox);
 
     expect(sideSession.disabled).toBe(true);
+    expect(selectedDropdownValue("newSessionSandboxNetworkFirewallLabel")).toBe(
+      "on",
+    );
     expect(
-      (
-        screen.getByRole("checkbox", {
-          name: "newSessionSandboxNetworkFirewallLabel",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(true);
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "recapModeFork",
-        }) as HTMLButtonElement
-      ).disabled,
+      dropdownOption("newSessionRecapTitle", "recapModeFork").disabled,
     ).toBe(false);
-    expect(
-      screen.getByRole("button", { name: "recapModeOff" }).className,
-    ).toContain("selected");
+    expect(selectedDropdownValue("newSessionRecapTitle")).toBe("off");
 
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "sandbox without side helper" },
@@ -1826,13 +1989,10 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    expect(
-      (
-        screen.getByRole("checkbox", {
-          name: "newSessionSandboxNetworkFirewallLabel",
-        }) as HTMLInputElement
-      ).checked,
-    ).toBe(false);
+    openAdvancedOptions();
+    expect(selectedDropdownValue("newSessionSandboxNetworkFirewallLabel")).toBe(
+      "off",
+    );
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "sandbox with direct networking" },
     });
@@ -1941,6 +2101,43 @@ describe("NewSessionForm", () => {
     expect(
       screen.queryByRole("checkbox", { name: "newSessionSandboxLabel" }),
     ).toBeNull();
+    expect(
+      document.querySelector("[data-new-session-sandbox-unavailable]"),
+    ).toBeNull();
+  });
+
+  it("explains why a supported host cannot offer sandboxing", () => {
+    versionState.version = {
+      capabilities: [SESSION_SANDBOXING_STATUS_CAPABILITY],
+      sessionSandboxing: {
+        state: "probe-failed",
+        platform: "linux",
+        backend: "bubblewrap",
+        blocker: { kind: "missing-packages", packages: ["slirp4netns"] },
+      },
+    };
+    serverSettingsState.settings = {
+      newSessionDefaults: { provider: "claude", sandboxLevel: "project-write" },
+    };
+    serverSettingsState.isLoading = false;
+
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+
+    expect(
+      document.querySelector("[data-new-session-sandbox-unavailable]")
+        ?.textContent,
+    ).toBe(
+      "Unavailable: install slirp4netns on the server to enable sandboxed sessions.",
+    );
+    expect(
+      screen.queryByRole("button", { name: "newSessionSandboxTitle" }),
+    ).toBeNull();
   });
 
   it("hides and disables sandboxing for an unimplemented provider", async () => {
@@ -2034,10 +2231,11 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    const optIn = await screen.findByRole("checkbox", {
-      name: /computerSessionOptIn/,
-    });
-    fireEvent.click(optIn);
+    openAdvancedOptions();
+    await screen.findByTestId("filter-newSessionComputerControlTitle");
+    fireEvent.click(
+      dropdownOption("newSessionComputerControlTitle", "showThinkingOn"),
+    );
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "drive the computer" },
     });
@@ -2651,10 +2849,11 @@ describe("NewSessionForm", () => {
       />,
     );
 
-    const medium = screen.getByRole("radio", { name: "Medium" });
-    expect(medium.className).toContain("active");
+    expect(selectedDropdownValue("newSessionThinkingEffortTitle")).toBe(
+      "on:medium",
+    );
 
-    fireEvent.click(screen.getByRole("radio", { name: "Low" }));
+    fireEvent.click(dropdownOption("newSessionThinkingEffortTitle", "Low"));
 
     await waitFor(() => {
       expect(mockUpdateSetting).toHaveBeenCalledWith(
@@ -2686,9 +2885,8 @@ describe("NewSessionForm", () => {
 
     // Provider thinking and Show-thinking are separate sections, but both are
     // still available during session setup.
-    expect(
-      screen.getAllByText("modelSettingsThinkingTitle").length,
-    ).toBeGreaterThan(0);
+    expect(screen.getByText("newSessionThinkingEffortTitle")).toBeDefined();
+    openAdvancedOptions();
     expect(screen.getByText("showThinkingTitle")).toBeDefined();
   });
 
@@ -2983,11 +3181,8 @@ describe("NewSessionForm", () => {
       primaryHeadings.indexOf("newSessionProviderTitle"),
     );
     expect(
-      primaryHeadings.indexOf("modelSettingsThinkingTitle"),
+      primaryHeadings.indexOf("newSessionThinkingEffortTitle"),
     ).toBeGreaterThan(primaryHeadings.indexOf("newSessionModelTitle"));
-    expect(primaryHeadings.indexOf("newSessionModeTitle")).toBeGreaterThan(
-      primaryHeadings.indexOf("modelSettingsThinkingTitle"),
-    );
 
     const secondaryHeadings = Array.from(
       container.querySelectorAll(
@@ -2995,7 +3190,8 @@ describe("NewSessionForm", () => {
       ),
       (element) => element.textContent,
     );
-    expect(secondaryHeadings[0]).toBe("showThinkingTitle");
+    expect(secondaryHeadings[0]).toBe("newSessionModeTitle");
+    expect(secondaryHeadings[1]).toBe("showThinkingTitle");
     expect(secondaryHeadings.indexOf("newSessionRecapTitle")).toBeGreaterThan(
       secondaryHeadings.indexOf("showThinkingTitle"),
     );
@@ -3032,9 +3228,44 @@ describe("NewSessionForm", () => {
       }),
     ).toBeDefined();
     expect(screen.getByText("showThinkingHint")).toBeDefined();
+    const suggestionSection = screen
+      .getByText("newSessionPromptSuggestionsTitle")
+      .closest(".new-session-helper-section");
+    expect(suggestionSection?.lastElementChild?.textContent).toBe(
+      "promptSuggestionModeOffDescription",
+    );
+  });
+
+  it("remembers whether Advanced options is expanded across form mounts", () => {
+    const first = render(<NewSessionForm projectId="project-1" />);
+    const advanced = screen
+      .getByTestId("filter-newSessionModeTitle")
+      .closest<HTMLElement>('[data-new-session-secondary-options="true"]');
+    expect(advanced?.id).toBe("new-session-advanced-options");
+    expect(advanced?.hidden).toBe(true);
     expect(
-      screen.getByText("promptSuggestionModeOffDescription"),
-    ).toBeDefined();
+      window.localStorage.getItem(UI_KEYS.newSessionAdvancedOptionsExpanded),
+    ).toBeNull();
+
+    openAdvancedOptions();
+    expect(advanced?.hidden).toBe(false);
+    expect(
+      window.localStorage.getItem(UI_KEYS.newSessionAdvancedOptionsExpanded),
+    ).toBe("true");
+
+    first.unmount();
+    render(<NewSessionForm projectId="project-1" />);
+    expect(
+      screen
+        .getByRole("button", { name: "newSessionHideAdvancedOptions" })
+        .getAttribute("aria-expanded"),
+    ).toBe("true");
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionHideAdvancedOptions" }),
+    );
+    expect(
+      window.localStorage.getItem(UI_KEYS.newSessionAdvancedOptionsExpanded),
+    ).toBe("false");
   });
 
   it("uses the selected rapid-speech prefix for new-session Project Queue", async () => {
@@ -3078,7 +3309,7 @@ describe("NewSessionForm", () => {
     });
   });
 
-  it("shows recap timing in tooltips until captions are expanded", async () => {
+  it("shows recap help below its dropdown when captions are expanded", async () => {
     serverSettingsState.settings = {
       newSessionDefaults: {
         provider: "claude",
@@ -3099,29 +3330,19 @@ describe("NewSessionForm", () => {
 
     const tailedDescription =
       "Summarize tailed assistant output after backgrounding (not closing) for 124 s.";
-    const forkedDescription =
-      "Summarize from a temporary fork after backgrounding (not closing) for 124 s.";
-
-    const tailedButton = await screen.findByRole("button", {
-      name: "recapModeSideSession",
-    });
+    openAdvancedOptions();
+    const tailedButton = dropdownOption(
+      "newSessionRecapTitle",
+      "recapModeSideSession",
+    );
     expect(screen.queryByText(tailedDescription)).toBeNull();
-    expect(tailedButton.getAttribute("title")).toBe(tailedDescription);
-    expect(
-      tailedButton
-        .closest(".new-session-helper-section")
-        ?.getAttribute("title"),
-    ).toBe(tailedDescription);
-    expect(
-      screen
-        .getByRole("button", { name: "recapModeFork" })
-        .getAttribute("title"),
-    ).toBe(forkedDescription);
+    const recapSection = tailedButton.closest(".new-session-helper-section");
+    expect(recapSection?.getAttribute("title")).toBe(tailedDescription);
 
     fireEvent.click(
       screen.getByRole("button", { name: "newSessionShowOptionCaptions" }),
     );
-    expect(screen.getByText(tailedDescription)).toBeDefined();
+    expect(recapSection?.lastElementChild?.textContent).toBe(tailedDescription);
   });
 
   it("keeps the drafted prompt when switching from detached to a project", async () => {
@@ -3190,6 +3411,51 @@ describe("NewSessionForm", () => {
       expect(mockAddProject).toHaveBeenCalledWith("/tmp/added-project");
       expect(mockStartSession).toHaveBeenCalledWith(
         "project-added",
+        "hello",
+        expect.any(Object),
+        undefined,
+        expect.any(Number),
+        undefined,
+      );
+    });
+  });
+
+  it("makes a typed description a project folder under home", async () => {
+    mockAddProject.mockResolvedValue({
+      project: {
+        id: "project-cat",
+        name: "My Cat Game",
+        path: "/home/u/my-cat-game",
+        sessionCount: 0,
+        activeOwnedCount: 0,
+        activeExternalCount: 0,
+      },
+      created: true,
+    });
+    render(<NewSessionForm projects={[...chooserProjects]} />);
+
+    fireEvent.change(
+      screen.getByPlaceholderText("newSessionProjectPathPlaceholder"),
+      { target: { value: "My Cat Game" } },
+    );
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+
+    await waitFor(() => {
+      expect(mockAddProject).toHaveBeenCalledWith("~/my-cat-game", {
+        create: true,
+        name: "My Cat Game",
+      });
+      expect(mockShowToast).toHaveBeenCalledWith(
+        "newSessionProjectFolderCreated",
+        "info",
+      );
+      expect(mockStartSession).toHaveBeenCalledWith(
+        "project-cat",
         "hello",
         expect.any(Object),
         undefined,
@@ -3585,10 +3851,12 @@ describe("NewSessionForm", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    openAdvancedOptions();
     expect(
-      screen.getByRole("button", {
-        name: /promptSuggestionModeNative/,
-      }),
+      dropdownOption(
+        "newSessionPromptSuggestionsTitle",
+        "promptSuggestionModeNative",
+      ),
     ).toBeDefined();
     expect(screen.queryByText("promptSuggestionNativeUnsupported")).toBeNull();
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
@@ -3632,20 +3900,19 @@ describe("NewSessionForm", () => {
       />,
     );
 
+    openAdvancedOptions();
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /promptSuggestionModeNative/ })
-          .className,
-      ).toContain("selected");
+      expect(selectedDropdownValue("newSessionPromptSuggestionsTitle")).toBe(
+        "native",
+      );
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /promptSuggestionModeNative/ })
-          .className,
-      ).toContain("selected");
+      expect(selectedDropdownValue("newSessionPromptSuggestionsTitle")).toBe(
+        "native",
+      );
     });
     expect(mockUpdateSetting).toHaveBeenCalledWith(
       "newSessionDefaults",
@@ -3677,10 +3944,9 @@ describe("NewSessionForm", () => {
     fireEvent.click(screen.getByRole("button", { name: "Claude" }));
 
     await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /promptSuggestionModeNative/ })
-          .className,
-      ).toContain("selected");
+      expect(selectedDropdownValue("newSessionPromptSuggestionsTitle")).toBe(
+        "native",
+      );
     });
   });
 
@@ -3696,20 +3962,25 @@ describe("NewSessionForm", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    openAdvancedOptions();
     expect(
-      screen.getByRole("button", { name: /recapModeSideSession/ }),
+      dropdownOption("newSessionRecapTitle", "recapModeSideSession"),
     ).toBeDefined();
     expect(
-      screen.queryByRole("button", { name: /recapModeNative/ }),
+      within(screen.getByTestId("filter-newSessionRecapTitle")).queryByRole(
+        "button",
+        { name: "recapModeNative" },
+      ),
     ).toBeNull();
     expect(
-      screen.getByRole("button", {
-        name: /promptSuggestionModeNative/,
-      }),
+      dropdownOption(
+        "newSessionPromptSuggestionsTitle",
+        "promptSuggestionModeNative",
+      ),
     ).toBeDefined();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /recapModeSideSession/ }),
+      dropdownOption("newSessionRecapTitle", "recapModeSideSession"),
     );
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
       target: { value: "hello" },
@@ -3756,8 +4027,9 @@ describe("NewSessionForm", () => {
       />,
     );
 
+    openAdvancedOptions();
     fireEvent.click(
-      screen.getByRole("button", { name: /recapModeSideSession/ }),
+      dropdownOption("newSessionRecapTitle", "recapModeSideSession"),
     );
     expect(screen.queryByRole("button", { name: "Local vLLM" })).toBeNull();
     fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {

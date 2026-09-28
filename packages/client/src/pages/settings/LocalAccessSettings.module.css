@@ -18,7 +18,82 @@
   flex: 0 0 7rem;
 }
 
+/* The password choice nested under Require Password (a .settings-subsection). */
+.passwordBlock {
+  margin-top: 0;
+  margin-bottom: var(--space-3);
+}
+
+.passwordState {
+  margin: var(--space-2) 0;
+  font-size: var(--font-size-sm);
+}
+
+.passwordStateActive {
+  color: var(--success-color);
+}
+
+.passwordStatePending,
+.passwordStateWarning {
+  color: var(--warning-color);
+}
+
+/* Validity outranks the shared `.settings-input:focus` ring, which also
+   recolors the border; the element qualifier wins regardless of load order. */
+input.inputValid,
+input.inputValid:focus {
+  border-color: var(--success-color);
+  box-shadow: 0 0 0 1px var(--success-color);
+}
+
+input.inputInvalid,
+input.inputInvalid:focus {
+  border-color: var(--error-color);
+  box-shadow: 0 0 0 1px var(--error-color);
+}
+
+.passwordHint {
+  margin: var(--space-2) 0 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.passwordActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 2.25rem;
+  margin-top: var(--space-2);
+}
+
+.passwordFeedback {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.passwordFeedbackGood {
+  color: var(--success-color);
+}
+
+.passwordFeedbackBad {
+  color: var(--error-color);
+}
+
+.passwordApply {
+  flex: 0 0 auto;
+  border-color: var(--accent-color);
+  background: var(--accent-color);
+  color: var(--bg-primary);
+}
+
 @media (max-width: 699px) {
+  .passwordActions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .customFoldersControls {
     flex-direction: column;
     align-items: stretch;

@@ -15,6 +15,11 @@ export interface AuthStatus {
   hasDesktopToken: boolean;
   /** Whether unauthenticated localhost access is allowed */
   localhostOpen: boolean;
+  /**
+   * Whether a named (limited-user) login can succeed. Absent from servers
+   * before it was reported, which the login page reads as off.
+   */
+  limitedUsersEnabled?: boolean;
 }
 
 export const authApi = {

@@ -277,8 +277,10 @@ describe("ProjectsPage", () => {
     fireEvent.change(name, { target: { value: "Beta" } });
     expect(code).toHaveProperty("value", "gm");
 
-    // Clearing a field hands it back to its default.
+    // A field left empty returns to its default once it loses focus.
     fireEvent.change(code, { target: { value: "" } });
+    expect(code).toHaveProperty("value", "");
+    fireEvent.blur(code);
     expect(code).toHaveProperty("value", "bet");
     fireEvent.change(code, { target: { value: "bta" } });
 
@@ -291,6 +293,77 @@ describe("ProjectsPage", () => {
     expect(state.addProject).toHaveBeenCalledWith("/tmp/beta-repo/", {
       name: "Beta",
       codeName: "bta",
+    });
+  });
+
+  it("lets the user erase a default name and type a replacement key by key", async () => {
+    state.version = {
+      capabilities: [
+        PROJECT_QUEUE_CAPABILITY,
+        PROJECT_CODE_NAMES_CAPABILITY,
+        PROJECT_NAMES_CAPABILITY,
+      ],
+    };
+    act(() => {
+      localStorage.setItem(UI_KEYS.projectCodeNamesEnabled, "true");
+      invalidateLocalStorageValues(UI_KEYS.projectCodeNamesEnabled);
+    });
+    state.addProject.mockResolvedValue({
+      project: { id: "project-2", name: "Sketch", path: "/tmp/my-project" },
+    });
+    renderProjectsPage();
+    fireEvent.click(screen.getByRole("button", { name: "Add Project" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project path" }), {
+      target: { value: "/tmp/my-project" },
+    });
+    const name = screen.getByRole("textbox", {
+      name: "Name",
+    }) as HTMLInputElement;
+    const code = screen.getByRole("textbox", { name: "Code" });
+    fireEvent.focus(name);
+
+    // Each keystroke edits whatever the field shows at that moment.
+    for (const _ of "my-project") {
+      fireEvent.change(name, { target: { value: name.value.slice(0, -1) } });
+    }
+    expect(name.value).toBe("");
+    for (const key of "Sketch") {
+      fireEvent.change(name, { target: { value: name.value + key } });
+    }
+    expect(name.value).toBe("Sketch");
+    expect(code).toHaveProperty("value", "ske");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => {
+      expect(state.addProject).toHaveBeenCalledWith("/tmp/my-project", {
+        name: "Sketch",
+        codeName: undefined,
+      });
+    });
+  });
+
+  it("submits an emptied name as the path's default", async () => {
+    state.version = {
+      capabilities: [PROJECT_QUEUE_CAPABILITY, PROJECT_NAMES_CAPABILITY],
+    };
+    state.addProject.mockResolvedValue({
+      project: { id: "project-2", name: "beta-repo", path: "/tmp/beta-repo" },
+    });
+    renderProjectsPage();
+    fireEvent.click(screen.getByRole("button", { name: "Add Project" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Project path" }), {
+      target: { value: "/tmp/beta-repo" },
+    });
+    const name = screen.getByRole("textbox", { name: "Name" });
+    fireEvent.change(name, { target: { value: "" } });
+    expect(name).toHaveProperty("value", "");
+
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => {
+      expect(state.addProject).toHaveBeenCalledWith("/tmp/beta-repo", {
+        name: undefined,
+        codeName: undefined,
+      });
     });
   });
 

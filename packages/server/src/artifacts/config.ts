@@ -18,6 +18,8 @@ export interface ArtifactConfig {
   vhosts?: ArtifactVhost[];
   /** Optional apex such as graehl.org; unset means name.localhost only. */
   vhostPublicRoot?: string;
+  /** Rewrite name.localhost links even outside a public relay session. */
+  alwaysRewriteVhostLinks?: boolean;
 }
 
 /** A week is long enough to open a link again, short enough to forget. */
@@ -32,7 +34,10 @@ const MAX_LEGACY_EXPIRY_HOURS = 168;
 export function validateArtifactConfig(
   value: unknown,
   defaultExpiryDays = DEFAULT_ARTIFACT_EXPIRY_DAYS,
-  previous?: Pick<ArtifactConfig, "vhosts" | "vhostPublicRoot">,
+  previous?: Pick<
+    ArtifactConfig,
+    "vhosts" | "vhostPublicRoot" | "alwaysRewriteVhostLinks"
+  >,
 ): ArtifactConfig {
   if (!value || typeof value !== "object")
     throw new Error("Artifact configuration must be an object");
@@ -87,12 +92,17 @@ export function validateArtifactConfig(
     input.vhostPublicRoot,
     previous?.vhostPublicRoot,
   );
+  const alwaysRewriteVhostLinks =
+    input.alwaysRewriteVhostLinks ?? previous?.alwaysRewriteVhostLinks ?? false;
+  if (typeof alwaysRewriteVhostLinks !== "boolean")
+    throw new Error("alwaysRewriteVhostLinks must be a boolean");
   return {
     ...config,
     expiryDays,
     expiryHours: expiryDays * 24,
     vhosts,
     ...(vhostPublicRoot ? { vhostPublicRoot } : {}),
+    ...(alwaysRewriteVhostLinks ? { alwaysRewriteVhostLinks: true } : {}),
   };
 }
 

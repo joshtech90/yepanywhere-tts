@@ -20,7 +20,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { createPortal } from "react-dom";
+import { createPortal, flushSync } from "react-dom";
 import { useAsyncQuestions } from "../contexts/AsyncQuestionsContext";
 import {
   SessionRewindProvider,
@@ -44,6 +44,7 @@ import { useMessageListSelectionQuote } from "../hooks/useMessageListSelectionQu
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import { useRecentProjectPathLinks } from "../hooks/useRecentProjectPathLinks";
 import { useTranscriptRenderWindow } from "../hooks/useTranscriptRenderWindow";
+import { useTranscriptMarginNavigation } from "../hooks/useTranscriptMarginNavigation";
 import { useI18n } from "../i18n";
 import {
   createRememberedDisclosureStateRegistry,
@@ -74,7 +75,10 @@ import {
   MESSAGE_STALE_THRESHOLD_MS,
 } from "../lib/messageAge";
 import type { ActiveToolApproval } from "@yep-anywhere/shared/transcript/types";
-import type { SessionIsearchScope } from "../lib/sessionIsearchGuide";
+import {
+  SESSION_ISEARCH_OPEN_EVENT,
+  type SessionIsearchScope,
+} from "../lib/sessionIsearchGuide";
 import {
   decideSessionScrollRestore,
   DEFAULT_SESSION_SCROLL_BEHAVIOR_MODE,
@@ -84,9 +88,10 @@ import {
   deriveVisibleSessionScrollCursor,
   getLatestSeenTurnRenderKey,
 } from "../lib/sessionScrollCursor";
+import { querySessionRouteLayerElement } from "../lib/sessionRouteLayer";
 import type { SessionRouteScrollSnapshot } from "../lib/sessionRouteSnapshots";
 import {
-  isSessionViewerOpen,
+  isSessionViewerTranscriptFrozen,
   useSessionViewerResumeRevision,
 } from "../lib/sessionViewerController";
 import {
@@ -348,6 +353,12 @@ function getSessionIsearchShortcutScope(
   }
   if (isCtrlKeyShortcut(event, "r", "KeyR", { allowAlt: true })) {
     return "user";
+  }
+  if (
+    isCtrlKeyShortcut(event, "k", "KeyK", { allowAlt: true }) &&
+    event.altKey
+  ) {
+    return "links";
   }
   return null;
 }
@@ -2023,6 +2034,7 @@ export const MessageList = memo(function MessageList({
       markdownAugments,
       activeToolApproval,
       transcriptDisplayObjects,
+      recoverUnanchoredBangCommands: true,
       previousRenderItems: previousRenderItemsRef.current,
       recentProjectPathLinksEnabled,
       workflowTagsEnabled,
@@ -2658,7 +2670,7 @@ export const MessageList = memo(function MessageList({
   const progressiveRenderPaused =
     inert ||
     progressiveRenderPauseSignal?.current === true ||
-    isSessionViewerOpen(sessionViewerSessionId);
+    isSessionViewerTranscriptFrozen(sessionViewerSessionId);
   const progressiveRenderCompactionActive =
     progressiveRenderPaused &&
     progressiveRenderPauseSignal?.supportsCompaction === true;
@@ -2888,7 +2900,7 @@ export const MessageList = memo(function MessageList({
     const timer = setTimeout(() => {
       if (
         progressiveRenderPauseSignal?.current ||
-        isSessionViewerOpen(sessionViewerSessionId)
+        isSessionViewerTranscriptFrozen(sessionViewerSessionId)
       ) {
         return;
       }
@@ -2900,7 +2912,7 @@ export const MessageList = memo(function MessageList({
         setProgressiveEntryCount((current) => {
           if (
             progressiveRenderPauseSignal?.current ||
-            isSessionViewerOpen(sessionViewerSessionId)
+            isSessionViewerTranscriptFrozen(sessionViewerSessionId)
           ) {
             return current;
           }
@@ -2939,7 +2951,7 @@ export const MessageList = memo(function MessageList({
     const timer = setTimeout(() => {
       if (
         progressiveRenderPauseSignal?.current ||
-        isSessionViewerOpen(sessionViewerSessionId)
+        isSessionViewerTranscriptFrozen(sessionViewerSessionId)
       ) {
         return;
       }
@@ -3236,14 +3248,22 @@ export const MessageList = memo(function MessageList({
   );
 
   /**
-   * Margin navigation (topics/session-rewind.md): a click on a row's margin,
-   * not on its content or controls, scrolls so the next row at the same
-   * outline level lands under the pointer; right-click goes to the previous
-   * one. Repeated clicks without moving the mouse therefore step through the
-   * outline. Outline levels are the top level and each rewound group.
+   * Opt-in margin navigation (topics/turn-rail-marker-layout.md): a plain
+   * click on a row's margin, not on its content or controls, scrolls so the
+   * next row at the same outline level lands under the pointer; right-click
+   * goes to the previous one. Repeated clicks without moving the mouse
+   * therefore step through the outline. Outline levels are the top level and
+   * each rewound group. Modified clicks and clicks that end a text selection
+   * keep their browser meaning.
    */
+  const { transcriptMarginNavigationEnabled } = useTranscriptMarginNavigation();
   const navigateFromMargin = useCallback(
     (event: React.MouseEvent<HTMLElement>, direction: 1 | -1): boolean => {
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) {
+        return false;
+      }
+      const selection = window.getSelection();
+      if (selection && !selection.isCollapsed) return false;
       const target = event.target as HTMLElement;
       const row = target.closest<HTMLElement>(".message-render-row");
       if (!row || target !== row) return false;
@@ -3644,12 +3664,16 @@ export const MessageList = memo(function MessageList({
     scheduleSettledScrollState();
   }, [reportFollowingBottom, scheduleSettledScrollState]);
 
-  const { highlightSearchMatch, clearSearchMatchHighlight } =
-    useSearchMatchHighlight(inert);
+  const {
+    beginSearchMatchReveal,
+    clearSearchMatchHighlight,
+    releaseSearchMatchHighlightOnInput,
+  } = useSearchMatchHighlight(inert);
   const revealSearchMatch = useCallback(
     (targetId: string, showMotionCue: boolean) => {
       const query = userTurnNavSearchState?.query ?? "";
       const caseSensitive = userTurnNavSearchState?.caseSensitive ?? false;
+      const highlightSearchMatch = beginSearchMatchReveal();
       scrollToRenderId(
         targetId,
         "auto",
@@ -3664,7 +3688,7 @@ export const MessageList = memo(function MessageList({
         },
       );
     },
-    [highlightSearchMatch, scrollToRenderId, userTurnNavSearchState],
+    [beginSearchMatchReveal, scrollToRenderId, userTurnNavSearchState],
   );
 
   const jumpToSearchTarget = useCallback(
@@ -3712,6 +3736,7 @@ export const MessageList = memo(function MessageList({
       preserveScrollAfterTranscriptHeightChange(
         () => {
           closeSearch(false);
+          releaseSearchMatchHighlightOnInput();
           requestAnimationFrame(() => {
             revealSearchMatch(targetId, false);
           });
@@ -3725,6 +3750,7 @@ export const MessageList = memo(function MessageList({
       completeProgressiveReveal,
       jumpToSearchTarget,
       preserveScrollAfterTranscriptHeightChange,
+      releaseSearchMatchHighlightOnInput,
       revealSearchMatch,
     ],
   );
@@ -3904,14 +3930,47 @@ export const MessageList = memo(function MessageList({
         stopSearchArrowRepeat();
       }
     };
+    // A plain click on the framed match row accepts it, as Enter does.
+    // Controls and links inside the row keep their own actions, and a
+    // click that ends a text selection is not an acceptance.
+    const handleMatchRowClick = (event: MouseEvent) => {
+      if (!searchActive || event.button !== 0 || event.defaultPrevented) return;
+      const target = event.target as Element | null;
+      const row = target?.closest<HTMLElement>('[data-search-match="true"]');
+      if (!row || !containerRef.current?.contains(row)) return;
+      if (target?.closest("a, button, input, select, textarea, summary"))
+        return;
+      if (!window.getSelection()?.isCollapsed) return;
+      const selectedAnchorId = getSelectedSearchAnchorId();
+      const selectedTargetId = getSelectedSearchTargetId();
+      if (!selectedAnchorId || !selectedTargetId) return;
+      event.preventDefault();
+      stopSearchArrowRepeat();
+      handleSearchMatchSelect(selectedAnchorId, selectedTargetId, true);
+    };
+    // The toolbar's search button: open in the last-used scope, or return
+    // focus to the open search. The synchronous commit mounts the input
+    // inside the tap, which is what lets a touch keyboard open.
+    const handleOpenRequest = () => {
+      if (searchActive) {
+        openSearch(searchScope);
+        return;
+      }
+      flushSync(() => startSearch(searchScope));
+    };
+    window.addEventListener("click", handleMatchRowClick);
+    window.addEventListener(SESSION_ISEARCH_OPEN_EVENT, handleOpenRequest);
 
     window.addEventListener("keydown", handleKeyDown, true);
     window.addEventListener("keyup", handleKeyUp, true);
     return () => {
+      window.removeEventListener("click", handleMatchRowClick);
+      window.removeEventListener(SESSION_ISEARCH_OPEN_EVENT, handleOpenRequest);
       window.removeEventListener("keydown", handleKeyDown, true);
       window.removeEventListener("keyup", handleKeyUp, true);
     };
   }, [
+    handleSearchMatchSelect,
     closeSearch,
     commitSearchJump,
     getSelectedSearchAnchorId,
@@ -3919,6 +3978,7 @@ export const MessageList = memo(function MessageList({
     handleSearchArrowKey,
     moveSearchSelection,
     navigateToAdjacentHiddenUserTurn,
+    openSearch,
     prepareSearchTarget,
     scrollToCurrent,
     searchActive,
@@ -4615,7 +4675,10 @@ export const MessageList = memo(function MessageList({
   const followButtonTarget =
     !isScrolledToBottom && typeof document !== "undefined"
       ? followButtonPortalTarget === undefined
-        ? document.querySelector<HTMLElement>(".session-input-inner")
+        ? querySessionRouteLayerElement<HTMLElement>(
+            ".session-input-inner",
+            containerRef.current,
+          )
         : followButtonPortalTarget
       : null;
   const followButtonLabel = newOutputBelowVisible
@@ -4698,8 +4761,14 @@ export const MessageList = memo(function MessageList({
           data-transcript-render-weight={transcriptRenderWindow.totalWeight}
           onPointerOver={handleTranscriptPointerOver}
           onPointerLeave={handleTranscriptPointerLeave}
-          onClick={handleMarginClick}
-          onContextMenu={handleMarginContextMenu}
+          onClick={
+            transcriptMarginNavigationEnabled ? handleMarginClick : undefined
+          }
+          onContextMenu={
+            transcriptMarginNavigationEnabled
+              ? handleMarginContextMenu
+              : undefined
+          }
         >
           {floatingSelectionActions}
           {progressiveRevealActive && (

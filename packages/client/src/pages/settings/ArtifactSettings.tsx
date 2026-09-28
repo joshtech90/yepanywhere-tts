@@ -42,6 +42,9 @@ function ArtifactSettingsForm({
   const [vhostPublicRoot, setVhostPublicRoot] = useState(
     status.vhostPublicRoot ?? "",
   );
+  const [alwaysRewriteVhostLinks, setAlwaysRewriteVhostLinks] = useState(
+    status.alwaysRewriteVhostLinks === true,
+  );
   const [vhosts, setVhosts] = useState<ArtifactVhost[]>(() =>
     (status.vhosts ?? []).map((row) => ({ ...row })),
   );
@@ -58,6 +61,7 @@ function ArtifactSettingsForm({
       expiryDays: number;
       expiryHours: number;
       vhosts: ArtifactVhost[];
+      alwaysRewriteVhostLinks: boolean;
     }> = {},
   ) {
     if (status.locked) return;
@@ -66,6 +70,7 @@ function ArtifactSettingsForm({
       expiryDays,
       expiryHours,
       vhosts,
+      alwaysRewriteVhostLinks,
       ...overrides,
     };
     setMessage("");
@@ -92,6 +97,7 @@ function ArtifactSettingsForm({
         ...(vhostsSupported
           ? {
               vhostPublicRoot: vhostPublicRoot.trim(),
+              alwaysRewriteVhostLinks: draft.alwaysRewriteVhostLinks,
               vhosts: draft.vhosts.map((row) => ({
                 name: row.name.trim(),
                 port: row.port,
@@ -239,6 +245,20 @@ function ArtifactSettingsForm({
               />
             </label>
             <p>{t("artifactVhostPublicRootHint", { port })}</p>
+            <label className={styles.toggle}>
+              <input
+                type="checkbox"
+                checked={alwaysRewriteVhostLinks}
+                onChange={(event) => {
+                  setAlwaysRewriteVhostLinks(event.target.checked);
+                  void save({
+                    alwaysRewriteVhostLinks: event.target.checked,
+                  });
+                }}
+              />
+              {t("artifactAlwaysRewriteVhostLinks")}
+            </label>
+            <p>{t("artifactAlwaysRewriteVhostLinksHint")}</p>
             <div className={styles.vhosts}>
               <span className={styles.vhostHeading}>
                 {t("artifactVhostTableTitle")}

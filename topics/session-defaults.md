@@ -186,6 +186,15 @@ conservative server/provider default. Existing YA requested-model metadata
 precedes provider transcript inference because it records the user's exact YA
 selection token.
 
+A live change is saved to that record as it is applied. When the process stops
+before that save has run — Stop, a rewind, an idle reap, a turn interrupt that
+falls back to aborting, a provider exit — the stop completes the save, so the
+next replacement process starts from the settings last applied rather than
+the ones saved before the change. A requested abort (Stop, a rewind, the
+interrupt fallback) waits for the save before returning; a failed save is logged and does not fail the stop. A save for a
+stopped process never overwrites a successor process that already owns the
+session.
+
 For a Codex session that predates the complete snapshot, the first later cold
 launch lazily reads the latest valid transcript `turn_context`. Its non-empty
 model and supported effort are recoverable. `none` recovers disabled thinking;
@@ -247,34 +256,41 @@ attached to the recap choices and before the conditional helper model. The
 slider, numeric seconds input, and unit remain visible as one control and never
 share or overlap the paired Show thinking / Suggestions grid row.
 
-New Session instead prioritizes the choices most likely to change before a
-launch. On a narrow viewport its visual and focus order is composer, project,
-AI Provider/model/thinking/permission, then the lower-frequency show-thinking,
-recap, conditional **Tailed Recap Model**, prompt-suggestion, and sandbox
-controls. On a wide viewport the project chooser sits beside the composer, the
-primary launch controls continue below the composer, and those lower-frequency
-controls use the column beneath the closed project chooser. Expanding the
-project chooser temporarily hides the secondary controls so its overlaid,
-scrollable project history remains unobstructed; closing it restores them.
-DOM, visual, keyboard, and screen-reader traversal retain the same row-major
-order while the chooser is closed. Placement does not change a setting's
-all-provider or provider-local persistence scope.
+New Session prioritizes project, AI Provider, model, and thinking/effort. On a
+narrow viewport they follow the composer in that order; on a wide viewport the
+project chooser sits beside the composer and the three provider controls share
+the next row. The model dropdown shows its provider/model badge, and the
+composer has no duplicate model selector. The provider dropdown lists every
+known provider with descriptive status: an uninstalled provider is disabled,
+while an installed provider whose authentication is unconfirmed remains
+selectable.
 
-New Session starts in its compact, routine-use presentation: explanatory
-captions are hidden, while desktop hover tooltips expose the same text. A small
-`?` button on the option region reveals the full captions, primarily for touch
-screens where hover is unavailable; the expansion is form-local and is not a
-new persisted default. Settings always shows captions because explanation and
-searchability matter more there than fitting the launch form on one screen.
+Permission mode, Show thinking, recaps, conditional **Tailed Recap Model**,
+suggestions, sandbox and its conditional network firewall, available computer
+control, and configured remote execution hosts live in **Advanced options**.
+These choices use compact dropdowns; recap away duration remains attached to
+an enabled recap mode. Advanced options starts collapsed for a browser that has
+never chosen, then remembers its expanded or collapsed state in browser-local
+storage across form mounts and reloads. When collapsed it summarizes active
+non-default choices. Expanding the project chooser temporarily hides the
+advanced controls so its overlaid, scrollable history remains unobstructed.
+Placement does not change a setting's all-provider or provider-local ownership.
+
+New Session hides explanatory captions by default, while desktop hover
+tooltips expose the same text. The `?` button reveals captions below their
+dropdowns, keeping control rows aligned when descriptions wrap; this choice
+lasts only for the mounted form. Settings always shows captions because
+explanation and searchability matter more there than fitting the launch form
+on one screen.
 
 Both surfaces take each control's base title and description, plus optional
 Settings-only search terms and label overrides, from one declarative control
 copy definition. A description that depends on the selected value, such as the
-active recap or suggestion mode, stays beside that live value but must appear
-both as compact-mode tooltip text and as expanded caption text.
+active recap or suggestion mode, must appear as compact-mode tooltip text and
+as expanded caption text below the control.
 
-Permission-mode cards are equal-sized by design. Their captions should fit the
-card grid with short explanatory text:
+Permission-mode descriptions stay short in the Settings card grid and New
+Session dropdown:
 
 - `Ask` — `Ask every time`
 - `Edit` — `Ask to run commands`

@@ -74,10 +74,12 @@ export function defineTool<
   // mandatory exactly when the two shapes differ, so the alternative below —
   // handing failure data to the result callbacks — is only ever taken where
   // the contract proved them interchangeable.
-  const { renderFailure, getFailureSummary } = callbacks as {
-    renderFailure?: FailureRenderer<z.output<I>, z.output<F>>;
-    getFailureSummary?: FailureSummary<z.output<I>, z.output<F>>;
-  };
+  const { renderFailure, renderCollapsedFailure, getFailureSummary } =
+    callbacks as {
+      renderFailure?: FailureRenderer<z.output<I>, z.output<F>>;
+      renderCollapsedFailure?: FailureRenderer<z.output<I>, z.output<F>>;
+      getFailureSummary?: FailureSummary<z.output<I>, z.output<F>>;
+    };
   const operations = [
     "renderToolUse",
     "renderToolResult",
@@ -251,6 +253,12 @@ export function defineTool<
                   : null}
                 {partial()}
               </>
+            ) : failure && renderCollapsedFailure ? (
+              renderCollapsedFailure(
+                failure.data,
+                context,
+                input.success ? input.data : undefined,
+              )
             ) : input.success ? (
               (callbacks.renderCollapsedPreview?.(
                 input.data,
@@ -321,6 +329,9 @@ type FailureSummary<TInput, TFailure> = (
  */
 type FailureCallbacks<TInput, TResult, TFailure> = {
   getFailureSummary?: FailureSummary<TInput, TFailure>;
+  /** Collapsed-row display of a checked rejection. Without it the collapsed
+   * preview receives no result for a rejection, only `isError`. */
+  renderCollapsedFailure?: FailureRenderer<TInput, TFailure>;
 } & ([TFailure] extends [TResult]
   ? { renderFailure?: FailureRenderer<TInput, TFailure> }
   : { renderFailure: FailureRenderer<TInput, TFailure> });

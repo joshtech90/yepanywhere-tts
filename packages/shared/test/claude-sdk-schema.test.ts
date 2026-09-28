@@ -47,6 +47,35 @@ describe("Claude SDK schema", () => {
       sessionId: "11111111-1111-4111-8111-111111111111",
       timestamp: "2026-07-19T00:00:00.000Z",
     },
+    {
+      type: "atis-latch",
+      atis: "",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+    },
+    {
+      type: "cost-state",
+      sessionId: "11111111-1111-4111-8111-111111111111",
+      totalCostUSD: 0.1,
+      totalAPIDuration: 100,
+      totalAPIDurationWithoutRetries: 90,
+      totalToolDuration: 10,
+      totalLinesAdded: 2,
+      totalLinesRemoved: 1,
+      totalDuration: 200,
+      startTime: 1_790_102_688_745,
+      modelUsage: {
+        "claude-opus-5-5": {
+          inputTokens: 2,
+          outputTokens: 16,
+          thinkingTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 20_763,
+          webSearchRequests: 0,
+          costUSD: 0.1,
+        },
+      },
+      hasUnknownModelCost: false,
+    },
   ])("parses current Claude metadata entry %#", (entry) => {
     expect(ClaudeSessionEntrySchema.safeParse(entry).success).toBe(true);
   });

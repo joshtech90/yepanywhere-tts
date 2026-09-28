@@ -1,0 +1,46 @@
+/* The one header layout shared by every viewer that shows a title — with or
+   without a revision/metrics caption line under it — beside a row of icon
+   buttons: the session right pane, the file viewer in all three of its homes,
+   the artifact link viewer, the session detail panel, and the diff pane
+   toolbar. They reflow identically because they use these classes and add only
+   their own padding, background and typography.
+
+   The rule is plain greedy wrapping and nothing else. The identity block keeps
+   a readable column, the actions take whatever is left, and a button that does
+   not fit moves to the next row — a row that then fills from the width the
+   header actually has. Widening a viewer therefore only ever removes rows.
+
+   No fixed grid or per-viewer width breakpoint: wrapping must only ever remove
+   rows. A fixed column grid caps each button row below the header width and
+   spills buttons into extra rows while space stays empty; a per-viewer
+   breakpoint makes two viewers disagree at the same width. */
+.header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.125rem 0.5rem;
+  flex-shrink: 0;
+}
+
+/* The title keeps a readable column: controls that no longer fit beside it
+   drop to a later header row rather than squeezing it to one glyph. */
+.identity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+  min-width: 0;
+  flex: 1 1 14rem;
+}
+
+/* Content-width, so a row the actions land on alone is only as tall and as
+   wide as the buttons need, and trailing-aligned so they stay anchored to the
+   header's edge wherever they end up. */
+.actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.25rem 0.125rem;
+  flex: 0 1 auto;
+  margin-left: auto;
+}

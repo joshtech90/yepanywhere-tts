@@ -1,5 +1,10 @@
 import { NewSessionQueueMark } from "./NewSessionQueueMark";
 import {
+  type ChosenNewSessionQueueTarget,
+  type NewSessionQueueTarget,
+  NewSessionQueueOptions,
+} from "./NewSessionQueueOptions";
+import {
   DEFAULT_PATIENT_QUEUE_PATIENCE_SECONDS,
   DEFAULT_PROJECT_QUEUE_CTRL_ENTER_ENABLED,
   DEFAULT_STEER_NOW_ENABLED,
@@ -181,6 +186,7 @@ type PendingSpeechDeliveryIntent =
   | {
       kind: "project-queue";
       newSession: boolean;
+      newSessionTarget?: ChosenNewSessionQueueTarget;
       focusAfterSubmit: boolean;
     }
   | {
@@ -240,11 +246,20 @@ interface Props {
   onQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
   /** Queue through the project-level idle gate. Hidden unless opted in. */
   onProjectQueue?: (text: string, metadata?: MessageSubmissionMetadata) => void;
-  /** Queue this draft as the opening turn of a new session in the project. */
+  /**
+   * Queue this draft as the opening turn of a new session: in this project
+   * with this session's settings, or at a target chosen from its options.
+   */
   onProjectQueueNewSession?: (
     text: string,
     metadata?: MessageSubmissionMetadata,
+    target?: ChosenNewSessionQueueTarget,
   ) => void;
+  /**
+   * What the new-session options start from. Present enables choosing another
+   * project, provider or model by right-click or long-press.
+   */
+  projectQueueNewSessionTarget?: NewSessionQueueTarget;
   disabled?: boolean;
   placeholder?: string;
   mode?: PermissionMode;
@@ -420,6 +435,7 @@ export function MessageInput({
   onQueue,
   onProjectQueue,
   onProjectQueueNewSession,
+  projectQueueNewSessionTarget,
   disabled,
   placeholder,
   mode = "default",
@@ -518,6 +534,10 @@ export function MessageInput({
   // User-controlled collapse state (independent of external collapse from approval panel)
   const [userCollapsed, setUserCollapsed] = useState(false);
   const [fullPane, setFullPane] = useState(false);
+  const [newSessionOptionsMode, setNewSessionOptionsMode] = useState<
+    "now" | "patient" | null
+  >(null);
+  const newSessionOptionsFormRef = useRef<HTMLFormElement>(null);
   const [interimTranscript, setInterimTranscript] = useState("");
   const interimTranscriptRef = useRef(interimTranscript);
   interimTranscriptRef.current = interimTranscript;
@@ -682,8 +702,7 @@ export function MessageInput({
             (candidate) =>
               matchingSlashCommands.length === 0 ||
               invocationQuery === null ||
-              candidate.start !== invocationQuery.start ||
-              candidate.end !== invocationQuery.end,
+              candidate.start !== invocationQuery.start,
           )
           .map((candidate) => candidate.token),
       ),
@@ -1617,15 +1636,26 @@ export function MessageInput({
           return;
         }
         if (bangDraft.kind === "bang" && !disabled) {
+          // Empty the composer before the request, as Send does, so keys typed
+          // while the command starts begin the next draft instead of being
+          // cleared with the command. Storage keeps the command until the
+          // outcome is known.
+          if (!preserveComposer) {
+            controls.clearInput();
+            resetCompositionMetadata();
+            setInterimTranscript("");
+          }
           try {
             await bangSupport.onRun(bangDraft.command);
             if (!preserveComposer) {
-              controls.clearInput();
-              resetCompositionMetadata();
-              setInterimTranscript("");
+              controls.confirmInputClear();
             }
           } catch {
-            // The owner surfaces the run failure; retain the draft for retry.
+            // The owner surfaces the run failure. Bring the command back for
+            // retry unless a newer draft has taken its place.
+            if (!preserveComposer) {
+              controls.restoreFromStorage();
+            }
           }
           if (focusAfterSubmit) {
             textareaRef.current?.focus();
@@ -1864,26 +1894,36 @@ export function MessageInput({
     [deferSpeechDelivery, onProjectQueue, submitToProjectQueue],
   );
 
+  const queueNewSessionAt = useCallback(
+    (target: ChosenNewSessionQueueTarget | undefined) =>
+      onProjectQueueNewSession && target
+        ? (text: string, metadata?: MessageSubmissionMetadata) =>
+            onProjectQueueNewSession(text, metadata, target)
+        : onProjectQueueNewSession,
+    [onProjectQueueNewSession],
+  );
+
   const handleProjectQueueNewSession = useCallback(
-    (focusAfterSubmit = true) => {
+    (focusAfterSubmit = true, target?: ChosenNewSessionQueueTarget) => {
       if (
         deferSpeechDelivery({
           kind: "project-queue",
           newSession: true,
+          newSessionTarget: target,
           focusAfterSubmit,
         })
       ) {
         return;
       }
       submitToProjectQueue(
-        onProjectQueueNewSession,
+        queueNewSessionAt(target),
         undefined,
         undefined,
         false,
         focusAfterSubmit,
       );
     },
-    [deferSpeechDelivery, onProjectQueueNewSession, submitToProjectQueue],
+    [deferSpeechDelivery, queueNewSessionAt, submitToProjectQueue],
   );
 
   const restorePendingSpeechDeliveryDraft = useCallback(() => {
@@ -1932,7 +1972,9 @@ export function MessageInput({
       }
       if (pending.intent.kind === "project-queue") {
         submitToProjectQueue(
-          pending.intent.newSession ? onProjectQueueNewSession : onProjectQueue,
+          pending.intent.newSession
+            ? queueNewSessionAt(pending.intent.newSessionTarget)
+            : onProjectQueue,
           pending.visibleTextSnapshot,
           pending.composition,
           true,
@@ -1981,7 +2023,7 @@ export function MessageInput({
     handleQueue,
     handleSubmit,
     onProjectQueue,
-    onProjectQueueNewSession,
+    queueNewSessionAt,
     restorePendingSpeechDeliveryDraft,
     submitToProjectQueue,
   ]);
@@ -2082,6 +2124,27 @@ export function MessageInput({
   const handleProjectQueueNewSessionPointerDelivery = useCallback(() => {
     runComposerPointerDelivery(handleProjectQueueNewSession);
   }, [handleProjectQueueNewSession, runComposerPointerDelivery]);
+  const openNewSessionOptions = useCallback(
+    () => setNewSessionOptionsMode("patient"),
+    [],
+  );
+  const openImmediateNewSessionOptions = useCallback(
+    () => setNewSessionOptionsMode("now"),
+    [],
+  );
+  const closeNewSessionOptions = useCallback(() => {
+    setNewSessionOptionsMode(null);
+    textareaRef.current?.focus();
+  }, []);
+  const queueNewSessionAtChosenTarget = useCallback(
+    (target: ChosenNewSessionQueueTarget) => {
+      setNewSessionOptionsMode(null);
+      runComposerPointerDelivery((focusAfterSubmit) =>
+        handleProjectQueueNewSession(focusAfterSubmit, target),
+      );
+    },
+    [handleProjectQueueNewSession, runComposerPointerDelivery],
+  );
   const handleForkWithoutSummaryPointerDelivery = useCallback(() => {
     runComposerPointerDelivery((focusAfterSubmit) => {
       handleForkWithoutSummary(undefined, focusAfterSubmit);
@@ -2243,15 +2306,21 @@ export function MessageInput({
     (command: SlashCommand, completionPrefix?: string) => {
       const canonicalToken =
         completionPrefix ?? getCanonicalInvocationToken(command);
+      const activeQuery = getInvocationCompletionQuery(text, composerCursor);
+      // A root token typed in front of existing text takes that text as its
+      // argument, so selection inserts the command instead of running it
+      // bare and discarding the draft.
+      const textFollowsToken =
+        activeQuery !== null && text.slice(activeQuery.end).trim() !== "";
       if (
         completionPrefix === undefined &&
         command.invocation?.kind === "emulated" &&
+        !textFollowsToken &&
         onCustomCommand?.(command.name)
       ) {
         return;
       }
 
-      const activeQuery = getInvocationCompletionQuery(text, composerCursor);
       let editStart: number;
       let editEnd: number;
       let nextText: string;
@@ -3435,6 +3504,36 @@ export function MessageInput({
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
+      if (newSessionOptionsMode && !event.nativeEvent.isComposing) {
+        if (
+          event.key === "Escape" &&
+          !(
+            event.target instanceof Element &&
+            event.target.closest(
+              '[role="combobox"][aria-expanded="true"], [role="listbox"]',
+            )
+          )
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          closeNewSessionOptions();
+          return;
+        }
+        if (
+          event.key === "Enter" &&
+          event.target === textareaRef.current &&
+          !event.shiftKey &&
+          !event.ctrlKey &&
+          !event.metaKey &&
+          !event.altKey &&
+          !hasCoarsePointer()
+        ) {
+          event.preventDefault();
+          event.stopPropagation();
+          newSessionOptionsFormRef.current?.requestSubmit();
+          return;
+        }
+      }
       if (!isVoiceInputShortcut(event)) return;
       event.preventDefault();
       event.stopPropagation();
@@ -3442,7 +3541,7 @@ export function MessageInput({
       if (!voice?.isAvailable) return;
       voice.toggle();
     },
-    [],
+    [newSessionOptionsMode, closeNewSessionOptions],
   );
 
   const toolbarProps: MessageInputToolbarProps = {
@@ -3500,14 +3599,27 @@ export function MessageInput({
     onDone,
     doneTitle,
     onSend: handlePrimaryPointerDelivery,
+    onSendOptions:
+      onProjectQueueNewSession &&
+      projectQueueNewSessionTarget &&
+      !forkSummaryMode
+        ? openImmediateNewSessionOptions
+        : undefined,
+    hidePrimaryDeliveryActions: newSessionOptionsMode !== null,
     onQueue: onQueue ? handleQueuePointerDelivery : undefined,
     onProjectQueue:
-      onProjectQueue && !forkSummaryMode
+      onProjectQueue && !forkSummaryMode && !newSessionOptionsMode
         ? handleProjectQueuePointerDelivery
         : undefined,
     onProjectQueueNewSession:
-      onProjectQueueNewSession && !forkSummaryMode
+      onProjectQueueNewSession && !forkSummaryMode && !newSessionOptionsMode
         ? handleProjectQueueNewSessionPointerDelivery
+        : undefined,
+    onProjectQueueNewSessionOptions:
+      onProjectQueueNewSession &&
+      projectQueueNewSessionTarget &&
+      !forkSummaryMode
+        ? openNewSessionOptions
         : undefined,
     onSteer: hasActiveDualActions ? handleSteerPointerDelivery : undefined,
     primaryActionKind: effectivePrimaryActionKind,
@@ -4146,7 +4258,7 @@ export function MessageInput({
           </div>
         )}
 
-        {!collapsed && showMobileKeyboardCompact && (
+        {!collapsed && showMobileKeyboardCompact && !newSessionOptionsMode && (
           <div className="message-input-keyboard-compact">
             {mobileKeyboardMoreOpen && (
               <div
@@ -4377,6 +4489,14 @@ export function MessageInput({
                 }`}
                 onPointerDown={(event) => event.preventDefault()}
                 onClick={handlePrimaryPointerDelivery}
+                onContextMenu={
+                  toolbarProps.onSendOptions
+                    ? (event) => {
+                        event.preventDefault();
+                        toolbarProps.onSendOptions?.();
+                      }
+                    : undefined
+                }
                 disabled={disabled}
                 aria-label={describePrefixedDelivery(
                   mobileKeyboardActionLabel,
@@ -4406,6 +4526,18 @@ export function MessageInput({
         {!collapsed && !showMobileKeyboardCompact && (
           <MessageInputToolbar {...toolbarProps} />
         )}
+        {!collapsed &&
+          newSessionOptionsMode &&
+          projectQueueNewSessionTarget && (
+            <NewSessionQueueOptions
+              initial={projectQueueNewSessionTarget}
+              primaryDelivery={newSessionOptionsMode}
+              formRef={newSessionOptionsFormRef}
+              disabled={!canSubmit || disabled}
+              onSubmit={queueNewSessionAtChosenTarget}
+              onClose={closeNewSessionOptions}
+            />
+          )}
       </div>
     </div>
   );

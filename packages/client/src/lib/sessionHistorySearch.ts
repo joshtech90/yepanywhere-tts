@@ -5,6 +5,7 @@ import {
   getActiveSearchAnchors,
   getAllTurnSearchAnchors,
   getFullSessionSearchAnchors,
+  getLinkSearchAnchors,
   getSearchMatchProjection,
   getUserTurnSearchAnchors,
 } from "./sessionDetail/search";
@@ -192,11 +193,15 @@ export function searchSessionHistoryPage({
   const displayRenderItems = conversationViewEnabled
     ? projectConversationSearchView(renderItems)
     : renderItems;
+  const turnGroups =
+    scope === "full" || scope === "links"
+      ? groupRenderItemsIntoTurns(displayRenderItems)
+      : [];
   const anchors = getActiveSearchAnchors({
     allAnchors: getAllTurnSearchAnchors(displayRenderItems),
-    fullAnchors: getFullSessionSearchAnchors(
-      groupRenderItemsIntoTurns(displayRenderItems),
-    ),
+    fullAnchors:
+      scope === "full" ? getFullSessionSearchAnchors(turnGroups) : [],
+    linkAnchors: scope === "links" ? getLinkSearchAnchors(turnGroups) : [],
     scope,
     userAnchors: getUserTurnSearchAnchors(displayRenderItems),
   });

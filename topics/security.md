@@ -8,12 +8,16 @@ Topic: security
 
 ## Authority Model
 
-YA is a single-user, self-hosted agent supervisor. It does not currently have
-application-level user accounts, roles, project access-control lists, or an
-authenticated read-only/operator split. A valid local password session, desktop
-session, or Remote Access SRP session reaches the same operator-facing API.
+YA is a self-hosted agent supervisor with one full-authority principal, the
+superuser. Apart from the optional limited users below, it has no roles,
+project access-control lists, or authenticated read-only/operator split. A
+valid superuser local password session, desktop session, or Remote Access SRP
+session reaches the same operator-facing API.
 When local authentication is disabled, anyone who can reach an admitted server
-endpoint has that same authority without first presenting a credential.
+endpoint has that same authority without first presenting a credential. When it
+is enabled, every `/api` route except the `/api/auth` login and status routes
+refuses a request that carries no valid credential; no operator route answers
+ahead of the host, CORS, custom-header, and authentication checks.
 
 The practical trust boundary is therefore **can use normal authenticated YA,
 including creating or controlling an ordinary session**. That authority should
@@ -33,12 +37,114 @@ useful safety controls, but they are not roles separating mutually distrusting
 YA users. Run YA under a dedicated least-privilege OS account, VM, or container
 when the serving account itself must be isolated from other host state.
 
-A future restricted multiuser or delegated-guest layer requires new principals,
-server-side authorization, and an enforced execution boundary. The
-[[principals-and-grants]] proposal records shared vocabulary for that work and
-its relationship to hosted and peer-issued authority without selecting a
-protocol. Hiding controls, selecting a project working directory, or assigning
-a narrower-sounding permission mode would not establish that boundary.
+Any restricted principal requires its own credential, server-side
+authorization, and an enforced execution boundary. Limited users are the first
+such layer; § Limited Users states the boundary they claim. Delegated guests
+and peer-issued grants remain proposals, and the [[principals-and-grants]]
+sketch records shared vocabulary for them without selecting a protocol. Hiding
+controls, selecting a project working directory, or assigning a
+narrower-sounding permission mode would not establish that boundary.
+
+## Limited Users
+
+Limited users are default-off (`limitedUsersEnabled`) named principals that
+the superuser creates in Settings → Users. The product contract, including
+every route decision, is
+[`limited-users.md` § Delivery v1](limited-users.md#delivery-v1--settings--users).
+This section states the boundary that layer claims and what lies outside it.
+
+**Login.** A limited user authenticates with their own password: a direct
+cookie login naming the username, or Remote Access SRP with the username as
+the SRP identity under the host's relay name. The relay learns nothing new,
+and the principal is bound before any API call. While the feature is on,
+`srp_hello` does not disclose which names exist:
+
+- an unknown or disabled identity gets a challenge against a decoy salt and
+  verifier and fails only at the proof step;
+- the decoy salt is derived per identity from a server secret persisted in
+  `limited-users.json`, so it is stable for a name across hellos and restarts,
+  and differs between names, as real salts do;
+- every hello response is padded to a fixed floor; and
+- every identity has its own hello limiter. The limiter set is capped with
+  least-recently-seen eviction, and a limiter that is currently blocking its
+  name is evicted only when nothing else can be, so spraying fresh names does
+  not lift a lockout.
+
+With the feature off, `srp_hello` behaves as it did before limited users
+existed: an unknown identity is refused immediately, and only the configured
+superuser name has a per-identity limiter. Turning the feature off also
+refuses every limited login already in progress, including cookies, relay
+sessions, and sockets; none falls back to superuser authority. A superuser
+using **Act as** remains the superuser underneath and regains full access on
+logout. A limited user's logout ends the cookie or relay session it used, and
+changing that user's password or deleting the user ends all of them,
+including saved relay resume credentials; an already open connection is cut
+off at once only by disabling the user.
+
+**API.** One server-side middleware ahead of every route judges a limited
+principal and denies by default: an unlisted path answers 403, and an
+ungranted project or session answers 404. It judges the percent-decoded path
+the router dispatches and takes project grants only from ids in that path. A
+session resolves to its project through the live process or the retained
+session catalog; a session that resolves to no project, or to two, is refused.
+The following are refused outright:
+
+- host administration and settings writes, plus the secrets and host inventory
+  in the settings document;
+- devices, public shares, app links and artifacts;
+- absolute-path file reads, file editing and bang commands;
+- Issues & PRs; and
+- remote-access and connection inventory.
+
+A `/api/ws` socket acts for its whole lifetime as the login that opened it.
+Its tunneled requests receive the same decisions as direct requests. A
+subscription is judged by every id its channel reads. The activity channel,
+filtered by event type and denying by default, passes an event only when it
+names a project the user may read. Hiding a control in the client is cosmetic.
+
+**Execution.** Every provider process a limited user starts or resumes runs
+in the project-write sandbox on this host, under the user's
+provider/model/effort lock. This covers create, resume, reactivate, a fork or
+clone copy once it runs, and Project Queue dispatch. A new session is forced
+to project-write, and an existing session must already be sandboxed. The same
+holds for acting in a session someone else started: a join grant sends turns,
+approves tools, interrupts, and changes the permission mode only of a session
+whose process runs sandboxed, never of the superuser's unsandboxed ones. Remote
+executors and computer control are refused, as is every other session action
+that launches a process, such as restart, recap, rewind, and clearloop. The
+sandbox keeps its own preconditions: enforced authentication, Linux, and a
+supported provider. When they are not met, the launch fails; it never falls
+back to an unsandboxed process.
+
+**Project creation.** A limited user adds a project only strictly beneath
+the directory the superuser configured for them, judged where the filesystem
+resolves it: symbolic links on the way are followed, and a project path that
+is itself a symbolic link is refused. The check runs again once the directory
+exists and before the project is registered, so a link swapped in during the
+request can at worst leave an empty repository outside that directory; it is
+never registered as a project. Creating a project grants its creator
+new-session access to it, as an ordinary grant the superuser can revoke.
+
+**Outside the boundary.**
+
+- **The network firewall is not forced.** A limited user's create request may
+  turn off the sandbox's network firewall. The session then shares host
+  networking and can reach the YA listener, local-network services, and
+  unauthenticated localhost services such as the maintenance server when it
+  runs. Tracked in
+  [`gaps/limited-user-sandbox-firewall-opt-out.md`](../gaps/limited-user-sandbox-firewall-opt-out.md).
+- **The sandbox confines writes, not reads.** Files the server account can
+  read remain readable to a limited user's agent, including other users'
+  projects. The layer claims no confidentiality, credential-isolation, or
+  exfiltration protection. Limited users' sessions spend the host's provider
+  accounts, bounded only by their lock.
+- **One process serves every principal.** All users share YA's process, event
+  bus, and data directory. Isolation is authorization plus per-session
+  filesystem confinement, not process-level tenancy. A defect in the
+  middleware, or a route that answers before it, breaches the boundary for
+  every limited user at once.
+- **Unsupported hosts start nothing.** On a host where the sandbox cannot run,
+  a limited user can view sessions but can neither start one nor act in one.
 
 ## File Access Is A Viewer Policy
 
@@ -66,13 +172,13 @@ claims general hostile-code, confidentiality, credential-isolation, or
 exfiltration protection. Unsupported providers, non-Linux hosts, and SSH
 executors cannot use it.
 
-YA advertises and launches **Project writes only** only while local operator
-authentication is enforced: password or desktop authentication must be
-present, `--auth-disable` must be off, and localhost-open access must be off.
-This remains required because a user may explicitly disable the network
-firewall and because authentication is independent defense in depth. While a
-project-write sandbox is launching or active, the auth routes reject disabling
-authentication or opening localhost access.
+Local operator authentication is not a prerequisite for **Project writes
+only** (maintainer direction, 2026-09-27; it previously was, and blocked
+relaxing auth while a sandbox ran). With password or desktop authentication
+absent, `--auth-disable` on, or localhost-open access on, New Session shows a
+standing warning on the enabled sandbox: an agent that reaches YA — readily
+so with the network firewall off — can drive it and escape. Authentication
+remains independent defense in depth, now the operator's choice.
 
 Browser bearer tokens never appear in `auth.json`; it stores domain-separated
 SHA-256 verifiers of the random tokens instead. Provider environments omit the
@@ -355,14 +461,17 @@ This topic states the intended security boundaries; it is not a certification
 that every implementation path satisfies them. A security review should treat
 an unexpected authority widening, public-to-authenticated route crossing,
 relay plaintext leak, missing target-side enforcement, or misleading UI claim
-as a finding. A future restricted multiuser layer must update this contract
-before it can weaken the current assumption that ordinary login/session
-creation means full server-account authority.
+as a finding. Ordinary superuser login and session creation still mean full
+server-account authority. For a limited principal, § Limited Users is the
+boundary: any path by which one reaches superuser or server-account authority
+beyond its stated exclusions is a finding. So is any change that widens an
+exclusion or adds a new restricted principal without first updating this
+contract.
 
 ## Related Notes
 
 - [`active-content-security.md`](active-content-security.md) records the
-  confirmed same-origin active-document execution path, the source-first file
+  confirmed same-origin active-document execution path, the scriptless file
   contract, and the isolated-origin requirement for agent-built applications.
 - [`docs/tactical/000-relay-origin-and-share-gating.md`](../docs/tactical/000-relay-origin-and-share-gating.md)
   records the current public-share relay, opt-in, and revocation decisions.

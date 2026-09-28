@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   getCodexToolCorrelation,
+  parseCodexSessionEntry,
   type CodexSessionEntry,
 } from "@yep-anywhere/shared";
 import { describe, expect, it, vi } from "vitest";
@@ -1942,6 +1943,54 @@ describe("Codex Normalization", () => {
       codexTurnId: "turn-1",
     });
     expect(result.messages[2]?.uuid).toBe("codex-1-2024-01-01T00:00:03Z");
+  });
+
+  it("renders a terminal error persisted on task_complete", () => {
+    const errorMessage =
+      "The 'gpt-6-sol' model is not supported when using Codex with a ChatGPT account.";
+    const persistedEntry = parseCodexSessionEntry(
+      JSON.stringify({
+        type: "event_msg",
+        timestamp: "2026-09-27T10:02:55.915Z",
+        payload: {
+          type: "task_complete",
+          turn_id: "turn-1",
+          last_agent_message: null,
+          error: {
+            message: errorMessage,
+            codex_error_info: "other",
+          },
+        },
+      }),
+    );
+    expect(persistedEntry).not.toBeNull();
+    if (!persistedEntry) throw new Error("Expected persisted Codex error");
+
+    const result = normalizeSession(buildLoadedSession([persistedEntry]));
+    expect(result.messages).toEqual([
+      expect.objectContaining({
+        type: "system",
+        subtype: "turn_complete",
+        codexTurnId: "turn-1",
+      }),
+      expect.objectContaining({
+        type: "error",
+        uuid: "codex-error-turn-1",
+        error: errorMessage,
+        codexErrorInfo: "other",
+        codexWillRetry: false,
+        codexErrorScope: "turn",
+        codexTurnId: "turn-1",
+      }),
+    ]);
+    expect(compileTranscriptProjection(result.messages)).toContainEqual(
+      expect.objectContaining({
+        type: "system",
+        id: "codex-error-turn-1",
+        subtype: "error",
+        content: errorMessage,
+      }),
+    );
   });
 
   it("emits persisted subagent activity as a visible system entry", () => {

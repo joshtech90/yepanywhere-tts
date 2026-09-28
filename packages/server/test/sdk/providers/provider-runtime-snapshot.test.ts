@@ -9,8 +9,8 @@ import {
 const CATALOG = { data: [{ id: "ds4" }] };
 const ENDPOINT = "http://127.0.0.1:8001";
 
-function readCatalogEffort(): Promise<unknown> {
-  return probeServiceEffort({}, ENDPOINT, CATALOG);
+async function readCatalogEffort(): Promise<unknown> {
+  return (await probeServiceEffort({}, ENDPOINT, CATALOG)).get("ds4");
 }
 
 describe("applyProviderRuntimeSnapshot", () => {

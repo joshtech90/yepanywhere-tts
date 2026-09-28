@@ -113,7 +113,15 @@ interface OpenCodeStreamState {
   partMessageIdsById: Map<string, string>;
   partTypesById: Map<string, string>;
   partTextById: Map<string, string>;
-  partSentLengthsById: Map<string, number>;
+  // Text-like parts of each assistant message in arrival order. Live output
+  // republishes the whole message under its durable id, because the client
+  // replaces a same-id message rather than appending to it.
+  textPartIdsByMessageId: Map<string, string[]>;
+  completedMessageIds: Set<string>;
+  // Messages whose text changed since they were last published, and whether
+  // that publication was still streaming.
+  changedMessageIds: Set<string>;
+  publishedStreamingByMessageId: Map<string, boolean>;
   // Unified tool parts stream pending->running->completed; dedupe the tool_use
   // and tool_result emissions per callID so they appear exactly once.
   toolUseEmitted: Set<string>;
@@ -849,7 +857,10 @@ export class OpenCodeProvider implements AgentProvider {
       partMessageIdsById: new Map(),
       partTypesById: new Map(),
       partTextById: new Map(),
-      partSentLengthsById: new Map(),
+      textPartIdsByMessageId: new Map(),
+      completedMessageIds: new Set(),
+      changedMessageIds: new Set(),
+      publishedStreamingByMessageId: new Map(),
       toolUseEmitted: new Set(),
       toolResultEmitted: new Set(),
       stepUsageByPartId: new Map(),
@@ -861,8 +872,9 @@ export class OpenCodeProvider implements AgentProvider {
     // Using an object to avoid TypeScript control flow issues across async boundaries
     const state = {
       eventBuffer: [] as SDKMessage[],
-      sseError: null as Error | null,
       sseComplete: false,
+      postError: null as Error | null,
+      postSettled: false,
       resolveWaiting: null as (() => void) | null,
     };
 
@@ -875,10 +887,8 @@ export class OpenCodeProvider implements AgentProvider {
         });
 
         if (!response.ok || !response.body) {
+          // The prompt POST body still supplies the reply without events.
           log.error({ status: response.status }, "Failed to connect to SSE");
-          state.sseError = new Error(
-            `SSE connection failed: ${response.status}`,
-          );
           return;
         }
 
@@ -980,8 +990,6 @@ export class OpenCodeProvider implements AgentProvider {
       } catch (error) {
         if (!sseController.signal.aborted) {
           log.error({ error }, "SSE connection error");
-          state.sseError =
-            error instanceof Error ? error : new Error(String(error));
         }
       } finally {
         state.sseComplete = true;
@@ -992,76 +1000,77 @@ export class OpenCodeProvider implements AgentProvider {
     // Wait briefly for SSE connection to establish
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    // Send the message
-    try {
-      log.debug(
-        {
-          opencodeSessionId: runtime.opencodeSessionId,
-          textLength: text.length,
-          model: modelSelection,
-        },
-        "Sending message to OpenCode",
-      );
-      const response = await fetch(
-        `${runtime.baseUrl}/session/${runtime.opencodeSessionId}/message`,
-        {
-          method: "POST",
-          headers: {
-            Accept: "application/json",
-            "Content-Type": "application/json",
+    // Send the message. OpenCode answers this POST only when the whole turn
+    // has finished, so it runs alongside the drain below; awaiting it first
+    // held every live event until the end of the turn.
+    const postPromise = (async () => {
+      try {
+        log.debug(
+          {
+            opencodeSessionId: runtime.opencodeSessionId,
+            textLength: text.length,
+            model: modelSelection,
           },
-          body: JSON.stringify({
-            ...(modelSelection ? { model: modelSelection } : {}),
-            // OpenCode selects reasoning effort by naming a model variant; the
-            // variant keys (low/medium/high/xhigh/max) coincide with YA's
-            // EffortLevel. Only sent when YA provides an effort (the UI gates
-            // this to models advertised with supportedEffortLevels).
-            ...(effort ? { variant: effort } : {}),
-            parts: [{ type: "text", text }, ...imageParts],
-          }),
-          signal,
-        },
-      );
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(
-          `Failed to send message: ${response.status} ${errorText}`,
+          "Sending message to OpenCode",
         );
-      }
-      const responsePayload = (await response
-        .json()
-        .catch(() => null)) as OpenCodeMessageResponse | null;
-      if (!streamState.sawAssistantContent) {
-        const fallbackMessages =
-          this.convertOpenCodeMessageResponseToSDKMessages(
-            responsePayload,
-            sessionId,
+        const response = await fetch(
+          `${runtime.baseUrl}/session/${runtime.opencodeSessionId}/message`,
+          {
+            method: "POST",
+            headers: {
+              Accept: "application/json",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              ...(modelSelection ? { model: modelSelection } : {}),
+              // OpenCode selects reasoning effort by naming a model variant; the
+              // variant keys (low/medium/high/xhigh/max) coincide with YA's
+              // EffortLevel. Only sent when YA provides an effort (the UI gates
+              // this to models advertised with supportedEffortLevels).
+              ...(effort ? { variant: effort } : {}),
+              parts: [{ type: "text", text }, ...imageParts],
+            }),
+            signal,
+          },
+        );
+
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(
+            `Failed to send message: ${response.status} ${errorText}`,
           );
-        if (fallbackMessages.length > 0) {
-          streamState.sawAssistantContent = true;
-          streamState.usedPostBodyFallback = true;
-          state.eventBuffer.push(...fallbackMessages);
-          state.resolveWaiting?.();
         }
+        const responsePayload = (await response
+          .json()
+          .catch(() => null)) as OpenCodeMessageResponse | null;
+        if (!streamState.sawAssistantContent) {
+          const fallbackMessages =
+            this.convertOpenCodeMessageResponseToSDKMessages(
+              responsePayload,
+              sessionId,
+            );
+          if (fallbackMessages.length > 0) {
+            streamState.sawAssistantContent = true;
+            streamState.usedPostBodyFallback = true;
+            state.eventBuffer.push(...fallbackMessages);
+            state.resolveWaiting?.();
+          }
+        }
+        log.debug(
+          { opencodeSessionId: runtime.opencodeSessionId },
+          "Message sent successfully",
+        );
+      } catch (error) {
+        if (!signal.aborted) {
+          log.error({ error }, "Failed to send message to OpenCode");
+          state.postError =
+            error instanceof Error ? error : new Error(String(error));
+        }
+      } finally {
+        state.postSettled = true;
+        state.resolveWaiting?.();
       }
-      log.debug(
-        { opencodeSessionId: runtime.opencodeSessionId },
-        "Message sent successfully",
-      );
-    } catch (error) {
-      sseController.abort();
-      if (signal.aborted) {
-        return;
-      }
-      log.error({ error }, "Failed to send message to OpenCode");
-      yield {
-        type: "error",
-        session_id: sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      } as SDKMessage;
-      return;
-    }
+    })();
 
     // Yield events from buffer as they arrive
     try {
@@ -1072,16 +1081,18 @@ export class OpenCodeProvider implements AgentProvider {
           if (event) yield event;
         }
 
-        // Check if done
-        if (state.sseComplete) break;
-        if (state.sseError) {
+        if (state.postError) {
           yield {
             type: "error",
             session_id: sessionId,
-            error: state.sseError.message,
+            error: state.postError.message,
           } as SDKMessage;
-          break;
+          return;
         }
+
+        // Check if done. The POST body can still supply the reply when the
+        // event stream closed before any assistant content arrived.
+        if (state.sseComplete && state.postSettled) break;
 
         // Wait for more events
         await new Promise<void>((resolve) => {
@@ -1094,6 +1105,9 @@ export class OpenCodeProvider implements AgentProvider {
     } finally {
       sseController.abort();
       await ssePromise; // Ensure SSE task completes
+      // Settled already unless the turn was aborted or failed; the request
+      // itself observes the turn's abort signal.
+      void postPromise;
     }
 
     // session.idle is OpenCode's turn boundary. Individual step-finish parts
@@ -1287,11 +1301,26 @@ export class OpenCodeProvider implements AgentProvider {
         return message ? [message] : [];
       }
 
+      case "message.updated": {
+        // Commit only once OpenCode completes the message. Between parts every
+        // part seen so far has ended, and a commit there would be followed by
+        // its delayed augmented copy after newer streamed text.
+        const info = (event as OpenCodeMessageUpdatedEvent).properties.info;
+        if (info.role !== "assistant" || !info.time?.completed) return [];
+        return this.commitAssistantSnapshots([info.id], sessionId, streamState);
+      }
+
       case "session.idle":
+        // The turn boundary commits any message whose completion was missed.
+        return this.commitAssistantSnapshots(
+          [...streamState.textPartIdsByMessageId.keys()],
+          sessionId,
+          streamState,
+        );
+
       case "session.status":
       case "session.updated":
       case "session.diff":
-      case "message.updated":
       case "server.connected":
         // These are status events, not content - skip
         return [];
@@ -1323,26 +1352,86 @@ export class OpenCodeProvider implements AgentProvider {
         ? previousText + part.delta
         : (part.fullText ?? previousText);
     streamState.partTextById.set(part.partId, nextText);
+    if (nextText !== previousText) {
+      streamState.changedMessageIds.add(part.messageId);
+    }
 
-    const sentLength = streamState.partSentLengthsById.get(part.partId) ?? 0;
-    const text = nextText.slice(sentLength);
-    if (!text) return null;
-    streamState.partSentLengthsById.set(part.partId, nextText.length);
+    const partIds = streamState.textPartIdsByMessageId.get(part.messageId);
+    if (!partIds) {
+      streamState.textPartIdsByMessageId.set(part.messageId, [part.partId]);
+    } else if (!partIds.includes(part.partId)) {
+      partIds.push(part.partId);
+    }
+
+    return this.buildAssistantSnapshotMessage(
+      part.messageId,
+      sessionId,
+      streamState,
+    );
+  }
+
+  private commitAssistantSnapshots(
+    messageIds: string[],
+    sessionId: string,
+    streamState: OpenCodeStreamState,
+  ): SDKMessage[] {
+    const committed: SDKMessage[] = [];
+    for (const messageId of messageIds) {
+      streamState.completedMessageIds.add(messageId);
+      const message = this.buildAssistantSnapshotMessage(
+        messageId,
+        sessionId,
+        streamState,
+      );
+      if (message) committed.push(message);
+    }
+    return committed;
+  }
+
+  /**
+   * The message's text and reasoning so far, published under the OpenCode
+   * message id (== the durable message.id) so the client replaces the same
+   * row and a later durable read merges by id. Snapshots stay `_isStreaming`
+   * until the message completes; the completed one commits it. Returns null
+   * when the content and streaming state are unchanged.
+   */
+  private buildAssistantSnapshotMessage(
+    messageId: string,
+    sessionId: string,
+    streamState: OpenCodeStreamState,
+  ): SDKMessage | null {
+    const streaming = !streamState.completedMessageIds.has(messageId);
+    if (
+      !streamState.changedMessageIds.has(messageId) &&
+      streamState.publishedStreamingByMessageId.get(messageId) === streaming
+    ) {
+      return null;
+    }
+    const partIds = streamState.textPartIdsByMessageId.get(messageId) ?? [];
+    const blocks: ContentBlock[] = [];
+    for (const partId of partIds) {
+      const text = streamState.partTextById.get(partId);
+      if (!text) continue;
+      blocks.push(
+        streamState.partTypesById.get(partId) === "reasoning"
+          ? { type: "thinking", thinking: text }
+          : { type: "text", text },
+      );
+    }
+    if (blocks.length === 0) return null;
+    streamState.changedMessageIds.delete(messageId);
+    streamState.publishedStreamingByMessageId.set(messageId, streaming);
 
     const content =
-      part.partType === "reasoning"
-        ? ([{ type: "thinking", thinking: text }] satisfies ContentBlock[])
-        : text;
+      blocks.length === 1 && blocks[0]?.type === "text"
+        ? (blocks[0].text ?? "")
+        : blocks;
 
     return {
       type: "assistant",
       session_id: sessionId,
-      // Use the part's own OpenCode message id (== the durable message.id), so
-      // the streamed assistant uuid matches the persisted row and the client
-      // dedups by id instead of re-appending the backfilled copy. (Previously a
-      // carried-over "current" id could attribute a later message's parts to an
-      // earlier message, diverging from the durable id.)
-      uuid: part.messageId,
+      uuid: messageId,
+      ...(streaming ? { _isStreaming: true } : {}),
       message: {
         role: "assistant",
         content,

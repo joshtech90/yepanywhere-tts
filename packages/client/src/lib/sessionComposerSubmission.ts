@@ -3,6 +3,7 @@ import type {
   TurnEffort,
   UploadedFile,
 } from "@yep-anywhere/shared";
+import type { DraftControls } from "../hooks/useDraftPersistence";
 import { materializeDraftAttachmentsForSession } from "./draftAttachmentStaging";
 import type { DraftAttachmentState } from "./draftEnvelope";
 import { prepareImageUpload } from "./imageAttachmentResize";
@@ -72,6 +73,40 @@ export function appendComposerTransferDraft(
   text: string,
 ): string {
   return getComposerTransferReplacement(currentDraft, text).nextDraft;
+}
+
+/** The draft operations {@link insertComposerTransferText} writes through. */
+export type ComposerTransferDraftControls = Pick<
+  DraftControls,
+  "getDraft" | "setDraft" | "replaceDraftRangeUndoably"
+>;
+
+/**
+ * Insert text into the composer draft without discarding what the user typed:
+ * an empty draft becomes the text, a nonempty one keeps its text and gains the
+ * insertion after a blank line. The textarea's undo stack records the edit
+ * when the composer is mounted. `suffix` follows the inserted text verbatim.
+ * Returns the resulting draft.
+ */
+export function insertComposerTransferText(
+  controls: ComposerTransferDraftControls,
+  text: string,
+  suffix = "",
+): string {
+  const currentDraft = controls.getDraft();
+  const transfer = getComposerTransferReplacement(currentDraft, text);
+  const replacement = `${transfer.replacement}${suffix}`;
+  const nextDraft = `${currentDraft.slice(0, transfer.start)}${replacement}${currentDraft.slice(transfer.end)}`;
+  const undoableDraft = controls.replaceDraftRangeUndoably?.(
+    transfer.start,
+    transfer.end,
+    replacement,
+  );
+  if (undoableDraft == null) {
+    controls.setDraft(nextDraft);
+    return nextDraft;
+  }
+  return undoableDraft;
 }
 
 export function appendSlashCommandDraft(

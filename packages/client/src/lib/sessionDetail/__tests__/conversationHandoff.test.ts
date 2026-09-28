@@ -48,6 +48,7 @@ function transcript(): RenderItem[] {
     },
     {
       type: "text",
+      sourceBlockIndex: 0,
       id: "older-answer",
       text: "Older **markdown** answer.",
       augmentHtml: "<p>Older <strong>markdown</strong> answer.</p>",
@@ -61,6 +62,7 @@ function transcript(): RenderItem[] {
     },
     {
       type: "thinking",
+      sourceBlockIndex: 0,
       id: "thinking",
       thinking: "Planning",
       status: "complete",
@@ -69,6 +71,7 @@ function transcript(): RenderItem[] {
     tool("routine-tool", 2_000),
     {
       type: "text",
+      sourceBlockIndex: 0,
       id: "answer",
       text: "Here is the **result**.",
       augmentHtml: "<p>Here is the <strong>result</strong>.</p>",

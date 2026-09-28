@@ -223,7 +223,9 @@ describe("Projects Routes", () => {
       const routes = createProjectsRoutes({
         scanner: {
           listProjects: vi.fn(async () => [project]),
-          getOrCreateProject: vi.fn(async () => project),
+          getProject: vi.fn(async (id: string) =>
+            id === project.id ? project : null,
+          ),
         } as unknown as ProjectScanner,
         readerFactory: vi.fn(),
         projectMetadataService: metadata,
@@ -277,6 +279,44 @@ describe("Projects Routes", () => {
       clearProjectCaptionCache();
       await rm(dataDir, { recursive: true, force: true });
       await rm(projectDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a caption for a directory that is not a listed project", async () => {
+    const dataDir = await mkdtemp(join(tmpdir(), "ya-caption-route-"));
+    const otherDir = await mkdtemp(join(tmpdir(), "ya-caption-other-"));
+    try {
+      const metadata = new ProjectMetadataService({ dataDir });
+      await metadata.initialize();
+      const emit = vi.fn();
+      const scanner = new ProjectScanner({
+        projectsDir: join(dataDir, "no-claude-projects"),
+        enableCodex: false,
+        enableGemini: false,
+        projectMetadataService: metadata,
+      });
+      const routes = createProjectsRoutes({
+        scanner,
+        readerFactory: vi.fn(),
+        projectMetadataService: metadata,
+        eventBus: { emit } as unknown as NonNullable<
+          Parameters<typeof createProjectsRoutes>[0]["eventBus"]
+        >,
+      });
+      const otherId = toUrlProjectId(otherDir);
+
+      const patched = await routes.request(`/${otherId}/caption`, {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ caption: "Not a project of mine" }),
+      });
+
+      expect(patched.status).toBe(404);
+      expect(metadata.getProjectCaptionOverride(otherId)).toBeUndefined();
+      expect(emit).not.toHaveBeenCalled();
+    } finally {
+      await rm(dataDir, { recursive: true, force: true });
+      await rm(otherDir, { recursive: true, force: true });
     }
   });
 
@@ -631,7 +671,7 @@ describe("Projects Routes", () => {
     const emit = vi.fn();
     const routes = createProjectsRoutes({
       scanner: {
-        getOrCreateProject: vi.fn(async () => project),
+        getProject: vi.fn(async () => project),
         listProjects: vi.fn(async () => [project, otherProject]),
       } as unknown as ProjectScanner,
       readerFactory: vi.fn(),

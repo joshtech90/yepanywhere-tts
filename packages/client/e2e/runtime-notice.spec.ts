@@ -2,12 +2,6 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { expect, test } from "./fixtures";
 
-test.afterEach(async ({ page }) => {
-  // About starts a fresh version check; finish any intercepted requests before
-  // Playwright closes the page instead of racing route.fetch during teardown.
-  await page.unrouteAll({ behavior: "wait" });
-});
-
 // The server is a fresh isolated process from global-setup. Only version
 // metadata is varied; navigation/session APIs keep their real implementation.
 for (const viewport of [

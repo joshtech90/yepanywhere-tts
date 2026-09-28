@@ -44,12 +44,14 @@ function renderControls() {
       <SearchSelection
         count={0}
         shown={0}
+        allShownSelected={false}
         filters={[]}
         onToggle={() => {}}
-        onReplace={() => {}}
+        onSelectShown={() => {}}
         onClear={() => {}}
+        onlySelected={false}
+        onOnlySelected={() => {}}
         onManage={() => {}}
-        onApply={() => {}}
         pending={false}
         helpInline
         onHelpInline={() => {}}

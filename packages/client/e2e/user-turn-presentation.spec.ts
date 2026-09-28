@@ -1,6 +1,7 @@
 import type { Locator, Page, TestInfo } from "@playwright/test";
 import { join } from "node:path";
 import { e2ePaths, expect, test } from "./fixtures.js";
+import { recordUiCapture } from "./support/ui-capture.js";
 
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
@@ -77,8 +78,8 @@ async function capture(
 for (const viewport of [
   {
     name: "desktop",
-    width: 1920,
-    height: 1080,
+    width: 1000,
+    height: 600,
     firstLayout: { actions: 3, columns: 3, rows: 1 },
   },
   {
@@ -132,6 +133,15 @@ for (const viewport of [
     await expect(
       first.locator('[data-glossary-term]:has-text("Viewer context")'),
     ).toBeVisible({ timeout: 10000 });
+    await fileLink.click({ button: "right" });
+    await expect(
+      page.getByRole("menuitem", { name: "Download" }),
+    ).toBeVisible();
+    await recordUiCapture(page, `${viewport.name}-file-link-download-menu`, {
+      width: viewport.width,
+      height: viewport.height,
+    });
+    await page.keyboard.press("Escape");
 
     const textSize = await first
       .locator(".text-block")

@@ -198,8 +198,8 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
     if (captures) mkdirSync(captures, { recursive: true });
     const cdp = await page.context().newCDPSession(page);
     for (const viewport of [
-      { name: "desktop", width: 1000, height: 600 },
       { name: "phone", width: 375, height: 812 },
+      { name: "desktop", width: 1000, height: 600 },
     ]) {
       await cdp.send("Emulation.setTouchEmulationEnabled", {
         enabled: viewport.name === "phone",
@@ -218,7 +218,7 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
       const toolbar = page.locator(".message-input-actions");
       const badge = toolbar.getByRole("button", { name: /^3 questions/ });
       await expect(badge).toBeVisible();
-      expect(sends).toHaveLength(viewport.name === "desktop" ? 0 : 3);
+      expect(sends).toHaveLength(viewport.name === "phone" ? 0 : 1);
       const scroller = page.locator("main.session-messages");
       await expect
         .poll(() =>
@@ -254,6 +254,9 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
           ],
         },
       });
+      await expect(
+        page.getByText("New live progress while replying."),
+      ).toBeVisible();
       await expect(field).toHaveValue("Inline draft survives progress");
       await expect(field).toBeFocused();
       if (captures)
@@ -265,17 +268,22 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
         .click();
       await expect(composer).toBeFocused();
       await expect(composer).toHaveValue("Keep my main draft");
-      await expect
-        .poll(() =>
-          scroller.evaluate(
-            (el) => el.scrollHeight - el.scrollTop - el.clientHeight,
-          ),
-        )
-        .toBeLessThan(3);
+      await test.step(`${viewport.name}: reply keeps the transcript pinned`, async () => {
+        await expect
+          .poll(() =>
+            scroller.evaluate(
+              (el) => el.scrollHeight - el.scrollTop - el.clientHeight,
+            ),
+          )
+          .toBeLessThan(3);
+      });
       expect(sends.at(-1)).toMatchObject({
         message: `> ${questions[0]!.title}\n\n${questions[0]!.options![1]}`,
         messageMetadata: { deliveryIntent: "steer" },
       });
+      // Phone-specific focus, viewport, and touch reply behavior is covered.
+      // The free-form failure/retry and persisted dismissal run once on desktop.
+      if (viewport.name === "phone") continue;
 
       // A historical reading position must survive a free-form reply, including failure.
       await scroller.hover();
@@ -372,6 +380,8 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
       ).toBeVisible({ timeout: 15_000 });
       busy = true;
     }
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true });
+    await page.setViewportSize({ width: 375, height: 812 });
     await page.goto(`${origin}/settings`);
     await page
       .getByRole("searchbox", { name: "Search settings" })
@@ -643,7 +653,9 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
       await alpha
         .getByRole("button", { name: /^3 questions/ })
         .click({ button: "right" });
-      await expect(menu).toBeVisible();
+      await test.step(`${viewport.name}: Inbox question menu opens`, async () => {
+        await expect(menu).toBeVisible();
+      });
       await menu
         .getByRole("button", { name: questions[1]!.title, exact: true })
         .click();
@@ -775,18 +787,22 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
     ).toHaveCount(0);
     await page.goto(`${origin}/projects/${projectId}/sessions/${sessionId}`);
     await expect(composer).toBeVisible({ timeout: 30_000 });
-    await expect(page.locator("[data-async-question-reply]")).not.toHaveCount(
-      0,
-    );
+    await test.step("Older server keeps structured replies without the capability", async () => {
+      await expect(page.locator("[data-async-question-reply]")).not.toHaveCount(
+        0,
+      );
+    });
 
     // Plain Markdown from an older server never acquires guessed controls.
     structured = false;
     await page.goto(`${origin}/projects/${projectId}/sessions/${sessionId}`);
     await expect(composer).toBeVisible();
-    await expect(page.locator("[data-async-question-reply]")).toHaveCount(0);
-    await expect(
-      toolbar.getByRole("button", { name: /question/i }),
-    ).toHaveCount(0);
+    await test.step("Older server leaves plain Markdown without reply controls", async () => {
+      await expect(page.locator("[data-async-question-reply]")).toHaveCount(0);
+      await expect(
+        toolbar.getByRole("button", { name: /question/i }),
+      ).toHaveCount(0);
+    });
     expect(browserErrors).toEqual([]);
   } finally {
     replyGate.release?.();

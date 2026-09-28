@@ -66,6 +66,7 @@ import type {
   SessionRewindRecord,
   SessionSandboxEnforcement,
   SessionSandboxLevel,
+  SessionCreationProvenance,
   ShowThinking,
   ThinkingOption,
   TranscriptDisplayObject,
@@ -120,6 +121,7 @@ export interface PaginationInfo {
  * An item in the inbox representing a session that may need attention.
  */
 export interface InboxItem {
+  creationProvenance?: SessionCreationProvenance;
   nonHumanUserTurn?: AppSessionSummary["nonHumanUserTurn"];
   asyncQuestions?: AppSessionSummary["asyncQuestions"];
   sessionId: string;
@@ -151,6 +153,7 @@ export interface InboxResponse {
  * An item in the global sessions list.
  */
 export interface GlobalSessionItem {
+  creationProvenance?: SessionCreationProvenance;
   nonHumanUserTurn?: AppSessionSummary["nonHumanUserTurn"];
   asyncQuestions?: AppSessionSummary["asyncQuestions"];
   id: string;
@@ -274,6 +277,7 @@ export function isUnchangedGlobalSessionsResponse(
 }
 
 export interface SessionOptions {
+  creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
   mode?: PermissionMode;
   /** Model ID (e.g., "sonnet", "opus", "qwen2.5-coder:0.5b") */
@@ -745,6 +749,7 @@ export const api = {
         attachments,
         clientTimestamp,
         messageMetadata,
+        creationProvenance: options?.creationProvenance,
       }),
     }),
 
@@ -781,6 +786,7 @@ export const api = {
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
         workstreamId: options?.workstreamId,
+        creationProvenance: options?.creationProvenance,
       }),
     }),
 
@@ -822,6 +828,7 @@ export const api = {
         attachments,
         clientTimestamp,
         messageMetadata,
+        creationProvenance: options?.creationProvenance,
       }),
     }),
 
@@ -853,6 +860,7 @@ export const api = {
         recapAfterSeconds: options?.recapAfterSeconds,
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
+        creationProvenance: options?.creationProvenance,
       }),
     }),
 
@@ -913,6 +921,7 @@ export const api = {
         forkUpToMessageId: options?.forkUpToMessageId,
         sourceUrl: options?.sourceUrl,
         handoffText: options?.handoffText,
+        creationProvenance: options?.creationProvenance,
       }),
     }),
 
@@ -946,7 +955,7 @@ export const api = {
   forkSession: (
     projectId: string,
     sessionId: string,
-    options?:
+    options?: (
       | { upToMessageId?: string }
       | {
           forkKind: "clone-latest-complete";
@@ -956,7 +965,8 @@ export const api = {
       | {
           forkKind: "before-user-turn" | "after-user-turn";
           sourceMessageId: string;
-        },
+        }
+    ) & { creationProvenance?: SessionCreationProvenance },
   ) =>
     fetchJSON<{
       sessionId: string;
@@ -1169,7 +1179,6 @@ export const api = {
         kind: "after-user-turn" | "before-user-turn";
         sourceMessageId: string;
       };
-      cutTurnIndex?: number;
     },
   ) =>
     fetchJSON<{
@@ -1190,7 +1199,6 @@ export const api = {
         kind: "after-user-turn" | "before-user-turn";
         sourceMessageId: string;
       };
-      cutTurnIndex?: number;
       prompt: string;
       total: number;
       commandText: string;

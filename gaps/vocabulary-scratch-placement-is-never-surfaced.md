@@ -52,8 +52,10 @@ to close and reopen them. The two conditions do not arrive equal on that point:
 **Update, `df8027084`:** both files now live in the data directory, so the
 reservation and its last-resort fallback are gone and the placement question is
 settled by the data directory's own placement. `reserveScratchSpace` itself has
-since been deleted; `scratchSpaceDirectories` in the same file still names the
-directories earlier versions could have chosen, so their files can be adopted. What remains open is the signal:
+since been deleted, and that file is now
+`packages/server/src/services/voice/legacy-vocabulary-directories.ts`, whose
+`legacySpeechVocabularyDirectories` names the directories earlier versions
+could have chosen, so their files can be adopted. What remains open is the signal:
 nothing still tells a client that speech vocabulary storage is affected, and the
 banner keys only on the SQLite refusal. The sections below record the reasoning
 that survived the move.

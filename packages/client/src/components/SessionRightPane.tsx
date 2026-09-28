@@ -1,9 +1,21 @@
-import { type Ref, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ARTIFACT_SANDBOX } from "@yep-anywhere/shared";
+import {
+  type Ref,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
+import { useArtifactTabHandoff } from "../hooks/useArtifactTabHandoff";
 import type { useSessionRightPane } from "../hooks/useSessionRightPane";
+import { useViewerFind } from "../hooks/useViewerFind";
 import { useI18n } from "../i18n";
 import { createLocalStorageValue } from "../lib/localStorageValue";
 import { UI_KEYS } from "../lib/storageKeys";
 import styles from "./SessionRightPane.module.css";
+import headerStyles from "./ViewerHeader.module.css";
+import { ViewerFindField } from "./ViewerFindField";
 import { ViewerWindowActions } from "./ViewerWindowActions";
 import { suppressTooltipsFor } from "../hooks/useTooltipAppearance";
 import { usePanelSlideAnimations } from "../hooks/usePanelSlideAnimations";
@@ -64,7 +76,7 @@ export function SessionRightPane({
 }) {
   const { panelSlideDurationMs } = usePanelSlideAnimations();
   const content = useClosingPaneContent(
-    pane.selected || pane.fileViewer ? pane : null,
+    pane.selected || pane.paneViewer ? pane : null,
     panelSlideDurationMs,
   );
   return (
@@ -96,8 +108,24 @@ function SessionRightPaneContent({
   const visibleWidth = Math.min(width, maxWidth);
   const [dragging, setDragging] = useState(false);
   const [blockedUrl, setBlockedUrl] = useState<string | null>(null);
+  // Remounting the frame refetches it; artifacts and apps serve per request.
+  const [reloadKey, setReloadKey] = useState(0);
+  // Only artifact frames carry the find agent; a proxied app keeps the
+  // browser's own find.
+  const [frame, setFrame] = useState<HTMLIFrameElement | null>(null);
+  const artifactFrame = pane.selected?.artifactToken ? frame : null;
+  const find = useViewerFind(
+    useMemo(
+      () =>
+        artifactFrame
+          ? ({ kind: "agent", frame: artifactFrame } as const)
+          : null,
+      [artifactFrame],
+    ),
+  );
   const url = pane.selected?.url;
-  const viewerIdentity = url ?? pane.fileViewer?.id;
+  useArtifactTabHandoff(artifactFrame, url);
+  const viewerIdentity = url ?? pane.paneViewer?.id;
   useLayoutEffect(() => {
     if (!viewerIdentity) return;
     const parent = root.current?.parentElement;
@@ -134,13 +162,13 @@ function SessionRightPaneContent({
       document.removeEventListener("securitypolicyviolation", blocked);
   }, [url]);
   useEffect(() => {
-    if (wide || !expanded || pane.fileViewer) return;
+    if (wide || !expanded || pane.paneViewer) return;
     const handleEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") pane.hide();
     };
     document.addEventListener("keydown", handleEscape);
     return () => document.removeEventListener("keydown", handleEscape);
-  }, [wide, expanded, pane.hide, pane.fileViewer]);
+  }, [wide, expanded, pane.hide, pane.paneViewer]);
   function resize(value: number) {
     const next = Math.max(280, Math.min(maxWidth, value));
     setWidth(next);
@@ -211,12 +239,24 @@ function SessionRightPaneContent({
         )}
         {pane.selected && (
           <>
-            <header className={styles.header}>
-              <span className={styles.title}>{pane.selected.label}</span>
+            <header className={`${headerStyles.header} ${styles.header}`}>
+              <span className={headerStyles.identity}>
+                <span className={styles.title} title={pane.selected.label}>
+                  {pane.selected.label}
+                </span>
+              </span>
+              <ViewerFindField find={find} />
               <ViewerWindowActions
+                className={headerStyles.actions}
                 url={pane.selected.url}
                 copyUrl={pane.copyUrl}
                 onMinimize={pane.hide}
+                onReload={() => setReloadKey((value) => value + 1)}
+                reloadLabel={
+                  pane.selected.artifactToken
+                    ? undefined
+                    : t("sessionRightPaneReloadApp")
+                }
                 onClose={pane.canKill ? () => void pane.kill() : undefined}
                 onMoveOut={pane.close}
                 destructiveClose={!pane.selected.artifactToken}
@@ -245,14 +285,19 @@ function SessionRightPaneContent({
             ) : (
               // biome-ignore lint/a11y/useIframeTitle: aria-label names the frame without a native tooltip over the app content.
               <iframe
-                key={`${pane.frameKey}:${url}`}
+                key={`${pane.frameKey}:${url}:${reloadKey}`}
+                ref={setFrame}
                 src={url}
                 onLoad={pane.onFrameLoad}
                 title=""
                 aria-label={pane.selected.label}
                 onPointerEnter={() => suppressTooltipsFor(0)}
                 referrerPolicy="no-referrer"
-                sandbox="allow-scripts allow-same-origin allow-forms allow-downloads"
+                sandbox={
+                  pane.selected.artifactToken
+                    ? ARTIFACT_SANDBOX
+                    : "allow-scripts allow-same-origin allow-forms allow-downloads"
+                }
                 className={styles.frame}
               />
             )}
@@ -262,7 +307,7 @@ function SessionRightPaneContent({
           ref={fileContentRef}
           className={styles.fileContent}
           data-session-right-pane-layer
-          hidden={!pane.fileViewer}
+          hidden={!pane.paneViewer}
         />
         {dragging && <div className={styles.dragShield} />}
       </aside>

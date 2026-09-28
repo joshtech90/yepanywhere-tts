@@ -50,6 +50,8 @@ export interface SessionToolbarPresence {
   projectQueue: ToolbarControlPresence;
   projectQueueNewSessionShortcut: ToolbarControlPresence;
   syntheticDone: ToolbarControlPresence;
+  /** Opens transcript search, the pointer entry to the search shortcuts. */
+  transcriptSearch: ToolbarControlPresence;
   /**
    * Composer opener for the prior-turn recall drawer. Shown only in the mobile
    * keyboard action row, never on the toolbar proper, so it has no narrowing
@@ -89,6 +91,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRESENCE: SessionToolbarPresence = {
   projectQueue: "hidden",
   projectQueueNewSessionShortcut: "hidden",
   syntheticDone: "off",
+  transcriptSearch: "first",
   composerRecall: "hidden",
 };
 
@@ -117,6 +120,7 @@ export const DEFAULT_SESSION_TOOLBAR_PRIORITY: SessionToolbarPriority = {
   projectQueue: "pin",
   projectQueueNewSessionShortcut: "pin",
   syntheticDone: "pin",
+  transcriptSearch: "first",
   composerRecall: "pin",
 };
 
@@ -129,6 +133,14 @@ const MOBILE_SESSION_TOOLBAR_PRESENCE_DEFAULTS: Partial<SessionToolbarPresence> 
     shortcutsHelp: "hidden",
     sessionStatus: "hidden",
   };
+
+// Client-only preferences: stable servers reject unknown presence keys, so
+// these are never read from or saved to server client defaults.
+const CLIENT_ONLY_TOOLBAR_CONTROLS = new Set<SessionToolbarVisibilityKey>([
+  "conversationView",
+  "browserDebug",
+  "transcriptSearch",
+]);
 
 const SESSION_TOOLBAR_MOBILE_QUERY = "(max-width: 600px)";
 
@@ -171,7 +183,7 @@ function normalizeClientDefaultPresence(
   const normalized: SessionToolbarPresenceDefaults = {};
   const presenceRecord = value as Record<string, unknown>;
   for (const key of SESSION_TOOLBAR_CONTROL_KEYS) {
-    if (key === "conversationView" || key === "browserDebug") continue;
+    if (CLIENT_ONLY_TOOLBAR_CONTROLS.has(key)) continue;
     const candidate = presenceRecord[key];
     if (isToolbarControlPresence(candidate)) {
       normalized[key] = candidate;
@@ -334,9 +346,7 @@ function saveClientDefaultPresence(
   key: SessionToolbarVisibilityKey,
   presence: ToolbarControlPresence,
 ): void {
-  // These controls are client-only preferences so stable servers never need
-  // to recognize their new toolbar keys.
-  if (key === "conversationView" || key === "browserDebug") {
+  if (CLIENT_ONLY_TOOLBAR_CONTROLS.has(key)) {
     return;
   }
   void api

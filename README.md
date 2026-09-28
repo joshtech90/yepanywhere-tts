@@ -165,6 +165,10 @@ Remote Access application traffic is end-to-end encrypted, so the relay
 cannot read session contents. Public session shares are a separate opt-in path:
 the current relay operator can read shared content. No accounts are required.
 
+Direct browser access has its own password under **Settings → Local Access**,
+or `yepanywhere --setup-auth "<password>"` for headless setup and recovery. See
+[Local access and passwords](https://yepanywhere.com/docs/local-access).
+
 **Private network:** If you only need to reach a solo install from your phone,
 a VPN such as Tailscale is usually simpler than deploying your own relay: put
 the phone and dev machine on the same private network, then open the Yep

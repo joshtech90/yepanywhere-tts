@@ -44,11 +44,112 @@ export type ProjectQueueProjectState =
   | "ready"
   | "dispatching";
 
+/**
+ * How many of a project's blockers the queue UI names; the rest are counted.
+ * The server resolves blocker session titles for these alone.
+ */
+export const PROJECT_QUEUE_NAMED_BLOCKER_COUNT = 3;
+
+/** Why one session holds a project's queued work. */
+export const PROJECT_QUEUE_SESSION_BLOCKER_REASONS = [
+  "in-turn",
+  "waiting-input",
+  "provider-retained",
+  "direct-queue",
+  "deferred-queue",
+  "pending-input",
+  "user-starting",
+  "automation-paused",
+  "external",
+] as const;
+
+export type ProjectQueueSessionBlockerReason =
+  (typeof PROJECT_QUEUE_SESSION_BLOCKER_REASONS)[number];
+
+/**
+ * A project-idle blocker string, parsed. The wire form stays a string
+ * (`<sessionId>:<reason>`, `readiness:<detail>`, `worker-queue`, …) so every
+ * server release and client agree on it; this is its one reader.
+ */
+export type ProjectQueueBlocker =
+  | {
+      kind: "session";
+      sessionId: string;
+      reason: ProjectQueueSessionBlockerReason;
+    }
+  | { kind: "session-liveness"; sessionId: string; status: string }
+  | { kind: "readiness"; detail: string }
+  | { kind: "worker-queue" }
+  | { kind: "recovered-session-queue"; count: string }
+  | { kind: "first-item-failed" }
+  | { kind: "other"; blocker: string };
+
+const SESSION_BLOCKER_REASONS: ReadonlySet<string> = new Set(
+  PROJECT_QUEUE_SESSION_BLOCKER_REASONS,
+);
+
+const LIVENESS_BLOCKER_PREFIX = "liveness-";
+
+/** The blocker string naming a session that holds a project's queue. */
+export function projectQueueSessionBlocker(
+  sessionId: string,
+  reason: ProjectQueueSessionBlockerReason,
+): string {
+  return `${sessionId}:${reason}`;
+}
+
+/** The blocker string for a session whose liveness is not verified idle. */
+export function projectQueueLivenessBlocker(
+  sessionId: string,
+  livenessStatus: string,
+): string {
+  return `${sessionId}:${LIVENESS_BLOCKER_PREFIX}${livenessStatus}`;
+}
+
+export function parseProjectQueueBlocker(blocker: string): ProjectQueueBlocker {
+  if (blocker.startsWith("readiness:")) {
+    return { kind: "readiness", detail: blocker.slice("readiness:".length) };
+  }
+  if (blocker === "worker-queue") return { kind: "worker-queue" };
+  if (blocker === "project-queue:first-failed") {
+    return { kind: "first-item-failed" };
+  }
+  if (blocker.startsWith("recovered-session-queue:")) {
+    return {
+      kind: "recovered-session-queue",
+      count: blocker.slice("recovered-session-queue:".length),
+    };
+  }
+  const separator = blocker.indexOf(":");
+  if (separator > 0) {
+    const sessionId = blocker.slice(0, separator);
+    const reason = blocker.slice(separator + 1);
+    if (SESSION_BLOCKER_REASONS.has(reason)) {
+      return {
+        kind: "session",
+        sessionId,
+        reason: reason as ProjectQueueSessionBlockerReason,
+      };
+    }
+    if (reason.startsWith(LIVENESS_BLOCKER_PREFIX)) {
+      return {
+        kind: "session-liveness",
+        sessionId,
+        status: reason.slice(LIVENESS_BLOCKER_PREFIX.length),
+      };
+    }
+  }
+  return { kind: "other", blocker };
+}
+
 export interface ProjectQueueProjectStatus {
   projectId: UrlProjectId;
   state: ProjectQueueProjectState;
   idle: boolean;
+  /** Parse each entry with `parseProjectQueueBlocker`. */
   blockers: string[];
+  /** Display titles for session ids named by blockers, when resolvable. */
+  blockerSessionTitles?: Record<string, string>;
   dispatchPaused: boolean;
   inFlight: boolean;
   quietWindowMs: number;
@@ -95,9 +196,11 @@ export interface ProjectQueueMessage {
   mode?: PermissionMode;
   metadata?: UserMessageMetadata;
   /**
-   * A YA-emulated command to run against the target session at dispatch
-   * instead of sending `text` to the provider. `text` stays the verbatim
-   * command line so every queue surface shows what the user typed.
+   * Marks `text` as a YA-emulated command to run against the target session
+   * at dispatch instead of sending it to the provider. `text` is the only
+   * source of the command: the server re-derives name and argument from it on
+   * every write and at dispatch, so what runs is what every queue surface
+   * shows.
    */
   yaCommand?: QueuedYaCommand;
 }
@@ -148,6 +251,11 @@ export interface ProjectQueueItem {
   createdAt: string;
   updatedAt: string;
   createdFrom?: ProjectQueueCreatedFrom;
+  /**
+   * The limited user who queued this item, whose launch policy and
+   * attribution apply when it runs; absent means the superuser.
+   */
+  createdByUser?: string;
   status: ProjectQueueItemStatus;
   lastError?: string;
   lastAttemptAt?: string;
@@ -164,6 +272,8 @@ export interface ProjectQueueItemSummary {
   createdAt: string;
   updatedAt: string;
   createdFrom?: ProjectQueueCreatedFrom;
+  /** The limited user who queued this item; absent means the superuser. */
+  createdByUser?: string;
   status: ProjectQueueItemStatus;
   attachmentCount: number;
   lastError?: string;

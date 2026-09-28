@@ -67,6 +67,49 @@ describe("PublicFileShareModal", () => {
     });
   });
 
+  it("says so and copies the play form when links open in play mode", async () => {
+    const shareUrl =
+      "https://ya.example/share/file-secret/file?h=relay&projectId=cHJvamVjdA&path=site%2Findex.html";
+    vi.mocked(api.createPublicFileShare).mockResolvedValue({
+      url: shareUrl,
+      shareId: "share-one",
+      createdAt: "2026-08-28T00:00:00.000Z",
+      secretBits: 128,
+    });
+    const { rerender } = render(
+      <I18nProvider>
+        <PublicFileShareModal
+          projectId="cHJvamVjdA"
+          filePath="site/index.html"
+          onClose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+    const notice =
+      "Interactive preview is running: copied links open the document in play mode.";
+    expect(screen.queryByText(notice)).toBeNull();
+
+    rerender(
+      <I18nProvider>
+        <PublicFileShareModal
+          projectId="cHJvamVjdA"
+          filePath="site/index.html"
+          playLinks
+          onClose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+    expect(screen.getByText(notice)).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Create and copy live link" }),
+    );
+    await waitFor(() => {
+      expect(writeText).toHaveBeenCalledWith(
+        "https://ya.example/play.html?h=relay&projectId=cHJvamVjdA&path=site%2Findex.html#share=file-secret",
+      );
+    });
+  });
+
   it("confirms before revoking a link", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.mocked(api.getPublicFileShares).mockResolvedValue({

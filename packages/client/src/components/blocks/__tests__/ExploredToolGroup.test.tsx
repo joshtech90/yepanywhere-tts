@@ -101,6 +101,7 @@ describe("ExploredToolGroup", () => {
     const grep = toolCall("grep-1", "Grep", { pattern: "needle" });
     const text: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "text-1",
       text: "done",
       sourceMessages: [sourceMessage("msg-text", "2026-05-28T00:00:02.000Z")],

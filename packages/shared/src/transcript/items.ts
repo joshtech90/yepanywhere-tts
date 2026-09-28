@@ -42,7 +42,7 @@ export interface TextItem extends RenderItemBase {
    * Position of this block inside its source message's content array, so a
    * consumer orders blocks without parsing the composed `id`.
    */
-  sourceBlockIndex?: number;
+  sourceBlockIndex: number;
   /** True if this text is still being streamed */
   isStreaming?: boolean;
   /**
@@ -62,7 +62,7 @@ export interface ThinkingItem extends RenderItemBase {
   id: string;
   thinking: string;
   /** Position of this block inside its source message's content array. */
-  sourceBlockIndex?: number;
+  sourceBlockIndex: number;
   signature?: string;
   status: "streaming" | "complete";
 }
@@ -136,6 +136,8 @@ export interface SystemItem extends RenderItemBase {
   subtype: "compact_boundary" | "status" | "init" | string;
   content: string;
   details?: Array<string | ContentBlock[]>;
+  /** Render the details expanded initially (an error notice's reason). */
+  detailsOpen?: boolean;
   /** For status subtype: the current status (e.g., "compacting") */
   status?: "compacting" | null;
   /** For config_ack subtype: whether it differs from the previous config ack */

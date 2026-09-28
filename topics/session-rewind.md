@@ -18,7 +18,10 @@ window counts live turns. Corrected 2026-09-19 after a 69-iteration loop: a
 watching tab no longer folds every earlier group inside the newest one (only a
 dropped cut nests), and delivered queued messages and durable receipts inside a
 cleared span are grouped with it instead of rendering as live rows scattered
-through the collapsed history. Known limits: the sidebar does not nest rewound
+through the collapsed history. Corrected 2026-09-26 after a loop ended at
+12/100 on a background-command notification: clearloop rewinds no longer pass
+the drop guard, a boundary waits for Claude background tasks, and a failed
+iteration is retried instead of ending the loop. Known limits: the sidebar does not nest rewound
 groups, `/clear 0` starts a new session rather than rewinding in place, and
 secondary readers (catalog previews, search, counts) still project without
 records until the next turn
@@ -53,16 +56,25 @@ is one server-wide value).
   it never removes turns from the session's history.
 - **Turn index `N`.** The 1-based ordinal of a real user turn over that full
   sequence, cleared turns included. Tool-result user rows, compact rows,
-  injected context, and synthetic rows are not turns (same boundary rule as
-  [fork-from-turn](fork-from-turn.md)). `N` therefore never renumbers: after
-  `/clear 2` the cleared turns keep 3–5 and the next new turn is 6, and its
-  turn menu shows `[6]`. Server normalization stamps the ordinal on each
-  user turn (`turnIndex`), and both the tooltip and `/clear N` resolve
-  through that one stamp, which is the invariant. `N = 0` names the empty
-  prefix before turn 1.
+  injected context, and synthetic rows are not turns. One predicate decides
+  this for the turn index, the [fork-from-turn](fork-from-turn.md) and rewind
+  boundaries, and the client, so a row is a turn everywhere or nowhere. `N`
+  therefore never renumbers: after `/clear 2` the cleared turns keep 3–5 and
+  the next new turn is 6, and its turn menu shows `[6]`. Server
+  normalization stamps the ordinal on each user turn (`turnIndex`), and both
+  the tooltip and `/clear N` resolve through that one stamp, which is the
+  invariant. The stamp is authoritative: a persisted row the server left
+  unstamped has no `N`, and the client numbers only rows the server has not
+  yet normalized (the live stream tail), continuing after the last stamped
+  turn. A rewind whose source row has no stamp is refused rather than
+  recorded as turn 0. `N = 0` names the empty prefix before turn 1.
 - **Cut.** The last kept chain entry. *After turn N* keeps turn N's prompt
   and its complete response; *before turn N* keeps everything preceding
-  turn N's prompt, which is the same cut as *after turn N−1*.
+  turn N's prompt, which is the same cut as *after* the turn N continued
+  from. That is turn N−1 unless a clear dropped the turns between: after
+  `/clear 3` drops 4–5, *before turn 6* is *after turn 3*. Both cuts, for
+  rewind and for fork, are resolved on the source turn's own chain, so a
+  cleared span is never the context of a live turn.
 - **Rewind.** Drop everything past the cut from the provider's live
   conversation while keeping the session id. On Claude this is the SDK's
   truncating resume (`resume` + `resumeSessionAt`), so it is a process
@@ -75,10 +87,13 @@ is one server-wide value).
 All three are YA-routed commands resolved by the composer's typed command
 resolver before provider ingress (`parseComposerSlashCommand`,
 `handleCustomCommand`). Their argument text is parsed by their handler, not
-the generic layer. They are available only when the server advertises the
-`session-rewind` capability and the session's provider supports rewind;
-otherwise the command menu marks them unavailable and a typed invocation
-fails visibly with the draft retained (never falls through as prompt text).
+the generic layer. They exist only when the server advertises the
+`session-rewind` capability and the session's provider supports rewind.
+Otherwise YA neither offers them in the command menu nor intercepts them: a
+typed `/clear`, `/fork`, or `/clearloop` is ordinary provider text, so it
+reaches the provider's own command when it has one, directly or through
+Project Queue. YA advertised no command there, so this is not the silent
+fall-through [emulated-slash-commands](emulated-slash-commands.md) forbids.
 
 - **`/clear N`** — rewind to the cut *after turn N*. Turn N and its response
   are the new tail. `/clear` with no argument is `/clear 0`.
@@ -119,10 +134,15 @@ The existing per-prompt **Fork from this turn** menu
 entries on rewind-capable providers, after the fork entries:
 
 - **Clear after this turn** — `/clear N` for this turn.
-- **Clear replacing this turn** — `/clear N−1` for this turn, then put this
-  turn's prompt text into the composer as the draft (the Codex Esc-Esc
-  shape), replacing whatever draft was there. Turn 1 has no earlier
-  boundary, so the entry reports that `/clear 0` is the new-session Clear.
+- **Clear replacing this turn** — the cut *before turn N*, recorded as
+  `/clear K` for the turn K it keeps (see **Cut**), then hand
+  this turn's prompt text back to the composer (the Codex Esc-Esc shape).
+  The composer changes only after the rewind succeeds; a refused or failed
+  rewind leaves the draft exactly as it was. An empty composer receives the
+  prompt as its draft. A nonempty draft is never overwritten: its text stays
+  and the prompt follows it after a blank line, as one undoable edit. Turn 1
+  has no earlier boundary, so the entry reports that `/clear 0` is the
+  new-session Clear.
 
 The menu's trigger tooltip becomes **Fork from this turn [N]** so the index a
 user types into `/clear N`, `/fork N`, and `/clearloop N …` is discoverable
@@ -134,20 +154,24 @@ a sent message would, so a reload does not restore it.
 ## Server rewind operation
 
 `POST /api/projects/:projectId/sessions/:sessionId/rewind` with
-`{ cut: { kind: "after-user-turn" | "before-user-turn", sourceMessageId },
-cutTurnIndex? }`. The client resolves `N` to the turn's YA message id from
-its own turn index; the server resolves the real human-turn boundary from
-the transcript exactly as the fork route does (provider ids stay
-server-side), then:
+`{ cut: { kind: "after-user-turn" | "before-user-turn", sourceMessageId } }`.
+For a typed `/clear N` the client maps `N` to that turn's YA message id
+through the server's `turnIndex` stamps (§ Vocabulary); the request carries
+no `N`. The server resolves the real human-turn boundary from the
+transcript exactly as the fork route does (provider ids stay server-side),
+takes the record's `N` from the kept turn's own stamp, then:
 
 1. Rejects (`409`) when the session is `in-turn`, `waiting-input`, or
    compacting, when a live queued or steered message is pending, or when the
    cut is not a completed human-turn boundary. The client never substitutes
    a partial boundary.
 2. Records a **rewind record** in session metadata before touching the
-   provider: `{ id, at, cutMessageId, droppedFromMessageId, droppedTurnCount,
-   reason: "clear" | "clearloop" (+ loop id and iteration) }`. It is a
-   display object: never model context, survives restart and device change.
+   provider: `{ id, at, cutMessageId, droppedFromMessageId,
+   droppedThroughMessageId, droppedTurnCount, reason: "clear" | "clearloop"
+   (+ loop id and iteration) }`. `droppedThroughMessageId` is the
+   transcript's last row, read after the live process stopped (the next
+   step), so it bounds the dropped span by file position. It is a display
+   object: never model context, survives restart and device change.
 3. Stops the live process, if any, and arms the record as the session's
    **pending rewind**. Claude's truncation is a resume option, so the rewind
    takes effect when the next process for the session launches, whichever
@@ -159,30 +183,34 @@ server-side), then:
    truncation (the API-error tail cut), and the record stops being pending
    once the process has started. A route never consumes it itself, so no
    launch path can replay a tail the view shows as dropped. When exactly one
-   turn is dropped, `resumeDropsTurn` names that turn's prompt UUID so the
-   CLI refuses if the discarded range holds anything the user's view had not
-   seen (an absorbed queued message, a task notification). The SDK validates
-   only a single declared turn, so a multi-turn drop passes no
-   `resumeDropsTurn`. A refusal is deterministic and is never retried: it
-   arrives as an `error_during_execution` result whose text starts with
-   `Resume rejected by --resume-drops-turn:`; the supervisor deletes that
-   rewind record, emits the metadata event with `rewindRecordRemoved`, every
-   open view reloads the transcript (the grouped rows are live again), a
-   running clearloop ends as `interrupted`, and the next send resumes the
-   full chain.
+   turn is dropped by `/clear N`, `resumeDropsTurn` names that turn's prompt
+   UUID so the CLI refuses if the discarded range holds anything the user's
+   view had not seen (an absorbed queued message, a task notification). The
+   SDK validates only a single declared turn, so a multi-turn drop passes no
+   `resumeDropsTurn`. A clearloop iteration's rewind passes none either: the
+   loop discards its iteration whole by contract (§ `/clearloop`), and an
+   agent's background command routinely lands its completion notification
+   inside the turn, which the guard would refuse. A refusal of the same
+   record is deterministic: it arrives as an `error_during_execution` result
+   whose text starts with `Resume rejected by --resume-drops-turn:`; the
+   supervisor deletes that rewind record, emits the metadata event with
+   `rewindRecordRemoved`, every open view takes the server's projection again
+   (the grouped rows are live again), and the next send resumes the full
+   chain. The
+   process exit publishes a "Claude refused the rewind" notice rather than
+   the unexpected-exit one
+   ([stream-persisted-render-parity](stream-persisted-render-parity.md)). A
+   running clearloop treats the refusal as a failed iteration (§ Stopping).
 4. Returns the record (`null` when the cut was already the tail, a no-op)
    and whether a process was stopped. The session metadata event carries
-   the record (`rewindRecord`); every open view of the session applies it
-   to its loaded transcript in place (rows after the cut join the group
-   behind the synthetic header), and refetches only when the cut lies
-   outside its loaded window. **The in-place application must produce what a
-   reload produces**: it follows the same membership, nesting, and header
-   placement rules as the reader below, so a watching tab and a tab opened
-   afterwards show the same outline, and no reload is needed to correct one.
-   In particular the header goes immediately before the first row this
-   record claims, not immediately after the cut, so earlier groups at the
-   same cut keep their place ahead of it. The tab that issued the rewind applies it
-   from the response before the event arrives. The detail response carries
+   the record (`rewindRecord`). **Group membership is computed only by the
+   reader below**: every open view of the session refetches its bounded
+   tail and replaces its loaded window with that projection, keeping the view
+   mounted, so a watching tab and a tab opened afterwards show the same
+   outline by construction. The client never regroups rows itself, since an
+   incremental catch-up can only append. The tab that issued the rewind
+   refetches on the response and ignores the event echoing the same record;
+   if the refetch fails, the view reloads the session. The detail response carries
    `rewindRecordIds`, the ids of the records its projection applied; a tab
    returning to the session with a cached transcript compares them and
    reloads whole when they differ, since an incremental catch-up can only
@@ -216,13 +244,21 @@ per [claude](claude.md) § Transcript Structure. With rewind records as an
 input, the reader instead emits the dropped rows as a **rewound group**:
 
 - Group membership is positional: every row after the cut's line in file
-  order that was written before the record's `at` and not already claimed by
-  an earlier rewind (a row keeps its first claim). Rows the session writes
-  after the rewind are the live branch and are never grouped, even before
-  the next turn exists (the record, not tip selection, decides the cut;
-  until a new turn is written the displayed tail is the cut itself).
-  Positional membership means a compaction inside a cleared span cannot
-  split it and clock skew between transcript and server cannot move rows.
+  order through the record's `droppedThroughMessageId` row, not already
+  claimed by an earlier rewind (a row keeps its first claim). Rows the
+  session writes after the rewind are the live branch and are never grouped,
+  even before the next turn exists (the record, not tip selection, decides
+  the cut; until a new turn is written the displayed tail is the cut
+  itself). Positional membership means a compaction inside a cleared span
+  cannot split it, and no timestamp is compared, so a transcript writer
+  whose clock differs from the server's cannot move rows. Every row in that
+  span is claimed, including one on a sibling branch of the dropped chain.
+  A record without the bound — written before the field existed, or when
+  no transcript file could be read at rewind time — instead claims the rows
+  after the cut stamped no later than its `at`. Those records do depend on
+  clock skew: a writer behind the server's clock stamps the next live turn
+  early enough to be claimed. A record whose bound row is missing from the
+  read transcript groups nothing.
 - Membership is by position, not by whether the provider stamped the row with
   a uuid. A queued message delivered into a cleared iteration is a transcript
   row with no uuid, and it joins that iteration's group; leaving it live
@@ -231,9 +267,15 @@ input, the reader instead emits the dropped rows as a **rewound group**:
   turns — for the tail window, and for the next rewind's `droppedTurnCount`
   and `droppedFromMessageId`, which grow without bound across a long loop
   when the previous iterations' queued messages never leave the live branch.
-  A durable receipt merged into the middle of a
-  cleared span — a `/goal` or clearloop notice whose timestamp lands there —
-  joins the group of the row before it, for the same reason.
+  A durable receipt — a `/goal` receipt or clearloop notice — follows the
+  rows' own rule: of the rewinds whose cut precedes its merged position, it
+  joins the earliest one made at or after the receipt was written, among the
+  groups of the rows on either side of it and the groups enclosing them. A
+  receipt written after the last rewind — a clearloop's final notice, a
+  `/goal` receipt after `/clear N` with no later turn — stays live even when
+  it follows a grouped row, so a reload shows what the watching tab showed.
+  A retry notice written between two iterations joins the later iteration's
+  group, the rewind that dropped it.
 - **Nesting.** A group nests exactly when its own cut is a row that some
   other rewind dropped. A clear whose cut is earlier than an existing group's
   cut therefore encloses that group: the new block claims the unclaimed rows
@@ -245,7 +287,10 @@ input, the reader instead emits the dropped rows as a **rewound group**:
   of them drops the shared cut, so each stays its own top-level collapsed
   entry in iteration order rather than vanishing inside the newest one.
 - A tail window never starts inside a group: when the window boundary
-  lands on a grouped row, it backs up to that group's header.
+  lands on a grouped row or header — a caller-chosen `tailFrom` row, or a
+  compaction boundary a rewind dropped — it backs up to the header of the
+  outermost group enclosing it, since a nested header is hidden while any
+  enclosing group is collapsed.
 - Placement: at the cut, in transcript order, before any later live rows.
 - Presentation: one collapsed outline entry by default. Expanding shows the
   dropped turns with their ordinary rendering, styled as nested rows (the
@@ -261,25 +306,29 @@ input, the reader instead emits the dropped rows as a **rewound group**:
   keeps the header fixed under the pointer (the list never jumps to the
   tail), and works the same with Conversation view on or off, where the
   expanded rows are projected like any other rows.
-- **Margin navigation.** A click on a row's margin (the row itself, not its
-  content or a control) scrolls so the next row at the same outline level
-  lands just under the pointer; right-click goes to the previous one. A
-  further click without moving the mouse steps again. Outline levels are the
-  top level and each rewound group.
+- Each rewound group is its own outline level for the opt-in margin
+  navigation owned by
+  [turn-rail-marker-layout](turn-rail-marker-layout.md#margin-navigation).
 - Every rewind produces its own group, so M clearloop iterations leave M
   reviewable groups at the same cut, in order.
 - The header row carries the cut row's timestamp, not the rewind time:
   timeline entries are ordered by their latest row time, and a later time on
   the header would drag the cut's turn past the group's own rows. The rewind
   time is kept in the header's `rewoundGroup.at`.
-
-- Search, copy, and turn navigation treat grouped rows as history: they are
-  reachable when expanded and never counted as turns for `N`.
+- Grouped rows keep their stamped `N` (§ Vocabulary), so a cleared turn's
+  menu still shows its index, but they are history rather than live turns:
+  search reaches them only while their group is expanded, turn navigation
+  skips them, the tail window does not count them, and `/clear N` naming one
+  is refused (§ Future work).
 
 **Composer recall.** `/clear N`, `/fork N`, and `/clearloop …` never become
 transcript turns, so accepted commands are recorded per session in browser
 storage and merged ahead of the turn history in the recall drawer
-(Ctrl+Up). A command that fails to parse is put back into the composer
+(Ctrl+Up). One browser-local key holds that history for the 30 most
+recently used sessions, 50 commands each, so running commands in many
+sessions cannot grow storage without bound; the per-session keys earlier
+releases wrote are folded into it and removed on the next read. A command
+that fails to parse is put back into the composer
 instead of being discarded. Harness-injected user rows such as task
 notifications are never offered for recall.
 
@@ -297,6 +346,16 @@ inactivity window**: no user send and no assistant progress for that long,
 where progress is any provider message or raw provider event and the session
 is idle or waiting for input at the end of the window. Then `m` increments;
 if `m < M` the next iteration starts, else the loop completes.
+
+**Background tasks hold the boundary.** While Claude reports a background
+task still running (a backgrounded command or agent; session crons do not
+count, since they last as long as the process), the session is busy for
+the loop: no countdown runs and no rewind happens. The rewind would stop
+the process and kill the task, and the task's completion notification
+would start a turn the agent needs to see. Once no task remains, the
+window counts from the last progress as usual. The hold is bounded: after
+30 minutes of waiting on background tasks alone (a task that never exits,
+such as a dev server) the boundary proceeds and the rewind stops them.
 
 **Why inactivity, not turn counting.** A strict "one assistant turn plus its
 blocking question and answer" boundary requires YA to classify every user
@@ -340,7 +399,11 @@ title in the session header, and its process card in the Agents view show
 a green badge with the remaining iteration count. It rides the session
 summaries and process list as a small `clearloop` object (remaining, total,
 cut turn, prompt, window) and the session metadata change event, so it
-updates live and clears when the loop ends. Its tooltip states the
+updates live and clears when the loop ends. Every surface takes the object
+from the clearloop service, so each shows the same window, and none shows a
+record a previous server process left `running`: only a loop this server is
+running has a badge, whether or not startup has yet closed that record out
+as interrupted. Its tooltip states the
 contract: Stop or a server reload aborts the loop; otherwise the window of
 inactivity rewinds to `/clear N` and relaunches the prompt. The header
 title lays out as a flex row so the badge survives a long ellipsized title.
@@ -352,8 +415,19 @@ same predicate Project Queue uses, minus its readiness check, because that
 check is only refreshed while Project Queue has backlog. Blockers naming the
 loop's own session are dropped: that session's quiescence is what the
 inactivity window already measured, so counting it would hold the loop
-against itself. While a patient loop is held, the queue-rail entry reports the
-raw blockers in place of the countdown, and it re-asks every five seconds.
+against itself. A patient loop also yields to Project Queue: while the project
+is otherwise quiet and Project Queue has an item it will promote once its quiet
+window passes, the loop is held (`project-queue:item-waiting`, then
+`project-queue:dispatching`), so a loop window shorter than the quiet window
+cannot start first at every boundary and keep that item waiting for the whole
+loop. Queued items therefore run at the loop's next boundary, one quiet
+window apart, before its next iteration. An item Project Queue is
+itself holding — dispatch paused, a failed first item, automation paused on its
+session, a readiness check not passed — does not hold the loop, and neither
+does a queue that the loop's own session is blocking. While a patient loop is
+held, the queue-rail entry reports the raw blockers in place of the countdown,
+and it re-asks every five seconds. Those re-checks republish the entry but are
+not project activity, so they do not restart Project Queue's quiet window.
 A server with no Project Queue cannot report project idleness; it refuses to
 make a loop patient rather than silently running it impatiently.
 
@@ -361,24 +435,34 @@ A loop starts patient when the command itself arrived through a patient lane —
 a `/clearloop` delivered by Project Queue (§ Queued YA commands in
 [project-queue](project-queue.md)) — and impatient otherwise. Patience is also
 a runtime control on the remaining-count badge; changing it lands at the next
-boundary and never disturbs the iteration already running.
+boundary and never disturbs the iteration already running. A change made while
+that iteration rewinds or sends is kept: the loop's own record writes apply to
+the record as it is then, not to the copy the iteration started from.
 
 **Remaining-count badge menu.** Right-click, long-press, or the context-menu
 key on the session header's badge opens Stop, the patience toggle (Patient /
 Impatient), and Start now. Start now ends the current iteration immediately,
 skipping both the remaining inactivity window and any project wait; it refuses
 while the loop is already starting an iteration, rather than overlapping
-itself. A left click still cancels, as before. The badge is green while
+itself. Starting spans the boundary's record of the finished iteration through
+the next send, so a Start now that lands while a timer-driven boundary is
+still writing is refused rather than counting an iteration twice. A left click still cancels, as before. The badge is green while
 impatient and Project Queue purple while patient, so the wait the loop is in
 is legible without opening the menu. The sidebar and Agents chips stay
 passive and carry the same color.
 
-**Settings changes take effect on the next iteration.** Before a rewind
-stops the live process it persists that process's current effort, thinking,
-model, and permission mode as the session's launch settings, so the resume
-that sends the next prompt (a clearloop iteration or the user's next send)
-uses what was last applied mid-session rather than the original launch
-values.
+**Settings changes take effect on the next iteration.** A rewind's stop,
+like every stop, completes the save of any effort, thinking, model, or
+permission mode applied to the live process before it returns
+([session defaults](session-defaults.md) § Per-session live picks), so the
+resume that sends the next prompt (a clearloop iteration or the user's next
+send) uses what was last applied mid-session rather than the original launch
+values. An iteration's resume is assembled by the same code as the `/resume`
+route, with those saved launch settings standing in for a client's request:
+the session's saved model, executor, recap mode and timing, prompt-suggestion
+preference, and settled sandbox all apply. Choices only a client request
+carries and the session never saves (a helper side model, permission rules)
+are absent, exactly as in a resume request that omits them.
 
 **The loop's own rewind is not a stop.** Rewinding aborts the live process
 to arm the truncating resume, which raises the same abort signal as a kill.
@@ -398,8 +482,13 @@ it arrives.
 - Ordinary sends do not stop the loop (see the inactivity rationale). A user
   who wants to keep the current iteration's result cancels the loop before
   the window elapses.
-- A rewind refusal or provider failure ends the loop as `interrupted` with
-  the error.
+- A failed iteration — its rewind or launch fails, or the provider refuses
+  its truncation — is retried rather than ending the loop: the loop writes
+  a durable "iteration m failed; retrying" notice with the error, restarts
+  the inactivity window from zero, and at that boundary rewinds and sends
+  the same iteration again, which resumes the provider process when none
+  is attached. `m` does not advance. The third consecutive failure ends the
+  loop as `interrupted` with the error; a successful send resets the count.
 - A server restart during a running loop marks it `interrupted` at the next
   startup (with the durable notice); YA never resumes a loop on startup.
 - The remaining-count chip in the session header is also the cancel control:
@@ -412,7 +501,8 @@ it arrives.
 session at the tail (a `local_command` display row, like goal receipts):
 the original `/clearloop N M: <prompt>` line, `completed m of M`, and for
 `cancelled`/`interrupted` the remaining `M−m`. The notice is session
-history, not a toast, and is never model context.
+history, not a toast, and is never model context. A notice carrying an
+error (an interruption, a retry) shows the error expanded without a click.
 
 ## Defaults and compatibility
 
@@ -431,9 +521,9 @@ history, not a toast, and is never model context.
   one. The optional-feature horizon on 2026-09-18 is v0.8.0 and
   v0.8.1 (the latest two stable releases and all releases from the
   preceding 14 days); neither has any of these. Without the capability the
-  client hides the menu entries, marks the commands unavailable, makes no
-  rewind or clearloop request, and ignores unknown queue kinds and metadata
-  fields. No existing capability meaning changes; existing fork behavior is
+  client hides the menu entries, leaves the command names to the provider
+  (§ Commands), makes no rewind or clearloop request, and ignores unknown
+  queue kinds and metadata fields. No existing capability meaning changes; existing fork behavior is
   unchanged. The originating request approved this gate.
 - Providers: Claude, Claude Gateway, and Claude Ollama sessions. Others
   report rewind unsupported; the route returns `409` and the client hides
@@ -475,13 +565,18 @@ Durable pointers by symbol and module; grep for the symbol.
 - `app-types.ts` — `rewoundGroupId` on messages, `clearloop` on session
   summaries, `SessionQueuedClearloopProgress` on queue entries.
 - `capability-ids.ts` / `server-capabilities.ts` — `sessionRewind`.
-- `transcript/messageProjection.ts` — the `rewound_group` system item.
+- `transcript/messageProjection.ts` — the `rewound_group` system item;
+  `isRealUserTurn`, the one "is this a turn" predicate.
 
 **Server** (`packages/server/src`)
-- `routes/sessions.ts` — `rewindSessionToCut` (the rewind operation),
-  `resolveRewindCut`, `sendClearloopPrompt`, the `/rewind` and `/clearloop`
-  routes, the clearloop runner, `rewindRecordIdsFor` on the detail
-  responses, the `/clone` rewind-state copy.
+- `routes/sessions.ts` — `runRewindCommand`, the one operation behind the
+  `/rewind` and `/clearloop` routes and queued `/clear N` / `/clearloop`
+  commands (provider and running-loop refusals, one session read, typed-N
+  resolution, then rewind or loop start); `rewindSessionToCut` (the rewind
+  itself, also run by each clearloop iteration), `resolveRewindCut`,
+  `sendClearloopPrompt` over `buildResumeLaunch` (the resume launch assembly
+  shared with the `/resume` route), the clearloop runner, `rewindRecordIdsFor`
+  on the detail responses, the `/clone` rewind-state copy.
 - `supervisor/resume-truncation.ts` — `resolveResumeTruncation` (the
   activation-seam consumption of `pendingRewind`) and
   `isResumeDropsTurnRefusal`; `Supervisor.consumePendingRewind`,
@@ -490,23 +585,26 @@ Durable pointers by symbol and module; grep for the symbol.
   `SessionMetadataService.copyRewindState`.
 - `services/ClearloopService.ts` — the loop state machine and inactivity
   timer (`iterate`, `check`, `readQuietAnchor`), `getProgress` for the queue
-  entry, `getBadge`/`clearloopBadgeFromJob` for summaries,
-  `reconcileAfterRestart`, the durable notice.
+  entry, `getBadge` for every summary surface (injected into the Agents
+  and All Sessions routes as `getClearloopBadge`), `reconcileAfterRestart`,
+  the durable notice.
 - `sessions/claude-messages.ts` — `collectRewoundRows` (positional
-  membership, nesting); the `rewindRecords` option of
+  membership, nesting), `lastRewindableClaudeRowId` (the bound
+  `rewindSessionToCut` records); the `rewindRecords` option of
   `collectVisibleClaudeEntries`, threaded through `normalizeSession` in
   `sessions/normalization.ts`.
-- `sessions/turn-index.ts` — `isRealUserTurn`, `stampTurnIndexes` (the
-  `turnIndex` stamp applied by `normalizeSession` for every provider),
-  `turnIndexOf` (used by the rewind routes for the record's `N`).
+- `sessions/turn-index.ts` — `stampTurnIndexes` (the `turnIndex` stamp
+  applied by `normalizeSession` for every provider), `turnIndexOf` (used by
+  the rewind routes for the record's `N`); `routes/sessions.ts` fork and
+  rewind boundaries use the same shared predicate.
 - `sessions/pagination.ts` — the tail window backs up to a group header.
 - `metadata/SessionMetadataService.ts` — `rewindRecords`, `pendingRewind`,
   `clearloop` fields and their accessors.
 - `routes/session-queue-summaries.ts` — the clearloop queue entry, always
   last.
 - `supervisor/SessionActivationCoordinator.ts`
-  `persistLiveProcessLaunchSettings` and `Supervisor.persistLiveLaunchSettings`
-  — live settings snapshot before the rewind stops the process.
+  `settleStoppingProcessLaunchSettings` — the rewind's abort, like every
+  stop, saves settings applied since the last save.
 - `sdk/providers/types.ts` / `sdk/providers/claude.ts` — `resumeDropsTurn`.
 - `routes/version.ts` `BASE_CAPABILITIES`; `routes/settings.ts` and
   `services/ServerSettingsService.ts` `clearloopInactivitySeconds`.
@@ -517,24 +615,26 @@ Durable pointers by symbol and module; grep for the symbol.
 
 **Client** (`packages/client/src`)
 - `lib/slashCommands.ts` — `REWIND_SLASH_COMMANDS`, parser entries.
-- `pages/SessionPage.tsx` — `handleRewindCommand`, `rewindToCut`,
-  `startClearloop`, `handleCancelClearloop`, the `SessionRewindProvider`
-  value, command recall, draft restore/clear, the metadata-event rewind
-  application, the header badge.
-- `lib/sessionRewind.ts` — `getSessionTurnIndex`, `supportsSessionRewind`;
-  `contexts/SessionRewindContext.tsx`.
+- `hooks/useSessionRewindControls.ts` — `handleRewindCommand`,
+  `rewindToCut`, `startClearloop`, `cancelClearloop`, the
+  `SessionRewindProvider` value, draft restore/clear, the metadata-event
+  rewind application; `pages/SessionPage.tsx` keeps the header badge.
+- `lib/sessionCommandRecall.ts` — the bounded command-recall store and
+  `useSessionCommandRecall`.
+- `lib/sessionRewind.ts` — `getSessionTurnIndex` (server stamps, live-tail
+  numbering), `supportsSessionRewind`; `contexts/SessionRewindContext.tsx`.
 - `components/blocks/ForkTurnMenu.tsx` — Clear entries and the indexed
   tooltip; `components/RenderItemComponent.tsx` — `RewoundGroupHeader`
   (toggle, copy control) and the nested-row styling.
 - `lib/sessionDetail/renderItems.ts` — `getDisplayRenderItems` collapse
   filter, `getRenderItemRewoundGroupId`; `lib/sessionDetail/search.ts`
-  excludes rewound rows from turn anchors.
-- `lib/sessionDetail/transcriptReducer.ts` — `applyRewindToMessages` and
-  the `applyRewind` action; `hooks/useSessionMessages.ts` —
-  `applyRewindLocally`, `reloadSession`.
+  excludes rewound rows from turn-navigation anchors.
+- `hooks/useSessionMessages.ts` — `refreshTranscriptTail` (the bounded
+  tail refetch through `fetchNewMessages`, replacing the loaded window via
+  `applyFullTailReconciliation`).
 - `components/MessageList.tsx` — scroll-anchored `toggleRewoundGroup`,
-  margin navigation (`navigateFromMargin`), the clearloop chip and
-  `ClearloopCountdown`; `components/ClearloopRemainingBadge.tsx`.
+  the clearloop chip and `ClearloopCountdown`;
+  `components/ClearloopRemainingBadge.tsx`.
 - `lib/composerTurnRecall.ts` — `mergeCommandRecallEntries`, task
   notifications excluded.
 - `pages/settings/MessageDeliverySettings.tsx` — the inactivity setting.
@@ -552,9 +652,27 @@ Durable pointers by symbol and module; grep for the symbol.
 - `/clear N` during `in-turn` or with a pending queued message is refused
   with `409` and records nothing.
 - A single-turn drop passes `resumeDropsTurn`; a multi-turn drop does not,
-  and a discarded range containing a non-turn row is refused by YA.
+  and a discarded range containing a non-turn row is refused by YA. A
+  clearloop iteration's rewind never passes it
+  (`session-rewind-orchestration.test.ts`).
+- A clearloop boundary waits while Claude reports a live background task,
+  not for session crons, and proceeds once the hold limit passes; a failed
+  iteration is retried after a fresh window without advancing `m`, a
+  refusal outside the loop's own launch counts as a failure, and the third
+  consecutive failure interrupts the loop (`ClearloopService.test.ts`).
+- A refused guarded resume publishes the refused-rewind notice, not the
+  unexpected-exit one, with its details open (`process.termination.test.ts`).
 - `/clearloop 3 2: p` and `/clear 3` then `/clearloop 2: p` produce the same
   rewind records and sends.
+- A queued `/clear N` and the interactive rewind of the same turn record the
+  same rewind, each reading the transcript once; a queued `/clearloop` starts
+  a patient loop at that cut; an iteration's resume carries the session's
+  saved launch settings and recap preferences
+  (`session-rewind-orchestration.test.ts`).
+- After `/clear 3` drops turns 4–5, **Clear replacing this turn** on turn 6
+  cuts after turn 3 and records `/clear 3`, and a fork before turn 6 keeps
+  turns 1–3; neither lands on the cleared turn 5
+  (`session-rewind-orchestration.test.ts`).
 - A clearloop iteration ends only after the configured inactivity window
   elapses with no user send and no provider event; a steer or patient
   delivery inside the window resets it and is included in the next group.
@@ -568,7 +686,10 @@ Durable pointers by symbol and module; grep for the symbol.
   no rewind request for a typed `/clear N`.
 - A pending rewind is applied by every Claude launch path, and it wins over
   a caller-supplied `resumeSessionAt`; a non-Claude provider or a new
-  session gets no truncation (`resumeTruncation.test.ts`).
+  session gets no truncation (`resumeTruncation.test.ts`). The real-SDK
+  launchers, used when no provider is resolved, truncate and disarm like
+  the provider launchers (`supervisor.test.ts` § a pending rewind on the
+  real SDK launch path).
 - A `Resume rejected by --resume-drops-turn:` result deletes the record and
   ends a running clearloop as `interrupted`; an idle-reap abort leaves the
   loop running (`ClearloopService.test.ts`).
@@ -578,10 +699,20 @@ Durable pointers by symbol and module; grep for the symbol.
   ride along with their cut (`pagination.test.ts`).
 - A queued message delivered inside a cleared span is grouped with it and
   keeps its delivery stamp, while a queued message delivered on the live
-  branch stays live and in place (`claude-messages.test.ts`).
+  branch stays live and in place, after the whole group whatever its length
+  (`claude-messages.test.ts`).
 - Two rewinds to the same live cut produce two sibling groups in order, with
-  no `rewoundParentGroupId` on either — on the server projection and on the
-  client's in-place application alike (`claude-messages.test.ts`,
-  `renderSelectors.test.ts`).
-- A durable receipt whose timestamp lands inside a cleared span joins that
-  group; one on the live branch does not (`goal-overlays.test.ts`).
+  no `rewoundParentGroupId` on either (`claude-messages.test.ts`).
+- A continuation stamped behind the server's clock stays live under a
+  bounded record, and a clear whose cut precedes an earlier group encloses
+  it with each row in its own group (`claude-messages.test.ts`); the
+  rewind route records the transcript's last row as the bound
+  (`session-rewind-orchestration.test.ts`).
+- A rewind, whether issued here or seen on the metadata event, replaces the
+  loaded window with the server's bounded tail projection without unmounting
+  the view, fetching once per record; a failed refetch reloads
+  (`useSessionMessages.cache.test.tsx`, `useSessionRewindControls.test.tsx`).
+- A durable receipt written before a rewind that dropped its position joins
+  that group (the enclosing one when an inner rewind came first); one written
+  after the last rewind stays live at a group's tail or before the next turn
+  (`goal-overlays.test.ts`).

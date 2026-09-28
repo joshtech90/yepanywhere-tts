@@ -151,6 +151,14 @@ export function getProjectName(projectPath: string): string {
 }
 
 /**
+ * Names a project for display: the user's chosen project name when one is
+ * stored, else {@link getProjectName}. `ProjectMetadataService` owns the
+ * chosen name, so surfaces that name a project take this rather than calling
+ * {@link getProjectName} on its path.
+ */
+export type ProjectDisplayNameResolver = (projectPath: string) => string;
+
+/**
  * Canonicalize a project path for identity comparisons.
  *
  * This keeps the path semantically the same while normalizing Windows-only

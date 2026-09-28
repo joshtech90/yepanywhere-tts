@@ -50,7 +50,7 @@ const SRP_FAILED_PROOF_BASE_COOLDOWN_MS = 5 * 1000;
 const SRP_FAILED_PROOF_MAX_COOLDOWN_MS = 5 * 60 * 1000;
 /** Keep idle per-username limiter entries for at most 30 minutes */
 const SRP_USERNAME_LIMITER_TTL_MS = 30 * 60 * 1000;
-/** Soft cap to prevent unbounded growth from random identity spam */
+/** Cap on per-username limiter entries, so random identity spam stays bounded */
 const SRP_USERNAME_LIMITER_MAX_ENTRIES = 1024;
 
 /**
@@ -62,20 +62,21 @@ const SRP_USERNAME_LIMITER_MAX_ENTRIES = 1024;
 const SRP_HELLO_RESPONSE_FLOOR_MS = 250;
 
 /**
- * Salt and verifier for an identity, real or decoy, never distinguishable.
+ * Limited users as `srp_hello` sees them.
  *
- * Returns undefined when limited users are disabled, which is the default:
- * an install with a single principal keeps answering an unknown identity
- * exactly as it did before (topics/limited-users.md § Delivery v1).
+ * While `isEnabled()` is false, which is the default, an install with a single
+ * principal answers every hello exactly as it did before limited users
+ * existed (topics/limited-users.md § Delivery v1): an unknown identity is
+ * told so at once, with no response floor and no per-identity limiter.
  */
 export interface SrpLimitedUserLookup {
-  getSrpChallengeInputs: (username: string) =>
-    | {
-        salt: string;
-        verifier: string;
-        known: boolean;
-      }
-    | undefined;
+  isEnabled: () => boolean;
+  /** Salt and verifier for an identity, real or decoy, never distinguishable. */
+  getSrpChallengeInputs: (username: string) => {
+    salt: string;
+    verifier: string;
+    known: boolean;
+  };
 }
 
 /** Wait until the hello response has taken at least the fixed floor. */
@@ -179,13 +180,33 @@ function cleanupUsernameSrpLimiters(now: number): void {
   }
 }
 
-function getUsernameLimiter(username: string, now: number): SrpLimiterState {
-  if (usernameSrpLimiters.size >= SRP_USERNAME_LIMITER_MAX_ENTRIES) {
-    cleanupUsernameSrpLimiters(now);
+/**
+ * Make room for one more per-identity limiter when the map is at its cap.
+ * The map is kept in least-recently-seen order, so the oldest entries go
+ * first; a blocked entry goes only when nothing else can, so spamming fresh
+ * identities is not a way to lift a lockout on a name being guessed at.
+ */
+function evictUsernameSrpLimiters(now: number): void {
+  cleanupUsernameSrpLimiters(now);
+  for (const blockedToo of [false, true]) {
+    for (const [username, limiter] of usernameSrpLimiters) {
+      if (usernameSrpLimiters.size < SRP_USERNAME_LIMITER_MAX_ENTRIES) return;
+      if (!blockedToo && limiter.blockedUntil > now) continue;
+      usernameSrpLimiters.delete(username);
+    }
   }
+}
 
+function getUsernameLimiter(username: string, now: number): SrpLimiterState {
   let limiter = usernameSrpLimiters.get(username);
-  if (!limiter) {
+  if (limiter) {
+    // Re-insert so iteration order stays least-recently-seen first.
+    usernameSrpLimiters.delete(username);
+    limiter.lastSeenAt = now;
+  } else {
+    if (usernameSrpLimiters.size >= SRP_USERNAME_LIMITER_MAX_ENTRIES) {
+      evictUsernameSrpLimiters(now);
+    }
     limiter = {
       helloBucket: createTokenBucket(
         SRP_USERNAME_HELLO_CAPACITY,
@@ -195,11 +216,18 @@ function getUsernameLimiter(username: string, now: number): SrpLimiterState {
       failedProofCount: 0,
       lastSeenAt: now,
     };
-    usernameSrpLimiters.set(username, limiter);
-  } else {
-    limiter.lastSeenAt = now;
   }
+  usernameSrpLimiters.set(username, limiter);
   return limiter;
+}
+
+/** Per-identity limiter count, for tests of its bound. */
+export function srpUsernameLimiterCountForTest(): number {
+  return usernameSrpLimiters.size;
+}
+
+export function resetSrpUsernameLimitersForTest(): void {
+  usernameSrpLimiters.clear();
 }
 
 function applyFailedProofPenalty(
@@ -587,27 +615,38 @@ export async function handleSrpHello(
   }
 
   const configuredUsername = remoteAccessService.getUsername();
-  const usernameLimiter = msg.identity
-    ? getUsernameLimiter(msg.identity, now)
+  const limitedUsersEnabled = limitedUsers?.isEnabled() === true;
+  // With limited users on, every identity is rate limited alike, or the
+  // limiter itself would tell known names from unknown ones.
+  const limitedIdentity = limitedUsersEnabled
+    ? msg.identity
+    : msg.identity === configuredUsername
+      ? configuredUsername
+      : null;
+  const usernameLimiter = limitedIdentity
+    ? getUsernameLimiter(limitedIdentity, now)
     : null;
   if (!enforceSrpHelloRateLimit(ws, connState, usernameLimiter, now)) {
     return;
   }
+  const finishHello = limitedUsersEnabled
+    ? () => padSrpHelloResponse(helloStartedAt)
+    : async () => {};
 
   /*
    * Identity selection (topics/limited-users.md § Login, switching, logout):
    * the superuser's configured relay name, else a limited user of that name,
-   * else a fixed decoy credential. The decoy path runs the same challenge
-   * computation and fails only at the proof step, and every response below is
-   * padded to a fixed floor, so response timing does not disclose which
-   * usernames this install knows.
+   * else a decoy credential whose salt is stable per identity. The decoy path
+   * runs the same challenge computation and fails only at the proof step, and
+   * every response below is padded to a fixed floor, so neither the salt nor
+   * response timing discloses which usernames this install knows.
    */
   const limitedCredentials =
-    msg.identity !== configuredUsername
-      ? limitedUsers?.getSrpChallengeInputs(msg.identity)
+    limitedUsers && limitedUsersEnabled && msg.identity !== configuredUsername
+      ? limitedUsers.getSrpChallengeInputs(msg.identity)
       : undefined;
   if (msg.identity !== configuredUsername && !limitedCredentials) {
-    await padSrpHelloResponse(helloStartedAt);
+    await finishHello();
     sendSrpMessage(ws, {
       type: "srp_error",
       code: "invalid_identity",
@@ -637,7 +676,7 @@ export async function handleSrpHello(
       salt: helloCredentials.salt,
       B,
     };
-    await padSrpHelloResponse(helloStartedAt);
+    await finishHello();
     sendSrpMessage(ws, challenge);
     connState.authState = "srp_waiting_proof";
     startSrpHandshakeTimeout(ws, connState);
@@ -646,7 +685,7 @@ export async function handleSrpHello(
   } catch (err) {
     console.error("[WS Relay] SRP hello error:", err);
     cleanupSrpHandshakeState(connState);
-    await padSrpHelloResponse(helloStartedAt);
+    await finishHello();
     sendSrpMessage(ws, {
       type: "srp_error",
       code: "server_error",

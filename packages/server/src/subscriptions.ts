@@ -524,7 +524,7 @@ export function createSessionSubscription(
     ? process.getStreamingContent()
     : null;
   if (streamingContent) {
-    getAugmenter()
+    coordinatorTail = getAugmenter()
       .then(async (aug) => {
         await aug.processCatchUp(
           streamingContent.text,
@@ -556,13 +556,22 @@ export function createSessionSubscription(
   };
 }
 
+export interface ActivitySubscriptionOptions extends SubscriptionOptions {
+  /**
+   * A bus event as this subscriber may receive it, or null when hidden from
+   * them. Absent forwards every event as is. The stream's own `connected` and
+   * `heartbeat` frames are always sent.
+   */
+  eventForSubscriber?: (event: BusEvent) => BusEvent | null;
+}
+
 /**
  * Create an activity subscription that forwards EventBus events via `emit`.
  */
 export function createActivitySubscription(
   eventBus: EventBus,
   emit: Emit,
-  options?: SubscriptionOptions,
+  options?: ActivitySubscriptionOptions,
 ): { cleanup: () => void } {
   let closed = false;
 
@@ -581,11 +590,15 @@ export function createActivitySubscription(
   const unsubscribe = eventBus.subscribe((event: BusEvent) => {
     if (closed) return;
     try {
+      const delivered = options?.eventForSubscriber
+        ? options.eventForSubscriber(event)
+        : event;
+      if (delivered === null) return;
       const label = options?.logLabel ? ` sub=${options.logLabel}` : "";
       getLogger().debug(
         `[ActivitySubscription] Forwarding event type=${event.type}${label}`,
       );
-      emit(event.type, event);
+      emit(delivered.type, delivered);
     } catch (err) {
       options?.onError?.(err);
     }

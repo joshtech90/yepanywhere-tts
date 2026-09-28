@@ -202,6 +202,10 @@ export interface StartSessionOptions {
   cwd: string;
   initialMessage?: UserMessage;
   resumeSessionId?: string;
+  /** Resume through this transcript UUID only; see the provider option. */
+  resumeSessionAt?: string;
+  /** With `resumeSessionAt`: the one turn the truncation may drop. */
+  resumeDropsTurn?: string;
   /**
    * Optional provider-visible client identity, used by providers that expose
    * launcher identity in session metadata (currently Codex).

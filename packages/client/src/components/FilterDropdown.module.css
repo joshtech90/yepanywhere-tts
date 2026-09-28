@@ -318,6 +318,19 @@
     border: 1px solid var(--border-subtle);
     border-radius: var(--radius-lg);
     min-width: 200px;
+    /*
+     * A long list scrolls inside the panel instead of growing the page. The
+     * component also caps it to the visible space on its side of the
+     * trigger; a panel that overhangs the scroll container would grow the
+     * page and leave its last rows unreachable from inside the panel.
+     */
+    max-height: min(
+      60vh,
+      480px,
+      var(--filter-dropdown-available-height, 480px)
+    );
+    overflow-y: auto;
+    overscroll-behavior: contain;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
     z-index: 100;
     animation: dropdownFadeIn 0.15s ease-out;
@@ -326,6 +339,14 @@
   .dropdown.alignRight {
     left: auto;
     right: 0;
+  }
+
+  /* Opens upward when there is more room above the trigger than below. */
+  .dropdown.above {
+    top: auto;
+    bottom: 100%;
+    margin-top: 0;
+    margin-bottom: var(--space-1);
   }
 
   .dropdown .options {

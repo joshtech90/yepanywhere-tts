@@ -103,6 +103,23 @@
   color: var(--text-muted);
 }
 
+.inputRow {
+  display: flex;
+  align-items: stretch;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.inputRow > input {
+  flex: 1;
+  min-width: 0;
+}
+
+.inputRow > button {
+  flex: none;
+  white-space: nowrap;
+}
+
 .subhead {
   margin: var(--space-2) 0 0;
   color: var(--text-secondary);
@@ -171,10 +188,83 @@
   margin-top: var(--space-4, 1rem);
 }
 
+/* Wide tables scroll inside their own box on a narrow screen. */
+.usageScroll {
+  overflow-x: auto;
+  margin-top: var(--space-3);
+}
+
 .usageTable {
   width: 100%;
   border-collapse: collapse;
   font-size: var(--font-size-sm);
+}
+
+.usageCaption {
+  caption-side: top;
+  padding-bottom: var(--space-2);
+  color: var(--text-primary);
+  font-weight: 600;
+  text-align: start;
+}
+
+/* Figures align on their right edge so rows compare at a glance. */
+.usageTable .usageNumber {
+  padding-inline: var(--space-3) 0;
+  text-align: end;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (max-width: 699px) {
+  .usageTable .usageNumber {
+    padding-inline-start: var(--space-2);
+  }
+
+  .usageTable {
+    font-size: var(--font-size-xs);
+  }
+}
+
+.usageWindow {
+  display: inline-flex;
+  gap: 0;
+  margin: var(--space-2) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.usageWindowLegend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+.usageWindowOption {
+  padding: var(--space-1) var(--space-3);
+  border: 1px solid var(--border-color);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  cursor: pointer;
+}
+
+.usageWindowOption:first-of-type {
+  border-radius: var(--radius-md) 0 0 var(--radius-md);
+}
+
+.usageWindowOption:last-of-type {
+  border-left: 0;
+  border-radius: 0 var(--radius-md) var(--radius-md) 0;
+}
+
+.usageWindowSelected {
+  background: var(--bg-code);
+  color: var(--text-primary);
+  font-weight: 600;
 }
 
 .usageTable th,
@@ -190,26 +280,7 @@
   font-weight: 600;
 }
 
+/* Names wrap at their hyphens, never mid-word; the table scrolls instead. */
 .usageUser {
-  overflow-wrap: anywhere;
-}
-
-/* Facts stack so a narrow column never reflows them into a paragraph. */
-.usageFacts {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 0;
-  margin: 0;
-  list-style: none;
-}
-
-/* The first fact is the interaction time, which is the headline number. */
-.usageFacts li:first-child {
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.usageFacts li {
-  color: var(--text-muted);
+  overflow-wrap: normal;
 }

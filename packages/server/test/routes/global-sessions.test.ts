@@ -1,5 +1,10 @@
 import type { UrlProjectId } from "@yep-anywhere/shared";
+import { Hono } from "hono";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  type Principal,
+  PRINCIPAL_VARIABLE,
+} from "../../src/auth/principal.js";
 import type { SessionIndexService } from "../../src/indexes/index.js";
 import type { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import type { NotificationService } from "../../src/notifications/index.js";
@@ -187,6 +192,37 @@ describe("Global Sessions Routes", () => {
     queryString = "",
   ): Promise<{ stats: GlobalSessionsResponse["stats"] }> {
     const response = await routes.request(`/stats${queryString}`);
+    expect(response.status).toBe(200);
+    return response.json();
+  }
+
+  async function makeLimitedRequest(
+    queryString = "",
+    overrides: Partial<GlobalSessionsDeps> = {},
+    projectIds = ["proj1"],
+  ): Promise<GlobalSessionsResponse> {
+    const app = new Hono<{
+      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+    }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, {
+        kind: "limited",
+        username: "alice",
+        grants: {
+          newSessionProjects: [],
+          joinProjects: [],
+          viewProjects: projectIds,
+          joinStaleOffsetMinutes: 0,
+          lock: {},
+        },
+        switched: false,
+        locked: true,
+        via: "direct",
+      });
+      await next();
+    });
+    app.route("/api/sessions", createGlobalSessionsRoutes(getDeps(overrides)));
+    const response = await app.request(`/api/sessions${queryString}`);
     expect(response.status).toBe(200);
     return response.json();
   }
@@ -496,6 +532,37 @@ describe("Global Sessions Routes", () => {
   });
 
   describe("filtering", () => {
+    it("scopes limited-user rows, options, stats, and pagination", async () => {
+      const project1 = createProject("proj1", "project-one", "/sessions/proj1");
+      const project2 = createProject("proj2", "project-two", "/sessions/proj2");
+      const visible = createSession("visible", "proj1", minutesAgo(10));
+      const hidden = createSession("hidden", "proj2", minutesAgo(1), {
+        provider: "codex",
+      });
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([
+        project1,
+        project2,
+      ]);
+      sessionsByDir.set("/sessions/proj1", [visible]);
+      sessionsByDir.set("/sessions/proj2", [hidden]);
+      unreadMap.set("hidden", true);
+      metadataMap.set("hidden", { isStarred: true });
+
+      const result = await makeLimitedRequest("?limit=1&includeStats=true");
+
+      expect(result.sessions.map((session) => session.id)).toEqual(["visible"]);
+      expect(result.hasMore).toBe(false);
+      expect(result.projects).toEqual([{ id: "proj1", name: "project-one" }]);
+      expect(result.stats).toEqual({
+        totalCount: 1,
+        unreadCount: 0,
+        starredCount: 0,
+        archivedCount: 0,
+        providerCounts: { claude: 1 },
+        executorCounts: { local: 1 },
+      });
+    });
+
     it("filters by projectId when ?project query param provided", async () => {
       const project1 = createProject("proj1", "project-one", "/sessions/proj1");
       const project2 = createProject("proj2", "project-two", "/sessions/proj2");
@@ -738,6 +805,34 @@ describe("Global Sessions Routes", () => {
         deps,
       );
       expect(page.sessions.map((s) => s.id)).toEqual(["older"]);
+    });
+
+    it("scopes limited-user retained rows before pagination and stats", async () => {
+      const rows = [
+        createCatalogRow("hidden", "proj2", minutesAgo(1), {
+          provider: "codex",
+        }),
+        createCatalogRow("visible", "proj1", minutesAgo(10)),
+      ];
+      unreadMap.set("hidden", true);
+      metadataMap.set("hidden", { isStarred: true });
+
+      const result = await makeLimitedRequest(
+        "?summaryMode=retained&limit=1&includeStats=true",
+        { retainedCollections: retainedCollections(rows) },
+      );
+
+      expect(result.sessions.map((session) => session.id)).toEqual(["visible"]);
+      expect(result.hasMore).toBe(false);
+      expect(result.projects).toEqual([{ id: "proj1", name: "proj1" }]);
+      expect(result.stats).toEqual({
+        totalCount: 1,
+        unreadCount: 0,
+        starredCount: 0,
+        archivedCount: 0,
+        providerCounts: { claude: 1 },
+        executorCounts: { local: 1 },
+      });
     });
   });
 

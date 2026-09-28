@@ -139,9 +139,38 @@ it("serves an authorized HTML directory with executable bytes and revocable acce
   const html = await server.app.request(grant.url);
   expect(html.status).toBe(200);
   expect(html.headers.get("content-type")).toContain("text/html");
+  // No popup or download authority: an unsandboxed popup could navigate the
+  // YA tab that frames this document.
   expect(html.headers.get("content-security-policy")).toContain(
-    "sandbox allow-scripts allow-same-origin",
+    "sandbox allow-scripts allow-same-origin;",
   );
+  // A PDF navigated to inside the sandboxed frame gets a hand-off page that
+  // asks the viewer for a tab; other fetch destinations and explicit
+  // downloads receive the bytes.
+  await writeFile(join(root, "paper.pdf"), "%PDF-1.4 stub");
+  const framed = await server.app.request(new URL("paper.pdf", grant.url), {
+    headers: { "Sec-Fetch-Dest": "iframe" },
+  });
+  expect(framed.headers.get("content-type")).toContain("text/html");
+  const handoff = await framed.text();
+  expect(handoff).toContain("yep-artifact-tab/1");
+  expect(handoff).not.toContain('target="_blank"');
+  expect(handoff).toContain("paper.pdf");
+  expect(handoff).not.toContain("%PDF");
+  // The page takes its address from the browser's location: behind a
+  // TLS-terminating tunnel the request URL the server saw is plain http.
+  expect(handoff).not.toContain(new URL(grant.url).origin);
+  const topLevel = await server.app.request(new URL("paper.pdf", grant.url), {
+    headers: { "Sec-Fetch-Dest": "document" },
+  });
+  expect(topLevel.headers.get("content-type")).toContain("application/pdf");
+  expect(await topLevel.text()).toBe("%PDF-1.4 stub");
+  const download = await server.app.request(
+    new URL("paper.pdf?download=true", grant.url),
+    { headers: { "Sec-Fetch-Dest": "iframe" } },
+  );
+  expect(download.headers.get("content-disposition")).toBe("attachment");
+  expect(await download.text()).toBe("%PDF-1.4 stub");
   expect(await html.text()).toContain('<script src="app.js">');
   const script = await server.app.request(new URL("app.js", grant.url));
   expect(script.status).toBe(200);
@@ -180,6 +209,54 @@ it("serves an authorized HTML directory with executable bytes and revocable acce
   ).toBe(421);
   await server.revoke(grant.id);
   expect((await server.app.request(grant.url)).status).toBe(404);
+});
+
+it("adds the find agent only to HTML framed by a viewer", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-find-"));
+  const source = "<p>Findable text</p>";
+  await writeFile(join(directory, "index.html"), source);
+  await writeFile(join(directory, "doc.xhtml"), "<html/>");
+  const server = new ArtifactServer(
+    { port: 4402, localOrigin: "http://artifacts.localhost:4402" },
+    createLocalResourcePathPolicy({ allowedPaths: [directory] }),
+  );
+  const grant = await server.createGrant(
+    join(directory, "index.html"),
+    "local",
+  );
+  const iframe = { "Sec-Fetch-Dest": "iframe" };
+  const framed = await server.app.request(grant.url, { headers: iframe });
+  const body = await framed.text();
+  expect(body.startsWith(source)).toBe(true);
+  expect(body).toContain("<script data-yep-find-agent>");
+  expect(body.trimEnd().endsWith("</script>")).toBe(true);
+  expect(Number(framed.headers.get("content-length"))).toBe(
+    Buffer.byteLength(body),
+  );
+  const framedHead = await server.app.request(grant.url, {
+    method: "HEAD",
+    headers: iframe,
+  });
+  expect(framedHead.headers.get("content-length")).toBe(
+    framed.headers.get("content-length"),
+  );
+  for (const [url, headers] of [
+    [grant.url, { "Sec-Fetch-Dest": "document" }],
+    [`${grant.url}?download=true`, iframe],
+    [grant.url, { ...iframe, Range: "bytes=0-2" }],
+  ] as const) {
+    const plain = await (await server.app.request(url, { headers })).text();
+    expect(source.startsWith(plain)).toBe(true);
+    expect(plain).not.toContain("yep-find");
+  }
+  expect(
+    await (
+      await server.app.request(new URL("doc.xhtml", grant.url), {
+        headers: iframe,
+      })
+    ).text(),
+  ).toBe("<html/>");
+  await server.close();
 });
 
 it("routes the artifact Host on YA's actual HTTP port before YA APIs", async () => {
@@ -299,6 +376,71 @@ it("expires each link at its original lifetime after an expiry-only settings cha
   await server.close();
 });
 
+it("reopening a file reuses its live borrowed link instead of filling the grant cap", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-reuse-"));
+  const entry = join(directory, "index.html");
+  await writeFile(entry, "<h1>Reused</h1>");
+  const now = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(now);
+  const server = new ArtifactServer(
+    { port: 4402, localOrigin: "http://artifacts.localhost:3400" },
+    createLocalResourcePathPolicy({ allowedPaths: [directory] }),
+  );
+  try {
+    const first = await server.createGrant(entry, "local");
+    expect(first.reused).toBe(false);
+    // More preview starts than the cap allows, each leaving its link behind.
+    for (let open = 0; open < 300; open++) {
+      const again = await server.createGrant(entry, "local");
+      expect(again).toMatchObject({ id: first.id, url: first.url });
+      expect(again.reused).toBe(true);
+    }
+    // A caller asking to own its directory always gets a grant of its own.
+    const owning = await server.createGrant(entry, "local", true);
+    expect(owning.id).not.toBe(first.id);
+    expect(owning.reused).toBe(false);
+    // Past half its lifetime a link is no longer handed to a new viewer, but
+    // it keeps serving whoever already holds it.
+    clock.mockReturnValue(now + 3.5 * 24 * 3600_000 + 1);
+    const renewed = await server.createGrant(entry, "local");
+    expect(renewed.id).not.toBe(first.id);
+    expect(renewed.expiresAt).toBe(
+      now + 3.5 * 24 * 3600_000 + 1 + 7 * 24 * 3600_000,
+    );
+    expect((await server.app.request(first.url)).status).toBe(200);
+  } finally {
+    await server.close();
+  }
+});
+
+it("refuses a new link past the cap with the time the next one expires", async () => {
+  directory = await mkdtemp(join(tmpdir(), "ya-artifact-cap-"));
+  const now = Date.now();
+  vi.spyOn(Date, "now").mockReturnValue(now);
+  const server = new ArtifactServer(
+    { port: 4402, localOrigin: "http://artifacts.localhost:3400" },
+    createLocalResourcePathPolicy({ allowedPaths: [directory] }),
+  );
+  try {
+    const entries: string[] = [];
+    for (let index = 0; index <= 256; index++) {
+      const dir = join(directory, `bundle-${index}`);
+      await mkdir(dir);
+      entries.push(join(dir, "index.html"));
+      await writeFile(entries[index]!, `<h1>${index}</h1>`);
+    }
+    for (const entry of entries.slice(0, 256))
+      await server.createGrant(entry, "local");
+    await expect(server.createGrant(entries[256]!, "local")).rejects.toThrow(
+      `Too many live artifact links (256); the next one expires at ${new Date(now + 7 * 24 * 3600_000).toISOString()}`,
+    );
+    // Reopening an already linked file needs no new slot.
+    expect((await server.createGrant(entries[0]!, "local")).reused).toBe(true);
+  } finally {
+    await server.close();
+  }
+});
+
 it("validates whole expiry days, rounding a legacy hours write up to a day", () => {
   expect(validateArtifactConfig({ port: 4402 }).expiryDays).toBe(7);
   expect(validateArtifactConfig({ port: 4402 }, 3).expiryDays).toBe(3);
@@ -359,6 +501,23 @@ it("keeps launch overrides explicit and rejects shared-loopback origins", () => 
       publicOrigin: "http://artifacts.example.org",
     }),
   ).toThrow();
+});
+
+it("validates and preserves the unconditional vhost link rewrite setting", () => {
+  expect(
+    validateArtifactConfig({ port: 4402, alwaysRewriteVhostLinks: true }),
+  ).toMatchObject({ alwaysRewriteVhostLinks: true });
+  expect(
+    validateArtifactConfig({ port: 4402 }, 7, {
+      alwaysRewriteVhostLinks: true,
+    }),
+  ).toMatchObject({ alwaysRewriteVhostLinks: true });
+  expect(() =>
+    validateArtifactConfig({
+      port: 4402,
+      alwaysRewriteVhostLinks: "yes",
+    }),
+  ).toThrow("alwaysRewriteVhostLinks must be a boolean");
 });
 
 it("proxies a static vhost Host to loopback before YA APIs", async () => {

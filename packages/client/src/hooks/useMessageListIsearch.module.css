@@ -46,11 +46,56 @@
 }
 
 .label {
+  padding: 2px 2px;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
   color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
   font-size: var(--font-size-xs);
   font-weight: 600;
   text-transform: uppercase;
   white-space: nowrap;
+}
+
+.label:hover,
+.label:focus-visible {
+  border-color: var(--focus-border);
+  color: var(--text-primary);
+  outline: none;
+}
+
+.label option {
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  text-transform: none;
+}
+
+.helpToggle {
+  display: none;
+}
+
+.close {
+  appearance: none;
+  min-width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-md, 16px);
+  line-height: 1;
+}
+
+.close:hover,
+.close:focus-visible {
+  border-color: var(--focus-border);
+  color: var(--text-primary);
+  outline: none;
 }
 
 .input {
@@ -292,6 +337,36 @@
 
   .help {
     display: none;
+  }
+
+  .help.helpShown {
+    display: flex;
+    flex: 1 1 100%;
+    margin-left: 0;
+    white-space: normal;
+  }
+
+  .helpToggle {
+    display: block;
+    position: absolute;
+    top: -12px;
+    right: 8px;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 1px solid var(--border-color);
+    border-radius: 50%;
+    background: var(--bg-tertiary);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font: inherit;
+    font-size: var(--font-size-xs);
+    font-weight: 700;
+  }
+
+  .helpToggle[aria-expanded="true"] {
+    border-color: var(--primary-color);
+    color: var(--text-primary);
   }
 
   .olderPreview,

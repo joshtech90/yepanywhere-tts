@@ -135,21 +135,27 @@ test.describe("New Session provider readiness", () => {
     await capture(page, "desktop-provider-readiness-375x812.png");
 
     await page.goto(`${baseURL}/new-session?provider=codex&detached=1`);
-    const codexOption = page
-      .locator(".provider-option")
-      .filter({ hasText: "Codex" });
-    await expect(codexOption).toBeEnabled();
-    await expect(codexOption.getByText("Authentication needed")).toBeVisible();
+    const providerPicker = page.locator(
+      '.new-session-provider-section button[aria-haspopup="listbox"]',
+    );
+    await expect(providerPicker).toBeEnabled();
+    await expect(providerPicker).toContainText("Codex");
+    await expect(providerPicker).toContainText("Authentication needed");
+    await providerPicker.click();
+    await expect(
+      page.getByRole("dialog").getByRole("button", { name: /Codex/ }),
+    ).toContainText("Authentication needed");
+    await page.keyboard.press("Escape");
     await page
       .getByPlaceholder("Describe what you'd like help with...")
       .fill("Verify provider authentication at launch");
     await expect(page.locator(".new-session-submit-button")).toBeEnabled();
 
     await page.setViewportSize({ width: 1000, height: 600 });
-    await codexOption.scrollIntoViewIfNeeded();
+    await providerPicker.scrollIntoViewIfNeeded();
     await capture(page, "new-session-auth-needed-1000x600.png");
     await page.setViewportSize({ width: 375, height: 812 });
-    await codexOption.scrollIntoViewIfNeeded();
+    await providerPicker.scrollIntoViewIfNeeded();
     await capture(page, "new-session-auth-needed-375x812.png");
   });
 
@@ -163,6 +169,19 @@ test.describe("New Session provider readiness", () => {
     let aggregateRequests = 0;
     let namedRequests = 0;
     let usageRequests = 0;
+    const usageRequestedAt: number[] = [];
+    // Route work precedes supplementary usage, but a held route tier releases
+    // the next after TIER_DEADLINE_MS (2s, lib/clientQueryBootstrap.ts), so a
+    // slow runner can legitimately see usage while the gates are still shut.
+    // The ordering holds if no usage request came sooner than that after
+    // navigation began; the page mounts after this mark, so the bound can
+    // only be conservative.
+    const tierDeadlineMs = 2_000;
+    let navigatedAt = 0;
+    const expectNoUsageAheadOfRouteWork = () => {
+      for (const at of usageRequestedAt)
+        expect(at - navigatedAt).toBeGreaterThanOrEqual(tierDeadlineMs);
+    };
 
     await page.route(
       (url) => url.pathname === "/api/providers",
@@ -202,6 +221,7 @@ test.describe("New Session provider readiness", () => {
         url.pathname === "/api/providers/claude-gateway/subscription-usage",
       async (route) => {
         usageRequests += 1;
+        usageRequestedAt.push(Date.now());
         await route.fulfill({
           status: 200,
           contentType: "application/json",
@@ -210,6 +230,7 @@ test.describe("New Session provider readiness", () => {
       },
     );
 
+    navigatedAt = Date.now();
     await page.goto(
       `${baseURL}/new-session?provider=claude-gateway&detached=1`,
     );
@@ -220,7 +241,7 @@ test.describe("New Session provider readiness", () => {
 
     await expect.poll(() => aggregateRequests).toBe(1);
     await expect.poll(() => namedRequests).toBe(1);
-    expect(usageRequests).toBe(0);
+    expectNoUsageAheadOfRouteWork();
 
     aggregateGate.open();
     await expect(page.getByText("Saved Gateway").first()).toBeVisible();
@@ -228,7 +249,7 @@ test.describe("New Session provider readiness", () => {
       page.getByText("Checking the configured gateway for models…"),
     ).toBeVisible();
     await expect(page.locator(".new-session-submit-button")).toBeDisabled();
-    expect(usageRequests).toBe(0);
+    expectNoUsageAheadOfRouteWork();
 
     await page.setViewportSize({ width: 1920, height: 1080 });
     await capture(page, "gateway-checking-desktop-1920x1080.png");

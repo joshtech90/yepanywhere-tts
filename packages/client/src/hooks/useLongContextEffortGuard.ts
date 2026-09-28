@@ -5,6 +5,7 @@ import {
   type LongContextEffortWarningSettings,
   type ProviderInfo,
   type ProviderName,
+  type SessionCreationProvenance,
   type ThinkingOption,
 } from "@yep-anywhere/shared";
 import { useCallback, useRef, useState } from "react";
@@ -31,6 +32,14 @@ export interface LongContextEffortGuardInput {
   noEffortLabel: string;
 }
 
+export interface LongContextEffortChangeOptions {
+  /**
+   * The same save also switches the model. The fork carries only the thinking
+   * option, so it would keep the source's model; no fork is offered then.
+   */
+  changesModel?: boolean;
+}
+
 export interface LongContextEffortWarningState {
   provider: ProviderName;
   contextTokens: number;
@@ -48,12 +57,16 @@ export interface LongContextEffortWarningState {
  * Contract: topics/mid-session-effort-change.md.
  */
 export function useLongContextEffortGuard(input: LongContextEffortGuardInput) {
-  const [warning, setWarning] = useState<LongContextEffortWarningState | null>(
-    null,
-  );
+  const [warning, setWarning] = useState<
+    | (Omit<LongContextEffortWarningState, "canFork"> & {
+        changesModel: boolean;
+      })
+    | null
+  >(null);
   const pendingRef = useRef<{
     resolve: (verdict: LongContextEffortGuardVerdict) => void;
     nextThinking: ThinkingOption;
+    changesModel: boolean;
   } | null>(null);
   const inputRef = useRef(input);
   inputRef.current = input;
@@ -77,6 +90,7 @@ export function useLongContextEffortGuard(input: LongContextEffortGuardInput) {
     (
       nextThinking: ThinkingOption,
       currentThinking: ThinkingOption | undefined,
+      options?: LongContextEffortChangeOptions,
     ): Promise<LongContextEffortGuardVerdict> => {
       const current = inputRef.current;
       if (
@@ -94,15 +108,16 @@ export function useLongContextEffortGuard(input: LongContextEffortGuardInput) {
       }
       // A second request while one is open supersedes it as a cancel.
       pendingRef.current?.resolve("skip");
+      const changesModel = options?.changesModel ?? false;
       return new Promise((resolve) => {
-        pendingRef.current = { resolve, nextThinking };
+        pendingRef.current = { resolve, nextThinking, changesModel };
         setWarning({
           provider: current.provider as ProviderName,
           contextTokens: current.contextTokens ?? 0,
           currentEffortLabel: effortLabel(currentThinking),
           nextEffortLabel: effortLabel(nextThinking),
-          canFork: current.canFork,
           busy: false,
+          changesModel,
         });
       });
     },
@@ -127,6 +142,8 @@ export function useLongContextEffortGuard(input: LongContextEffortGuardInput) {
       pending.resolve("skip");
       return;
     }
+    // Eligibility can change after the dialog opens or between render and click.
+    if (!inputRef.current.canFork || pending.changesModel) return;
     setWarning((prev) => (prev ? { ...prev, busy: true } : prev));
     try {
       await inputRef.current.forkWithThinking(pending.nextThinking);
@@ -137,7 +154,20 @@ export function useLongContextEffortGuard(input: LongContextEffortGuardInput) {
     }
   }, []);
 
-  return { guardEffortChange, warning, choose };
+  return {
+    guardEffortChange,
+    warning: warning
+      ? {
+          provider: warning.provider,
+          contextTokens: warning.contextTokens,
+          currentEffortLabel: warning.currentEffortLabel,
+          nextEffortLabel: warning.nextEffortLabel,
+          busy: warning.busy,
+          canFork: input.canFork && !warning.changesModel,
+        }
+      : null,
+    choose,
+  };
 }
 
 /** The fork request the guard's fork choice sends. */
@@ -145,9 +175,11 @@ export function forkSessionAtEffort(
   projectId: string,
   sessionId: string,
   thinking: ThinkingOption,
+  creationProvenance?: SessionCreationProvenance,
 ) {
   return api.forkSession(projectId, sessionId, {
     forkKind: "clone-latest-complete",
     thinking,
+    creationProvenance,
   });
 }

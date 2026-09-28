@@ -104,7 +104,7 @@ for (const viewport of [
     );
   });
 
-  test(`expands New Session option explanations on ${viewport.name}`, async ({
+  test(`uses compact New Session controls on ${viewport.name}`, async ({
     page,
     baseURL,
   }) => {
@@ -115,6 +115,9 @@ for (const viewport of [
     const toggle = page.getByRole("button", {
       name: "Show option explanations",
     });
+    const advancedToggle = page.getByRole("button", {
+      name: "Show advanced options",
+    });
     const project = page.locator(".new-session-project-slot");
     const projectSummary = page.locator(".new-session-project-summary");
     const primaryOptions = page.locator(".new-session-provider-slot");
@@ -124,32 +127,12 @@ for (const viewport of [
     const showThinking = page.locator(".new-session-show-thinking-section");
     const explanation = "Show the model's thinking";
     await expect(toggle).toBeVisible({ timeout: 10_000 });
+    await expect(advancedToggle).toBeVisible();
     await expect(project).toBeVisible();
     await expect(primaryOptions).toBeVisible();
-    await expect(secondaryOptions).toBeVisible();
+    await expect(secondaryOptions).toBeHidden();
     await expect(toggle).toHaveAttribute("aria-pressed", "false");
-    await expect(showThinking).toHaveAttribute(
-      "data-tooltip",
-      /Show the model's thinking/,
-    );
     await expect(page.getByText(explanation, { exact: false })).toHaveCount(0);
-
-    const projectBox = await project.boundingBox();
-    const primaryOptionsBox = await primaryOptions.boundingBox();
-    const secondaryOptionsBox = await secondaryOptions.boundingBox();
-    if (!projectBox || !primaryOptionsBox || !secondaryOptionsBox) {
-      throw new Error("New Session controls have no layout box");
-    }
-    if (viewport.name === "desktop") {
-      expect(secondaryOptionsBox.x).toBeGreaterThanOrEqual(projectBox.x);
-      expect(secondaryOptionsBox.y).toBeGreaterThanOrEqual(
-        projectBox.y + projectBox.height,
-      );
-    } else {
-      expect(secondaryOptionsBox.y).toBeGreaterThanOrEqual(
-        primaryOptionsBox.y + primaryOptionsBox.height,
-      );
-    }
 
     await projectSummary.click();
     const projectPanel = page.locator("#new-session-project-panel");
@@ -157,18 +140,49 @@ for (const viewport of [
     await expect(secondaryOptions).toBeHidden();
     await projectSummary.click();
     await expect(projectPanel).not.toBeVisible();
-    await expect(secondaryOptions).toBeVisible();
 
     await capture(
       page,
       `new-session-${viewport.name}-compact-${viewport.width}x${viewport.height}.png`,
     );
 
+    await advancedToggle.click();
+    await expect(secondaryOptions).toBeVisible();
+    await expect(showThinking).toHaveAttribute(
+      "data-tooltip",
+      /Show the model's thinking/,
+    );
+    const primaryOptionsBox = await primaryOptions.boundingBox();
+    const secondaryOptionsBox = await secondaryOptions.boundingBox();
+    if (!primaryOptionsBox || !secondaryOptionsBox) {
+      throw new Error("New Session controls have no layout box");
+    }
+    expect(secondaryOptionsBox.y).toBeGreaterThanOrEqual(
+      primaryOptionsBox.y + primaryOptionsBox.height,
+    );
+
+    const showThinkingPicker = showThinking.locator(
+      'button[aria-haspopup="listbox"]',
+    );
+    await showThinkingPicker.click();
+    await page.getByRole("dialog").getByRole("button", { name: "On" }).click();
+    await expect(showThinkingPicker).toContainText("On");
+
+    await page.reload();
+    await expect(secondaryOptions).toBeVisible();
+
     await toggle.click();
     await expect(
       page.getByRole("button", { name: "Hide option explanations" }),
     ).toHaveAttribute("aria-pressed", "true");
-    await expect(page.getByText(explanation, { exact: false })).toBeVisible();
+    const caption = showThinking.locator("p");
+    await expect(caption).toContainText(explanation);
+    const pickerBox = await showThinkingPicker.boundingBox();
+    const captionBox = await caption.boundingBox();
+    if (!pickerBox || !captionBox) {
+      throw new Error("Show thinking controls have no layout box");
+    }
+    expect(captionBox.y).toBeGreaterThanOrEqual(pickerBox.y + pickerBox.height);
     await expect(
       page.getByText("Server changed", { exact: false }),
     ).toHaveCount(0);
@@ -180,5 +194,9 @@ for (const viewport of [
       page,
       `new-session-${viewport.name}-expanded-${viewport.width}x${viewport.height}.png`,
     );
+
+    await page.getByRole("button", { name: "Hide advanced options" }).click();
+    await page.reload();
+    await expect(secondaryOptions).toBeHidden();
   });
 }

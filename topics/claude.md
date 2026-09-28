@@ -114,10 +114,12 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   the SDK reports only an extended-context variant. In particular,
   `opus[1m]` supplies live capability metadata to the visible `opus` row rather
   than appearing as a duplicate or losing adaptive-thinking, fast-mode, auto,
-  or effort support. Canonical Claude 5 Opus and Sonnet ids are 1M models; the
-  auth/probe-failure fallback must describe the current Opus generation and
-  retain the provider-native capability controls that are known without a
-  handshake.
+  or effort support. A live catalog may instead report plain `opus`; merge it
+  over the stable fallback without discarding fallback-only defaults. Canonical
+  Claude 5 Opus and Sonnet ids, including minor-version ids such as
+  `claude-opus-5-5`, are 1M models. The auth/probe-failure fallback must describe
+  the current Opus generation and retain the provider-native capability
+  controls that are known without a handshake.
 - When the live catalog spells the current Fable model as a concrete extended
   id such as `claude-fable-5-1[1m]`, YA transfers its live capabilities to the
   stable `fable` selection rather than showing a duplicate concrete row.
@@ -129,10 +131,10 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   deliberately does not identify which blocks are progress versus summarized
   reasoning, so YA must not infer that distinction from prose or reclassify
   them as task/plan events. The dedicated `display: "updates"` API beta would
-  make every non-empty thinking block a progress update, but Agent SDK 0.3.273
-  excludes that value and bundled Claude Code 2.1.273 rejects
-  `--thinking-display updates`; expose a distinct progress presentation only
-  after the supported SDK surface carries the mode. Sources: [Fable 5.1
+  make every non-empty thinking block a progress update, but Agent SDK 0.3.280
+  still excludes that value from `ThinkingConfig`; expose a distinct progress
+  presentation only after the supported SDK surface carries the mode. Sources:
+  [Fable 5.1
   progress updates](https://platform.claude.com/docs/en/models/fable-5-1/whats-new-fable-5-1#progress-updates-between-tool-calls-beta)
   and [thinking display](https://platform.claude.com/docs/en/build-with-claude/thinking#progress-updates).
 - Claude's primary model catalog remains the provider-native, latest-oriented

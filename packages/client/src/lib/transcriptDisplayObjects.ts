@@ -1,9 +1,31 @@
 import type { TranscriptDisplayObject } from "@yep-anywhere/shared";
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
+import { getEarliestMessageTimestampMs, parseTimestampMs } from "./messageAge";
+import type { Message } from "../types";
+import { getCachedWebTranscriptProjection } from "./webTranscriptProjection";
+
+/** Anchor a bang command to displayed content, never a transient result event. */
+export function getBangCommandAnchor(messages: Message[]): string {
+  const items = getCachedWebTranscriptProjection(messages);
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const sources = items[index]?.sourceMessages ?? [];
+    for (
+      let sourceIndex = sources.length - 1;
+      sourceIndex >= 0;
+      sourceIndex -= 1
+    ) {
+      const message = sources[sourceIndex];
+      const id = message?.uuid ?? message?.id;
+      if (id) return id;
+    }
+  }
+  return "";
+}
 
 export function insertTranscriptDisplayObjects(
   items: RenderItem[],
   objects: readonly TranscriptDisplayObject[],
+  recoverUnanchoredBangCommands = false,
 ): RenderItem[] {
   if (objects.length === 0) {
     return items;
@@ -26,6 +48,23 @@ export function insertTranscriptDisplayObjects(
         )
       ) {
         itemIndex = index;
+      }
+    }
+    // Older clients anchored runs to transient result events. On the live
+    // window, recover those records by creation time without mutating history.
+    if (
+      itemIndex === Number.NEGATIVE_INFINITY &&
+      recoverUnanchoredBangCommands &&
+      object.kind === "bang-command"
+    ) {
+      const createdAt = parseTimestampMs(object.createdAt);
+      if (createdAt !== null) {
+        for (let index = 0; index < items.length; index += 1) {
+          const timestamp = getEarliestMessageTimestampMs(
+            items[index]?.sourceMessages ?? [],
+          );
+          if (timestamp !== null && timestamp <= createdAt) itemIndex = index;
+        }
       }
     }
     return itemIndex === Number.NEGATIVE_INFINITY

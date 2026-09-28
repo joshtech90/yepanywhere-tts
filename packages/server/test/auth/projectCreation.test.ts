@@ -7,6 +7,7 @@ import {
   INITIAL_COMMIT_MESSAGE,
   decideProjectCreation,
   ensureProjectDirectory,
+  isContainedOnDisk,
   isWithinRoot,
 } from "../../src/routes/project-creation.js";
 import { runGit } from "../../src/git/gitExec.js";
@@ -55,66 +56,125 @@ describe("isWithinRoot", () => {
 });
 
 describe("decideProjectCreation", () => {
-  it("lets the superuser add anything, owned by nobody in particular", () => {
-    expect(
-      decideProjectCreation(contextFor({ kind: "superuser" }), "/anywhere"),
-    ).toEqual({ kind: "allowed" });
+  let root: string;
+
+  beforeEach(async () => {
+    root = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "ya-projroot-")),
+    );
   });
 
-  it("refuses a limited user with no configured directory", () => {
-    const decision = decideProjectCreation(
+  afterEach(async () => {
+    await fs.rm(root, { recursive: true, force: true });
+  });
+
+  it("lets the superuser add anything, owned by nobody in particular", async () => {
+    await expect(
+      decideProjectCreation(contextFor({ kind: "superuser" }), "/anywhere"),
+    ).resolves.toEqual({ kind: "allowed" });
+  });
+
+  it("refuses a limited user with no configured directory", async () => {
+    const decision = await decideProjectCreation(
       contextFor(limited()),
-      "/home/archer/proj",
+      path.join(root, "proj"),
     );
     expect(decision.kind).toBe("denied");
   });
 
-  it("allows one under their directory and records them as owner", () => {
-    expect(
-      decideProjectCreation(
-        contextFor(limited("/home/archer")),
-        "/home/archer/proj",
-      ),
-    ).toEqual({ kind: "allowed", ownerUsername: "archer" });
+  it("allows one under their directory and records them as owner", async () => {
+    await expect(
+      decideProjectCreation(contextFor(limited(root)), path.join(root, "proj")),
+    ).resolves.toEqual({
+      kind: "allowed",
+      owner: { username: "archer", projectRoot: root },
+    });
   });
 
-  it("refuses one outside their directory", () => {
-    const decision = decideProjectCreation(
-      contextFor(limited("/home/archer")),
+  it("refuses one outside their directory", async () => {
+    const decision = await decideProjectCreation(
+      contextFor(limited(root)),
       "/etc",
     );
     expect(decision.kind).toBe("denied");
     expect(decision).toMatchObject({
-      error: expect.stringContaining("/home/archer"),
+      error: expect.stringContaining(root),
     });
   });
 
-  it("refuses the root itself, which is where projects go", () => {
-    const decision = decideProjectCreation(
-      contextFor(limited("/home/archer")),
-      "/home/archer",
+  it("refuses the root itself, which is where projects go", async () => {
+    const decision = await decideProjectCreation(
+      contextFor(limited(root)),
+      root,
     );
     expect(decision.kind).toBe("denied");
   });
 });
 
+describe("isContainedOnDisk", () => {
+  let dir: string;
+  let root: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    dir = await fs.realpath(
+      await fs.mkdtemp(path.join(os.tmpdir(), "ya-projdisk-")),
+    );
+    root = path.join(dir, "root");
+    outside = path.join(dir, "outside");
+    await fs.mkdir(root);
+    await fs.mkdir(outside);
+  });
+
+  afterEach(async () => {
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("accepts a directory, or a missing leaf, beneath the root", async () => {
+    await fs.mkdir(path.join(root, "made"));
+    expect(await isContainedOnDisk(root, path.join(root, "made"))).toBe(true);
+    expect(await isContainedOnDisk(root, path.join(root, "fresh"))).toBe(true);
+  });
+
+  it("follows a symlinked root to where it really is", async () => {
+    const alias = path.join(dir, "root-alias");
+    await fs.symlink(root, alias);
+    expect(await isContainedOnDisk(alias, path.join(alias, "proj"))).toBe(true);
+  });
+
+  it("refuses a symlinked leaf wherever it points", async () => {
+    await fs.symlink(outside, path.join(root, "out"));
+    await fs.mkdir(path.join(root, "real"));
+    await fs.symlink(path.join(root, "real"), path.join(root, "in"));
+    expect(await isContainedOnDisk(root, path.join(root, "out"))).toBe(false);
+    expect(await isContainedOnDisk(root, path.join(root, "in"))).toBe(false);
+  });
+
+  it("refuses a leaf under a symlinked parent that leaves the root", async () => {
+    await fs.symlink(outside, path.join(root, "via"));
+    expect(await isContainedOnDisk(root, path.join(root, "via", "proj"))).toBe(
+      false,
+    );
+  });
+
+  it("accepts a missing root so creation can make its directories", async () => {
+    expect(
+      await isContainedOnDisk(
+        path.join(dir, "no-root"),
+        path.join(dir, "no-root", "proj"),
+      ),
+    ).toBe(true);
+  });
+});
+
 describe("limited-user route policy for adding a project", () => {
   it("reaches the route, which is what holds them to their directory", () => {
-    const parsed = new URL("/api/projects", "http://127.0.0.1");
     expect(
-      decideLimitedRoute({
-        method: "POST",
-        path: parsed.pathname,
-        query: parsed.searchParams,
-      }),
+      decideLimitedRoute({ method: "POST", path: "/api/projects" }),
     ).toEqual({ kind: "allow" });
     // Anything else on the collection stays refused.
     expect(
-      decideLimitedRoute({
-        method: "DELETE",
-        path: parsed.pathname,
-        query: parsed.searchParams,
-      }),
+      decideLimitedRoute({ method: "DELETE", path: "/api/projects" }),
     ).toEqual({ kind: "deny" });
   });
 });

@@ -99,4 +99,46 @@ describe("WriteRenderer", () => {
     expect(preview?.getAttribute("data-tooltip")).toBe(content);
     expect(preview?.getAttribute("title")).toBeNull();
   });
+
+  it("shows a rejected Write's own message in its collapsed row", () => {
+    const { container } = render(
+      <div>
+        {writeRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { file_path: "notes.txt", content: "text" },
+              "EACCES: permission denied",
+              true,
+              "error",
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
+      </div>,
+    );
+
+    expect(container.querySelector(".write-preview-error")?.textContent).toBe(
+      "EACCES: permission denied",
+    );
+  });
+
+  it("names a failed Write generically when no rejection arrived", () => {
+    const { container } = render(
+      <div>
+        {writeRenderer
+          .prepare(
+            recordFromLegacyArgs(
+              { file_path: "notes.txt", content: "text" },
+              undefined,
+              true,
+              "error",
+            ),
+          )
+          .renderCollapsedPreview(renderContext)}
+      </div>,
+    );
+
+    expect(container.querySelector(".write-preview-error")?.textContent).toBe(
+      "Failed to write file",
+    );
+  });
 });

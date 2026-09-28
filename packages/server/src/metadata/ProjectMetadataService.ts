@@ -19,6 +19,7 @@ import {
   decodeProjectId,
   encodeProjectId,
   getProjectIdentityKey,
+  getProjectName,
 } from "../projects/paths.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 import {
@@ -49,6 +50,8 @@ export interface HiddenProjectMetadata {
   path: string;
   /** When the project was hidden from YA project lists */
   hiddenAt: string;
+  /** The hidden project's `ownerUsername`, restored if it is added again. */
+  ownerUsername?: string;
 }
 
 export interface ProjectSessionDefaultsMetadata {
@@ -88,6 +91,13 @@ export interface ProjectMetadataState {
 }
 
 const CURRENT_VERSION = 4;
+
+/** A stored owner as an entry field; anything but a nonempty name is none. */
+function ownerField(ownerUsername: unknown): { ownerUsername?: string } {
+  return typeof ownerUsername === "string" && ownerUsername
+    ? { ownerUsername }
+    : {};
+}
 
 export interface ProjectMetadataServiceOptions {
   /** Directory to store metadata state (defaults to ~/.yep-anywhere) */
@@ -216,6 +226,14 @@ export class ProjectMetadataService {
 
   getProjectNameOverride(projectId: string): string | undefined {
     return this.state.projectNames?.[this.canonicalProjectId(projectId)]?.name;
+  }
+
+  /** The project's display name: the chosen name, else its path's name. */
+  getProjectDisplayName(projectPath: string): string {
+    return (
+      this.getProjectNameOverride(encodeProjectId(projectPath)) ??
+      getProjectName(projectPath)
+    );
   }
 
   /**
@@ -390,7 +408,10 @@ export class ProjectMetadataService {
   }
 
   /**
-   * Add a project. The projectId should be a UrlProjectId (base64url encoded path).
+   * Add a project, or show a hidden one again. The projectId should be a
+   * UrlProjectId (base64url encoded path). Without `ownerUsername` a project
+   * that already has an owner, listed or hidden, keeps that owner; the caller
+   * decides who may add a project that already exists.
    */
   async addProject(
     projectId: string,
@@ -399,6 +420,7 @@ export class ProjectMetadataService {
   ): Promise<void> {
     const canonicalPath = canonicalizeProjectPath(projectPath);
     const canonicalProjectId = encodeProjectId(canonicalPath);
+    const owner = ownerUsername ?? this.getProjectOwner(canonicalPath);
     if (projectId !== canonicalProjectId) {
       delete this.state.projects[projectId];
       const legacyCodeName = this.state.projectCodeNames?.[projectId];
@@ -413,9 +435,31 @@ export class ProjectMetadataService {
     this.state.projects[canonicalProjectId] = {
       path: canonicalPath,
       addedAt: new Date().toISOString(),
-      ...(ownerUsername ? { ownerUsername } : {}),
+      ...(owner ? { ownerUsername: owner } : {}),
     };
     await this.save();
+  }
+
+  /**
+   * The limited user owning the project at this path, listed or hidden;
+   * undefined for a superuser project or a path that is no project here.
+   */
+  getProjectOwner(projectPath: string): string | undefined {
+    const targetIdentity = getProjectIdentityKey(
+      canonicalizeProjectPath(projectPath),
+    );
+    for (const metadata of [
+      ...Object.values(this.state.projects),
+      ...Object.values(this.state.hiddenProjects ?? {}),
+    ]) {
+      if (
+        metadata.ownerUsername &&
+        getProjectIdentityKey(metadata.path) === targetIdentity
+      ) {
+        return metadata.ownerUsername;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -442,6 +486,7 @@ export class ProjectMetadataService {
   async hideProject(projectId: string, projectPath: string): Promise<void> {
     const canonicalPath = canonicalizeProjectPath(projectPath);
     const canonicalProjectId = encodeProjectId(canonicalPath);
+    const owner = this.getProjectOwner(canonicalPath);
 
     if (projectId !== canonicalProjectId) {
       delete this.state.projects[projectId];
@@ -458,6 +503,7 @@ export class ProjectMetadataService {
     this.state.hiddenProjects[canonicalProjectId] = {
       path: canonicalPath,
       hiddenAt: new Date().toISOString(),
+      ...(owner ? { ownerUsername: owner } : {}),
     };
     await this.save();
   }
@@ -537,6 +583,7 @@ export class ProjectMetadataService {
           metadata: {
             path: canonicalPath,
             addedAt: metadata.addedAt,
+            ...ownerField(metadata.ownerUsername),
           },
         });
       }
@@ -566,6 +613,7 @@ export class ProjectMetadataService {
           metadata: {
             path: canonicalPath,
             hiddenAt: metadata.hiddenAt,
+            ...ownerField(metadata.ownerUsername),
           },
         });
       }

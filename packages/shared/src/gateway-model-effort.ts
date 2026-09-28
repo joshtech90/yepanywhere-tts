@@ -151,6 +151,24 @@ export interface GatewayModelEffortSources {
 }
 
 /**
+ * The levels every source ranked above the endpoint's answer states for a
+ * model, or undefined when none of them describes it.
+ *
+ * Undefined is the case where a probe answer supplies the model's levels, so it
+ * is also how a catalog read decides which models are worth asking about.
+ */
+export function describedGatewayModelLevels(
+  sources: Omit<GatewayModelEffortSources, "probed">,
+): EffortLevel[] | undefined {
+  const configured = orderedLevels(sources.configuredLevels ?? []);
+  if (configured.length) return configured;
+  const advertised = orderedLevels(sources.advertisedLevels ?? []);
+  if (advertised.length) return advertised;
+  const builtIn = builtInGatewayModelEffort(sources.modelId);
+  return builtIn?.levels.length ? builtIn.levels : undefined;
+}
+
+/**
  * The effort a model offers, or undefined when no source states any level —
  * which is the signal to show no effort control at all rather than to guess.
  */
@@ -159,15 +177,9 @@ export function gatewayModelEffort(
 ): GatewayModelEffort | undefined {
   const builtIn = builtInGatewayModelEffort(sources.modelId);
   const configured = orderedLevels(sources.configuredLevels ?? []);
-  const advertised = orderedLevels(sources.advertisedLevels ?? []);
-  const probed = orderedLevels(sources.probed?.levels ?? []);
-  const levels = configured.length
-    ? configured
-    : advertised.length
-      ? advertised
-      : builtIn?.levels.length
-        ? builtIn.levels
-        : probed;
+  const levels =
+    describedGatewayModelLevels(sources) ??
+    orderedLevels(sources.probed?.levels ?? []);
   if (!levels.length) return undefined;
 
   const configuredDefault =

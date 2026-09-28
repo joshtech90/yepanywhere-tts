@@ -1081,7 +1081,7 @@ async function startServer() {
     resolveAbsoluteFilePaths,
     limitedUsers: limitedUsersSrpLookup,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
     artifactServer,
     conversationSubscriptions,
     focusedSessionWatchManager,
@@ -1349,7 +1349,7 @@ async function startServer() {
     resolveAbsoluteFilePaths,
     limitedUsers: limitedUsersSrpLookup,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
   });
   app.get("/api/ws", wsRelayHandler);
 
@@ -1379,7 +1379,7 @@ async function startServer() {
     resolveAbsoluteFilePaths,
     limitedUsers: limitedUsersSrpLookup,
     authorizeSubscription,
-    isActivityEventVisible,
+    activityEventForIdentity,
   });
   markStartup("relay accept handler configured");
 

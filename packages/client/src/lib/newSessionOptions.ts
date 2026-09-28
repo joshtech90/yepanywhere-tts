@@ -2,6 +2,7 @@ import {
   HELPER_SIDE_MODEL_CHEAPEST,
   HELPER_SIDE_MODEL_SAME_AS_MAIN,
   PROMPT_SUGGESTION_MODES,
+  effortOfThinkingOption,
   type EffortLevel,
   type ModelInfo,
   type PromptSuggestionMode,
@@ -35,7 +36,7 @@ export function parseThinkingOption(option: ThinkingOption): {
 } {
   if (option === "off") return { mode: "off", effort: "high" };
   if (option === "auto") return { mode: "auto", effort: "high" };
-  const effort = option.startsWith("on:") ? option.slice(3) : option;
+  const effort = effortOfThinkingOption(option);
   return {
     mode: "on",
     effort: isEffortLevel(effort) ? effort : "high",

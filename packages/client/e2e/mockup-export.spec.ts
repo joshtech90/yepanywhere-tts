@@ -227,7 +227,7 @@ test("exports matching source states, a complete bundle, and a working direct YA
         `http://127.0.0.1:${address.port}/e2e/fixtures/artifact-viewer.html?path=${encodeURIComponent(join(relocated, "index.html"))}`,
       );
       await page
-        .getByRole("button", { name: "Run interactive preview" })
+        .getByRole("button", { name: "Run full HTML/CSS/JavaScript preview" })
         .click();
       await expect(
         page

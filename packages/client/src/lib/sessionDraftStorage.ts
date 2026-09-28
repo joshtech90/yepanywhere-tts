@@ -183,11 +183,12 @@ export function saveSessionDraftAttachmentState(
 
 export function markSessionDraftPendingSend(
   reference: SessionDraftReference,
+  sentAtMs: number,
 ): void {
   persistSessionDraftEnvelope(
     reference,
     (previousValue) =>
-      draftStorageValueForPendingSend(previousValue) ?? previousValue,
+      draftStorageValueForPendingSend(previousValue, sentAtMs) ?? previousValue,
   );
 }
 

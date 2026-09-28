@@ -246,7 +246,7 @@ test("a long-context effort change asks first and can fork at the new effort", a
     // Fork at the new effort sends the thinking option and navigates.
     await dialog.getByRole("button", { name: "Fork at Max" }).click();
     await expect.poll(() => forkBodies.length, { timeout: 15_000 }).toBe(1);
-    expect(forkBodies[0]).toEqual({
+    expect(forkBodies[0]).toMatchObject({
       forkKind: "clone-latest-complete",
       thinking: "on:max",
     });

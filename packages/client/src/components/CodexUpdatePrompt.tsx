@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useCanAdministerHost } from "../hooks/useActingPrincipal";
 import { useCodexUpdateStatus } from "../hooks/useCodexUpdateStatus";
 import { useProviders } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
@@ -23,7 +24,9 @@ export function CodexUpdatePrompt({
 function ActiveCodexUpdatePrompt() {
   const { t } = useI18n();
   const { settings, updateSetting } = useServerSettings();
-  const policy = settings?.codexUpdatePolicy;
+  // A limited user can neither install an update nor change the policy.
+  const canAdministerHost = useCanAdministerHost();
+  const policy = canAdministerHost ? settings?.codexUpdatePolicy : undefined;
   const { status, isInstalling, error, installOutput, install } =
     useCodexUpdateStatus({ enabled: policy === "notify" });
   const { refetch: refetchProviders } = useProviders();

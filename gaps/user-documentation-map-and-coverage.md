@@ -8,21 +8,23 @@ to impose a new layout.
 
 In this checkout, the root [README](../README.md) links to the public `/docs`
 index. [`docs-navigation.ts`](../site/src/data/docs-navigation.ts) organizes
-twelve guides under Start here, Connect, Use Yep Anywhere and Get help.
+thirteen guides under Start here, Connect, Use Yep Anywhere and Get help.
 [`docs/index.astro`](../site/src/pages/docs/index.astro) renders that directory,
 and the documentation layout reuses its navigation. Guide Markdown lives in
 `site/src/content/docs/`; `site/src/content.config.ts` loads only that directory.
 These are source-code findings, not verification of the currently deployed site.
 
-The separate `topics/` collection holds product contracts and some user-facing
-guides. `topics/README.md` is a technical topic list, not a user-task map. The
-public navigation does not automatically expose user guides written there.
+The separate `topics/` collection holds product contracts. `topics/README.md`
+is a technical topic list, not a user-task map, and the public navigation does
+not expose anything written there. The template-authoring guide, first written
+in `topics/`, now lives at
+[`project-templates.md`](../site/src/content/docs/project-templates.md) with its
+own navigation entry.
 
 ## Confirmed omissions and writing candidates
 
 | User task | Existing material | Missing path or content |
 | --- | --- | --- |
-| Configure sources and author/share templates | [Template-authoring guide](../topics/project-template-authoring.md), already user-facing and vendored into agents | No entry in the public documentation navigation, no corresponding public guide, and no direct root-README link. Connect the existing canonical guide; do not write a competing copy. |
 | Create and manage limited users | [Limited users](../topics/limited-users.md), mixing delivered v1 behavior with approved future extensions | No limited-user guide or navigation entry in `site/src/content/docs/`. Review the topic and write the missing user-facing instructions for delivered behavior; clearly separate pending template grants and personal-directory defaults. |
 
 This is a seed inventory, not a completed documentation audit. Other missing
@@ -38,11 +40,10 @@ behavior rather than inferred from the size of the topics directory.
 - Extend the existing user-documentation index with task-oriented labels.
   Make README → documentation map → relevant guide a clear, working path,
   including when README is read through YA's document viewer.
-- Decide how a canonical user guide in `topics/` reaches the site and in-app
-  viewer without independently maintained copies. A topic path is acceptable
-  as the canonical source; its location alone does not establish user access.
-  Link technical details separately where useful instead of presenting a raw
-  developer-topic index as user documentation.
+- Write user guides in `site/src/content/docs/` with a navigation entry, and
+  keep contracts in the owning topic. Link technical details separately where
+  useful instead of presenting a raw developer-topic index as user
+  documentation. Check that the in-app viewer can reach the same guide.
 - Write genuinely missing user material, reusing reviewed facts from the
   owning topics. Keep user instructions distinct from implementation plans,
   proposals and maintainer procedures; preserve existing canonical ownership

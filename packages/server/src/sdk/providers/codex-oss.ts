@@ -344,20 +344,46 @@ export class CodexOSSProvider implements AgentProvider {
         : []),
     ]);
 
-    const { models, routes } = unionModelCatalogs(perSource);
+    const read = perSource.filter(
+      (
+        source,
+      ): source is { serviceId: string | undefined; models: ModelInfo[] } =>
+        source.models !== undefined,
+    );
+    const { models, routes } = unionModelCatalogs(read);
+
+    // An endpoint that could not be read this time keeps its last good routes,
+    // as it does for Claude Gateway: a slow or restarting server must not send
+    // a live session's next turn to the local provider, or leave it counted
+    // against no endpoint so auto-stop kills the one it is using. Only a
+    // successful read publishes a change.
+    const refreshed = new Set(read.map((source) => source.serviceId));
+    for (const [exposedId, route] of this.modelRoutes) {
+      if (
+        route.serviceId !== undefined &&
+        !refreshed.has(route.serviceId) &&
+        services.some((service) => service.id === route.serviceId) &&
+        !routes.has(exposedId)
+      ) {
+        routes.set(exposedId, route);
+      }
+    }
     this.modelRoutes = routes;
     return models;
   }
 
-  /** Read one endpoint's OpenAI-compatible catalog. */
+  /**
+   * Read one endpoint's OpenAI-compatible catalog, or undefined when it cannot
+   * be read now. An empty list is a real answer: the endpoint serves nothing.
+   */
   private async readServiceModels(
     service: GatewayService,
-  ): Promise<ModelInfo[]> {
+  ): Promise<ModelInfo[] | undefined> {
     try {
       const response = await fetch(`${service.url}/v1/models`, {
         signal: AbortSignal.timeout(5000),
       });
-      if (!response.ok) return [];
+      if (!response.ok) return undefined;
       const payload = (await response.json()) as {
         data?: {
           id?: unknown;
@@ -366,7 +392,7 @@ export class CodexOSSProvider implements AgentProvider {
           capabilities?: { supports?: { reasoning_effort?: unknown } };
         }[];
       };
-      if (!Array.isArray(payload.data)) return [];
+      if (!Array.isArray(payload.data)) return undefined;
       // The same sources Claude Gateway resolves from. A model reached over
       // the Responses API offers the same thinking effort it offers over the
       // Anthropic wire; only "none" differs, and that is expressed below.
@@ -382,9 +408,10 @@ export class CodexOSSProvider implements AgentProvider {
           (typeof row.max_model_len === "number" && row.max_model_len > 0
             ? row.max_model_len
             : undefined);
+        const modelProbe = probed.get(id);
         const effort = this.serviceModelEffort(service, id, {
           advertisedLevels: advertisedGatewayEffortLevels(row),
-          ...(probed ? { probed } : {}),
+          ...(modelProbe ? { probed: modelProbe } : {}),
         });
         models.push({
           id,
@@ -435,15 +462,15 @@ export class CodexOSSProvider implements AgentProvider {
         { error, serviceId: service.id, url: service.url },
         "Failed to read CodexOSS service models",
       );
-      return [];
+      return undefined;
     }
   }
 
   /**
-   * Which configured endpoint a launch with this model would use.
+   * Which configured endpoint a launch with this model would use now.
    *
-   * Public so that auto-stop can attribute a live CodexOSS process the same way
-   * its launch did — `gatewayServiceUsage` asks this the way it asks
+   * Public so that auto-stop can attribute a live CodexOSS process that carries
+   * no launch-bound endpoint — `gatewayServiceUsage` asks this the way it asks
    * `ClaudeGatewayProvider.resolveServiceForModel`. Nothing comes back for a
    * model no configured endpoint serves, which is the honest answer: that
    * launch went to the local provider and holds no service open.
@@ -458,15 +485,47 @@ export class CodexOSSProvider implements AgentProvider {
       : undefined;
   }
 
+  /**
+   * The endpoint a launch of this model is bound to for the session's life.
+   *
+   * Every turn of a CodexOSS session is a separate `codex exec`, so a route
+   * looked up per turn would follow whatever the latest catalog read said. It
+   * is decided here once instead, reading the catalog first when this process
+   * has not seen the model: nothing has read it yet after a server restart,
+   * and a provider-host worker never reads it at all.
+   */
+  async resolveLaunchGatewayRoute(
+    model: string | undefined,
+  ): Promise<ModelCatalogRoute | null> {
+    if (
+      model &&
+      this.codexServices().length > 0 &&
+      !this.modelRoutes.has(model) &&
+      !this.qualifiedModelRoute(model)
+    ) {
+      await this.getAvailableModels();
+    }
+    return this.resolveServiceForModel(model) ?? null;
+  }
+
   /** Which configured endpoint serves a model, if any. */
   private resolveModelRoute(model: string | undefined): CodexModelRoute {
     if (!model) return { serviceId: undefined, modelId: model ?? "" };
     const known = this.modelRoutes.get(model);
     if (known) return known;
-    const qualified = parseGatewayModelId(model, (serviceId) =>
+    return (
+      this.qualifiedModelRoute(model) ?? {
+        serviceId: undefined,
+        modelId: model,
+      }
+    );
+  }
+
+  /** A `<serviceId>::<model>` id naming a configured endpoint. */
+  private qualifiedModelRoute(model: string): ModelCatalogRoute | null {
+    return parseGatewayModelId(model, (serviceId) =>
       this.codexServices().some((service) => service.id === serviceId),
     );
-    return qualified ?? { serviceId: undefined, modelId: model };
   }
 
   private serviceById(serviceId: string | undefined) {
@@ -616,6 +675,7 @@ export class CodexOSSProvider implements AgentProvider {
    * Start a new CodexOSS session.
    */
   async startSession(options: StartSessionOptions): Promise<AgentSession> {
+    const gatewayRoute = await this.launchGatewayRoute(options);
     const installationLease =
       await this.installationCoordinator.acquireRuntimeLease(
         CODEX_INSTALLATION_FAMILY,
@@ -630,6 +690,7 @@ export class CodexOSSProvider implements AgentProvider {
 
     const sessionIterator = this.runSession(
       options,
+      gatewayRoute,
       queue,
       abortController.signal,
       pidRef,
@@ -646,6 +707,7 @@ export class CodexOSSProvider implements AgentProvider {
       iterator,
       queue,
       abort: () => abortController.abort(),
+      ...(gatewayRoute ? { gatewayServiceId: gatewayRoute.serviceId } : {}),
       setSessionOptions: async (requested) =>
         inactiveProviderSessionOptionsResult(
           requested,
@@ -655,6 +717,18 @@ export class CodexOSSProvider implements AgentProvider {
         return pidRef.value;
       },
     };
+  }
+
+  /**
+   * The route a launch was handed by the server process, else the one this
+   * process resolves now. Either way it is decided once, for every turn.
+   */
+  private launchGatewayRoute(
+    options: StartSessionOptions,
+  ): Promise<ModelCatalogRoute | null> {
+    return options.gatewayRoute !== undefined
+      ? Promise.resolve(options.gatewayRoute)
+      : this.resolveLaunchGatewayRoute(options.model);
   }
 
   /**
@@ -671,6 +745,7 @@ export class CodexOSSProvider implements AgentProvider {
    */
   private async *runSession(
     options: StartSessionOptions,
+    gatewayRoute: ModelCatalogRoute | null,
     queue: MessageQueue,
     signal: AbortSignal,
     pidRef: { value?: number },
@@ -683,6 +758,10 @@ export class CodexOSSProvider implements AgentProvider {
       } as SDKMessage;
       return;
     }
+    const route: CodexModelRoute = gatewayRoute ?? {
+      serviceId: undefined,
+      modelId: options.model ?? "",
+    };
 
     let currentSessionId = options.resumeSessionId ?? "";
     let initEmitted = !!options.resumeSessionId;
@@ -736,9 +815,24 @@ export class CodexOSSProvider implements AgentProvider {
 
       // Build CLI arguments - use resume for subsequent turns
       const isFirstTurn = turnNumber === 1 && !options.resumeSessionId;
+      if (route.serviceId !== undefined && !this.serviceById(route.serviceId)) {
+        // The endpoint this session is bound to was removed or stopped offering
+        // CodexOSS. Its turns must not quietly move to the local provider.
+        yield {
+          type: "error",
+          session_id: currentSessionId,
+          error: `CodexOSS endpoint ${route.serviceId} is no longer configured`,
+        } as SDKMessage;
+        return;
+      }
       const args = isFirstTurn
-        ? this.buildFirstTurnArgs(options)
-        : this.buildResumeTurnArgs(options, currentSessionId, userPrompt);
+        ? this.buildFirstTurnArgs(options, route)
+        : this.buildResumeTurnArgs(
+            options,
+            route,
+            currentSessionId,
+            userPrompt,
+          );
 
       // Spawn codex process
       let codexProcess: ChildProcess;
@@ -973,8 +1067,10 @@ export class CodexOSSProvider implements AgentProvider {
   /**
    * Build CLI arguments for first turn: `codex exec --oss --json ...`
    */
-  private buildFirstTurnArgs(options: StartSessionOptions): string[] {
-    const route = this.resolveModelRoute(options.model);
+  private buildFirstTurnArgs(
+    options: StartSessionOptions,
+    route: CodexModelRoute,
+  ): string[] {
     const service = this.serviceById(route.serviceId);
     const args: string[] = service
       ? // A configured endpoint replaces `--oss`, which only ever meant
@@ -1005,10 +1101,10 @@ export class CodexOSSProvider implements AgentProvider {
    */
   private buildResumeTurnArgs(
     options: StartSessionOptions,
+    route: CodexModelRoute,
     sessionId: string,
     prompt: string,
   ): string[] {
-    const route = this.resolveModelRoute(options.model);
     const service = this.serviceById(route.serviceId);
     const args: string[] = [
       "exec",

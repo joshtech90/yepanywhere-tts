@@ -122,10 +122,16 @@ interface PendingProcessLaunchSettings {
   value: EffectiveSessionLaunchSettingsValue;
 }
 
+interface StoppingProcessSettlement {
+  processId: string;
+  done: Promise<void>;
+}
+
 interface SessionCoordinationState {
   activation: Promise<Process> | null;
   configurationTail: Promise<void> | null;
   pendingLaunchSettings: PendingProcessLaunchSettings | null;
+  stoppingSettlement: StoppingProcessSettlement | null;
 }
 
 export interface SessionActivationCoordinatorOptions {
@@ -228,6 +234,7 @@ export class SessionActivationCoordinator {
       activation: null,
       configurationTail: null,
       pendingLaunchSettings: null,
+      stoppingSettlement: null,
     };
     this.sessions.set(sessionId, created);
     return created;
@@ -241,6 +248,7 @@ export class SessionActivationCoordinator {
       state.activation === null &&
       state.configurationTail === null &&
       state.pendingLaunchSettings === null &&
+      state.stoppingSettlement === null &&
       this.sessions.get(sessionId) === state
     ) {
       this.sessions.delete(sessionId);
@@ -390,16 +398,6 @@ export class SessionActivationCoordinator {
     };
   }
 
-  /**
-   * Snapshot a live process's current settings (model, effort, thinking,
-   * mode) as the session's durable launch settings, so a restart that follows
-   * — a same-session rewind, for example — resumes with what the user last
-   * applied rather than what the process was launched with.
-   */
-  async persistLiveProcessLaunchSettings(process: Process): Promise<void> {
-    await this.persistProcessLaunchSettings(process);
-  }
-
   private async persistProcessLaunchSettings(process: Process): Promise<void> {
     const state = this.stateFor(process.sessionId);
     const pending: PendingProcessLaunchSettings = {
@@ -522,6 +520,54 @@ export class SessionActivationCoordinator {
       state.pendingLaunchSettings = null;
       this.releaseEmptyState(process.sessionId, state);
     }
+  }
+
+  /**
+   * Save a stopping process's applied-but-unsaved launch settings. A
+   * scheduled save skips a process that has terminated, so without this a
+   * stop right after a setting change (Stop, idle reap, a rewind's abort)
+   * relaunches with the settings saved before the change. Call before the
+   * process is unregistered. Repeated calls for one process share one save,
+   * which runs in the configuration queue, yields to a successor process that
+   * owns the session by then, and never rejects: a failed save is logged.
+   */
+  settleStoppingProcessLaunchSettings(process: Process): Promise<void> {
+    const state = this.sessions.get(process.sessionId);
+    if (state?.stoppingSettlement?.processId === process.id) {
+      return state.stoppingSettlement.done;
+    }
+    if (!state || state.pendingLaunchSettings?.processId !== process.id) {
+      return Promise.resolve();
+    }
+    const done: Promise<void> = this.enqueueConfiguration(
+      process.sessionId,
+      async () => {
+        const owner = this.options.getProcessForSession(process.sessionId);
+        if (owner && owner !== process) return;
+        await this.persistProcessLaunchSettings(process);
+      },
+    )
+      .catch((error) => {
+        this.discardProcess(process);
+        getLogger().warn(
+          {
+            event: "session_launch_settings_save_failed",
+            sessionId: process.sessionId,
+            processId: process.id,
+            setting: "stop",
+            error: error instanceof Error ? error.message : String(error),
+          },
+          "Failed to save applied session launch settings before stopping",
+        );
+      })
+      .finally(() => {
+        if (state.stoppingSettlement?.done === done) {
+          state.stoppingSettlement = null;
+          this.releaseEmptyState(process.sessionId, state);
+        }
+      });
+    state.stoppingSettlement = { processId: process.id, done };
+    return done;
   }
 
   async persistSuccessfulSessionBoundaryOrAbort(

@@ -72,6 +72,10 @@ it("restarts once per request, ignores retired exits and reaps launcher descenda
   Object.assign(env, {
     PATH: `${directory}${delimiter}${process.env.PATH}`,
     USE_MOCK_SDK: "true",
+    // The suite launcher supplies a disposable HOME. This fixture deliberately
+    // starts `pnpm dev` from another disposable directory under the same temp
+    // root, which a host-level repository marker may otherwise make suspicious.
+    YEP_ALLOW_SUSPICIOUS_HOME: "true",
     YEP_DATA_DIR: join(directory, "profile"),
     YA_TEST_WRAPPER_EVENTS: eventsFile,
     PORT: "3499",

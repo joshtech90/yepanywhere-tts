@@ -1,4 +1,4 @@
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { UI_KEYS } from "../lib/storageKeys";
 
 /** The desktop sidebar's display modes (topics/ui-architecture.md). */
@@ -28,10 +28,14 @@ function saveStoredMode(mode: SidebarDisplayMode): void {
 /**
  * Hook to manage the sidebar display-mode preference.
  * Persists to localStorage.
+ *
+ * `initialMode` narrows the sidebar for this mount only, without saving: a
+ * page that wants the room starts collapsed, and a tab opened straight onto
+ * the new-session composer starts minimized. It never widens a stored mode.
  */
 export function useSidebarPreference(
   forceExpanded = false,
-  initiallyCollapsed = false,
+  initialMode: "collapsed" | "minimized" | null = null,
 ): {
   isExpanded: boolean;
   isMinimized: boolean;
@@ -42,15 +46,25 @@ export function useSidebarPreference(
   const [mode, setModeState] = useState<SidebarDisplayMode>(() => {
     if (forceExpanded) return "expanded";
     const stored = loadStoredMode();
-    return initiallyCollapsed && stored === "expanded" ? "collapsed" : stored;
+    if (initialMode === "minimized") return "minimized";
+    return initialMode === "collapsed" && stored === "expanded"
+      ? "collapsed"
+      : stored;
   });
+  // Restoring from a minimized start the user never chose returns to their
+  // stored mode instead of saving a collapsed one over it.
+  const transientlyMinimizedRef = useRef(
+    mode === "minimized" && loadStoredMode() !== "minimized",
+  );
 
   const setMode = useCallback((next: SidebarDisplayMode) => {
+    transientlyMinimizedRef.current = false;
     setModeState(next);
     saveStoredMode(next);
   }, []);
 
   const toggleExpanded = useCallback(() => {
+    transientlyMinimizedRef.current = false;
     // Use functional update to avoid stale closure issues
     setModeState((prev) => {
       const next = prev === "expanded" ? "collapsed" : "expanded";
@@ -64,10 +78,14 @@ export function useSidebarPreference(
     [setMode],
   );
 
-  const restoreCollapsedSidebar = useCallback(
-    () => setMode("collapsed"),
-    [setMode],
-  );
+  const restoreCollapsedSidebar = useCallback(() => {
+    if (transientlyMinimizedRef.current) {
+      transientlyMinimizedRef.current = false;
+      setModeState(loadStoredMode());
+      return;
+    }
+    setMode("collapsed");
+  }, [setMode]);
 
   return {
     isExpanded: mode === "expanded",

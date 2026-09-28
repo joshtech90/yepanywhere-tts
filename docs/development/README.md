@@ -9,7 +9,7 @@ root unless stated otherwise.
 | Guide | Use it for |
 | --- | --- |
 | [Local development](local-development.md) | Setup, command reference, ports, profiles, data directories, and feature configuration. |
-| [Testing](testing.md) | Required source checks, cross-platform coverage, device-control testing, and ChromeOS debugging. |
+| [Testing](testing.md) | Required source checks, cross-platform coverage, device-control testing, and ChromeOS debugging; links to [E2E test-level guidance](../../topics/e2e-testing.md). |
 | [Code quality](code-quality.md) | Warnings, Biome formatting, import/export edits, and mechanical cleanup. |
 | [Client development](client.md) | UI translations and console budgets; links to CSS and visual verification owners. |
 | [Provider development](providers.md) | Codex audit approval, pinned reference source, compatibility markers, and schema validation. |

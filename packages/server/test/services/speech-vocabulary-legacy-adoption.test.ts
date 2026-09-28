@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { setImmediate as yieldToLoop } from "node:timers/promises";
 import type { VocabularyCaseForms } from "@yep-anywhere/shared";
 import { afterEach, expect, it } from "vitest";
-import { scratchSpaceDirectories } from "../../src/lib/scratchSpace.js";
+import { legacySpeechVocabularyDirectories } from "../../src/services/voice/legacy-vocabulary-directories.js";
 import type {
   VocabularyCheckpointRow,
   VocabularyCommit,
@@ -89,12 +89,10 @@ it("moves a table out of the directory earlier versions reserved", () => {
   const dataDir = join(root, "data");
   const env = { YEP_SCRATCH_DIR: join(root, "scratch") };
   // Placed through the enumeration the store itself consults, so this pins
-  // that it looks where scratch space is, not a path spelled twice.
-  const reserved = scratchSpaceDirectories(
-    "speech-vocabulary",
-    dataDir,
-    env,
-  ).at(0) as string;
+  // that it looks where the legacy directories are, not a path spelled twice.
+  const reserved = legacySpeechVocabularyDirectories(dataDir, env).at(
+    0,
+  ) as string;
   mkdirSync(reserved, { recursive: true });
   writeFileSync(join(reserved, "speech-vocabulary.sqlite"), "table bytes");
   const store = new VocabularyStore(dataDir, {

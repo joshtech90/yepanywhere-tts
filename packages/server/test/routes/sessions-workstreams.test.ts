@@ -82,6 +82,7 @@ function createDeps() {
     setRequestedModel: vi.fn(async () => {}),
     updateMetadata: vi.fn(async () => {}),
     setWorkstream: vi.fn(async () => {}),
+    recordCreationProvenance: vi.fn(async () => {}),
   } as unknown as SessionMetadataService;
   const supervisor = {
     startSession: vi.fn(async () => createProcess("session-started")),
@@ -173,5 +174,75 @@ describe("Session workstream routing", () => {
       "session-created",
       workstreamId,
     );
+  });
+
+  it("records normalized UI provenance on a started session", async () => {
+    const { routes, supervisor, sessionMetadataService } = createDeps();
+    vi.mocked(supervisor.startSession).mockImplementationOnce(
+      async (_path, _message, _mode, _settings, options) => {
+        await options?.onStarted?.("session-started");
+        return createProcess("session-started");
+      },
+    );
+
+    const response = await routes.request(`/projects/${projectId}/sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: "start here",
+        creationProvenance: {
+          surface: "web",
+          clientOrigin: "https://example.test/ignored/path",
+          clientVersion: "0.9.3-test",
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(
+      sessionMetadataService.recordCreationProvenance,
+    ).toHaveBeenCalledWith("session-started", {
+      surface: "web",
+      clientOrigin: "https://example.test",
+      clientVersion: "0.9.3-test",
+    });
+  });
+
+  it("retains UI provenance when two-phase creation waits for a worker", async () => {
+    const { routes, supervisor, sessionMetadataService } = createDeps();
+    vi.mocked(supervisor.createSession).mockResolvedValueOnce({
+      queued: true,
+      queueId: "queue-1",
+      position: 1,
+    });
+
+    const response = await routes.request(
+      `/projects/${projectId}/sessions/create`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          creationProvenance: {
+            surface: "desktop",
+            clientVersion: "0.9.3-test",
+            clientCommit: "abc123",
+          },
+        }),
+      },
+    );
+
+    expect(response.status).toBe(202);
+    expect(
+      sessionMetadataService.recordCreationProvenance,
+    ).not.toHaveBeenCalled();
+    const options = vi.mocked(supervisor.createSession).mock.calls[0]?.[3];
+    await options?.onStarted?.("session-created");
+    expect(
+      sessionMetadataService.recordCreationProvenance,
+    ).toHaveBeenCalledWith("session-created", {
+      surface: "desktop",
+      clientVersion: "0.9.3-test",
+      clientCommit: "abc123",
+    });
   });
 });

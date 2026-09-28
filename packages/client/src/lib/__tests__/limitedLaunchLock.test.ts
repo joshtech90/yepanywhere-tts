@@ -1,6 +1,8 @@
 import type { ActingPrincipal } from "@yep-anywhere/shared";
 import { describe, expect, it } from "vitest";
 import {
+  knownLockedEffort,
+  knownLockedProvider,
   launchLockFor,
   launchLockOverrides,
   UNLOCKED_LAUNCH,
@@ -75,15 +77,26 @@ describe("launchLockFor", () => {
     });
   });
 
-  it("ignores a provider or effort this client cannot name", () => {
+  it("keeps a provider or effort this client cannot name locked", () => {
     const lock = launchLockFor(
-      limited({ provider: "not-a-provider", effort: "colossal" }),
+      limited({ provider: "newer-provider", effort: "colossal" }),
     );
-    expect(lock.provider).toBeNull();
-    expect(lock.effort).toBeNull();
-    // Still limited, so the sandbox stays fixed.
+    // Still locked, so the form withholds the pickers and states the values.
+    expect(lock.provider).toBe("newer-provider");
+    expect(lock.effort).toBe("colossal");
+    expect(knownLockedProvider(lock)).toBeNull();
+    expect(knownLockedEffort(lock)).toBeNull();
+    // The route refuses any other value, so the launch sends these verbatim.
     expect(launchLockOverrides(lock)).toEqual({
+      provider: "newer-provider",
+      thinking: "on:colossal",
       sandboxLevel: "project-write",
     });
+  });
+
+  it("names a known locked provider and effort for seeding the pickers", () => {
+    const lock = launchLockFor(limited({ provider: "codex", effort: "high" }));
+    expect(knownLockedProvider(lock)).toBe("codex");
+    expect(knownLockedEffort(lock)).toBe("high");
   });
 });

@@ -47,8 +47,9 @@ export interface EarlyTypingHandoffOptions {
    */
   attempts?: number;
   /**
-   * Give up if nobody claims the keys. Without this an abandoned navigation
-   * would intercept typing for the rest of the page's life.
+   * Stop intercepting if nobody claims the keys by then. Without this an
+   * abandoned navigation would intercept typing for the rest of the page's
+   * life. What was already held stays for a claim that arrives later.
    */
   expireMs?: number;
 }
@@ -58,7 +59,11 @@ export interface EarlyTypingHandoff {
   active(): boolean;
   /** Characters accepted so far, for a field that claims late. */
   buffered(): string;
-  /** Give the keys an owner, replaying what was buffered in order. */
+  /**
+   * Give the keys an owner, replaying what was buffered in order. After the
+   * hold expired this still delivers what was held, but intercepts nothing
+   * further.
+   */
   claim(sink: EarlyTypingSink): void;
   /** Retire if the sink holds focus and already shows what it expects. */
   retireWhenReady(): void;
@@ -94,11 +99,15 @@ export function startEarlyTypingHandoff(
 ): EarlyTypingHandoff {
   let owner = sink ?? null;
   let held = "";
+  let cancelled = false;
   let attempted = 0;
   let listener: ((event: KeyboardEvent) => void) | null = null;
   let expiry: ReturnType<typeof setTimeout> | null = null;
 
-  const cancel = () => {
+  // Expiry and retirement both end interception; only cancel also forgets.
+  // Keys struck before the bound were already kept from the page, so an
+  // expiry that dropped them would lose them outright.
+  const stopIntercepting = () => {
     if (expiry !== null) {
       clearTimeout(expiry);
       expiry = null;
@@ -106,6 +115,12 @@ export function startEarlyTypingHandoff(
     if (!listener) return;
     window.removeEventListener("keydown", listener, true);
     listener = null;
+  };
+
+  const cancel = () => {
+    stopIntercepting();
+    cancelled = true;
+    held = "";
   };
 
   const ready = () => {
@@ -118,7 +133,7 @@ export function startEarlyTypingHandoff(
   const retireWhenReady = () => {
     if (!listener || !ready()) return;
     const retiring = owner;
-    cancel();
+    stopIntercepting();
     if (retiring && retiring.shows() !== retiring.expects()) {
       retiring.repairCaret?.();
     }
@@ -139,14 +154,14 @@ export function startEarlyTypingHandoff(
   };
   window.addEventListener("keydown", listener, true);
   if (expireMs > 0 && !owner) {
-    expiry = setTimeout(cancel, expireMs);
+    expiry = setTimeout(stopIntercepting, expireMs);
   }
 
   return {
     active: () => listener !== null,
     buffered: () => held,
     claim: (next: EarlyTypingSink) => {
-      if (!listener) return;
+      if (cancelled) return;
       if (expiry !== null) {
         clearTimeout(expiry);
         expiry = null;

@@ -134,6 +134,24 @@ describe("getVisibleReloadBanners", () => {
       ),
     ).toEqual({ backend: false, frontend: false });
   });
+
+  it("never shows a server reload to a client that cannot restart it", () => {
+    expect(
+      getVisibleReloadBanners(
+        true,
+        { backend: true, frontend: true },
+        { backendReloadSafetyKnown: true, canRestartServer: false },
+      ),
+    ).toEqual({ backend: false, frontend: true });
+
+    expect(
+      getVisibleReloadBanners(
+        true,
+        { backend: true, frontend: false },
+        { canRestartServer: false },
+      ),
+    ).toEqual({ backend: false, frontend: false });
+  });
 });
 
 describe("useReloadNotifications dismissal", () => {

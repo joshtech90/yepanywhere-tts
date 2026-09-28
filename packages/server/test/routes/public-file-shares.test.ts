@@ -147,6 +147,111 @@ describe("public file shares", () => {
     expect(await revokeResponse.json()).toEqual({ revoked: true });
   });
 
+  it("shares an absolute path under the registered project that owns it", async () => {
+    const otherRoot = path.join(testDir, "other-project");
+    await fs.mkdir(path.join(otherRoot, "build"), { recursive: true });
+    await fs.writeFile(path.join(otherRoot, "build", "paper.html"), "<p>x</p>");
+    // The existence check reads through the project file fetcher.
+    files.set("build/paper.html", "<p>x</p>");
+    const app = createPublicFileShareRoutes({
+      publicShareService: service,
+      fetchProjectFile,
+      listProjectRoots: async () => [projectRoot, otherRoot],
+      getPublicSharesEnabled: () => true,
+      getRemoteAccessEnabled: () => true,
+      getRelayConfig: () => ({
+        url: "wss://relay.example/ws",
+        username: "example-host",
+      }),
+      getYaClientBaseUrl: () => "https://ya.example/",
+    });
+    // Viewed from the first project's viewer, the file lives in the other one.
+    const created = await app.request("/public-file-shares", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId,
+        path: path.join(otherRoot, "build", "paper.html"),
+      }),
+    });
+    expect(created.status).toBe(200);
+    const url = new URL(((await created.json()) as { url: string }).url);
+    expect(url.searchParams.get("projectId")).toBe(toUrlProjectId(otherRoot));
+    expect(url.searchParams.get("path")).toBe("build/paper.html");
+    // The list resolves the same way, so the retained link is found again.
+    const listed = await app.request(
+      `/public-file-shares?projectId=${encodeURIComponent(projectId)}&path=${encodeURIComponent(path.join(otherRoot, "build", "paper.html"))}`,
+    );
+    expect(((await listed.json()) as { items: unknown[] }).items).toHaveLength(
+      1,
+    );
+    // Outside every registered project stays refused.
+    const outside = await app.request("/public-file-shares", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        projectId,
+        path: path.join(testDir, "stray.html"),
+      }),
+    });
+    expect(outside.status).toBe(400);
+    expect(((await outside.json()) as { error: string }).error).toMatch(
+      /outside every registered project/,
+    );
+  });
+
+  it("authorizes exactly the assets an HTML root's elements load for play", async () => {
+    files.set(
+      "site/index.html",
+      '<link rel="stylesheet" href="site.css"><link rel="preload" as="font" href="paper.woff2"><script src="app.js"></script><script src="/assets/entry.js"></script><img src="logo.png"><a href="src/server.js">source</a>',
+    );
+    files.set("site/site.css", "body{font-family:Paper}");
+    files.set("site/app.js", "console.log(1)");
+    files.set("site/assets/entry.js", "console.log(3)");
+    files.set("site/other.js", "console.log(2)");
+    files.set("site/src/server.js", "export const secret = 1;");
+    files.set("site/paper.woff2", "font");
+    files.set("docs/notes.css", "p{}");
+    const { secret } = await service.createFileShare({
+      projectId,
+      path: "site/index.html",
+      title: "Site",
+      buildPublicUrl: (value) => `https://ya.example/share/${value}/file`,
+    });
+    const app = createPublicSharePublicRoutes({
+      publicShareService: service,
+      loadSession: vi.fn(async () => null),
+      getPublicSharesEnabled: () => true,
+      fetchProjectFile,
+    });
+    const status = async (path: string) =>
+      (
+        await app.request(
+          `/${secret}/files/raw?path=${encodeURIComponent(path)}`,
+        )
+      ).status;
+    expect(await status("site/site.css")).toBe(200);
+    expect(await status("site/app.js")).toBe(200);
+    // A leading slash names the root's directory, as the play page resolves it.
+    expect(await status("site/assets/entry.js")).toBe(200);
+    expect(await status("site/other.js")).toBe(404);
+    // A linked document, and a file no element loads, stay private.
+    expect(await status("site/src/server.js")).toBe(404);
+    expect(await status("site/paper.woff2")).toBe(404);
+    // A Markdown root does not gain script or stylesheet authority.
+    const markdown = await service.createFileShare({
+      projectId,
+      path: "docs/guide.md",
+      title: "Guide",
+      buildPublicUrl: (value) => `https://ya.example/share/${value}/file`,
+    });
+    files.set("docs/guide.md", "# Guide\n\n[css](notes.css)\n");
+    expect(
+      (await app.request(`/${markdown.secret}/files/raw?path=docs%2Fnotes.css`))
+        .status,
+    ).toBe(404);
+  });
+
   it("serves the current root and only directly referenced render assets", async () => {
     const { secret } = await service.createFileShare({
       projectId,

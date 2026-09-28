@@ -145,6 +145,7 @@ export function mergeMessage(
     return {
       ...existing,
       ...incoming,
+      _isStreaming: incoming._isStreaming,
       _source: "jsonl",
     };
   }
@@ -249,7 +250,14 @@ export function mergeJSONLMessages(
   for (const incomingMsg of incoming) {
     const incomingId = getMessageId(incomingMsg);
     const existingMsg = messageMap.get(incomingId);
-    messageMap.set(incomingId, mergeMessage(existingMsg, incomingMsg, "jsonl"));
+    messageMap.set(
+      incomingId,
+      mergeMessage(
+        existingMsg,
+        incomingMsg,
+        incomingMsg._isStreaming ? "sdk" : "jsonl",
+      ),
+    );
   }
 
   // Build result array, preserving order

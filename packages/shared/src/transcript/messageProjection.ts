@@ -117,13 +117,30 @@ function findLastUserPromptMessageIndex(messages: Message[]): number {
 
 const INTERNAL_REASONING_PLACEHOLDER = "Reasoning [internal]";
 
+/**
+ * The fields the user-turn predicates read. Server-normalized messages and
+ * client transcript messages both satisfy it, though their `Message` types
+ * differ in how narrowly they spell `role`.
+ */
+export interface UserTurnCandidate {
+  type?: string;
+  role?: string;
+  content?: unknown;
+  message?: { role?: unknown; content?: unknown };
+  isCompactSummary?: unknown;
+  isMeta?: unknown;
+  isSynthetic?: unknown;
+  isSubagent?: unknown;
+  toolUseResult?: unknown;
+}
+
 function getPreprocessMessageContent(
-  msg: Message,
+  msg: UserTurnCandidate,
 ): string | ContentBlock[] | undefined {
-  return (
-    (msg.message as { content?: string | ContentBlock[] } | undefined)
-      ?.content ?? msg.content
-  );
+  return (msg.message?.content ?? msg.content) as
+    | string
+    | ContentBlock[]
+    | undefined;
 }
 
 /** Claude's durable compact-summary body opener (JSONL + live stream). */
@@ -151,7 +168,7 @@ function isPostCompactReplayMessage(msg: Message): boolean {
   return msg.type === "user" || role === "user";
 }
 
-function isCompactSummaryMessage(msg: Message): boolean {
+function isCompactSummaryMessage(msg: UserTurnCandidate): boolean {
   if (msg.isCompactSummary === true) {
     return true;
   }
@@ -166,9 +183,7 @@ function isCompactSummaryMessage(msg: Message): boolean {
     return false;
   }
   // Preamble alone is extremely distinctive; still require a user-role row.
-  const role =
-    (msg.message as { role?: "user" | "assistant" } | undefined)?.role ??
-    msg.role;
+  const role = msg.message?.role ?? msg.role;
   return msg.type === "user" || role === "user";
 }
 
@@ -255,7 +270,7 @@ function compactSummaryDetails(
   return content === undefined ? [] : [content];
 }
 
-function isSlashCommandSkillBodyMessage(msg: Message): boolean {
+function isSlashCommandSkillBodyMessage(msg: UserTurnCandidate): boolean {
   const content = getPreprocessMessageContent(msg);
   return (
     msg.isMeta === true &&
@@ -302,6 +317,38 @@ export function isUserPromptMessage(msg: Message): boolean {
     return false;
   }
   return !parseCommandTurn(content);
+}
+
+/**
+ * Real user turn: a turn the user authored. It is the unit the
+ * session-rewind turn index `N` counts (topics/session-rewind.md
+ * § Vocabulary) and the request a fork-from-turn boundary starts at. Server
+ * normalization stamps `turnIndex` with it, the fork and rewind routes find
+ * boundaries with it, and the client numbers live stream rows with it, so
+ * none of them can disagree about which rows are turns. Compact summaries,
+ * post-compact replay text, skill bodies, tool results, and synthetic or
+ * subagent rows are not turns.
+ */
+export function isRealUserTurn(msg: UserTurnCandidate): boolean {
+  const role = msg.message?.role ?? msg.role ?? msg.type;
+  if (role !== "user") return false;
+  if (msg.isSynthetic === true || msg.isSubagent === true) return false;
+  if (msg.toolUseResult !== undefined) return false;
+  if (isCompactSummaryMessage(msg)) return false;
+  if (isSlashCommandSkillBodyMessage(msg)) return false;
+  const content = getPreprocessMessageContent(msg);
+  if (content === undefined) return true;
+  if (
+    Array.isArray(content) &&
+    content.some(
+      (block) => block.type === "tool_result" || block.type === "tool_use",
+    )
+  ) {
+    return false;
+  }
+  const text =
+    typeof content === "string" ? content : contentBlocksText(content);
+  return !isPostCompactReplayText(text);
 }
 
 function isDisplayableThinking(
@@ -399,6 +446,9 @@ function processMessage(
           subtype,
           content,
           details: systemLocalCommandDetails(msg),
+          ...((msg as { detailsOpen?: unknown }).detailsOpen === true
+            ? { detailsOpen: true }
+            : {}),
           sourceMessages: [msg],
           isSubagent: msg.isSubagent,
         });

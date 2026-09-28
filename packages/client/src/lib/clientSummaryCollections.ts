@@ -58,6 +58,7 @@ export interface SessionCollectionRecord {
   parentSessionId?: string;
   parentSessionKind?: "btw-aside";
   forkedFromSessionId?: string;
+  creationProvenance?: GlobalSessionItem["creationProvenance"];
   /** Iterations a running `/clearloop` still has to do; absent when none runs. */
   clearloop?: SessionClearloopBadge;
   initialPrompt?: string;

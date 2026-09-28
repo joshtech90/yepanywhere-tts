@@ -1,6 +1,7 @@
 import {
   DEFAULT_RELAY_URL,
   PUBLIC_SHARE_INITIAL_PROMPT_MAX_LENGTH,
+  PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS,
   PUBLIC_SHARE_SESSION_CHUNKS_CAPABILITY,
   type AppSession,
   type CreatePublicSessionShareRequest,
@@ -12,6 +13,7 @@ import {
   type PublicSessionShareViewerActionResponse,
   type RevokePublicSessionSharesResponse,
   type UrlProjectId,
+  findHtmlRootAssetReferences,
   isUrlProjectId,
   normalizeRelayUrl,
   parseLineColumn,
@@ -19,7 +21,11 @@ import {
 import { dirname, extname, posix, win32 } from "node:path";
 import type { Context } from "hono";
 import { Hono } from "hono";
-import { decodeProjectId, getProjectName } from "../projects/paths.js";
+import {
+  decodeProjectId,
+  getProjectName,
+  type ProjectDisplayNameResolver,
+} from "../projects/paths.js";
 import { tryClaimProjectPathIndex } from "../projects/projectPathIndex.js";
 import type { RelayClientStatus } from "../services/RelayClientService.js";
 import {
@@ -108,6 +114,8 @@ export interface PublicShareRoutesDeps extends PublicSharePublicRoutesDeps {
     projectId: UrlProjectId,
     sessionId: string,
   ) => Promise<AppSession | null>;
+  /** Names the shared session's project; defaults to the path's name. */
+  projectDisplayName?: ProjectDisplayNameResolver;
 }
 
 const PUBLIC_SHARE_RENDER_SOURCE_EXTENSIONS = new Set([
@@ -117,26 +125,6 @@ const PUBLIC_SHARE_RENDER_SOURCE_EXTENSIONS = new Set([
   ".md",
   ".mdx",
   ".qmd",
-]);
-const PUBLIC_SHARE_RENDER_ASSET_EXTENSIONS = new Set([
-  ".apng",
-  ".avif",
-  ".avi",
-  ".bmp",
-  ".gif",
-  ".ico",
-  ".jpeg",
-  ".jpg",
-  ".mkv",
-  ".mov",
-  ".mp4",
-  ".ogv",
-  ".png",
-  ".svg",
-  ".tif",
-  ".tiff",
-  ".webm",
-  ".webp",
 ]);
 const MAX_PUBLIC_SHARE_TRANSITIVE_SOURCE_BYTES = 1024 * 1024;
 
@@ -772,7 +760,7 @@ async function publicShareSessionMentionsRenderAsset(
   dataDir?: string,
 ): Promise<boolean> {
   if (
-    !hasPublicShareExtension(relativePath, PUBLIC_SHARE_RENDER_ASSET_EXTENSIONS)
+    !hasPublicShareExtension(relativePath, PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS)
   ) {
     return false;
   }
@@ -821,13 +809,20 @@ async function publicFileShareMentionsRenderAsset(
   relativePath: string,
   projectRoot: string,
 ): Promise<boolean> {
+  const htmlRoot = /\.(?:html?|xhtml)$/i.test(fileShare.path);
   if (
     !deps.fetchProjectFile ||
     !hasPublicShareExtension(
       fileShare.path,
       PUBLIC_SHARE_RENDER_SOURCE_EXTENSIONS,
     ) ||
-    !hasPublicShareExtension(relativePath, PUBLIC_SHARE_RENDER_ASSET_EXTENSIONS)
+    // An HTML root's assets, scripts and stylesheets included, are decided
+    // by the element that loads each one, below.
+    (!htmlRoot &&
+      !hasPublicShareExtension(
+        relativePath,
+        PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS,
+      ))
   ) {
     return false;
   }
@@ -848,6 +843,13 @@ async function publicFileShareMentionsRenderAsset(
         MAX_PUBLIC_SHARE_TRANSITIVE_SOURCE_BYTES
     ) {
       return false;
+    }
+    if (htmlRoot) {
+      // The play page inlines exactly these, so it never asks for a file
+      // this refuses, and a linked document is never among them.
+      return findHtmlRootAssetReferences(source.content, fileShare.path).some(
+        (reference) => reference.path === relativePath,
+      );
     }
     return extractLocalRenderReferences(source.content).some(
       (reference) =>
@@ -1497,7 +1499,9 @@ export function createPublicShareRoutes(deps: PublicShareRoutesDeps): Hono {
     const title =
       body.title ?? sessionSummary.customTitle ?? sessionSummary.title;
     const projectRoot = decodeProjectId(body.projectId);
-    const projectName = getProjectName(projectRoot);
+    const projectName = (deps.projectDisplayName ?? getProjectName)(
+      projectRoot,
+    );
     const initialPrompt =
       normalizePromptPreview(sessionSummary.initialPrompt ?? "") ??
       (capture ? getInitialPromptPreview(capture.snapshot) : null) ??

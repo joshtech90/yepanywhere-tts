@@ -10,7 +10,7 @@
 
 import { Fragment, type ReactNode } from "react";
 import { useI18n } from "../i18n";
-import type { LaunchLock } from "../lib/limitedLaunchLock";
+import { knownLockedProvider, type LaunchLock } from "../lib/limitedLaunchLock";
 import { getSessionDefaultControlCopy } from "../lib/sessionDefaultControlCopy";
 import { ProviderBadge } from "./ProviderBadge";
 import styles from "./NewSessionFixedLaunch.module.css";
@@ -39,15 +39,19 @@ export function NewSessionFixedLaunch({
 
   const rows: Array<{ key: string; label: string; value: ReactNode }> = [];
   if (lock.provider) {
+    // A provider this client has no badge for is stated as stored.
+    const knownProvider = knownLockedProvider(lock);
     rows.push({
       key: "provider",
       label: copy.provider.title,
-      value: (
+      value: knownProvider ? (
         <ProviderBadge
-          provider={lock.provider}
+          provider={knownProvider}
           model={lock.model ?? undefined}
           className={styles.badge}
         />
+      ) : (
+        lock.provider
       ),
     });
   }

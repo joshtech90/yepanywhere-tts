@@ -16,6 +16,35 @@ the missing-capability warning for older servers.
 
 ## Why Attachments Are Stored
 
+Pre-session drafts are isolated by acting account. Limited-user draft uploads,
+validation, deletion and materialization use a separate persisted staging index;
+knowing another account's batch and attachment IDs grants no access. Direct
+WebSocket uploads and relay uploads retain the account's staging store through
+completion and cancellation. Template preparation accepts staged references,
+creates its session, materializes those references under the normal storage
+policy, then sends the preparation message with the attachments.
+
+The composer offers recent prompts and a scrollable upload gallery, retained
+only in this browser and separated by server and acting username. It keeps up
+to 50 prompts and 50 uploaded files within a 100 MiB file budget. Choosing a
+recent upload stages a fresh copy; it does not reuse another session's access.
+The paperclip opens the native picker; right-click or a downward swipe opens
+the gallery, which also offers the picker. These are recent uploads saved by
+the new-session/project composers, not a server-wide attachment inventory.
+Account-owned draft transfer through Project Queue remains in
+[its gap](../gaps/limited-user-queued-draft-attachments.md).
+
+New-session and standalone project-template composers show recent prompts as
+a column of small dashes at the left edge of the text box. Each 14×2 px dash
+has a 36×36 px activation target, enlarged to 44×44 px for a coarse pointer.
+Hover, keyboard focus or touch press previews the prompt; dragging shrinks
+the preview to half size and follows the pointer. A caret shows the text
+insertion position. Release inside inserts without replacing existing text;
+release outside, pointer cancellation or Escape dismisses without editing.
+Enter or Space inserts at the composer's saved cursor. Read-only and disabled
+composers refuse insertion. The rail scrolls through up to 50 prompts and
+does not expose another account's history after switching accounts.
+
 An uploaded file must survive long enough for the provider to read it, for a
 queued message to deliver it, and for the transcript to display or download it.
 That is intentional attachment persistence initiated by the upload action. It

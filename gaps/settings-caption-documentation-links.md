@@ -7,10 +7,10 @@ surface has no documentation-link contract. Authors must add a separate,
 feature-specific link or leave the guide undiscoverable from its setting.
 
 The concrete example is **Project templates**. Its user-facing guide lives at
-[`topics/project-template-authoring.md`](../topics/project-template-authoring.md)
-and is vendored as `agents/project-templates/README.md`. The technical
-project-templates topic links to it, but neither YA's root README nor the
-Project templates settings caption provides a direct user-facing path.
+[`site/src/content/docs/project-templates.md`](../site/src/content/docs/project-templates.md),
+published at `/docs/project-templates` in the documentation navigation, and is
+vendored as `agents/project-templates/README.md`. The Project templates
+settings caption still provides no direct path to it.
 
 ## Requested behavior
 

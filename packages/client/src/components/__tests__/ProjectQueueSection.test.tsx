@@ -216,6 +216,20 @@ describe("ProjectQueueSection", () => {
     expect(screen.queryByRole("link", { name: "Session session-" })).toBeNull();
   });
 
+  it("shows the queued provider and model before dispatch", () => {
+    renderSection([
+      makeItem("1", "queued", {
+        target: {
+          type: "new-session",
+          provider: "codex",
+          model: "gpt-5.6-sol",
+        },
+      }),
+    ]);
+
+    expect(screen.getByRole("img", { name: "gpt-5.6-sol" })).toBeTruthy();
+  });
+
   it("groups queued items by project name while preserving project order", () => {
     renderSection([
       makeItem("beta-1", "queued", {
@@ -478,12 +492,73 @@ describe("ProjectQueueSection", () => {
       { [PROJECT_ID]: makeProjectStatus("blocked") },
     );
 
-    expect(screen.getByText(/Waiting because: session- in turn/)).toBeTruthy();
+    expect(
+      document.querySelector(`.${styles.itemReadiness}`)?.textContent,
+    ).toBe("Waiting because: session- in turn");
     fireEvent.click(screen.getByRole("button", { name: "Force start" }));
 
     expect(handlers.onPromoteNow).toHaveBeenCalledWith("project-1", "1", {
       force: true,
     });
+  });
+
+  it("groups same-session blockers and links the session title", () => {
+    renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      { status: "running" },
+      [],
+      {
+        [PROJECT_ID]: makeProjectStatus("blocked", {
+          blockers: [
+            "readiness:Waiting for readiness check",
+            "01a0c5c3-full-session-id:in-turn",
+            "01a0c5c3-full-session-id:liveness-verified-progressing",
+          ],
+          blockerSessionTitles: {
+            "01a0c5c3-full-session-id": "Repair publish verification",
+          },
+        }),
+      },
+    );
+
+    const readiness = document.querySelector(`.${styles.itemReadiness}`)!;
+    expect(readiness.textContent).toBe(
+      "Waiting because: Waiting for readiness check; 01a0c5c3 in turn; liveness verified-progressing; Repair publish verification",
+    );
+    expect(
+      screen
+        .getByRole("link", { name: "Repair publish verification" })
+        .getAttribute("href"),
+    ).toBe(`/projects/${PROJECT_ID}/sessions/01a0c5c3-full-session-id`);
+  });
+
+  it("says in words that a session's automation is paused, titled or not", () => {
+    renderSection(
+      [makeItem("1")],
+      undefined,
+      undefined,
+      { status: "running" },
+      [],
+      {
+        [PROJECT_ID]: makeProjectStatus("blocked", {
+          blockers: [
+            "01a0c5c3-full-session-id:automation-paused",
+            "99887766-other-session-id:automation-paused",
+          ],
+          blockerSessionTitles: {
+            "01a0c5c3-full-session-id": "Repair publish verification",
+          },
+        }),
+      },
+    );
+
+    expect(
+      document.querySelector(`.${styles.itemReadiness}`)?.textContent,
+    ).toBe(
+      "Waiting because: 01a0c5c3 automation paused until your next turn; Repair publish verification; 99887766 automation paused until your next turn",
+    );
   });
 
   it("shows the external readiness caption without interpreting its colons", () => {
@@ -500,8 +575,8 @@ describe("ProjectQueueSection", () => {
       },
     );
     expect(
-      screen.getByText("Waiting because: Editing parser: updating tests"),
-    ).toBeTruthy();
+      document.querySelector(`.${styles.itemReadiness}`)?.textContent,
+    ).toBe("Waiting because: Editing parser: updating tests");
   });
 
   it("highlights a linked queue item", () => {

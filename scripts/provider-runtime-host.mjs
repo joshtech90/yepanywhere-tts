@@ -111,8 +111,11 @@ export function withAgentLaunchEnvironment(
   const serverUrl = options?.staticAgentEnvironment?.AGENT_SERVER_URL;
   if (typeof serverUrl === "string" && serverUrl)
     environment.AGENT_SERVER_URL = serverUrl;
+  // Prefer the concrete id the server resolved the selection to, so an alias
+  // such as "opus" still tells the agent which model version it is.
+  const launchModel = options?.launchModel || options?.model;
   const model =
-    typeof options?.model === "string" ? options.model.trim() : undefined;
+    typeof launchModel === "string" ? launchModel.trim() : undefined;
   const effort =
     typeof options?.effort === "string" ? options.effort.trim() : undefined;
   if (model) environment.AGENT_LAUNCH_MODEL = model;

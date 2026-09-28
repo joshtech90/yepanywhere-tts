@@ -1,6 +1,5 @@
 /* Sits inline on the project card's title line, beside the project name. */
 .slot {
-  position: relative;
   display: inline-flex;
   align-items: center;
   min-width: 0;
@@ -77,21 +76,4 @@ button.codeName:hover {
 
 .cancel:hover {
   color: var(--text-primary);
-}
-
-/* Floats below the chip so a validation message cannot reflow the title line. */
-.error {
-  position: absolute;
-  top: calc(100% + 2px);
-  left: 0;
-  z-index: 10;
-  max-width: 28rem;
-  padding: 2px 4px;
-  border-radius: var(--radius-sm);
-  background: var(--bg-surface);
-  color: var(--error-color);
-  font-size: var(--font-size-xs);
-  font-weight: 400;
-  line-height: 1.25;
-  white-space: nowrap;
 }

@@ -19,6 +19,15 @@ on rerun. The 10-second non-Windows deadline remains unchanged. This is a
 suite-load-dependent failure, not evidence of a mockup export defect.
 Contributing-model: 6-Astra
 
+Observed 2026-09-27 during composer new-session dock verification: the full
+workspace run failed both the installed Pi version probe and
+`pi-effort-retry.e2e.test.ts` (expected a result, received an error), while
+5,951 server tests passed. Both installed-Pi tests passed together in an
+isolated rerun (12.26s total). No Pi or server production code changed in
+this task. The full-suite failure remains unresolved; the retry test's
+failure mechanism was not established.
+Contributing-model: 6-Astra
+
 Observed again 2026-09-08 during Codex incremental-read verification: the
 full-suite installed-Pi probe failed after 10.8 seconds with empty version
 stdout (`Unrecognized Pi version output:`), while an isolated contract rerun
@@ -30,4 +39,12 @@ Observed again 2026-09-15 during shell-wait display verification: the full
 workspace run failed only this server test, with empty version stdout;
 5,283 other server tests passed. The isolated Pi contract passed in 10.7s.
 The full-suite failure remains unresolved.
+Contributing-model: 6-Astra
+
+Observed 2026-09-28 during project-template placement mockup verification:
+`pnpm test` failed the version probe with empty output and the effort-retry
+case with `error` instead of `result`; 5,979 server tests passed. Shared,
+relay and push-broker suites passed; the recursive run stopped at the server
+failure. No provider/runtime files changed in the mockup slice. These failures
+were recorded rather than changing installed-Pi behavior for a UI prototype.
 Contributing-model: 6-Astra

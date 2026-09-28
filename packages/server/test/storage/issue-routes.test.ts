@@ -1,11 +1,13 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import { DiscoverySqliteService } from "../../src/storage/discovery-sqlite.js";
 import { IssueStore } from "../../src/services/issues/IssueStore.js";
 import { IssueIndexer } from "../../src/services/issues/IssueIndexer.js";
+import { IssueConfirmer } from "../../src/services/issues/confirm.js";
+import { IssueCredentials } from "../../src/services/issues/credentials.js";
 import { DEFAULT_ISSUE_SETTINGS } from "@yep-anywhere/shared";
 import { createIssueRoutes } from "../../src/routes/issues.js";
 import { getServerCapabilities } from "../../src/routes/version.js";
@@ -439,6 +441,96 @@ it("attaches a hand-resolved reference in one write, with the note as its excerp
     ]);
     expect(writes).toBe(1);
   } finally {
+    await indexer.close();
+    db.close();
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+});
+
+it("asks a tracker only about a reference YA captured in that project", async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), "ya-issue-confirm-route-"));
+  const settings = new ServerSettingsService({ dataDir });
+  await settings.initialize();
+  await settings.updateSettings({
+    issueAssociations: {
+      enabled: true,
+      scope: "viewed",
+      recentDays: 7,
+      confirmation: { enabled: true, jiraSite: "", jiraEmail: "" },
+    },
+  });
+  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
+  const store = new IssueStore(
+    db.getDatabase()!,
+    () => settings.getSetting("issueAssociations")!,
+  );
+  const indexer = new IssueIndexer(store, {
+    settings: () => settings.getSetting("issueAssociations")!,
+    candidates: async function* () {},
+    read: async () => null,
+  });
+  const fetcher = vi.fn(
+    async () =>
+      new Response(JSON.stringify({ title: "A pull" }), { status: 200 }),
+  );
+  const confirmer = new IssueConfirmer(store, {
+    settings: () => settings.getSetting("issueAssociations")!,
+    credentials: new IssueCredentials({
+      env: { GITHUB_TOKEN: "gh-secret" },
+      cliToken: async () => null,
+    }),
+    fetch: fetcher as unknown as typeof fetch,
+  });
+  const app = createIssueRoutes(
+    indexer,
+    settings,
+    async () => ({ available: true }),
+    undefined,
+    confirmer,
+  );
+  const confirm = (body: unknown) =>
+    app.request("/issues/confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  const confirmations = () =>
+    storedRows(
+      store.database,
+      "SELECT project_id,provider,ref_key,state FROM issue_confirmations ORDER BY project_id,ref_key",
+    ).map((row) => [
+      String(row.project_id),
+      String(row.provider),
+      String(row.ref_key),
+      String(row.state),
+    ]);
+  try {
+    store.capture(
+      { sessionId: "s", projectId: "p" },
+      { id: "m", text: "see https://github.com/a/b/issues/7" },
+    );
+    await confirmer.drain();
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    // A typo, a key captured only in another project, and the right key under
+    // the wrong provider all name nothing YA saw: no row, no tracker request.
+    for (const body of [
+      { projectId: "p", provider: "github", key: "a/b#8" },
+      { projectId: "other", provider: "github", key: "a/b#7" },
+      { projectId: "p", provider: "jira", key: "a/b#7" },
+    ])
+      expect((await confirm(body)).status).toBe(404);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(confirmations()).toEqual([["p", "github", "a/b#7", "confirmed"]]);
+
+    // The captured reference is still the user's to recheck.
+    expect(
+      (await confirm({ projectId: "p", provider: "github", key: "a/b#7" }))
+        .status,
+    ).toBe(200);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  } finally {
+    await confirmer.close();
     await indexer.close();
     db.close();
     rmSync(dataDir, { recursive: true, force: true });

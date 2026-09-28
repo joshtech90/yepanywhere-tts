@@ -1,4 +1,7 @@
-import type { SessionClearloopBadge } from "@yep-anywhere/shared";
+import type {
+  DurableLocalCommandMessage,
+  SessionClearloopBadge,
+} from "@yep-anywhere/shared";
 import type {
   AppSessionSummary,
   NonHumanUserTurn,
@@ -115,6 +118,8 @@ export interface SessionSummary {
   parentSessionKind?: "btw-aside";
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
+  /** Client-declared creation source for a YA-owned session. */
+  creationProvenance?: import("@yep-anywhere/shared").SessionCreationProvenance;
   /** Initial prompt text accepted by YA for new-session recovery/copy. */
   initialPrompt?: string;
   /** Whether this session is opted in to heartbeat turns */
@@ -279,6 +284,11 @@ export interface ProcessInfo {
    * See topics/provider-abstraction.md § Per-model settings keying.
    */
   requestedModel?: string;
+  /**
+   * Configured model endpoint the provider bound this session to when it
+   * launched. Auto-stop counts the session against it (gatewayServiceUsage).
+   */
+  gatewayServiceId?: string;
   /** Context window usage from the last assistant message */
   contextUsage?: ContextUsage;
   /** SSH host for remote execution (undefined = local) */
@@ -334,6 +344,8 @@ export type ProcessEvent =
       type: "configuration-applied";
       setting: "model" | "thinking" | "effort";
     }
+  /** The served model changed, e.g. a reply named the model behind an alias. */
+  | { type: "model-resolved"; model: string }
   | { type: "session-id-changed"; oldSessionId: string; newSessionId: string }
   | {
       type: "context-window-observed";
@@ -350,12 +362,23 @@ export type ProcessEvent =
   | { type: "error"; error: Error }
   | { type: "idle-reap" }
   | { type: "complete" }
-  | { type: "terminated"; reason: string; error?: Error }
+  | {
+      type: "terminated";
+      reason: string;
+      error?: Error;
+      /** Attributed notice for an unrequested provider death; Supervisor persists it. */
+      failureNotice?: DurableLocalCommandMessage;
+    }
   | {
       type: "deferred-queue";
       reason?: "queued" | "cancelled" | "promoted";
       tempId?: string;
       yaCommand?: SessionQueuedYaCommand;
+      /**
+       * Only a server-owned entry outside this process's queues changed (the
+       * `/clearloop` job re-checking); no queue this process holds moved.
+       */
+      republished?: boolean;
     }
   | {
       type: "recap-result";
@@ -391,6 +414,8 @@ export interface ProcessOptions {
   model?: string;
   /** Exact YA model token selected at launch, including "default". */
   requestedModel?: string;
+  /** Configured model endpoint the provider bound this session to at launch. */
+  gatewayServiceId?: string;
   /** Configured per-model compaction threshold percentage, if any. */
   compactAtContextPercent?: number;
   /** Effective full context window used to derive the threshold. */

@@ -44,10 +44,19 @@ export function createConversationSource(
     let releaseProcess: (() => void) | undefined;
     let releaseWatch: (() => void) | undefined;
     let failed = false;
+    // The durable revision at which memory last dropped a record. Only a read
+    // that starts after it, with the turn settled, can cover that record.
+    let failedAtRevision = 0;
     let liveBytes = 0;
     const live = new Map<string, { message: Message; bytes: number }>();
+    const drop = () => {
+      failed = true;
+      dirty = true;
+      failedAtRevision = ++durableRevision;
+      invalidate();
+    };
     const add = (raw: Record<string, unknown>) => {
-      if (failed || signal.aborted) return;
+      if (signal.aborted) return;
       // Finalized provider records and YA's identity-preserving user echoes are
       // usable now. Raw token frames need a separate block assembler.
       if (raw.type === "stream_event" || raw._isStreaming === true) return;
@@ -58,10 +67,9 @@ export function createConversationSource(
           Parameters<typeof markSubagent>[0],
       );
       const id = getMessageId(message);
-      if (!id) {
-        if (message.type === "system") return;
-        failed = true;
-        invalidate();
+      if (!id && message.type === "system") return;
+      if (!id || failed) {
+        drop();
         return;
       }
       const bytes = Buffer.byteLength(JSON.stringify(message), "utf8");
@@ -70,8 +78,7 @@ export function createConversationSource(
         nextBytes > MAX_PROJECTION_INPUT_BYTES ||
         (!live.has(id) && live.size >= MAX_PROJECTION_RECORDS)
       ) {
-        failed = true;
-        invalidate();
+        drop();
         return;
       }
       liveBytes = nextBytes;
@@ -181,6 +188,10 @@ export function createConversationSource(
         if (!baseline || (dirty && process?.state.type !== "in-turn")) {
           const liveAtReadStart = new Map(live);
           const observedRevision = durableRevision;
+          const settledAtReadStart =
+            !process ||
+            process.state.type === "idle" ||
+            process.state.type === "terminated";
           const result = await (deps.readFile ?? readConversationFile)({
             path: row.location.path,
             provider: row.catalogFamily as "claude" | "codex",
@@ -203,7 +214,11 @@ export function createConversationSource(
               live.delete(id);
             }
           }
-          if (failed) {
+          if (
+            failed &&
+            settledAtReadStart &&
+            observedRevision >= failedAtRevision
+          ) {
             // Dropped records left no byte accounting behind; re-derive it from
             // what memory still holds before deciding the source is usable.
             liveBytes = [...live.values()].reduce(

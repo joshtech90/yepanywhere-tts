@@ -20,6 +20,7 @@ export function LoginPage() {
     isLoading,
     authEnabled,
     authDisabledByEnv,
+    limitedUsersEnabled,
   } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -66,7 +67,10 @@ export function LoginPage() {
       if (isSetupMode) {
         await setupAccount(password);
       } else {
-        await login(password, username.trim() || undefined);
+        await login(
+          password,
+          (limitedUsersEnabled && username.trim()) || undefined,
+        );
       }
       navigate(from, { replace: true });
     } catch (err) {
@@ -102,8 +106,9 @@ export function LoginPage() {
 
         <form onSubmit={handleSubmit} className="login-form">
           {/* A named login is a limited user; blank is the owner, exactly as
-              before limited users existed (topics/limited-users.md). */}
-          {!isSetupMode && (
+              before limited users existed. The field exists only while the
+              feature is on (topics/limited-users.md). */}
+          {!isSetupMode && limitedUsersEnabled && (
             <div className="login-field">
               <label htmlFor="username">{t("loginUsernameOptional")}</label>
               <input

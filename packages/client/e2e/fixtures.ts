@@ -259,6 +259,13 @@ interface TestFixtures {
 
 // Extend base test with dynamic baseURL and maintenanceURL
 export const test = base.extend<TestFixtures>({
+  page: async ({ page }, use) => {
+    await use(page);
+    // A completed assertion does not imply intercepted background requests
+    // have finished. Drain handlers before the base context fixture closes.
+    // Some tests own an earlier page close before stopping their dev server.
+    if (!page.isClosed()) await page.unrouteAll({ behavior: "wait" });
+  },
   // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
   baseURL: async ({}, use) => {
     const port = getServerPort();

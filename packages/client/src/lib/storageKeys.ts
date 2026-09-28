@@ -41,6 +41,8 @@ export const UI_KEYS = {
   contentMaxWidth: "yep-anywhere-content-max-width",
   sessionRightPane: "yep-anywhere-session-right-pane-enabled",
   sessionRightPaneWidth: "yep-anywhere-session-right-pane-width",
+  pdfjsRenderer: "yep-anywhere-pdfjs-renderer-enabled",
+  transcriptMarginNavigation: "yep-anywhere-transcript-margin-navigation",
   commitReadWatermarks: "yep-anywhere-commit-read-watermarks",
   sourceControlCleanLanding: "yep-anywhere-source-control-clean-landing",
   sidebarWidth: "yep-anywhere-sidebar-width",
@@ -98,6 +100,8 @@ export const UI_KEYS = {
   sessionThinkingVisible: "yep-anywhere-session-thinking-visible",
   cacheMissEventOutcomeFilter: "yep-anywhere-cache-miss-event-outcome-filter",
   settingsSearchMatchValues: "yep-anywhere-settings-search-match-values",
+  newSessionAdvancedOptionsExpanded:
+    "yep-anywhere-new-session-advanced-options-expanded",
   sessionThinkingLatestOnly: "yep-anywhere-session-thinking-latest-only",
   sessionLoadingProgress: "yep-anywhere-session-loading-progress-enabled",
   sessionDomLinger: "yep-anywhere-session-dom-linger-enabled",

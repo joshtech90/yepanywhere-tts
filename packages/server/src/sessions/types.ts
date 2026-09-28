@@ -24,6 +24,7 @@ export interface SessionListSummary {
   projectId: SessionSummary["projectId"];
   title: SessionSummary["title"];
   fullTitle: SessionSummary["fullTitle"];
+  createdAt?: SessionSummary["createdAt"];
   updatedAt: SessionSummary["updatedAt"];
   provider: SessionSummary["provider"];
   customTitle?: SessionSummary["customTitle"];
@@ -58,13 +59,15 @@ export function toSessionListSummary(
     | "isArchived"
     | "isStarred"
     | "asyncQuestions"
-  >,
+  > &
+    Pick<SessionListSummary, "createdAt">,
 ): SessionListSummary {
   return {
     id: summary.id,
     projectId: summary.projectId,
     title: summary.title,
     fullTitle: summary.fullTitle,
+    createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
     provider: summary.provider,
     ...(summary.asyncQuestions !== undefined
@@ -94,6 +97,12 @@ export interface GetSessionOptions {
   beforeMessageId?: string;
   /** Fresh indexed metadata that permits a provider to skip its historical prefix. */
   summaryHint?: SessionSummary;
+  /**
+   * A YA-owned provider process is mid-turn and streams the unfinished reply
+   * live. A provider whose durable rows fill in place may omit that unfinished
+   * tail, so a client never holds it as a durable row that later reads skip.
+   */
+  ownedTurnInProgress?: boolean;
 }
 
 export type SessionSummaryReadMode = "full" | "head";

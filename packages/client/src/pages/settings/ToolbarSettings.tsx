@@ -95,6 +95,7 @@ const PRIORITY_EDITABLE_CONTROLS = new Set<SessionToolbarVisibilityKey>([
   "syntheticDone",
   "sessionStatus",
   "shortcutsHelp",
+  "transcriptSearch",
   "contextUsage",
   "btw",
   "steerNow",
@@ -416,6 +417,12 @@ export function ToolbarSettings() {
       "shortcutsHelp",
       t("appearanceToolbarShortcutsTitle"),
       t("appearanceToolbarShortcutsDescription"),
+      "right",
+    ),
+    controlMeta(
+      "transcriptSearch",
+      t("appearanceToolbarTranscriptSearchTitle"),
+      t("appearanceToolbarTranscriptSearchDescription"),
       "right",
     ),
     controlMeta(

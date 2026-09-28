@@ -1,3 +1,5 @@
+import type { CodexLiveToolOutput } from "../../../src/sdk/providers/codex.js";
+
 type CodexNotificationFixture = {
   method: string;
   params?: unknown;
@@ -9,7 +11,7 @@ export function createLiveEventState() {
   return {
     streamingTextByItemKey: new Map<string, string>(),
     streamingReasoningSummaryByItemKey: new Map<string, string[]>(),
-    streamingToolOutputByItemKey: new Map<string, string>(),
+    streamingToolOutputByItemKey: new Map<string, CodexLiveToolOutput>(),
     toolCallContexts: new Map<string, unknown>(),
     resultBackedToolItemsByTurnId: new Map<string, Set<string>>(),
     planUpdateCountByTurnId: new Map<string, number>(),

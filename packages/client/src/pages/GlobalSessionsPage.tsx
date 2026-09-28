@@ -2,6 +2,7 @@ import {
   ALL_PROVIDERS,
   PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
   SESSION_CONTENT_SEARCH_CAPABILITY,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
   serverHasCapability,
   providerSupportsBoundedTurnSearch,
   type ProviderName,
@@ -18,6 +19,7 @@ import {
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { createSessionApi } from "../api/sessionClient";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
+import { BulkActionBar } from "../components/BulkActionBar";
 import { FilterDropdown } from "../components/FilterDropdown";
 import { PageHeader } from "../components/PageHeader";
 import { SessionListItem } from "../components/SessionListItem";
@@ -59,6 +61,7 @@ import { useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { setNewSessionPrefill } from "../lib/newSessionPrefill";
+import { groupProjectsForFilter } from "../lib/projectFilterOptions";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import { sessionCollectionRecordsToGlobalSessionItems } from "../lib/sessionCollectionRecords";
 import {
@@ -80,6 +83,7 @@ interface SearchHistoryControls {
   old: string;
   limit: string;
   selected: string[];
+  onlySelected?: boolean;
 }
 
 export function GlobalSessionsPage() {
@@ -126,6 +130,10 @@ function SessionSearchPage() {
     version,
     SESSION_CONTENT_SEARCH_CAPABILITY,
   );
+  const creationProvenanceAvailable = serverHasCapability(
+    version,
+    SESSION_CREATION_PROVENANCE_CAPABILITY,
+  );
   const publicShareManagementAvailable = serverHasCapability(
     version,
     PUBLIC_SHARE_MANAGEMENT_CAPABILITY,
@@ -147,6 +155,7 @@ function SessionSearchPage() {
   const project = params.get("project") ?? "";
   const providerParam = params.get("provider") ?? "";
   const executorParam = params.get("executor") ?? "";
+  const createdParam = params.get("created") ?? "";
   const statusParam = params.get("status") ?? "unarchived";
   const providers = useMemo(
     () =>
@@ -160,6 +169,13 @@ function SessionSearchPage() {
   const executors = useMemo(
     () => executorParam.split(",").filter(Boolean),
     [executorParam],
+  );
+  const created = useMemo(
+    () =>
+      createdParam
+        .split(",")
+        .filter((value) => ["web", "desktop", "unspecified"].includes(value)),
+    [createdParam],
   );
   const filters = useMemo(
     () =>
@@ -188,6 +204,11 @@ function SessionSearchPage() {
   const [selected, setSelected] = useState<Set<string>>(
     () => new Set(remembered?.selected),
   );
+  const [onlySelected, setOnlySelected] = useState(
+    remembered?.onlySelected ?? false,
+  );
+  // An empty selection cannot restrict anything, so the toggle waits for one.
+  const withinSelection = onlySelected && selected.size > 0;
   useLayoutEffect(() => {
     if (window.history.state?.key !== location.key) return;
     const controls: SearchHistoryControls = {
@@ -198,12 +219,23 @@ function SessionSearchPage() {
       old,
       limit,
       selected: [...selected],
+      onlySelected,
     };
     window.history.replaceState(
       { ...window.history.state, yaSessionSearch: controls },
       "",
     );
-  }, [location.key, sourceKey, fields, basis, young, old, limit, selected]);
+  }, [
+    location.key,
+    sourceKey,
+    fields,
+    basis,
+    young,
+    old,
+    limit,
+    selected,
+    onlySelected,
+  ]);
   const [manage, setManage] = useState(false);
   const [zoomed, setZoomed] = useState<SearchPreviewTarget>();
   const [expanded, setExpanded] = useState<SearchPreviewTarget["session"]>();
@@ -238,6 +270,10 @@ function SessionSearchPage() {
     () => sessionCollectionRecordsToGlobalSessionItems(records),
     [records],
   );
+  const projectGroups = useMemo(
+    () => groupProjectsForFilter(feed.projects, sessions, Date.now()),
+    [feed.projects, sessions],
+  );
   useEffect(() => {
     if (feed.hasMore && !feed.loading && !feed.error) void feed.loadMore();
   }, [feed.hasMore, feed.loading, feed.error, feed.loadMore]);
@@ -257,7 +293,7 @@ function SessionSearchPage() {
       new Map(
         sessions.map((s) => {
           const reasons: string[] = [];
-          if (selected.size && !selected.has(s.id))
+          if (withinSelection && !selected.has(s.id))
             reasons.push(t("sessionSearchOutsideSelection"));
           if (project && s.projectId !== project)
             reasons.push(t("sessionSearchOutsideProject"));
@@ -265,6 +301,12 @@ function SessionSearchPage() {
             reasons.push(t("sessionSearchOutsideProvider"));
           if (executors.length && !executors.includes(s.executor ?? "local"))
             reasons.push(t("sessionSearchOutsideExecutor"));
+          if (
+            creationProvenanceAvailable &&
+            created.length &&
+            !created.includes(s.creationProvenance?.surface ?? "unspecified")
+          )
+            reasons.push(t("sessionSearchOutsideCreation"));
           for (const status of filters) {
             if (!matchesStatus(s, status))
               reasons.push(
@@ -287,10 +329,13 @@ function SessionSearchPage() {
       ),
     [
       sessions,
+      withinSelection,
       selected,
       project,
       providers,
       executors,
+      created,
+      creationProvenanceAvailable,
       filters,
       basis,
       bounds,
@@ -390,9 +435,12 @@ function SessionSearchPage() {
       }),
     [],
   );
-  const apply = async () => {
-    const action = filters.at(-1);
-    if (!action || pending || !selected.size) return;
+  const selectedSessions = useMemo(
+    () => sessions.filter((session) => selected.has(session.id)),
+    [sessions, selected],
+  );
+  const apply = async (action: SearchStatus) => {
+    if (pending || !selected.size) return;
     setPending(true);
     setActionError(undefined);
     try {
@@ -419,6 +467,7 @@ function SessionSearchPage() {
           }),
         );
       }
+      setSelected(new Set());
       await feed.refetch();
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
@@ -610,7 +659,9 @@ function SessionSearchPage() {
         }
       />
       <main className="page-scroll-container">
-        <div className={styles.content}>
+        <div
+          className={`${styles.content} ${selected.size ? styles.withBulkBar : ""}`}
+        >
           <SearchFilters
             basis={basis}
             onBasis={setBasis}
@@ -626,6 +677,7 @@ function SessionSearchPage() {
               label={t("sessionSearchProjects")}
               className={styles.dropdownContainer}
               placeholder={t("sessionSearchProjects")}
+              align="right"
               triggerClassName={styles.dropdown}
               options={[
                 // An explicit first row, so returning to every project is a
@@ -635,7 +687,18 @@ function SessionSearchPage() {
                   label: t("globalSessionsFilterProjectPlaceholder"),
                   clearSelection: true,
                 },
-                ...feed.projects.map((p) => ({ value: p.id, label: p.name })),
+                ...projectGroups.current.map((p) => ({
+                  value: p.id,
+                  label: p.name,
+                })),
+                ...projectGroups.older.map((p, index) => ({
+                  value: p.id,
+                  label: p.name,
+                  groupLabelBefore:
+                    index === 0 && projectGroups.current.length > 0
+                      ? t("globalSessionsFilterProjectOlder")
+                      : undefined,
+                })),
               ]}
               selected={project ? [project] : []}
               onChange={(value) => changeParam("project", value[0] ?? "")}
@@ -645,6 +708,7 @@ function SessionSearchPage() {
               label={t("sessionSearchProviders")}
               className={styles.dropdownContainer}
               placeholder={t("sessionSearchProviders")}
+              align="right"
               triggerClassName={styles.dropdown}
               options={ALL_PROVIDERS.filter((p) =>
                 sessions.some((s) => s.provider === p),
@@ -674,20 +738,47 @@ function SessionSearchPage() {
                 onChange={(value) => changeParam("executor", value.join(","))}
               />
             )}
+            {creationProvenanceAvailable && (
+              <FilterDropdown
+                label={t("sessionSearchCreatedFrom")}
+                placeholder={t("sessionSearchCreatedFromPlaceholder")}
+                align="right"
+                triggerClassName={styles.dropdown}
+                options={[
+                  { value: "web", label: t("sessionSearchCreatedWeb") },
+                  {
+                    value: "desktop",
+                    label: t("sessionSearchCreatedDesktop"),
+                  },
+                  {
+                    value: "unspecified",
+                    label: t("sessionSearchCreatedUnspecified"),
+                  },
+                ]}
+                selected={created}
+                onChange={(value) => changeParam("created", value.join(","))}
+              />
+            )}
           </SearchFilters>
           <SearchSelection
             helpInline={helpInline}
             onHelpInline={setHelpInline}
             count={selected.size}
             shown={results.length}
+            allShownSelected={results.every(({ session }) =>
+              selected.has(session.id),
+            )}
             filters={filters}
             onToggle={(status) =>
               changeParam("status", toggleStatus(filters, status).join(","))
             }
-            onReplace={() => setSelected(new Set(shownIds))}
+            onSelectShown={() =>
+              setSelected((previous) => new Set([...previous, ...shownIds]))
+            }
             onClear={() => setSelected(new Set())}
+            onlySelected={onlySelected}
+            onOnlySelected={setOnlySelected}
             onManage={() => setManage((value) => !value)}
-            onApply={() => void apply()}
             pending={pending}
           />
           {activeProject && (
@@ -881,6 +972,23 @@ function SessionSearchPage() {
             <p className={styles.help}>{t("sessionSearchUpgrade")}</p>
           )}
         </div>
+        <BulkActionBar
+          selectedCount={selected.size}
+          onArchive={() => apply("archived")}
+          onUnarchive={() => apply("unarchived")}
+          onStar={() => apply("starred")}
+          onUnstar={() => apply("unstarred")}
+          onMarkRead={() => apply("read")}
+          onMarkUnread={() => apply("unread")}
+          onClearSelection={() => setSelected(new Set())}
+          isPending={pending}
+          canArchive={selectedSessions.some((s) => !s.isArchived)}
+          canUnarchive={selectedSessions.some((s) => s.isArchived)}
+          canStar={selectedSessions.some((s) => !s.isStarred)}
+          canUnstar={selectedSessions.some((s) => s.isStarred)}
+          canMarkRead={selectedSessions.some((s) => s.hasUnread)}
+          canMarkUnread={selectedSessions.some((s) => !s.hasUnread)}
+        />
       </main>
       {expanded && (
         <SearchSessionMatches

@@ -15,6 +15,7 @@ import type {
   SessionClearloopBadge,
   SessionClearloopJob,
   SessionClearloopState,
+  SessionProviderRetentionSnapshot,
   SessionQueuedClearloopProgress,
   UrlProjectId,
 } from "@yep-anywhere/shared";
@@ -46,16 +47,20 @@ export interface ClearloopServiceOptions {
   /** Current server-wide inactivity window, read at every boundary. */
   getInactivitySeconds: () => number;
   /**
-   * Project idle predicate for patient loops, without the Project Queue
-   * readiness check. Absent when this server has no Project Queue, which is
-   * what makes a loop refuse to become patient rather than silently run
-   * impatiently.
+   * Project idle predicate for patient loops: Project Queue's, without its
+   * readiness check, and blocked while that queue is about to promote an
+   * item. Absent when this server has no Project Queue, which is what makes
+   * a loop refuse to become patient rather than silently run impatiently.
    */
   getProjectIdleStatus?: (
     projectId: UrlProjectId,
   ) => Promise<{ idle: boolean; blockers: string[] }>;
   /** How often a held patient loop re-asks; defaults to five seconds. */
   patientRecheckMs?: number;
+  /** Background-task hold limit; defaults to CLEARLOOP_BACKGROUND_HOLD_MAX_MS. */
+  backgroundHoldMaxMs?: number;
+  /** Busy re-check cadence; defaults to five seconds. */
+  busyRecheckMs?: number;
 }
 
 export interface StartClearloopParams {
@@ -74,15 +79,36 @@ const BUSY_RECHECK_MS = 5_000;
 /** Default cadence for a held patient loop's project re-check. */
 const PATIENT_RECHECK_MS = 5_000;
 
+/**
+ * Longest a boundary waits on Claude background tasks alone. A task that
+ * never exits (a dev server started in the background) must not hold the
+ * loop forever; past this the rewind stops the process and its tasks.
+ */
+export const CLEARLOOP_BACKGROUND_HOLD_MAX_MS = 30 * 60_000;
+
+/** Consecutive failed attempts at one iteration before the loop gives up. */
+export const CLEARLOOP_MAX_CONSECUTIVE_FAILURES = 3;
+
 interface LoopContext {
   projectId: UrlProjectId;
   timer: NodeJS.Timeout | null;
-  /** Guards against overlapping iterate/check work. */
+  /**
+   * The single-flight claim on beginning an iteration, from the boundary's
+   * record write through the send. Taken synchronously; see `runExclusive`.
+   */
   working: boolean;
   /** True while the loop's own rewind may stop the live process. */
   rewinding: boolean;
   /** Project blockers from the last patient check, for the chip's caption. */
   projectBlockers?: string[];
+  /** When the boundary began waiting on background tasks alone. */
+  backgroundHoldSince?: number;
+  /** Consecutive failed attempts at the current iteration. */
+  failures: number;
+  /** After a failure the next boundary retries the iteration, not the next. */
+  retryPending: boolean;
+  /** The last failure restarts the inactivity countdown from zero. */
+  failedAtMs?: number;
 }
 
 function parseIsoMs(value: string | undefined): number | null {
@@ -92,23 +118,37 @@ function parseIsoMs(value: string | undefined): number | null {
 }
 
 /**
- * Remaining iterations for session summaries, from the durable job record
- * alone. A record left `running` by a previous server process is not shown:
- * the loop cannot advance, and `getRunningJob` reports it as not running.
+ * Claude background tasks still running. Session crons are excluded: they
+ * persist for the process's lifetime, so waiting on them would never end.
  */
-export function clearloopBadgeFromJob(
-  job: SessionClearloopJob | undefined,
-  isLive: boolean,
-  windowSeconds?: number,
-): SessionClearloopBadge | undefined {
-  if (job?.state !== "running" || !isLive) return undefined;
+function liveBackgroundTaskCount(
+  retention: SessionProviderRetentionSnapshot | undefined,
+): number {
+  if (!retention) return 0;
+  return (retention.backgroundTaskCount ?? 0) + (retention.liveTaskCount ?? 0);
+}
+
+/**
+ * Looks up the clearloop badge for a session's summary row: present only
+ * while this server runs the session's loop. Surfaces without a clearloop
+ * service leave it absent, since no loop can run there.
+ */
+export type ClearloopBadgeResolver = (
+  sessionId: string,
+) => SessionClearloopBadge | undefined;
+
+/** Badge fields for a loop this server is running. */
+function badgeForLiveJob(
+  job: SessionClearloopJob,
+  windowSeconds: number,
+): SessionClearloopBadge {
   return {
     remaining: Math.max(0, job.total - job.completed),
     total: job.total,
     completed: job.completed,
     cutTurnIndex: job.cutTurnIndex,
     prompt: job.prompt,
-    ...(windowSeconds !== undefined ? { windowSeconds } : {}),
+    windowSeconds,
     ...(job.patient ? { patient: true } : {}),
   };
 }
@@ -120,10 +160,17 @@ export class ClearloopService {
   constructor(private readonly options: ClearloopServiceOptions) {
     options.eventBus?.subscribe((event) => {
       if (event.type === "session-metadata-changed") {
-        // The provider refused the iteration's rewind; the session view no
-        // longer shows the cut, so the loop cannot honestly continue.
-        if (event.rewindRecordRemoved && this.contexts.has(event.sessionId)) {
-          void this.interrupt(
+        // The provider refused the iteration's rewind, so the dropped turns
+        // are live again and the iteration is retried. A refusal during the
+        // loop's own launch also fails that send, which already counts it.
+        const context = this.contexts.get(event.sessionId);
+        if (
+          event.rewindRecordRemoved &&
+          context &&
+          !context.working &&
+          !context.retryPending
+        ) {
+          void this.handleIterationFailure(
             event.sessionId,
             "The provider refused the rewind; the dropped turns were kept",
           );
@@ -154,8 +201,10 @@ export class ClearloopService {
   /**
    * Loop state does not survive a server restart: a record left `running`
    * belongs to a previous server process and can never advance. Mark each
-   * one interrupted with the usual durable notice so badges and history
-   * agree. Called once after session metadata has loaded.
+   * one interrupted with the usual durable notice so history says how it
+   * ended. Called once after session metadata has loaded. Never rejects: a
+   * record whose write fails is logged and left for the next start, and
+   * still shows no badge, since only a loop this server runs has one.
    */
   async reconcileAfterRestart(): Promise<void> {
     const sessionIds =
@@ -165,12 +214,22 @@ export class ClearloopService {
       if (this.contexts.has(sessionId)) continue;
       const job = this.options.sessionMetadataService.getClearloop(sessionId);
       if (job?.state !== "running") continue;
-      await this.finish(
-        sessionId,
-        job,
-        "interrupted",
-        "Server restarted while the loop was running",
-      );
+      try {
+        await this.finish(
+          sessionId,
+          "interrupted",
+          "Server restarted while the loop was running",
+        );
+      } catch (error) {
+        getLogger().warn(
+          {
+            event: "clearloop_restart_reconcile_failed",
+            sessionId,
+            message: error instanceof Error ? error.message : String(error),
+          },
+          "Clearloop restart reconcile failed for a leftover running loop",
+        );
+      }
     }
   }
 
@@ -187,13 +246,15 @@ export class ClearloopService {
     return this.getRunningJob(sessionId) !== undefined;
   }
 
-  /** Badge data for the sidebar/title chip, or undefined when no loop runs. */
+  /**
+   * Badge data for every session-summary surface (title chip, sidebar,
+   * Agents), or undefined when this server runs no loop for the session.
+   */
   getBadge(sessionId: string): SessionClearloopBadge | undefined {
-    return clearloopBadgeFromJob(
-      this.options.sessionMetadataService.getClearloop(sessionId),
-      this.contexts.has(sessionId),
-      this.options.getInactivitySeconds(),
-    );
+    const job = this.getRunningJob(sessionId);
+    return job
+      ? badgeForLiveJob(job, this.options.getInactivitySeconds())
+      : undefined;
   }
 
   async start(
@@ -221,14 +282,26 @@ export class ClearloopService {
       startedAt: new Date().toISOString(),
       commandText: params.commandText,
     };
-    this.contexts.set(sessionId, {
+    // The first iteration holds the claim from creation: the record reads
+    // as running as soon as it is written, before its flush settles.
+    const context: LoopContext = {
       projectId,
       timer: null,
-      working: false,
+      working: true,
       rewinding: false,
+      failures: 0,
+      retryPending: false,
+    };
+    this.contexts.set(sessionId, context);
+    try {
+      await this.persist(sessionId, job);
+    } catch (error) {
+      context.working = false;
+      throw error;
+    }
+    void this.iterate(sessionId).finally(() => {
+      context.working = false;
     });
-    await this.persist(sessionId, job);
-    void this.iterate(sessionId);
     return job;
   }
 
@@ -237,9 +310,8 @@ export class ClearloopService {
    * finishes on its own and no further rewind happens.
    */
   async cancel(sessionId: string): Promise<SessionClearloopJob | undefined> {
-    const job = this.getRunningJob(sessionId);
-    if (!job) return undefined;
-    return this.finish(sessionId, job, "cancelled");
+    if (!this.getRunningJob(sessionId)) return undefined;
+    return this.finish(sessionId, "cancelled");
   }
 
   /**
@@ -259,12 +331,11 @@ export class ClearloopService {
       );
     }
     if ((job.patient ?? false) === patient) return job;
-    const updated: SessionClearloopJob = { ...job, patient };
     if (!patient) {
       const context = this.contexts.get(sessionId);
       if (context) context.projectBlockers = undefined;
     }
-    await this.persist(sessionId, updated);
+    const updated = await this.update(sessionId, { patient });
     // Either direction can change whether the boundary is already due.
     this.scheduleCheck(sessionId, 0);
     return updated;
@@ -279,17 +350,20 @@ export class ClearloopService {
     const context = this.contexts.get(sessionId);
     const job = this.getRunningJob(sessionId);
     if (!context || !job) return undefined;
-    if (context.working) {
+    const boundary = this.runExclusive(context, () => {
+      if (context.timer) {
+        clearTimeout(context.timer);
+        context.timer = null;
+      }
+      context.projectBlockers = undefined;
+      return this.endBoundary(sessionId, context);
+    });
+    if (!boundary) {
       throw new ClearloopConflictError(
         "The loop is already starting an iteration",
       );
     }
-    if (context.timer) {
-      clearTimeout(context.timer);
-      context.timer = null;
-    }
-    context.projectBlockers = undefined;
-    await this.advance(sessionId, job);
+    await boundary;
     return this.getRunningJob(sessionId) ?? job;
   }
 
@@ -297,20 +371,19 @@ export class ClearloopService {
     sessionId: string,
     error: string,
   ): Promise<SessionClearloopJob | undefined> {
-    const job = this.getRunningJob(sessionId);
-    if (!job) return undefined;
-    return this.finish(sessionId, job, "interrupted", error);
+    if (!this.getRunningJob(sessionId)) return undefined;
+    return this.finish(sessionId, "interrupted", error);
   }
 
+  /** Rewind and send the next iteration. Runs under the single-flight claim. */
   private async iterate(sessionId: string): Promise<void> {
     const context = this.contexts.get(sessionId);
     const job = this.getRunningJob(sessionId);
     if (!context || !job || !this.runner) return;
     if (job.completed >= job.total) {
-      await this.finish(sessionId, job, "completed");
+      await this.finish(sessionId, "completed");
       return;
     }
-    context.working = true;
     const iteration = job.completed + 1;
     try {
       context.rewinding = true;
@@ -326,30 +399,71 @@ export class ClearloopService {
       }
       // Cancel may have landed while rewinding.
       if (!this.getRunningJob(sessionId)) return;
-      const sending: SessionClearloopJob = {
-        ...job,
+      const sending = await this.update(sessionId, {
         currentIteration: iteration,
         iterationSentAt: new Date().toISOString(),
-      };
-      await this.persist(sessionId, sending);
+      });
       await this.runner.send({
         sessionId,
         projectId: context.projectId,
         job: sending,
       });
+      context.failures = 0;
+      context.failedAtMs = undefined;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       getLogger().warn(
         { event: "clearloop_iteration_failed", sessionId, iteration, message },
         "clearloop iteration failed",
       );
-      const current = this.getRunningJob(sessionId);
-      if (current)
-        await this.finish(sessionId, current, "interrupted", message);
+      await this.handleIterationFailure(sessionId, message);
       return;
-    } finally {
-      context.working = false;
     }
+    this.scheduleCheck(sessionId, this.options.getInactivitySeconds() * 1000);
+  }
+
+  /**
+   * Take the single-flight claim and hold it until `work` settles, or return
+   * undefined when an iteration already holds it. The claim is taken before
+   * `work` first awaits, so a Start now and a timer-driven check cannot both
+   * pass their guards while the other is still writing the boundary.
+   */
+  private runExclusive(
+    context: LoopContext,
+    work: () => Promise<void>,
+  ): Promise<void> | undefined {
+    if (context.working) return undefined;
+    context.working = true;
+    return work().finally(() => {
+      context.working = false;
+    });
+  }
+
+  /**
+   * A failed iteration (its rewind, its launch, or a refused truncation) is
+   * retried after a fresh inactivity window; the send resumes the provider
+   * process when none is attached. Only repeated failure ends the loop.
+   */
+  private async handleIterationFailure(
+    sessionId: string,
+    message: string,
+  ): Promise<void> {
+    const context = this.contexts.get(sessionId);
+    const job = this.getRunningJob(sessionId);
+    if (!context || !job) return;
+    context.failures += 1;
+    if (context.failures >= CLEARLOOP_MAX_CONSECUTIVE_FAILURES) {
+      await this.finish(sessionId, "interrupted", message);
+      return;
+    }
+    context.retryPending = true;
+    context.failedAtMs = Date.now();
+    await this.writeLocalNotice(
+      sessionId,
+      `${job.commandText} — iteration ${job.completed + 1} failed; retrying after the inactivity window (failure ${context.failures} of ${CLEARLOOP_MAX_CONSECUTIVE_FAILURES})`,
+      message,
+    );
+    this.publishQueueEntry(sessionId);
     this.scheduleCheck(sessionId, this.options.getInactivitySeconds() * 1000);
   }
 
@@ -368,27 +482,45 @@ export class ClearloopService {
     context.timer = timer;
   }
 
-  /** End the iteration once the session has been quiet for the window. */
   /**
-   * When the session last did anything (user send, provider progress), or
-   * `busy` while a turn is running and the due time is unknown.
+   * When the session last did anything (user send, provider progress, a
+   * failed attempt), or `busy` while a turn is running and the due time is
+   * unknown. Claude background tasks still running also keep the session
+   * busy, so the rewind neither kills them nor drops the turn their
+   * notification would start, until the hold limit has passed.
    */
   private readQuietAnchor(
     sessionId: string,
     job: SessionClearloopJob,
     now: number,
-  ): { busy: true } | { busy: false; anchorMs: number } {
+  ):
+    | { busy: true; backgroundTasks: number }
+    | { busy: false; anchorMs: number; backgroundTasks: number } {
     const process = this.options
       .getSupervisor()
       .getProcessForSession(sessionId);
+    const context = this.contexts.get(sessionId);
     const candidates: number[] = [];
     const sentAt = parseIsoMs(job.iterationSentAt);
     if (sentAt !== null) candidates.push(sentAt);
+    if (context?.failedAtMs !== undefined) candidates.push(context.failedAtMs);
+    let backgroundTasks = 0;
     if (process) {
       if (process.state.type === "in-turn" || process.queueDepth > 0) {
-        return { busy: true };
+        return { busy: true, backgroundTasks };
       }
       const liveness = process.getLivenessSnapshot(new Date(now));
+      backgroundTasks = liveBackgroundTaskCount(liveness.providerRetention);
+      const holdSince = context?.backgroundHoldSince;
+      if (
+        backgroundTasks > 0 &&
+        (holdSince === undefined ||
+          now - holdSince <
+            (this.options.backgroundHoldMaxMs ??
+              CLEARLOOP_BACKGROUND_HOLD_MAX_MS))
+      ) {
+        return { busy: true, backgroundTasks };
+      }
       const state = process.state;
       for (const value of [
         state.type === "idle" ? state.since.getTime() : null,
@@ -401,6 +533,7 @@ export class ClearloopService {
     return {
       busy: false,
       anchorMs: candidates.length > 0 ? Math.max(...candidates) : now,
+      backgroundTasks,
     };
   }
 
@@ -425,6 +558,7 @@ export class ClearloopService {
     };
   }
 
+  /** End the iteration once the session has been quiet for the window. */
   private async check(sessionId: string): Promise<void> {
     const context = this.contexts.get(sessionId);
     const job = this.getRunningJob(sessionId);
@@ -432,11 +566,22 @@ export class ClearloopService {
     const now = Date.now();
     const windowMs = this.options.getInactivitySeconds() * 1000;
     const quiet = this.readQuietAnchor(sessionId, job, now);
+    // The hold limit runs from the first check that found the session
+    // waiting on background tasks alone; a running turn or no remaining
+    // task resets it (a turn reports no task count).
+    if (quiet.backgroundTasks === 0) {
+      context.backgroundHoldSince = undefined;
+    } else if (quiet.busy) {
+      context.backgroundHoldSince ??= now;
+    }
     // Every check republishes the entry so clients see the busy/quiet
     // transition and can count down from the current anchor.
     this.publishQueueEntry(sessionId);
     if (quiet.busy) {
-      this.scheduleCheck(sessionId, BUSY_RECHECK_MS);
+      this.scheduleCheck(
+        sessionId,
+        this.options.busyRecheckMs ?? BUSY_RECHECK_MS,
+      );
       return;
     }
     const dueInMs = quiet.anchorMs + windowMs - now;
@@ -452,22 +597,31 @@ export class ClearloopService {
       );
       return;
     }
-    // Cancel, a stop, or Start now may have landed during the idle read.
-    if (this.getRunningJob(sessionId) !== job || context.working) return;
-    await this.advance(sessionId, job);
+    // Cancel, a stop, a patience change, or Start now may have landed during
+    // the idle read.
+    if (this.getRunningJob(sessionId) !== job) return;
+    await this.runExclusive(context, () =>
+      this.endBoundary(sessionId, context),
+    );
   }
 
-  /** Close out the current iteration and begin the next, or complete. */
-  private async advance(
+  /**
+   * Retry a failed iteration, or close out the finished one and begin the
+   * next. Runs under the single-flight claim.
+   */
+  private async endBoundary(
     sessionId: string,
-    job: SessionClearloopJob,
+    context: LoopContext,
   ): Promise<void> {
-    const advanced: SessionClearloopJob = {
-      ...job,
-      completed: job.completed + 1,
-      currentIteration: undefined,
-    };
-    await this.persist(sessionId, advanced);
+    context.backgroundHoldSince = undefined;
+    if (context.retryPending) {
+      context.retryPending = false;
+    } else {
+      await this.update(sessionId, (current) => ({
+        completed: current.completed + 1,
+        currentIteration: undefined,
+      }));
+    }
     await this.iterate(sessionId);
   }
 
@@ -496,24 +650,47 @@ export class ClearloopService {
 
   private async finish(
     sessionId: string,
-    job: SessionClearloopJob,
     state: Exclude<SessionClearloopState, "running">,
     error?: string,
   ): Promise<SessionClearloopJob> {
     const context = this.contexts.get(sessionId);
     if (context?.timer) clearTimeout(context.timer);
     this.contexts.delete(sessionId);
-    const finished: SessionClearloopJob = {
-      ...job,
+    const finished = await this.update(sessionId, {
       state,
       endedAt: new Date().toISOString(),
       ...(error ? { error } : {}),
-    };
-    await this.persist(sessionId, finished);
+    });
     await this.writeNotice(sessionId, finished);
     return finished;
   }
 
+  /**
+   * Change the loop's durable record as it is at write time. A caller's own
+   * snapshot can be seconds old (a rewind stops the process first), and
+   * writing a spread of it would revert a concurrent change such as a
+   * patience toggle. Reading and writing the in-memory record is one
+   * synchronous step; only the flush awaits.
+   */
+  private async update(
+    sessionId: string,
+    patch:
+      | Partial<SessionClearloopJob>
+      | ((current: SessionClearloopJob) => Partial<SessionClearloopJob>),
+  ): Promise<SessionClearloopJob> {
+    const current = this.options.sessionMetadataService.getClearloop(sessionId);
+    if (!current) {
+      throw new Error(`No clearloop record for session ${sessionId}`);
+    }
+    const next: SessionClearloopJob = {
+      ...current,
+      ...(typeof patch === "function" ? patch(current) : patch),
+    };
+    await this.persist(sessionId, next);
+    return next;
+  }
+
+  /** Write a whole record; changes to an existing one go through `update`. */
   private async persist(
     sessionId: string,
     job: SessionClearloopJob,
@@ -526,11 +703,7 @@ export class ClearloopService {
       ...(context ? { projectId: context.projectId } : {}),
       clearloop:
         job.state === "running" && context
-          ? clearloopBadgeFromJob(
-              job,
-              true,
-              this.options.getInactivitySeconds(),
-            )
+          ? badgeForLiveJob(job, this.options.getInactivitySeconds())
           : null,
       timestamp: new Date().toISOString(),
     });
@@ -559,12 +732,21 @@ export class ClearloopService {
       job.state === "completed"
         ? `${job.commandText} — completed ${job.completed} of ${job.total}`
         : `${job.commandText} — ${job.state} after ${job.completed} of ${job.total}, ${remaining} remaining`;
+    await this.writeLocalNotice(sessionId, summary, job.error);
+  }
+
+  /** A durable session-history row; an error is shown without a click. */
+  private async writeLocalNotice(
+    sessionId: string,
+    content: string,
+    error?: string,
+  ): Promise<void> {
     const id = randomUUID();
     const notice: DurableLocalCommandMessage = {
       type: "system",
       subtype: "local_command",
-      content: summary,
-      ...(job.error ? { details: [job.error] } : {}),
+      content,
+      ...(error ? { details: [error], detailsOpen: true } : {}),
       timestamp: new Date().toISOString(),
       uuid: id,
       id,

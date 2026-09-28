@@ -102,6 +102,25 @@ describe("ProjectMetadataService", () => {
       expect(parsed.projects[projectId]).toBeDefined();
     });
 
+    it("keeps a limited owner across a restart", async () => {
+      const projectId = encodeProjectId("/home/archer/notes");
+      await service.addProject(projectId, "/home/archer/notes", "archer");
+
+      const reloaded = new ProjectMetadataService({ dataDir: tempDir });
+      await reloaded.initialize();
+
+      expect(reloaded.getMetadata(projectId)?.ownerUsername).toBe("archer");
+    });
+
+    it("keeps the owner when the superuser adds the project again", async () => {
+      const projectId = encodeProjectId("/home/archer/notes");
+      await service.addProject(projectId, "/home/archer/notes", "archer");
+
+      await service.addProject(projectId, "/home/archer/notes");
+
+      expect(service.getMetadata(projectId)?.ownerUsername).toBe("archer");
+    });
+
     it("stores canonical Windows project IDs and paths", async () => {
       await service.addProject(
         "legacy-id",
@@ -330,6 +349,18 @@ describe("ProjectMetadataService", () => {
       await reloaded.hideProject(projectId, "/repos/alpha");
       expect(reloaded.getProjectNameOverride(projectId)).toBeUndefined();
     });
+
+    it("names a project by its chosen name, else by its path's last component", async () => {
+      expect(service.getProjectDisplayName("/repos/alpha")).toBe("alpha");
+      await service.setProjectNameOverride(
+        encodeProjectId("/repos/alpha"),
+        "Alpha Service",
+      );
+      expect(service.getProjectDisplayName("/repos/alpha")).toBe(
+        "Alpha Service",
+      );
+      expect(service.getProjectDisplayName("/repos/beta")).toBe("beta");
+    });
   });
 
   describe("hideProject", () => {
@@ -357,6 +388,18 @@ describe("ProjectMetadataService", () => {
 
       expect(service.isHiddenProject(projectId)).toBe(false);
       expect(service.getMetadata(projectId)).toBeDefined();
+    });
+
+    it("gives a hidden project its owner back when it is added again", async () => {
+      const projectId = encodeProjectId("/home/archer/notes");
+      await service.addProject(projectId, "/home/archer/notes", "archer");
+      await service.hideProject(projectId, "/home/archer/notes");
+
+      const reloaded = new ProjectMetadataService({ dataDir: tempDir });
+      await reloaded.initialize();
+      await reloaded.addProject(projectId, "/home/archer/notes");
+
+      expect(reloaded.getMetadata(projectId)?.ownerUsername).toBe("archer");
     });
 
     it("hides Windows project casing variants together", async () => {

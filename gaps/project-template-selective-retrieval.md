@@ -8,7 +8,7 @@ resources. This gap tracks the requested efficient retrieval separately from
 
 The configurable default is repository `https://github.com/graehl/agents`,
 content root `project-templates`, with support for a specified revision and
-alternative sources. It does not depend on the host's `~/agents`. Retrieve
+alternative sources. It does not depend on any checkout on the host. Retrieve
 when the feature is enabled and when its configured origin changes while
 enabled. Origin includes repository, content root and revision for source
 invalidation. Save changes while disabled without fetching; validate the
@@ -40,9 +40,9 @@ Selective transfer alone does not bound accumulated local storage.
   resource included. No later build/test/run or supported add-on may require
   either the cache or the author's checkout.
 
-The producer-side prerequisite is
-`~/agents/project-templates/gaps/template-content-subset.md` (repository
-`graehl/agents`, same repository-relative path). It owns the intuitive content
+The producer-side prerequisite is the default source's
+[template content subset gap](https://github.com/graehl/agents/blob/master/project-templates/gaps/template-content-subset.md).
+It owns the intuitive content
 layout, possible symlink entry paths and linkage to task-suitability review.
 Choose Git partial retrieval or another GitHub tree/blob mechanism during
 implementation; do not confuse sparse working-tree paths with avoided blob

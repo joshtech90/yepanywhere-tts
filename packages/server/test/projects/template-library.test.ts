@@ -295,4 +295,37 @@ describe("project template composition", () => {
   it("reports a missing content directory", async () => {
     await expect(TemplateLibrary.load(root, "missing")).rejects.toThrow();
   });
+
+  it("materializes retained bytes and context into a fresh directory only", async () => {
+    await node(
+      "app",
+      [],
+      { "README.md": "Starter", "nested/file": "payload" },
+      { template: true },
+    );
+    const library = await load();
+    const target = join(root, "project");
+    await library.materialize("app", target, {
+      name: "My app",
+      description: "My intent",
+    });
+    expect(await readFile(join(target, "nested/file"), "utf8")).toBe("payload");
+    expect(
+      JSON.parse(
+        await readFile(join(target, ".project-template/project.json"), "utf8"),
+      ),
+    ).toMatchObject({
+      name: "My app",
+      description: "My intent",
+      origin: { template: "app", order: ["app"] },
+    });
+    await writeFile(join(target, "README.md"), "User edit");
+    await expect(
+      library.materialize("app", target, {
+        name: "Again",
+        description: "Again",
+      }),
+    ).rejects.toThrow();
+    expect(await readFile(join(target, "README.md"), "utf8")).toBe("User edit");
+  });
 });

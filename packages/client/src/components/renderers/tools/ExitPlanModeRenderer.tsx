@@ -1,6 +1,7 @@
 import { toolDisplayContracts } from "./toolDisplayContracts";
 import { defineTool } from "./defineTool";
 import styles from "./ExitPlanModeRenderer.module.css";
+import { useSessionAppLinksHtml } from "../../SessionAppLinks";
 
 /** Renders the plan content (markdown or plain text) */
 function PlanContent({
@@ -10,10 +11,11 @@ function PlanContent({
   plan?: string;
   renderedHtml?: string;
 }) {
+  const rewrittenHtml = useSessionAppLinksHtml(renderedHtml ?? "");
   if (renderedHtml) {
     // Server-rendered HTML with shiki syntax highlighting
     // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered markdown is safe
-    return <div dangerouslySetInnerHTML={{ __html: renderedHtml }} />;
+    return <div dangerouslySetInnerHTML={{ __html: rewrittenHtml }} />;
   }
 
   // Fallback to plain text when server-rendered HTML is not available

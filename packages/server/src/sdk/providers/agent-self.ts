@@ -172,7 +172,7 @@ export async function startAgentSelfSession(
     ...lease.environment,
     AGENT_LAUNCHER: "yepanywhere",
     AGENT_LAUNCH_HARNESS: agentHarness(provider),
-    AGENT_LAUNCH_MODEL: options.model ?? "",
+    AGENT_LAUNCH_MODEL: options.launchModel || options.model || "",
     AGENT_LAUNCH_EFFORT: options.effort ?? "",
   };
   let session: AgentSession;

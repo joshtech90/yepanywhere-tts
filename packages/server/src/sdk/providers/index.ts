@@ -205,10 +205,23 @@ function hostedProvider(rawProvider: AgentProvider): AgentProvider {
         };
       }
       if (property === "startSession") {
-        return (options: Parameters<AgentProvider["startSession"]>[0]) =>
+        return async (options: Parameters<AgentProvider["startSession"]>[0]) =>
           startHostedProviderSession(
             target.name,
-            options,
+            {
+              ...options,
+              launchModel: target.resolveLaunchModel?.(options.model),
+              // The worker holds no catalog, so the endpoint is decided here,
+              // from the one this process reads for the model picker.
+              ...(target.resolveLaunchGatewayRoute &&
+              options.gatewayRoute === undefined
+                ? {
+                    gatewayRoute: await target.resolveLaunchGatewayRoute(
+                      options.model,
+                    ),
+                  }
+                : {}),
+            },
             getProviderRuntimeSnapshot(),
           );
       }

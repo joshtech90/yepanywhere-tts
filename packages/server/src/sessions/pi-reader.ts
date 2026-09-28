@@ -31,6 +31,11 @@ import {
   readCwdFromSessionFile,
 } from "../projects/paths.js";
 import {
+  PI_EFFORT_RETRY_ENTRY_TYPE,
+  piEffortRetryNoticeText,
+  readPiEffortRetryRecord,
+} from "../sdk/providers/pi-effort-retry.js";
+import {
   attachPiResultDetailToToolInput,
   normalizePiTool,
   normalizePiToolResult,
@@ -69,6 +74,9 @@ interface PiRawNode {
   modelId?: string;
   provider?: string;
   message?: PiRawMessage;
+  /** `custom` entries: the writing extension's type and payload. */
+  customType?: string;
+  data?: unknown;
 }
 
 interface PiRawMessage {
@@ -102,7 +110,10 @@ interface PiSessionInfo {
 }
 
 interface PiParsedSession {
-  /** Active leaf → root path, chronological, message nodes only. */
+  /**
+   * Active leaf → root path, chronological: message nodes plus the custom
+   * entries YA's pi extension writes.
+   */
   messageNodes: PiRawNode[];
   /** Header `cwd`. */
   cwd: string;
@@ -307,7 +318,11 @@ export class PiSessionReader implements ISessionReader {
     }
     path.reverse();
 
-    const messageNodes = path.filter((n) => n.type === "message");
+    const messageNodes = path.filter(
+      (n) =>
+        n.type === "message" ||
+        (n.type === "custom" && n.customType === PI_EFFORT_RETRY_ENTRY_TYPE),
+    );
     const model = this.modelFromPath(path);
 
     const parsed: PiParsedSession = { messageNodes, cwd, createdAt, model };
@@ -360,9 +375,23 @@ export class PiSessionReader implements ISessionReader {
     index: number,
     toolStates: Map<string, PiToolState>,
   ): Message | null {
+    const uuid = node.id ?? `pi-${index}`;
+    if (node.type === "custom") {
+      const record = readPiEffortRetryRecord(node.data);
+      if (!record) return null;
+      return {
+        type: "assistant",
+        uuid,
+        timestamp: node.timestamp,
+        role: "assistant",
+        message: {
+          role: "assistant",
+          content: piEffortRetryNoticeText(record, true),
+        },
+      };
+    }
     const m = node.message;
     if (!m) return null;
-    const uuid = node.id ?? `pi-${index}`;
     const timestamp = m.timestamp ?? node.timestamp;
 
     if (m.role === "user") {
@@ -451,10 +480,24 @@ export class PiSessionReader implements ISessionReader {
   private buildMessages(parsed: PiParsedSession): Message[] {
     const messages: Message[] = [];
     const toolStates = new Map<string, PiToolState>();
+    // A refusal record precedes the prompt it resent: YA's extension writes it
+    // when it sets the refused turn aside, before YA sends the prompt again.
+    // The live stream says so after the prompt, so place it there.
+    let refusals: Message[] = [];
     parsed.messageNodes.forEach((node, index) => {
       const mapped = this.mapNode(node, index, toolStates);
-      if (mapped) messages.push(mapped);
+      if (!mapped) return;
+      if (node.type === "custom") {
+        refusals.push(mapped);
+        return;
+      }
+      messages.push(mapped);
+      if (node.message?.role === "user") {
+        messages.push(...refusals);
+        refusals = [];
+      }
     });
+    messages.push(...refusals);
     return messages;
   }
 

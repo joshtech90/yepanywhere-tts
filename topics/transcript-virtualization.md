@@ -313,6 +313,14 @@ form advertised in that scope's caption. Ctrl+S searches all turns and
 Ctrl+Alt+S includes full-session content. Switching scope preserves the query
 and case setting.
 
+The session composer toolbar's Search transcript button is the pointer and
+touch entry. It opens search in the scope last used in that message list
+(user turns until another is chosen), or refocuses the input when search is
+already open, and it shows pressed while search is open. The input takes focus
+before the tap handler returns, so a touch keyboard opens with it. The public
+share viewer has no such entry yet
+([gap](../gaps/isearch-has-no-touch-entry.md)).
+
 An unhydrated historical result is deliberately preview-only. It has no turn
 rail marker and no estimated transcript coordinate: a page-local height would
 misrepresent its position across omitted history. Committing the selected

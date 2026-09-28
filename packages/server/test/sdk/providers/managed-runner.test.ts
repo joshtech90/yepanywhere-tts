@@ -171,6 +171,78 @@ describe("ProviderSessionOwner", () => {
     await owner.shutdown("test cleanup");
   });
 
+  it("publishes and replays only the latest streaming snapshot per message", async () => {
+    let terminal: string | undefined;
+    const owner = startFakeOwner({
+      onTerminal: (reason) => {
+        terminal = reason;
+      },
+    });
+    // Published one by one, these snapshots exceed the 64 MiB
+    // unacknowledged-byte bound.
+    const snapshotText = "y".repeat(512 * 1024);
+    const snapshotCount = 140;
+    await owner.start(async (hooks) => {
+      const base = await startFakeProviderSession({}, hooks);
+      const iterator = (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: base.sessionId,
+        } as const;
+        for (let index = 0; index < snapshotCount; index += 1) {
+          yield {
+            type: "user",
+            uuid: "cmd-result",
+            _isStreaming: true,
+            message: { role: "user", content: `${index}:${snapshotText}` },
+          } as const;
+        }
+        yield {
+          type: "user",
+          uuid: "cmd-result",
+          message: { role: "user", content: "final output" },
+        } as const;
+        yield { type: "result", subtype: "success" } as const;
+      })();
+      return { session: { ...base, iterator } };
+    });
+    const live: Record<string, unknown>[] = [];
+    owner.attach("controller-one", "generation-one", (message) =>
+      live.push(message as Record<string, unknown>),
+    );
+    owner.begin();
+    await waitFor(
+      () =>
+        live.some((message) => eventContent(message) === "final output") ||
+        terminal !== undefined,
+      10_000,
+    );
+    await waitFor(() => terminal !== undefined);
+    expect(terminal).toBe("provider iterator completed");
+    expect(live.some((message) => message.type === "failed")).toBe(false);
+    expect(
+      live.filter(
+        (message) =>
+          message.type === "event" &&
+          (message.message as { _isStreaming?: boolean })._isStreaming,
+      ),
+    ).toHaveLength(1);
+
+    owner.detach("controller-one");
+    const replayed: Record<string, unknown>[] = [];
+    owner.attach("controller-two", "generation-two", (message) =>
+      replayed.push(message as Record<string, unknown>),
+    );
+    const replayedEvents = replayed.filter(
+      (message) => message.type === "event",
+    );
+    expect(
+      replayedEvents.map((message) => eventContent(message) ?? null),
+    ).toEqual([null, "final output", null]);
+    await owner.shutdown("test cleanup");
+  });
+
   it("reports provider failure as a terminal outcome", async () => {
     let terminal: { reason: string; exitCode: number } | undefined;
     const owner = startFakeOwner({

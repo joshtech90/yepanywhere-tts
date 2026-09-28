@@ -185,8 +185,8 @@ we adopted kzahel's observation-based context windows (a kzahel-merge decision,
 getModelContextWindow`: the real window is learned from the SDK's `modelUsage`
 and persisted, which is more robust than a hardcoded override (it self-corrects
 when an account only gets 200K, the same credits caveat that applies to sonnet).
-Current Opus still runs at 1M without a launch rewrite: SDK 0.3.220 resolves
-bare `opus` to Opus 5 with its native 1M window. The SDK then observes and
+Current Opus still runs at 1M without a launch rewrite: SDK 0.3.280 resolves
+bare `opus` to Opus 5.5 with its native 1M window. The SDK then observes and
 reports the real value. The lesson remains: prefer observing a real value over
 hardcoding it in a provider quirk when the value is observable.
 
@@ -251,6 +251,19 @@ minimum two separately-named fields surfaced at that boundary) so they can't be
 swapped silently, with exactly one resolver where they cross. The two-field
 minimum is now in place (`requestedModel` alongside the reported `model` on
 `Process`/`ProcessInfo`/`LiveModelConfig`); the nominal brand is not yet.
+
+**When the reported model is known (2026-09-28).** A process reports the served
+id from launch, not the alias. The supervisor hands each process its provider's
+`resolveLaunchModel` (the catalog's current id for a selection, never probing),
+which resolves the launch selection immediately and each later switch. Every
+main-thread reply then names the served model and keeps it current; subagent
+replies are ignored, since they may run another model. Each change is published
+as a session update carrying the model, so an open page moves off the alias
+without a reload. Before this, the reported model was the alias until the first
+reply, was captured from that reply only, and a switch pinned the new alias
+for the rest of the session. Displays drop the vendor name
+(`displayModelId`: `claude-opus-5-5` reads `opus-5-5`); records keep the full
+id, because the same model through another harness may bill differently.
 
 ### Rejected: probe-and-store-under-the-resolved-name
 

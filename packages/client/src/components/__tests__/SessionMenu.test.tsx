@@ -172,6 +172,96 @@ describe("SessionMenu CSS module contracts", () => {
     ).toBeTruthy();
   });
 
+  describe("closing after a copied session id", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    function openMenu() {
+      fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+    }
+
+    function menuIsOpen() {
+      return (
+        screen
+          .getByRole("button", { name: "Session options" })
+          .getAttribute("aria-expanded") === "true"
+      );
+    }
+
+    it("closes the menu a second after confirming the copy", async () => {
+      vi.useFakeTimers();
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText: vi.fn().mockResolvedValue(undefined) },
+        configurable: true,
+      });
+      renderMenu();
+      openMenu();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Copy session id" }),
+        );
+      });
+
+      act(() => vi.advanceTimersByTime(1000));
+
+      expect(menuIsOpen()).toBe(false);
+    });
+
+    it("leaves a menu reopened before that second alone", async () => {
+      vi.useFakeTimers();
+      Object.defineProperty(navigator, "clipboard", {
+        value: { writeText: vi.fn().mockResolvedValue(undefined) },
+        configurable: true,
+      });
+      renderMenu();
+      openMenu();
+      await act(async () => {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Copy session id" }),
+        );
+      });
+      fireEvent.mouseDown(document.body);
+      openMenu();
+
+      act(() => vi.advanceTimersByTime(1000));
+
+      expect(menuIsOpen()).toBe(true);
+      expect(
+        screen.getByRole("button", { name: "Copy session id" }),
+      ).toBeTruthy();
+    });
+
+    it("ignores a copy that finishes after its menu closed", async () => {
+      vi.useFakeTimers();
+      let finishCopy: () => void = () => {};
+      Object.defineProperty(navigator, "clipboard", {
+        value: {
+          writeText: vi.fn(
+            () =>
+              new Promise<void>((resolve) => {
+                finishCopy = resolve;
+              }),
+          ),
+        },
+        configurable: true,
+      });
+      renderMenu();
+      openMenu();
+      fireEvent.click(screen.getByRole("button", { name: "Copy session id" }));
+      fireEvent.mouseDown(document.body);
+      await act(async () => finishCopy());
+      openMenu();
+
+      act(() => vi.advanceTimersByTime(1000));
+
+      expect(menuIsOpen()).toBe(true);
+      expect(
+        screen.getByRole("button", { name: "Copy session id" }),
+      ).toBeTruthy();
+    });
+  });
+
   it("says so when the clipboard refuses the session id", async () => {
     Object.defineProperty(navigator, "clipboard", {
       value: { writeText: vi.fn().mockRejectedValue(new Error("denied")) },

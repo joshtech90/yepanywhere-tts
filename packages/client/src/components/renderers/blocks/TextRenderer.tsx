@@ -5,6 +5,7 @@ import {
   useLocalResourceClick,
 } from "../../LocalMediaModal";
 import type { ContentBlock, ContentRenderer } from "../types";
+import { useSessionAppLinksHtml } from "../../SessionAppLinks";
 
 interface TextBlock extends ContentBlock {
   type: "text";
@@ -17,6 +18,7 @@ interface TextBlock extends ContentBlock {
  * Text renderer - displays text content with markdown rendering
  */
 function TextRendererComponent({ block }: { block: TextBlock }) {
+  const renderedHtml = useSessionAppLinksHtml(block._renderedHtml ?? "");
   const {
     modal,
     localFileModal,
@@ -41,7 +43,7 @@ function TextRendererComponent({ block }: { block: TextBlock }) {
       >
         <div
           // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered markdown
-          dangerouslySetInnerHTML={{ __html: block._renderedHtml }}
+          dangerouslySetInnerHTML={{ __html: renderedHtml }}
         />
         {modal && (
           <LocalMediaModal

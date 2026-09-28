@@ -1,4 +1,8 @@
-import type { UrlProjectId } from "@yep-anywhere/shared";
+import {
+  type UrlProjectId,
+  projectQueueLivenessBlocker,
+  projectQueueSessionBlocker,
+} from "@yep-anywhere/shared";
 
 export interface ProjectWorkProcessSnapshot {
   sessionId: string;
@@ -64,25 +68,28 @@ export async function getProjectWorkIdleStatus(
     ) {
       continue;
     }
+    const { sessionId } = process;
     const stateType = process.state.type;
     if (stateType === "in-turn" || stateType === "waiting-input") {
-      blockers.push(`${process.sessionId}:${stateType}`);
+      blockers.push(projectQueueSessionBlocker(sessionId, stateType));
     }
     if (process.isRetainingProviderWork()) {
-      blockers.push(`${process.sessionId}:provider-retained`);
+      blockers.push(projectQueueSessionBlocker(sessionId, "provider-retained"));
     }
     if (process.queueDepth > 0) {
-      blockers.push(`${process.sessionId}:direct-queue`);
+      blockers.push(projectQueueSessionBlocker(sessionId, "direct-queue"));
     }
     if (process.getDeferredQueueSummary().length > 0) {
-      blockers.push(`${process.sessionId}:deferred-queue`);
+      blockers.push(projectQueueSessionBlocker(sessionId, "deferred-queue"));
     }
     if (process.getPendingInputRequest()) {
-      blockers.push(`${process.sessionId}:pending-input`);
+      blockers.push(projectQueueSessionBlocker(sessionId, "pending-input"));
     }
     const liveness = process.getLivenessSnapshot();
     if (liveness.derivedStatus !== "verified-idle") {
-      blockers.push(`${process.sessionId}:liveness-${liveness.derivedStatus}`);
+      blockers.push(
+        projectQueueLivenessBlocker(sessionId, liveness.derivedStatus),
+      );
     }
   }
 
@@ -105,7 +112,7 @@ export async function getProjectWorkIdleStatus(
           sessionId,
         );
       if (info?.projectId === projectId) {
-        blockers.push(`${sessionId}:external`);
+        blockers.push(projectQueueSessionBlocker(sessionId, "external"));
       }
     }
   }

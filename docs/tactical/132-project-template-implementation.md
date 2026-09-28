@@ -1,13 +1,115 @@
 # Usable projects from approved templates
 
-Status: implementation started, 2026-09-21. Native library loading/composition
-and source settings are implemented; production creation remains unimplemented.
+Status: limited-user grants and creation implemented, 2026-09-28; full acceptance remains open.
 Contributing-model: 6-Astra.
 
-## Implementation checkpoint — 2026-09-21
+## Current implementation checkpoint — 2026-09-28
+
+The approved recent-prompt rail is implemented in both new-session and
+standalone template composers. Small dashes have 36 px activation targets
+(44 px with touch), hover/press previews, half-size drag previews and a
+positioned insertion caret. Release inserts without replacing the draft;
+outside release and Escape cancel. Browser checks cover real mouse/touch
+input, insertion into a blank line, keyboard insertion, account isolation,
+and sequential typing with 50 prompts and concurrent renders. The upload
+gallery remains on paperclip right-click/downward swipe; ordinary click opens
+the native picker. Browser history is local to server/account, not a complete
+server attachment inventory. See [attachment storage](../../topics/attachment-storage.md).
+
+The real limited-user browser flow now creates a missing root, builds the
+actual App canvas source, pastes an image before creation, reloads the operation
+and reaches preparation with attachments. It then reuses that upload in an
+ordinary new session. Setup, storage, authorization and routing are real; only
+the provider is mocked. The expanded New project panel spans both desktop
+columns. Draft upload indexes are account-owned. Queue transfer of those
+account-owned drafts remains in its explicit attachment gap.
+
+The working implementation now connects the authorized radio palette and inline
+New session expansion to native materialization, setup, initial Git commit,
+real project registration and session launch. The new capability is
+`project-template-creation`; the distinct `limited-user-project-templates`
+capability adds None / Selected / Any controls to Users, source-qualified grants,
+owner-scoped operations and project-write setup. Existing records migrate once
+to Any with a root and None without one, preserving later choices. Personal
+workspace scope and human identity remain separate. No shared server was
+restarted or published.
+
+The user rejected the earlier superuser-only stopping point. A real browser
+test now saves Selected in Users, switches into that limited user, verifies
+the chooser and locked parent, creates through sandboxed setup, reloads, and
+reaches preparation. The provider is mocked; confinement and registration are
+real. Its first execution exposed symlinked sandbox-state mount destinations;
+the sandbox now canonicalizes its storage root. Desktop/phone captures under
+`.artifacts/ui-testing/2026-09-28-limited-templates/` were inspected one by one.
+Missing configured roots and intermediate parents are now created automatically
+after containment validation. App-route tests verify first creation and reject
+missing descendants under escaping symlinks. Optional personal
+feature subsets are a sketch, not delivered controls. Hidden settings inherit
+the superuser configuration subject to explicit per-user grants and locks.
+
+App canvas and its dependency closure were admitted in agents `090e72b` after
+review. Native YA creation against that local source runs dependency install,
+typecheck, tests and build and leaves a clean initial Git commit. The production
+HTTP integration test reaches the normal project/session routes, using a mock
+SDK only at the provider boundary. The browser test creates a real fixture
+project through the form and reloads during creation, then reaches its one
+preparation session. No live provider preparation or usable App-pane claim yet.
+
+The operation journal refuses overwrite and replay. It preserves failed files,
+stops setup during graceful shutdown, returns the same result for concurrent
+retries, and reports unfinished disk state as interrupted after restart. The
+browser keeps the same request UUID across reload. Full queue reconciliation,
+crash recovery of dispatched session identity and abrupt-crash subprocess
+cleanup remain unfinished; do not call this complete crash recovery.
+
+User-directed icon refresh now rereads chooser data when reopened. The source's
+manifest must map `icon.svg` to `.project-template/icon.svg`; GitHub changes
+require Fetch / update first, while local edits are read directly. The server
+test edits the actual local SVG and verifies changed bytes in the next response.
+
+Earlier superuser checkpoint verification: full unit tests passed (6,343 client, 5,989 server, 916 shared,
+130 relay, 44 push broker; 15 server tests skipped). Lint, formatting,
+typechecking and the capability audit pass. Six active browser cases pass,
+including native creation/reload and the v0.8.0/v0.8.1 no-request fallback;
+the optional network-fetch case is skipped. Native App canvas setup also passes
+with the canonical filtered child environment and no npm environment warnings.
+No LSP diagnostics were available.
+
+Captures at 1200×600, 1000×600 and 375×812 were inspected sequentially under
+`.artifacts/ui-testing/2026-09-28-template-source-icons/`. These supersede the
+earlier captures that mistakenly substituted green plus-sign placeholders.
+The corrected layout captures read the actual three SVG files in the source
+library, with fixture choice metadata. The creation case uses a real temporary
+source and the isolated mock provider. Neither claims live model execution.
+
+Web page and Storybook are now ready in the agents manifests, including their
+page/writing/story bases. Both passed fresh materialization, setup, typecheck,
+tests and build without allowing drafts. The limited-user empty state no longer
+directs users to settings they cannot access and distinguishes loading,
+disabled templates and absent grants.
+
+Remaining scope: personal workspace defaults/scopes
+and their migration, App pane/reservations/runtime lifecycle,
+project-local human identity, and the live-provider/direct/relay/portability
+acceptance below. Existing projects must not be modified or templates silently
+enabled. Source retrieval is still opt-in/default-off.
+Contributing-model: 6-Astra.
+
+## Earlier implementation checkpoint — 2026-09-21
+
+Placement revision, user-directed 2026-09-28: always show the template radio
+palette, including a single choice. New session supports entering a new project
+name or expanding New project inline, preserving the prompt and session
+settings without page navigation. The isolated fixture is
+`packages/client/mockups/project-template-placement/`; it is a mockup-first
+delivery, not production creation. The optional artwork specification remains
+in [its sketch](../../gaps/sketches/project-template-artwork.md).
+The user approved these placement mockups on 2026-09-28, including the three
+compact SVG icons, and requested that the icons ship with the source templates.
+Contributing-model: 6-Astra.
 
 The user authorized implementation and expanded the default limited-user
-selection to every template at agents HEAD `947fc67`: App canvas, Storybook,
+selection to every current default-source template: App canvas, Storybook,
 and Web page. All three remain draft until their content review/admission.
 Apply this scope to the two-template acceptance cases below as well.
 
@@ -25,9 +127,10 @@ Apply this scope to the two-template acceptance cases below as well.
   combined-library validation. Later sources replace matching definitions;
   community templates can extend YA-default bases. Empty subdirectories mean
   repository root. Automatic update checks remain a sketch.
-- Complete: user-facing authoring guide in `topics/project-template-authoring.md`
-  (`799bcd2b3`), copied exactly into agents `project-templates/README.md`
-  (`77a2cf9`), with pinned provenance and YA's MIT notice. Original agents
+- Complete: user-facing authoring guide, now the site guide
+  `site/src/content/docs/project-templates.md` (written as
+  `topics/project-template-authoring.md` at `799bcd2b3`), copied exactly
+  into agents `project-templates/README.md` (`77a2cf9`), with pinned provenance and YA's MIT notice. Original agents
   material uses MIT-0 (`eb6b931`); imported content retains its own terms.
 - Verification: all ten source-service tests pass, including limited-user
   denial, concurrent-request rejection, layered inheritance and dependency
@@ -57,9 +160,10 @@ Apply this scope to the two-template acceptance cases below as well.
 - Pending: ready-content admission, fresh-target materialization, durable
   setup/preparation, permissions/sandboxing, App access/reservations, creation
   UI and project-local identity. Template retrieval remains opt-in/default-off.
-- Approved: the supported-release capability/fallback plan below. Existing
-  limited users retain project-only scope and receive no template-creation
-  grant; defaults apply only to new users. No migration has run yet.
+- Approved: the supported-release capability/fallback plan below. The user's
+  2026-09-23 migration decision applies the new defaults to existing limited
+  users too, superseding the earlier preserve-restrictions decision. No
+  migration has run yet. Contributing-model: 6-Astra.
 - Complete: Delete user requires confirmation, naming the account and
   explaining that grants/usage are removed but files remain. Cancel sends no
   deletion request. Seven focused component tests and desktop/phone browser
@@ -114,22 +218,21 @@ Read these before implementing their corresponding slice:
   [project directory storage](../../topics/project-directory-storage.md).
 - [Server capabilities](../../topics/server-capabilities.md) and
   [hosted compatibility](../../topics/remote-hosted-compatibility.md).
-- The actual library at `~/agents/project-templates`: `PROGRAM.md`,
-  `FORMAT.md`, `README.md`, `library.json`, selected manifests, `composition.py`,
-  and its tests. Read the agents repository's entry instructions and governing
-  program chain before editing it. FORMAT.md is the single format authority.
+- The actual library, the default source's
+  [`project-templates`](https://github.com/graehl/agents/tree/master/project-templates):
+  `PROGRAM.md`, `FORMAT.md`, `README.md`, `library.json`, selected manifests,
+  `composition.py`, and its tests. Read that repository's entry instructions
+  and governing program chain before editing it. FORMAT.md is the single
+  format authority.
 
-The library landed at agents `d6a64e9` and `4baf1bf`; `eb2dd3c` added the
-template illustration and `f3e64ec` added redoc and the flatter source layout.
 YA `2bc60b548` holds the initial contracts/mockups, `aad6e4154` the preview
 contract, and `526fb1236` the project-local identity contract. Reconcile newer
 commits and worktree changes before acting; these are orientation anchors.
 
 Both manifests are still draft. Local materialization, setup, typecheck,
 unit/static-server tests, build, browser interaction and optional server
-activation passed for both templates. Composition had 13 passing cases.
-Fresh examples were `~/agents/tasks/redoc-flat-canvas` and
-`~/agents/tasks/redoc-flat-web-page`. These local checks do not establish YA
+activation passed for both templates in fresh materialized projects.
+Composition had 13 passing cases. These local checks do not establish YA
 integration or actual provider discovery/invocation of project skills.
 
 Approved UI source: `packages/client/mockups/project-templates/README.md` and
@@ -196,26 +299,17 @@ settings. Server-side None / Selected / Any grants are authoritative:
 
 - None and an empty Selected set prevent creation without changing existing
   project access. Any includes future enabled ready templates.
-- Selected uses source-qualified IDs. New limited users default to all three
-  current templates: App canvas, Storybook and Web page.
+- Selected uses source-qualified IDs. A limited user with a configured
+  project root defaults to Any; without one, to None (user-directed
+  2026-09-28; see [project templates](../../topics/project-templates.md#limited-user-permissions)).
   Missing/draft/unavailable selections do not fall back to another template.
-- One permitted available choice is automatic; multiple choices show cards.
+- Always show the radio palette; one permitted available choice is preselected.
   No arbitrary source, script, grant or parent-directory fields for limited users.
-- New users default Create in to `~/username`, administrator editable. This is
-  also their default writable personal-directory sandbox, independent of cwd.
-- The administrator may instead lock Current project only. It grants writes
-  only to the active project, including one outside the personal directory
-  with an explicit new-session grant. Do not intersect that project's writable
-  root with the personal directory. View-only does not grant session creation.
-- Other paths remain read-only under existing read policy. Filesystem reads do
-  not imply YA visibility, view/join/new-session API grants, or confidentiality.
-  Limited users never choose sandbox granularity at session creation.
-
-Approved migration: preserve existing users'
-project-only confinement and disable template creation until an administrator
-grants it; apply the new defaults only to newly created users. Do not silently
-broaden old accounts or already-running sessions. Record the eventual decision
-in the limited-users and project-templates contracts before migration code.
+- Create in, the Personal directory and Current project only write scopes, and
+  the one-time migration of existing limited users follow the
+  [workspace direction](../../topics/limited-users.md#approved-workspace-direction-2026-09-21-not-implemented).
+  Do not mutate live provider mounts or treat a broader policy as a broader
+  already-running sandbox.
 
 Enforce the effective principal, locked provider settings, writable root and
 permission rechecks through create/fork/resume/join and provider process reuse.
@@ -296,7 +390,10 @@ Use the existing Projects page, AddProjectForm and Settings components with
 English i18n keys, supported-server gates and normal loading/error semantics.
 Superusers get From template / Existing directory, name, intent and parent.
 Limited users get name and intent under their configured root. Template cards
-appear only with multiple choices and preserve entered fields on selection.
+always appear, including for a single choice, and preserve entered fields on
+selection. New session offers inline project creation with the same palette;
+its project selector may use a dropdown trigger. Do not navigate away from the
+form or lose its entered prompt and provider/model settings.
 Use muted illustrative placeholders, not prefilled requirements. Preserve the
 existing owner display such as `alex / Sketch garden`; no mandatory username
 in the project's own name or directory leaf.
@@ -323,27 +420,12 @@ exist. Redoc keeps the whole doc hierarchy truthful and readable, repairs
 links, and refreshes a project-specific `docs/brand.svg` leading README.
 This project branding is separate from the template chooser illustration.
 
-Initial name/intent is provisional and creates no protection marker. Only a
-deliberate post-creation YA-UI name/caption edit creates root
-`.project-identity.json`, for existing/imported projects as well as templates.
-Follow the exact schema in project-captions and the vendored redoc reference.
-Preserve independent human name/description strings byte-for-byte at the
-decoded-string level. Description is humanText + separately editable agentCoda;
-the coda owns its separator and can be replaced/removed. Name has no coda.
-Do not normalize repeated spaces or Unicode; reject invalid input instead.
-
-This project-local file is the authority, an explicitly approved exception to
-app-data-only storage. Private YA metadata alone is insufficient. Do not create
-the file for ordinary discovery or automatically ignore it. Fail a human edit
-if the record cannot safely persist. Handle malformed versions, escaping
-symlinks, concurrent file/UI edits, cache invalidation and independent reset.
-Legacy private overrides do not prove a post-creation conscious human edit.
-
-Redoc reads this record before revising README or manifest descriptions,
-preserves the human portion exactly, and may update the coda. Do not rename
-package IDs/imports/directories/deployment targets as autodoc. Ordinary prose
-is freely revisable; no Git-blame ownership ledger or blanket protection for
-handwritten docs. Users wanting editorial control may supply their own procedure.
+Implement the
+[project-local identity record](../../topics/project-captions.md#approved-project-local-identity-extension-not-implemented)
+for existing/imported projects as well as templates, including redoc's use of
+it. That section is the contract; the
+[identity gap](../../gaps/project-local-identity.md) lists the decisions it
+leaves open and the verification.
 
 Retain the flatter template layout: root app modules, tests/ and scripts/ for
 real artifacts, no superfluous src/ or empty directory placeholders. Prefer
@@ -390,3 +472,4 @@ do not push or deploy without authorization. No running job is handed over.
 The UI approval removes the visual-design blocker, not these integration tests.
 
 Source session: codex | 01a0c113-abb9-7b72-96a6-c00ee8ab67c5
+Source session: codex | 01a0e5bb-2e7b-7f33-9caa-c8cf712dfed8

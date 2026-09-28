@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import {
+  act,
   cleanup,
   fireEvent,
   render,
@@ -115,6 +116,36 @@ describe("ProjectCard", () => {
         "test-code",
       );
     });
+  });
+
+  it("shows a refused code name's reason outside the truncated title line", async () => {
+    const onUpdateCodeName = vi.fn().mockResolvedValue(undefined);
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{ ...project, codeName: "tst" }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCodeName={onUpdateCodeName}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit code name" }));
+    const input = screen.getByRole("textbox", { name: "Project code name" });
+    fireEvent.change(input, { target: { value: "bad name" } });
+    fireEvent.blur(input);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("may contain only letters");
+    expect(alert.closest("strong")).toBeNull();
+    expect(input.getAttribute("aria-describedby")).toBe(alert.id);
+    expect(onUpdateCodeName).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: "good-name" } });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("cancels an inline code-name edit with the x control", () => {
@@ -237,6 +268,136 @@ describe("ProjectCard", () => {
         null,
       );
     });
+  });
+
+  it("focuses the caption field as it opens, with the caption selected", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{
+              ...project,
+              caption: { text: "From the readme.", source: "readme" },
+            }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCaption={vi.fn()}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption" }));
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Project caption",
+    });
+    expect(document.activeElement).toBe(input);
+    expect([input.selectionStart, input.selectionEnd]).toEqual([
+      0,
+      "From the readme.".length,
+    ]);
+  });
+
+  it("keeps typing in the code-name field when Enter is refused", async () => {
+    const onUpdateCodeName = vi.fn().mockResolvedValue(undefined);
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{ ...project, codeName: "tst" }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCodeName={onUpdateCodeName}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit code name" }));
+    const input = screen.getByRole("textbox", { name: "Project code name" });
+    fireEvent.change(input, { target: { value: "bad name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    // Enter must not hand focus to the page even for a frame: the next key
+    // is the user fixing the code the rule just refused.
+    expect(document.activeElement).toBe(input);
+    expect(screen.getByRole("alert").textContent).toContain(
+      "may contain only letters",
+    );
+
+    fireEvent.change(input, { target: { value: "good-name" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    fireEvent.blur(input);
+    await waitFor(() => {
+      expect(onUpdateCodeName).toHaveBeenCalledWith(
+        expect.objectContaining({ id: "proj-1" }),
+        "good-name",
+      );
+    });
+    expect(onUpdateCodeName).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the caption field focused through a save the server refuses", async () => {
+    const onUpdateCaption = vi
+      .fn()
+      .mockRejectedValue(new Error("Caption storage is unavailable"));
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={project}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCaption={onUpdateCaption}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit caption" }));
+    const input = screen.getByRole<HTMLInputElement>("textbox", {
+      name: "Project caption",
+    });
+    fireEvent.change(input, { target: { value: "Short summary" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(document.activeElement).toBe(input);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe("Caption storage is unavailable");
+    expect(document.activeElement).toBe(input);
+    expect(input.readOnly).toBe(false);
+    expect(input.value).toBe("Short summary");
+  });
+
+  it("leaves focus where the user moved it when a blurred code name is refused", async () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{ ...project, codeName: "tst" }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCodeName={vi.fn().mockResolvedValue(undefined)}
+            onOpenSettings={vi.fn()}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Edit code name" }));
+    fireEvent.change(
+      screen.getByRole("textbox", { name: "Project code name" }),
+      { target: { value: "bad name" } },
+    );
+    const gear = screen.getByRole("button", { name: "Open project settings" });
+    act(() => gear.focus());
+
+    expect(screen.getByRole("alert")).toBeTruthy();
+    await act(
+      () =>
+        new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
+    );
+    expect(document.activeElement).toBe(gear);
   });
 
   it("offers an add-caption placeholder only when editable", () => {

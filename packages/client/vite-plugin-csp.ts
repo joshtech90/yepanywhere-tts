@@ -64,7 +64,11 @@ export function cspPlugin(options: CspPluginOptions = {}): Plugin {
 
     transformIndexHtml: {
       order: "post", // Run after other transforms
-      handler(html) {
+      handler(html, context) {
+        // play.html declares its own policy: it hosts an untrusted sandboxed
+        // document whose srcdoc frame would inherit this strict one.
+        if (/(?:^|\/)play\.html$/.test(context.filename ?? context.path ?? ""))
+          return html;
         // Compute hashes for inline scripts
         const inlineScripts = extractInlineScripts(html);
         const scriptHashes = inlineScripts.map(computeScriptHash);
@@ -103,8 +107,8 @@ export function cspPlugin(options: CspPluginOptions = {}): Plugin {
         // img-src: Allow self, data URIs (icons), and blob (uploads/previews)
         directives.push("img-src 'self' data: blob:");
 
-        // font-src: Only self
-        directives.push("font-src 'self'");
+        // font-src: self, plus blob for the file viewer's font specimens
+        directives.push("font-src 'self' blob:");
 
         // media-src: Allow self and blob for audio/video
         directives.push("media-src 'self' blob:");

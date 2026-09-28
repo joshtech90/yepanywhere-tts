@@ -2,6 +2,7 @@ import type {
   ActingPrincipal,
   LimitedUserLock,
   LimitedUserSummary,
+  TemplateCreationGrant,
   UsageReport,
 } from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
@@ -17,6 +18,7 @@ export interface LimitedUserDraft {
   lock?: LimitedUserLock;
   /** Directory the user may create projects under; empty revokes the grant. */
   projectRoot?: string;
+  templateCreation?: TemplateCreationGrant;
   disabled?: boolean;
 }
 

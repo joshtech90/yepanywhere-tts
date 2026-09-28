@@ -35,6 +35,37 @@ function requiredModuleClass(value: string | undefined): string {
 describe("BangCommandDisplayObject", () => {
   afterEach(cleanup);
 
+  it("automatically expands a newly noticed completed run and its stderr", async () => {
+    const fetchOutput = vi.fn(async () => ({
+      stdout: "complete output",
+      stderr: "cannot rebase: You have unstaged changes.",
+      stdoutHtml: "<p>complete output</p>",
+      mode: "markdown" as const,
+      responseTruncated: false,
+    }));
+    render(
+      <I18nProvider>
+        <BangCommandDisplayObject
+          object={{
+            ...object,
+            exitCode: 1,
+            stderrPreview: "cannot rebase: You have unstaged changes.",
+          }}
+          handlers={{ fetchOutput, shouldExpandOutput: () => true }}
+        />
+      </I18nProvider>,
+    );
+    expect(
+      screen
+        .getByText("cannot rebase: You have unstaged changes.")
+        .closest("details")?.open,
+    ).toBe(true);
+    await waitFor(() => expect(fetchOutput).toHaveBeenCalledWith("bang-1"));
+    await waitFor(() =>
+      expect(screen.getByText("complete output")).toBeTruthy(),
+    );
+  });
+
   it("does not fetch full output until the user asks for it", async () => {
     const fetchOutput = vi.fn(async () => ({
       stdout: "full output",

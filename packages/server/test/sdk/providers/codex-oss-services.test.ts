@@ -1,41 +1,80 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { GatewayService } from "@yep-anywhere/shared";
+import type { GatewayService, ModelCatalogRoute } from "@yep-anywhere/shared";
 import { CodexOSSProvider } from "../../../src/sdk/providers/codex-oss.js";
+import type { ProviderInstallationCoordinator } from "../../../src/services/ProviderInstallationCoordinator.js";
 import { gatewayEffortProbeCache } from "../../../src/services/GatewayEffortProbe.js";
 import type { StartSessionOptions } from "../../../src/sdk/providers/types.js";
 
+type TurnRoute = ModelCatalogRoute<string | undefined>;
+
+interface CodexOSSInternals {
+  buildFirstTurnArgs(options: StartSessionOptions, route: TurnRoute): string[];
+  buildResumeTurnArgs(
+    options: StartSessionOptions,
+    route: TurnRoute,
+    sessionId: string,
+    prompt: string,
+  ): string[];
+  resolveModelRoute(model: string | undefined): TurnRoute;
+  launchGatewayRoute(
+    options: StartSessionOptions,
+  ): Promise<ModelCatalogRoute | null>;
+}
+
 class ExposedCodexOSSProvider extends CodexOSSProvider {
+  private get internals(): CodexOSSInternals {
+    return this as unknown as CodexOSSInternals;
+  }
+
+  /**
+   * The route a turn uses: the launch-bound one when given, as `runSession`
+   * passes it, else what the current catalog says.
+   */
+  private turnRoute(
+    model: string | undefined,
+    launched: ModelCatalogRoute | null | undefined,
+  ): TurnRoute {
+    if (launched === undefined) return this.internals.resolveModelRoute(model);
+    return launched ?? { serviceId: undefined, modelId: model ?? "" };
+  }
+
   firstTurnArgs(
     model?: string,
     turn: Partial<StartSessionOptions> = {},
+    launched?: ModelCatalogRoute | null,
   ): string[] {
-    return (
-      this as unknown as {
-        buildFirstTurnArgs(options: StartSessionOptions): string[];
-      }
-    ).buildFirstTurnArgs({ model, ...turn } as StartSessionOptions);
+    return this.internals.buildFirstTurnArgs(
+      { model, ...turn } as StartSessionOptions,
+      this.turnRoute(model, launched),
+    );
   }
 
   resumeTurnArgs(
     model: string | undefined,
     sessionId: string,
     turn: Partial<StartSessionOptions> = {},
+    launched?: ModelCatalogRoute | null,
   ): string[] {
-    return (
-      this as unknown as {
-        buildResumeTurnArgs(
-          options: StartSessionOptions,
-          sessionId: string,
-          prompt: string,
-        ): string[];
-      }
-    ).buildResumeTurnArgs(
+    return this.internals.buildResumeTurnArgs(
       { model, ...turn } as StartSessionOptions,
+      this.turnRoute(model, launched),
       sessionId,
       "go",
     );
   }
+
+  launchRoute(
+    options: Partial<StartSessionOptions>,
+  ): Promise<ModelCatalogRoute | null> {
+    return this.internals.launchGatewayRoute(options as StartSessionOptions);
+  }
 }
+
+/** Lets a session start without touching the machine's Codex installation. */
+const noInstallation = {
+  acquireRuntimeLease: async () => ({ release: async () => {} }),
+  getSourceVersion: () => "test",
+} as unknown as ProviderInstallationCoordinator;
 
 function service(overrides: Partial<GatewayService> = {}): GatewayService {
   return {
@@ -175,6 +214,38 @@ describe("CodexOSS gateway services", () => {
       "-c",
       'model="deepseek-v4-flash"',
     ]);
+  });
+
+  it("keeps an endpoint's routes when a later catalog read fails", async () => {
+    const fetchMock = vi.fn(async () => vllmCatalog(["deepseek-v4-flash"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new ExposedCodexOSSProvider();
+    provider.setGatewayServices([service()]);
+    await provider.getAvailableModels();
+
+    // Unreadable answers teach nothing; the session's next turn still goes to
+    // the endpoint it was using rather than to the local provider.
+    for (const unreadable of [
+      async () => new Response("overloaded", { status: 503 }),
+      async () => new Response(JSON.stringify({ object: "list" })),
+      async () => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      },
+    ]) {
+      fetchMock.mockImplementationOnce(unreadable);
+      await expect(provider.getAvailableModels()).resolves.toEqual([]);
+      expect(
+        provider.resumeTurnArgs("deepseek-v4-flash", "thread-1"),
+      ).toContain('model_provider="ya_vllm"');
+    }
+
+    // A successful read is authoritative, including one that no longer lists
+    // the model.
+    fetchMock.mockImplementationOnce(async () => vllmCatalog(["other-model"]));
+    await provider.getAvailableModels();
+    expect(provider.resumeTurnArgs("deepseek-v4-flash", "thread-1")).toContain(
+      'model_provider="ollama"',
+    );
   });
 
   it("underscores a hyphenated service id into the provider key", async () => {
@@ -466,5 +537,97 @@ describe("CodexOSS gateway services", () => {
       'model_providers.ya_second.base_url="http://127.0.0.1:8002/v1"',
     );
     expect(args[args.indexOf("--model") + 1]).toBe("shared-model");
+  });
+
+  it("launches a worker that never read its catalog against the endpoint the server chose", async () => {
+    // A provider-host worker: the same configuration, and no catalog read.
+    const fetchMock = vi.fn(async () => {
+      throw new Error("a worker must not read the catalog");
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new ExposedCodexOSSProvider({
+      installationCoordinator: noInstallation,
+    });
+    provider.setGatewayServices([service()]);
+    const chosen = { serviceId: "vllm", modelId: "deepseek-v4-flash" };
+
+    // Resolved from its own empty catalog, the model looks local.
+    expect(provider.firstTurnArgs("deepseek-v4-flash")).toContain("--oss");
+
+    const route = await provider.launchRoute({
+      model: "deepseek-v4-flash",
+      gatewayRoute: chosen,
+    });
+    expect(route).toEqual(chosen);
+    expect(provider.firstTurnArgs("deepseek-v4-flash", {}, route)).toContain(
+      'model_provider="ya_vllm"',
+    );
+    await expect(
+      provider.launchRoute({ model: "llama3.2", gatewayRoute: null }),
+    ).resolves.toBeNull();
+
+    const session = await provider.startSession({
+      cwd: "/tmp",
+      model: "deepseek-v4-flash",
+      gatewayRoute: chosen,
+    });
+    expect(session.gatewayServiceId).toBe("vllm");
+    await session.abort();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reads its catalog once to place a model it has not seen", async () => {
+    const fetchMock = vi.fn(async () => vllmCatalog(["deepseek-v4-flash"]));
+    vi.stubGlobal("fetch", fetchMock);
+    const provider = new ExposedCodexOSSProvider({
+      installationCoordinator: noInstallation,
+    });
+    // Stated levels keep the read from also probing the endpoint's efforts,
+    // so every request counted here is a catalog read.
+    provider.setGatewayServices([service({ effortLevels: ["low", "high"] })]);
+
+    // After a server restart nothing has read the catalog yet.
+    const session = await provider.startSession({
+      cwd: "/tmp",
+      model: "deepseek-v4-flash",
+    });
+    expect(session.gatewayServiceId).toBe("vllm");
+    await session.abort();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    await expect(
+      provider.launchRoute({ model: "deepseek-v4-flash" }),
+    ).resolves.toEqual({ serviceId: "vllm", modelId: "deepseek-v4-flash" });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a session on its launch endpoint after a second one starts serving its model", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => vllmCatalog(["deepseek-v4-flash"])),
+    );
+    const provider = new ExposedCodexOSSProvider();
+    provider.setGatewayServices([service()]);
+    await provider.getAvailableModels();
+    const launched = await provider.launchRoute({ model: "deepseek-v4-flash" });
+
+    provider.setGatewayServices([
+      service(),
+      service({ id: "second", label: "", url: "http://127.0.0.1:8002" }),
+    ]);
+    const models = await provider.getAvailableModels();
+    // The catalog now names the model only with a service prefix, so the bare
+    // id the session launched with places nowhere.
+    expect(models.map((model) => model.id)).toEqual([
+      "vllm::deepseek-v4-flash",
+      "second::deepseek-v4-flash",
+    ]);
+    expect(provider.resumeTurnArgs("deepseek-v4-flash", "thread-1")).toContain(
+      'model_provider="ollama"',
+    );
+
+    expect(
+      provider.resumeTurnArgs("deepseek-v4-flash", "thread-1", {}, launched),
+    ).toContain('model_provider="ya_vllm"');
   });
 });

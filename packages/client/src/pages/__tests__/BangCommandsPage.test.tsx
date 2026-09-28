@@ -110,11 +110,19 @@ function renderPage() {
   );
 }
 
-describe("BangCommandsPage per-entry actions", () => {
+describe("BangCommandsPage", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
     mockRemoteBasePath.value = "";
+  });
+
+  it("shows the empty state when history has no commands", async () => {
+    mockFetchBangCommandHistory.mockResolvedValue({ entries: [] });
+
+    renderPage();
+
+    expect(await screen.findByText("No bang commands yet")).toBeDefined();
   });
 
   it("renders the three actions only for entries with a project", async () => {

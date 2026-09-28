@@ -244,6 +244,41 @@ function projectQueueStatus(
 }
 
 describe("clientSummaryState", () => {
+  it("retains creation provenance through the collection and metadata event", () => {
+    let state = applyGlobalSessionsCollectionSnapshot(
+      createEmptyClientSummaryState(),
+      {
+        query: { scope: "global-sessions" },
+        sessions: [
+          globalSession("session", {
+            creationProvenance: { surface: "web" },
+          }),
+        ],
+        hasMore: false,
+      },
+      NOW,
+    );
+    expect(
+      sessionCollectionRecordToGlobalSessionItem(
+        selectSessionCollectionRecord(state, "session")!,
+      )?.creationProvenance,
+    ).toEqual({ surface: "web" });
+
+    state = applySessionCollectionMetadataChanged(
+      state,
+      {
+        type: "session-metadata-changed",
+        sessionId: "queued",
+        creationProvenance: { surface: "desktop" },
+        timestamp: RECENT,
+      },
+      NOW + 1,
+    );
+    expect(
+      selectSessionCollectionRecord(state, "queued")?.creationProvenance,
+    ).toEqual({ surface: "desktop" });
+  });
+
   it("preserves question previews across partial updates and projects known empty results", () => {
     const asyncQuestions = {
       omitted: false,

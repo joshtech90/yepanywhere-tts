@@ -196,8 +196,9 @@ queue, and username-prefix rules.
   (`UserTurnNavigator`) shows a notch per matching note with the note text as
   its preview, the same way it previews search matches today. Ctrl+N is not
   a candidate: it is the browser's new-tab key. A visible toggle opens the
-  drawer for pointer and touch users; today isearch starts only from the
-  keyboard, recorded in
+  drawer for pointer and touch users; the session composer has a search
+  button, but the share viewer still starts isearch only from the keyboard,
+  recorded in
   [isearch has no touch entry](../gaps/isearch-has-no-touch-entry.md).
 - **Persistence** is YA app-data beside the session, keyed by canonical
   session id and turn anchor, and survives compaction and forking with the

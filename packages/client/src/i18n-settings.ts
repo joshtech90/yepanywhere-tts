@@ -1,3 +1,10 @@
+import {
+  DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
+  DEVICE_BRIDGE_CAPABILITY,
+  DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
+  GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY,
+  SERVER_CAPABILITIES,
+} from "@yep-anywhere/shared";
 import type { SidebarSpacing } from "./hooks/useSidebarSpacing";
 import type {
   OutputFixedFont,
@@ -125,11 +132,19 @@ export function getSettingsCategories(
       id: "source-control",
       label: t("settingsSourceControlTitle"),
       description: t("settingsSourceControlDescription"),
+      requires: {
+        anyCapability: [GIT_SOURCE_REVIEW_SUBMISSIONS_CAPABILITY],
+        unsupportedMessage: t("sourceControlUnsupportedServer"),
+      },
     },
     {
       id: "issues",
       label: t("issuesTitle"),
       description: t("issuesSettingsDescription"),
+      requires: {
+        anyCapability: [SERVER_CAPABILITIES.issueSessionAssociations.name],
+        unsupportedMessage: t("issuesUnavailable"),
+      },
     },
     {
       id: "storage",
@@ -140,6 +155,10 @@ export function getSettingsCategories(
       id: "computer-control",
       label: t("computerTitle"),
       description: t("settingsComputerDescription"),
+      requires: {
+        anyCapability: [SERVER_CAPABILITIES.computerControl.name],
+        unsupportedMessage: t("computerUnsupportedServer"),
+      },
     },
     {
       id: "agent-context",
@@ -170,11 +189,19 @@ export function getSettingsCategories(
       id: "users",
       label: t("settingsUsersTitle"),
       description: t("settingsUsersDescription"),
+      requires: {
+        anyCapability: [SERVER_CAPABILITIES.limitedUsers.name],
+        unsupportedMessage: t("usersUnsupportedServer"),
+      },
     },
     {
       id: "project-templates",
       label: t("settingsProjectTemplatesTitle"),
       description: t("settingsProjectTemplatesDescription"),
+      requires: {
+        anyCapability: [SERVER_CAPABILITIES.projectTemplateSources.name],
+        unsupportedMessage: t("projectTemplatesUnsupportedServer"),
+      },
     },
     {
       id: "apps",
@@ -217,19 +244,22 @@ export function getSettingsCategories(
       description: t("settingsDevelopmentDescription"),
     },
     {
+      id: "emulator",
+      label: t("settingsEmulatorTitle"),
+      description: t("settingsEmulatorDescription"),
+      requires: {
+        anyCapability: [
+          DEVICE_BRIDGE_CAPABILITY,
+          DEVICE_BRIDGE_DOWNLOAD_CAPABILITY,
+          DEVICE_BRIDGE_AVAILABLE_CAPABILITY,
+        ],
+        unsupportedMessage: t("settingsEmulatorUnsupportedServer"),
+      },
+    },
+    {
       id: "about",
       label: t("settingsAboutTitle"),
       description: t("settingsAboutDescription"),
     },
   ];
-}
-
-export function getEmulatorCategory(
-  t: (key: string) => string,
-): SettingsCategory {
-  return {
-    id: "emulator",
-    label: t("settingsEmulatorTitle"),
-    description: t("settingsEmulatorDescription"),
-  };
 }

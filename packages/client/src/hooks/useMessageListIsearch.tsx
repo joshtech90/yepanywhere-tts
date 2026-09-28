@@ -23,10 +23,12 @@ import {
   getActiveSearchAnchors,
   getAllTurnSearchAnchors,
   getFullSessionSearchAnchors,
+  getLinkSearchAnchors,
   getSearchMatchProjection,
   getSearchNavigatorStateProjection,
   getSearchPanelProjection,
   getSearchReady,
+  getSearchScopeLabel,
   getSearchSelectionProjection,
   getSearchVisibleTurnGroups,
   getUserTurnNavAnchors,
@@ -40,6 +42,7 @@ import {
   type SessionHistorySearchPageResult,
   type SessionHistorySearchWorkerResponse,
 } from "../lib/sessionHistorySearch";
+import { querySessionRouteLayerElement } from "../lib/sessionRouteLayer";
 import type { GetSessionResult } from "../lib/sourceRuntime";
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import type {
@@ -51,6 +54,12 @@ import styles from "./useMessageListIsearch.module.css";
 const SEARCH_ARROW_REPEAT_DELAY_MS = 150;
 const SEARCH_ARROW_REPEAT_INTERVAL_MS = 42;
 const HISTORY_SEARCH_RESULT_LIMIT = 512;
+const SEARCH_SCOPES: readonly SessionIsearchScope[] = [
+  "user",
+  "all",
+  "full",
+  "links",
+];
 
 interface UserTurnSearchSession {
   active: boolean;
@@ -170,6 +179,8 @@ export function useMessageListIsearch({
     "start" | "previous" | "next" | null
   >(null);
   const [boundaryPulse, setBoundaryPulse] = useState(0);
+  // Narrow screens hide the key help until asked, to keep the row usable.
+  const [helpShown, setHelpShown] = useState(false);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchInputWantsFocusRef = useRef(false);
   const searchQueryRef = useRef("");
@@ -461,9 +472,18 @@ export function useMessageListIsearch({
     }
     return getFullSessionSearchAnchors(turnGroups);
   }, [includeFullSessionSearchAnchors, turnGroups]);
+  const includeLinkSearchAnchors =
+    searchReady && userTurnSearch.scope === "links";
+  const linkSearchAnchors = useMemo<UserTurnNavAnchor[]>(() => {
+    if (!includeLinkSearchAnchors) {
+      return [];
+    }
+    return getLinkSearchAnchors(turnGroups);
+  }, [includeLinkSearchAnchors, turnGroups]);
   const loadedSearchAnchors = getActiveSearchAnchors({
     allAnchors: sessionTurnNavAnchors,
     fullAnchors: fullSessionSearchAnchors,
+    linkAnchors: linkSearchAnchors,
     scope: userTurnSearch.scope,
     userAnchors: userTurnSearchAnchors,
   });
@@ -1150,7 +1170,10 @@ export function useMessageListIsearch({
 
   const searchPanelTarget =
     userTurnSearch.active && typeof document !== "undefined"
-      ? document.querySelector<HTMLElement>(".session-input-inner")
+      ? querySessionRouteLayerElement<HTMLElement>(
+          ".session-input-inner",
+          containerRef.current,
+        )
       : null;
   const checkedTotal = Math.max(
     totalMessageCount,
@@ -1185,9 +1208,20 @@ export function useMessageListIsearch({
       <div className={styles.panel} role="search">
         <div className={styles.main}>
           <div className={styles.queryRow}>
-            <span className={styles.label}>
-              {searchPanelProjection.scopeLabel}
-            </span>
+            <select
+              className={styles.label}
+              value={userTurnSearch.scope}
+              aria-label={t("sessionSearchScopePicker")}
+              onChange={(event) =>
+                openSearch(event.target.value as SessionIsearchScope)
+              }
+            >
+              {SEARCH_SCOPES.map((scope) => (
+                <option key={scope} value={scope}>
+                  {getSearchScopeLabel(scope)}
+                </option>
+              ))}
+            </select>
             <input
               ref={attachSearchInput}
               className={styles.input}
@@ -1268,6 +1302,20 @@ export function useMessageListIsearch({
           <span className={styles.count}>
             {searchPanelProjection.countLabel}
           </span>
+          <button
+            type="button"
+            className={styles.close}
+            aria-label={t("sessionSearchCloseHere")}
+            title={t("sessionSearchCloseHere")}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() =>
+              selectedSearchAnchor && selectedSearchTargetId
+                ? activateSelected(true)
+                : closeSearch(false)
+            }
+          >
+            ×
+          </button>
         </div>
         {boundary && (
           <div key={boundaryPulse} className={styles.boundary} role="status">
@@ -1334,7 +1382,21 @@ export function useMessageListIsearch({
             )}
           </div>
         )}
-        <div className={styles.help}>
+        <button
+          type="button"
+          className={styles.helpToggle}
+          aria-label={t("sessionSearchShowKeys")}
+          aria-expanded={helpShown}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={() => setHelpShown((shown) => !shown)}
+        >
+          ?
+        </button>
+        <div
+          className={[styles.help, helpShown ? styles.helpShown : ""]
+            .filter(Boolean)
+            .join(" ")}
+        >
           <span>
             {t("sessionSearchHelpNavigate", {
               shortcutKeys: searchPanelProjection.shortcutKeys,

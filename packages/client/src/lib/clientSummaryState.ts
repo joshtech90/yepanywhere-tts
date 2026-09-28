@@ -185,6 +185,7 @@ const REMAP_MERGE_GROUPS = {
     "parentSessionId",
     "parentSessionKind",
     "forkedFromSessionId",
+    "creationProvenance",
     "clearloop",
     "executor",
   ],
@@ -1059,6 +1060,7 @@ function upsertInboxItemRecord(
     record,
     {
       customTitle: item.customTitle,
+      creationProvenance: item.creationProvenance,
       nonHumanUserTurn: item.nonHumanUserTurn,
       isStarred: item.isStarred,
     },
@@ -1258,6 +1260,7 @@ function withMetadataFields(
     parentSessionId?: string | null;
     parentSessionKind?: "btw-aside" | null;
     forkedFromSessionId?: string | null;
+    creationProvenance?: GlobalSessionItem["creationProvenance"];
     clearloop?: SessionClearloopBadge | null;
     executor?: string;
   },
@@ -1326,6 +1329,13 @@ function withMetadataFields(
           )
         ? { forkedFromSessionId: fields.forkedFromSessionId }
         : {}),
+    ...(canApplyObservedField(
+      record.creationProvenance,
+      fields.creationProvenance,
+      isFresh,
+    )
+      ? { creationProvenance: fields.creationProvenance }
+      : {}),
     ...(fields.clearloop === null
       ? isFresh
         ? { clearloop: undefined }
@@ -1520,6 +1530,7 @@ function upsertSnapshotRecord(
       parentSessionId: row.parentSessionId,
       parentSessionKind: row.parentSessionKind,
       forkedFromSessionId: row.forkedFromSessionId,
+      creationProvenance: row.creationProvenance,
       executor: row.executor,
     },
     observation,
@@ -1696,6 +1707,7 @@ export function applySessionCollectionTitleSnapshot(
     record,
     {
       customTitle: session.customTitle,
+      creationProvenance: session.creationProvenance,
       nonHumanUserTurn: session.nonHumanUserTurn,
     },
     observation,
@@ -2067,6 +2079,7 @@ export function applySessionCollectionCreated(
       parentSessionId: session.parentSessionId,
       parentSessionKind: session.parentSessionKind,
       forkedFromSessionId: session.forkedFromSessionId,
+      creationProvenance: session.creationProvenance,
     },
     observation,
   );
@@ -2144,6 +2157,7 @@ export function applySessionCollectionMetadataChanged(
       parentSessionId: event.parentSessionId,
       parentSessionKind: event.parentSessionKind,
       forkedFromSessionId: event.forkedFromSessionId,
+      creationProvenance: event.creationProvenance,
       clearloop: event.clearloop,
     },
     observation,

@@ -202,8 +202,9 @@ immediately fall back to the repository's installed Playwright dependency,
 which is what the capture command already uses. Do not stop or keep retrying a
 desktop-only backend.
 
-For multi-step interaction testing, add or run a focused `@playwright/test`
-case under `packages/client/e2e/`.
+For multi-step interaction testing that needs a real browser, run an existing
+focused `@playwright/test` case or add one under the [E2E testing](e2e-testing.md)
+criteria. A visual capture alone does not require a permanent regression case.
 
 Choose an unused base port and its next two ports for the server under test;
 the example uses 4000–4002. That port belongs to the throwaway server being
@@ -284,9 +285,9 @@ sees nothing, so say plainly in the handoff that the images were not presented,
 paste the paths, and treat it as the exception rather than the shape to reach
 for.
 
-For multi-step flows, add or run a focused `@playwright/test` case under
-`packages/client/e2e/`. If Playwright itself is unavailable, use another
-browser automation path or a manual browser session:
+For multi-step flows that need browser automation, use a focused Playwright
+case under the [E2E testing](e2e-testing.md) criteria. If Playwright itself is
+unavailable, use another browser automation path or a manual browser session:
 
 1. Open the target page directly in a browser.
 2. Resize viewport to desktop + mobile dimensions.

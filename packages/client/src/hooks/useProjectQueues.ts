@@ -1,10 +1,11 @@
-import type {
-  ProjectQueueDispatchState,
-  ProjectQueueItemSummary,
-  ProjectQueueProjectStatus,
-  ProjectQueuePromoteNowResult,
-  ProjectQueueRecoveredSessionQueueSummary,
-  UpdateProjectQueueItemRequest,
+import {
+  type ProjectQueueDispatchState,
+  type ProjectQueueItemSummary,
+  type ProjectQueueProjectStatus,
+  type ProjectQueuePromoteNowResult,
+  type ProjectQueueRecoveredSessionQueueSummary,
+  type UpdateProjectQueueItemRequest,
+  retagEditedQueuedMessage,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
@@ -576,10 +577,14 @@ export function useProjectQueues(
       setMutationError(null);
       const requestSummary = sourceSummary;
       try {
+        // Queue editors spread the old message and replace its text; the
+        // command it runs follows that text (topics/project-queue.md).
         const response = await api.updateProjectQueueItem(
           projectId,
           itemId,
-          request,
+          request.message
+            ? { ...request, message: retagEditedQueuedMessage(request.message) }
+            : request,
         );
         requestSummary.reportProjectQueueCollectionSnapshot(response.queue);
       } catch (err) {

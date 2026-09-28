@@ -1,13 +1,20 @@
 import {
   type ProjectQueueItemSummary,
+  type ProjectQueueListResponse,
   type ProjectQueuePromoteNowRequest,
   toUrlProjectId,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
+import { Hono } from "hono";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  PRINCIPAL_VARIABLE,
+  type Principal,
+} from "../../src/auth/principal.js";
+import { UserUsageService } from "../../src/auth/UserUsageService.js";
 import type { ProjectScanner } from "../../src/projects/scanner.js";
 import {
   createGlobalProjectQueueRoutes,
@@ -277,12 +284,22 @@ describe("Project Queue Routes", () => {
       ),
     };
 
-    const routes = createGlobalRoutes({ projectQueueScheduler });
+    const routes = createGlobalRoutes({
+      projectQueueScheduler,
+      sessionMetadataService: {
+        getMetadata: vi.fn((sessionId: string) =>
+          sessionId === "session-1"
+            ? { customTitle: "Active repair session" }
+            : undefined,
+        ),
+      } as unknown as SessionMetadataService,
+    });
     const listResponse = await routes.request("/");
     const listBody = await listResponse.json();
     expect(listBody.projectStatuses[projectId]).toMatchObject({
       state: "blocked",
       blockers: ["session-1:in-turn"],
+      blockerSessionTitles: { "session-1": "Active repair session" },
       nextItemId: item.id,
     });
 
@@ -307,6 +324,52 @@ describe("Project Queue Routes", () => {
       force: true,
       deliveryIntent: "steer",
     });
+  });
+
+  it("looks up titles only for the blocker sessions the queue names", async () => {
+    await service.createItem({
+      projectId,
+      projectPath: project.path,
+      request: {
+        target: { type: "new-session" },
+        message: { text: "blocked queued item" },
+      },
+    });
+    const projectQueueScheduler = {
+      getProjectStatus: vi.fn(async (id: UrlProjectId) => ({
+        projectId: id,
+        state: "blocked" as const,
+        idle: false,
+        blockers: [
+          "session-1:in-turn",
+          "worker-queue",
+          "session-2:automation-paused",
+          "session-3:liveness-verified-progressing",
+        ],
+        dispatchPaused: false,
+        inFlight: false,
+        quietWindowMs: 30_000,
+        itemCount: 1,
+      })),
+      promoteNow: vi.fn(),
+    };
+    const getMetadata = vi.fn((sessionId: string) => ({
+      customTitle: `Title of ${sessionId}`,
+    }));
+
+    const routes = createGlobalRoutes({
+      projectQueueScheduler,
+      sessionMetadataService: {
+        getMetadata,
+      } as unknown as SessionMetadataService,
+    });
+    const body = await (await routes.request("/")).json();
+
+    expect(body.projectStatuses[projectId].blockerSessionTitles).toEqual({
+      "session-1": "Title of session-1",
+      "session-2": "Title of session-2",
+    });
+    expect(getMetadata).not.toHaveBeenCalledWith("session-3");
   });
 
   it("enriches existing-session targets with cached session titles", async () => {
@@ -501,6 +564,263 @@ describe("Project Queue Routes", () => {
         content: "second recovered",
       },
     ]);
+  });
+
+  it("queues a limited user's item under their launch policy, and only lets them change their own", async () => {
+    const limited: Principal = {
+      kind: "limited",
+      username: "alice",
+      grants: {
+        newSessionProjects: [projectId],
+        joinProjects: [],
+        viewProjects: [],
+        joinStaleOffsetMinutes: 0,
+        lock: { model: "gpt-5" },
+      },
+      switched: false,
+      locked: true,
+      via: "direct",
+    };
+    const app = new Hono<{
+      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+    }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, limited);
+      await next();
+    });
+    app.route("/", createRoutes());
+    const send = (method: string, url: string, body: unknown) =>
+      app.request(url, {
+        method,
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const remote = await send("POST", `/${projectId}/queue`, {
+      target: { type: "new-session", executor: "devbox" },
+      message: { text: "run elsewhere" },
+    });
+    expect(remote.status).toBe(403);
+    const command = await send("POST", `/${projectId}/queue`, {
+      target: { type: "existing-session", sessionId: "session-1" },
+      message: {
+        text: "/clear 1",
+        yaCommand: { name: "clear", argument: "1" },
+      },
+    });
+    expect(command.status).toBe(403);
+
+    const created = await send("POST", `/${projectId}/queue`, {
+      target: { type: "new-session", sandboxLevel: "none" },
+      message: { text: "start as alice" },
+    });
+    expect(created.status).toBe(201);
+    const { item } = (await created.json()) as {
+      item: ProjectQueueItemSummary;
+    };
+    expect(item.createdByUser).toBe("alice");
+    expect(item.target).toMatchObject({
+      type: "new-session",
+      sandboxLevel: "project-write",
+      model: "gpt-5",
+    });
+
+    const superuserItem = await service.createItem({
+      projectId,
+      projectPath: project.path,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: { text: "superuser's turn" },
+      },
+    });
+    const foreign = await send(
+      "PATCH",
+      `/${projectId}/queue/${superuserItem.id}`,
+      { message: { text: "rewritten by alice" } },
+    );
+    expect(foreign.status).toBe(404);
+    const foreignDelete = await app.request(
+      `/${projectId}/queue/${superuserItem.id}`,
+      { method: "DELETE" },
+    );
+    expect(foreignDelete.status).toBe(404);
+    const own = await send("PATCH", `/${projectId}/queue/${item.id}`, {
+      message: { text: "edited by alice" },
+    });
+    expect(own.status).toBe(200);
+  });
+
+  it("counts a queued prompt in the usage ledger when it is queued", async () => {
+    const userUsageService = new UserUsageService({ dataDir: testDir });
+    const limited: Principal = {
+      kind: "limited",
+      username: "alice",
+      grants: {
+        newSessionProjects: [projectId],
+        joinProjects: [projectId],
+        viewProjects: [],
+        joinStaleOffsetMinutes: 0,
+        lock: {},
+      },
+      switched: false,
+      locked: false,
+      via: "direct",
+    };
+    let principal: Principal = limited;
+    const app = new Hono<{
+      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+    }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, principal);
+      await next();
+    });
+    app.route("/", createRoutes({ userUsageService }));
+    const queue = (body: unknown) =>
+      app.request(`/${projectId}/queue`, {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "application/json" },
+      });
+
+    const newSession = await queue({
+      target: { type: "new-session" },
+      message: { text: "start three words" },
+    });
+    expect(newSession.status).toBe(201);
+    principal = { kind: "superuser" };
+    const followUp = await queue({
+      target: { type: "existing-session", sessionId: "session-1" },
+      message: { text: "then this" },
+    });
+    expect(followUp.status).toBe(201);
+    const command = await queue({
+      target: { type: "existing-session", sessionId: "session-1" },
+      message: {
+        text: "/clear 1",
+        yaCommand: { name: "clear", argument: "1" },
+      },
+    });
+    expect(command.status).toBe(201);
+
+    const report = await userUsageService.report(["alice"]);
+    expect(
+      report.users.find((user) => user.username === "alice")?.total,
+    ).toMatchObject({ sessions: 1, turns: 1, words: 3 });
+    // The queued YA command is no turn, as on the session routes.
+    expect(
+      report.users.find((user) => user.username === null)?.total,
+    ).toMatchObject({ sessions: 0, turns: 1, words: 2 });
+  });
+
+  it("shows a limited user only their granted projects' queue", async () => {
+    const otherProjectId = toUrlProjectId("/tmp/project-queue-route-other");
+    const grantedItem = await service.createItem({
+      projectId,
+      projectPath: project.path,
+      request: {
+        target: { type: "existing-session", sessionId: "session-1" },
+        message: { text: "granted prompt" },
+      },
+    });
+    await service.createItem({
+      projectId: otherProjectId,
+      projectPath: "/tmp/project-queue-route-other",
+      request: {
+        target: { type: "existing-session", sessionId: "other-session" },
+        message: { text: "someone else's prompt" },
+      },
+    });
+    const sessionQueuePersistenceService = new SessionQueuePersistenceService({
+      dataDir: testDir,
+    });
+    await sessionQueuePersistenceService.initialize();
+    await sessionQueuePersistenceService.replaceAll([
+      makePersistedSessionQueueItem({ id: "granted-recovered" }),
+      makePersistedSessionQueueItem({
+        id: "other-recovered",
+        sessionId: "other-session",
+        projectId: otherProjectId,
+        projectPath: "/tmp/project-queue-route-other",
+        message: { text: "someone else's recovered prompt" },
+      }),
+    ]);
+    const statusFor = (id: UrlProjectId, sessionId: string) => ({
+      projectId: id,
+      state: "blocked" as const,
+      idle: false,
+      blockers: [`${sessionId}:in-turn`],
+      dispatchPaused: false,
+      inFlight: false,
+      quietWindowMs: 30_000,
+      itemCount: 1,
+    });
+    const projectQueueScheduler = {
+      getProjectStatus: vi.fn(async (id: UrlProjectId) =>
+        statusFor(id, id === projectId ? "session-1" : "other-session"),
+      ),
+      promoteNow: vi.fn(async (id: UrlProjectId) => ({
+        promoted: false,
+        reason: "blocked" as const,
+        status: statusFor(id, "session-1"),
+      })),
+    };
+    const global = createGlobalRoutes({
+      projectQueueScheduler,
+      sessionQueuePersistenceService,
+      sessionMetadataService: {
+        getMetadata: vi.fn((sessionId: string) => ({
+          customTitle:
+            sessionId === "session-1" ? "Granted session" : "Private title",
+        })),
+      } as unknown as SessionMetadataService,
+    });
+    const limited: Principal = {
+      kind: "limited",
+      username: "alice",
+      grants: {
+        newSessionProjects: [projectId],
+        joinProjects: [],
+        viewProjects: [],
+        joinStaleOffsetMinutes: 0,
+        lock: {},
+      },
+      switched: false,
+      locked: true,
+      via: "direct",
+    };
+    const app = new Hono<{
+      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+    }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, limited);
+      await next();
+    });
+    app.route("/", global);
+
+    const expectScoped = (body: ProjectQueueListResponse) => {
+      expect(body.items.map((item) => item.id)).toEqual([grantedItem.id]);
+      expect(body.recoveredSessionQueues?.map((item) => item.id)).toEqual([
+        "granted-recovered",
+      ]);
+      expect(Object.keys(body.projectStatuses ?? {})).toEqual([projectId]);
+      expect(JSON.stringify(body)).not.toContain("Private title");
+      expect(JSON.stringify(body)).not.toContain("someone else's");
+    };
+
+    const listResponse = await app.request("/");
+    expect(listResponse.status).toBe(200);
+    expectScoped(await listResponse.json());
+
+    const promoteResponse = await app.request(`/${projectId}/promote-now`, {
+      method: "POST",
+    });
+    expect(promoteResponse.status).toBe(200);
+    expectScoped(await promoteResponse.json());
+
+    // The superuser still sees every project.
+    const superuserBody = await (await global.request("/")).json();
+    expect(superuserBody.items).toHaveLength(2);
+    expect(Object.keys(superuserBody.projectStatuses)).toHaveLength(2);
   });
 
   it("pauses and resumes project queue dispatch globally", async () => {

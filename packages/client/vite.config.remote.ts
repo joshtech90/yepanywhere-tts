@@ -11,6 +11,7 @@ import react from "@vitejs/plugin-react";
 import { type Plugin, defineConfig } from "vite";
 import { warningFreeBuildLogger } from "./vite-build-policy";
 import { cspPlugin, shouldInlineClientAsset } from "./vite-plugin-csp";
+import { prebootComposerPlugin } from "./vite-plugin-preboot-composer";
 
 function getGitVersion(): string {
   try {
@@ -76,7 +77,12 @@ export default defineConfig(({ command }) => ({
   // Remote builds should not serialize dev-only VITE_* shell variables such as
   // VITE_PORT into the hosted bundle. Keep this to intentional public inputs.
   envPrefix: ["VITE_DEFAULT_RELAY_URL"],
-  plugins: [serveRemoteHtml(), react(), cspPlugin({ isRemote: true })],
+  plugins: [
+    serveRemoteHtml(),
+    react(),
+    prebootComposerPlugin(),
+    cspPlugin({ isRemote: true }),
+  ],
   resolve: {
     alias: {
       crypto: resolve(__dirname, "src/lib/connection/browserCrypto.ts"),
@@ -103,6 +109,7 @@ export default defineConfig(({ command }) => ({
     rollupOptions: {
       input: {
         main: resolve(__dirname, "remote.html"),
+        play: resolve(__dirname, "play.html"),
       },
       output: {
         manualChunks: {

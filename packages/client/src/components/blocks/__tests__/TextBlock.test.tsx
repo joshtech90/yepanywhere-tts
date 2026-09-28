@@ -19,6 +19,7 @@ import type { YaSourceRuntime } from "../../../lib/sourceRuntime";
 import { SourceRuntimeProvider } from "../../../lib/sourceRuntimeReact";
 import { FakeSourceTransport } from "../../../lib/transport";
 import localMediaStyles from "../../LocalMediaModal.module.css";
+import { SessionAppLinkContext } from "../../SessionAppLinks";
 import { TextBlock } from "../TextBlock";
 
 function GlobalRenderModeButton() {
@@ -120,6 +121,34 @@ describe("TextBlock", () => {
 
     expect(container.querySelector(".text-block-toggle")).toBeNull();
     expect(screen.getByText("Plain answer.")).toBeDefined();
+  });
+
+  it("rewrites rendered anchor destinations without changing their labels", () => {
+    const { container } = render(
+      <I18nProvider>
+        <SessionAppLinkContext.Provider
+          value={{
+            rewriteHref: (href) =>
+              href === "http://plan.localhost/"
+                ? "https://plan.example.org/?ya_access=token"
+                : href,
+          }}
+        >
+          <TextBlock
+            text="plan.localhost"
+            augmentHtml={
+              '<p><a href="http://plan.localhost/">plan.localhost</a></p>'
+            }
+          />
+        </SessionAppLinkContext.Provider>
+      </I18nProvider>,
+    );
+
+    const link = container.querySelector("a");
+    expect(link?.textContent).toBe("plan.localhost");
+    expect(link?.getAttribute("href")).toBe(
+      "https://plan.example.org/?ya_access=token",
+    );
   });
 
   it("shows render toggle for completed server markdown", () => {
@@ -607,7 +636,7 @@ describe("TextBlock", () => {
       expect(candidate).toBeTruthy();
       return candidate;
     });
-    expect(frame?.getAttribute("sandbox")).toBe("");
+    expect(frame?.getAttribute("sandbox")).toBe("allow-same-origin");
     expect(frame?.srcdoc).toContain("Rendered local preview");
   });
 

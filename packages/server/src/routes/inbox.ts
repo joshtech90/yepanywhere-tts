@@ -32,10 +32,8 @@ import { SessionCollectionGeneration } from "../sessions/sessionCollectionGenera
 import type { GrokSessionReader } from "../sessions/grok-reader.js";
 import type { PiSessionReader } from "../sessions/pi-reader.js";
 import type { ISessionReader, SessionListSummary } from "../sessions/types.js";
-import {
-  getEffectiveProviderUpdatedAt,
-  sessionRowRuntimeOverlay,
-} from "../sessions/recap-overlays.js";
+import { getEffectiveProviderUpdatedAt } from "../sessions/recap-overlays.js";
+import { sessionRowRuntimeOverlay } from "../sessions/session-runtime-overlay.js";
 import type { ProjectQueueService } from "../services/ProjectQueueService.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
 import type {
@@ -44,6 +42,7 @@ import type {
   Project,
 } from "../supervisor/types.js";
 import type { EventBus } from "../watcher/index.js";
+import type { ProjectDisplayNameResolver } from "../projects/paths.js";
 import { buildProviderProjectCatalog } from "./provider-catalog.js";
 import { getActiveSessionIndexOptions } from "./session-list-options.js";
 
@@ -68,9 +67,12 @@ export interface InboxDeps {
   piReaderFactory?: (projectPath: string) => PiSessionReader;
   eventBus?: EventBus;
   sessionAutoArchiveDays?: number;
+  /** Names a retained row's project; defaults to the path's name. */
+  projectDisplayName?: ProjectDisplayNameResolver;
 }
 
 export interface InboxItem {
+  creationProvenance?: import("@yep-anywhere/shared").SessionCreationProvenance;
   nonHumanUserTurn?: import("@yep-anywhere/shared").NonHumanUserTurn | null;
   asyncQuestions?: SessionListSummary["asyncQuestions"];
   sessionId: string;
@@ -106,6 +108,7 @@ const INBOX_RETENTION_BYTES = 8 * 1024 * 1024;
 
 /** One session, walked and enriched, before any tier decision is made. */
 interface EnrichedInboxSession {
+  creationProvenance?: InboxItem["creationProvenance"];
   session: SessionListSummary;
   projectName: string;
   pendingInputType?: PendingInputType;
@@ -248,6 +251,7 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
           activity,
           hasUnread,
           customTitle: metadata?.customTitle ?? session.customTitle,
+          creationProvenance: metadata?.creationProvenance,
           isStarred: metadata?.isStarred ?? session.isStarred ?? false,
         });
       }
@@ -311,6 +315,7 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
             activity: item.activity,
             hasUnread: item.hasUnread,
             customTitle: item.customTitle,
+            creationProvenance: item.creationProvenance,
             isStarred: item.isStarred,
           }))
       : await readInbox(filterProjectId);
@@ -349,6 +354,7 @@ export function createInboxRoutes(deps: InboxDeps): Hono {
             }),
       updatedAt: item.session.updatedAt,
       customTitle: item.customTitle,
+      creationProvenance: item.creationProvenance,
       isStarred: item.isStarred,
       pendingInputType: item.pendingInputType,
       activity: item.activity,

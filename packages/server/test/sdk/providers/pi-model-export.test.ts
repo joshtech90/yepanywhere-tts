@@ -136,6 +136,68 @@ describe("pi model registry export", () => {
     expect(registry["ya-vllm"]?.models).toHaveLength(1);
   });
 
+  describe("a registry YA cannot read as plain JSON", () => {
+    // pi reads models.json as JSON with comments, so a hand-maintained one may
+    // carry comments or a trailing comma that JSON.parse rejects.
+    const COMMENTED = `{
+  // local vLLM
+  "providers": {
+    "vllm-local": { "baseUrl": "http://127.0.0.1:8001/v1", "models": [] },
+  },
+}
+`;
+
+    async function expectUntouched(): Promise<void> {
+      await expect(
+        readFile(piModelsJsonPath(agentDir), "utf8"),
+      ).resolves.toEqual(COMMENTED);
+      await expect(
+        readFile(`${piModelsJsonPath(agentDir)}.ya-backup`, "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+
+    it("is left alone with the export off", async () => {
+      await writeFile(piModelsJsonPath(agentDir), COMMENTED);
+
+      const result = await syncPiModelExport({
+        services: [service()],
+        enabled: false,
+        models: new Map([["vllm", [model]]]),
+        agentDir,
+      });
+
+      expect(result.changed).toBe(false);
+      await expectUntouched();
+    });
+
+    it("is left alone with the export on", async () => {
+      await writeFile(piModelsJsonPath(agentDir), COMMENTED);
+
+      const result = await syncPiModelExport({
+        services: [service()],
+        enabled: true,
+        models: new Map([["vllm", [model]]]),
+        agentDir,
+      });
+
+      expect(result.changed).toBe(false);
+      await expectUntouched();
+    });
+  });
+
+  it("creates no registry while the export is off", async () => {
+    await syncPiModelExport({
+      services: [service()],
+      enabled: false,
+      models: new Map([["vllm", [model]]]),
+      agentDir,
+    });
+
+    await expect(
+      readFile(piModelsJsonPath(agentDir), "utf8"),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("leaves a disabled service out", async () => {
     await syncPiModelExport({
       services: [service({ enabled: false })],

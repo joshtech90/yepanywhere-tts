@@ -9,7 +9,7 @@ import {
   type ProjectQueueItemSummary,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import type { SessionIndexService } from "../indexes/index.js";
 import type {
   ProjectMetadataService,
@@ -21,7 +21,10 @@ import { warmGitAuthorPalette } from "../git/authorPalette.js";
 import {
   decideProjectCreation,
   ensureProjectDirectory,
+  isContainedOnDisk,
 } from "./project-creation.js";
+import type { LimitedUsersService } from "../auth/LimitedUsersService.js";
+import { principalFor } from "../auth/limitedLaunchPolicy.js";
 import type { CodexSessionScanner } from "../projects/codex-scanner.js";
 import type { GeminiSessionScanner } from "../projects/gemini-scanner.js";
 import {
@@ -48,9 +51,11 @@ import type { EventBus } from "../watcher/index.js";
 import {
   applyRecapOverlayToSummary,
   getEffectiveProviderUpdatedAt,
+} from "../sessions/recap-overlays.js";
+import {
   sessionOwnershipFromProcess,
   sessionRowRuntimeOverlay,
-} from "../sessions/recap-overlays.js";
+} from "../sessions/session-runtime-overlay.js";
 import type { ExternalSessionTracker } from "../supervisor/ExternalSessionTracker.js";
 import type { Process } from "../supervisor/Process.js";
 import type { Supervisor } from "../supervisor/Supervisor.js";
@@ -67,6 +72,8 @@ export interface ProjectsDeps {
   sessionMetadataService?: SessionMetadataService;
   /** ProjectMetadataService for persisting added projects */
   projectMetadataService?: ProjectMetadataService;
+  /** Grants a limited user the project they just created. */
+  limitedUsersService?: Pick<LimitedUsersService, "grantNewSessionProject">;
   eventBus?: EventBus;
   projectQueueService?: Pick<ProjectQueueService, "listAll" | "listProject">;
   sessionIndexService?: SessionIndexService;
@@ -98,6 +105,23 @@ interface ProjectActivityCounts {
   activeExternalCount: number;
   projectQueueBlockingCount: number;
 }
+
+/**
+ * Whether the acting principal may change how a project is named, captioned,
+ * code-named or listed. Those are one value every principal sees, so a
+ * limited user changes them only on a project they own; a grant to start
+ * sessions somewhere is not a say in how it is presented to everyone else.
+ * topics/limited-users.md § Delivery v1 — Authorization.
+ */
+function mayEditSharedProjectMetadata(c: Context, project: Project): boolean {
+  const principal = principalFor(c);
+  return (
+    principal.kind !== "limited" || project.ownerUsername === principal.username
+  );
+}
+
+const NOT_PROJECT_OWNER_ERROR =
+  "Only the project's owner or the superuser may change this project";
 
 function emptyProjectActivityCounts(): ProjectActivityCounts {
   return {
@@ -432,6 +456,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         parentSessionId,
         parentSessionKind,
         forkedFromSessionId,
+        creationProvenance: metadata?.creationProvenance,
         workstreamId: metadata?.workstreamId,
       };
     });
@@ -583,9 +608,35 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
 
     // A limited user may only add projects under their configured directory;
     // the superuser may add anything (topics/limited-users.md § Delivery v1).
-    const creation = decideProjectCreation(c, normalizedPath);
+    const creation = await decideProjectCreation(c, normalizedPath);
     if (creation.kind === "denied") {
       return c.json({ error: creation.error }, 403);
+    }
+    const owner = creation.owner;
+    if (owner && !deps.limitedUsersService) {
+      throw new Error(
+        "Adding a limited user's project needs the limited users service",
+      );
+    }
+    // A limited user adds a directory; re-adding must not claim a project
+    // that is already here under another owner or none, nor show one the
+    // superuser hid. Their own project may be added again.
+    if (owner) {
+      const existing = await deps.scanner.getProject(
+        toUrlProjectId(normalizedPath),
+      );
+      if (
+        deps.projectMetadataService?.isHiddenProjectPath(normalizedPath) ||
+        (existing && existing.ownerUsername !== owner.username)
+      ) {
+        return c.json(
+          {
+            error:
+              "This directory is already a project; ask the superuser for access",
+          },
+          403,
+        );
+      }
     }
 
     // `create` is the client's confirmed answer to "this does not exist yet".
@@ -593,9 +644,23 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     // no caller creates a directory by accident.
     const directory = await ensureProjectDirectory(normalizedPath, {
       create: body.create === true,
+      projectRoot: owner?.projectRoot,
     });
     if (directory.kind === "error") {
       return c.json({ error: directory.error }, directory.status);
+    }
+    // Checked again now the directory exists: a link swapped in under the
+    // root since the first check must not become a registered project.
+    if (
+      owner &&
+      !(await isContainedOnDisk(owner.projectRoot, normalizedPath))
+    ) {
+      return c.json(
+        {
+          error: `This user may only create projects under ${owner.projectRoot}`,
+        },
+        403,
+      );
     }
 
     // Create projectId and try to get/create the project
@@ -615,7 +680,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       await deps.projectMetadataService.addProject(
         projectId,
         normalizedPath,
-        creation.ownerUsername,
+        owner?.username,
       );
       // A name equal to the path's own is no override at all.
       if (
@@ -640,6 +705,14 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         publishCodeNameChanges(update.changedProjectIds);
       }
     }
+    // Owning a project is what makes it theirs to use; without the grant it
+    // would vanish from their own project list the moment it was made.
+    if (owner) {
+      await deps.limitedUsersService?.grantNewSessionProject(
+        owner.username,
+        project.id,
+      );
+    }
     publishProjectsChanged([project.id]);
 
     const codeNameByProjectId = await codeNamesForProjects([project]);
@@ -648,9 +721,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
         ...project,
         codeName: codeNameByProjectId.get(project.id),
         caption: await captionForProject(project),
-        ...(creation.ownerUsername
-          ? { ownerUsername: creation.ownerUsername }
-          : {}),
+        ...(owner ? { ownerUsername: owner.username } : {}),
       },
       created: directory.kind === "created",
     });
@@ -676,9 +747,14 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       return c.json({ error: "caption must be a string or null" }, 400);
     }
 
-    const project = await deps.scanner.getOrCreateProject(projectId);
+    // Only a listed project takes a caption; an arbitrary directory's id
+    // must not gain app-data metadata through this route.
+    const project = await deps.scanner.getProject(projectId);
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
+    }
+    if (!mayEditSharedProjectMetadata(c, project)) {
+      return c.json({ error: NOT_PROJECT_OWNER_ERROR }, 403);
     }
 
     let caption: string | null;
@@ -725,9 +801,14 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       return c.json({ error: "name must be a string or null" }, 400);
     }
 
-    const project = await deps.scanner.getOrCreateProject(projectId);
+    // Only a listed project takes a name; an arbitrary directory's id must
+    // not become a project through a rename.
+    const project = await deps.scanner.getProject(projectId);
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
+    }
+    if (!mayEditSharedProjectMetadata(c, project)) {
+      return c.json({ error: NOT_PROJECT_OWNER_ERROR }, 403);
     }
 
     let name: string | null;
@@ -744,8 +825,7 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     await deps.projectMetadataService.setProjectNameOverride(project.id, name);
     deps.scanner.invalidateCache();
     publishProjectsChanged([project.id]);
-    const renamed =
-      (await deps.scanner.getOrCreateProject(projectId)) ?? project;
+    const renamed = (await deps.scanner.getProject(projectId)) ?? project;
     return c.json({ name: renamed.name });
   });
 
@@ -768,9 +848,12 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
       return c.json({ error: "codeName is required" }, 400);
     }
 
-    const project = await deps.scanner.getOrCreateProject(projectId);
+    const project = await deps.scanner.getProject(projectId);
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
+    }
+    if (!mayEditSharedProjectMetadata(c, project)) {
+      return c.json({ error: NOT_PROJECT_OWNER_ERROR }, 403);
     }
 
     try {
@@ -805,6 +888,9 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     const project = await deps.scanner.getProject(projectId);
     if (!project) {
       return c.json({ error: "Project not found" }, 404);
+    }
+    if (!mayEditSharedProjectMetadata(c, project)) {
+      return c.json({ error: NOT_PROJECT_OWNER_ERROR }, 403);
     }
 
     await deps.projectMetadataService.hideProject(project.id, project.path);

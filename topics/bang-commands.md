@@ -90,12 +90,36 @@ project directory:
   deliberately no further escape — a turn whose literal text must begin
   with space-then-`!!` cannot be sent, an accepted non-case. A bare `!!`
   with no command is a silent no-op (the chip already explains the mode).
-- **Execution.** Server-side `bash -c` (pipes, globs, redirects work — the
+- **Submission empties the composer; its outcome settles the draft.** As
+  with Send, submitting a bang command empties the composer at once, so
+  keys typed while the run request is in flight start the next draft and
+  are never cleared with the command; browser draft storage keeps the
+  command as the recovery copy meanwhile. A completed bang-run request
+  removes that copy only while the composer is still empty. A failed request
+  puts the submitted command back so the user can correct or retry it, unless
+  the user has already begun a newer draft, which is kept; the failure toast
+  then remains the only record of the command. See
+  [composer acknowledgement safety](message-control-steer-queue-btw-later-interrupt.md#composer-acknowledgement-safety).
+- **Execution.** Server-side `bash -lc` loads the user's login startup,
+  including functions and aliases (pipes, globs, redirects work — the
   acli composition story assumes pipeable verbs), `cwd` = the session's
   project directory, child in its own process group so kill reaches the
   whole pipeline. Command resolution: PATH first, then the project
-  directory as an implicit final PATH entry (a project-root executable
-  `foo` runs as `./foo`; no subdirectory search).
+  directory as an implicit final PATH entry, applied after login startup
+  along with the project working directory (a project-root executable
+  `foo` runs as `./foo`; no subdirectory search). Login startup is not an
+  interactive shell: aliases and functions a `.bashrc` defines after the
+  usual interactive guard (`[[ $- == *i* ]] || return`) do not load, even
+  when `.bash_profile` sources that `.bashrc`.
+- **Login startup is not part of the run.** What login startup writes — a
+  banner, `fortune`, a warning — is dropped from the run's output and
+  previews; the run records only what follows it. A run whose login startup
+  never hands control to the command, because a login file replaces the
+  shell (`exec zsh`) or exits, settles as an error saying so, even when the
+  shell exited 0, and keeps startup's output as its only evidence. Startup
+  that has not returned within 30 seconds (an auto-attaching `tmux`, a
+  prompt waiting on input) is killed with that reason. Side effects of
+  login startup still happen on every run.
 - **Trust boundary.** No new one: YA already executes arbitrary code as the
   server user via agent sessions. Bang exec is gated by the same
   authentication as sending a turn (owner clients over direct or E2E relay
@@ -111,24 +135,34 @@ project directory:
   `BASH_ENV`** — an agent launcher's `BASH_ENV` bridge script would
   otherwise be re-sourced by the child bash and re-inject the identity vars
   just scrubbed (caught by test; a bang-run `agentctl` must never adopt an
-  agent session's identity).
+  agent session's identity). Clear these markers again after login startup.
 - **Result block.** Shows the command line, exit code, duration, and output;
-  stderr stays distinguishable (collapsed `details`, hidden when empty).
+  stderr stays distinguishable and expanded, hidden only when empty.
+  Newly noticed runs in an open session expand automatically: previews show
+  during execution and completed rendered output loads without a click.
+  Runs already present when revisiting the session start with bounded previews.
   Non-zero exit gets error styling. A running block shows a streaming
   preview with a cancel control; streamed updates are coalesced server-side
   (metadata-changed events at most every 750 ms) before reaching React —
   bursty command output is exactly the high-rate path the client
   performance rules cover.
+  A delayed start response cannot overwrite newer streamed output or terminal
+  status, or remove another concurrent run.
 - **Persistence.** Transcript display object kind `bang-command`, anchored
-  by `placementAfterMessageId` at the transcript tail when run (empty
-  anchor renders before the first item, for empty sessions). User-authored,
+  by `placementAfterMessageId` at the displayed transcript tail when run;
+  transient completion events are never anchors. The live window recovers
+  older bang records whose anchors disappeared by placing them at their saved
+  creation time, provided preceding timestamped content is loaded. Historical
+  search windows retain exact-anchor placement. An empty
+  anchor renders before the first item, for empty sessions. User-authored,
   so deletion is allowed once finished (409 while running). Output does not
   bloat `session-metadata.json`: the object stores the command line, exit
   metadata, and bounded preview tails (4 KiB stdout / 2 KiB stderr); full
   output lands in `{dataDir}/bang-commands/<sessionId>/<objectId>.stdout` /
   `.stderr` (8 MiB cap per stream, truncation flagged), fetched on demand
-  (2 MiB response cap per stream, 4 MiB combined). Full output is loaded only
-  after an explicit user action; the 500-entry history view retains at most one
+  (2 MiB response cap per stream, 4 MiB combined). Full output loads
+  automatically for newly noticed session runs, or after an explicit user
+  action for revisited runs; the 500-entry history view retains at most one
   expanded full-output response at a time. Per-session bang objects are pruned
   oldest-first past 100, but a running object is never pruned. Truncated
   display states that it was cut — the acli truncation principle applied to
@@ -197,8 +231,7 @@ a bang draft the mobile-keyboard compact action row gains a temporary
 "Tab ⇥" button that triggers the same completion action.
 
 Completion responses are draft-versioned: a response for an older full bang
-line is discarded even when the trailing token is unchanged. A failed run
-keeps the submitted draft intact so the user can correct or retry it.
+line is discarded even when the trailing token is unchanged.
 
 - **Command position** — the first token, and the first token after `|`,
   `;`, or `&`: candidates are executable names from the server's PATH plus

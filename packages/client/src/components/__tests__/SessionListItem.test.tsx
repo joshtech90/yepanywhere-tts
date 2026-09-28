@@ -79,6 +79,35 @@ describe("SessionListItem links", () => {
     };
   }
 
+  it("shows creation age only when the creation timestamp is known", () => {
+    const updatedAt = new Date(Date.now() - 60 * 60_000).toISOString();
+    const knownCreation = new Date(Date.now() - 2 * 86_400_000).toISOString();
+    const renderCard = (createdAt?: string) => (
+      <I18nProvider>
+        <MemoryRouter>
+          <ul>
+            <SessionListItem
+              sessionId="session-1"
+              projectId="project-1"
+              title="Build logs"
+              mode="card"
+              updatedAt={updatedAt}
+              createdAt={createdAt}
+            />
+          </ul>
+        </MemoryRouter>
+      </I18nProvider>
+    );
+    const view = render(renderCard());
+    expect(view.container.querySelector(".session-list-item__age")).toBeNull();
+
+    view.rerender(renderCard(knownCreation));
+    expect(screen.getByText("Created 2d ago")).toBeTruthy();
+
+    view.rerender(renderCard(new Date(0).toISOString()));
+    expect(view.container.querySelector(".session-list-item__age")).toBeNull();
+  });
+
   it("opens the session in a new window on middle click", () => {
     const { link, onNavigate } = renderItem();
 

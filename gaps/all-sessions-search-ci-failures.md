@@ -351,6 +351,26 @@ kzahel recorded "preserves copying and returns to the query end only when
 typing" as flaky — failed once, passed on retry #1 — where graehl passed it
 outright.
 
+2026-09-23 — the copy-selection failure is explained and fixed in the spec.
+It failed its first attempt at `7d59241b6`, `b4601c77a` and `88182fb1c`, each
+time at line 165 with the triple-click selection losing its two trailing
+newlines after the right-click. A triple-click selection ends at the boundary
+of the block that follows the help paragraph, and the spec selected straight
+after typing, while the fixture's row was still arriving. When the list
+changed, the boundary moved. Pausing 1.5s between the triple-click and the
+right-click reproduced it deterministically: the selection grew into the
+newly listed row. The spec now waits for the fixture's row and for no scan to
+be running before it selects, and passes with that pause in place.
+
+The spec's `Control+c` also never copied on macOS, so the clipboard check
+could not pass locally there; it is `ControlOrMeta+c` now.
+
+Left open as product behavior, not a test defect: a reader's selection that
+ends at a block boundary next to the results moves when results arrive. No
+contract covers it yet.
+
+Retire this file once CI stays green on this spec.
+
 Found 2026-09-15 while reporting source CI after publishing the catch-up fix.
 Contributing-model: 6-Astra
 Contributing-model: Opus 5

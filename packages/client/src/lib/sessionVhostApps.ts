@@ -15,6 +15,12 @@ export interface SessionVhostApp {
   artifactToken?: string;
 }
 
+export interface SessionVhostLinkContext {
+  clientUrl: string;
+  relayed: boolean;
+  force?: boolean;
+}
+
 const toolUrls = new WeakMap<Message, string[]>();
 
 /** Discover local app URLs only in tool result text, without rescanning immutable history. */
@@ -116,4 +122,86 @@ export function sessionVhostApp(
     url: target.href,
     label: `${row.name}${source.pathname === "/" ? "" : source.pathname}`,
   };
+}
+
+/**
+ * Whether transcript link rewriting can change any destination on this page:
+ * a public root is configured, and the page is a public relay page, the
+ * operator chose "always", or an explicit copy action forces it.
+ */
+export function sessionLocalhostRewriteApplies(
+  config: SessionAppConfig | undefined,
+  context: SessionVhostLinkContext,
+): boolean {
+  if (!config?.vhostPublicRoot) return false;
+  if (context.force || config.alwaysRewriteVhostLinks) return true;
+  if (!context.relayed) return false;
+  try {
+    return artifactAudience(new URL(context.clientUrl).hostname) === "public";
+  } catch {
+    return false;
+  }
+}
+
+/** Rewrite a name.localhost URL through the configured public wildcard root. */
+export function rewriteSessionLocalhostHref(
+  raw: string,
+  config: SessionAppConfig | undefined,
+  context: SessionVhostLinkContext,
+): string {
+  if (
+    !config?.vhostPublicRoot ||
+    !sessionLocalhostRewriteApplies(config, context)
+  )
+    return raw;
+  let source: URL;
+  try {
+    source = new URL(raw, context.clientUrl);
+  } catch {
+    return raw;
+  }
+  if (
+    !["http:", "https:"].includes(source.protocol) ||
+    source.username ||
+    source.password ||
+    !source.hostname.endsWith(".localhost")
+  )
+    return raw;
+  const name = source.hostname.slice(0, -".localhost".length);
+  if (!name) return raw;
+  const configuredVhost = config.vhosts?.some((row) => row.name === name);
+  const token = configuredVhost ? config.accessTokens?.[name] : undefined;
+  if (configuredVhost && config.accessTokens && token === undefined) return raw;
+  const target = new URL(`https://${name}.${config.vhostPublicRoot}`);
+  target.pathname = source.pathname;
+  target.search = source.search;
+  if (token) target.searchParams.set("ya_access", token);
+  target.hash = source.hash;
+  return target.href;
+}
+
+/**
+ * Public URL for an explicit "Copy public URL", independent of the automatic
+ * rewrite choice: a forced localhost mapping, else a link already under the
+ * public root. Undefined when no public destination exists.
+ */
+export function publicSessionLocalhostHref(
+  raw: string,
+  config: SessionAppConfig | undefined,
+  context: SessionVhostLinkContext,
+): string | undefined {
+  if (!config?.vhostPublicRoot) return undefined;
+  const rewritten = rewriteSessionLocalhostHref(raw, config, {
+    ...context,
+    force: true,
+  });
+  if (rewritten !== raw) return rewritten;
+  try {
+    const target = new URL(raw);
+    if (target.hostname.endsWith(`.${config.vhostPublicRoot}`))
+      return target.href;
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }

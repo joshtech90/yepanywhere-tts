@@ -9,6 +9,16 @@ import type {
   TranscriptDisplayObject,
 } from "@yep-anywhere/shared";
 
+/** A delayed run receipt must not replace newer streamed command output. */
+export function applyBangCommandReceipt(
+  current: TranscriptDisplayObject[],
+  object: TranscriptDisplayObject,
+): TranscriptDisplayObject[] {
+  return current.some((entry) => entry.id === object.id)
+    ? current
+    : [...current, object];
+}
+
 export type ComposerBangDraft =
   | { kind: "bang"; command: string }
   | { kind: "empty" }

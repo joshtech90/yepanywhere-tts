@@ -2,7 +2,7 @@ import {
   MAX_PROJECT_CAPTION_LENGTH,
   normalizeProjectCaption,
 } from "@yep-anywhere/shared";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { Project } from "../types";
 import styles from "./ProjectCaptionEditor.module.css";
@@ -28,32 +28,42 @@ export function ProjectCaptionEditor({
   const [draft, setDraft] = useState(caption?.text ?? "");
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
+  // Set while this edit is being saved or once it is left, so a later blur
+  // (the field keeps focus through Enter and may blur as it unmounts) cannot
+  // start a second save.
+  const closingRef = useRef(false);
 
-  useEffect(() => {
-    if (!editing) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [editing]);
+  // Focus in the commit that creates the field: opening the editor means the
+  // next keystroke belongs to it (topics/early-typing-handoff.md).
+  const attachInput = useCallback((input: HTMLInputElement | null) => {
+    if (!input) return;
+    input.focus();
+    input.select();
+  }, []);
 
   const startEdit = (event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     setDraft(caption?.text ?? "");
     setError(null);
+    closingRef.current = false;
     setEditing(true);
   };
 
   const cancelEdit = (event: React.SyntheticEvent) => {
     event.preventDefault();
     event.stopPropagation();
+    closingRef.current = true;
     setDraft(caption?.text ?? "");
     setError(null);
     setEditing(false);
   };
 
+  // Enter and ✓ commit without moving focus, so a refused caption leaves the
+  // user typing in the field; a commit started by leaving the field does not
+  // take focus back.
   const commitEdit = async () => {
-    if (!onUpdateCaption || saving) return;
+    if (!onUpdateCaption || closingRef.current) return;
     let next: string;
     try {
       next = normalizeProjectCaption(draft);
@@ -63,9 +73,9 @@ export function ProjectCaptionEditor({
           ? caught.message
           : t("projectCaptionSaveFailed"),
       );
-      requestAnimationFrame(() => inputRef.current?.focus());
       return;
     }
+    closingRef.current = true;
     const unchanged =
       (next === "" && caption?.source !== "override") ||
       (next !== "" && next === caption?.text && caption?.source === "override");
@@ -80,12 +90,12 @@ export function ProjectCaptionEditor({
       await onUpdateCaption(project, next === "" ? null : next);
       setEditing(false);
     } catch (caught) {
+      closingRef.current = false;
       setError(
         caught instanceof Error
           ? caught.message
           : t("projectCaptionSaveFailed"),
       );
-      requestAnimationFrame(() => inputRef.current?.focus());
     } finally {
       setSaving(false);
     }
@@ -105,11 +115,11 @@ export function ProjectCaptionEditor({
       <div className={styles.slot}>
         <div className={styles.editor}>
           <input
-            ref={inputRef}
+            ref={attachInput}
             aria-label={t("projectCaptionLabel")}
             aria-invalid={error ? true : undefined}
             className={styles.input}
-            disabled={saving}
+            readOnly={saving}
             maxLength={MAX_PROJECT_CAPTION_LENGTH}
             placeholder={t("projectCaptionPlaceholder")}
             value={draft}
@@ -125,7 +135,7 @@ export function ProjectCaptionEditor({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
-                event.currentTarget.blur();
+                void commitEdit();
               } else if (event.key === "Escape") {
                 cancelEdit(event);
               }

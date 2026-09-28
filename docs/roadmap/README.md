@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-21.
+Last updated: 2026-09-26.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -39,9 +39,12 @@ Exact API and mobile release scope remain design work.
   desktop releases. [Nightly Desktop](../../.github/workflows/nightly-desktop.yml)
   publishes verified `main` changes to Latest; the first signed nightlies and
   the unchanged-source skip have passed release validation. The
-  [2026-09-10 nightly run](https://github.com/kzahel/yepanywhere/actions/runs/34450193826)
-  is blocked by a release-creation authorization error (HTTP 403); credential
-  repair is excluded from the current CI repair work.
+  release-creation authorization failures of 2026-09-09 to 2026-09-15 have not
+  recurred: every nightly from 2026-09-16 through 2026-09-26 succeeded.
+- The website's [desktop downloads page](../tactical/134-desktop-download-links.md)
+  is live in `site-v1.11.0`. It suggests the visitor's platform and links to
+  current Stable macOS and Windows installers through the update server;
+  nightly builds remain separate.
 - The [server runtime matrix](https://github.com/kzahel/yepanywhere/actions/runs/34485119811)
   now passes full packaged startup on Linux, macOS and Windows across all four
   Node versions and the pinned Bun runtime, including clean npm installations.

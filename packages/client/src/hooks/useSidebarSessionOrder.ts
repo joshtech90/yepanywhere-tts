@@ -20,14 +20,13 @@ export function useSidebarSessionOrder(
   const raw = useSyncExternalStore(store.subscribe, store.read, store.read);
   return useMemo(() => {
     const interactions = new Map<string, number>(JSON.parse(raw));
-    // This browser's own record of where the reader has been, and the server's
-    // record of when anyone last wrote into the session. The local one alone
-    // would place a session by when *this* browser last visited it, so a phone
-    // and a desktop disagreed about the same session and one of them filed a
-    // session the reader had answered elsewhere under older work, where it was
-    // hard to find. Taking the later of the two keeps a click's effect
-    // immediate while letting a fresh browser, with nothing stored, still land
-    // on the same chronology.
+    // This browser's own record of when the reader last wrote into each
+    // session, and the server's record of when anyone did. The local one alone
+    // would place a session by what *this* browser sent, so a session the
+    // reader had answered on another device would file under older work,
+    // where it was hard to find. Taking the later of the two moves a row as
+    // soon as it is sent to, before the server reports the turn, while a fresh
+    // browser with nothing stored still lands on the same chronology.
     const time = (record: SessionCollectionRecord) =>
       Math.max(
         interactions.get(record.id) ?? 0,

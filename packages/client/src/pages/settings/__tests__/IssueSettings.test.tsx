@@ -5,6 +5,7 @@ import {
   fireEvent,
   render,
   screen,
+  waitFor,
 } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -85,7 +86,12 @@ async function renderPane(settings: Record<string, unknown> = {}) {
       </MemoryRouter>
     </I18nProvider>,
   );
-  await screen.findByLabelText("Indexing scope");
+  // The scope select renders before the settings fetch resolves, disabled;
+  // the confirmation and blocklist controls appear only once it has. Wait
+  // for the load itself so a slow runner cannot query ahead of it.
+  const scope =
+    await screen.findByLabelText<HTMLSelectElement>("Indexing scope");
+  await waitFor(() => expect(scope.disabled).toBe(false));
 }
 
 describe("IssueSettings tracker confirmation", () => {
@@ -177,7 +183,8 @@ describe("IssueSettings tracker confirmation", () => {
       method: "PUT",
       body: JSON.stringify({ provider: "jira", key: "secret-token" }),
     });
-    expect(input.value).toBe("");
+    // The field clears once the save answers, not when it is sent.
+    await waitFor(() => expect(input.value).toBe(""));
   });
 
   it("edits the blocked project names and rejects an unusable entry", async () => {

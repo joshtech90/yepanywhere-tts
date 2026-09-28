@@ -59,6 +59,10 @@ import {
   findTurnInlineImageAnchor,
   getTurnInlineImageTargetForTarget,
 } from "../../lib/turnInlineMedia";
+import {
+  rewriteSessionAppLinksHtml,
+  useSessionAppLinkRewriter,
+} from "../SessionAppLinks";
 
 const EMPTY_LOCAL_MATH_PREVIEW = { html: "", changed: false };
 
@@ -86,6 +90,7 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
   projectPathLinks?: readonly ProjectPathLinkTarget[];
   publicShare?: PublicShareContextValue | null;
 }) {
+  const rewriteHref = useSessionAppLinkRewriter();
   const renderedHtml = useMemo(() => {
     const withProjectPaths = annotateProjectPathLinksHtml(
       html,
@@ -93,8 +98,9 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
       projectId,
       publicShare,
     ).html;
-    return annotateGlossaryHtml(withProjectPaths, artifact).html;
-  }, [artifact, html, projectId, projectPathLinks, publicShare]);
+    const withGlossary = annotateGlossaryHtml(withProjectPaths, artifact).html;
+    return rewriteSessionAppLinksHtml(withGlossary, rewriteHref);
+  }, [artifact, html, projectId, projectPathLinks, publicShare, rewriteHref]);
   return (
     <div
       className={className}
@@ -151,6 +157,7 @@ export const TextBlock = memo(function TextBlock({
       ? glossary.result.artifact
       : undefined;
   const publicShare = usePublicShareContext();
+  const rewriteHref = useSessionAppLinkRewriter();
   const sessionMetadata = useOptionalSessionMetadata();
   const projectId =
     sessionMetadata?.projectId ?? publicShare?.projectId ?? undefined;
@@ -162,9 +169,13 @@ export const TextBlock = memo(function TextBlock({
         projectId,
         publicShare,
       ).html;
-      return annotateGlossaryHtml(withProjectPaths, glossaryArtifact).html;
+      const withGlossary = annotateGlossaryHtml(
+        withProjectPaths,
+        glossaryArtifact,
+      ).html;
+      return rewriteSessionAppLinksHtml(withGlossary, rewriteHref);
     },
-    [glossaryArtifact, projectId, projectPathLinks, publicShare],
+    [glossaryArtifact, projectId, projectPathLinks, publicShare, rewriteHref],
   );
   const serverMarkdownChanged = useMemo(() => {
     if (!augmentHtml) return false;

@@ -35,6 +35,8 @@ import { getLogger } from "../../../src/logging/logger.js";
 import { getCodexCommonPaths } from "../../../src/sdk/cli-detection.js";
 import { logSDKMessage } from "../../../src/sdk/messageLogger.js";
 import {
+  CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS,
+  CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS,
   CodexProvider,
   type CodexProviderConfig,
   formatCodexLoginCommand,
@@ -2729,6 +2731,54 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
+  it("maps thinking off to the model's lowest effort on a cold catalog", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-thinking-off-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-thinking-off",
+      buildFakeCodexAppServer(logPath, "chatgpt", undefined, false, {
+        data: [
+          {
+            id: "gpt-6-astra",
+            model: "gpt-6-astra",
+            displayName: "Astra",
+            isDefault: true,
+            defaultReasoningEffort: "medium",
+            supportedReasoningEfforts: ["low", "medium", "high", "max"].map(
+              (reasoningEffort) => ({ reasoningEffort, description: "" }),
+            ),
+          },
+        ],
+        nextCursor: null,
+      }),
+    );
+
+    let session: Awaited<ReturnType<CodexProvider["startSession"]>> | undefined;
+    try {
+      // A fresh provider has no model catalog yet, like a new session worker.
+      const testProvider = new CodexProvider({ codexPath });
+      session = await testProvider.startSession({
+        cwd: tempDir,
+        model: "gpt-6-astra",
+        effort: "high",
+        thinking: { type: "disabled" },
+      });
+      await session.iterator.next();
+
+      const threadStart = readFakeCodexRequests(logPath).find(
+        (request) => request.method === "thread/start",
+      );
+      expect(threadStart?.params).toMatchObject({
+        config: { model_reasoning_effort: "low" },
+      });
+    } finally {
+      session?.abort();
+      await session?.iterator.return?.(undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("generates simulated recaps through an ephemeral helper thread", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-recap-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -2843,7 +2893,7 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
-  it("forks a Codex thread and rolls back trailing turns", async () => {
+  it("forks a Codex thread through the turn holding a message anchor", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-fork-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
     const codexPath = createFakeCodexCommand(
@@ -2871,9 +2921,6 @@ describe("CodexProvider app-server lifecycle", () => {
       const forkRequest = requests.find(
         (request) => request.method === "thread/fork",
       );
-      const rollback = requests.find(
-        (request) => request.method === "thread/rollback",
-      );
 
       expect(read?.params).toMatchObject({
         threadId: "source-thread",
@@ -2881,15 +2928,42 @@ describe("CodexProvider app-server lifecycle", () => {
       });
       expect(forkRequest?.params).toMatchObject({
         threadId: "source-thread",
+        lastTurnId: "turn-2",
         cwd: tempDir,
         approvalPolicy: "on-request",
         sandbox: "workspace-write",
         excludeTurns: true,
       });
-      expect(rollback?.params).toMatchObject({
-        threadId: "fork-thread",
-        numTurns: 1,
+      expect(
+        requests.some((request) => request.method === "thread/rollback"),
+      ).toBe(false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("forks the whole Codex thread when the anchor ends the last turn", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-fork-last-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-fork-last",
+      buildFakeCodexAppServerForFork(logPath),
+    );
+
+    try {
+      const testProvider = new CodexProvider({ codexPath });
+      await testProvider.forkSession({
+        sessionId: "source-thread",
+        cwd: tempDir,
+        upToMessageId: "assistant-3-turn-3",
       });
+
+      const forkRequest = readFakeCodexRequests(logPath).find(
+        (request) => request.method === "thread/fork",
+      );
+      expect(forkRequest?.params).toMatchObject({ threadId: "source-thread" });
+      expect(forkRequest?.params).not.toHaveProperty("lastTurnId");
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }
@@ -3023,6 +3097,7 @@ function buildFakeCodexAppServer(
   accountType: "chatgpt" | "apiKey" = "chatgpt",
   goalStatusOverride?: "budgetLimited",
   goalStartsTurn = false,
+  modelList?: unknown,
 ): string {
   return `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
@@ -3031,6 +3106,7 @@ const logPath = ${JSON.stringify(logPath)};
 const accountType = ${JSON.stringify(accountType)};
 const goalStatusOverride = ${JSON.stringify(goalStatusOverride)};
 const goalStartsTurn = ${JSON.stringify(goalStartsTurn)};
+const modelList = ${JSON.stringify(modelList ?? null)};
 let buffer = "";
 let goal = null;
 let activeTurn = false;
@@ -3181,6 +3257,9 @@ function handleMessage(message) {
       break;
     case "turn/steer":
       respond(message.id, { turnId: "turn-steered" });
+      break;
+    case "model/list":
+      respond(message.id, modelList ?? {});
       break;
     case "turn/interrupt":
       respond(message.id, {});
@@ -4224,11 +4303,6 @@ function handleMessage(message) {
         activePermissionProfile: null,
         reasoningEffort: null,
         multiAgentMode: "disabled",
-      });
-      break;
-    case "thread/rollback":
-      respond(message.id, {
-        thread: { id: message.params?.threadId ?? "fork-thread", turns: [] },
       });
       break;
     default:
@@ -6119,6 +6193,60 @@ describe("CodexProvider Event Normalization", () => {
     );
     expect(second[0]).toMatchObject(
       codexAgentMessageDeltaFixtures.expectedSecondMessage,
+    );
+  });
+
+  it("bounds live command-output snapshots to a head and tail window", () => {
+    const provider = createTestProvider() as unknown as {
+      convertNotificationToSDKMessages: (
+        notification: { method: string; params?: unknown },
+        sessionId: string,
+        usageByTurnId: Map<string, unknown>,
+        liveEventState: ReturnType<typeof createLiveEventState>,
+      ) => Array<Record<string, unknown>>;
+    };
+    const liveEventState = createLiveEventState();
+    const chunk = `${"x".repeat(8191)}\n`;
+    const chunkCount = 128;
+    let last: Record<string, unknown> | undefined;
+    let largestSnapshot = 0;
+    for (let index = 0; index < chunkCount; index += 1) {
+      const delta = index === 0 ? `FIRST${chunk.slice(5)}` : chunk;
+      [last] = provider.convertNotificationToSDKMessages(
+        {
+          method: "item/commandExecution/outputDelta",
+          params: {
+            threadId: "thread-1",
+            turnId: "turn-1",
+            itemId: "cmd-1",
+            delta: index === chunkCount - 1 ? `${chunk.slice(4)}LAST` : delta,
+          },
+        },
+        "session-1",
+        new Map(),
+        liveEventState,
+      );
+      largestSnapshot = Math.max(largestSnapshot, JSON.stringify(last).length);
+    }
+
+    const content =
+      (last?.message as { content: Array<{ content: string }> } | undefined)
+        ?.content[0]?.content ?? "";
+    const totalChars = chunk.length * chunkCount;
+    const omitted =
+      totalChars -
+      CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS -
+      CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS;
+    expect(last).toMatchObject({ _isStreaming: true });
+    expect(content.startsWith("FIRST")).toBe(true);
+    expect(content.endsWith("LAST")).toBe(true);
+    expect(content).toContain(
+      `${omitted} characters omitted from the live preview`,
+    );
+    expect(largestSnapshot).toBeLessThan(
+      CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS +
+        CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS +
+        2048,
     );
   });
 

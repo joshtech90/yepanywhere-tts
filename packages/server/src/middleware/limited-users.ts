@@ -15,13 +15,13 @@ import { getCookie } from "hono/cookie";
 import type { LimitedUserGrants } from "@yep-anywhere/shared";
 import {
   ACTING_USER_COOKIE,
+  DIRECT_LOGIN_VARIABLE,
   type LimitedPrincipal,
   type Principal,
   PRINCIPAL_VARIABLE,
   SUPERUSER,
   verifyActingUser,
 } from "../auth/principal.js";
-import type { LimitedUsersService } from "../auth/LimitedUsersService.js";
 import type { SessionAccessResolver } from "../auth/sessionAccess.js";
 import {
   type FilteredListKind,
@@ -29,13 +29,21 @@ import {
   levelFor,
   satisfies,
 } from "../auth/limitedUserPolicy.js";
-import { getAuthenticatedSrpTransport } from "./authenticated-transport.js";
+import {
+  getAuthenticatedDirectLogin,
+  getAuthenticatedSrpTransport,
+} from "./authenticated-transport.js";
+import { WS_INTERNAL_AUTHENTICATED } from "./internal-auth.js";
 
 export interface LimitedUsersMiddlewareOptions {
-  limitedUsers: LimitedUsersService;
+  /**
+   * Grants for a limited user who may act now: null when the feature is off
+   * or the user is unknown or disabled. With the feature off no login other
+   * than the superuser's resolves, so a live limited login is refused rather
+   * than read as the superuser.
+   */
+  getActiveGrants: (username: string) => LimitedUserGrants | null;
   sessionAccess: SessionAccessResolver;
-  /** Whether the feature is enabled in server settings. */
-  isEnabled: () => boolean;
   /** The superuser's relay/SRP identity, when remote access is configured. */
   getSuperuserIdentity: () => string | null;
   /** Username recorded on the direct cookie session, when there is one. */
@@ -54,17 +62,33 @@ function limitedPrincipal(
   return { kind: "limited", username, grants, ...options };
 }
 
+/**
+ * The direct login's username for this request, or null for the superuser.
+ * An internal request never takes its login from its own headers: a
+ * trusted-local websocket carries the login it bound at upgrade, and a
+ * server-originated request has none.
+ */
+async function resolveDirectLoginUsername(
+  c: Parameters<MiddlewareHandler>[0],
+  options: LimitedUsersMiddlewareOptions,
+): Promise<string | null> {
+  if (getAuthenticatedSrpTransport(c.env)) return null;
+  const bound = getAuthenticatedDirectLogin(c.env);
+  if (bound) return bound.username;
+  if (c.env?.[WS_INTERNAL_AUTHENTICATED]) return null;
+  return options.getCookieSessionUsername(c);
+}
+
 /** Resolve the acting principal without enforcing anything. */
 export async function resolvePrincipal(
   c: Parameters<MiddlewareHandler>[0],
   options: LimitedUsersMiddlewareOptions,
+  directLoginUsername: string | null,
 ): Promise<Principal> {
-  if (!options.isEnabled()) return SUPERUSER;
-
   const srp = getAuthenticatedSrpTransport(c.env);
   const superuserIdentity = options.getSuperuserIdentity();
   if (srp && srp.username !== superuserIdentity) {
-    const grants = options.limitedUsers.getActiveGrants(srp.username);
+    const grants = options.getActiveGrants(srp.username);
     if (!grants) return DENIED_PRINCIPAL;
     return limitedPrincipal(srp.username, grants, {
       switched: false,
@@ -73,17 +97,14 @@ export async function resolvePrincipal(
     });
   }
 
-  if (!srp) {
-    const cookieUsername = await options.getCookieSessionUsername(c);
-    if (cookieUsername) {
-      const grants = options.limitedUsers.getActiveGrants(cookieUsername);
-      if (!grants) return DENIED_PRINCIPAL;
-      return limitedPrincipal(cookieUsername, grants, {
-        switched: false,
-        locked: true,
-        via: "direct",
-      });
-    }
+  if (directLoginUsername) {
+    const grants = options.getActiveGrants(directLoginUsername);
+    if (!grants) return DENIED_PRINCIPAL;
+    return limitedPrincipal(directLoginUsername, grants, {
+      switched: false,
+      locked: true,
+      via: "direct",
+    });
   }
 
   // The login is the superuser; honor a switch into a limited user.
@@ -92,7 +113,7 @@ export async function resolvePrincipal(
     options.getCookieSecret(),
   );
   if (acting) {
-    const grants = options.limitedUsers.getActiveGrants(acting);
+    const grants = options.getActiveGrants(acting);
     if (grants) {
       return limitedPrincipal(acting, grants, {
         switched: true,
@@ -181,6 +202,94 @@ function pruneProjectsList(
   };
 }
 
+/** Session rows use `projectId`, while their filter options use project `id`. */
+function pruneSessionsList(
+  body: unknown,
+  isAccessible: (projectId: string) => boolean,
+): unknown {
+  const pruned = pruneInaccessible(body, isAccessible);
+  if (pruned === DROP || !pruned || typeof pruned !== "object") return {};
+  const record = pruned as Record<string, unknown>;
+  const projects = record.projects;
+  if (!Array.isArray(projects)) return record;
+  return {
+    ...record,
+    projects: projects.filter(
+      (project) =>
+        typeof (project as { id?: unknown }).id === "string" &&
+        isAccessible((project as { id: string }).id),
+    ),
+  };
+}
+
+function projectScopedRows(
+  value: unknown,
+  isAccessible: (projectId: string) => boolean,
+): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry) => {
+    if (!entry || typeof entry !== "object") return false;
+    const projectId = (entry as { projectId?: unknown }).projectId;
+    return typeof projectId === "string" && isAccessible(projectId);
+  });
+}
+
+/**
+ * Project Queue is a global response made of several project-keyed fields.
+ * Build an allowlist projection so a future field cannot silently bypass the
+ * grants merely because it has a new response shape.
+ */
+function pruneProjectQueueResponse(
+  body: unknown,
+  isAccessible: (projectId: string) => boolean,
+): unknown {
+  if (!body || typeof body !== "object") return {};
+  const record = body as Record<string, unknown>;
+  const projected: Record<string, unknown> = {
+    items: projectScopedRows(record.items, isAccessible),
+  };
+
+  if (record.dispatchState !== undefined) {
+    // The global pause gates this user's own queue too, so it remains visible.
+    projected.dispatchState = record.dispatchState;
+  }
+  if (record.recoveredSessionQueues !== undefined) {
+    projected.recoveredSessionQueues = projectScopedRows(
+      record.recoveredSessionQueues,
+      isAccessible,
+    );
+  }
+  if (record.projectStatuses !== undefined) {
+    const statuses: Record<string, unknown> = {};
+    if (record.projectStatuses && typeof record.projectStatuses === "object") {
+      for (const [projectId, status] of Object.entries(
+        record.projectStatuses as Record<string, unknown>,
+      )) {
+        if (!isAccessible(projectId) || !status || typeof status !== "object") {
+          continue;
+        }
+        if ((status as { projectId?: unknown }).projectId !== projectId) {
+          continue;
+        }
+        statuses[projectId] = status;
+      }
+    }
+    projected.projectStatuses = statuses;
+  }
+  if (record.promoteResult && typeof record.promoteResult === "object") {
+    const status = (record.promoteResult as { status?: unknown }).status;
+    const projectId =
+      status && typeof status === "object"
+        ? (status as { projectId?: unknown }).projectId
+        : undefined;
+    if (typeof projectId === "string" && isAccessible(projectId)) {
+      projected.promoteResult = record.promoteResult;
+    }
+  }
+
+  return projected;
+}
+
 async function filterResponse(
   response: Response,
   filter: FilteredListKind,
@@ -196,10 +305,20 @@ async function filterResponse(
   } catch {
     return response;
   }
-  const filtered =
-    filter === "projects"
-      ? pruneProjectsList(body, isAccessible)
-      : pruneInaccessible(body, isAccessible);
+  let filtered: unknown | typeof DROP;
+  switch (filter) {
+    case "projects":
+      filtered = pruneProjectsList(body, isAccessible);
+      break;
+    case "project-queue":
+      filtered = pruneProjectQueueResponse(body, isAccessible);
+      break;
+    case "sessions":
+      filtered = pruneSessionsList(body, isAccessible);
+      break;
+    default:
+      filtered = pruneInaccessible(body, isAccessible);
+  }
   const payload = filtered === DROP ? {} : filtered;
   const headers = new Headers(response.headers);
   headers.delete("Content-Length");
@@ -213,7 +332,9 @@ export function createLimitedUsersMiddleware(
   options: LimitedUsersMiddlewareOptions,
 ): MiddlewareHandler {
   return async (c, next) => {
-    const principal = await resolvePrincipal(c, options);
+    const directLoginUsername = await resolveDirectLoginUsername(c, options);
+    c.set(DIRECT_LOGIN_VARIABLE, directLoginUsername);
+    const principal = await resolvePrincipal(c, options, directLoginUsername);
     c.set(PRINCIPAL_VARIABLE, principal);
     if (principal.kind === "superuser") {
       await next();
@@ -224,11 +345,11 @@ export function createLimitedUsersMiddleware(
       return c.json({ error: "Session expired" }, 401);
     }
 
-    const url = new URL(c.req.url);
+    // The routed path, not `new URL(c.req.url).pathname`: Hono matches
+    // handlers against the percent-decoded path.
     const decision = decideLimitedRoute({
       method: c.req.method,
-      path: url.pathname,
-      query: url.searchParams,
+      path: c.req.path,
     });
 
     const isAccessible = (projectId: string) =>
@@ -256,6 +377,9 @@ export function createLimitedUsersMiddleware(
           return c.json({ error: "Not permitted for this user" }, 403);
         }
         await next();
+        if (decision.filter && c.res) {
+          c.res = await filterResponse(c.res, decision.filter, isAccessible);
+        }
         return;
       }
       case "session": {
@@ -274,6 +398,19 @@ export function createLimitedUsersMiddleware(
         }
         if (!satisfies(level, decision.required)) {
           return c.json({ error: "Not permitted for this user" }, 403);
+        }
+        if (decision.required === "join" && !facts.sandboxed) {
+          // Driving a process that runs outside the sandbox — sending turns,
+          // approving tools, changing its permission mode — is the server
+          // account's authority, whoever started it and however fresh it is.
+          return c.json(
+            {
+              error:
+                "This session runs outside the sandbox, so this user cannot act in it; start a new session instead",
+              reason: "unsandboxed-session",
+            },
+            403,
+          );
         }
         if (
           decision.required === "join" &&

@@ -93,7 +93,7 @@ export function HostOfflineModal({
 
         {error.relayUsername && (
           <p className={styles.detail}>
-            <strong>{t("relayLoginUsername")}:</strong> {error.relayUsername}
+            <strong>{t("relayLoginServerName")}:</strong> {error.relayUsername}
           </p>
         )}
 

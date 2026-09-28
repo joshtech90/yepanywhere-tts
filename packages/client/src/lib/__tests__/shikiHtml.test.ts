@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
-  annotateShikiSourceOffsets,
+  prepareShikiHtml,
   splitHighlightedSourceAfterLine,
 } from "../shikiHtml";
 
-describe("annotateShikiSourceOffsets", () => {
+describe("prepareShikiHtml", () => {
   it("carries exact line and token offsets through compact Shiki HTML", () => {
     const source = 'const x = "<";\nreturn x;';
     const html =
       '<pre class="shiki"><code><span class="line"><span>const</span> x = <span>"&lt;"</span>;</span>\n<span class="line"><span>return</span> x;</span></code></pre>';
     const template = document.createElement("template");
-    template.innerHTML = annotateShikiSourceOffsets(html, source) ?? "";
+    template.innerHTML = prepareShikiHtml(html, source);
 
     const lines = template.content.querySelectorAll<HTMLElement>(".line");
     expect(lines[0]?.dataset.yaSourceStart).toBe("0");
@@ -30,6 +30,18 @@ describe("annotateShikiSourceOffsets", () => {
       ['"<"', "10", "13"],
       ["return", "15", "21"],
     ]);
+  });
+
+  it("removes the text between lines even when the source is unknown", () => {
+    const html =
+      '<pre class="shiki"><code><span class="line">one</span>\n<span class="line">two</span></code></pre>';
+
+    const prepared = prepareShikiHtml(html);
+
+    expect(prepared).toBe(
+      '<pre class="shiki"><code><span class="line">one</span><span class="line">two</span></code></pre>',
+    );
+    expect(prepareShikiHtml(prepared)).toBe(prepared);
   });
 });
 

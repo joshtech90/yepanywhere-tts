@@ -156,6 +156,37 @@ const ContextCollapseSnapshotEntrySchema = z.object({
   lastSpawnTokens: z.number(),
 });
 
+const AtisLatchEntrySchema = z.object({
+  type: z.literal("atis-latch"),
+  sessionId: SessionIdSchema,
+  atis: z.string(),
+});
+
+const CostStateModelUsageSchema = z.object({
+  inputTokens: z.number(),
+  outputTokens: z.number(),
+  thinkingTokens: z.number(),
+  cacheReadInputTokens: z.number(),
+  cacheCreationInputTokens: z.number(),
+  webSearchRequests: z.number(),
+  costUSD: z.number(),
+});
+
+const CostStateEntrySchema = z.object({
+  type: z.literal("cost-state"),
+  sessionId: SessionIdSchema,
+  totalCostUSD: z.number(),
+  totalAPIDuration: z.number(),
+  totalAPIDurationWithoutRetries: z.number(),
+  totalToolDuration: z.number(),
+  totalLinesAdded: z.number(),
+  totalLinesRemoved: z.number(),
+  totalDuration: z.number(),
+  startTime: z.number(),
+  modelUsage: z.record(z.string(), CostStateModelUsageSchema),
+  hasUnknownModelCost: z.boolean(),
+});
+
 export const MetadataEntrySchema = z.union([
   CustomTitleEntrySchema,
   AiTitleEntrySchema,
@@ -174,6 +205,8 @@ export const MetadataEntrySchema = z.union([
   SpeculationAcceptEntrySchema,
   ContextCollapseCommitEntrySchema,
   ContextCollapseSnapshotEntrySchema,
+  AtisLatchEntrySchema,
+  CostStateEntrySchema,
 ]);
 
 export type MetadataEntry = z.infer<typeof MetadataEntrySchema>;

@@ -47,3 +47,8 @@ copyFileSync(
   join(serverSourceDir, "session-sandbox-network-launcher.mjs"),
   join(serverTargetDir, "session-sandbox-network-launcher.mjs"),
 );
+
+copyFileSync(
+  join(serverSourceDir, "sdk/providers/pi-yep-anywhere-extension.mjs"),
+  join(serverTargetDir, "sdk/providers/pi-yep-anywhere-extension.mjs"),
+);

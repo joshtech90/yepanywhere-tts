@@ -1,6 +1,8 @@
 # Superusers cannot configure or compose project templates in Settings
 
-The initial library exists in `~/agents/project-templates`, but YA has no
+The initial library exists in the default source's
+[`project-templates`](https://github.com/graehl/agents/tree/master/project-templates)
+directory, but YA has no
 **Settings → Project templates** page. The basic editor and source controls
 should share that page, avoiding a separate navigation just to change where
 templates are stored. This is a user-requested follow-up to the initial

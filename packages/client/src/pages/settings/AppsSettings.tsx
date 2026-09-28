@@ -22,5 +22,6 @@ export function AppsSettings() {
 
 export function AppsSettingsLink() {
   const { t } = useI18n();
-  return <Link to="../apps">{t("settingsAppsLink")}</Link>;
+  // Absolute: the settings category routes are siblings, so "../apps" resolved to "/apps".
+  return <Link to="/settings/apps">{t("settingsAppsLink")}</Link>;
 }

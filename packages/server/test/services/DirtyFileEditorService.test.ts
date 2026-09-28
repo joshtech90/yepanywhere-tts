@@ -1,4 +1,11 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { GitStatusInfo } from "@yep-anywhere/shared";
@@ -337,6 +344,63 @@ describe("DirtyFileEditorService", () => {
         .reconcileGitStatus(projectPath, dirtyStatus("src/a.ts", "src/b.ts"))
         .files.map((file) => file.lastEditor?.sessionId),
     ).toEqual(["session-script", "session-script"]);
+  });
+
+  it("matches a pending write in a project reached through a symlink", async () => {
+    const realProject = join(dataDir, "real-project");
+    await mkdir(join(realProject, "src"), { recursive: true });
+    await writeFile(join(realProject, "src", "a.ts"), "a\n");
+    await writeFile(join(realProject, "src", "b.ts"), "b\n");
+    await writeFile(join(dataDir, "outside.ts"), "outside\n");
+    const alias = join(dataDir, "alias");
+    await symlink(realProject, alias, "dir");
+    const canonical = (file: string) => realpath(join(realProject, file));
+    const service = createService({
+      captureDirtyFiles: async () => snapshot({}),
+    });
+    await service.initialize();
+    const process = { id: "process-1", projectPath: alias, sessionId: "s" };
+
+    service.observeMessage(
+      process,
+      toolUse("write", "Write", { file_path: "src/a.ts" }),
+    );
+    expect(await service.isWritePending(await canonical("src/a.ts"))).toBe(
+      true,
+    );
+    expect(await service.isWritePending(await canonical("src/b.ts"))).toBe(
+      false,
+    );
+
+    // A Write that creates its file matches the file once it exists.
+    service.observeMessage(
+      process,
+      toolUse("create", "Write", { file_path: "src/new.ts" }),
+    );
+    await writeFile(join(realProject, "src", "new.ts"), "new\n");
+    expect(await service.isWritePending(await canonical("src/new.ts"))).toBe(
+      true,
+    );
+
+    service.observeMessage(
+      process,
+      toolUse("bash", "Bash", { command: "pnpm format" }),
+    );
+    expect(await service.isWritePending(await canonical("src/b.ts"))).toBe(
+      true,
+    );
+    expect(
+      await service.isWritePending(await realpath(join(dataDir, "outside.ts"))),
+    ).toBe(false);
+
+    service.observeMessage(
+      process,
+      toolResult("write", "2026-08-02T10:00:00Z"),
+    );
+    service.observeMessage(process, toolResult("bash", "2026-08-02T10:00:00Z"));
+    expect(await service.isWritePending(await canonical("src/a.ts"))).toBe(
+      false,
+    );
   });
 });
 

@@ -24,6 +24,8 @@ import {
 } from "../SettingsUndoContext";
 
 const {
+  authState,
+  bindingState,
   hookState,
   mockDisconnect,
   mockGetFileAccessInfo,
@@ -32,6 +34,8 @@ const {
   remoteState,
   versionState,
 } = vi.hoisted(() => ({
+  authState: { value: null as unknown },
+  bindingState: { value: null as unknown },
   hookState: {
     settings: null as ServerSettings | null,
     isLoading: false,
@@ -63,7 +67,7 @@ vi.mock("../../../api/client", async () => {
 });
 
 vi.mock("../../../contexts/AuthContext", () => ({
-  useOptionalAuth: () => null,
+  useOptionalAuth: () => authState.value,
 }));
 
 vi.mock("../../../contexts/RemoteConnectionContext", () => ({
@@ -72,7 +76,7 @@ vi.mock("../../../contexts/RemoteConnectionContext", () => ({
 
 vi.mock("../../../hooks/useNetworkBinding", () => ({
   useNetworkBinding: () => ({
-    binding: null,
+    binding: bindingState.value,
     loading: false,
     applying: false,
     updateBinding: vi.fn(),
@@ -168,6 +172,107 @@ describe("LocalAccessSettings", () => {
     cleanup();
     vi.clearAllMocks();
     remoteState.connection = null;
+    authState.value = null;
+    bindingState.value = null;
+  });
+
+  describe("password block", () => {
+    const enableAuth = vi.fn();
+    const changePassword = vi.fn();
+    const disableAuth = vi.fn();
+
+    function useDirectAccess(authEnabled: boolean) {
+      remoteState.connection = null;
+      authState.value = {
+        authEnabled,
+        isAuthenticated: true,
+        isLoading: false,
+        localhostOpen: false,
+        hasDesktopToken: false,
+        authDisabledByEnv: false,
+        enableAuth,
+        changePassword,
+        disableAuth,
+        setLocalhostOpen: vi.fn(),
+        logout: vi.fn(),
+      };
+      bindingState.value = {
+        localhost: { port: 3400, overriddenByCli: false },
+        network: {
+          enabled: false,
+          host: null,
+          port: 3400,
+          overriddenByCli: false,
+        },
+        interfaces: [],
+      };
+    }
+
+    function feedback(): string | null | undefined {
+      return document
+        .querySelector("[data-local-access-password-feedback]")
+        ?.getAttribute("data-local-access-password-feedback");
+    }
+
+    it("nests the fields under the toggle with live match feedback", async () => {
+      useDirectAccess(false);
+      render(<LocalAccessSettings />);
+
+      expect(
+        document.querySelector("[data-local-access-password-block]"),
+      ).toBeNull();
+      fireEvent.click(checkboxFor("localAccessRequirePasswordTitle"));
+
+      const block = document.querySelector(
+        "[data-local-access-password-block]",
+      ) as HTMLElement;
+      expect(block.textContent).toContain("localAccessPasswordPending");
+      const password = screen.getByPlaceholderText(
+        "localAccessPasswordPlaceholder",
+      );
+      const confirm = screen.getByPlaceholderText(
+        "localAccessConfirmPasswordPlaceholder",
+      );
+      const apply = screen.getByRole("button", {
+        name: "localAccessPasswordEnableAction",
+      });
+      expect(block.contains(confirm)).toBe(true);
+      expect(block.contains(apply)).toBe(true);
+
+      fireEvent.change(password, { target: { value: "abc" } });
+      expect(feedback()).toBe("short");
+      fireEvent.change(password, { target: { value: "secret1" } });
+      fireEvent.change(confirm, { target: { value: "sec" } });
+      expect(feedback()).toBe("none");
+      fireEvent.change(confirm, { target: { value: "secret2" } });
+      expect(feedback()).toBe("mismatch");
+      expect(confirm.getAttribute("aria-invalid")).toBe("true");
+      expect((apply as HTMLButtonElement).disabled).toBe(true);
+
+      fireEvent.change(confirm, { target: { value: "secret1" } });
+      expect(feedback()).toBe("match");
+      expect((apply as HTMLButtonElement).disabled).toBe(false);
+      fireEvent.click(apply);
+      await waitFor(() => expect(enableAuth).toHaveBeenCalledWith("secret1"));
+    });
+
+    it("offers removal in place when the toggle turns an active password off", async () => {
+      useDirectAccess(true);
+      render(<LocalAccessSettings />);
+
+      const block = document.querySelector(
+        "[data-local-access-password-block]",
+      ) as HTMLElement;
+      expect(block.textContent).toContain("localAccessPasswordActive");
+      fireEvent.click(checkboxFor("localAccessRequirePasswordTitle"));
+      expect(block.textContent).toContain("localAccessPasswordDisableWarning");
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "localAccessPasswordDisableAction",
+        }),
+      );
+      await waitFor(() => expect(disableAuth).toHaveBeenCalledTimes(1));
+    });
   });
 
   it("shows file access controls in relay mode without direct port controls", async () => {

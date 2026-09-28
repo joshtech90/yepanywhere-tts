@@ -141,6 +141,7 @@ export async function createStreamAugmenter(
   let coordinator: StreamCoordinator | null = null;
   let coordinatorInitPromise: Promise<StreamCoordinator> | null = null;
   let currentStreamingMessageId: string | null = null;
+  let streamedText = "";
   const taskListAugmenter =
     sharedTaskListAugmenter ?? createTaskListAugmenter();
 
@@ -165,6 +166,7 @@ export async function createStreamAugmenter(
    */
   const processTextChunk = async (text: string): Promise<void> => {
     const messageId = currentStreamingMessageId;
+    streamedText += text;
     try {
       const coord = await getCoordinator();
       const result = await coord.onChunk(text);
@@ -236,19 +238,33 @@ export async function createStreamAugmenter(
   ): Promise<void> => {
     const messageId =
       extractMessageIdFromStart(message) ?? extractIdFromAssistant(message);
-    if (messageId) {
+    if (messageId && messageId !== currentStreamingMessageId) {
+      await flush();
+      streamedText = "";
       currentStreamingMessageId = messageId;
     }
 
+    const snapshot = extractTextFromAssistant(message);
+    if (snapshot !== null && !snapshot.startsWith(streamedText)) {
+      throw new Error(
+        "Streaming assistant snapshot does not extend its previous text",
+      );
+    }
     const textDelta =
-      extractTextDelta(message) ?? extractTextFromAssistant(message);
+      snapshot !== null
+        ? snapshot.slice(streamedText.length)
+        : extractTextDelta(message);
     if (textDelta) {
       await processTextChunk(textDelta);
     }
 
-    if (isStreamingComplete(message)) {
+    if (
+      isStreamingComplete(message) ||
+      (snapshot !== null && message._isStreaming !== true)
+    ) {
       await flush();
       currentStreamingMessageId = null;
+      streamedText = "";
     }
   };
 
@@ -279,6 +295,7 @@ export async function createStreamAugmenter(
         coordinator.reset();
       }
       currentStreamingMessageId = null;
+      streamedText = "";
     },
 
     getCurrentMessageId(): string | null {
@@ -288,13 +305,10 @@ export async function createStreamAugmenter(
     async processCatchUp(text: string, messageId: string): Promise<void> {
       try {
         const coord = await getCoordinator();
-        const result = await coord.onChunk(text);
-        if (result.pendingHtml) {
-          onPending({
-            html: result.pendingHtml,
-            messageId,
-          });
-        }
+        coord.reset();
+        currentStreamingMessageId = messageId;
+        streamedText = "";
+        await processTextChunk(text);
       } catch (err) {
         handleError(err, "Failed to send catch-up pending HTML");
       }

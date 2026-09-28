@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import type { ActingPrincipal, LimitedUserSummary } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import english from "../../../i18n/en.json";
 import { UsersSettings } from "../UsersSettings";
 
 /** Contract: topics/limited-users.md § Delivery v1 — Settings → Users. */
@@ -173,6 +174,15 @@ describe("Settings → Users", () => {
     await waitFor(() => {
       expect(screen.getByText("usersEmpty")).toBeTruthy();
     });
+    expect(screen.getByText("usersTrustWarning")).toBeTruthy();
+    expect(english.settingsUsersDescription).toBe(
+      "Preview accounts for trusted sharing",
+    );
+    expect(english.advancedLimitedUsersTitle).toBe("Limited users (preview)");
+    expect(english.advancedLimitedUsersDescription).toContain(
+      "not hardened isolation for hostile or untrusted users",
+    );
+    expect(english.usersTrustWarning).toContain("only with people you trust");
     // The toggle is present and off, and adding a user does not wait for it.
     const toggle = screen.getByRole("checkbox") as HTMLInputElement;
     expect(toggle.checked).toBe(false);
@@ -242,16 +252,6 @@ describe("Settings → Users", () => {
     expect(mockListUsers).not.toHaveBeenCalled();
   });
 
-  it("reports an older server without the users surface rather than an error", async () => {
-    const missing = Object.assign(new Error("Not found"), { status: 404 });
-    mockListUsers.mockRejectedValue(missing);
-    render(<UsersSettings />);
-
-    await waitFor(() => {
-      expect(screen.getByText("usersUnsupportedServer")).toBeTruthy();
-    });
-  });
-
   it("does not call the directory before the server says who this client is", () => {
     principalState.resolved = false;
     render(<UsersSettings />);
@@ -268,6 +268,7 @@ describe("Settings → Users", () => {
     render(<UsersSettings />);
 
     await waitFor(() => expect(mockListUsers).toHaveBeenCalled());
-    expect(screen.queryByText("usersUnsupportedServer")).toBeNull();
+    expect(await screen.findByText("Not permitted")).toBeTruthy();
+    expect(screen.getByRole("checkbox")).toBeTruthy();
   });
 });

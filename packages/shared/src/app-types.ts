@@ -293,15 +293,15 @@ export const DEFAULT_CONTEXT_WINDOW = 200_000;
 export const CODEX_DEFAULT_CONTEXT_WINDOW = 258_000;
 /** GPT-5.6 Sol, Terra, and Luna context window in Codex 0.144.6+. */
 export const CODEX_GPT56_CONTEXT_WINDOW = 272_000;
-/** GPT-6 Astra context window in Codex 0.153.3+. */
-export const CODEX_GPT6_ASTRA_CONTEXT_WINDOW = 272_000;
+/** GPT-6 Astra (Codex 0.153.3+), Sol, and Luna (0.156.1+) context window. */
+export const CODEX_GPT6_CONTEXT_WINDOW = 272_000;
 export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
 
 /**
  * Known context window sizes for different models.
  *
  * Claude models:
- * - Claude 5 Fable / Opus / Sonnet canonical ids: 1M
+ * - Claude 5.x Fable / Opus / Sonnet canonical ids: 1M
  * - Opus / Sonnet / Haiku standard aliases: 200K
  * - Explicit "[1m]" Claude variants: 1M
  * - Sonnet 3.5: 200K
@@ -313,7 +313,7 @@ export const CLAUDE_EXTENDED_CONTEXT_WINDOW = 1_000_000;
  * - GPT-4: 128K (varies by variant)
  * - GPT-4o: 128K
  * - GPT-5.6 Sol/Terra/Luna: 272K
- * - GPT-6 Astra: 272K
+ * - GPT-6 Astra/Sol/Luna: 272K
  * - Earlier GPT-5 / Codex 5.x: ~258K
  */
 const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
@@ -341,6 +341,7 @@ const MODEL_CONTEXT_WINDOWS: Record<string, number> = {
  * - "claude-opus-4-5-20251101" → opus → 200K
  * - "claude-opus-4-8[1m]" → opus → 1M
  * - "claude-opus-5" → opus → 1M
+ * - "claude-opus-5-5" → opus → 1M
  * - "claude-fable-5" → fable → 1M
  * - "claude-sonnet-5" → sonnet → 1M
  * - "claude-sonnet-4-20250514" → sonnet → 200K
@@ -369,7 +370,7 @@ export function getModelContextWindow(
     return CLAUDE_EXTENDED_CONTEXT_WINDOW;
   }
 
-  if (/(?:^|[./])claude-(?:opus|sonnet)-5$/.test(lowerModel)) {
+  if (/(?:^|[./])claude-(?:opus|sonnet)-5(?:-\d+)?$/.test(lowerModel)) {
     return CLAUDE_EXTENDED_CONTEXT_WINDOW;
   }
 
@@ -377,8 +378,8 @@ export function getModelContextWindow(
     return CODEX_GPT56_CONTEXT_WINDOW;
   }
 
-  if (lowerModel.includes("gpt-6-astra")) {
-    return CODEX_GPT6_ASTRA_CONTEXT_WINDOW;
+  if (lowerModel.includes("gpt-6-")) {
+    return CODEX_GPT6_CONTEXT_WINDOW;
   }
 
   // Handle model IDs that may include provider namespace or other prefixes.
@@ -512,6 +513,11 @@ export interface DurableLocalCommandMessage extends AppMessageExtensions {
   subtype: "local_command";
   content: string;
   details?: string[];
+  /**
+   * The details explain why the notice exists (an error), so the transcript
+   * shows them without a click. Absent means collapsed.
+   */
+  detailsOpen?: boolean;
   timestamp: string;
   uuid: string;
   id: string;
@@ -552,10 +558,18 @@ export interface DurableSyntheticDoneMessage extends AppMessageExtensions {
   yaSyntheticSource: "done";
 }
 
-/**
- * Session summary for list views.
- * Contains metadata without full message content.
- */
+/** Client-declared UI that first created a YA-owned session. */
+export interface SessionCreationProvenance {
+  surface: "web" | "desktop";
+  /** Browser page origin, which may be a hosted UI rather than the server. */
+  clientOrigin?: string;
+  /** Version of the frontend bundle that submitted the create request. */
+  clientVersion?: string;
+  /** Desktop application's source commit, when its runtime reports one. */
+  clientCommit?: string;
+}
+
+/** Session summary for list views, without full message content. */
 export interface AppSessionSummary {
   /** null clears a known receipt; omission preserves unknown older-server state. */
   nonHumanUserTurn?: NonHumanUserTurn | null;
@@ -598,6 +612,8 @@ export interface AppSessionSummary {
   parentSessionKind?: "btw-aside";
   /** Source session whose provider transcript was cloned or forked. */
   forkedFromSessionId?: string;
+  /** Client-declared creation provenance; absent for older or external sessions. */
+  creationProvenance?: SessionCreationProvenance;
   /** Iterations a running `/clearloop` still has to do; absent when none runs. */
   clearloop?: SessionClearloopBadge;
   /**
@@ -1097,6 +1113,22 @@ function isMetadataEntry(value: Record<string, unknown>): boolean {
         Array.isArray(value.staged) &&
         typeof value.armed === "boolean" &&
         typeof value.lastSpawnTokens === "number"
+      );
+    case "atis-latch":
+      return hasStringFields(value, "sessionId", "atis");
+    case "cost-state":
+      return (
+        typeof value.sessionId === "string" &&
+        typeof value.totalCostUSD === "number" &&
+        typeof value.totalAPIDuration === "number" &&
+        typeof value.totalAPIDurationWithoutRetries === "number" &&
+        typeof value.totalToolDuration === "number" &&
+        typeof value.totalLinesAdded === "number" &&
+        typeof value.totalLinesRemoved === "number" &&
+        typeof value.totalDuration === "number" &&
+        typeof value.startTime === "number" &&
+        isUnknownRecord(value.modelUsage) &&
+        typeof value.hasUnknownModelCost === "boolean"
       );
     default:
       return false;

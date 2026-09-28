@@ -7,8 +7,9 @@
 
 Topic: session-right-pane
 
-Status: implemented for static-vhost tool URLs, artifact links, and session
-file viewers. Multiple viewer tabs remain a sketch.
+Status: implemented for static-vhost tool URLs, artifact links, session file
+viewers, and the session's tool-detail panels. Multiple viewer tabs remain a
+sketch.
 
 See also:
 
@@ -36,8 +37,10 @@ column (messages, composer, status) stays mounted and remains the
 primary conversation surface.
 
 Consumers include loopback HTTP apps discovered from tool output (Plannotator
-is the worked case), artifact links, and session file viewers. File viewers
-reuse the pane instead of covering the transcript when the setting is on.
+is the worked case), artifact links, session file viewers, and the detail
+panels tool rows publish — the long-edit diff, full bash output, write and
+grep details. All of them reuse the pane instead of covering the transcript
+when the setting is on.
 
 ## Enablement
 
@@ -51,11 +54,13 @@ Two independent gates:
    An empty table means YA has no Host to proxy, so loopback tool-output URLs
    are not rewritten. Configured artifact grant links remain eligible.
 
-File viewers use this pane whenever the Appearance setting is enabled,
-including when the vhost table is empty. They use the existing project file
-API and React viewer, with no vhost hostname or proxy. Standalone file pages,
-public shares, tool-detail panels, and the separate media lightbox retain their
-presentations.
+File viewers and tool-detail panels use this pane whenever the Appearance
+setting is enabled, including when the vhost table is empty. File viewers use
+the existing project file API and React viewer, with no vhost hostname or
+proxy. Placement is one decision for every session-owned viewer
+(`sessionViewerUsesRightPane`), so a panel written for the covering modal needs
+no knowledge of where it is shown. Standalone file pages, public shares, and
+the separate media lightbox retain their presentations.
 
 ## Layout
 
@@ -77,8 +82,25 @@ cross-origin frame requires cooperation from that app; YA cannot inspect or
 intercept arbitrary embedded app events.
 Pane width is persisted per browser. The session column may shrink to a
 readable minimum but is never removed.
+The session column clips only vertically, so popovers anchored in it (the
+context-usage detail, composer menus) draw over the pane rather than being
+cut off at the column edge (2026-09-24).
 
 A detected-app action opens the latest discovered app, including after Close.
+A file viewer's interactive play activation also announces its grant as the
+session's latest app (2026-09-23): the reader can close the viewer and recall
+the running document from the App action without having minimized it first.
+Such a viewer-activated app keeps a `play:` announcement id in the saved
+latest-app entry, which is the one entry storage seeds back into a reopened
+session's app list, since transcript scanning cannot rediscover it. It was the
+latest app when saved, so it stays the App action's target above the history
+loaded with the reopened session, and like loaded history it is offered but
+never opened automatically: storage cannot establish that its grant is alive.
+Opening an artifact link from session prose announces the same way
+(2026-09-25). File viewers the session hosts, in the pane or as a modal, sit
+inside the session's App-link context so their play activation reaches it. A
+viewer-activated announcement never auto-opens the pane: the announcing viewer
+is already showing that document.
 While the pane is expanded, that App action closes it completely without
 creating a bottom-bar entry. The separate minimize button still parks it.
 With the setting off it is a new-window link. V1 has one managed viewer:
@@ -96,6 +118,12 @@ session whose state returns to the default releases its entry, including one
 left by an earlier release. Every reader shares one store over that key family,
 so sidebar cost does not grow with the session count and one session's
 discovery does not re-render unrelated rows.
+
+Discovery publishes only when this tab's discovered latest app changes.
+Receiving another tab's saved App entry must not publish this tab's older
+entry back: tabs can hold different transcript windows. Dismissals are merged
+from the current store when publishing, without making storage notifications
+an input to the publication effect.
 
 Minimize parks the pane at the existing bottom viewer controller, returning
 its width to the transcript. The iframe stays mounted so restore does not
@@ -116,9 +144,12 @@ host support is Linux with `/usr/bin/lsof` and `/proc`. Other hosts and older
 servers retain App/minimize but show no Kill and make no control requests.
 
 Artifact links use the same pane but have no process to kill. Their × clears
-the session app entry; the existing grant expiry/ownership/deletion lifecycle
-remains authoritative. The URL token is not the grant's management id, so
-closing a discovered artifact URL does not send a guessed revocation request.
+only the selected pane controller; it does not dismiss the artifact from the
+session's discovered links. The same artifact can therefore be reopened from a
+previous turn or remain open in other browser tabs. The existing grant expiry
+and explicit revocation lifecycle remains authoritative. The URL token is not
+the grant's management id, so closing a discovered artifact URL does not send a
+guessed revocation request.
 
 ### Narrow (<1100px)
 
@@ -230,11 +261,13 @@ the parent, so an Open-in-window action is always present.
   model: minimize goes to the bottom and Close unloads, as with modal viewers.
   Multiple viewer windows are a later, separately selectable display option.
 
-## File viewers
+## File viewers and detail panels
 
 When the Appearance setting is on, file links in the session open in the
 right pane. The stable session host owns the document independently of the
-link's transcript row. Minimize parks at the existing composer controller;
+link's transcript row. While the pane is open there is no composer
+controller: the pane's own header carries minimize and close. Minimize parks
+at the existing composer controller, which appears only then;
 restore reuses the same mounted viewer and preserves reading state. Close
 destroys it and dismisses its originating link's open state, allowing that
 same link to open it again.
@@ -248,6 +281,21 @@ The file viewer retains its file-specific header controls and shares the final
 link, move-out, minimize, and close group with App viewers. Its header adapts
 to the allocated viewer width, including a narrow pane on a wide screen.
 
+A tool-detail panel takes the same pane on the same terms, rendering the
+covering modal's own header — its own actions, select-all, minimize, close —
+and content chrome (`ModalChrome`), so the panel body renders identically in
+either placement.
+
+Escape follows the placement, for panels and file viewers alike. The narrow
+drawer covers the session, so it is a modal layer: Escape pressed anywhere
+dismisses the topmost viewer, and it holds a share of the document scroll lock
+([parked file viewer](parked-file-viewer.md) owns that stack). The wide pane is
+a column beside a live session, not a layer over it: Escape dismisses its
+viewer only when pressed inside the viewer, after the viewer's own controls
+have had it, and it takes no scroll lock. An Escape pressed in the composer or
+transcript reaches that control — dismissing a composer menu, for example —
+and leaves the pane open.
+
 ## Slide animations
 
 **Appearance → Slide animations** defaults on. It controls sidebar motion,
@@ -258,6 +306,9 @@ content, and column allocation in the same update: no animation-frame or
 zero-delay timer is needed to finish opening or closing. With animations on,
 closing content stays mounted only through the exit transition; minimized
 content stays mounted for later restore. Splitter dragging remains immediate.
+On wide screens the session column and pane are explicitly assigned to the
+first and second grid tracks. A zero-duration update therefore cannot place the
+pane in the session track while the browser resolves the new column allocation.
 
 ## Non-goals
 

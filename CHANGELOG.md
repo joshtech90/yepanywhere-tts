@@ -7,6 +7,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Limited-user Project Queue and All Sessions responses are now scoped to
+  granted projects, including queue messages and attachments, recovered queue
+  items, project options, pagination, and aggregate statistics. The Users
+  settings now identify this as a preview for trusted sharing rather than
+  hardened isolation between mutually untrusted users.
+
+## [0.9.2] - 2026-09-26
+
+### Security
+- A limited user who logged in directly and opened the WebSocket no longer
+  acts as the superuser; the socket binds the login instead of trusting
+  per-request headers.
+- Turning limited users off now refuses their live logins instead of
+  promoting them to the superuser.
+- Limited-user access is judged by the routed path, never the query string,
+  so an unlisted route is no longer reachable by adding a granted
+  `projectId`. Settings secrets (such as the lifecycle webhook token),
+  host activity and recents are withheld from limited users, and file
+  editing is listed among the routes they never reach.
+- Computer-control routes now sit behind the same host, CORS, header, auth
+  and limited-user checks as the rest of `/api`.
+- Artifact rebuild is refused to anyone but the superuser, and approving a
+  rebuild approves only the command the dialog showed, not whatever is on
+  disk when the request arrives.
+- Artifact frames can no longer open popups that escape the sandbox and
+  reach the YA tab.
+- Copy public URL on a running preview no longer mints an unlisted public
+  grant covering the file's whole directory for a week; it copies the same
+  revocable file share as the file link's entry.
+- Updated `@hono/node-server` to 1.19.17, which fixes the serve-static
+  advisory (GHSA-frvp-7c67-39w9) that had been ignored as unreachable.
+
+### Added
+- The file viewer shows PDFs inline, plays audio and video, previews fonts,
+  and shows text files up to 100 MB. An opt-in Appearance setting,
+  "Draw PDFs with pdf.js", renders PDFs the browser will not show, with
+  pinch, Ctrl+wheel and button zoom; a PDF the browser blocks in a frame
+  offers a new tab.
+- Ctrl+F inside an artifact or file viewer searches only that viewer, and
+  the find field stays open until Escape.
+- A reload button in the session right pane refetches a rebuilt artifact
+  or app.
+- Cost estimates for GPT-6 Sol and Luna.
+
+### Changed
+- Codex 0.156.1 support: message-anchor forks no longer depend on the
+  removed `thread/rollback` method. Codex 0.157.0 is recorded as
+  compatible.
+
+### Fixed
+- Sessions with thinking off on Codex models without a "none" effort (such
+  as GPT-6 Astra) no longer fail their first turn with a 400.
+- Parked sessions keep their scroll position across A/B switches instead
+  of jumping to the top of the transcript.
+- A slash command typed in front of existing composer text now offers
+  completions.
+- Artifacts played in a file viewer or opened from session prose become
+  the session's App.
+- Section links in the sanitized HTML preview and fragment links in play
+  frames scroll in place; iframe titles no longer show as hover tooltips;
+  composer popovers draw over the docked right pane.
+- Shutting the server down no longer races the artifact server's startup
+  state writes.
+
+## [0.9.1] - 2026-09-24
+
+### Fixed
+- Recover the session catalog from a corrupt or missing shard instead of
+  failing every session list with "Invalid session catalog row" until the
+  `session-catalog` folder was deleted by hand (#125). The catalog restarts
+  empty and rebuilds from provider session files.
+- Keep a session-catalog generation on disk while a reader still walks it,
+  fixing an intermittent ENOENT on All Sessions.
+- Stream OpenCode replies live instead of only after a reload (#115).
+- Bound live Codex command output so a command printing about 1 MiB no
+  longer kills its turn, and label provider deaths YA did not request in the
+  transcript instead of showing a plain interrupt.
+- Let All Sessions select several rows and archive them; bulk actions no
+  longer hide unselected rows.
+- Keep filter menus from leaving the sessions page scrolled.
+- Fix the settings "moved to Apps" link.
+
+### Added
+- Transcript search from a toolbar button, clickable and touch-reachable
+  search controls, and a Ctrl+Alt+K Links scope over link labels.
+- File and artifact viewers render HTML by default, offer an explicit edit
+  mode for original sources, a reload button with a freshness check, and
+  rebuild of edited artifacts through an approved `ya-artifact:v1` hook.
+- Public file shares can play a shared HTML document in a new tab, and
+  project-file links offer Copy public URL.
+
+### Changed
+- `AGENT_LAUNCH_MODEL` carries the concrete model id (for example
+  `claude-opus-5-5`) instead of the UI alias.
+- The effort-change cache warning is skipped on Opus 5.5, whose prompt
+  cache survives the change.
+
+## [0.9.0] - 2026-09-22
+
 ### Added
 - Add `ya-granite`, a local speech-to-text backend running IBM Granite Speech
   4.1 2B through the existing pixi `stt` environment. Enable it with
@@ -25,8 +125,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   standard or Daybreak programs on each turn for an enrolled account.
 
 ### Changed
-- Refresh the bundled Claude runtime to Claude Code 2.1.273 and Agent SDK
-  0.3.273.
+- Refresh the bundled Claude runtime to Claude Code 2.1.280 and Agent SDK
+  0.3.280, including Opus 5.5 model discovery, native 1M-context accounting,
+  and the new persisted cost-state metadata.
 - Refresh Codex compatibility through CLI 0.154.0, including the regenerated
   app-server protocol subset, the new durable reasoning-effort history item,
   and the migrated approval path fields.

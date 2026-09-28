@@ -25,24 +25,28 @@ describe("stabilizeRenderItems", () => {
 
     const previousFirst: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "msg-1",
       text: "first",
       sourceMessages: [firstMessage],
     };
     const previousSecond: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "msg-2",
       text: "second",
       sourceMessages: [secondMessage],
     };
     const rebuiltFirst: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "msg-1",
       text: "first",
       sourceMessages: [firstMessage],
     };
     const updatedSecond: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "msg-2",
       text: "second update",
       sourceMessages: [{ ...secondMessage }],
@@ -121,6 +125,7 @@ describe("stabilizeRenderItems", () => {
     };
     const assistantOne: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-1",
       text: "settled",
       sourceMessages: [],
@@ -133,6 +138,7 @@ describe("stabilizeRenderItems", () => {
     };
     const previousTail: RenderItem = {
       type: "text",
+      sourceBlockIndex: 0,
       id: "assistant-2",
       text: "streaming",
       isStreaming: true,

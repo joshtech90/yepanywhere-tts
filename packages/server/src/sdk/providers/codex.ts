@@ -99,8 +99,6 @@ import type {
   ThreadItem as CodexThreadItem,
   ThreadCompactStartParams,
   ThreadCompactStartResponse,
-  ThreadRollbackParams,
-  ThreadRollbackResponse,
   CommandExecutionApprovalDecision,
   CommandExecutionRequestApprovalParams,
   FileChangeApprovalDecision,
@@ -620,10 +618,52 @@ interface NormalizedFileChange {
 interface CodexLiveEventState {
   streamingTextByItemKey: Map<string, string>;
   streamingReasoningSummaryByItemKey: Map<string, string[]>;
-  streamingToolOutputByItemKey: Map<string, string>;
+  streamingToolOutputByItemKey: Map<string, CodexLiveToolOutput>;
   toolCallContexts: Map<string, CodexToolCallContext>;
   resultBackedToolItemsByTurnId: Map<string, Set<string>>;
   planUpdateCountByTurnId: Map<string, number>;
+}
+
+/**
+ * Each live tool-output message is a cumulative snapshot that replaces the
+ * previous one, so an unbounded snapshot makes a long output cost quadratic
+ * bytes across provider replay, fan-out, and relay. The live preview keeps the
+ * head (collapsed rows show leading lines) and the tail (progress); the
+ * completed item carries the full output.
+ */
+export const CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS = 32 * 1024;
+export const CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS = 32 * 1024;
+
+export interface CodexLiveToolOutput {
+  head: string;
+  tail: string;
+  omittedChars: number;
+}
+
+export function appendCodexLiveToolOutput(
+  output: CodexLiveToolOutput | undefined,
+  delta: string,
+): CodexLiveToolOutput {
+  let head = output?.head ?? "";
+  let tail = output?.tail ?? "";
+  let omittedChars = output?.omittedChars ?? 0;
+  const headRoom = CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS - head.length;
+  let rest = delta;
+  if (headRoom > 0) {
+    head += rest.slice(0, headRoom);
+    rest = rest.slice(headRoom);
+  }
+  tail += rest;
+  if (tail.length > CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS) {
+    omittedChars += tail.length - CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS;
+    tail = tail.slice(-CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS);
+  }
+  return { head, tail, omittedChars };
+}
+
+export function renderCodexLiveToolOutput(output: CodexLiveToolOutput): string {
+  if (output.omittedChars === 0) return `${output.head}${output.tail}`;
+  return `${output.head}\n… ${output.omittedChars} characters omitted from the live preview; the completed result shows the full output …\n${output.tail}`;
 }
 
 interface CodexFailureTraceEvent {
@@ -1779,8 +1819,11 @@ export class CodexProvider implements AgentProvider {
   private async startSessionInternal(
     options: StartSessionOptions,
   ): Promise<AgentSession> {
+    // These effort mappings read the model's supported efforts, which a fresh
+    // session worker has not loaded yet.
     if (
       options.effort === "max" ||
+      options.thinking?.type === "disabled" ||
       options.initialMessage?.metadata?.turnEffort
     )
       await this.getAvailableModels();
@@ -2506,40 +2549,36 @@ export class CodexProvider implements AgentProvider {
       const experimentalApiEnabled = await this.initializeAppServer(appServer);
       appServer.notify("initialized");
 
-      const rollbackCount = options.boundary
-        ? 0
-        : options.upToMessageId
-          ? await this.resolveCodexForkRollbackCount(
-              appServer,
-              options.sessionId,
-              options.upToMessageId,
-            )
-          : 0;
+      const lastTurnId =
+        options.boundary?.kind === "turn"
+          ? options.boundary.turnId
+          : options.upToMessageId
+            ? await this.resolveCodexForkLastTurnId(
+                appServer,
+                options.sessionId,
+                options.upToMessageId,
+              )
+            : undefined;
       const policy = this.mapPermissionModeToThreadPolicy(undefined);
       const fork = await appServer.request<ThreadForkResponse>(
         "thread/fork",
-        this.createThreadForkParams(options, policy, experimentalApiEnabled),
+        this.createThreadForkParams(
+          { ...options, lastTurnId },
+          policy,
+          experimentalApiEnabled,
+        ),
       );
       const forkSessionId = fork.thread?.id;
       if (!forkSessionId) {
         throw new Error("Codex thread/fork did not return a thread id");
       }
 
-      if (rollbackCount > 0) {
-        await appServer.request<ThreadRollbackResponse>("thread/rollback", {
-          threadId: forkSessionId,
-          numTurns: rollbackCount,
-        } satisfies ThreadRollbackParams);
-      }
-
       log.info(
         {
           sourceSessionId: options.sessionId,
           forkSessionId,
-          boundaryTurnId:
-            options.boundary?.kind === "turn" ? options.boundary.turnId : null,
+          lastTurnId: lastTurnId ?? null,
           upToMessageId: options.upToMessageId ?? null,
-          rollbackCount,
         },
         "Forked Codex app-server thread",
       );
@@ -3865,16 +3904,14 @@ export class CodexProvider implements AgentProvider {
     options: {
       sessionId: string;
       cwd: string;
-      boundary?: ProviderForkBoundary;
+      lastTurnId?: string;
     },
     policy: CodexThreadPolicy,
     experimentalApiEnabled = false,
   ): CodexThreadForkParamsForRequest {
     const params: CodexThreadForkParamsForRequest = {
       threadId: options.sessionId,
-      ...(options.boundary?.kind === "turn"
-        ? { lastTurnId: options.boundary.turnId }
-        : {}),
+      ...(options.lastTurnId ? { lastTurnId: options.lastTurnId } : {}),
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
       config: this.buildThreadConfigOverrides({}),
@@ -3885,11 +3922,16 @@ export class CodexProvider implements AgentProvider {
     return params;
   }
 
-  private async resolveCodexForkRollbackCount(
+  /**
+   * Maps a legacy message-id fork anchor to the completed turn the fork keeps
+   * through. Undefined means the anchor ends the thread, so the fork copies
+   * everything, including a turn that may still be in progress.
+   */
+  private async resolveCodexForkLastTurnId(
     appServer: CodexAppServerClient,
     sessionId: string,
     upToMessageId: string,
-  ): Promise<number> {
+  ): Promise<string | undefined> {
     const response = await appServer.request<ThreadReadResponse>(
       "thread/read",
       {
@@ -3898,13 +3940,13 @@ export class CodexProvider implements AgentProvider {
       } satisfies ThreadReadParams,
     );
     const turns = response.thread.turns ?? [];
-    return this.computeCodexForkRollbackCount(turns, upToMessageId);
+    return this.computeCodexForkLastTurnId(turns, upToMessageId);
   }
 
-  private computeCodexForkRollbackCount(
+  private computeCodexForkLastTurnId(
     turns: CodexThreadTurn[],
     upToMessageId: string,
-  ): number {
+  ): string | undefined {
     const anchor = this.findCodexForkAnchor(turns, upToMessageId);
     if (!anchor) {
       throw new Error(
@@ -3926,7 +3968,9 @@ export class CodexProvider implements AgentProvider {
       }
     }
 
-    return turns.length - anchor.turnIndex - 1;
+    return anchor.turnIndex < turns.length - 1
+      ? turns[anchor.turnIndex]?.id
+      : undefined;
   }
 
   private findCodexForkAnchor(
@@ -6430,8 +6474,12 @@ export class CodexProvider implements AgentProvider {
     liveEventState: CodexLiveEventState,
   ): SDKMessage {
     const key = this.buildItemEventKey(turnId, itemId);
-    const content = `${liveEventState.streamingToolOutputByItemKey.get(key) ?? ""}${delta}`;
-    liveEventState.streamingToolOutputByItemKey.set(key, content);
+    const output = appendCodexLiveToolOutput(
+      liveEventState.streamingToolOutputByItemKey.get(key),
+      delta,
+    );
+    liveEventState.streamingToolOutputByItemKey.set(key, output);
+    const content = renderCodexLiveToolOutput(output);
 
     const message = withCodexTimestamp({
       type: "user",

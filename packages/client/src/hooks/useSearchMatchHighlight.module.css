@@ -4,6 +4,21 @@
   background-color: color-mix(in srgb, var(--primary-color) 12%, transparent);
 }
 
+/* Only the landing fades; selecting a match while searching stays instant. */
+.target.landed {
+  outline-color: transparent;
+  background-color: transparent;
+  transition:
+    outline-color 700ms ease-out,
+    background-color 700ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .target.landed {
+    transition: none;
+  }
+}
+
 .target::highlight(session-isearch),
 .target ::highlight(session-isearch) {
   background-color: #ffdc70;

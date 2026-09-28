@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ArtifactViewerStatus } from "@yep-anywhere/shared";
-import { sessionToolUrls, sessionVhostApp } from "./sessionVhostApps";
+import {
+  publicSessionLocalhostHref,
+  rewriteSessionLocalhostHref,
+  sessionLocalhostRewriteApplies,
+  sessionToolUrls,
+  sessionVhostApp,
+} from "./sessionVhostApps";
+import { rewriteSessionAppLinksHtml } from "../components/SessionAppLinks";
 
 const vhostConfig: ArtifactViewerStatus = {
   port: 4402,
@@ -69,6 +76,149 @@ describe("session vhost apps", () => {
         "https://ya.example.net",
       )?.url,
     ).toBe("https://plan.example.org/");
+  });
+  it("rewrites configured localhost anchors only for public relay sessions", () => {
+    const config = {
+      ...vhostConfig,
+      accessTokens: { plan: "private-token" },
+    };
+    const raw = "http://plan.localhost:19432/review?q=abc#x";
+    expect(
+      rewriteSessionLocalhostHref(raw, config, {
+        clientUrl: "https://ya.example.org/-/relay/home/sessions/one",
+        relayed: true,
+      }),
+    ).toBe("https://plan.example.org/review?q=abc&ya_access=private-token#x");
+    for (const context of [
+      { clientUrl: "https://ya.example.org/sessions/one", relayed: false },
+      { clientUrl: "http://localhost:3400/sessions/one", relayed: true },
+    ]) {
+      expect(rewriteSessionLocalhostHref(raw, config, context)).toBe(raw);
+    }
+  });
+  it("can always rewrite configured localhost anchors and preserves prose", () => {
+    const config = {
+      ...vhostConfig,
+      alwaysRewriteVhostLinks: true,
+      accessTokens: { plan: null },
+    };
+    const raw = "http://plan.localhost/path";
+    const rewrite = (href: string) =>
+      rewriteSessionLocalhostHref(href, config, {
+        clientUrl: "http://localhost:3400/sessions/one",
+        relayed: false,
+      });
+    expect(rewrite(raw)).toBe("https://plan.example.org/path");
+    expect(
+      rewriteSessionAppLinksHtml(
+        `plan.localhost <a href="${raw}">plan.localhost</a>`,
+        rewrite,
+      ),
+    ).toBe(
+      'plan.localhost <a href="https://plan.example.org/path">plan.localhost</a>',
+    );
+  });
+  it("forces an explicit public URL for any localhost subdomain", () => {
+    expect(
+      rewriteSessionLocalhostHref(
+        "http://artifacts.localhost:3400/a/grant/report.html#results",
+        vhostConfig,
+        {
+          clientUrl: "http://localhost:3400/sessions/one",
+          relayed: false,
+          force: true,
+        },
+      ),
+    ).toBe("https://artifacts.example.org/a/grant/report.html#results");
+    expect(
+      rewriteSessionLocalhostHref("//reports.localhost/today", vhostConfig, {
+        clientUrl: "https://ya.example.org/-/relay/home/sessions/one",
+        relayed: true,
+        force: true,
+      }),
+    ).toBe("https://reports.example.org/today");
+  });
+  it("decides per page whether transcript rewriting can change a destination", () => {
+    const relayPage = {
+      clientUrl: "https://ya.example.org/-/relay/home/sessions/one",
+      relayed: true,
+    };
+    const directPage = {
+      clientUrl: "http://localhost:3400/sessions/one",
+      relayed: false,
+    };
+    const { vhostPublicRoot: _root, ...noRoot } = vhostConfig;
+    expect(sessionLocalhostRewriteApplies(vhostConfig, relayPage)).toBe(true);
+    expect(sessionLocalhostRewriteApplies(vhostConfig, directPage)).toBe(false);
+    expect(
+      sessionLocalhostRewriteApplies(
+        { ...vhostConfig, alwaysRewriteVhostLinks: true },
+        directPage,
+      ),
+    ).toBe(true);
+    expect(
+      sessionLocalhostRewriteApplies(vhostConfig, {
+        ...directPage,
+        force: true,
+      }),
+    ).toBe(true);
+    expect(sessionLocalhostRewriteApplies(noRoot, relayPage)).toBe(false);
+    expect(sessionLocalhostRewriteApplies(undefined, relayPage)).toBe(false);
+  });
+  it("offers an explicit public URL only where a public destination exists", () => {
+    const directPage = {
+      clientUrl: "http://localhost:3400/sessions/one",
+      relayed: false,
+    };
+    expect(
+      publicSessionLocalhostHref(
+        "http://reports.localhost/today",
+        vhostConfig,
+        directPage,
+      ),
+    ).toBe("https://reports.example.org/today");
+    expect(
+      publicSessionLocalhostHref(
+        "https://plan.example.org/path",
+        vhostConfig,
+        directPage,
+      ),
+    ).toBe("https://plan.example.org/path");
+    expect(
+      publicSessionLocalhostHref(
+        "https://elsewhere.test/path",
+        vhostConfig,
+        directPage,
+      ),
+    ).toBeUndefined();
+    const { vhostPublicRoot: _root, ...noRoot } = vhostConfig;
+    expect(
+      publicSessionLocalhostHref(
+        "http://reports.localhost/today",
+        noRoot,
+        directPage,
+      ),
+    ).toBeUndefined();
+  });
+  it("rewrites generic subdomains but not private apps without an access decision", () => {
+    const context = {
+      clientUrl: "https://ya.example.org/-/relay/home/sessions/one",
+      relayed: true,
+    };
+    expect(
+      rewriteSessionLocalhostHref(
+        "http://other.localhost/",
+        { ...vhostConfig, accessTokens: { plan: "token" } },
+        context,
+      ),
+    ).toBe("https://other.example.org/");
+    expect(
+      rewriteSessionLocalhostHref(
+        "http://plan.localhost/",
+        { ...vhostConfig, accessTokens: {} },
+        context,
+      ),
+    ).toBe("http://plan.localhost/");
   });
   it("does not offer unreachable, same-host, mixed-content or unconfigured views", () => {
     for (const raw of [

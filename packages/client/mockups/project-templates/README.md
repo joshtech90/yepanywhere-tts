@@ -1,5 +1,11 @@
 # Project templates UI proposal
 
+The creation placement is superseded by
+[`../project-template-placement/README.md`](../project-template-placement/README.md):
+an always-visible radio palette and inline New session creation. This older
+fixture retains the settings, permissions, preparation and app-name proposals;
+its hidden single-choice picker is no longer the intended creation behavior.
+
 Isolated interactive proposal for Projects → New project, the immediately
 available starter with a preparation session, and Settings → Users template
 permissions. Uses the real `AddProjectForm`, `SettingsSection`, `I18nProvider`

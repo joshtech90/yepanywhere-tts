@@ -31,13 +31,15 @@ on the Claude file shape: `docs/research/archive/claude-session-jsonl-structure.
 transcript is written by this server, and a cold fork has no process to own it,
 so the file activity of its own creation used to arrive as "another program is
 writing this session" and raise the amber banner on a session nothing else had
-touched. `Supervisor.forkSession` now emits `session-forked`, and
-`ExternalSessionTracker` holds a ~30s grace (`forkGraceMs`) during which that
-session is still discovered — summary read, `session-created` emitted — but is
-reported unowned rather than externally active. After the grace, a writer that
-is not YA is external again, exactly as for any other session. This is the same
-shape as the existing post-abort grace, for the same reason: our own writes are
-not evidence of a foreign writer.
+touched. `Supervisor.forkSession` emits `session-forked`, and
+`ExternalSessionTracker` records it as one of this server's own writes, as it
+does a `session-aborted` stop: one grace per session with its reason, because
+our own writes are not evidence of a foreign writer. For ~30s after a fork
+(`forkGraceMs`) the session is still discovered — summary read,
+`session-created` emitted — but reported unowned rather than externally active;
+for ~30s after an abort (`abortGraceMs`) its cleanup writes are ignored. After
+the grace, a writer that is not YA is external again, exactly as for any other
+session.
 
 **Ownership is derived purely from file mtime.** It is a *recency* signal, not
 a *liveness* signal: it cannot see processes, pids, or locks. This is the root

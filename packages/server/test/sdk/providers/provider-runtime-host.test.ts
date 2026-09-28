@@ -32,7 +32,6 @@ import {
   closeProviderRuntimeHostRegistration,
   ensureProviderRuntimeHost,
   initializeProviderRuntimeHost,
-  providerHostEnabled,
   startHostedProviderSession,
 } from "../../../src/sdk/providers/provider-runtime-host.js";
 import { isProviderHostDegraded } from "../../../src/sdk/providers/provider-host-status.js";
@@ -74,26 +73,6 @@ describe("resolveProviderRuntimeWorkerPath", () => {
   });
 });
 
-describe("providerHostEnabled", () => {
-  it("defaults off on Mac and on for Linux", () => {
-    expect(providerHostEnabled({}, "darwin")).toBe(false);
-    expect(providerHostEnabled({}, "linux")).toBe(true);
-    expect(providerHostEnabled({}, "win32")).toBe(false);
-  });
-
-  it("honors explicit booleans and rejects invalid values", () => {
-    expect(
-      providerHostEnabled({ YEP_PROVIDER_HOST_ENABLED: "true" }, "darwin"),
-    ).toBe(true);
-    expect(
-      providerHostEnabled({ YEP_PROVIDER_HOST_ENABLED: "false" }, "linux"),
-    ).toBe(false);
-    expect(() =>
-      providerHostEnabled({ YEP_PROVIDER_HOST_ENABLED: "sometimes" }, "linux"),
-    ).toThrow("must be true or false");
-  });
-});
-
 describe("withAgentLaunchEnvironment", () => {
   it("publishes the current server URL and clears a stale outer launcher URL", () => {
     const ambient = { AGENT_SERVER_URL: "http://outer.invalid/" };
@@ -132,6 +111,20 @@ describe("withAgentLaunchEnvironment", () => {
       AGENT_LAUNCH_MODEL: "gpt-5.6-sol",
       AGENT_LAUNCH_EFFORT: "high",
     });
+  });
+
+  it("publishes the resolved launch model instead of its alias", () => {
+    expect(
+      withAgentLaunchEnvironment(
+        "claude",
+        { model: "opus", launchModel: "claude-opus-5-5" },
+        {},
+      ).AGENT_LAUNCH_MODEL,
+    ).toBe("claude-opus-5-5");
+    expect(
+      withAgentLaunchEnvironment("claude", { model: "opus" }, {})
+        .AGENT_LAUNCH_MODEL,
+    ).toBe("opus");
   });
 
   it("removes unavailable optional launch facts", () => {
@@ -421,6 +414,22 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     vi.stubEnv("YEP_PROVIDER_RUNTIME_TOKEN", undefined);
 
     expect(await ensureProviderRuntimeHost()).toBe(false);
+    expect(existsSync(join(runtimeRoot, "host.json"))).toBe(false);
+    expect(isProviderHostDegraded()).toBe(false);
+  });
+
+  it("stays in-process without the degraded notice when it ships no host scripts", async () => {
+    const runtimeRoot = await mkdtemp(
+      join(runtimeTmpDir, "scriptless-provider-host-"),
+    );
+    temporaryPaths.push(runtimeRoot);
+    vi.stubEnv("VITEST", undefined);
+    vi.stubEnv("USE_MOCK_SDK", undefined);
+    vi.stubEnv("YEP_PROVIDER_HOST_RUNTIME_DIR", runtimeRoot);
+    vi.stubEnv("YEP_PROVIDER_RUNTIME_SOCKET", undefined);
+    vi.stubEnv("YEP_PROVIDER_RUNTIME_TOKEN", undefined);
+
+    expect(await ensureProviderRuntimeHost(null)).toBe(false);
     expect(existsSync(join(runtimeRoot, "host.json"))).toBe(false);
     expect(isProviderHostDegraded()).toBe(false);
   });
@@ -1924,9 +1933,13 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
 
     const first = await startHostedProviderSession(
       "claude",
-      { cwd: runtimeRoot },
+      {
+        cwd: runtimeRoot,
+        gatewayRoute: { serviceId: "vllm", modelId: "deepseek-v4-flash" },
+      },
       {},
     );
+    expect(first.gatewayServiceId).toBe("vllm");
     const firstEvent = await first.iterator.next();
     expect(firstEvent.value?.session_id).toBe("fake-session-1");
     expect(first.initializedSessionId).toBeUndefined();
@@ -1966,6 +1979,9 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     // The retained worker acknowledged the first generation's init, so the
     // reattached proxy reports provider identity without a replayed init.
     expect(second.initializedSessionId).toBe("canonical-session");
+    // The replacement server resolved no endpoint of its own for this resume;
+    // the worker is still bound to the one it launched against.
+    expect(second.gatewayServiceId).toBe("vllm");
     const secondEvent = await second.iterator.next();
     expect(secondEvent.value?.session_id).toBe("fake-session-2");
     const environmentEvent = await second.iterator.next();
@@ -2021,7 +2037,6 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
           networkFirewall: false,
           provider: "claude",
           projectPath: runtimeRoot,
-          authEnforced: true,
         },
       },
       {},
@@ -2044,7 +2059,6 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
           networkFirewall: true,
           provider: "claude",
           projectPath: runtimeRoot,
-          authEnforced: true,
         },
       },
       {},

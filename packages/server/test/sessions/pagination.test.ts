@@ -19,6 +19,27 @@ function compactBoundary(uuid: string): Message {
   return msg("system", uuid, "compact_boundary");
 }
 
+/** The synthetic header row the reader places before a rewound group. */
+function rewoundHeader(groupId: string, parentGroupId?: string): Message {
+  return rewoundRow(
+    msg("system", `rewound-group-${groupId}`, "rewound_group"),
+    groupId,
+    parentGroupId,
+  );
+}
+
+function rewoundRow(
+  message: Message,
+  groupId: string,
+  parentGroupId?: string,
+): Message {
+  return {
+    ...message,
+    rewoundGroupId: groupId,
+    ...(parentGroupId ? { rewoundParentGroupId: parentGroupId } : {}),
+  } as Message;
+}
+
 describe("sliceAtCompactBoundaries", () => {
   it("slices incremental messages after a known message id", () => {
     const messages = [
@@ -370,6 +391,30 @@ describe("sliceAtCompactBoundaries", () => {
     expect(result.pagination.totalCompactions).toBe(2);
     expect(result.pagination.hasOlderMessages).toBe(true);
   });
+
+  it("starts at the outermost header when the boundary was rewound", () => {
+    // A compaction inside rw-b's dropped span, which rw-a later enclosed.
+    const messages = [
+      msg("user", "u1"),
+      msg("assistant", "a1"),
+      rewoundHeader("rw-a"),
+      rewoundRow(msg("user", "u2"), "rw-a"),
+      rewoundHeader("rw-b", "rw-a"),
+      rewoundRow(msg("assistant", "a2"), "rw-b", "rw-a"),
+      rewoundRow(compactBoundary("cb1"), "rw-b", "rw-a"),
+      rewoundRow(msg("user", "u3"), "rw-b", "rw-a"),
+      msg("user", "u4"),
+      msg("assistant", "a4"),
+    ];
+
+    const result = sliceAtCompactBoundaries(messages, 1);
+
+    expect(result.messages[0]?.uuid).toBe("rewound-group-rw-a");
+    expect(result.messages).toHaveLength(8);
+    expect(result.pagination.truncatedBeforeMessageId).toBe(
+      "rewound-group-rw-a",
+    );
+  });
 });
 
 describe("sliceAtUserTurnBoundary", () => {
@@ -402,6 +447,33 @@ describe("sliceAtUserTurnBoundary", () => {
       "a4",
     ]);
     expect(result.pagination.totalUserTurns).toBe(2);
+  });
+
+  it("starts a window inside a nested group at its outermost header", () => {
+    // Clears made innermost first: rw-c dropped u4, rw-b's cut u3 was later
+    // dropped by rw-a. Only rw-a's header shows while rw-a is collapsed.
+    const messages = [
+      msg("user", "u1"),
+      msg("assistant", "a1"),
+      rewoundHeader("rw-a"),
+      rewoundRow(msg("user", "u2"), "rw-a"),
+      rewoundRow(msg("user", "u3"), "rw-a"),
+      rewoundHeader("rw-b", "rw-a"),
+      rewoundRow(msg("assistant", "a3"), "rw-b", "rw-a"),
+      rewoundHeader("rw-c", "rw-b"),
+      rewoundRow(msg("user", "u4"), "rw-c", "rw-b"),
+      rewoundRow(msg("assistant", "a4"), "rw-c", "rw-b"),
+      msg("user", "u5"),
+      msg("assistant", "a5"),
+    ];
+
+    const result = sliceAtUserTurnBoundary(messages, 20, "u4");
+
+    expect(result.messages[0]?.uuid).toBe("rewound-group-rw-a");
+    expect(result.messages).toHaveLength(10);
+    expect(result.pagination.truncatedBeforeMessageId).toBe(
+      "rewound-group-rw-a",
+    );
   });
 
   it("returns only the requested recent user-turn tail", () => {

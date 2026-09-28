@@ -5,8 +5,7 @@ export function sessionCollectionRecordToGlobalSessionItem(
   record: SessionCollectionRecord,
 ): GlobalSessionItem | null {
   const updatedAt = record.updatedAt ?? record.createdAt;
-  const createdAt = record.createdAt ?? updatedAt;
-  if (!record.provider || !record.projectId || !createdAt || !updatedAt) {
+  if (!record.provider || !record.projectId || !updatedAt) {
     return null;
   }
 
@@ -14,7 +13,7 @@ export function sessionCollectionRecordToGlobalSessionItem(
     id: record.id,
     title: record.title ?? null,
     fullTitle: record.fullTitle ?? null,
-    createdAt,
+    createdAt: record.createdAt,
     updatedAt,
     messageCount: record.messageCount ?? 0,
     provider: record.provider,
@@ -32,6 +31,7 @@ export function sessionCollectionRecordToGlobalSessionItem(
     parentSessionId: record.parentSessionId,
     parentSessionKind: record.parentSessionKind,
     forkedFromSessionId: record.forkedFromSessionId,
+    creationProvenance: record.creationProvenance,
     clearloop: record.clearloop,
     initialPrompt: record.initialPrompt,
     executor: record.executor,

@@ -83,6 +83,14 @@ by the Maintainer on 2026-09-08 so remote users can arrange a runtime upgrade
 while continuing to use their existing server. It adds no frontend cutoff or
 update-command gate. See [server runtimes](server-runtime.md).
 
+The session toolbar's Search transcript button ships default-visible,
+explicitly authorized by graehl on 2026-09-23 so that touch users can discover
+transcript search, which otherwise needs Ctrl+R-style keys. It takes the
+lowest narrowing tier, so it shows only where the bottom row has spare width
+and otherwise sits in `...`; opening search is its only effect. Toolbar settings
+can hide it. See
+[composer-bottom-bar-overflow](composer-bottom-bar-overflow.md).
+
 Structured Codex async questions and their toolbar reminders ship default-on,
 explicitly authorized by graehl on 2026-09-07. They make an existing provider
 question answerable without blocking ongoing work. Clickable choices and the

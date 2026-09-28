@@ -48,10 +48,24 @@ model serving.
 - A `serviceCommand` is accepted only for a loopback URL. A non-loopback entry
   is an endpoint YA merely talks to: never started, stopped, or signalled.
 - The editor has no Save button. A typed field writes the whole list when it
-  loses focus and a checkbox, radio, select, reorder, add, or remove writes it
+  loses focus and a checkbox, radio, select, reorder, or remove writes it
   as it is operated, which is the convention everywhere else in settings. A
   Save at the foot of a list of endpoints is scrolled out of sight exactly when
   there is enough configured for it to matter.
+- An added entry is the exception: it starts with no endpoint and stays out of
+  every save until its endpoint field loses focus holding one. It is enabled
+  for both providers, so saving it at once would reload the providers and send
+  catalog and effort probes, and with the export on write terminal files, for
+  an address nobody chose. Until then it can be edited, including its
+  checkboxes, or removed without anything being written, but not made the
+  default. When admitted it takes an id derived from its endpoint unless it
+  was already named.
+- Saving never costs a keystroke. Saves do not overlap: a write requested while
+  one is out waits for it, then sends the list as it stands by then. When a
+  save's answer arrives, an entry changed since that save was sent keeps what
+  was typed, and only entries untouched since then take the saved copy, which
+  may differ where the server normalized a value. A list changed elsewhere
+  replaces the editor's copy only where nothing here is unsaved.
 
 ### Lifecycle
 
@@ -74,12 +88,16 @@ model serving.
   a unique, same-user listener that is never YA or one of its ancestors.
 - `autoStop` schedules that stop request once no live session uses the service,
   after the entry's idle delay; any later use cancels it. Use counts live
-  processes from both providers that reach these endpoints, each attributed to
-  the service its launch model resolves to, so a CodexOSS session holds its
-  endpoint open exactly as a Claude Gateway one does. The two differ where a
-  model resolves to nothing: a Claude Gateway session is attributed to the
-  default service, since it must be using some service, while a CodexOSS
-  session launched against the local provider holds no service open at all.
+  processes from both providers that reach these endpoints, so a CodexOSS
+  session holds its endpoint open exactly as a Claude Gateway one does. A
+  CodexOSS session counts against the endpoint its launch was bound to (see
+  § Catalogs and model identity), which no later catalog read or server reload
+  changes; a Claude Gateway session, and a CodexOSS process that carries no
+  binding, counts against the service its launch model resolves to now. The
+  two differ where a model resolves to nothing: a Claude Gateway session is
+  attributed to the default service, since it must be using some service,
+  while a CodexOSS session launched against the local provider holds no
+  service open at all.
 - Each service owns its own launcher: reconfiguring or removing one never
   disturbs another's process, and a removed entry's child and pending stop
   check are torn down with it.
@@ -105,11 +123,21 @@ model serving.
   unusable as a separator because a vLLM server with no `--served-model-name`
   advertises a Hugging Face repo id that already contains one. A launch always
   reaches the owning service under the plain name that service knows.
+- A CodexOSS session is bound to one endpoint when it launches, because each of
+  its turns is a separate `codex exec`. The server process resolves the model
+  against the catalog it holds, reading that catalog first when the model is
+  not in it (nothing has read it yet after a server restart), and every turn
+  uses the result — under the provider host too, whose worker reads no catalog
+  and is handed the endpoint with the launch. A model no endpoint serves is
+  bound to the local provider. When the bound endpoint is later removed or
+  stops offering CodexOSS, the next turn fails with an error naming it rather
+  than moving to the local provider.
 - A catalog read may start only the default service. A non-default service that
   is not already listening contributes nothing until one of its models is
   selected, and that selection is what authorizes its start.
-- A service that could not be read keeps its last good catalog and routes;
-  only a successful read publishes a change.
+- A service that could not be read — a timeout or an error status — keeps its
+  last good catalog and routes, for CodexOSS as for Claude Gateway; only a
+  successful read publishes a change.
 - `maxModels` truncates one service's contribution in catalog order, defaulting
   to 100.
 
@@ -175,13 +203,25 @@ model serving.
   that fails. A template that *accepts* the highest schema level is not
   narrowing from the top, so the schema answer stands — at the cost of one
   prefill and one token, which is the second stage's whole price and the one
-  case where asking is not free.
+  case where asking is not free. A template stage that fails, most likely by
+  outlasting its deadline behind real work after accepting, also leaves the
+  schema answer standing.
+- The template is a property of each model, not of the endpoint: one server can
+  front several models with different templates. The schema stage is asked once
+  per endpoint; the template stage is asked of each listed model whose levels
+  the answer would supply — one that no configuration, catalog row, or known
+  family describes — a few at a time, and each such model gets its own answer.
+  Any other listed model gets the schema answer, which can still say whether
+  thinking can be turned off.
 - An entry stating its own `effortLevels` is never asked: configuration wins for
   every model of that service, so no answer could change the outcome.
-- Answers are cached per endpoint URL and shared between the two providers, 30
-  minutes for an answer and one minute for a silence, since the usual silence is
-  an endpoint that is not up yet. A reconfigured services list drops the cache,
-  because the same address may now front a different server.
+- Answers are shared between the two providers. Schema answers are cached per
+  endpoint URL, 30 minutes for an answer and one minute for a silence, since the
+  usual silence is an endpoint that is not up yet. Template answers are cached
+  per endpoint URL and model for 30 minutes whatever they said, so a failed or
+  accepting template is not asked, and paid for, again on the next catalog
+  read. A reconfigured services list drops the cache, because the same address
+  may now front a different server.
 - The setting governs every process that reads a catalog, not only the server's
   own reads. A hosted session runs in a provider worker with its own module
   state, so the launch snapshot carries the setting and the worker applies it
@@ -189,7 +229,8 @@ model serving.
   while the user had switched asking off.
 - A 2xx to the probe means the endpoint validates nothing and has therefore said
   nothing; it is not read as accepting every level.
-- `POST /api/settings/gateway-services/effort` asks one endpoint on demand. It
+- `POST /api/settings/gateway-services/effort` asks one endpoint on demand,
+  about the first model its catalog lists, and reports that model's id. It
   bypasses both the cache and the setting, and its URL must be loopback or
   already configured: unlike catalog discovery it sends a chat request, so it
   stays pointed at endpoints the server already talks to. The requested URL is
@@ -248,7 +289,8 @@ model serving.
   characters and a model id is whatever the endpoint's catalog row says, so a
   `"` or `\` in either reaches Codex as written instead of ending the string
   early and failing the launch.
-- The services editor checks `codexEnabled` by default on a newly added entry:
+- The services editor checks `codexEnabled` by default on a newly added entry
+  (saved once it names an endpoint; see § Configuration):
   an endpoint added to the list is usually the reason CodexOSS is being turned
   on at all. Existing entries keep whatever was saved, and the single-gateway
   legacy paths still default to off.
@@ -285,9 +327,13 @@ selectable from a plain terminal session.
   against installed Pi 0.85.1). The export therefore merges into the user's own
   file: every provider named `ya-<service id>` belongs to YA and is rewritten or
   removed with the services list, every other key is preserved, and the file is
-  copied once to `models.json.ya-backup` before the first rewrite. A registry
-  YA cannot parse as plain JSON is left alone rather than rewritten from a
-  guess. The command is `pi --provider ya-<id>`.
+  copied once to `models.json.ya-backup` before the first rewrite. pi accepts
+  comments and trailing commas in that file; a registry YA cannot read, or
+  cannot parse as plain JSON, is left alone rather than rewritten from a guess,
+  with a logged warning when YA had providers to write or withdraw. That never
+  fails startup, a settings save, or a catalog read. With the export off, a
+  registry that names no `ya-` provider is not parsed at all, and no registry
+  is created where pi has none. The command is `pi --provider ya-<id>`.
 - pi's registry states each model outright, so it can only name what an
   endpoint has advertised: it is refreshed from each catalog read, and a
   service whose catalog has not been read yet keeps the models pi was last

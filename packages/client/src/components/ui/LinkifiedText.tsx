@@ -1,6 +1,7 @@
 import { Fragment, memo, type ReactNode, useMemo } from "react";
 import { containsLinkifiableUrl, splitUrlSegments } from "@yep-anywhere/shared";
 import styles from "./LinkifiedText.module.css";
+import { useSessionAppLinkRewriter } from "../SessionAppLinks";
 
 interface Props {
   text: string;
@@ -20,6 +21,7 @@ export const LinkifiedText = memo(function LinkifiedText({
   suppressTrailingUrl,
   renderText,
 }: Props) {
+  const rewriteHref = useSessionAppLinkRewriter();
   const segments = useMemo(
     () =>
       containsLinkifiableUrl(text)
@@ -39,7 +41,7 @@ export const LinkifiedText = memo(function LinkifiedText({
           <a
             key={`${index}-${segment.text}`}
             className={styles.link}
-            href={segment.href}
+            href={segment.href ? rewriteHref(segment.href) : undefined}
             target="_blank"
             rel="noopener noreferrer"
             onClick={(event) => event.stopPropagation()}

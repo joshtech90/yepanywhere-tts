@@ -587,14 +587,24 @@ export const CodexTaskStartedEventSchema = z.object({
   collaboration_mode_kind: z.string(),
 });
 
+const CodexPersistedErrorEventSchema = z
+  .object({
+    message: z.string(),
+    codex_error_info: z.unknown().optional(),
+  })
+  .passthrough();
+
 /**
  * Task complete event - emitted when an agent turn finishes.
  */
-export const CodexTaskCompleteEventSchema = z.object({
-  type: z.literal("task_complete"),
-  turn_id: z.string(),
-  last_agent_message: z.string().nullable(),
-});
+export const CodexTaskCompleteEventSchema = z
+  .object({
+    type: z.literal("task_complete"),
+    turn_id: z.string(),
+    last_agent_message: z.string().nullable(),
+    error: CodexPersistedErrorEventSchema.optional(),
+  })
+  .passthrough();
 
 /** Completed apply_patch event, including provider-native structured changes. */
 export const CodexPatchApplyEndEventSchema = z

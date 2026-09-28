@@ -919,7 +919,8 @@ and refreshes the palette in the background when a project is opened or added;
 new HEAD commits only scan the newly reachable range. A palette read, update,
 or write error discards persisted detail and permits exactly one full-history
 regeneration attempt, then omits server palette detail rather than retrying in
-a loop. The client re-spaces the visible file's author set from those
+a loop. Shutting the app down waits for a refresh already running, so none
+writes after the server has stopped. The client re-spaces the visible file's author set from those
 preferences. When palette generation fails or an older server omits the
 optional preference, a stable author-name hash supplies the preference without
 an unsupported request.

@@ -1,6 +1,12 @@
 import { getLatestMessageTimestampMs } from "../messageAge";
 import { parseUserPrompt } from "../parseUserPrompt";
+import {
+  detectFilePaths,
+  type ProjectPathLinkTarget,
+  splitUrlSegments,
+} from "@yep-anywhere/shared";
 import { isLegacyCodexSetupText } from "@yep-anywhere/shared/transcript/codexLegacySetup";
+import { readProjectPathLinkTargets } from "@yep-anywhere/shared/transcript/projectPathLinks";
 import type { ContentBlock } from "../../types";
 import type {
   RenderItem,
@@ -72,13 +78,14 @@ export interface SearchSelectionProjection<
   selectedTargetId: string | null;
 }
 
-export type RenderSearchScope = "user" | "all" | "full";
+export type RenderSearchScope = "user" | "all" | "full" | "links";
 
 export interface ActiveSearchAnchorsInput<
   TAnchor extends RenderNavAnchor = RenderNavAnchor,
 > {
   allAnchors: readonly TAnchor[];
   fullAnchors: readonly TAnchor[];
+  linkAnchors: readonly TAnchor[];
   scope: RenderSearchScope;
   userAnchors: readonly TAnchor[];
 }
@@ -186,9 +193,13 @@ export function getActiveSearchAnchors<
 >({
   allAnchors,
   fullAnchors,
+  linkAnchors,
   scope,
   userAnchors,
 }: ActiveSearchAnchorsInput<TAnchor>): readonly TAnchor[] {
+  if (scope === "links") {
+    return linkAnchors;
+  }
   if (scope === "full") {
     return fullAnchors;
   }
@@ -196,6 +207,9 @@ export function getActiveSearchAnchors<
 }
 
 export function getSearchScopeLabel(scope: RenderSearchScope): string {
+  if (scope === "links") {
+    return "Links";
+  }
   if (scope === "full") {
     return "Full session";
   }
@@ -203,6 +217,9 @@ export function getSearchScopeLabel(scope: RenderSearchScope): string {
 }
 
 export function getSearchScopeAriaLabel(scope: RenderSearchScope): string {
+  if (scope === "links") {
+    return "Reverse search link labels";
+  }
   if (scope === "full") {
     return "Reverse search full session";
   }
@@ -212,6 +229,9 @@ export function getSearchScopeAriaLabel(scope: RenderSearchScope): string {
 }
 
 export function getSearchScopeKeys(scope: RenderSearchScope): string {
+  if (scope === "links") {
+    return "Ctrl+Alt+K";
+  }
   if (scope === "full") {
     return "Ctrl+Alt+S";
   }
@@ -376,7 +396,8 @@ export function getSearchableUserTurnPreview(item: RenderItem): string | null {
   if (item.type !== "user_prompt" || item.isSubagent) {
     return null;
   }
-  // Rows a same-session rewind dropped are history, never turns.
+  // Rows a same-session rewind dropped keep their turn index N, but they are
+  // history, not live turns, so turn navigation skips them.
   if (item.sourceMessages.some((message) => message.rewoundGroupId)) {
     return null;
   }
@@ -733,6 +754,134 @@ export function getFullSessionSearchAnchorForItem(
   }
 }
 
+const HTML_ANCHOR_PATTERN = /<a\b[^>]*>([\s\S]*?)<\/a>/gi;
+const MARKDOWN_LINK_PATTERN = /!?\[([^\]\n]+)\]\([^)\s]+(?:\s+"[^"]*")?\)/g;
+const HTML_ENTITIES: Record<string, string> = {
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  "#39": "'",
+  "#x27": "'",
+  nbsp: " ",
+};
+
+function decodeHtmlText(html: string): string {
+  return html
+    .replace(/<[^>]*>/g, "")
+    .replace(/&(#?\w+);/g, (entity, name: string) => {
+      return HTML_ENTITIES[name.toLowerCase()] ?? entity;
+    });
+}
+
+/**
+ * Labels of the links a plain-text surface renders: bare URLs, detected file
+ * paths, and project path targets. Glossary terms are a client-side
+ * decoration, not links, so they never appear here.
+ */
+function getPlainTextLinkLabels(
+  text: string,
+  projectPathLinks: readonly ProjectPathLinkTarget[] | undefined,
+): string[] {
+  const labels: string[] = [];
+  for (const segment of splitUrlSegments(text)) {
+    if (segment.type === "url") labels.push(segment.text);
+  }
+  for (const detected of detectFilePaths(text)) labels.push(detected.match);
+  for (const link of projectPathLinks ?? []) labels.push(link.text);
+  return labels;
+}
+
+/**
+ * Assistant markdown is rendered by the server, so its anchors are the links
+ * the reader sees; before that HTML arrives, approximate it from the source.
+ */
+function getAssistantTextLinkLabels(item: RenderItem & { type: "text" }) {
+  const labels: string[] = [];
+  if (item.augmentHtml) {
+    for (const match of item.augmentHtml.matchAll(HTML_ANCHOR_PATTERN)) {
+      labels.push(decodeHtmlText(match[1] ?? ""));
+    }
+  } else {
+    const withoutMarkdownLinks = item.text.replace(
+      MARKDOWN_LINK_PATTERN,
+      (_link, label: string) => {
+        labels.push(label);
+        return " ";
+      },
+    );
+    labels.push(...getPlainTextLinkLabels(withoutMarkdownLinks, undefined));
+  }
+  for (const link of item.projectPathLinks ?? []) labels.push(link.text);
+  return labels;
+}
+
+export function getLinkSearchLabels(item: RenderItem): string[] {
+  let labels: string[];
+  switch (item.type) {
+    case "user_prompt":
+      labels = getPlainTextLinkLabels(
+        getPromptTextForCorrection(item.content),
+        item.projectPathLinks,
+      );
+      break;
+    case "text":
+      labels = getAssistantTextLinkLabels(item);
+      break;
+    case "tool_call": {
+      const input =
+        item.toolInput && typeof item.toolInput === "object"
+          ? (item.toolInput as Record<string, unknown>)._projectPathLinks
+          : undefined;
+      labels = [
+        ...(readProjectPathLinkTargets(input) ?? []),
+        ...(item.toolResult?.projectPathLinks ?? []),
+      ].map((link) => link.text);
+      break;
+    }
+    default:
+      labels = [];
+  }
+  const unique = new Set<string>();
+  for (const label of labels) {
+    const compact = label.replace(/\s+/g, " ").trim();
+    if (compact) unique.add(compact);
+  }
+  return [...unique];
+}
+
+function getLinkSearchAnchorForItem(item: RenderItem): RenderNavAnchor | null {
+  const labels = getLinkSearchLabels(item);
+  if (labels.length === 0) return null;
+  return {
+    id: item.id,
+    preview: getSearchPreviewFallback(labels.join(" · ")),
+    searchText: labels.join("\n"),
+    timestampMs: getLatestMessageTimestampMs(item.sourceMessages),
+  };
+}
+
+/** One anchor per rendered row whose links' labels are searchable. */
+export function getLinkSearchAnchors(
+  turnGroups: readonly RenderTurnGroup[],
+): RenderNavAnchor[] {
+  const anchors: RenderNavAnchor[] = [];
+  const push = (item: RenderItem | undefined) => {
+    const anchor = item ? getLinkSearchAnchorForItem(item) : null;
+    if (anchor) anchors.push(anchor);
+  };
+  for (const group of turnGroups) {
+    if (group.isUserPrompt) {
+      push(group.items[0]);
+      continue;
+    }
+    for (const segment of buildAssistantRenderSegments(group.items)) {
+      if (segment.kind === "item") push(segment.item);
+    }
+  }
+  return anchors;
+}
+
 export function getFullSessionSearchAnchorsForSegment(
   segment: AssistantRenderSegment,
 ): RenderNavAnchor[] {
@@ -852,7 +1001,7 @@ export function getSearchVisibleTurnGroups<TTurnGroup extends RenderTurnGroup>({
     }
 
     const isVisible =
-      scope === "full"
+      scope === "full" || scope === "links"
         ? turnGroupHasFullSessionMatch(group, matchTargetIds)
         : scope === "all"
           ? group.items.some((item) => matchIds.has(item.id)) ||

@@ -6,7 +6,10 @@ import {
   startMultiHostRelayHarness,
   type MultiHostRelayHarness,
 } from "./support/multi-host-relay-harness.js";
-import { stopYaServerProcess } from "./support/ya-server-process.js";
+import {
+  restartYaServerProcess,
+  terminateYaServerProcess,
+} from "./support/ya-server-process.js";
 
 interface ProvisionInput {
   displayName: string;
@@ -296,20 +299,34 @@ async function runSingleSourceDisposal(
   });
 }
 
+let harness: MultiHostRelayHarness | null = null;
+
+test.beforeAll(async ({ relayWsURL }) => {
+  harness = await startMultiHostRelayHarness({
+    relayUrl: relayWsURL,
+    testRoot: e2ePaths.tempDir,
+  });
+});
+
+test.afterAll(() => {
+  harness?.stop();
+});
+
 for (const transportMode of ["legacy", "mux"] as const) {
   test.describe(`Secure multi-host coexistence (${transportMode})`, () => {
     test.describe.configure({ mode: "serial", timeout: 60_000 });
-    let harness: MultiHostRelayHarness | null = null;
 
-    test.beforeAll(async ({ relayWsURL }) => {
-      harness = await startMultiHostRelayHarness({
-        relayUrl: relayWsURL,
-        testRoot: e2ePaths.tempDir,
-      });
-    });
-
-    test.afterAll(() => {
-      harness?.stop();
+    test.beforeAll(async () => {
+      if (transportMode !== "mux" || !harness) return;
+      const lastHost = harness.hosts.at(-1);
+      if (!lastHost) throw new Error("Multi-host harness has no last host");
+      if (
+        lastHost.server.process.exitCode !== null ||
+        lastHost.server.process.signalCode !== null
+      ) {
+        lastHost.server = await restartYaServerProcess(lastHost.server);
+        await harness.waitForWaitingHosts();
+      }
     });
 
     test("keeps three relay-backed source runtimes independent", async ({
@@ -561,7 +578,7 @@ for (const transportMode of ["legacy", "mux"] as const) {
 
       const disconnectedHost = harness.hosts.at(-1);
       if (!disconnectedHost) throw new Error("No host available to disconnect");
-      stopYaServerProcess(disconnectedHost.server);
+      await terminateYaServerProcess(disconnectedHost.server);
 
       await expect(page.getByTestId("multi-host-connected-count")).toHaveText(
         "Connected 2 of 3",

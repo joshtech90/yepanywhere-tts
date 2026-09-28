@@ -30,6 +30,37 @@ function provider(id: string, second: number): Message {
     message: { role: "assistant", content: "Work" },
   };
 }
+function grouped(
+  id: string,
+  second: number,
+  groupId: string,
+  parentGroupId?: string,
+): Message {
+  return {
+    ...provider(id, second),
+    rewoundGroupId: groupId,
+    ...(parentGroupId ? { rewoundParentGroupId: parentGroupId } : {}),
+  };
+}
+/** A rewound-group header: the cut's time, the rewind's time in `at`. */
+function header(
+  groupId: string,
+  cutSecond: number,
+  atSecond: number,
+  parentGroupId?: string,
+): Message {
+  const id = `rewound-group-${groupId}`;
+  return {
+    id,
+    uuid: id,
+    type: "system",
+    subtype: "rewound_group",
+    timestamp: goal(id, cutSecond).timestamp,
+    rewoundGroupId: groupId,
+    ...(parentGroupId ? { rewoundParentGroupId: parentGroupId } : {}),
+    rewoundGroup: { at: goal(id, atSecond).timestamp },
+  };
+}
 const ids = (messages: Message[]) => messages.map((message) => message.id);
 
 describe("durable goal receipts", () => {
@@ -72,16 +103,95 @@ describe("durable goal receipts", () => {
     ).toEqual([]);
   });
   it("puts a receipt written inside a cleared span into that group", () => {
-    const grouped = (id: string, second: number): Message => ({
-      ...provider(id, second),
-      rewoundGroupId: "rw-1",
-    });
     const result = mergeLocalCommandMessages(
-      [provider("cut", 5), grouped("dropped", 10), grouped("more", 30)],
+      [
+        provider("cut", 5),
+        header("rw-1", 5, 40),
+        grouped("dropped", 10, "rw-1"),
+        grouped("more", 30, "rw-1"),
+      ],
       [goal("notice", 20)],
     );
-    expect(ids(result)).toEqual(["cut", "dropped", "notice", "more"]);
-    expect(result[2]?.rewoundGroupId).toBe("rw-1");
+    expect(ids(result)).toEqual([
+      "cut",
+      "rewound-group-rw-1",
+      "dropped",
+      "notice",
+      "more",
+    ]);
+    expect(result[3]?.rewoundGroupId).toBe("rw-1");
+  });
+  it("leaves a receipt written after the last rewind live at the group's tail", () => {
+    // A clearloop's final notice, or a /goal receipt after /clear N with no
+    // later turn: nothing follows it, and a reload must match the live view.
+    const result = mergeLocalCommandMessages(
+      [
+        provider("cut", 5),
+        header("rw-1", 5, 40),
+        grouped("dropped", 10, "rw-1"),
+        grouped("last", 30, "rw-1"),
+      ],
+      [goal("final-notice", 45)],
+    );
+    expect(ids(result).at(-1)).toBe("final-notice");
+    expect(result.at(-1)?.rewoundGroupId).toBeUndefined();
+  });
+  it("leaves a receipt written after the rewind live before the next turn", () => {
+    const result = mergeLocalCommandMessages(
+      [
+        provider("cut", 5),
+        header("rw-1", 5, 40),
+        grouped("dropped", 10, "rw-1"),
+        provider("next-turn", 50),
+      ],
+      [goal("notice", 45)],
+    );
+    expect(ids(result)).toEqual([
+      "cut",
+      "rewound-group-rw-1",
+      "dropped",
+      "notice",
+      "next-turn",
+    ]);
+    expect(result[3]?.rewoundGroupId).toBeUndefined();
+  });
+  it("puts a receipt written between two rewinds to one cut into the later group", () => {
+    // A clearloop retry notice: written after iteration 1's rewind, dropped
+    // by iteration 2's.
+    const result = mergeLocalCommandMessages(
+      [
+        provider("cut", 5),
+        header("rw-1", 5, 20),
+        grouped("first", 10, "rw-1"),
+        header("rw-2", 5, 40),
+        grouped("second", 30, "rw-2"),
+      ],
+      [goal("retry-notice", 25)],
+    );
+    expect(ids(result)).toEqual([
+      "cut",
+      "rewound-group-rw-1",
+      "first",
+      "rewound-group-rw-2",
+      "retry-notice",
+      "second",
+    ]);
+    expect(result[4]?.rewoundGroupId).toBe("rw-2");
+  });
+  it("puts a receipt the enclosing rewind dropped into the enclosing group", () => {
+    const result = mergeLocalCommandMessages(
+      [
+        provider("outer-cut", 2),
+        header("rw-outer", 2, 55),
+        grouped("inner-cut", 5, "rw-outer"),
+        header("rw-inner", 5, 20, "rw-outer"),
+        grouped("inner-dropped", 10, "rw-inner", "rw-outer"),
+      ],
+      [goal("notice", 30)],
+    );
+    const notice = result.find((message) => message.id === "notice");
+    expect(notice?.rewoundGroupId).toBe("rw-outer");
+    expect(notice?.rewoundParentGroupId).toBeUndefined();
   });
   it("leaves a receipt on the live branch alone", () => {
     const result = mergeLocalCommandMessages(

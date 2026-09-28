@@ -901,6 +901,21 @@ describe("Files API", () => {
       expect(text).toBe('console.log("Hello, world!");');
     });
 
+    it("returns raw JSON with its content-type", async () => {
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files/raw?path=data.json`,
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("Content-Type")).toBe("application/json");
+      expect(await res.text()).toBe('{"key": "value"}');
+    });
+
     it("returns raw binary file with correct content-type", async () => {
       const { app } = createApp({
         sdk: mockSdk,
@@ -1172,9 +1187,59 @@ describe("Files API", () => {
   });
 
   describe("large file handling", () => {
-    it("omits content for files over 1MB", async () => {
-      // Create a file larger than 1MB
-      const largeContent = "x".repeat(1024 * 1024 + 1);
+    it.each([
+      ["html", 3],
+      ["htm", 3],
+      ["html", 200],
+    ] as const)(
+      "returns complete large %s documents at %i MiB with bounded source highlighting",
+      async (extension, sizeMiB) => {
+        const prefix = "<!doctype html><html><body><p>Paper</p><!--";
+        const suffix = "--><p>End of paper</p></body></html>";
+        const content =
+          prefix +
+          "x".repeat(sizeMiB * 1024 * 1024 - prefix.length - suffix.length) +
+          suffix;
+        await writeFile(join(projectPath, `paper.${extension}`), content);
+        const { app } = createApp({
+          sdk: mockSdk,
+          projectsDir: join(testDir, "sessions"),
+        });
+
+        const res = await app.request(
+          `/api/projects/${projectId}/files?path=paper.${extension}&highlight=true`,
+        );
+        expect(res.status).toBe(200);
+        const json = (await res.json()) as FileContentResponse;
+        expect(json.metadata.mimeType).toBe("text/html");
+        expect(json.content === content).toBe(true);
+        expect(json.contentTruncated).not.toBe(true);
+        expect(json.highlightedHtml).toBeDefined();
+        expect(json.highlightedTruncated).toBe(true);
+        expect(json.highlightedHtml).not.toContain("End of paper");
+      },
+    );
+
+    it("omits HTML content above the 200 MiB document limit", async () => {
+      const path = join(projectPath, "too-large.html");
+      await writeFile(path, "<!doctype html>");
+      await truncate(path, 200 * 1024 * 1024 + 1);
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=too-large.html&highlight=true`,
+      );
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      expect(json.metadata.isText).toBe(true);
+      expect(json.content).toBeUndefined();
+      expect(json.rawUrl).toBeDefined();
+    });
+
+    it("returns complete text files over the highlight bound", async () => {
+      const largeContent = `${"x".repeat(3 * 1024 * 1024)}\nlast line`;
       await writeFile(join(projectPath, "large.txt"), largeContent);
 
       const { app } = createApp({
@@ -1189,7 +1254,27 @@ describe("Files API", () => {
       expect(res.status).toBe(200);
       const json = (await res.json()) as FileContentResponse;
       expect(json.metadata.isText).toBe(true);
-      expect(json.metadata.size).toBeGreaterThan(1024 * 1024);
+      expect(json.content === largeContent).toBe(true);
+      expect(json.contentTruncated).not.toBe(true);
+    });
+
+    it("omits content for text files over 100 MiB", async () => {
+      const path = join(projectPath, "too-large.txt");
+      await writeFile(path, "x");
+      await truncate(path, 100 * 1024 * 1024 + 1);
+
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files?path=too-large.txt`,
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as FileContentResponse;
+      expect(json.metadata.isText).toBe(true);
       expect(json.content).toBeUndefined();
       expect(json.rawUrl).toBeDefined();
     });

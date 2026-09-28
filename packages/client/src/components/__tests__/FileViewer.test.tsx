@@ -181,6 +181,106 @@ describe("FileViewer", () => {
     );
   });
 
+  it("reloads from disk on demand and reports freshness on hover", async () => {
+    const file = (content: string, modifiedAt: number) => ({
+      metadata: {
+        path: "notes.md",
+        size: content.length,
+        mimeType: "text/markdown",
+        isText: true,
+        modifiedAt,
+      },
+      rawUrl: "",
+      content,
+      renderedMarkdownHtml: `<h1>${content.slice(2).trim()}</h1>`,
+    });
+    const source: FileViewerSource = {
+      loadFile: vi
+        .fn()
+        .mockResolvedValueOnce(file("# First\n", 1000))
+        .mockResolvedValueOnce(file("# Second\n", 2000)),
+      statFile: vi.fn().mockResolvedValue(file("# Second\n", 2000)),
+    };
+    render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="notes.md"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+    expect(await screen.findByRole("heading", { name: "First" })).toBeTruthy();
+    const reload = screen.getByRole("button", { name: "Reload from disk" });
+    expect(reload.getAttribute("title")).toBe("Reload from disk");
+    fireEvent.mouseEnter(reload);
+    await waitFor(() =>
+      expect(reload.getAttribute("title")).toMatch(/^Changed on disk at /),
+    );
+    expect(source.statFile).toHaveBeenCalledWith("project-id", "notes.md");
+    fireEvent.click(reload);
+    expect(await screen.findByRole("heading", { name: "Second" })).toBeTruthy();
+    expect(source.loadFile).toHaveBeenCalledTimes(2);
+    fireEvent.mouseEnter(reload);
+    await waitFor(() =>
+      expect(reload.getAttribute("title")).toMatch(/^Unchanged on disk/),
+    );
+  });
+
+  it("drops a reload that answers after the viewer moved to another file", async () => {
+    const file = (path: string, title: string) => ({
+      metadata: {
+        path,
+        size: title.length + 3,
+        mimeType: "text/markdown",
+        isText: true,
+      },
+      rawUrl: "",
+      content: `# ${title}\n`,
+      renderedMarkdownHtml: `<h1>${title}</h1>`,
+    });
+    let answerReload: (data: FileContentResponse) => void = () => {};
+    const source: FileViewerSource = {
+      loadFile: vi
+        .fn()
+        .mockResolvedValueOnce(file("a.md", "A before"))
+        .mockReturnValueOnce(
+          new Promise<FileContentResponse>((resolve) => {
+            answerReload = resolve;
+          }),
+        )
+        .mockResolvedValueOnce(file("b.md", "B")),
+    };
+    const viewer = (filePath: string) => (
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath={filePath}
+          source={source}
+        />
+      </I18nProvider>
+    );
+    const { rerender } = render(viewer("a.md"));
+    expect(
+      await screen.findByRole("heading", { name: "A before" }),
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload from disk" }));
+    // The copy on screen stays while the fresh one is fetched.
+    expect(screen.getByRole("heading", { name: "A before" })).toBeTruthy();
+    expect(screen.queryByText("Loading a.md...")).toBeNull();
+
+    rerender(viewer("b.md"));
+    expect(await screen.findByRole("heading", { name: "B" })).toBeTruthy();
+    await act(async () => {
+      answerReload(file("a.md", "A after"));
+    });
+
+    expect(screen.getByRole("heading", { name: "B" })).toBeTruthy();
+    expect(screen.queryByRole("heading", { name: "A after" })).toBeNull();
+    expect(source.loadFile).toHaveBeenCalledTimes(3);
+  });
+
   it("returns from a diff to the retained raw source without loading", async () => {
     mocks.useFileVersionControl.mockReturnValue({
       cumulativeFile: null,
@@ -1091,7 +1191,7 @@ describe("FileViewer", () => {
     ]);
   });
 
-  it("keeps HTML source-first and confines an explicit static preview", async () => {
+  it("defaults HTML to a confined static preview and offers raw source", async () => {
     const fileResponse: FileContentResponse = {
       metadata: {
         path: "reports/demo.html",
@@ -1120,15 +1220,11 @@ describe("FileViewer", () => {
     const rawSource = await screen.findByRole("button", {
       name: "Raw source",
     });
-    expect(rawSource.getAttribute("aria-pressed")).toBe("true");
-    expect(container.querySelector("iframe")).toBeNull();
-    expect(screen.getByText(/Preview heading/)).toBeTruthy();
-
-    fireEvent.click(rawSource);
     const frame = container.querySelector<HTMLIFrameElement>("iframe");
     expect(frame).toBeTruthy();
     expect(rawSource.getAttribute("aria-pressed")).toBe("false");
-    expect(frame?.getAttribute("sandbox")).toBe("");
+    // Same-origin so the viewer's find can search it; never with scripts.
+    expect(frame?.getAttribute("sandbox")).toBe("allow-same-origin");
     expect(frame?.getAttribute("referrerpolicy")).toBe("no-referrer");
     expect(frame?.srcdoc).toContain("Content-Security-Policy");
     expect(frame?.srcdoc).toContain("default-src 'none'");
@@ -1171,6 +1267,233 @@ describe("FileViewer", () => {
         .getByRole("button", { name: "Raw source" })
         .getAttribute("aria-pressed"),
     ).toBe("false");
+  });
+
+  it("frames a same-origin PDF's own response, not a CSP-inheriting blob", async () => {
+    const fileResponse: FileContentResponse = {
+      metadata: {
+        path: "docs/report.pdf",
+        size: 39_000,
+        mimeType: "application/pdf",
+        isText: false,
+      },
+      rawUrl: "/api/projects/project-id/files/raw?path=docs%2Freport.pdf",
+    };
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => fileResponse),
+      fetchRawFileBlob: vi.fn(async () => new Blob(["%PDF-1.7"])),
+    };
+
+    render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="docs/report.pdf"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    const frame = await screen.findByTitle("report.pdf");
+    expect(frame.tagName).toBe("IFRAME");
+    expect(frame.getAttribute("src")).toBe(fileResponse.rawUrl);
+    expect(source.fetchRawFileBlob).not.toHaveBeenCalled();
+    expect(screen.queryByText("This file cannot be displayed inline.")).toBe(
+      null,
+    );
+  });
+
+  function stubObjectUrls(url: string) {
+    const createObjectURL = vi.fn((_blob: Blob) => url);
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: createObjectURL,
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    return createObjectURL;
+  }
+
+  function binarySource(path: string, mimeType: string): FileViewerSource {
+    return {
+      loadFile: vi.fn(async () => ({
+        metadata: { path, size: 2048, mimeType, isText: false },
+        rawUrl: `/api/projects/project-id/files/raw?path=${path}`,
+      })),
+      fetchRawFileBlob: vi.fn(async () => new Blob(["media"])),
+    };
+  }
+
+  it("plays audio inline and falls back when the browser cannot decode it", async () => {
+    const createObjectURL = stubObjectUrls("blob:file-viewer-audio");
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="clips/take.m4a"
+          source={binarySource("clips/take.m4a", "audio/mp4")}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(container.querySelector("audio")).toBeTruthy());
+    const audio = container.querySelector("audio")!;
+    expect(audio.getAttribute("src")).toBe("blob:file-viewer-audio");
+    expect(audio.hasAttribute("controls")).toBe(true);
+    // The relayed blob arrived untyped; the player needs the file's type.
+    expect(createObjectURL.mock.calls[0]?.[0].type).toBe("audio/mp4");
+
+    fireEvent.error(audio);
+    expect(
+      await screen.findByText("This file cannot be displayed inline."),
+    ).toBeTruthy();
+  });
+
+  it("plays video inline", async () => {
+    stubObjectUrls("blob:file-viewer-video");
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="clips/demo.mp4"
+          source={binarySource("clips/demo.mp4", "video/mp4")}
+        />
+      </I18nProvider>,
+    );
+
+    await waitFor(() => expect(container.querySelector("video")).toBeTruthy());
+    expect(container.querySelector("video")!.getAttribute("src")).toBe(
+      "blob:file-viewer-video",
+    );
+  });
+
+  it("shows a font specimen from the loaded face", async () => {
+    stubObjectUrls("blob:file-viewer-font");
+    const added: unknown[] = [];
+    class FakeFontFace {
+      constructor(
+        readonly family: string,
+        readonly source: string,
+      ) {}
+      load() {
+        return Promise.resolve(this);
+      }
+    }
+    vi.stubGlobal("FontFace", FakeFontFace);
+    Object.defineProperty(document, "fonts", {
+      configurable: true,
+      value: { add: (face: unknown) => added.push(face), delete: vi.fn() },
+    });
+    try {
+      const { container } = render(
+        <I18nProvider>
+          <FileViewer
+            projectId="project-id"
+            filePath="fonts/Brand.woff2"
+            source={binarySource("fonts/Brand.woff2", "font/woff2")}
+          />
+        </I18nProvider>,
+      );
+
+      await screen.findAllByText("The quick brown fox jumps over the lazy dog");
+      const specimen = container.querySelector<HTMLElement>(
+        "[data-font-specimen]",
+      )!;
+      const face = added[0] as FakeFontFace;
+      expect(face.source).toBe('url("blob:file-viewer-font")');
+      expect(specimen.style.fontFamily).toContain(face.family);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("renders only the leading lines of large unhighlighted text", async () => {
+    const content = Array.from(
+      { length: 10_005 },
+      (_, i) => `row ${i + 1}`,
+    ).join("\n");
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "data/big.log",
+          size: content.length,
+          mimeType: "application/octet-stream",
+          isText: true,
+        },
+        content,
+        rawUrl: "/api/projects/project-id/files/raw?path=data/big.log",
+      })),
+    };
+
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="data/big.log"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      await screen.findByText("Showing the first 10000 of 10005 lines"),
+    ).toBeTruthy();
+    expect(
+      container.querySelectorAll(".code-content [data-line]"),
+    ).toHaveLength(10_000);
+    // Rendering the full 10,000-line cap in jsdom takes ~1s locally but has
+    // exceeded the 5s default on a loaded upstream CI runner.
+  }, 20_000);
+
+  it("finds within its own content after a click there", async () => {
+    // jsdom has no layout; a real browser reports an empty box off-screen.
+    Range.prototype.getBoundingClientRect ??= () => new DOMRect();
+    const source: FileViewerSource = {
+      loadFile: vi.fn(async () => ({
+        metadata: {
+          path: "notes.txt",
+          size: 22,
+          mimeType: "text/plain",
+          isText: true,
+        },
+        content: "alpha beta\nbeta gamma",
+        rawUrl: "/api/projects/project-id/files/raw?path=notes.txt",
+      })),
+    };
+    const { container } = render(
+      <I18nProvider>
+        <FileViewer
+          projectId="project-id"
+          filePath="notes.txt"
+          source={source}
+        />
+      </I18nProvider>,
+    );
+    await screen.findByText("alpha beta");
+    const findBox = () =>
+      screen.queryByRole("searchbox", { name: "Find in this view" });
+    // Until the reader has clicked into the viewer, Ctrl+F stays the browser's.
+    expect(fireEvent.keyDown(document.body, { key: "f", ctrlKey: true })).toBe(
+      true,
+    );
+    expect(findBox()).toBeNull();
+
+    const body = container.querySelector<HTMLElement>(".file-viewer-body")!;
+    fireEvent.pointerDown(body);
+    expect(fireEvent.keyDown(body, { key: "f", ctrlKey: true })).toBe(false);
+    const input = findBox()!;
+    expect(document.activeElement).toBe(input);
+    fireEvent.change(input, { target: { value: "beta" } });
+    expect(await screen.findByText("1/2")).toBeTruthy();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(await screen.findByText("2/2")).toBeTruthy();
+    fireEvent.keyDown(input, { key: "r", ctrlKey: true });
+    expect(await screen.findByText("1/2")).toBeTruthy();
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() => expect(findBox()).toBeNull());
+    expect(document.activeElement).toBe(body);
   });
 
   it("keeps raw image links and moves the viewer through its stable URL", async () => {

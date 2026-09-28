@@ -24,31 +24,28 @@ import { AuthService } from "../src/auth/AuthService.js";
 import { SESSION_COOKIE_NAME } from "../src/auth/routes.js";
 import { createAuthMiddleware } from "../src/middleware/auth.js";
 import {
-  applySessionSandboxAuthRequirement,
   getClaudeSandboxProjectDir,
   getCodexSandboxSessionsDir,
   getSessionSandboxSettingsError,
-  prepareSessionSandbox as prepareSessionSandboxWithoutAuth,
+  prepareSessionSandbox,
   probeSessionSandboxAvailability,
   type SessionSandboxSpawn,
 } from "../src/session-sandbox.js";
 import { ClaudeSessionReader } from "../src/sessions/reader.js";
 import { ClaudeProvider } from "../src/sdk/providers/claude.js";
-import type { AgentProvider } from "../src/sdk/providers/types.js";
-import { Supervisor } from "../src/supervisor/Supervisor.js";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 
 const hostSandboxAvailable =
   (await probeSessionSandboxAvailability()).state === "available";
-const trustedSystemFalseAvailable = await stat("/usr/bin/false")
-  .then((info) => info.isFile() && info.uid === 0 && (info.mode & 0o022) === 0)
-  .catch(() => false);
-
-function prepareSessionSandbox(
-  options: Parameters<typeof prepareSessionSandboxWithoutAuth>[0],
-) {
-  return prepareSessionSandboxWithoutAuth({ ...options, authEnforced: true });
+async function isTrustedSystemFile(path: string): Promise<boolean> {
+  return stat(path)
+    .then(
+      (info) => info.isFile() && info.uid === 0 && (info.mode & 0o022) === 0,
+    )
+    .catch(() => false);
 }
+const trustedSystemFalseAvailable = await isTrustedSystemFile("/usr/bin/false");
+const trustedBwrapAvailable = await isTrustedSystemFile("/usr/bin/bwrap");
 
 async function runSandboxed(spawnOptions: SessionSandboxSpawn): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -83,10 +80,15 @@ async function runSandboxed(spawnOptions: SessionSandboxSpawn): Promise<void> {
   });
 }
 
-describe("session sandbox", () => {
+// Real-sandbox cases spawn bwrap, unshare, and slirp4netns per launch.
+// Measured 2026-09-27 on an Ubuntu dev host: 0.6-2.2s idle, and two cases
+// timed out at the 5000ms default at load average ~8.7; 4x that limit.
+describe("session sandbox", { timeout: 20_000 }, () => {
   const roots: string[] = [];
   const linuxIt = process.platform === "linux" ? it : it.skip;
   const trustedFalseIt = trustedSystemFalseAvailable ? linuxIt : it.skip;
+  const trustedBwrapIt =
+    trustedSystemFalseAvailable && trustedBwrapAvailable ? linuxIt : it.skip;
   const t = hostSandboxAvailable ? it : it.skip;
 
   afterEach(async () => {
@@ -117,85 +119,49 @@ describe("session sandbox", () => {
     });
   });
 
-  it("reports and enforces the local authentication prerequisite", async () => {
-    expect(
-      applySessionSandboxAuthRequirement(
-        {
-          state: "available",
-          platform: "linux",
-          backend: "bubblewrap",
-          version: "0.4.0",
-        },
-        false,
-      ),
-    ).toEqual({
-      state: "auth-required",
-      platform: "linux",
-      backend: "bubblewrap",
-      version: "0.4.0",
-    });
-
+  t("launches without local authentication, which only warns", async () => {
     const root = await fixtureRoot();
     const projectPath = join(root, "project");
     await mkdir(projectPath);
-    await expect(
-      prepareSessionSandboxWithoutAuth({
-        level: "project-write",
-        provider: "codex",
-        projectPath,
-      }),
-    ).rejects.toThrow(/requires password or desktop authentication/);
+    const runtime = await prepareSessionSandbox({
+      level: "project-write",
+      provider: "codex",
+      projectPath,
+      stateRoot: join(root, "state"),
+    });
+    expect(runtime?.enforcement).toMatchObject({
+      effective: "project-write",
+      state: "enforced",
+    });
   });
 
-  t("blocks auth relaxation throughout a pending sandbox launch", async () => {
-    const root = await fixtureRoot();
+  t("launches through a symlinked private state root", async () => {
+    // Keep the alias visible through the read-only host mount; /tmp is
+    // replaced inside the sandbox and would hide the symlink under test.
+    const root = await fixtureRoot(process.cwd());
     const projectPath = join(root, "project");
+    const storage = join(root, "storage");
+    const alias = join(root, "alias");
     await mkdir(projectPath);
-    let rejectProviderStart!: (error: Error) => void;
-    let markProviderStartEntered!: () => void;
-    const providerStartEntered = new Promise<void>((resolve) => {
-      markProviderStartEntered = resolve;
-    });
-    const provider = {
-      name: "claude",
-      displayName: "Claude",
-      supportsPermissionMode: true,
-      supportsThinkingToggle: true,
-      supportsSlashCommands: true,
-      supportsSteering: false,
-      isInstalled: async () => true,
-      isAuthenticated: async () => true,
-      getAuthStatus: async () => ({
-        installed: true,
-        authenticated: true,
-        enabled: true,
-      }),
-      getAvailableModels: async () => [],
-      startSession: () => {
-        markProviderStartEntered();
-        return new Promise((_, reject) => {
-          rejectProviderStart = reject;
-        });
-      },
-    } as AgentProvider;
-    const supervisor = new Supervisor({
-      provider,
-      isSessionSandboxAuthEnforced: () => true,
-      sandboxStateRoot: join(root, "state"),
-    });
-
-    const launch = supervisor.startSession(
+    await mkdir(storage);
+    await symlink(storage, alias);
+    const runtime = await prepareSessionSandbox({
+      level: "project-write",
+      provider: "codex",
       projectPath,
-      { text: "test" },
-      undefined,
-      { sandboxLevel: "project-write" },
+      stateRoot: join(alias, "state"),
+    });
+    expect(runtime?.transcriptDir).toContain(await realpath(storage));
+    await runSandboxed(
+      runtime!.wrapSpawn(
+        process.execPath,
+        ["-e", "require('node:fs').writeFileSync('created.txt', 'ready')"],
+        process.env,
+      ),
     );
-    await providerStartEntered;
-    expect(supervisor.isAuthenticationRelaxationBlocked()).toBe(true);
-
-    rejectProviderStart(new Error("test provider launch failure"));
-    await expect(launch).rejects.toThrow("test provider launch failure");
-    expect(supervisor.isAuthenticationRelaxationBlocked()).toBe(false);
+    expect(await readFile(join(projectPath, "created.txt"), "utf8")).toBe(
+      "ready",
+    );
   });
 
   it("distinguishes missing and untrusted Linux backends", async () => {
@@ -225,6 +191,59 @@ describe("session sandbox", () => {
       backend: "bubblewrap",
     });
   });
+
+  it("names every missing host package in one blocker", async () => {
+    const root = await fixtureRoot();
+    const availability = await probeSessionSandboxAvailability({
+      platform: "linux",
+      bwrapPath: join(root, "missing-bwrap"),
+      slirp4netnsPath: join(root, "missing-slirp4netns"),
+    });
+    expect(availability).toMatchObject({
+      state: "missing-bubblewrap",
+      blocker: { kind: "missing-packages" },
+    });
+    const packages =
+      availability.blocker?.kind === "missing-packages"
+        ? availability.blocker.packages
+        : [];
+    expect(packages.slice(0, 2)).toEqual(["bubblewrap", "slirp4netns"]);
+  });
+
+  trustedBwrapIt(
+    "attributes a failed namespace setup to the AppArmor restriction",
+    async () => {
+      const root = await fixtureRoot();
+      const restricted = join(root, "restricted");
+      const unrestricted = join(root, "unrestricted");
+      await writeFile(restricted, "1\n");
+      await writeFile(unrestricted, "0\n");
+      // Trusted stand-ins; `unshare` fails first, as the restricted one does,
+      // so the others are never run and need not be installed.
+      const failingHelpers = {
+        platform: "linux" as const,
+        unsharePath: "/usr/bin/false",
+        slirp4netnsPath: "/usr/bin/false",
+        ipPath: "/usr/bin/false",
+      };
+
+      await expect(
+        probeSessionSandboxAvailability({
+          ...failingHelpers,
+          usernsRestrictionPath: restricted,
+        }),
+      ).resolves.toMatchObject({
+        state: "probe-failed",
+        blocker: { kind: "userns-restricted" },
+      });
+      const unexplained = await probeSessionSandboxAvailability({
+        ...failingHelpers,
+        usernsRestrictionPath: unrestricted,
+      });
+      expect(unexplained.state).toBe("probe-failed");
+      expect(unexplained.blocker).toBeUndefined();
+    },
+  );
 
   trustedFalseIt("reports a trusted but unusable Linux backend", async () => {
     await expect(

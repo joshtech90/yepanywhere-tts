@@ -30,10 +30,6 @@ export function ComputerControlSettings() {
   const { version } = useVersion();
   const { sourceKey } = useCurrentSourceRuntime();
   const { t } = useI18n();
-  const supported = serverHasCapability(
-    version,
-    SERVER_CAPABILITIES.computerControl.name,
-  );
   const managed = serverHasCapability(
     version,
     SERVER_CAPABILITIES.computerControlReleases.name,
@@ -43,11 +39,7 @@ export function ComputerControlSettings() {
       title={t("computerTitle")}
       description={t("computerDescription")}
     >
-      {supported ? (
-        <Controls key={sourceKey} managed={managed} />
-      ) : (
-        <p>{t("computerUnsupportedServer")}</p>
-      )}
+      <Controls key={sourceKey} managed={managed} />
     </SettingsSection>
   );
 }

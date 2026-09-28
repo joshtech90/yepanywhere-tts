@@ -1,11 +1,9 @@
-import type { ProviderName } from "@yep-anywhere/shared";
 import { useI18n } from "../i18n";
 import { Modal } from "./ui/Modal";
 
 export type LongContextEffortWarningChoice = "apply" | "fork" | "cancel";
 
 interface LongContextEffortWarningModalProps {
-  provider: ProviderName;
   contextTokens: number;
   currentEffortLabel: string;
   nextEffortLabel: string;
@@ -17,12 +15,11 @@ interface LongContextEffortWarningModalProps {
 
 /**
  * Confirmation shown before a mid-session effort change on a long-context
- * session: the change re-renders the system prompt, so the next request
- * re-reads most of the cached prompt. Contract:
- * topics/mid-session-effort-change.md.
+ * session: the provider caches the prompt per effort, so the next request
+ * re-reads the whole context, and a fork at the new effort does too.
+ * Contract: topics/mid-session-effort-change.md.
  */
 export function LongContextEffortWarningModal({
-  provider,
   contextTokens,
   currentEffortLabel,
   nextEffortLabel,
@@ -47,9 +44,7 @@ export function LongContextEffortWarningModal({
         </p>
         {canFork && (
           <p className="settings-hint">
-            {provider === "codex" || provider === "codex-oss"
-              ? t("longContextEffortWarningForkHintCodex")
-              : t("longContextEffortWarningForkHint")}
+            {t("longContextEffortWarningForkHint")}
           </p>
         )}
         <div className="model-switch-actions">

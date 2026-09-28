@@ -8,13 +8,11 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import {
-  buildPublicShareRawFileApiPath,
-  usePublicShareContext,
-} from "../contexts/PublicShareContext";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useI18n } from "../i18n";
 import { useRemoteImage } from "../hooks/useRemoteImage";
+import { buildPublicShareRawFileApiPath } from "../lib/publicShareFiles";
 import { fetchPublicShareBlobViaRelay } from "../lib/publicShareRelay";
 import { loadCachedAttachmentPreview } from "../lib/attachmentPreviewCache";
 import {

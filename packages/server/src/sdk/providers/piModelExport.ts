@@ -127,19 +127,32 @@ export function mergedPiModelsConfig(
   return JSON.stringify(next) === JSON.stringify(existing) ? undefined : next;
 }
 
-async function readPiModelsConfig(path: string): Promise<PiModelsConfig> {
+/** The registry's text, or undefined when pi has none yet. */
+async function readPiRegistryText(path: string): Promise<string | undefined> {
   try {
-    const raw = await readFile(path, "utf8");
-    // pi tolerates comments here; JSON.parse does not. A file YA cannot read
-    // as plain JSON is left alone rather than rewritten from a guess.
+    return await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
+    throw error;
+  }
+}
+
+/**
+ * The registry as a plain JSON object, or undefined when it is not one.
+ *
+ * pi reads this file as JSON with comments; JSON.parse does not. A file YA
+ * cannot read as plain JSON is left alone rather than rewritten from a guess.
+ */
+function parsePiModelsConfig(raw: string): PiModelsConfig | undefined {
+  try {
     const parsed: unknown = JSON.parse(raw);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
       return parsed as PiModelsConfig;
     }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+  } catch {
+    // Reported by the caller, which knows whether YA had anything to change.
   }
-  return {};
+  return undefined;
 }
 
 async function writeAtomic(path: string, contents: string): Promise<void> {
@@ -160,6 +173,25 @@ async function backUpOnce(path: string): Promise<void> {
   await copyFile(path, `${path}.ya-backup`, constants.COPYFILE_EXCL).catch(
     () => undefined,
   );
+}
+
+/**
+ * Say why pi's registry was left as it is.
+ *
+ * Only worth a warning when YA had something to write or withdraw; an
+ * unreadable registry that YA was never going to change is not the user's
+ * problem to hear about on every start.
+ */
+function reportUnusablePiRegistry(
+  path: string,
+  relevant: boolean,
+  error?: unknown,
+): void {
+  const log = getLogger();
+  const message =
+    "Left pi's model registry unchanged: YA cannot read it or parse it as plain JSON";
+  if (relevant) log.warn({ error, path }, message);
+  else log.debug({ error, path }, message);
 }
 
 /** What the last export knew, so a later catalog read can refresh it. */
@@ -183,7 +215,26 @@ export async function syncPiModelExport(options: {
 }): Promise<PiModelExportResult> {
   lastExport = { enabled: options.enabled, services: options.services };
   const path = piModelsJsonPath(options.agentDir ?? piAgentDir());
-  const existing = await readPiModelsConfig(path);
+  const unchanged = { path, providers: [], changed: false };
+
+  let raw: string | undefined;
+  try {
+    raw = await readPiRegistryText(path);
+  } catch (error) {
+    reportUnusablePiRegistry(path, options.enabled, error);
+    return unchanged;
+  }
+  // With the export off there is only YA's own providers to withdraw, and a
+  // registry that names none needs no parse, so a pi user who never enabled
+  // the export is unaffected by what pi alone accepts in the file.
+  if (!options.enabled && !raw?.includes(`"${PI_PROVIDER_PREFIX}`)) {
+    return unchanged;
+  }
+  const existing = raw === undefined ? {} : parsePiModelsConfig(raw);
+  if (!existing) {
+    reportUnusablePiRegistry(path, true);
+    return unchanged;
+  }
   const owned = new Map<string, PiProviderEntry>();
 
   if (options.enabled) {

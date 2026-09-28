@@ -13,7 +13,13 @@ function prompt(id: string): RenderItem {
 }
 
 function answer(id: string): RenderItem {
-  return { type: "text", id, text: id, sourceMessages: [] };
+  return {
+    type: "text",
+    sourceBlockIndex: 0,
+    id,
+    text: id,
+    sourceMessages: [],
+  };
 }
 
 function elementAt(top: number, bottom: number): HTMLElement {

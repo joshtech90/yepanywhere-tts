@@ -51,6 +51,18 @@ export interface PiExtensionUiRequest {
   [key: string]: unknown;
 }
 
+/**
+ * An extension failure line: pi caught a throw from an extension's handler.
+ * For a command, `extensionPath` is `command:<name>`, and the line precedes
+ * that command's `response`.
+ */
+export interface PiExtensionError {
+  type: "extension_error";
+  extensionPath?: string;
+  event?: string;
+  error?: string;
+}
+
 type PiCommand = { type: string; [key: string]: unknown };
 
 /**
@@ -112,6 +124,9 @@ export class PiRpcClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly eventListeners = new Set<(event: PiAgentEvent) => void>();
   private extensionRequestHandler?: (request: PiExtensionUiRequest) => void;
+  private readonly extensionErrorListeners = new Set<
+    (error: PiExtensionError) => void
+  >();
   private readonly detach: () => void;
 
   constructor(private readonly proc: ChildProcess) {
@@ -157,6 +172,9 @@ export class PiRpcClient {
 
     if (parsed.type === "extension_error") {
       getLogger().warn({ event: parsed }, "pi RPC: extension error");
+      for (const listener of this.extensionErrorListeners) {
+        listener(parsed as PiExtensionError);
+      }
       return;
     }
 
@@ -179,6 +197,12 @@ export class PiRpcClient {
   subscribe(listener: (event: PiAgentEvent) => void): () => void {
     this.eventListeners.add(listener);
     return () => this.eventListeners.delete(listener);
+  }
+
+  /** Observe extension failures; returns an unsubscribe function. */
+  onExtensionError(listener: (error: PiExtensionError) => void): () => void {
+    this.extensionErrorListeners.add(listener);
+    return () => this.extensionErrorListeners.delete(listener);
   }
 
   /** Register the single handler for extension UI requests (permission bridge). */

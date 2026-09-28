@@ -17,6 +17,7 @@ import {
   userMessage,
 } from "./MessageList.test-support";
 import { MessageList } from "../MessageList";
+import { requestSessionIsearchOpen } from "../../lib/sessionIsearchGuide";
 import { setRecentProjectPathLinksPreference } from "../../hooks/useRecentProjectPathLinks";
 import { setReverseSearchMaxPagesPerAttemptPreference } from "../../hooks/useSessionPerformanceSettings";
 
@@ -184,6 +185,28 @@ describe("MessageList reverse search", () => {
     })) as HTMLInputElement;
     expect(document.activeElement).toBe(input);
     expect([input.selectionStart, input.selectionEnd]).toEqual([0, 0]);
+  });
+
+  it("opens from a toolbar request with focus inside the tap, in the last scope", () => {
+    render(<MessageList messages={[userMessage("first", "Horizon needle")]} />);
+    // No await: the input must hold focus before the dispatching tap returns,
+    // or a touch keyboard will not open.
+    act(() => requestSessionIsearchOpen());
+    const userInput = screen.getByRole("textbox", {
+      name: "Reverse search user turns",
+    });
+    expect(document.activeElement).toBe(userInput);
+
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true, altKey: true });
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(
+      screen.queryByRole("textbox", { name: "Reverse search user turns" }),
+    ).toBeNull();
+
+    act(() => requestSessionIsearchOpen());
+    expect(document.activeElement).toBe(
+      screen.getByRole("textbox", { name: "Reverse search link labels" }),
+    );
   });
 
   it("routes keys typed before the input takes focus into the query", async () => {

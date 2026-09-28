@@ -6,7 +6,17 @@ import {
   type UpdateProjectQueueItemRequest,
   isUrlProjectId,
 } from "@yep-anywhere/shared";
-import { Hono } from "hono";
+import { type Context, Hono, type MiddlewareHandler } from "hono";
+import {
+  limitQueuedLaunch,
+  principalFor,
+} from "../auth/limitedLaunchPolicy.js";
+import { levelFor } from "../auth/limitedUserPolicy.js";
+import {
+  type LimitedPrincipal,
+  PRINCIPAL_VARIABLE,
+  type Principal,
+} from "../auth/principal.js";
 import type {
   GlobalProjectQueueRoutesDeps,
   ProjectQueueRoutesDeps,
@@ -15,11 +25,41 @@ import {
   globalQueueResponse,
   projectQueueResponse,
 } from "./project-queue-response.js";
-import { ProjectQueueValidationError } from "../services/ProjectQueueService.js";
+import {
+  ProjectQueueLaunchRefusedError,
+  type ProjectQueueLaunchPolicy,
+  ProjectQueueValidationError,
+} from "../services/ProjectQueueService.js";
 import type { Project } from "../supervisor/types.js";
 
 function validationError(message: string) {
   return { error: "Invalid project queue request", reason: message };
+}
+
+/** The acting limited user, or null for the superuser. */
+function limitedActorFor(c: Context): LimitedPrincipal | null {
+  const principal = principalFor(c);
+  return principal.kind === "limited" ? principal : null;
+}
+
+/** A limited user's launch policy, applied as they queue or edit an item. */
+function queuedLaunchPolicyFor(
+  actor: LimitedPrincipal,
+): ProjectQueueLaunchPolicy {
+  return (draft) => limitQueuedLaunch(actor.grants, draft)?.error ?? null;
+}
+
+/**
+ * The projects a request's principal may see in the global queue: every
+ * project for the superuser, only granted ones for a limited user
+ * (topics/limited-users.md § Delivery v1).
+ */
+function projectVisibilityFor(
+  c: Context,
+): ((projectId: string) => boolean) | undefined {
+  const principal = c.get(PRINCIPAL_VARIABLE) as Principal | undefined;
+  if (!principal || principal.kind === "superuser") return undefined;
+  return (projectId) => levelFor(principal.grants, projectId) !== "none";
 }
 
 export function createGlobalProjectQueueRoutes(
@@ -28,13 +68,22 @@ export function createGlobalProjectQueueRoutes(
   const routes = new Hono();
 
   routes.get("/", async (c) => {
-    return c.json(await globalQueueResponse(deps));
+    return c.json(
+      await globalQueueResponse(deps, {
+        isProjectVisible: projectVisibilityFor(c),
+      }),
+    );
   });
 
   routes.post("/pause", async (c) => {
     try {
       const dispatchState = await deps.projectQueueService.pauseDispatch();
-      return c.json(await globalQueueResponse(deps, dispatchState));
+      return c.json(
+        await globalQueueResponse(deps, {
+          dispatchState,
+          isProjectVisible: projectVisibilityFor(c),
+        }),
+      );
     } catch (error) {
       if (error instanceof ProjectQueueValidationError) {
         return c.json(validationError(error.message), 400);
@@ -45,7 +94,12 @@ export function createGlobalProjectQueueRoutes(
 
   routes.post("/resume", async (c) => {
     const dispatchState = await deps.projectQueueService.resumeDispatch();
-    return c.json(await globalQueueResponse(deps, dispatchState));
+    return c.json(
+      await globalQueueResponse(deps, {
+        dispatchState,
+        isProjectVisible: projectVisibilityFor(c),
+      }),
+    );
   });
 
   routes.post("/:projectId/promote-now", async (c) => {
@@ -79,7 +133,9 @@ export function createGlobalProjectQueueRoutes(
       options,
     );
     const response: ProjectQueuePromoteNowResponse = {
-      ...(await globalQueueResponse(deps)),
+      ...(await globalQueueResponse(deps, {
+        isProjectVisible: projectVisibilityFor(c),
+      })),
       promoteResult,
     };
     return c.json(response);
@@ -110,6 +166,32 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
     return { project };
   }
 
+  // A limited user changes only the items they queued: someone else's item
+  // runs with that person's launch settings and attribution, so editing,
+  // retrying, reordering, or deleting it is not theirs to do
+  // (topics/limited-users.md § Delivery v1).
+  const refuseForeignItem: MiddlewareHandler = async (c, next) => {
+    const actor = limitedActorFor(c);
+    if (actor) {
+      const projectId = c.req.param("projectId") ?? "";
+      const itemId = c.req.param("itemId");
+      const owned =
+        isUrlProjectId(projectId) &&
+        deps.projectQueueService
+          .listProject(projectId)
+          .items.some(
+            (item) =>
+              item.id === itemId && item.createdByUser === actor.username,
+          );
+      if (!owned) {
+        return c.json({ error: "Project queue item not found" }, 404);
+      }
+    }
+    await next();
+  };
+  routes.use("/:projectId/queue/:itemId", refuseForeignItem);
+  routes.use("/:projectId/queue/:itemId/*", refuseForeignItem);
+
   routes.get("/:projectId/queue", async (c) => {
     const resolved = await resolveProject(c.req.param("projectId"));
     if ("error" in resolved) {
@@ -132,12 +214,30 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
+    const actor = limitedActorFor(c);
     try {
       const item = await deps.projectQueueService.createItem({
         projectId: resolved.project.id,
         projectPath: resolved.project.path,
         request: body,
+        ...(actor
+          ? {
+              createdByUser: actor.username,
+              launchPolicy: queuedLaunchPolicyFor(actor),
+            }
+          : {}),
       });
+      // Queuing is the user's action, so it counts now, like a turn deferred
+      // on the session route; a YA command is no turn there either.
+      if (!item.message.yaCommand) {
+        if (item.target.type === "new-session") {
+          void deps.userUsageService?.recordSession(actor?.username);
+        }
+        void deps.userUsageService?.recordTurn(
+          actor?.username,
+          item.message.text,
+        );
+      }
       const queue = await projectQueueResponse(resolved.project, deps);
       return c.json(
         {
@@ -148,6 +248,9 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
         201,
       );
     } catch (error) {
+      if (error instanceof ProjectQueueLaunchRefusedError) {
+        return c.json({ error: error.message }, 403);
+      }
       if (error instanceof ProjectQueueValidationError) {
         return c.json(validationError(error.message), 400);
       }
@@ -172,11 +275,13 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
       return c.json(validationError("target or message is required"), 400);
     }
 
+    const actor = limitedActorFor(c);
     try {
       const item = await deps.projectQueueService.updateItem(
         resolved.project.id,
         c.req.param("itemId"),
         body,
+        actor ? queuedLaunchPolicyFor(actor) : undefined,
       );
       if (!item) {
         return c.json({ error: "Project queue item not found" }, 404);
@@ -187,6 +292,9 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
         queue,
       });
     } catch (error) {
+      if (error instanceof ProjectQueueLaunchRefusedError) {
+        return c.json({ error: error.message }, 403);
+      }
       if (error instanceof ProjectQueueValidationError) {
         return c.json(validationError(error.message), 400);
       }

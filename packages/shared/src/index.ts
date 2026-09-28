@@ -3,6 +3,12 @@ export type {
   ArtifactViewerConfig,
   ArtifactViewerStatus,
   ArtifactViewerGrant,
+  ArtifactTabRequest,
+} from "./artifact-viewer.js";
+export {
+  ARTIFACT_SANDBOX,
+  ARTIFACT_TAB_PROTOCOL,
+  isArtifactTabRequest,
 } from "./artifact-viewer.js";
 export type {
   RetainedSessionCollectionState,
@@ -12,6 +18,8 @@ export type {
 export * from "./session-content-search.js";
 export * from "./limited-users.js";
 export * from "./project-template-source.js";
+export * from "./model-prices.js";
+export * from "./model-display.js";
 export * from "./user-usage.js";
 export {
   ACLI_COMMENTARY_MAX_TEXTS,
@@ -64,7 +72,6 @@ export {
   LONG_CONTEXT_EFFORT_WARNING_SLIDER_MAX_TOKENS,
   LONG_CONTEXT_EFFORT_WARNING_SLIDER_STEP_TOKENS,
   effortChangeKeepsPromptCache,
-  effortOfThinkingOption,
   parseLongContextEffortWarningSettings,
   shouldWarnLongContextEffortChange,
   type LongContextEffortChangeQuery,
@@ -73,6 +80,8 @@ export {
 
 export {
   EFFORT_LEVEL_ORDER,
+  effortOfThinkingOption,
+  isThinkingOption,
   getModelEffortLevels,
   nativeModelEffort,
   resolveTurnEffort,
@@ -251,6 +260,7 @@ export {
 export {
   advertisedGatewayEffortLevels,
   builtInGatewayModelEffort,
+  describedGatewayModelLevels,
   gatewayModelEffort,
   isEffortLevel,
   nearestGatewayEffortLevel,
@@ -431,6 +441,8 @@ export type {
   SessionSandboxEnforcement,
   SessionSandboxAvailability,
   SessionSandboxAvailabilityState,
+  SessionSandboxBlocker,
+  SessionSandboxHostPackage,
   ProviderSessionDefaults,
   NewSessionDefaults,
   BusyComposerDefaultAction,
@@ -695,7 +707,14 @@ export {
 export {
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   MAX_PROJECT_QUEUE_QUIET_SECONDS,
+  PROJECT_QUEUE_NAMED_BLOCKER_COUNT,
+  PROJECT_QUEUE_SESSION_BLOCKER_REASONS,
+  type ProjectQueueBlocker,
+  type ProjectQueueSessionBlockerReason,
   clampProjectQueueQuietSeconds,
+  parseProjectQueueBlocker,
+  projectQueueLivenessBlocker,
+  projectQueueSessionBlocker,
 } from "./project-queue.js";
 export {
   COMPOSER_ONLY_YA_COMMANDS,
@@ -704,15 +723,22 @@ export {
   type ComposerOnlyYaCommandName,
   type UnsupportedQueuedYaCommandName,
   type QueuedYaCommand,
+  type QueuedYaCommandAction,
   type QueuedYaCommandClassification,
   type QueuedYaCommandName,
+  type QueuedYaCommandProblem,
+  type QueuedYaCommandReading,
   classifyQueuedYaCommand,
+  queuedYaCommandForText,
+  readQueuedYaCommand,
+  retagEditedQueuedMessage,
 } from "./queued-ya-commands.js";
 export {
   type ClearloopCommandArguments,
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   MAX_CLEARLOOP_INACTIVITY_SECONDS,
   MIN_CLEARLOOP_INACTIVITY_SECONDS,
+  REWIND_SLASH_COMMANDS,
   REWOUND_GROUP_SUBTYPE,
   type SessionClearloopBadge,
   type SessionClearloopJob,
@@ -723,6 +749,7 @@ export {
   type UpdateClearloopRequest,
   clampClearloopInactivitySeconds,
   formatDurationSeconds,
+  isRewindSlashCommand,
   parseClearloopArguments,
   parseDurationSeconds,
   parseTurnIndexArgument,
@@ -809,6 +836,7 @@ export {
   SESSION_REWIND_CAPABILITY,
   NON_HUMAN_USER_TURN_CAPABILITY,
   SESSION_CONTENT_SEARCH_CAPABILITY,
+  SESSION_CREATION_PROVENANCE_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
   GLOSSARY_TOOLTIPS_CAPABILITY,
@@ -1017,6 +1045,7 @@ export type {
   ForkSummaryTranscriptDisplayObject,
   TranscriptDisplayObject,
   AppSessionSummary,
+  SessionCreationProvenance,
   AppSession,
   SessionEffectiveModelSettings,
   SessionMetadataPayload,
@@ -1083,7 +1112,7 @@ export {
   DEFAULT_CONTEXT_WINDOW,
   CODEX_DEFAULT_CONTEXT_WINDOW,
   CODEX_GPT56_CONTEXT_WINDOW,
-  CODEX_GPT6_ASTRA_CONTEXT_WINDOW,
+  CODEX_GPT6_CONTEXT_WINDOW,
   getModelContextWindow,
 } from "./app-types.js";
 
@@ -1119,6 +1148,12 @@ export {
   isPublicSessionSharePublicMetadata,
   isPublicSessionShareResponse,
 } from "./public-shares.js";
+export {
+  findHtmlRootAssetReferences,
+  PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS,
+  resolveHtmlRootAssetPath,
+} from "./html-root-assets.js";
+export type { HtmlRootAssetReference } from "./html-root-assets.js";
 
 export type {
   CreatePublicFileShareRequest,
@@ -1550,3 +1585,5 @@ export {
 } from "./linkify.js";
 
 export { asRecord, isRecord } from "./plain-record.js";
+
+export { PDFJS_VERSION } from "./pdfjs.js";

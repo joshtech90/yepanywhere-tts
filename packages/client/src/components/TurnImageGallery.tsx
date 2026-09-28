@@ -11,13 +11,11 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  buildPublicShareRawFileApiPath,
-  usePublicShareContext,
-} from "../contexts/PublicShareContext";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../hooks/useInlineMedia";
 import { useI18n } from "../i18n";
+import { buildPublicShareRawFileApiPath } from "../lib/publicShareFiles";
 import { fetchPublicShareBlobViaRelay } from "../lib/publicShareRelay";
 import {
   collectTurnInlineImages,

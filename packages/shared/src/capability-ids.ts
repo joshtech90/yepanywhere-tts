@@ -510,6 +510,42 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "project-template-sources",
     introducedIn: "0.8.2",
   },
+  fileSourceEditing: {
+    id: 82,
+    direction: "server",
+    name: "file-source-editing",
+    introducedIn: "0.9.1",
+  },
+  limitedUsers: {
+    id: 83,
+    direction: "server",
+    name: "limited-users",
+    introducedIn: "0.9.0",
+  },
+  sessionCreationProvenance: {
+    id: 84,
+    direction: "server",
+    name: "session-creation-provenance",
+    introducedIn: "0.9.3",
+  },
+  projectTemplateCreation: {
+    id: 85,
+    direction: "server",
+    name: "project-template-creation",
+    introducedIn: "0.9.4",
+  },
+  limitedUserProjectTemplates: {
+    id: 86,
+    direction: "server",
+    name: "limited-user-project-templates",
+    introducedIn: "0.9.4",
+  },
+  templatePreparationAttachments: {
+    id: 87,
+    direction: "server",
+    name: "template-preparation-attachments",
+    introducedIn: "0.9.4",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

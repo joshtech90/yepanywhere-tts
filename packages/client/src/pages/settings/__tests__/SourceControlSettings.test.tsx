@@ -132,10 +132,4 @@ describe("SourceControlSettings", () => {
     render(<SourceControlSettings />);
     expect(screen.queryByRole("spinbutton")).toBeNull();
   });
-
-  it("renders nothing without the permanent capability", () => {
-    state.capabilities = [];
-    const { container } = render(<SourceControlSettings />);
-    expect(container.textContent).toBe("");
-  });
 });

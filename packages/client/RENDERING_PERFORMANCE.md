@@ -84,10 +84,12 @@ stable component identity, and lower update cadence.
   boundary and must not wait for the transcript. Prefix-changing pagination and
   trimming remain immediate because their scroll corrections are coupled to the
   new transcript structure.
-- An open managed viewer covers the transcript and holds its last committed
+- A covering non-App managed modal may hold the transcript's last committed
   projection stable. Incoming session data continues to buffer and surrounding
   controls and viewer sources remain live, but transcript reconciliation and
-  progressive hydration resume only after the viewer is parked or closed.
+  progressive hydration resume only after the modal is parked or closed. App
+  and artifact iframes, right-pane viewers, and parked viewers leave transcript
+  reconciliation live.
 - Conditional UI controls must not run an expensive render only to decide
   whether the control exists. Prefer transforms that return structured metadata
   such as `{ html, changed }`, and pass that first completed scan into the
@@ -97,6 +99,11 @@ stable component identity, and lower update cadence.
   caller can apply them incrementally.
 - Avoid string comparisons as change detection after a formatter has already
   determined whether it changed anything. Preserve and reuse the boolean.
+- An optional per-block HTML transform is absent, not an identity, where it
+  cannot change anything. The session app-link rewriter
+  (`SessionViewerProvider`) exists only when
+  `sessionLocalhostRewriteApplies` holds for the page, so ordinary direct
+  sessions parse no streamed or completed HTML block for it.
 - When fixing one high-rate path, keep tracing. A throttled markdown path does
   not prove text placeholders, tool previews, activity/freshness state,
   queued-message UI, or composer-adjacent state are also covered.

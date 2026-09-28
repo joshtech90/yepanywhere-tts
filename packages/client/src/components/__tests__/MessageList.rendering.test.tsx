@@ -1618,6 +1618,36 @@ describe("MessageList rendering", () => {
     ).toBeTruthy();
   });
 
+  it("shows an error notice's details without a click", () => {
+    const notice = (id: string, detailsOpen?: boolean) => ({
+      type: "system",
+      subtype: "local_command",
+      uuid: id,
+      id,
+      session_id: "session-1",
+      timestamp: "2026-09-26T04:00:00.000Z",
+      isSynthetic: true,
+      content: `notice ${id}`,
+      details: [`reason ${id}`],
+      ...(detailsOpen ? { detailsOpen } : {}),
+    });
+    const { container } = render(
+      <MessageList
+        messages={
+          [notice("error", true), notice("plain")] as unknown as Parameters<
+            typeof MessageList
+          >[0]["messages"]
+        }
+      />,
+    );
+
+    const rows = Array.from(
+      container.querySelectorAll("details.system-message-local-command"),
+    ) as HTMLDetailsElement[];
+    expect(rows.map((row) => row.open)).toEqual([true, false]);
+    expect(rows[0]?.textContent).toContain("reason error");
+  });
+
   it("passes display text without uploaded-file metadata to correction", () => {
     const onCorrect = vi.fn();
 

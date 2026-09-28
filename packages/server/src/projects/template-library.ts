@@ -1,6 +1,13 @@
 import { createHash } from "node:crypto";
-import { readFile, realpath, stat } from "node:fs/promises";
-import { isAbsolute, join, relative, sep } from "node:path";
+import {
+  chmod,
+  mkdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { z } from "zod";
 
 const identifier = z.string().regex(/^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/);
@@ -370,6 +377,60 @@ export class TemplateLibrary {
     const result = this.compose(id);
     if (result.template.status !== "ready")
       throw new Error(`Project template is draft: ${id}`);
+    return result;
+  }
+
+  /** Materializes a ready template without overwriting an existing target. */
+  async materialize(
+    id: string,
+    target: string,
+    context: { name: string; description: string },
+  ): Promise<TemplateComposition> {
+    const result = this.readyComposition(id);
+    if (!context.name.trim() || !context.description.trim())
+      throw new Error("Project name and description must be nonempty");
+    for (const file of result.files.keys()) {
+      const folded = file.toLowerCase();
+      if (
+        folded === ".project-template" ||
+        folded === ".project-template/project.json" ||
+        folded.startsWith(".project-template/project.json/")
+      )
+        throw new Error("Reserved project context destination");
+    }
+    // Exclusive allocation precedes all writes; a failed partial tree is retained.
+    await mkdir(target);
+    for (const [destination, file] of result.files) {
+      const output = join(target, destination);
+      await mkdir(dirname(output), { recursive: true });
+      await writeFile(output, file.content, { flag: "wx" });
+      await chmod(output, file.executable ? 0o755 : 0o644);
+    }
+    await mkdir(join(target, ".project-template"), { recursive: true });
+    await writeFile(
+      join(target, ".project-template/project.json"),
+      `${JSON.stringify(
+        {
+          ...context,
+          origin: {
+            template: id,
+            sourceId: this.sourceOf(id),
+            status: result.template.status,
+            order: result.order,
+            files: [...result.files].map(([path, file]) => ({
+              path,
+              sha256: createHash("sha256").update(file.content).digest("hex"),
+              bytes: file.content.length,
+              executable: file.executable,
+              sources: file.sources,
+            })),
+          },
+        },
+        null,
+        2,
+      )}\n`,
+      { flag: "wx" },
+    );
     return result;
   }
 }

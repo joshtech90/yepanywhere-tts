@@ -155,7 +155,9 @@ mode while live, or `fork` once cold (the only mode that revives). A session
 never seen live this view has an unknown mode and does not fire.
 
 `recapMode` is durable (persisted in `SessionMetadataService`, mirroring
-`recapAfterSeconds`); the recap-config route and reactivation read/write it.
+`recapAfterSeconds`); the recap-config route and reactivation read/write it,
+and a resume that names no recap mode (including a `/clearloop` iteration)
+reads it.
 This is what lets a cold session report whether/how to recap, and it also fixes
 a prior bug where reactivation reset a session's recap mode to the default.
 

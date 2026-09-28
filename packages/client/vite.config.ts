@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { warningFreeBuildLogger } from "./vite-build-policy";
 import { cspPlugin, shouldInlineClientAsset } from "./vite-plugin-csp";
+import { prebootComposerPlugin } from "./vite-plugin-preboot-composer";
 import { reloadNotify } from "./vite-plugin-reload-notify";
 
 // NO_FRONTEND_RELOAD: Suppress application updates with reloadNotify.
@@ -72,6 +73,8 @@ export default defineConfig(({ command }) => ({
     react(),
     // Manual mode suppresses application updates inside the HMR hook.
     reloadNotify({ enabled: noFrontendReload }),
+    // Typeable /new-session before the app loads; must precede the CSP hash.
+    prebootComposerPlugin(),
     // Content Security Policy (stricter in production, permissive in dev for HMR)
     cspPlugin({ isRemote: false }),
   ],

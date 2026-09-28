@@ -139,13 +139,18 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
   useDraftPersistence: () => {
     const [value, setValueInternal] = useState("");
     const valueRef = useRef("");
+    // Stands in for the stored copy: kept by clearInput for recovery,
+    // replaced by any edit, dropped by clearDraft and confirmInputClear.
+    const storedRef = useRef("");
     const setValue = useCallback((nextValue: string) => {
       valueRef.current = nextValue;
+      storedRef.current = nextValue;
       setValueInternal(nextValue);
     }, []);
     const getDraft = useCallback(() => valueRef.current, []);
     const setDraft = useCallback((nextValue: string) => {
       valueRef.current = nextValue;
+      storedRef.current = nextValue;
       setValueInternal(nextValue);
     }, []);
     const flushDraft = useCallback(() => {}, []);
@@ -153,11 +158,18 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
       valueRef.current = "";
       setValueInternal("");
     }, []);
+    const confirmInputClear = useCallback(() => {
+      if (valueRef.current === "") storedRef.current = "";
+    }, []);
     const clearDraft = useCallback(() => {
       valueRef.current = "";
+      storedRef.current = "";
       setValueInternal("");
     }, []);
-    const restoreFromStorage = useCallback(() => {}, []);
+    const restoreFromStorage = useCallback(() => {
+      valueRef.current = storedRef.current;
+      setValueInternal(storedRef.current);
+    }, []);
 
     const controls = useMemo(
       () => ({
@@ -165,6 +177,7 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
         setDraft,
         flushDraft,
         clearInput,
+        confirmInputClear,
         clearDraft,
         restoreFromStorage,
       }),
@@ -173,6 +186,7 @@ vi.mock("../../hooks/useDraftPersistence", () => ({
         setDraft,
         flushDraft,
         clearInput,
+        confirmInputClear,
         clearDraft,
         restoreFromStorage,
       ],
@@ -250,15 +264,34 @@ vi.mock("../../hooks/useVersion", () => ({
   }),
 }));
 
-vi.mock("../../hooks/useProviders", () => ({
-  useProviders: () => ({
-    providers: [
-      {
-        name: "claude",
-        displayName: "Claude",
-        models: [{ id: "test-model", name: "Test Model" }],
-      },
+vi.mock("../../hooks/useProviders", async () => {
+  const actual = await vi.importActual<
+    typeof import("../../hooks/useProviders")
+  >("../../hooks/useProviders");
+  return {
+    ...actual,
+    useProviders: () => ({
+      providers: [
+        {
+          name: "claude",
+          displayName: "Claude",
+          installed: true,
+          models: [{ id: "test-model", name: "Test Model" }],
+        },
+      ],
+    }),
+  };
+});
+
+vi.mock("../../hooks/useProjects", () => ({
+  useProjects: () => ({
+    projects: [
+      { id: "project-1", name: "Here", path: "/work/here" },
+      { id: "project-2", name: "Elsewhere", path: "/work/elsewhere" },
     ],
+    loading: false,
+    error: null,
+    refetch: vi.fn(),
   }),
 }));
 
@@ -637,6 +670,7 @@ const toolbarVisibility: MessageInputToolbarViewProps["visibility"] = {
   microphone: false,
   waveform: false,
   shortcutsHelp: false,
+  transcriptSearch: false,
   contextUsage: false,
   btw: false,
   nudge: false,
@@ -3770,6 +3804,41 @@ describe("MessageInput", () => {
     expectSubmission(onSend, "before /dou after", "direct");
   });
 
+  it("completes a root slash command typed in front of existing text", async () => {
+    const onSend = vi.fn();
+    // Rewind commands consume a bare selection; text after the caret must
+    // become the argument instead.
+    const onCustomCommand = vi.fn(() => true);
+    const textarea = renderMessageInput(
+      vi.fn(() => true),
+      {
+        onSend,
+        slashCommands: ["clear", "clearloop", "compact"].map(
+          createClientSlashCommand,
+        ),
+        onCustomCommand,
+      },
+    ) as HTMLTextAreaElement;
+
+    // Pasted body, then Home, then `/cl` typed before it.
+    fireEvent.change(textarea, {
+      target: {
+        value: "/clfix the build",
+        selectionStart: 3,
+        selectionEnd: 3,
+      },
+    });
+
+    expect(screen.getByRole("menuitem", { name: /\/clear\b/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /\/clearloop/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /\/compact/ })).toBeNull();
+
+    fireEvent.keyDown(textarea, { key: "Enter" });
+    await waitFor(() => expect(textarea.value).toBe("/clear fix the build"));
+    expect(onCustomCommand).not.toHaveBeenCalled();
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("hides slash suggestions once the command is completely typed", () => {
     const textarea = renderMessageInput(
       vi.fn(() => true),
@@ -5346,6 +5415,75 @@ describe("MessageInput", () => {
     expect(onProjectQueue).not.toHaveBeenCalled();
   });
 
+  it("queues the draft as a new session in another project chosen by right-click", () => {
+    const onProjectQueueNewSession = vi.fn();
+    const textarea = renderMessageInput(vi.fn(), {
+      onProjectQueueNewSession,
+      projectQueueNewSessionTarget: {
+        projectId: "project-1",
+        provider: "claude",
+        model: "test-model",
+      },
+    });
+
+    fireEvent.change(textarea, { target: { value: "work over there" } });
+    const button = screen.getByRole("button", {
+      name: "Queue as new session for Project Queue",
+    });
+    fireEvent.contextMenu(button);
+
+    expect(onProjectQueueNewSession).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("newSessionQueueOptionsProject"), {
+      target: { value: "project-2" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionQueueOptionsSubmit" }),
+    );
+
+    expectSubmission(onProjectQueueNewSession, "work over there", "deferred");
+    expect(onProjectQueueNewSession.mock.calls.at(-1)?.[2]).toEqual({
+      projectId: "project-2",
+      provider: "claude",
+      model: "test-model",
+      projectName: "Elsewhere",
+    });
+    expect(
+      screen.queryByRole("button", { name: "newSessionQueueOptionsSubmit" }),
+    ).toBeNull();
+  });
+
+  it("exits new-session mode without losing the draft or stopping the active turn", () => {
+    const onStop = vi.fn();
+    const onSend = vi.fn();
+    const textarea = renderMessageInput(onSend, {
+      onProjectQueueNewSession: vi.fn(),
+      projectQueueNewSessionTarget: {
+        projectId: "project-1",
+        provider: "claude",
+        model: "test-model",
+      },
+      isRunning: true,
+      isThinking: true,
+      onStop,
+    });
+    fireEvent.change(textarea, { target: { value: "keep this draft" } });
+    const send = document.querySelector(".send-button-with-help");
+    expect(send).not.toBeNull();
+    fireEvent.contextMenu(send!);
+    fireEvent.keyDown(textarea, { key: "Escape" });
+    expect(onStop).not.toHaveBeenCalled();
+    expect((textarea as HTMLTextAreaElement).value).toBe("keep this draft");
+    expect(
+      screen.queryByRole("button", { name: "newSessionQueueExit" }),
+    ).toBeNull();
+    fireEvent.contextMenu(document.querySelector(".send-button-with-help")!);
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionQueueExit" }),
+    );
+    expect((textarea as HTMLTextAreaElement).value).toBe("keep this draft");
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it("shows only the Project Queue new-session action when current-session queueing is unavailable", () => {
     const onProjectQueueNewSession = vi.fn();
     const textarea = renderMessageInput(vi.fn(), {
@@ -6218,6 +6356,7 @@ describe("MessageInput", () => {
       syntheticDone: "off",
       sessionStatus: "pin",
       shortcutsHelp: "last",
+      transcriptSearch: "first",
       contextUsage: "pin",
       btw: "pin",
       steerNow: "pin",
@@ -6413,17 +6552,24 @@ describe("MessageInput bang commands", () => {
     history,
   });
 
+  type BangSupport = NonNullable<
+    ComponentProps<typeof MessageInput>["bangSupport"]
+  >;
+
   function bangSupport(
     overrides: Partial<{
-      onRun: ReturnType<typeof vi.fn>;
-      fetchCompletions: ReturnType<typeof vi.fn>;
+      onRun: BangSupport["onRun"];
+      fetchCompletions: BangSupport["fetchCompletions"];
       history: string[];
     }> = {},
-  ) {
+  ): BangSupport {
     return {
-      onRun: overrides.onRun ?? vi.fn(),
+      onRun: overrides.onRun ?? vi.fn<BangSupport["onRun"]>(),
       fetchCompletions:
-        overrides.fetchCompletions ?? vi.fn(async () => completionsResult([])),
+        overrides.fetchCompletions ??
+        vi.fn<BangSupport["fetchCompletions"]>(async () =>
+          completionsResult([]),
+        ),
       history: overrides.history ?? [],
     };
   }

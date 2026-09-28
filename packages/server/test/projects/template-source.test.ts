@@ -2,6 +2,7 @@ import {
   mkdtemp,
   mkdir,
   readFile,
+  readdir,
   realpath,
   rm,
   writeFile,
@@ -21,8 +22,10 @@ import {
   type ProjectTemplateSourceConfig,
 } from "@yep-anywhere/shared";
 import {
+  type TemplateSourceGit,
   TemplateSourceService,
   relocateTemplateReferences,
+  resolveTemplateRevision,
   templateSourceConfig,
 } from "../../src/projects/TemplateSourceService.js";
 import { createProjectTemplateSourceRoutes } from "../../src/routes/project-template-source.js";
@@ -118,6 +121,84 @@ describe("template source retrieval", () => {
     expect(resolve).toHaveBeenCalledTimes(2);
   });
 
+  it("checks refs and downloads through one git runner that ignores the user's Git config", async () => {
+    const runners: TemplateSourceGit[] = [];
+    const service = new TemplateSourceService(
+      root,
+      async (entry, directory, git) => {
+        runners.push(git);
+        return fixture(directory, entry.contentPath);
+      },
+      async (_entry, git) => {
+        runners.push(git);
+        return sha;
+      },
+    );
+    await service.configure(config);
+    await service.waitForRetrieval();
+    expect((await service.current()).phase).toBe("ready");
+    expect(runners).toHaveLength(2);
+    expect(runners[0]).toBeTypeOf("function");
+    expect(runners[1]).toBe(runners[0]);
+
+    const userConfig = join(root, "user-gitconfig");
+    await writeFile(
+      userConfig,
+      '[url "git@github.com:"]\n\tinsteadOf = https://github.com/\n',
+    );
+    vi.stubEnv("GIT_CONFIG_GLOBAL", userConfig);
+    try {
+      const rewrites = ["config", "--get-regexp", "^url\\."];
+      const plain = await promisify(execFile)("git", rewrites, { cwd: root });
+      expect(plain.stdout).toContain("insteadof https://github.com/");
+      await expect(
+        runners[0]?.(rewrites, {
+          cwd: root,
+          timeout: 30_000,
+          maxBuffer: 64 * 1024,
+        }),
+      ).rejects.toMatchObject({ code: 1 });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("resolves a branch, a peeled annotated tag and HEAD from ls-remote output", async () => {
+    const [branch, tag, peeled, head] = ["b", "c", "d", "e"].map((digit) =>
+      digit.repeat(40),
+    );
+    const listings: Record<string, string> = {
+      main: `${branch}\trefs/heads/main\n`,
+      v1: `${tag}\trefs/tags/v1\n${peeled}\trefs/tags/v1^{}\n`,
+      HEAD: `${head}\tHEAD\n`,
+      both: `${branch}\trefs/heads/both\n${tag}\trefs/tags/both\n`,
+    };
+    const calls: string[][] = [];
+    const git: TemplateSourceGit = async (args) => {
+      calls.push(args);
+      const revision = args.at(-1)?.replace(/^refs\/(heads|tags)\//, "");
+      return {
+        stdout: listings[revision?.replace("^{}", "") ?? ""] ?? "",
+      };
+    };
+    const at = (revision: string) =>
+      resolveTemplateRevision({ ...source, revision }, git);
+    expect(await at("main")).toBe(branch);
+    expect(calls[0]).toEqual([
+      "ls-remote",
+      "--exit-code",
+      source.repository,
+      "refs/heads/main",
+      "refs/tags/main",
+      "refs/tags/main^{}",
+    ]);
+    expect(await at("v1")).toBe(peeled);
+    expect(await at("HEAD")).toBe(head);
+    await expect(at("both")).rejects.toThrow("Ambiguous revision");
+    expect(await at(sha)).toBe(sha);
+    expect(calls).toHaveLength(4);
+  });
+
   it("accepts the repository root and fetches a changed origin even at the same SHA", async () => {
     const fetch = vi.fn(
       async (source: ProjectTemplateSourceConfig, directory: string) =>
@@ -167,6 +248,56 @@ describe("template source retrieval", () => {
       phase: "error",
       error: expect.stringContaining("interrupted"),
     });
+  });
+
+  it("sets an unreadable saved state aside so the next save replaces it", async () => {
+    const directory = join(root, "project-templates-source");
+    await mkdir(directory, { recursive: true });
+    const saved = [
+      "{ not json",
+      JSON.stringify({
+        config: { enabled: true, sources: [] },
+        phase: "ready",
+      }),
+      JSON.stringify({ config, phase: "ready", snapshot: { sources: 7 } }),
+    ];
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const bytes of saved) {
+      logged.mockClear();
+      await writeFile(join(directory, "state.json"), bytes);
+      const service = new TemplateSourceService(root);
+      const state = await service.current();
+      expect(state).toMatchObject({
+        config: { enabled: false },
+        phase: "error",
+        error: expect.stringContaining("set aside"),
+      });
+      expect(state.snapshot).toBeUndefined();
+      const asideName = (await readdir(directory)).find((name) =>
+        name.startsWith("state.unreadable-"),
+      );
+      expect(asideName).toBeDefined();
+      expect(state.error).toContain(asideName);
+      expect(logged).toHaveBeenCalledWith(
+        `[TemplateSource] Unreadable saved state set aside as ${asideName}:`,
+        expect.anything(),
+      );
+      expect(await readFile(join(directory, asideName ?? ""), "utf8")).toBe(
+        bytes,
+      );
+      // The explanation survives a restart until a save replaces it.
+      expect(await new TemplateSourceService(root).current()).toMatchObject({
+        phase: "error",
+        error: state.error,
+      });
+      await service.configure({ ...config, enabled: false });
+      expect(await new TemplateSourceService(root).current()).toEqual({
+        config: { ...config, enabled: false },
+        phase: "disabled",
+      });
+      await rm(join(directory, asideName ?? ""));
+    }
+    logged.mockRestore();
   });
 
   it("layers sources last-wins, resolves shared bases and relocates cached dependents after an update", async () => {
@@ -372,6 +503,53 @@ describe("template source retrieval", () => {
     expect((await service.current()).snapshot?.templates[0]?.sourceId).toBe(
       source.id,
     );
+  });
+
+  it("revalidates a local overlay's edits without re-copying unchanged GitHub sources", async () => {
+    const localDirectory = async (name: string) => {
+      await fixture(join(root, name), "");
+      return realpath(join(root, name, "repository"));
+    };
+    const fetch = vi.fn(
+      async (entry: ProjectTemplateSourceConfig, directory: string) =>
+        fixture(directory, entry.contentPath),
+    );
+    const service = new TemplateSourceService(
+      join(root, "data"),
+      fetch,
+      async () => sha,
+    );
+    const local = {
+      ...source,
+      id: "local",
+      repository: await localDirectory("local"),
+      contentPath: "",
+    };
+    const layered = { enabled: true, sources: [source, local] };
+    await service.configure(layered);
+    await service.waitForRetrieval();
+    const first = await service.current();
+    const copied = first.snapshot?.sources[0]?.directory;
+    const path = join(local.repository, "templates/app/template.json");
+    const manifest = JSON.parse(await readFile(path, "utf8"));
+    manifest.title = "Edited overlay";
+    await writeFile(path, JSON.stringify(manifest));
+    await service.configure(layered);
+    await service.waitForRetrieval();
+    const edited = await service.current();
+    expect(edited).toMatchObject({ phase: "ready", result: "up-to-date" });
+    expect(edited.snapshot?.sources[0]?.directory).toBe(copied);
+    expect(edited.snapshot?.templates[0]?.title).toBe("Edited overlay");
+    const moved = {
+      ...local,
+      repository: await localDirectory("moved"),
+    };
+    await service.configure({ enabled: true, sources: [source, moved] });
+    await service.waitForRetrieval();
+    const relocated = await service.current();
+    expect(relocated).toMatchObject({ phase: "ready", result: "updated" });
+    expect(relocated.snapshot?.sources[0]?.directory).not.toBe(copied);
+    expect(fetch).toHaveBeenCalledTimes(1);
   });
 
   it("reports a local Git owner's HEAD but revalidates working files without copying them", async () => {

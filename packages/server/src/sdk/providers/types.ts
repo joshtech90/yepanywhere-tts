@@ -234,6 +234,22 @@ export interface StartSessionOptions {
   restoredGoal?: ClaudeGoalSnapshot | null;
   /** Model to use (e.g., "sonnet", "opus", "haiku") */
   model?: string;
+  /**
+   * Concrete id `model` resolved to at launch (see
+   * `AgentProvider.resolveLaunchModel`). Only reported to the agent as
+   * `AGENT_LAUNCH_MODEL`; `model` still selects what the provider runs.
+   */
+  launchModel?: string;
+  /**
+   * Configured model endpoint this launch is bound to, resolved once by the
+   * server process from the catalog it holds (see
+   * `AgentProvider.resolveLaunchGatewayRoute`); `null` binds it to the
+   * provider's local path. A provider that honors this uses it for the whole
+   * session rather than re-resolving `model` against a catalog of its own,
+   * which a provider-host worker never reads and a later read can re-key.
+   * Absent means the provider resolves the route itself at launch.
+   */
+  gatewayRoute?: import("@yep-anywhere/shared").ModelCatalogRoute | null;
   /** Provider-visible service tier. undefined means provider/default behavior. */
   serviceTier?: string;
   /** Thinking configuration (undefined = thinking disabled) */
@@ -301,6 +317,8 @@ export interface AgentSession {
   queue: AgentMessageQueue;
   /** Internal placement identity retained by the owning Process. */
   execution?: SessionExecution;
+  /** Configured model endpoint this session is bound to for its lifetime. */
+  gatewayServiceId?: string;
   /** Abort function to cancel the session */
   abort: () => void | Promise<void>;
   /** Release only the replaceable server's proxy, retaining the provider owner. */
@@ -538,6 +556,25 @@ export interface AgentProvider {
    * See topics/provider-abstraction.md § Per-model settings keying.
    */
   yaModelIdForReported?(reported: string | undefined): string | undefined;
+
+  /**
+   * Concrete provider model id a launch selection (e.g. "opus") currently
+   * resolves to, e.g. "claude-opus-5-5", from the already-fetched catalog; never
+   * probes. `undefined` when the selection is absent or the catalog does not
+   * report a resolution. Published to the agent as `AGENT_LAUNCH_MODEL`.
+   */
+  resolveLaunchModel?(model: string | undefined): string | undefined;
+
+  /**
+   * Which configured model endpoint a launch of this model uses, from the
+   * catalog the server already holds, reading it once when the model is not
+   * yet known; `null` for a launch that reaches no configured endpoint. The
+   * hosted-provider proxy resolves this before handing the launch to a worker
+   * and passes it as `StartSessionOptions.gatewayRoute`.
+   */
+  resolveLaunchGatewayRoute?(
+    model: string | undefined,
+  ): Promise<import("@yep-anywhere/shared").ModelCatalogRoute | null>;
 
   /**
    * Generate a YA-owned summary through one of the supported helper

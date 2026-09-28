@@ -35,7 +35,14 @@ function commandItem(
 }
 
 function textItem(id: string, text: string, augmentHtml?: string): TextItem {
-  return { type: "text", id, text, augmentHtml, sourceMessages: [] };
+  return {
+    type: "text",
+    sourceBlockIndex: 0,
+    id,
+    text,
+    augmentHtml,
+    sourceMessages: [],
+  };
 }
 
 function projectedTextLink(

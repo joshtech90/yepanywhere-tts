@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <!--
+      This document hosts a public share's play frame. A srcdoc frame inherits
+      its parent's Content Security Policy, so the hosted client's strict
+      policy would block the untrusted document's own stylesheets and
+      scripts. This page therefore carries its own policy, permissive for the
+      frame's content and closed for this page: no nested frames (a srcdoc
+      frame is not a framed URL, so the page's own frame still loads), no
+      plugins, no form navigation, and a base URL only on this origin, which
+      play-main.ts uses to keep the share secret out of the document's
+      fallback base URL. The frame inherits all of it. The frame is sandboxed
+      without allow-same-origin, so the document still has an opaque origin
+      and no reach to this origin. The plugin that injects the strict policy
+      skips this file by name.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self' data: blob: http: https:; script-src 'self' 'unsafe-inline' 'unsafe-eval' data: blob: http: https:; style-src 'self' 'unsafe-inline' data: blob: http: https:; img-src * data: blob:; font-src * data: blob:; media-src * data: blob:; connect-src *; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'none'"
+    />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Shared document</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #fff; }
+      p { padding: 24px; font: 15px/1.5 system-ui, sans-serif; color: #222; }
+      iframe { position: fixed; inset: 0; width: 100%; height: 100%; border: 0; background: #fff; }
+    </style>
+  </head>
+  <body>
+    <p id="notice"></p>
+    <script type="module" src="/src/play-main.ts"></script>
+  </body>
+</html>

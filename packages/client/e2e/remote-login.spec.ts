@@ -6,12 +6,59 @@
  * WebSocket connection.
  */
 
+import { join } from "node:path";
+import { InstallService } from "../../server/src/services/InstallService.js";
+import type { YaServerProcess } from "./support/ya-server-process.js";
+import {
+  startYaServerProcess,
+  stopYaServerProcess,
+} from "./support/ya-server-process.js";
 import {
   configureRemoteAccess,
   disableRemoteAccess,
+  e2ePaths,
   expect,
-  test,
+  test as baseTest,
 } from "./fixtures.js";
+
+// Remote login changes server-wide credentials. Give this file its own YA
+// process and data directory while reusing the run's remote client build.
+const test = baseTest.extend<
+  Record<string, never>,
+  { remoteLoginServer: YaServerProcess }
+>({
+  remoteLoginServer: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
+    async ({}, use) => {
+      const server = await startYaServerProcess({
+        label: "remote login",
+        mockClaudeSession: {
+          projectPath: join(e2ePaths.tempDir, "mockproject"),
+          sessionId: "mock-session-001",
+          content: "Mock project session for remote login",
+          timestamp: new Date().toISOString(),
+        },
+        setupProfile: async ({ dataDir }) => {
+          const installService = new InstallService({ dataDir });
+          await installService.initialize();
+          await installService.recordSuccessfulProviders(["claude"]);
+        },
+      });
+      try {
+        await use(server);
+      } finally {
+        stopYaServerProcess(server);
+      }
+    },
+    { scope: "worker" },
+  ],
+  baseURL: async ({ remoteLoginServer }, use) => {
+    await use(remoteLoginServer.baseUrl);
+  },
+  wsURL: async ({ remoteLoginServer }, use) => {
+    await use(remoteLoginServer.wsUrl);
+  },
+});
 
 // Test credentials
 const TEST_USERNAME = "e2e-test-user";
@@ -503,7 +550,7 @@ test.describe("Encrypted Data Flow", () => {
       await expect(page).toHaveURL(/\/bang-commands$/);
       await expect(bangHistoryLink).toHaveClass(/\bactive\b/);
       await expect(
-        page.getByText("No local commands have been run yet."),
+        page.getByText("!! Command History", { exact: true }),
       ).toBeVisible({ timeout: 10_000 });
     } finally {
       await setBangHistoryVisibility(baseURL, false);

@@ -11,6 +11,8 @@ import {
   resolveComposerSlashTurn,
 } from "../slashCommands";
 
+const rewind = { rewindSupported: true };
+
 describe("slashCommands", () => {
   it("parses fast and run aliases only when they start with slash", () => {
     expect(parseComposerSlashCommand("/f check status")).toEqual({
@@ -62,7 +64,7 @@ describe("slashCommands", () => {
       command: "done",
       argument: "with notes",
     });
-    expect(resolveComposerSlashTurn("/done")).toEqual({
+    expect(resolveComposerSlashTurn("/done", rewind)).toEqual({
       kind: "custom",
       command: "done",
       argument: "",
@@ -226,7 +228,7 @@ describe("slashCommands", () => {
       command: "btw",
       argument: "side lookup",
     });
-    expect(resolveComposerSlashTurn("/btw side lookup")).toEqual({
+    expect(resolveComposerSlashTurn("/btw side lookup", rewind)).toEqual({
       kind: "custom",
       command: "btw",
       argument: "side lookup",
@@ -323,7 +325,7 @@ describe("slashCommands", () => {
   });
 
   it("turns /fast into a relative one-turn effort request", () => {
-    expect(resolveComposerSlashTurn("/f summarize this")).toEqual({
+    expect(resolveComposerSlashTurn("/f summarize this", rewind)).toEqual({
       kind: "message",
       text: "summarize this",
       command: "fast",
@@ -332,7 +334,10 @@ describe("slashCommands", () => {
   });
 
   it("turns /run into a thinking-off exact-run instruction", () => {
-    const resolved = resolveComposerSlashTurn("/r git diff -- README.md");
+    const resolved = resolveComposerSlashTurn(
+      "/r git diff -- README.md",
+      rewind,
+    );
 
     expect(resolved.kind).toBe("message");
     if (resolved.kind !== "message") {
@@ -345,12 +350,12 @@ describe("slashCommands", () => {
   });
 
   it("returns errors for slash commands that need an argument", () => {
-    expect(resolveComposerSlashTurn("/f")).toEqual({
+    expect(resolveComposerSlashTurn("/f", rewind)).toEqual({
       kind: "error",
       command: "fast",
       message: "Add a request after /fast or /f.",
     });
-    expect(resolveComposerSlashTurn("/run")).toEqual({
+    expect(resolveComposerSlashTurn("/run", rewind)).toEqual({
       kind: "error",
       command: "run",
       message: "Add a shell command after /run or /r.",
@@ -358,11 +363,11 @@ describe("slashCommands", () => {
   });
 
   it("keeps unknown provider slash commands as normal messages", () => {
-    expect(resolveComposerSlashTurn("/permissions")).toEqual({
+    expect(resolveComposerSlashTurn("/permissions", rewind)).toEqual({
       kind: "message",
       text: "/permissions",
     });
-    expect(resolveComposerSlashTurn("/goal all tests pass")).toEqual({
+    expect(resolveComposerSlashTurn("/goal all tests pass", rewind)).toEqual({
       kind: "message",
       text: "/goal all tests pass",
     });
@@ -397,10 +402,21 @@ describe("same-session rewind commands", () => {
       command: "clearloop",
       argument: "3 2: again",
     });
-    expect(resolveComposerSlashTurn("/clearloop 2: again")).toEqual({
+    expect(resolveComposerSlashTurn("/clearloop 2: again", rewind)).toEqual({
       kind: "custom",
       command: "clearloop",
       argument: "2: again",
     });
+  });
+
+  it("hands them to the provider unaltered where rewind is unsupported", () => {
+    for (const text of ["/clear", "/clear 3", "/fork 2", "/clearloop 2: go"]) {
+      expect(
+        resolveComposerSlashTurn(text, { rewindSupported: false }),
+      ).toEqual({ kind: "message", text });
+    }
+    expect(
+      resolveComposerSlashTurn("/title Name", { rewindSupported: false }),
+    ).toEqual({ kind: "custom", command: "title", argument: "Name" });
   });
 });

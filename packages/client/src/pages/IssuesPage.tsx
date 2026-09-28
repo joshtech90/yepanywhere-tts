@@ -46,6 +46,9 @@ function IssueBrowser() {
   const [result, setResult] = useState<IssueSearchResult>();
   const [selected, setSelected] = useState<IssueItem>();
   const [detail, setDetail] = useState<IssueSessionsResult>();
+  // The dismissed filter `detail` was fetched under; the checkbox can change
+  // before its replacement arrives.
+  const [detailIncludesDismissed, setDetailIncludesDismissed] = useState(false);
   const [sessionOffset, setSessionOffset] = useState(0);
   const [sort, setSort] = useState("activity");
   const [issueSort, setIssueSort] = useState<IssueSort>("activity");
@@ -123,7 +126,9 @@ function IssueBrowser() {
           `/issues/sessions?${new URLSearchParams({ id: selected.id, offset: String(sessionOffset), sort, dismissed: dismissed ? "1" : "0", revision: String(revision) })}`,
         )
         .then((next) => {
-          if (!disposed) setDetail(next);
+          if (disposed) return;
+          setDetail(next);
+          setDetailIncludesDismissed(dismissed);
         })
         .catch(() => {
           if (!disposed) setError(t("issuesLoadError"));
@@ -511,7 +516,7 @@ function IssueBrowser() {
                 session={session}
                 unresolved={selected.unresolved}
                 busy={busy}
-                includeDismissed={dismissed}
+                includeDismissed={detailIncludesDismissed}
                 action={action}
               />
             ))}

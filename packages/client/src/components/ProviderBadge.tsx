@@ -1,4 +1,4 @@
-import type { ProviderName } from "@yep-anywhere/shared";
+import { displayModelId, type ProviderName } from "@yep-anywhere/shared";
 import { getIndicatorToneFromProcess } from "../lib/modelConfigIndicator";
 import { getModelIndicatorModelParts } from "../lib/modelIndicatorText";
 import {
@@ -110,7 +110,7 @@ export function ProviderBadge({
   const modelColorStyle =
     modelColor && modelColor !== color ? { color: modelColor } : undefined;
 
-  const fullTitle = effectiveModel ?? label;
+  const fullTitle = effectiveModel ? displayModelId(effectiveModel) : label;
 
   if (compact) {
     return (

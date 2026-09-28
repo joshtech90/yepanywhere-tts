@@ -51,6 +51,32 @@ export interface JobAdmission {
   source: string;
   priority: number;
 }
+/**
+ * Every state an index job row can hold. `indexing` is a claim that
+ * `requeueIndexing` returns to `queued` after a restart; `viewed` and `partial`
+ * record a window a browser already read, with no catalog source to acquire.
+ */
+export type IssueJobState =
+  | "queued"
+  | "indexing"
+  | "indexed"
+  | "partial"
+  | "viewed"
+  | "paused"
+  | "unsupported"
+  | "failed";
+/** Every state a tracker confirmation row can hold. */
+export type ConfirmationState =
+  | "pending"
+  | "confirmed"
+  | "rejected"
+  | "unreachable";
+/** A tracker's answer; `pending` is written only by the store itself. */
+export interface ConfirmationVerdict {
+  state: Exclude<ConfirmationState, "pending">;
+  title?: string;
+  detail?: string;
+}
 /** A tracker reference awaiting its one confirmation query. */
 export interface PendingConfirmation {
   projectId: string;
@@ -77,10 +103,10 @@ export class IssueStore {
       s.finalize();
     }
   }
-  private run(sql: string, ...values: SqliteValue[]): void {
+  private run(sql: string, ...values: SqliteValue[]): number {
     const s = this.database.prepare(sql);
     try {
-      s.run(...values);
+      return s.run(...values).changes;
     } finally {
       s.finalize();
     }
@@ -146,7 +172,8 @@ export class IssueStore {
   }
   // The operational tables below are driven by the index worker and the
   // confirmation worker. They are named after what the caller is deciding, so
-  // no column name, state string or upsert rule lives outside this file; the
+  // no column name or upsert rule lives outside this file, and a state a
+  // caller passes must be one of `IssueJobState` or `ConfirmationState`; the
   // workers own the policy, the store owns the statements.
   /** Return jobs a previous process left mid-acquisition to the queue. */
   requeueIndexing(): void {
@@ -217,7 +244,7 @@ export class IssueStore {
    * alone. An `error` is supplied only when the new state carries a reason;
    * omitting it keeps whatever reason the row already holds.
    */
-  markJob(sessionId: string, state: string, error?: string): void {
+  markJob(sessionId: string, state: IssueJobState, error?: string): void {
     if (error === undefined)
       this.run(
         "UPDATE issue_index_jobs SET state=? WHERE session_id=?",
@@ -240,7 +267,11 @@ export class IssueStore {
   recordJobBatch(
     sessionId: string,
     sourceVersion: string,
-    batch: { cursor: string; state: string; error: string | null },
+    batch: {
+      cursor: string;
+      state: Extract<IssueJobState, "queued" | "indexed" | "partial">;
+      error: string | null;
+    },
   ): void {
     this.run(
       "UPDATE issue_index_jobs SET cursor=?,state=?,error=?,updated_at=? WHERE session_id=? AND source_version=?",
@@ -269,21 +300,30 @@ export class IssueStore {
     ).map((row) => ({ state: String(row.state), count: Number(row.count) }));
   }
   /**
-   * Queue one reference to be asked about again. A reference first seen while
-   * confirmation was off holds no row, and the explicit request is what
-   * authorizes its first lookup, so this writes the row when none exists.
+   * Queue one captured reference to be asked about again, returning false when
+   * no evidence in that project holds that provider and key. A reference first
+   * seen while confirmation was off holds no row, and the explicit request is
+   * what authorizes its first lookup, so this writes the row when none exists;
+   * a key YA never captured writes nothing and is never sent to a tracker.
    */
   requeueConfirmation(
     projectId: string,
     provider: string,
     refKey: string,
-  ): void {
-    this.run(
-      `INSERT INTO issue_confirmations(project_id,provider,ref_key,state,checked_at) VALUES (?,?,?,'pending',0)
+  ): boolean {
+    return (
+      this.run(
+        `INSERT INTO issue_confirmations(project_id,provider,ref_key,state,checked_at)
+        SELECT ?,?,?,'pending',0 WHERE EXISTS (SELECT 1 FROM session_issue_evidence
+          WHERE project_id=? AND provider=? AND ref_key=?)
         ON CONFLICT(project_id,provider,ref_key) DO UPDATE SET state='pending'`,
-      projectId,
-      provider,
-      refKey,
+        projectId,
+        provider,
+        refKey,
+        projectId,
+        provider,
+        refKey,
+      ) > 0
     );
   }
   /** References still awaiting their one query, oldest key first. */
@@ -300,7 +340,7 @@ export class IssueStore {
   /** Store one tracker verdict, which stands until an explicit recheck. */
   recordConfirmation(
     reference: PendingConfirmation,
-    verdict: { state: string; title?: string; detail?: string },
+    verdict: ConfirmationVerdict,
   ): void {
     this.run(
       "UPDATE issue_confirmations SET state=?,title=?,detail=?,checked_at=? WHERE project_id=? AND provider=? AND ref_key=?",

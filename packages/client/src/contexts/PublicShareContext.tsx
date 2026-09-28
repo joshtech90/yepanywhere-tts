@@ -1,14 +1,5 @@
-import {
-  fromUrlProjectId,
-  isUrlProjectId,
-  parseLineColumn,
-} from "@yep-anywhere/shared";
 import { createContext, type ReactNode, useContext } from "react";
-import {
-  getProjectRelativePath,
-  normalizePathSeparators,
-  stripTrailingPathSeparators,
-} from "../lib/text";
+import { normalizePublicShareFilePath } from "../lib/publicShareFiles";
 
 export interface PublicShareContextValue {
   projectId: string | null;
@@ -41,75 +32,12 @@ export function usePublicShareContext(): PublicShareContextValue | null {
   return useContext(PublicShareContext);
 }
 
-function normalizeRelativePath(filePath: string): string | null {
-  const parts: string[] = [];
-  for (const part of filePath.replaceAll("\\", "/").split("/")) {
-    if (!part || part === ".") {
-      continue;
-    }
-    if (part === "..") {
-      if (parts.length === 0) {
-        return null;
-      }
-      parts.pop();
-      continue;
-    }
-    parts.push(part);
-  }
-  return parts.length > 0 ? parts.join("/") : null;
-}
-
-function getProjectRoot(projectId: string | null): string | null {
-  if (!projectId || !isUrlProjectId(projectId)) {
-    return null;
-  }
-  try {
-    return stripTrailingPathSeparators(fromUrlProjectId(projectId));
-  } catch {
-    return null;
-  }
-}
-
 function decodeURIComponentSafe(value: string): string | null {
   try {
     return decodeURIComponent(value);
   } catch {
     return null;
   }
-}
-
-function isLikelyManagedAttachmentPath(filePath: string): boolean {
-  return /(?:^|[\\/])projects\/[a-f0-9]{32}\/attachments(?:[\\/]|$)/i.test(
-    filePath,
-  );
-}
-
-export function normalizePublicShareFilePath(
-  filePath: string,
-  projectId: string | null,
-): { lineNumber?: number; path: string } | null {
-  const parsed = parseLineColumn(filePath);
-  const parsedPath = normalizePathSeparators(parsed.path);
-  if (isLikelyManagedAttachmentPath(parsedPath)) {
-    return { lineNumber: parsed.line, path: parsedPath };
-  }
-  const projectRoot = getProjectRoot(projectId);
-  const projectRelativePath = getProjectRelativePath(parsedPath, projectRoot);
-  if (projectRelativePath === ".") {
-    return null;
-  }
-  if (projectRelativePath !== null) {
-    const relativePath = normalizeRelativePath(projectRelativePath);
-    return relativePath
-      ? { lineNumber: parsed.line, path: relativePath }
-      : null;
-  }
-  if (parsedPath.startsWith("/") || /^[a-zA-Z]:\//.test(parsedPath)) {
-    return null;
-  }
-
-  const relativePath = normalizeRelativePath(parsedPath);
-  return relativePath ? { lineNumber: parsed.line, path: relativePath } : null;
 }
 
 export function buildPublicShareFileHref(
@@ -296,19 +224,6 @@ export function rewritePublicShareLocalAppHref(
     lineNumber: reference.lineNumber,
     viewMode: reference.viewMode,
   });
-}
-
-export function buildPublicShareRawFileApiPath(
-  context: PublicShareContextValue,
-  filePath: string,
-): string | null {
-  const normalized = normalizePublicShareFilePath(filePath, context.projectId);
-  if (!normalized) {
-    return null;
-  }
-  const params = new URLSearchParams({ path: normalized.path });
-  if (context.viewerId) params.set("viewerId", context.viewerId);
-  return `/public-api/shares/${encodeURIComponent(context.secret)}/files/raw?${params}`;
 }
 
 export function rewritePublicShareLocalAppLinks(

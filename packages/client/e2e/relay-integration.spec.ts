@@ -650,7 +650,7 @@ test.describe("Full Relay Integration", () => {
         new RegExp(`${relayAppPath("bang-commands")}$`),
       );
       await expect(
-        page.getByText("No local commands have been run yet."),
+        page.getByText("!! Command History", { exact: true }),
       ).toBeVisible({ timeout: 10_000 });
       await openSidebar.click();
       await expect(bangHistoryLink).toHaveClass(/\bactive\b/);

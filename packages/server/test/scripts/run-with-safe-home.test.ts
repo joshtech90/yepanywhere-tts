@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -23,7 +23,7 @@ describe("run-with-safe-home", () => {
         "--temporary-home",
         process.execPath,
         "-e",
-        "console.log(JSON.stringify({home:require('node:os').homedir(),HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE}))",
+        "console.log(JSON.stringify({home:require('node:os').homedir(),tmp:require('node:os').tmpdir(),HOME:process.env.HOME,USERPROFILE:process.env.USERPROFILE}))",
       ]);
       let stdout = "";
       let stderr = "";
@@ -40,12 +40,29 @@ describe("run-with-safe-home", () => {
     expect(result).toMatchObject({ code: 0, stderr: "" });
     const childEnvironment = JSON.parse(result.stdout) as {
       home: string;
+      tmp: string;
       HOME: string;
       USERPROFILE: string;
     };
     expect(childEnvironment.home).not.toBe(homedir());
     expect(childEnvironment.HOME).toBe(childEnvironment.home);
     expect(childEnvironment.USERPROFILE).toBe(childEnvironment.home);
+    expect(relative(childEnvironment.home, childEnvironment.tmp)).toBe(
+      "../tmp",
+    );
+    expect(relative(childEnvironment.tmp, childEnvironment.home)).toBe(
+      "../home",
+    );
+    if (process.platform !== "win32") {
+      // macOS rejects Unix socket paths over 104 bytes (including NUL).
+      const nestedSocket = join(
+        childEnvironment.tmp,
+        "managed-runner-socket-XXXXXX",
+        "provider.sock",
+      );
+      expect(Buffer.byteLength(nestedSocket)).toBeLessThan(104);
+    }
     expect(existsSync(childEnvironment.home)).toBe(false);
+    expect(existsSync(childEnvironment.tmp)).toBe(false);
   });
 });

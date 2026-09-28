@@ -7,6 +7,33 @@ Topic: backward-compat
 
 ## Decisions
 
+2026-09-27 `yep-sidebar-interactions:*` — replaced by
+`yep-sidebar-submissions:*`; the old key is removed, not migrated. It mixed
+session visits with sends, and the two cannot be told apart, so carrying it
+forward would keep a pre-change visit pinning its row. Losing old sends costs
+nothing lasting: the server's last human turn orders those sessions.
+Browser-local state only. See
+[sidebar session ordering](sidebar-session-ordering.md) § Storage and
+ownership.
+
+2026-09-27 draft envelope `pendingSend: true` — replaced by `pendingSendAt`,
+the submit's server-clock time, so a recovery copy can be discarded only on
+proof dated from its own send. A stored or sibling-tab marker without a time
+reads as an ordinary draft and is never discarded automatically; the worst
+case is one stale draft left visible. An older client ignores `pendingSendAt`
+the same way. Browser-local state only; no server contract changes. See
+[message control](message-control-steer-queue-btw-later-interrupt.md)
+§ Composer acknowledgement safety.
+
+2026-09-26 limited users — gate Settings → Users behind the new
+version-implied `limited-users` capability (ID 83, from 0.9.0) instead of
+probing `/api/users` for a 404. Released v0.9.0 and v0.9.1 carry the feature
+and infer the capability from their version; an older server previously got a
+toggle whose `limitedUsersEnabled` write it silently dropped, and now gets no
+toggle and no request. `GET /api/auth/status` gains an additive
+`limitedUsersEnabled` boolean; only the co-deployed local login page reads it,
+and a server without it keeps that page's Username field hidden.
+
 2026-09-07 Codex `/clone` — keep the existing route and response fields while
 using native provider forks. `messageCount` remains a conservative inherited
 prefix offset for older `/btw` clients, using `Number.MAX_SAFE_INTEGER` until
@@ -317,6 +344,25 @@ type, so a settings file saved before the removal and a hosted client still
 sending it both keep working; the status no longer reports it, and a client
 that read it sees the field absent, which it already had to tolerate.
 
+2026-09-26 session metadata `rewindRecords[].droppedThroughMessageId` — add
+the transcript's last row at rewind time as an optional record field, and
+group a bounded record's rows by file position alone. Records already on disk
+lack it and keep the old rule, rows stamped no later than the record's `at`,
+because no read of today's transcript can recover which rows existed when
+they were made; they keep that rule's clock-skew exposure. The client no
+longer computes membership, so no capability gates it: an older client sees
+the grouping the server serves and ignores the field.
+
+2026-09-26 `POST /api/artifacts` borrowed-grant reuse — a borrowing request
+may now return an existing live grant for the same entry file, with an
+additive `reused: true`, rather than a new grant; no capability gates it. Older
+servers omit the field and never reuse, so a new client revokes exactly as
+before against them. An older client against a new server can still revoke a
+reused grant it abandoned mid-request, breaking another viewer's frame of that
+file until it reopens; that narrow race was accepted over gating reuse, since
+unreused grants exhaust the 256-grant cap for every client. See
+[active content security](active-content-security.md).
+
 2026-09-19 persisted session-summary index version 5 — the on-disk shape is
 unchanged from 3 and 4; the number now also dates an index's entries, which is
 what ends the one-shot Claude empty-summary repair. Versions 3 and 4 are still
@@ -324,3 +370,12 @@ accepted and upgraded in place, so no installation rebuilds its indexes on
 upgrade. A downgrade to a build predating 5 does rebuild them: an older reader
 accepts only 3 and 4 and starts that scope fresh. Indexes are caches, so the
 cost is one cold parse per scope, not lost data.
+
+2026-09-25 `POST /api/file-edit/rebuild` approval — `register: true` now also
+requires `approved`, the proposal the editor displayed, and registers only when
+it equals the artifact's current descriptor. A client from before this change
+sends `register` alone and gets 409 instead of an approval, so it can still run
+an already-approved hook but cannot approve a new one until it updates. No
+fallback is kept: the old request approved whatever command was on disk when it
+arrived, which is the defect being closed. A new client against an older server
+still works, since the older schema ignores the extra field.

@@ -193,10 +193,55 @@ describe("ModelSwitchModal", () => {
     await waitFor(() => {
       // The mocked process has no thinking config, which the modal reads as
       // thinking off, so the guard sees off → on:max.
-      expect(guardEffortChange).toHaveBeenCalledWith("on:max", "off");
+      expect(guardEffortChange).toHaveBeenCalledWith("on:max", "off", {
+        changesModel: false,
+      });
     });
     expect(mockSetProcessConfig).not.toHaveBeenCalled();
     expect((saveButton as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it("tells the effort guard when the save also changes the model", async () => {
+    mockGetProcessModels.mockResolvedValue({
+      models: [
+        { id: "latest", name: "Latest" },
+        { id: "other", name: "Other" },
+      ],
+    });
+    const guardEffortChange = vi.fn().mockResolvedValue("apply");
+
+    render(
+      <ModelSwitchModal
+        processId="process-1"
+        sessionId="session-1"
+        currentModel="latest"
+        onModelChanged={vi.fn()}
+        guardEffortChange={guardEffortChange}
+        onClose={vi.fn()}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: /Other/ }));
+    fireEvent.click(
+      screen.getByRole("button", { name: /effortLevelMaxLabel/ }),
+    );
+    const saveButtons = await screen.findAllByRole("button", {
+      name: /modelSwitchSaveAll/,
+    });
+    const saveButton = saveButtons[0];
+    if (!saveButton) throw new Error("Expected a save button");
+    fireEvent.click(saveButton);
+
+    await waitFor(() => {
+      expect(mockSetProcessConfig).toHaveBeenCalledWith("process-1", {
+        model: "other",
+        thinking: "on:max",
+        showThinking: true,
+      });
+    });
+    expect(guardEffortChange).toHaveBeenCalledWith("on:max", "off", {
+      changesModel: true,
+    });
   });
 
   it("dismisses while an explicit save remains pending", async () => {

@@ -9,6 +9,8 @@ import {
   getGitAuthorIdentity,
   getGitAuthorPalette,
   resetGitAuthorPaletteForTests,
+  settleGitAuthorPaletteRefreshes,
+  warmGitAuthorPalette,
 } from "./authorPalette.js";
 import { getBlame, resetBlameCacheForTest } from "./blame.js";
 import { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
@@ -95,6 +97,34 @@ describe("Git author palette", () => {
     await expect(readFile(join(repo, ".yep"), "utf8")).rejects.toMatchObject({
       code: "ENOENT",
     });
+    expect(
+      JSON.parse(
+        await readFile(
+          storagePolicy.writePath(repo, "git-author-palette.json"),
+          "utf8",
+        ),
+      ).version,
+    ).toBe(1);
+  });
+
+  it("lets shutdown wait for a warm nobody awaited", async () => {
+    const repo = await makeRepo("ya-author-palette-settle-");
+    const dataDir = await makeRepo("ya-author-palette-settle-data-");
+    await git(repo, ["init"]);
+    await git(repo, ["config", "commit.gpgsign", "false"]);
+    await git(repo, ["config", "user.name", "First"]);
+    await git(repo, ["config", "user.email", "first@example.com"]);
+    await writeFile(join(repo, "file.txt"), "one\n");
+    await git(repo, ["add", "file.txt"]);
+    await git(repo, ["commit", "-m", "first"]);
+    const storagePolicy = new ProjectStoragePolicy({
+      dataDir,
+      getMode: () => "app-data",
+    });
+
+    void warmGitAuthorPalette(repo, storagePolicy);
+    await settleGitAuthorPaletteRefreshes();
+
     expect(
       JSON.parse(
         await readFile(

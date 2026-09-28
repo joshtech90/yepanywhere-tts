@@ -1,5 +1,9 @@
 import type { IssueSettings } from "@yep-anywhere/shared";
-import type { IssueStore, PendingConfirmation } from "./IssueStore.js";
+import type {
+  ConfirmationVerdict,
+  IssueStore,
+  PendingConfirmation,
+} from "./IssueStore.js";
 import type { IssueCredentials } from "./credentials.js";
 
 /**
@@ -17,18 +21,6 @@ import type { IssueCredentials } from "./credentials.js";
 /** Bounds one drain so a large first import cannot become a request storm. */
 const BATCH = 20;
 const TIMEOUT_MS = 10_000;
-
-export type ConfirmationState =
-  | "pending"
-  | "confirmed"
-  | "rejected"
-  | "unreachable";
-
-export interface ConfirmationVerdict {
-  state: Exclude<ConfirmationState, "pending">;
-  title?: string;
-  detail?: string;
-}
 
 export interface IssueConfirmerDeps {
   settings: () => IssueSettings;
@@ -138,9 +130,12 @@ export class IssueConfirmer {
     };
   }
 
-  /** Queue one reference to be asked about again, by explicit request only. */
-  recheck(projectId: string, provider: string, refKey: string): void {
-    this.store.requeueConfirmation(projectId, provider, refKey);
+  /**
+   * Queue one captured reference to be asked about again, by explicit request
+   * only. False means YA holds no such reference and nothing was queued.
+   */
+  recheck(projectId: string, provider: string, refKey: string): boolean {
+    return this.store.requeueConfirmation(projectId, provider, refKey);
   }
 
   /** Run a drain, coalescing concurrent callers into one pass. */

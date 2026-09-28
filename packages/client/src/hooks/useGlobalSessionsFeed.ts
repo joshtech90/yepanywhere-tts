@@ -27,6 +27,7 @@ import { acquireClientQueryBootstrapSlot } from "../lib/clientQueryBootstrap";
 import {
   createClientQueryKey,
   ensureClientQuery,
+  getClientQueryState,
   invalidateClientQuery,
   retainClientQuery,
 } from "../lib/clientQueryController";
@@ -55,14 +56,18 @@ import { useRetainedVersionInfo } from "./useVersion";
 
 const REFETCH_DEBOUNCE_MS = 500;
 /**
- * Reconnect is the only event the owner reacts to on its own. The rest arrive
- * through `useFileActivity` because this feed patches its collection from the
- * event before deciding whether a refetch is even needed, and that patch is
- * per-query bookkeeping rather than a revalidation.
+ * Reconnect and visibility restoration can both follow a window in which this
+ * client missed session events. The rest arrive through `useFileActivity`
+ * because this feed patches its collection from the event before deciding
+ * whether a refetch is even needed, and that patch is per-query bookkeeping
+ * rather than a revalidation. Adding, removing, or renaming a project changes
+ * rows' project names and the project filter without touching any session.
  */
 const GLOBAL_SESSIONS_REVALIDATE_EVENTS = [
   "reconnect",
+  "refresh",
   "session-catalog-updated",
+  "projects-changed",
 ] as const;
 const GLOBAL_SESSIONS_DEFAULT_LIMIT = 100;
 const GLOBAL_SESSIONS_STALE_TIME_MS = 30_000;
@@ -518,29 +523,31 @@ export function useGlobalSessionsFeed(
           },
         });
         // Retained rows carry their own stats, so only a complete read needs
-        // the separate stats request.
-        const statsMode =
+        // the separate stats request. Its mode is chained, not awaited here:
+        // a source change rejects both reads, and awaiting this one first
+        // would leave the sessions read's rejection unobserved.
+        const statsPromise =
           includeStats && !projectId
-            ? await resolveCollectionRequestMode(requestSourceKey, {
+            ? resolveCollectionRequestMode(requestSourceKey, {
                 searchQuery,
                 currentSourceKey: () => sourceKeyRef.current,
-              })
-            : null;
-        const statsPromise =
-          statsMode === "complete"
-            ? ensureClientQuery<{ stats: GlobalSessionStats }>({
-                sourceKey: requestSourceKey,
-                key: GLOBAL_SESSION_STATS_QUERY_KEY,
-                coverage: { includeStats: true },
-                staleTimeMs: GLOBAL_SESSION_STATS_STALE_TIME_MS,
-                force: fetchOptions.force,
-                fetcher: () => api.getGlobalSessionStats(),
-                applySnapshot: (data, context) => {
-                  updateGlobalSessionsAuxiliary(context.sourceKey, {
-                    stats: data.stats,
-                  });
-                },
-              })
+              }).then((statsMode) =>
+                statsMode === "complete"
+                  ? ensureClientQuery<{ stats: GlobalSessionStats }>({
+                      sourceKey: requestSourceKey,
+                      key: GLOBAL_SESSION_STATS_QUERY_KEY,
+                      coverage: { includeStats: true },
+                      staleTimeMs: GLOBAL_SESSION_STATS_STALE_TIME_MS,
+                      force: fetchOptions.force,
+                      fetcher: () => api.getGlobalSessionStats(),
+                      applySnapshot: (data, context) => {
+                        updateGlobalSessionsAuxiliary(context.sourceKey, {
+                          stats: data.stats,
+                        });
+                      },
+                    })
+                  : undefined,
+              )
             : Promise.resolve();
 
         await Promise.all([sessionsPromise, statsPromise]);
@@ -773,13 +780,22 @@ export function useGlobalSessionsFeed(
         slot.settle();
         return;
       }
-      void fetch().finally(() => slot.settle());
+      // A query with no other retainer may have been inactive while another
+      // device created sessions. Its time-based freshness only describes the
+      // last local request, not whether events were observed while inactive,
+      // so validate against the server's collection generation on activation.
+      // Later consumers of an already-retained query reuse its live coverage.
+      const firstRetainer =
+        getClientQueryState(sourceKey, queryKey)?.retainedCount === 1;
+      void fetch(firstRetainer ? { force: true } : undefined).finally(() =>
+        slot.settle(),
+      );
     });
     return () => {
       cancelled = true;
       slot.settle();
     };
-  }, [fetch, ready, sourceKey]);
+  }, [fetch, queryKey, ready, sourceKey]);
 
   const catalogState = catalogLoadState(
     queryState?.catalog,

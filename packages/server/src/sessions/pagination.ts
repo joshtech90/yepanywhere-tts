@@ -254,6 +254,36 @@ function isUserTurn(m: Message): boolean {
   );
 }
 
+function rewoundGroupIdOf(m: Message | undefined): string | undefined {
+  const groupId = m?.rewoundGroupId;
+  return typeof groupId === "string" ? groupId : undefined;
+}
+
+/**
+ * Where a window starting at `startIdx` must start instead so it never opens
+ * inside a rewound group. A group's rows follow its header, and a nested
+ * group's header shows only while every enclosing group is expanded, so the
+ * start backs up to the header of the outermost group enclosing that row
+ * (topics/session-rewind.md).
+ */
+function windowStartOutsideRewoundGroups(
+  messages: Message[],
+  startIdx: number,
+): number {
+  let start = startIdx;
+  let groupId = rewoundGroupIdOf(messages[startIdx]);
+  const seen = new Set<string>();
+  while (groupId !== undefined && !seen.has(groupId)) {
+    seen.add(groupId);
+    const firstIdx = messages.findIndex((m) => rewoundGroupIdOf(m) === groupId);
+    if (firstIdx < 0) break;
+    start = Math.min(start, firstIdx);
+    const parent = messages[firstIdx]?.rewoundParentGroupId;
+    groupId = typeof parent === "string" ? parent : undefined;
+  }
+  return start;
+}
+
 /**
  * Slice messages to return only the tail portion starting from the Nth-from-last
  * compact_boundary. The boundary message itself is included so the client sees
@@ -310,8 +340,10 @@ export function sliceAtCompactBoundaries(
   }
 
   // Slice starting from the Nth-from-last compact boundary (inclusive)
-  const sliceFromIdx =
-    compactIndices[compactIndices.length - tailCompactions] ?? 0;
+  const sliceFromIdx = windowStartOutsideRewoundGroups(
+    workingMessages,
+    compactIndices[compactIndices.length - tailCompactions] ?? 0,
+  );
   const slicedMessages = workingMessages.slice(sliceFromIdx);
   const firstId = slicedMessages[0]
     ? getMessageId(slicedMessages[0])
@@ -378,17 +410,7 @@ export function sliceAtUserTurnBoundary(
   } else if (totalUserTurns > tailTurns) {
     sliceFromIdx = userTurnIndices[totalUserTurns - tailTurns] ?? 0;
   }
-  // A window must not start inside a rewound group: the group's header row
-  // precedes its rows, and a headerless partial group has nothing to expand
-  // from. Back up to the header (topics/session-rewind.md).
-  const startGroup = (messages[sliceFromIdx] as { rewoundGroupId?: unknown })
-    ?.rewoundGroupId;
-  if (typeof startGroup === "string") {
-    const headerIdx = messages.findIndex(
-      (m) => (m as { rewoundGroupId?: unknown }).rewoundGroupId === startGroup,
-    );
-    if (headerIdx >= 0 && headerIdx < sliceFromIdx) sliceFromIdx = headerIdx;
-  }
+  sliceFromIdx = windowStartOutsideRewoundGroups(messages, sliceFromIdx);
 
   const slicedMessages = messages.slice(sliceFromIdx);
   const firstId = slicedMessages[0]

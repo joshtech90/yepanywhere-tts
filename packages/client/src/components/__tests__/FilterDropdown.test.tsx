@@ -22,6 +22,67 @@ function setViewportWidth(width: number) {
   });
 }
 
+function setViewportHeight(height: number) {
+  Object.defineProperty(window, "innerHeight", {
+    configurable: true,
+    writable: true,
+    value: height,
+  });
+}
+
+function rect(top: number, bottom: number): DOMRect {
+  return {
+    top,
+    bottom,
+    left: 0,
+    right: 300,
+    width: 300,
+    height: bottom - top,
+    x: 0,
+    y: top,
+    toJSON: () => ({}),
+  };
+}
+
+/**
+ * Lays out the trigger at the given rows, an optional clipping ancestor, and
+ * a panel whose unclamped content is `panelContentHeight` tall. jsdom has no
+ * layout, so these stand in for what the browser would measure.
+ */
+function mockPanelLayout({
+  trigger,
+  panelContentHeight,
+  clip,
+}: {
+  trigger: { top: number; bottom: number };
+  panelContentHeight: number;
+  clip?: { top: number; height: number };
+}) {
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(
+    function (this: Element) {
+      if (this.getAttribute("aria-haspopup") === "listbox") {
+        return rect(trigger.top, trigger.bottom);
+      }
+      if (clip && this.getAttribute("data-clip") === "true") {
+        return rect(clip.top, clip.top + clip.height);
+      }
+      return rect(0, 0);
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(
+    function (this: HTMLElement) {
+      return clip && this.getAttribute("data-clip") === "true"
+        ? clip.height
+        : 0;
+    },
+  );
+  vi.spyOn(HTMLElement.prototype, "scrollHeight", "get").mockImplementation(
+    function (this: HTMLElement) {
+      return this.getAttribute("role") === "dialog" ? panelContentHeight : 0;
+    },
+  );
+}
+
 function openTrigger() {
   fireEvent.click(screen.getByRole("button", { name: "filterByLabel" }));
 }
@@ -29,6 +90,8 @@ function openTrigger() {
 describe("FilterDropdown", () => {
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
+    setViewportHeight(768);
     setViewportWidth(DESKTOP_WIDTH);
     document.body.style.overflow = "";
   });
@@ -209,6 +272,101 @@ describe("FilterDropdown", () => {
     expect(document.body.contains(sheet)).toBe(true);
     expect(sheet.className).toContain(styles.sheet);
     expect(document.body.style.overflow).toBe("hidden");
+  });
+
+  it("caps the desktop panel to the room below the trigger", () => {
+    setViewportHeight(700);
+    mockPanelLayout({
+      trigger: { top: 100, bottom: 130 },
+      panelContentHeight: 900,
+    });
+    render(
+      <FilterDropdown
+        label="Models"
+        options={[{ value: "fable", label: "Fable" }]}
+        selected={[]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    openTrigger();
+    const panel = screen.getByRole("dialog");
+
+    expect(panel.className).not.toContain(styles.above);
+    expect(
+      panel.style.getPropertyValue("--filter-dropdown-available-height"),
+    ).toBe("562px");
+  });
+
+  it("opens upward when a low trigger has more room above", () => {
+    setViewportHeight(700);
+    mockPanelLayout({
+      trigger: { top: 560, bottom: 590 },
+      panelContentHeight: 400,
+    });
+    render(
+      <FilterDropdown
+        label="Models"
+        options={[{ value: "fable", label: "Fable" }]}
+        selected={[]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    openTrigger();
+    const panel = screen.getByRole("dialog");
+
+    expect(panel.className).toContain(styles.above);
+    expect(
+      panel.style.getPropertyValue("--filter-dropdown-available-height"),
+    ).toBe("552px");
+  });
+
+  it("stays below a low trigger when its content fits there", () => {
+    setViewportHeight(700);
+    mockPanelLayout({
+      trigger: { top: 560, bottom: 590 },
+      panelContentHeight: 80,
+    });
+    render(
+      <FilterDropdown
+        label="Models"
+        options={[{ value: "fable", label: "Fable" }]}
+        selected={[]}
+        onChange={vi.fn()}
+      />,
+    );
+
+    openTrigger();
+
+    expect(screen.getByRole("dialog").className).not.toContain(styles.above);
+  });
+
+  it("measures room against a scrolling ancestor, not only the window", () => {
+    setViewportHeight(900);
+    mockPanelLayout({
+      trigger: { top: 150, bottom: 180 },
+      panelContentHeight: 1000,
+      clip: { top: 100, height: 400 },
+    });
+    render(
+      <div data-clip="true" style={{ overflowY: "auto" }}>
+        <FilterDropdown
+          label="Models"
+          options={[{ value: "fable", label: "Fable" }]}
+          selected={[]}
+          onChange={vi.fn()}
+        />
+      </div>,
+    );
+
+    openTrigger();
+    const panel = screen.getByRole("dialog");
+
+    expect(panel.className).not.toContain(styles.above);
+    expect(
+      panel.style.getPropertyValue("--filter-dropdown-available-height"),
+    ).toBe("312px");
   });
 
   it("applies the full-width variant to the container and trigger", () => {

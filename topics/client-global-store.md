@@ -152,6 +152,13 @@ anything that can change a rendered row, including metadata, unread state, and
 ownership, which the catalog's row-oriented generation does not cover. Do not
 conflate the two or persist one under the other's key.
 
+A collection feed validates when its first client retainer becomes active and
+when a connected client returns from background visibility. Local time-based
+freshness cannot prove that the client observed events while it was inactive;
+the conditional server generation makes this healing check cheap when the
+collection is unchanged. Additional consumers of an already-retained query
+reuse that query's live coverage rather than issuing their own activation read.
+
 Offering an accepted generation claims the client still holds those rows, which
 binds it to coverage and not only to content. A consumer widening its window
 past the rows it retains needs rows; `unchanged` would answer it truthfully and

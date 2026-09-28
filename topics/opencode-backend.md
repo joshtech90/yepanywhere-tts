@@ -431,6 +431,37 @@ unless the user sets the toggle to "on". That preference is browser-local under
 reloads in the same browser profile; there is no client install-id scoping or
 async `/api/server-info` dependency in the settings path.
 
+## Live reply streaming and the unfinished durable row
+
+OpenCode writes an assistant row to `opencode.db` when a step starts and fills
+it in place until it records `time.completed`. YA's other transcripts append
+immutable rows, and the client relies on that: a durable row wins over a live
+row with the same id, and catch-up reads only rows after the last known id.
+Issue #115 was the result: a view opened mid-turn held the partial row, dropped
+the live reply, and never re-read the completed row until a reload.
+
+- The prompt `POST /session/:id/message` resolves only after the turn ends, so
+  the adapter drains `/event` concurrently with it. The POST body is still the
+  fallback reply when the event stream carries no assistant content.
+- Live output republishes each assistant message's reasoning and text so far
+  under the durable message id, marked `_isStreaming` (the Codex item
+  pattern). It commits once, when `message.updated` reports `time.completed`,
+  or at `session.idle` as a backstop. Committing when every part seen so far has
+  ended is wrong: that is also true between parts, and the commit's delayed
+  augmented copy then overwrites newer streamed text.
+- While YA's own process is mid-turn (`in-turn` or `waiting-input`), detail
+  reads omit a trailing assistant row without `time.completed`. The stream owns
+  that row, and the catch-up cursor stays before it so the completed row is
+  returned after idle. Other readers keep it: a killed `opencode serve` never
+  completes its row, and its partial output must stay visible.
+
+Reproduce with a scripted OpenAI-compatible server as an OpenCode custom
+provider (`npm: "@ai-sdk/openai-compatible"`, `options.baseURL`), with
+`OPENCODE_CONFIG` and isolated `XDG_*` directories so no account or model is
+needed. Pause between reasoning and text, and open the session during the
+pause. Use a git repository as the project: see
+[the global-project gap](../gaps/opencode-non-git-sessions-unreadable.md).
+
 ## Gaps To Close
 
 Status tags added 2026-06-21 (DONE = landed in that review). These statuses and

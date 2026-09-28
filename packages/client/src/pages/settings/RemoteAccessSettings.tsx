@@ -171,7 +171,7 @@ interface HostAwakeSettingsProps {
   onUpdate: (updates: {
     hostAwakeMode?: "off" | "idle";
     hostAwakeBatteryFloorPercent?: number;
-  }) => Promise<void>;
+  }) => Promise<unknown>;
   onRefresh: () => Promise<void>;
 }
 
