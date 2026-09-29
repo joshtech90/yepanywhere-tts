@@ -97,10 +97,7 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     const waitMs = loginThrottle.retryAfterMs(key);
     if (waitMs > 0) {
       c.header("Retry-After", String(Math.ceil(waitMs / 1000)));
-      return c.json(
-        { error: "Too many failed logins. Try again later." },
-        429,
-      );
+      return c.json({ error: "Too many failed logins. Try again later." }, 429);
     }
     await next();
     if (c.res.status === 401) loginThrottle.recordFailure(key, policy);
