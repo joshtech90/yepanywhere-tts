@@ -55,6 +55,38 @@ export interface AuthState {
 
 const CURRENT_VERSION = 2;
 
+/**
+ * A file that parses but does not look like auth state must not be read as
+ * "auth off": only known versions with well-typed fields are accepted.
+ */
+function isValidAuthState(value: unknown): value is AuthState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const state = value as Record<string, unknown>;
+  if (state.version !== 1 && state.version !== CURRENT_VERSION) return false;
+  if (state.enabled !== undefined && typeof state.enabled !== "boolean") {
+    return false;
+  }
+  if (
+    state.localhostOpen !== undefined &&
+    typeof state.localhostOpen !== "boolean"
+  ) {
+    return false;
+  }
+  if (state.account !== undefined) {
+    const account = state.account as Record<string, unknown> | null;
+    if (!account || typeof account.passwordHash !== "string") return false;
+  }
+  if (
+    state.version === CURRENT_VERSION &&
+    (!state.sessions ||
+      typeof state.sessions !== "object" ||
+      Array.isArray(state.sessions))
+  ) {
+    return false;
+  }
+  return true;
+}
+
 function sessionVerifier(sessionId: string): string {
   return crypto
     .createHash("sha256")
@@ -109,7 +141,10 @@ export class AuthService {
       );
 
       const content = await fs.readFile(this.filePath, "utf-8");
-      const parsed = JSON.parse(content) as AuthState;
+      const parsed: unknown = JSON.parse(content);
+      if (!isValidAuthState(parsed)) {
+        throw new Error("auth.json has an unknown or malformed shape");
+      }
 
       if (parsed.version === CURRENT_VERSION) {
         this.state = parsed;
@@ -120,14 +155,6 @@ export class AuthService {
           version: CURRENT_VERSION,
           enabled: parsed.enabled,
           localhostOpen: parsed.localhostOpen,
-          account: parsed.account,
-          sessions: {},
-        };
-        await this.save();
-      } else {
-        // Future: handle migrations
-        this.state = {
-          version: CURRENT_VERSION,
           account: parsed.account,
           sessions: {},
         };
@@ -209,6 +236,9 @@ export class AuthService {
    */
   async enableAuth(password: string): Promise<boolean> {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
+    // `--setup-auth` is the documented repair for an unreadable auth.json:
+    // it writes a complete fresh state, so saving is safe again.
+    this.loadFailed = false;
     this.state.enabled = true;
     this.state.account = {
       passwordHash,
