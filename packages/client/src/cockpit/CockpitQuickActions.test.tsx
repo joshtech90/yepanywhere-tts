@@ -4,6 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   writeClipboardText: vi.fn(async () => true),
+  handoff: {
+    phase: "idle" as "idle" | "summarizing" | "starting" | "error",
+    error: null,
+    start: vi.fn(async () => {}),
+    reset: vi.fn(),
+  },
 }));
 
 vi.mock("../lib/clipboard", () => ({
@@ -11,6 +17,18 @@ vi.mock("../lib/clipboard", () => ({
 }));
 vi.mock("../contexts/SourceRuntimeContext", () => ({
   useCurrentSourceRuntime: () => ({ sourceKey: "local", transport: {} }),
+}));
+vi.mock("../hooks/useModelSettings", () => ({
+  useModelSettings: () => ({}),
+}));
+vi.mock("../hooks/useProviders", () => ({
+  useProviders: () => ({ providers: [] }),
+}));
+vi.mock("../hooks/useServerSettings", () => ({
+  useServerSettings: () => ({ settings: null }),
+}));
+vi.mock("./useCockpitHandoff", () => ({
+  useCockpitHandoff: () => mocks.handoff,
 }));
 
 import { I18nProvider } from "../i18n";
@@ -23,15 +41,18 @@ const PROJECT_ID = btoa("/tmp/yep-cockpit-test")
   .replace(/\//g, "_")
   .replace(/=+$/, "");
 
-function renderActions(busy: boolean) {
+function actionsTree(
+  busy: boolean,
+  processState: CockpitComposerSessionPort["processState"] = "idle",
+) {
   const port = {
     actualSessionId: "24e22f93-9d63-44d6-b237-6d765a2b8346",
     permissionMode: "default",
-    processState: "idle",
+    processState,
     session: { provider: "claude" },
     status: { owner: "none" },
   } as unknown as CockpitComposerSessionPort;
-  return render(
+  return (
     <MemoryRouter>
       <I18nProvider>
         <CockpitQuickActions
@@ -44,14 +65,20 @@ function renderActions(busy: boolean) {
           sessionTitle="Test"
         />
       </I18nProvider>
-    </MemoryRouter>,
+    </MemoryRouter>
   );
+}
+
+function renderActions(busy: boolean) {
+  return render(actionsTree(busy));
 }
 
 afterEach(cleanup);
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
   mocks.writeClipboardText.mockClear();
+  mocks.handoff.phase = "idle";
+  mocks.handoff.reset.mockClear();
 });
 
 describe("Cockpit quick actions", () => {
@@ -79,5 +106,32 @@ describe("Cockpit quick actions", () => {
     }) as HTMLButtonElement;
     expect(handoff.disabled).toBe(true);
     expect(handoff.textContent).toContain("no longer working");
+  });
+
+  it("keeps Cancel reachable when the session asks for an approval mid-handoff", () => {
+    const { rerender } = renderActions(false);
+    fireEvent.click(screen.getByRole("button", { name: "Quick actions" }));
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: /New session with handoff/ }),
+    );
+    const cancel = () =>
+      // jsdom leaves the modal <dialog> closed, so its content counts as hidden.
+      screen.getByRole("button", {
+        hidden: true,
+        name: "Cancel",
+      }) as HTMLButtonElement;
+
+    mocks.handoff.phase = "summarizing";
+    rerender(actionsTree(false, "in-turn"));
+    expect(cancel().disabled).toBe(true);
+
+    rerender(actionsTree(false, "waiting-input"));
+    expect(screen.getByText(/waiting for an approval/)).toBeDefined();
+    expect(cancel().disabled).toBe(false);
+
+    mocks.handoff.reset.mockClear(); // opening the dialog resets it, too
+    fireEvent.click(cancel());
+    expect(mocks.handoff.reset).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/waiting for an approval/)).toBeNull();
   });
 });

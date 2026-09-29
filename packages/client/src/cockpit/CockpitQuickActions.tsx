@@ -210,6 +210,15 @@ function HandoffDialog({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const running =
     handoff.phase === "summarizing" || handoff.phase === "starting";
+  // An approval the session asks for mid-handoff sits behind this modal, so
+  // Cancel must stay reachable then; cancelling abandons the handoff.
+  const waitingApproval =
+    handoff.phase === "summarizing" && port.processState === "waiting-input";
+  const canCancel = !running || waitingApproval;
+  const cancel = () => {
+    handoff.reset();
+    onClose();
+  };
 
   // Start from the session's own provider and model; the rest from the saved
   // new-session defaults.
@@ -285,7 +294,7 @@ function HandoffDialog({
       className={styles.dialog}
       onCancel={(event) => {
         event.preventDefault();
-        if (!running) onClose();
+        if (canCancel) cancel();
       }}
       ref={dialogRef}
     >
@@ -340,7 +349,9 @@ function HandoffDialog({
         <p className={styles.progress} role="status">
           <span aria-hidden="true" className={styles.spinner} />
           {handoff.phase === "summarizing"
-            ? t("cockpitHandoffSummarizing")
+            ? waitingApproval
+              ? t("cockpitHandoffWaitingApproval")
+              : t("cockpitHandoffSummarizing")
             : t("cockpitHandoffStarting")}
         </p>
       )}
@@ -353,8 +364,8 @@ function HandoffDialog({
       <div className={styles.actions}>
         <button
           className={styles.secondary}
-          disabled={running}
-          onClick={onClose}
+          disabled={!canCancel}
+          onClick={cancel}
           type="button"
         >
           {t("cockpitSessionMenuCancel")}

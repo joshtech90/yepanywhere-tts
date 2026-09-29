@@ -221,4 +221,56 @@ describe("useCockpitHandoff", () => {
     });
     expect(mocks.send).toHaveBeenCalledTimes(1);
   });
+
+  it("lets a pending approval cancel the handoff without a late new session", async () => {
+    let props = {
+      basePath: "",
+      entries: [] as CockpitTranscriptEntry[],
+      port: port("idle"),
+      projectId: "project-1",
+      sourceTitle: "Test",
+    };
+    const { result, rerender } = renderHook(() => useCockpitHandoff(props), {
+      wrapper,
+    });
+    await act(() => result.current.start(choices));
+    props = { ...props, port: port("waiting-input") };
+    rerender();
+    expect(result.current.phase).toBe("summarizing");
+
+    act(() => result.current.reset());
+    expect(result.current.phase).toBe("idle");
+
+    // The approved turn later finishes with a complete handoff answer.
+    props = {
+      ...props,
+      port: port("idle"),
+      entries: [
+        { kind: "user", key: "u", text: COCKPIT_HANDOFF_PROMPT },
+        {
+          kind: "assistant",
+          key: "a",
+          text: [
+            {
+              id: "t",
+              text: "1. Ziel: Tastatur",
+              isStreaming: false,
+              abortedMidStream: false,
+            },
+          ],
+          thinking: [],
+          spokenText: "1. Ziel: Tastatur",
+          isStreaming: false,
+        },
+      ],
+    };
+    await act(async () => {
+      rerender();
+    });
+    expect(mocks.startSession).not.toHaveBeenCalled();
+
+    // A fresh handoff can be started afterwards.
+    await act(() => result.current.start(choices));
+    expect(mocks.send).toHaveBeenCalledTimes(2);
+  });
 });

@@ -143,6 +143,7 @@
   "cockpitHandoffStart": "Übergabe starten",
   "cockpitHandoffSummarizing": "Die Sitzung schreibt die Übergabe …",
   "cockpitHandoffStarting": "Neue Sitzung wird gestartet …",
+  "cockpitHandoffWaitingApproval": "Die Sitzung wartet auf eine Freigabe. Mit Abbrechen kommst du dorthin; die Übergabe entfällt dann.",
   "cockpitHandoffNoSummary": "Die Sitzung hat keine Übergabe geliefert. Bitte erneut versuchen.",
   "cockpitHandoffSendFailed": "Die Anfrage an die Sitzung ist gescheitert: {message}",
   "cockpitHandoffNewTitle": "Fortsetzung: {title}",

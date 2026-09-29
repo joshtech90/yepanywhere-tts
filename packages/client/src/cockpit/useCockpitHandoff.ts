@@ -49,6 +49,8 @@ export function useCockpitHandoff({
   const runtime = useCurrentSourceRuntime();
   const navigate = useNavigate();
   const [phase, setPhase] = useState<CockpitHandoffPhase>("idle");
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
   const [error, setError] = useState<string | null>(null);
   const choicesRef = useRef<CockpitLaunchChoices | null>(null);
   const sawTurnRef = useRef(false);
@@ -202,7 +204,12 @@ export function useCockpitHandoff({
   }, [turnEnded]);
 
   const reset = useCallback(() => {
-    if (inFlightRef.current) return;
+    // Once the new session is being created there is nothing left to cancel.
+    if (phaseRef.current === "starting") return;
+    inFlightRef.current = false;
+    choicesRef.current = null;
+    sawTurnRef.current = false;
+    setWaitExpired(false);
     setError(null);
     setPhase("idle");
   }, []);

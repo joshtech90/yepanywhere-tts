@@ -550,6 +550,7 @@
   "cockpitHandoffStart": "Start handoff",
   "cockpitHandoffSummarizing": "The session is writing the handoff…",
   "cockpitHandoffStarting": "Starting the new session…",
+  "cockpitHandoffWaitingApproval": "The session is waiting for an approval. Cancel to answer it; the handoff is then abandoned.",
   "cockpitHandoffNoSummary": "The session did not return a handoff. Please try again.",
   "cockpitHandoffSendFailed": "Sending to the session failed: {message}",
   "cockpitHandoffNewTitle": "Continued: {title}",
