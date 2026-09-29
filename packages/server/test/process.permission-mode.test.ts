@@ -5,6 +5,7 @@ import {
   createMockIterator,
 } from "./process.test-support.js";
 import type { ProcessEvent, UrlProjectId } from "./process.test-support.js";
+import { setStandingPermissionModeSource } from "../src/supervisor/standingPermissionMode.js";
 
 describe("Process", () => {
   describe("permission mode", () => {
@@ -84,6 +85,54 @@ describe("Process", () => {
         { type: "mode-applied", mode: "default" },
         { type: "mode-applied", mode: "bypassPermissions" },
       ]);
+    });
+
+    it("never downgrades below a standing bypass, at start or on change", async () => {
+      setStandingPermissionModeSource(() => "bypassPermissions");
+      try {
+        const process = new Process(createMockIterator([]), {
+          projectPath: "/test",
+          projectId: "proj-1" as UrlProjectId,
+          sessionId: "sess-standing",
+          provider: "claude",
+          idleTimeoutMs: 100,
+          permissionMode: "default",
+        });
+        expect(process.permissionMode).toBe("bypassPermissions");
+
+        process.setPermissionMode("default");
+        expect(process.permissionMode).toBe("bypassPermissions");
+
+        process.setPermissionMode("plan");
+        expect(process.permissionMode).toBe("plan");
+      } finally {
+        setStandingPermissionModeSource(undefined);
+      }
+    });
+
+    it("auto-approves tools when the standing bypass is switched on later", async () => {
+      let standing: "bypassPermissions" | undefined;
+      setStandingPermissionModeSource(() => standing);
+      try {
+        const process = new Process(createMockIterator([]), {
+          projectPath: "/test",
+          projectId: "proj-1" as UrlProjectId,
+          sessionId: "sess-standing-later",
+          provider: "claude",
+          idleTimeoutMs: 100,
+        });
+        expect(process.permissionMode).toBe("default");
+        standing = "bypassPermissions";
+        process.setPermissionMode("default");
+        const result = await process.handleToolApproval(
+          "mcp__chromium__new_page",
+          {},
+          { signal: new AbortController().signal },
+        );
+        expect(result.behavior).toBe("allow");
+      } finally {
+        setStandingPermissionModeSource(undefined);
+      }
     });
 
     it("initializes modeVersion to 0", async () => {
