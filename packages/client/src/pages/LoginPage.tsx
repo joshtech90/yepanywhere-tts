@@ -32,12 +32,12 @@ export function LoginPage() {
 
   // Get the page they were trying to access before being redirected
   const from =
-    (location.state as { from?: string } | null)?.from ?? "/projects";
+    (location.state as { from?: string } | null)?.from ?? "/cockpit";
 
   // If auth is not enabled or disabled by env, redirect away from login page
   useEffect(() => {
     if (!isLoading && (!authEnabled || authDisabledByEnv)) {
-      navigate("/projects", { replace: true });
+      navigate("/cockpit", { replace: true });
     }
   }, [isLoading, authEnabled, authDisabledByEnv, navigate]);
 

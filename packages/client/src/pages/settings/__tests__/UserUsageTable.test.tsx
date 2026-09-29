@@ -111,7 +111,7 @@ describe("UserUsageTable", () => {
       "4h 25m",
       "8",
       "141",
-      "4,913",
+      (4913).toLocaleString(),
       "12.0k",
     ]);
   });
@@ -133,7 +133,7 @@ describe("UserUsageTable", () => {
   it("shows a model's output-token equivalent and dollars in columns", () => {
     renderTable(report());
     expect(rowCells(OWNER_BY_MODEL, "opus")).toEqual([
-      "2,400",
+      (2400).toLocaleString(),
       "$0.06",
       "12.0k",
     ]);
@@ -146,7 +146,7 @@ describe("UserUsageTable", () => {
     renderTable(
       report({ users: [{ username: null, total: served, lastWeek: served }] }),
     );
-    expect(rowCells(OWNER_BY_MODEL, "opus-5-5")[0]).toBe("2,400");
+    expect(rowCells(OWNER_BY_MODEL, "opus-5-5")[0]).toBe((2400).toLocaleString());
   });
 
   it("marks a figure the report does not have instead of omitting it", () => {
@@ -202,7 +202,7 @@ describe("UserUsageTable", () => {
 describe("formatTokenCount", () => {
   it("is exact below ten thousand and abbreviated above", () => {
     expect(formatTokenCount(0)).toBe("0");
-    expect(formatTokenCount(9999)).toBe("9,999");
+    expect(formatTokenCount(9999)).toBe((9999).toLocaleString());
     expect(formatTokenCount(12_345)).toBe("12.3k");
     expect(formatTokenCount(2_500_000)).toBe("2.5M");
   });

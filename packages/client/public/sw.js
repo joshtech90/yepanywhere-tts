@@ -640,7 +640,9 @@ async function openSession(sessionId, projectId) {
   // (absolute paths like /foo would ignore the scope's path prefix like /remote/)
   let path = "./";
   if (sessionId && projectId) {
-    path = `./projects/${encodeURIComponent(projectId)}/sessions/${sessionId}`;
+    // The Cockpit is the default surface; its session route mirrors the
+    // classic one under ./cockpit/.
+    path = `./cockpit/projects/${encodeURIComponent(projectId)}/sessions/${sessionId}`;
   }
   return openAppPath(path, {
     sessionId,

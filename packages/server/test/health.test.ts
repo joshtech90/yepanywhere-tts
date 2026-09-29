@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { app } from "../src/app.js";
+import { countBusyProcesses } from "../src/routes/health.js";
 import { MockClaudeSDK, MockServerClaudeProvider } from "../src/sdk/mock.js";
 import { createApp } from "./setup/create-app.js";
 
@@ -57,5 +58,24 @@ describe("GET /health", () => {
 
     expect(res.status).toBe(200);
     await expect(res.json()).resolves.toMatchObject({ providers: [] });
+  });
+});
+
+describe("GET /health/activity", () => {
+  it("reports no busy sessions on a fresh server", async () => {
+    const { app } = createApp({ sdk: new MockClaudeSDK() });
+    const res = await app.request("/health/activity");
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ inTurn: 0, waitingInput: 0, busy: 0 });
+  });
+
+  it("counts turns and pending input but not idle or ended sessions", () => {
+    const states = ["in-turn", "waiting-input", "idle", "terminated", "in-turn"];
+    const counts = countBusyProcesses({
+      getAllProcesses: () => states.map((type) => ({ state: { type } })),
+    });
+
+    expect(counts).toEqual({ inTurn: 2, waitingInput: 1, busy: 3 });
   });
 });

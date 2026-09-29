@@ -196,7 +196,7 @@ import { ReviewCaptureService } from "./review/ReviewCaptureService.js";
 import { ReviewCommentService } from "./review/ReviewCommentService.js";
 import { ReviewResponseObserver } from "./review/ReviewResponseObserver.js";
 import { createSupervisorReviewLauncher } from "./review/reviewSessionLauncher.js";
-import { health } from "./routes/health.js";
+import { countBusyProcesses, health } from "./routes/health.js";
 import { createInboxRoutes } from "./routes/inbox.js";
 import { createNetworkBindingRoutes } from "./routes/network-binding.js";
 import { createOnboardingRoutes } from "./routes/onboarding.js";
@@ -2075,6 +2075,9 @@ export function createApp(options: AppOptions): AppResult {
   app.use("/health", corsMiddleware);
   app.use("/health/*", corsMiddleware);
   app.route("/health", health);
+  // Counts only, no session details: lets the rebuild watcher on each host
+  // restart the server only while no session is mid-turn or awaiting input.
+  app.get("/health/activity", (c) => c.json(countBusyProcesses(supervisor)));
 
   // Version check (outside /api for easy access)
   app.route(
