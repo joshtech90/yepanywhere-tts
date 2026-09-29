@@ -8,6 +8,15 @@
 set -e
 cd "$(dirname "$0")"
 
+# Den Dienst aus dem festen Release-Ordner starten, den
+# "AI Worker/scripts/yep_nachbau.py" baut und testet (29.09.2026): Mac und
+# aihub fahren so denselben Stand, und Arbeit im Repo beruehrt den laufenden
+# Dienst nicht. Ohne Release laeuft er wie frueher aus dem Repo.
+RELEASE="$HOME/.local/share/yep-release/current"
+if [ -f "$RELEASE/.yep-release" ] && [ "$(pwd -P)" != "$(cd "$RELEASE" && pwd -P)" ]; then
+  exec /bin/zsh "$RELEASE/yep-server-headless.sh"
+fi
+
 PORT="${PORT:-3400}"
 DATA_DIR="$HOME/.yep-anywhere"
 JSON_QUELLE="/Users/joscha/Documents/Google Cloud API/Google Cloud JSON joschasgemini modular-glider-469107-a0-98936530d5fb.json"
@@ -76,7 +85,7 @@ fi
 # Nur Warnungen ins launchd-Protokoll: mit INFO wuchs es auf ueber 200 MB.
 # Beim Start wird ein zu grosses Protokoll geleert (launchd rotiert nicht).
 export LOG_LEVEL="${LOG_LEVEL:-warn}"
-for LOGDATEI in .memory/yep-launchd.out.log .memory/yep-launchd.err.log; do
+for LOGDATEI in "$HOME/Projects/yepanywhere/.memory/yep-launchd.out.log" "$HOME/Projects/yepanywhere/.memory/yep-launchd.err.log"; do
   if [ -f "$LOGDATEI" ] && [ "$(wc -c < "$LOGDATEI")" -gt 52428800 ]; then
     : > "$LOGDATEI"
   fi

@@ -647,32 +647,30 @@ async function openSession(sessionId, projectId) {
   return openAppPath(path, {
     sessionId,
     projectId,
-    matchClient: (client) => sessionId && client.url.includes(sessionId),
+    // Only a Cockpit tab counts: a classic tab would keep the old UI.
+    matchClient: (client) =>
+      sessionId && isCockpitUrl(client.url) && client.url.includes(sessionId),
   });
 }
 
+// The Cockpit is the default surface and has no project page; project and
+// project-list notifications open (or focus) the Cockpit overview.
 async function openProject(projectId) {
-  const path = projectId
-    ? `./projects?project=${encodeURIComponent(projectId)}`
-    : "./projects";
-  return openAppPath(path, {
+  return openAppPath("./cockpit", {
     projectId,
-    matchClient: (client) =>
-      isProjectsPageUrl(client.url) ||
-      (projectId &&
-        client.url.includes(`project=${encodeURIComponent(projectId)}`)),
+    matchClient: (client) => isCockpitUrl(client.url),
   });
 }
 
 async function openProjects() {
-  return openAppPath("./projects", {
-    matchClient: (client) => isProjectsPageUrl(client.url),
+  return openAppPath("./cockpit", {
+    matchClient: (client) => isCockpitUrl(client.url),
   });
 }
 
-function isProjectsPageUrl(url) {
+function isCockpitUrl(url) {
   try {
-    return new URL(url).pathname.endsWith("/projects");
+    return new URL(url).pathname.includes("/cockpit");
   } catch {
     return false;
   }
