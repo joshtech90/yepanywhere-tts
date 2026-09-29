@@ -7,6 +7,8 @@ import type { PermissionMode } from "@yep-anywhere/shared";
  * back to asking for approvals (Joscha 29.09.2026). Explicitly chosen other
  * modes (plan, acceptEdits, auto) stay deliberate choices.
  */
+// One source per server process: each host runs exactly one YA server, whose
+// app registers its settings here.
 let standingSource: (() => PermissionMode | undefined) | undefined;
 
 export function setStandingPermissionModeSource(

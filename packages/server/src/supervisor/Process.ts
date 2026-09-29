@@ -3656,10 +3656,15 @@ export class Process {
         composeAnchor,
       ),
     );
-    return {
-      ...prepared,
-      mode: applyStandingPermissionMode(prepared.mode ?? this._permissionMode),
-    };
+    const mode = applyStandingPermissionMode(
+      prepared.mode ?? this._permissionMode,
+    );
+    // A standing bypass switched on after this process started still has to
+    // reach the approval bridge and the UI, not just this one message.
+    if (mode !== this._permissionMode && prepared.mode === undefined) {
+      this.setPermissionMode(mode);
+    }
+    return { ...prepared, mode };
   }
 
   private withProviderDeliveryPriority(message: UserMessage): UserMessage {
