@@ -194,7 +194,9 @@ export function useCockpitComposer(
       // first never counts as a stall.
       const armStallTimer = () => {
         clearTimeout(stallTimer);
+        if (uploadsRef.current.get(attachment.id) !== controller) return;
         stallTimer = setTimeout(() => {
+          if (uploadsRef.current.get(attachment.id) !== controller) return;
           // Fail right away: the shared transport may not settle at all
           // while the host sleeps.
           update({ status: "failed", error: t("cockpitUploadStalled") });
@@ -232,6 +234,13 @@ export function useCockpitComposer(
         },
       })
         .then((uploaded) => {
+          if (!isCurrent()) {
+            // A superseded attempt still produced a file: free its preview.
+            revokeAttachmentPreviewUrls([
+              uploaded as ComposerUploadedAttachment,
+            ]);
+            return;
+          }
           update({
             progress: 100,
             status: "ready",
