@@ -100,9 +100,9 @@ export function useCockpitComposer(
   );
   const draftRef = useRef(draft);
   const draftRevisionRef = useRef(0);
-  const [attachments, setAttachments] = useState<
-    CockpitComposerAttachment[]
-  >([]);
+  const [attachments, setAttachments] = useState<CockpitComposerAttachment[]>(
+    [],
+  );
   const attachmentsRef = useRef<CockpitComposerAttachment[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -209,7 +209,9 @@ export function useCockpitComposer(
               candidate.id === attachment.id
                 ? {
                     ...candidate,
-                    progress: Math.round((bytesUploaded / uploadFile.size) * 100),
+                    progress: Math.round(
+                      (bytesUploaded / uploadFile.size) * 100,
+                    ),
                   }
                 : candidate,
             ),
@@ -245,8 +247,8 @@ export function useCockpitComposer(
                       : stalled
                         ? t("cockpitUploadStalled")
                         : uploadError instanceof Error
-                        ? uploadError.message
-                        : String(uploadError),
+                          ? uploadError.message
+                          : String(uploadError),
                   }
                 : candidate,
             ),
@@ -384,7 +386,9 @@ export function useCockpitComposer(
         if (pendingId) sessionPort.removePendingMessage(pendingId);
         sessionPort.setProcessState(previousProcessState);
         const message =
-          submitError instanceof Error ? submitError.message : String(submitError);
+          submitError instanceof Error
+            ? submitError.message
+            : String(submitError);
         setError(
           t(action === "queue" ? "sessionQueueFailed" : "sessionSendFailed", {
             message,

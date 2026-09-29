@@ -124,9 +124,7 @@ export function CockpitNewSession({
   const providerInfo = launchable.find(
     (provider) => provider.name === selection?.provider,
   );
-  const choices = selection
-    ? launchChoices(selection, providerInfo, t)
-    : null;
+  const choices = selection ? launchChoices(selection, providerInfo, t) : null;
   const customFolder = projectChoice === OTHER_FOLDER;
   const folderPath = normalizeProjectPath(folder);
   const canStart =
@@ -182,7 +180,8 @@ export function CockpitNewSession({
           },
           initialTitle: text,
           initialModel: result.model ?? choices.effective.model ?? undefined,
-          initialProvider: result.provider ?? choices.effective.provider ?? undefined,
+          initialProvider:
+            result.provider ?? choices.effective.provider ?? undefined,
         }),
       });
     } catch (err) {
@@ -206,7 +205,11 @@ export function CockpitNewSession({
   };
 
   const onMessageKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing)
+    if (
+      event.key !== "Enter" ||
+      event.shiftKey ||
+      event.nativeEvent.isComposing
+    )
       return;
     // On touch keyboards Enter stays a line break; the button starts.
     if (window.matchMedia?.("(pointer: coarse)").matches) return;
@@ -247,7 +250,9 @@ export function CockpitNewSession({
                 {`${project.name} · ${shortPath(project.path)}`}
               </option>
             ))}
-            <option value={OTHER_FOLDER}>{t("cockpitNewSessionOtherFolder")}</option>
+            <option value={OTHER_FOLDER}>
+              {t("cockpitNewSessionOtherFolder")}
+            </option>
           </select>
           {customFolder && (
             <>
@@ -361,7 +366,9 @@ export function CockpitNewSession({
             {t("cockpitNewSessionCancel")}
           </button>
           <button className={styles.primary} disabled={!canStart} type="submit">
-            {starting ? t("cockpitNewSessionStarting") : t("newSessionStartAction")}
+            {starting
+              ? t("cockpitNewSessionStarting")
+              : t("newSessionStartAction")}
           </button>
         </div>
       </section>

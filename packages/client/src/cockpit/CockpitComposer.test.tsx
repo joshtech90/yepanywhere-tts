@@ -17,6 +17,7 @@ import {
   useCockpitAttachmentDropTarget,
 } from "./CockpitAttachmentDropTarget";
 import { CockpitComposer } from "./CockpitComposer";
+import { COCKPIT_UPLOAD_STALL_MS } from "./useCockpitComposer";
 import {
   cockpitComposerDraftKey,
   rememberCockpitPrompt,
@@ -519,6 +520,41 @@ describe("Cockpit composer", () => {
 
     expect(observedSignal?.aborted).toBe(true);
     expect(screen.queryByText("draft.txt")).toBeNull();
+  });
+
+  it("gives up a stalled upload so a sleeping host cannot block sending", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let observedSignal: AbortSignal | undefined;
+    runtime.transport.upload.mockImplementation(
+      (_projectId, _sessionId, _file, options) =>
+        new Promise((_resolve, reject) => {
+          observedSignal = options?.signal;
+          options?.signal?.addEventListener("abort", () =>
+            reject(new DOMException("cancelled", "AbortError")),
+          );
+        }),
+    );
+    const view = render(composer());
+    const input =
+      view.container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("file input missing");
+
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["demo"], "asleep.txt", { type: "text/plain" })],
+      },
+    });
+    await waitFor(() => expect(runtime.transport.upload).toHaveBeenCalled());
+    await act(async () => {
+      vi.advanceTimersByTime(COCKPIT_UPLOAD_STALL_MS + 100);
+    });
+
+    expect(observedSignal?.aborted).toBe(true);
+    await waitFor(() =>
+      expect(screen.getByText(/No connection to the computer/)).toBeDefined(),
+    );
+    expect(screen.getByRole("button", { name: "Try again" })).toBeDefined();
+    vi.useRealTimers();
   });
 
   it("isolates drafts and uploads when the session identity changes", async () => {

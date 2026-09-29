@@ -45,4 +45,19 @@ describe("Cockpit mobile navigation layout", () => {
       expect(declarations).toMatch(/bottom:\s*8rem\s*;/);
     }
   });
+
+  it("cannot be shifted out of reach by focus or the file picker", async () => {
+    const pageCss = await readFile(pageStylesheetUrl, "utf8");
+    const detailCss = await readFile(sessionDetailStylesheetUrl, "utf8");
+
+    // Hidden labels in the rows stay inside the transcript scroller ...
+    expect(rules(detailCss, ".transcript")[0]).toMatch(
+      /position:\s*relative\s*;/,
+    );
+    // ... and the session canvas clips instead of being a hidden scroller.
+    expect(
+      rule(pageCss, '.canvas[data-view="session"],\n.canvas[data-view="list"]'),
+    ).toMatch(/overflow:\s*clip\s*;/);
+  });
 });
+
