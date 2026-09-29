@@ -576,8 +576,25 @@ Pfeiltasten, Pos1/Ende und Doppelklick bedienbar, auf dem Handy aus.
 **Listenansichten.** `?view=projects` und `?view=sessions[&project=]` sind
 Cockpit-Seiten. Die Sitzungsliste montiert den vorhandenen
 `useGlobalSessionsFeed` nur solange sie offen ist, wie die Suche. Einstellungen
-bleiben die bisherige Seite und oeffnen in einem neuen Tab, damit das Cockpit
-ohne Kern-Eingriff offen bleibt.
+bleiben die bisherige Seite. Am Desktop oeffnen sie in einem neuen Tab. Auf dem
+Handy (installierte App, keine Tabs) oeffnen sie im selben Fenster; das Cockpit
+merkt sich Pfad und History-Index in `sessionStorage` (`core/navigation.ts`),
+und die schmale Einstellungsliste zeigt dann einen Zurueck-Knopf. Das ist der
+einzige Eingriff in `SettingsLayout.tsx`.
+
+**Handy (Joscha 26.09.2026).** Maximaler Platz fuer den Sitzungstext: Die Liste
+steht ohne Karte in voller Breite; die offene Sitzung hat eine einzeilige,
+schmale Kopfzeile (kurzer Modellname, Link zur bisherigen Ansicht im
+Blitz-Menue). Die beschriftete untere Leiste entfaellt in der Sitzung. Statt
+des Zurueck-Pfeils oeffnet ein Menue-Knopf eine Seitenleiste wie in der
+ChatGPT-App (`CockpitMobileDrawer`, natives modales `dialog`): Suche,
+Ziele, Ausgeblendet und darunter die Sitzungsliste mit Favoriten. Die Shell
+reicht den Oeffner per Context an die Sitzungsansicht; jede Navigation
+schliesst die Leiste. Senden, Lenken und Einreihen sind am Handy Symbole mit
+dem bisherigen Text als Namen, das Eingabefeld waechst mit dem Text. Diese
+Symbole unterschreiten bewusst die 44-Pixel-Zielgroesse aus Paket 10. Der leere
+Desktop-Inhalt zeigt ein wechselndes Zitat aus der deutschen Literatur
+(`core/quotes.ts`, nur wortgetreue gemeinfreie Stellen).
 
 ## Verworfene Alternativen
 

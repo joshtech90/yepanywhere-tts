@@ -1,9 +1,17 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
+import { useCockpitDrawerOpener } from "./CockpitMobileDrawer";
 import { CockpitPage, CockpitShell } from "./CockpitPage";
+import { readCockpitReturn } from "./core/navigation";
 import type { CockpitShellState } from "./core/shellState";
 import type { CockpitCatalogData } from "./useCockpitCatalog";
 
@@ -41,6 +49,7 @@ const pageMocks = vi.hoisted(() => {
         togglePin: vi.fn(async () => true),
         renameSession: vi.fn(async () => true),
         archiveSession: vi.fn(async () => true),
+        unarchiveSession: vi.fn(async () => true),
       },
     },
   };
@@ -92,11 +101,34 @@ beforeEach(() => {
   pageMocks.runtime.sourceKey = "local";
 });
 
-function renderShell(shellState: CockpitShellState = { kind: "empty" }) {
+function DrawerProbe() {
+  const openDrawer = useCockpitDrawerOpener();
+  return openDrawer ? (
+    <button onClick={openDrawer} type="button">
+      Open drawer
+    </button>
+  ) : null;
+}
+
+function mockPhoneLayout() {
+  const original = window.matchMedia;
+  window.matchMedia = ((media: string) => ({
+    ...original(media),
+    matches: media === "(max-width: 700px)",
+  })) as typeof window.matchMedia;
+  return () => {
+    window.matchMedia = original;
+  };
+}
+
+function renderShell(
+  shellState: CockpitShellState = { kind: "empty" },
+  entry = "/-/relay/studio/cockpit",
+) {
   const onAccentChange = vi.fn();
   const onThemeChange = vi.fn();
   render(
-    <MemoryRouter initialEntries={["/-/relay/studio/cockpit"]}>
+    <MemoryRouter initialEntries={[entry]}>
       <I18nProvider>
         <CockpitShell
           accent="blue"
@@ -115,6 +147,68 @@ function renderShell(shellState: CockpitShellState = { kind: "empty" }) {
 }
 
 describe("Cockpit shell", () => {
+  it("opens a drawer with navigation and sessions from a phone session", () => {
+    const restore = mockPhoneLayout();
+    try {
+      sessionStorage.clear();
+      render(
+        <MemoryRouter
+          initialEntries={["/cockpit/projects/p/sessions/s?keep=1"]}
+        >
+          <I18nProvider>
+            <CockpitShell
+              accent="blue"
+              basePath=""
+              catalogData={pageMocks.catalogData as CockpitCatalogData}
+              onAccentChange={vi.fn()}
+              onThemeChange={vi.fn()}
+              resolvedTheme="light"
+              shellState={{ kind: "empty" }}
+              theme="auto"
+            >
+              <DrawerProbe />
+            </CockpitShell>
+          </I18nProvider>
+        </MemoryRouter>,
+      );
+
+      expect(screen.getByRole("main").getAttribute("data-session-drawer")).toBe(
+        "true",
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: "Open drawer" }));
+
+      const drawer = screen.getByRole("dialog", { name: "Cockpit navigation" });
+      expect(
+        within(drawer).getByRole("region", { name: "Projects and sessions" }),
+      ).toBeTruthy();
+      expect(
+        within(drawer).getByRole("button", { name: "Search" }),
+      ).toBeTruthy();
+      const settings = within(drawer).getByRole("link", { name: "Settings" });
+      expect(settings.getAttribute("href")).toBe("/settings");
+      // An installed phone app has no tabs: the settings stay in the window.
+      expect(settings.getAttribute("target")).toBeNull();
+
+      fireEvent.click(settings);
+      expect(readCockpitReturn()?.path).toBe(
+        "/cockpit/projects/p/sessions/s?keep=1",
+      );
+      // Navigating closes the drawer.
+      expect(screen.queryByRole("dialog")).toBeNull();
+    } finally {
+      restore();
+      sessionStorage.clear();
+    }
+  });
+
+  it("keeps the labelled navigation outside an open session", () => {
+    renderShell();
+    expect(screen.getByRole("main").getAttribute("data-session-drawer")).toBe(
+      null,
+    );
+  });
+
   it("renders only the catalog for the active responsive layout", () => {
     renderShell();
 
@@ -131,10 +225,9 @@ describe("Cockpit shell", () => {
         </I18nProvider>
       </MemoryRouter>,
     );
-    fireEvent.change(
-      screen.getByRole("searchbox", { name: "Loaded sessions" }),
-      { target: { value: "Atlas" } },
-    );
+    fireEvent.change(screen.getByRole("searchbox", { name: "Sessions" }), {
+      target: { value: "Atlas" },
+    });
 
     pageMocks.runtime.sourceKey = "relay:studio";
     view.rerender(
@@ -146,9 +239,11 @@ describe("Cockpit shell", () => {
     );
 
     expect(
-      (screen.getByRole("searchbox", {
-        name: "Loaded sessions",
-      }) as HTMLInputElement).value,
+      (
+        screen.getByRole("searchbox", {
+          name: "Sessions",
+        }) as HTMLInputElement
+      ).value,
     ).toBe("");
   });
 
@@ -186,16 +281,53 @@ describe("Cockpit shell", () => {
     });
     expect(settings.getAttribute("href")).toBe("/-/relay/studio/settings");
     expect(settings.getAttribute("target")).toBe("_blank");
+    const quote = screen.getByRole("figure", { name: "Quote" });
+    const first = quote.textContent;
+    expect(first).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Next quote" }));
+    expect(screen.getByRole("figure", { name: "Quote" }).textContent).not.toBe(
+      first,
+    );
+  });
+
+  it("marks the view on screen in the sidebar, also with a project filter", () => {
+    renderShell(
+      { kind: "empty" },
+      "/-/relay/studio/cockpit?view=new&project=p1",
+    );
+    const sidebar = screen.getByRole("complementary");
+
     expect(
-      screen.getByRole("status").textContent?.includes("calmly organized"),
-    ).toBe(true);
+      within(sidebar)
+        .getByRole("link", { name: "New Session" })
+        .getAttribute("aria-current"),
+    ).toBe("page");
+    expect(
+      within(sidebar)
+        .getByRole("link", { name: "All Sessions" })
+        .getAttribute("aria-current"),
+    ).toBeNull();
+  });
+
+  it("marks no view on the home canvas", () => {
+    renderShell();
+    const sidebar = screen.getByRole("complementary");
+
+    for (const name of ["All Sessions", "Projects", "New Session"]) {
+      expect(
+        within(sidebar)
+          .getByRole("link", { name })
+          .getAttribute("aria-current"),
+      ).toBeNull();
+    }
   });
 
   it("loads the German Cockpit copy instead of falling back to English", async () => {
     localStorage.setItem(UI_KEYS.locale, "de");
     renderShell();
 
-    expect(await screen.findByText("Dein KI-Arbeitsbereich")).toBeTruthy();
+    expect(await screen.findByText("Nächstes Zitat")).toBeTruthy();
+    expect(screen.getByPlaceholderText("Suchen")).toBeTruthy();
     expect((await screen.findAllByText("Akzentfarbe")).length).toBeGreaterThan(
       0,
     );
@@ -206,9 +338,9 @@ describe("Cockpit shell", () => {
     const { onAccentChange, onThemeChange } = renderShell();
 
     expect(
-      screen.getAllByRole("button", { name: "Auto" })[0]?.getAttribute(
-        "aria-pressed",
-      ),
+      screen
+        .getAllByRole("button", { name: "Auto" })[0]
+        ?.getAttribute("aria-pressed"),
     ).toBe("true");
     const [darkButton] = screen.getAllByRole("button", { name: "Dark" });
     const [violetButton] = screen.getAllByRole("button", {
@@ -226,7 +358,7 @@ describe("Cockpit shell", () => {
     renderShell();
 
     const appearance = screen
-      .getAllByLabelText("Cockpit appearance")
+      .getAllByLabelText("Appearance")
       .find((element) => element.tagName === "DETAILS");
     if (!(appearance instanceof HTMLDetailsElement)) {
       throw new Error("desktop appearance disclosure missing");
@@ -263,9 +395,7 @@ describe("Cockpit shell", () => {
 
   it("returns shortcut-help focus to its keyboard origin", () => {
     renderShell();
-    const origin = screen
-      .getAllByRole("link", { name: "New Session" })
-      .at(-1);
+    const origin = screen.getAllByRole("link", { name: "New Session" }).at(-1);
     if (!origin) throw new Error("new-session focus origin missing");
     origin.focus();
 
@@ -285,9 +415,7 @@ describe("Cockpit shell", () => {
 
   it("returns search focus to its keyboard origin", () => {
     renderShell();
-    const origin = screen
-      .getAllByRole("link", { name: "New Session" })
-      .at(-1);
+    const origin = screen.getAllByRole("link", { name: "New Session" }).at(-1);
     if (!origin) throw new Error("new-session focus origin missing");
     origin.focus();
 

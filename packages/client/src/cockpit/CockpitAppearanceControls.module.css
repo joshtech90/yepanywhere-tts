@@ -15,9 +15,9 @@
 .controlLabel {
   padding: 0;
   color: var(--cockpit-faint);
-  font-size: 0.65rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
   text-transform: uppercase;
 }
 
@@ -27,7 +27,7 @@
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.15rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 0.72rem;
+  border-radius: var(--cockpit-radius-md);
   background: var(--cockpit-bg);
 }
 
@@ -41,11 +41,11 @@
 .segmentButton {
   min-height: 2.25rem;
   padding: 0 0.45rem;
-  border-radius: 0.55rem;
+  border-radius: var(--cockpit-radius-sm);
   color: var(--cockpit-muted);
   background: transparent;
-  font-size: 0.68rem;
-  font-weight: 700;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
   transition:
     color 140ms ease,
     background 140ms ease,
@@ -60,7 +60,7 @@
 .segmentButton[aria-pressed="true"] {
   color: var(--cockpit-text);
   background: var(--cockpit-surface-raised);
-  box-shadow: 0 2px 9px var(--cockpit-shadow);
+  box-shadow: var(--cockpit-elevation-low);
 }
 
 .accentChoices {
@@ -73,7 +73,7 @@
   position: relative;
   min-width: 2.5rem;
   min-height: 2.5rem;
-  border-radius: 0.72rem;
+  border-radius: var(--cockpit-radius-md);
   background: var(--accent-choice);
   transition:
     box-shadow 140ms ease,
@@ -81,8 +81,7 @@
 }
 
 .accentButton:hover {
-  box-shadow: 0 7px 16px var(--cockpit-shadow);
-  transform: translateY(-1px);
+  box-shadow: var(--cockpit-elevation-low);
 }
 
 .accentButton[data-accent-choice="blue"] {
@@ -105,7 +104,7 @@
   position: absolute;
   inset: 0.42rem;
   border: 2px solid #ffffff;
-  border-radius: 0.38rem;
+  border-radius: var(--cockpit-radius-xs);
   box-shadow: 0 0 0 1px rgb(0 0 0 / 18%);
   content: "";
 }

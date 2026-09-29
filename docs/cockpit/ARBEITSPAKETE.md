@@ -517,7 +517,11 @@ Markenzeichen wird dabei nicht mehr als Teil des Screenreader-Namens vorgelesen.
 
 ## 11 — Umschaltpunkt, Alltagstest und Upstream-Merge-Probe
 
-Status: **offen**
+Status: **teilweise** (25.09.2026): Joschas yep auf aihub laeuft auf dem
+Cockpit-Stand (`feat/tts-vorlesen` vorgespult, Sicherungsmarke
+`vor-cockpit-20260925-1202`), die Startadresse oeffnet das Cockpit, die alte
+Oberflaeche bleibt unter ihren Routen und ueber „In bisheriger Ansicht
+oeffnen“ erreichbar. Offen: Alltagstest per Relay und Upstream-Merge-Probe.
 
 Voraussetzung: alle Pakete, die Joscha fuer den Alltag als notwendig markiert.
 

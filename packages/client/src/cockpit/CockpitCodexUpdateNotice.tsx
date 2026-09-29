@@ -47,10 +47,12 @@ export function CockpitCodexUpdateNotice({
     <aside aria-label={t("cockpitCodexUpdateAria")} className={styles.root}>
       <p className={styles.copy} role="status">
         <strong>{t("cockpitCodexUpdateTitle")}</strong>{" "}
-        {t("cockpitCodexUpdateBody", {
-          current: status.installed ?? t("cockpitCodexUpdateUnknownVersion"),
-          latest: latestTag,
-        })}
+        <span className={styles.detail}>
+          {t("cockpitCodexUpdateBody", {
+            current: status.installed ?? t("cockpitCodexUpdateUnknownVersion"),
+            latest: latestTag,
+          })}
+        </span>
       </p>
       <div className={styles.actions}>
         <button onClick={dismiss} type="button">

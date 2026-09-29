@@ -6,7 +6,10 @@ import { resolveCockpitShortcut } from "./core/shortcuts";
 const NAVIGATION_PREFIX_TIMEOUT_MS = 1_200;
 
 export interface CockpitShortcutOptions {
+  /** The phone session drawer is a modal: Escape closes it, nothing else. */
+  drawerOpen: boolean;
   navigation: CockpitNavigation;
+  onCloseDrawer: () => void;
   onCloseHelp: () => void;
   onCloseSearch: () => void;
   onOpenHelp: (focusOrigin: HTMLElement | null) => void;
@@ -17,7 +20,9 @@ export interface CockpitShortcutOptions {
 }
 
 export function useCockpitShortcuts({
+  drawerOpen,
   navigation,
+  onCloseDrawer,
   onCloseHelp,
   onCloseSearch,
   onOpenHelp,
@@ -41,6 +46,15 @@ export function useCockpitShortcuts({
 
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return;
+      // Escape in the open drawer must not reach the stop shortcut: it
+      // stopped a running session behind the drawer (Astra review).
+      if (drawerOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onCloseDrawer();
+        }
+        return;
+      }
       if (event.key === "Escape" && shortcutsOpen) {
         event.preventDefault();
         onCloseHelp();
@@ -53,10 +67,7 @@ export function useCockpitShortcuts({
         return;
       }
 
-      const action = resolveCockpitShortcut(
-        event,
-        navigationPrefixRef.current,
-      );
+      const action = resolveCockpitShortcut(event, navigationPrefixRef.current);
       if (action !== "navigation-prefix") clearNavigationPrefix();
       if (!action) return;
 
@@ -111,8 +122,10 @@ export function useCockpitShortcuts({
       clearNavigationPrefix();
     };
   }, [
+    drawerOpen,
     navigate,
     navigation,
+    onCloseDrawer,
     onCloseHelp,
     onCloseSearch,
     onOpenHelp,

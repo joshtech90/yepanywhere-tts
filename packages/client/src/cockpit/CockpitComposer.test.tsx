@@ -7,10 +7,15 @@ import {
   waitFor,
 } from "@testing-library/react";
 import type { UrlProjectId } from "@yep-anywhere/shared";
+import { useRef } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../api/client";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
+import {
+  CockpitAttachmentDropCue,
+  useCockpitAttachmentDropTarget,
+} from "./CockpitAttachmentDropTarget";
 import { CockpitComposer } from "./CockpitComposer";
 import {
   cockpitComposerDraftKey,
@@ -99,6 +104,31 @@ function composer(
   );
 }
 
+function DropSurface() {
+  const attachRef = useRef<((files: File[]) => void) | null>(null);
+  const drop = useCockpitAttachmentDropTarget((files) =>
+    attachRef.current?.(files),
+  );
+  const { onPaste: _paste, ...handlers } = drop.handlers;
+  return (
+    <I18nProvider>
+      <div {...handlers}>
+        <p>Transcript</p>
+        <CockpitAttachmentDropCue
+          label="Drop files to attach"
+          visible={drop.draggingFiles}
+        />
+        <CockpitComposer
+          dropTargetRef={attachRef}
+          projectId="project-1"
+          sessionId="session-1"
+          sessionPort={sessionPort()}
+        />
+      </div>
+    </I18nProvider>
+  );
+}
+
 afterEach(cleanup);
 beforeEach(() => {
   localStorage.clear();
@@ -122,9 +152,7 @@ describe("Cockpit composer", () => {
       value += character;
       const startedAt = performance.now();
       fireEvent.change(input, { target: { value } });
-      view.rerender(
-        composer({ ...port, status: { owner: "none" } }),
-      );
+      view.rerender(composer({ ...port, status: { owner: "none" } }));
       expect(input.value).toBe(value);
       expect(performance.now() - startedAt).toBeLessThan(100);
     }
@@ -165,34 +193,31 @@ describe("Cockpit composer", () => {
     );
   });
 
-  it(
-    "sends through the mounted source instead of the globally active source",
-    async () => {
-      const globalResume = vi
-        .spyOn(api, "resumeSession")
-        .mockRejectedValue(new Error("wrong source"));
-      runtime.transport.fetch.mockResolvedValue({
-        processId: "process-source-a",
-        permissionMode: "default",
-        modeVersion: 1,
-        serverTimestamp: 0,
-      });
-      render(composer());
+  it("sends through the mounted source instead of the globally active source", async () => {
+    const globalResume = vi
+      .spyOn(api, "resumeSession")
+      .mockRejectedValue(new Error("wrong source"));
+    runtime.transport.fetch.mockResolvedValue({
+      processId: "process-source-a",
+      permissionMode: "default",
+      modeVersion: 1,
+      serverTimestamp: 0,
+    });
+    render(composer());
 
-      fireEvent.change(screen.getByRole("textbox"), {
-        target: { value: "Keep this on source A." },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+    fireEvent.change(screen.getByRole("textbox"), {
+      target: { value: "Keep this on source A." },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
-      await waitFor(() =>
-        expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
-      );
-      expect(runtime.transport.fetch.mock.calls[0]?.[0]).toBe(
-        "/projects/project-1/sessions/session-1/resume",
-      );
-      expect(globalResume).not.toHaveBeenCalled();
-    },
-  );
+    await waitFor(() =>
+      expect(runtime.transport.fetch).toHaveBeenCalledTimes(1),
+    );
+    expect(runtime.transport.fetch.mock.calls[0]?.[0]).toBe(
+      "/projects/project-1/sessions/session-1/resume",
+    );
+    expect(globalResume).not.toHaveBeenCalled();
+  });
 
   it("keeps new input added while the previous send is pending", async () => {
     let finishSend:
@@ -218,9 +243,8 @@ describe("Cockpit composer", () => {
     });
     const view = render(composer());
     const input = screen.getByRole("textbox") as HTMLTextAreaElement;
-    const fileInput = view.container.querySelector<HTMLInputElement>(
-      'input[type="file"]',
-    );
+    const fileInput =
+      view.container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!fileInput) throw new Error("file input missing");
 
     fireEvent.change(input, { target: { value: "Send this first." } });
@@ -341,7 +365,9 @@ describe("Cockpit composer", () => {
       ),
     );
     const input = screen.getByRole("textbox");
-    fireEvent.change(input, { target: { value: "Queue this fictional note." } });
+    fireEvent.change(input, {
+      target: { value: "Queue this fictional note." },
+    });
     fireEvent.keyDown(input, { key: "Enter", ctrlKey: true });
 
     await waitFor(() =>
@@ -367,18 +393,21 @@ describe("Cockpit composer", () => {
         mimeType: "text/plain",
       });
     const view = render(composer());
-    const input = view.container.querySelector<HTMLInputElement>(
-      'input[type="file"]',
-    );
+    const input =
+      view.container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!input) throw new Error("file input missing");
 
     fireEvent.change(input, {
-      target: { files: [new File(["demo"], "notes.txt", { type: "text/plain" })] },
+      target: {
+        files: [new File(["demo"], "notes.txt", { type: "text/plain" })],
+      },
     });
 
     expect(await screen.findByText("preview upload unavailable")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
-    await waitFor(() => expect(runtime.transport.upload).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(runtime.transport.upload).toHaveBeenCalledTimes(2),
+    );
     await waitFor(() =>
       expect(screen.queryByRole("button", { name: "Try again" })).toBeNull(),
     );
@@ -430,6 +459,40 @@ describe("Cockpit composer", () => {
     expect(screen.getByText("dropped.txt")).toBeTruthy();
   });
 
+  it("takes files dropped anywhere on a surrounding session surface", async () => {
+    runtime.transport.upload.mockResolvedValue({
+      id: "upload-1",
+      originalName: "dropped.txt",
+      name: "upload-1-dropped.txt",
+      path: "/demo/uploads/upload-1-dropped.txt",
+      size: 8,
+      mimeType: "text/plain",
+    });
+    render(<DropSurface />);
+    const dropped = new File(["invented"], "dropped.txt", {
+      type: "text/plain",
+    });
+    const dataTransfer = {
+      dropEffect: "none",
+      files: [dropped],
+      types: ["Files"],
+    };
+
+    // Over the input the surface shows its one cue; the composer adds none.
+    fireEvent.dragEnter(screen.getByRole("textbox"), { dataTransfer });
+    expect(screen.getAllByText("Drop files to attach")).toHaveLength(1);
+    fireEvent.dragLeave(screen.getByRole("textbox"), { dataTransfer });
+
+    fireEvent.dragEnter(screen.getByText("Transcript"), { dataTransfer });
+    fireEvent.drop(screen.getByText("Transcript"), { dataTransfer });
+
+    await waitFor(() =>
+      expect(runtime.transport.upload).toHaveBeenCalledTimes(1),
+    );
+    expect(screen.getByText("dropped.txt")).toBeTruthy();
+    expect(screen.queryByText("Drop files to attach")).toBeNull();
+  });
+
   it("aborts an in-flight upload when its attachment is removed", async () => {
     let observedSignal: AbortSignal | undefined;
     runtime.transport.upload.mockImplementation(
@@ -442,18 +505,17 @@ describe("Cockpit composer", () => {
         }),
     );
     const view = render(composer());
-    const input = view.container.querySelector<HTMLInputElement>(
-      'input[type="file"]',
-    );
+    const input =
+      view.container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!input) throw new Error("file input missing");
 
     fireEvent.change(input, {
-      target: { files: [new File(["demo"], "draft.txt", { type: "text/plain" })] },
+      target: {
+        files: [new File(["demo"], "draft.txt", { type: "text/plain" })],
+      },
     });
     await waitFor(() => expect(runtime.transport.upload).toHaveBeenCalled());
-    fireEvent.click(
-      screen.getByRole("button", { name: "Remove draft.txt" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Remove draft.txt" }));
 
     expect(observedSignal?.aborted).toBe(true);
     expect(screen.queryByText("draft.txt")).toBeNull();
@@ -475,9 +537,8 @@ describe("Cockpit composer", () => {
       "Draft for session two",
     );
     const view = render(composer());
-    const input = view.container.querySelector<HTMLInputElement>(
-      'input[type="file"]',
-    );
+    const input =
+      view.container.querySelector<HTMLInputElement>('input[type="file"]');
     if (!input) throw new Error("file input missing");
 
     fireEvent.change(screen.getByRole("textbox"), {

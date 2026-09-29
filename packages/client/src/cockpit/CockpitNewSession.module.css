@@ -11,15 +11,15 @@
   margin: 0.2rem 0 0;
   color: var(--cockpit-text);
   font-size: clamp(1.35rem, 3vw, 1.75rem);
-  letter-spacing: -0.02em;
+  letter-spacing: var(--cockpit-tracking-tight);
 }
 
 .eyebrow {
   margin: 0;
   color: var(--cockpit-accent);
-  font-size: 0.66rem;
-  font-weight: 800;
-  letter-spacing: 0.1em;
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
   text-transform: uppercase;
 }
 
@@ -28,10 +28,9 @@
   padding: clamp(0.95rem, 3vw, 1.35rem);
   gap: 1.1rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 1.1rem;
+  border-radius: var(--cockpit-radius-lg);
   background: var(--cockpit-surface);
-  box-shadow: 0 10px 28px
-    color-mix(in srgb, var(--cockpit-shadow) 40%, transparent);
+  box-shadow: var(--cockpit-elevation-low);
 }
 
 .field {
@@ -42,9 +41,9 @@
 
 .label {
   color: var(--cockpit-muted);
-  font-size: 0.66rem;
-  font-weight: 750;
-  letter-spacing: 0.06em;
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
   text-transform: uppercase;
 }
 
@@ -54,11 +53,11 @@
   min-height: 2.6rem;
   padding: 0 0.7rem;
   border: 1px solid var(--cockpit-border-strong);
-  border-radius: 0.7rem;
+  border-radius: var(--cockpit-radius-md);
   color: var(--cockpit-text);
   background: var(--cockpit-surface);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--cockpit-text-sm);
 }
 
 .select:focus-visible,
@@ -75,15 +74,15 @@
 }
 
 .provider {
-  min-height: 2.45rem;
+  min-height: 2.35rem;
   padding: 0 1rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 0.75rem;
+  border-radius: 999px;
   color: var(--cockpit-muted);
   background: var(--cockpit-surface);
   font: inherit;
-  font-size: 0.8rem;
-  font-weight: 700;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
   cursor: pointer;
 }
 
@@ -112,11 +111,11 @@
   padding: 0.75rem 0.85rem;
   resize: vertical;
   border: 1px solid var(--cockpit-border-strong);
-  border-radius: 0.85rem;
+  border-radius: var(--cockpit-radius-md);
   color: var(--cockpit-text);
   background: var(--cockpit-bg);
   font: inherit;
-  font-size: 0.86rem;
+  font-size: var(--cockpit-text-md);
   line-height: 1.5;
 }
 
@@ -127,16 +126,16 @@
 .loading {
   margin: 0;
   color: var(--cockpit-muted);
-  font-size: 0.8rem;
+  font-size: var(--cockpit-text-sm);
 }
 
 .error {
   margin: 0;
   padding: 0.6rem 0.75rem;
-  border-radius: 0.7rem;
+  border-radius: var(--cockpit-radius-md);
   color: var(--cockpit-danger);
   background: color-mix(in srgb, var(--cockpit-danger) 10%, transparent);
-  font-size: 0.78rem;
+  font-size: var(--cockpit-text-sm);
 }
 
 .actions {
@@ -150,10 +149,10 @@
   min-height: 2.6rem;
   padding: 0 1.1rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 0.75rem;
+  border-radius: var(--cockpit-radius-md);
   font: inherit;
-  font-size: 0.8rem;
-  font-weight: 750;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
   cursor: pointer;
 }
 
@@ -195,7 +194,7 @@
   .select,
   .input,
   .message {
-    font-size: 1rem;
+    font-size: var(--cockpit-text-lg);
   }
 
   .actions > * {

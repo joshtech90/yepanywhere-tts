@@ -1,4 +1,8 @@
-import type { EffortLevel, ModelInfo, ThinkingMode } from "@yep-anywhere/shared";
+import type {
+  EffortLevel,
+  ModelInfo,
+  ThinkingMode,
+} from "@yep-anywhere/shared";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { api } from "../api/client";
 import { LongContextEffortWarningModal } from "../components/LongContextEffortWarningModal";
@@ -24,6 +28,7 @@ import {
 import { toThinkingOption } from "../lib/newSessionOptions";
 import type { SessionMetadata, SessionStatus } from "../types";
 import styles from "./CockpitModelControls.module.css";
+import { shortCockpitModelLabel } from "./core/modelLabel";
 import { CockpitModelField, CockpitThinkingField } from "./CockpitRunSettings";
 
 export interface CockpitModelControlsProps {
@@ -278,6 +283,11 @@ export function CockpitModelControls({
       >
         <span>{providerInfo?.displayName ?? session?.provider ?? ""}</span>
         <strong>{session?.model ?? t("processInfoDefaultModel")}</strong>
+        <b className={styles.shortModel}>
+          {shortCockpitModelLabel(
+            session?.model ?? t("processInfoDefaultModel"),
+          )}
+        </b>
         {effort && <em>{effort}</em>}
       </button>
 

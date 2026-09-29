@@ -36,6 +36,9 @@ export function useCockpitSessionMenu(
     <CockpitSessionMenu
       anchor={target.anchor}
       busy={pendingPins.has(session.id)}
+      confirmArchive={
+        session.status !== "complete" && session.status !== "offline"
+      }
       key={session.key}
       onArchive={() => archiveSession(session.id)}
       onClose={close}

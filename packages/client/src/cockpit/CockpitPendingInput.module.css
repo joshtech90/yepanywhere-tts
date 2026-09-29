@@ -31,7 +31,7 @@
   --font-size-lg: 0.9rem;
   --font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   flex: 0 0 auto;
-  padding: 0.8rem clamp(1rem, 3vw, 2rem) 0.9rem;
+  padding: 0.8rem var(--cockpit-gutter) 0.9rem;
   border-top: 1px solid var(--cockpit-border);
   background: color-mix(
     in srgb,
@@ -53,14 +53,15 @@
   justify-content: space-between;
   gap: 0.75rem;
   color: var(--cockpit-muted);
-  font-size: 0.66rem;
+  font-size: var(--cockpit-text-xs);
 }
 
 .statusRow strong {
   color: var(--cockpit-text);
-  font-size: 0.68rem;
-  letter-spacing: 0.06em;
+  font-size: var(--cockpit-text-2xs);
+  letter-spacing: var(--cockpit-tracking-caps);
   text-transform: uppercase;
+  font-weight: var(--cockpit-weight-strong);
 }
 
 .statusRow span {
@@ -70,16 +71,13 @@
 .error {
   margin: 0.65rem 0 0;
   padding: 0.6rem 0.7rem;
-  border: 1px solid color-mix(
-    in srgb,
-    var(--cockpit-danger) 36%,
-    var(--cockpit-border)
-  );
-  border-radius: 0.65rem;
+  border: 1px solid
+    color-mix(in srgb, var(--cockpit-danger) 36%, var(--cockpit-border));
+  border-radius: var(--cockpit-radius-sm);
   color: var(--cockpit-danger);
   background: color-mix(in srgb, var(--cockpit-danger) 8%, transparent);
-  font-size: 0.68rem;
-  font-weight: 650;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
   line-height: 1.4;
 }
 

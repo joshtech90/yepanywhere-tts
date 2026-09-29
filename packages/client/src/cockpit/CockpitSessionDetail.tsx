@@ -11,11 +11,17 @@ import {
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
+import {
+  CockpitAttachmentDropCue,
+  useCockpitAttachmentDropTarget,
+} from "./CockpitAttachmentDropTarget";
 import { CockpitAttentionCard } from "./CockpitAttentionCard";
 import { CockpitCopyResponseButton } from "./CockpitCopyResponseButton";
+import { useCockpitDrawerOpener } from "./CockpitMobileDrawer";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 import { CockpitComposer } from "./CockpitComposer";
 import { CockpitModelControls } from "./CockpitModelControls";
+import { CockpitQuickActions } from "./CockpitQuickActions";
 import { CockpitStatusLed } from "./CockpitStatusLed";
 import { CockpitStopButton } from "./CockpitStopButton";
 import { CockpitTranscriptWindow } from "./CockpitTranscriptWindow";
@@ -31,6 +37,7 @@ import {
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 import type { CockpitShellState } from "./core/shellState";
+import { cockpitContextUsage } from "./core/contextUsage";
 import { cockpitLedToneForState } from "./core/statusLed";
 import { selectCockpitTranscriptSnapshot } from "./core/transcriptScheduling";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
@@ -52,6 +59,14 @@ function ArrowIcon({ direction }: { direction: "left" | "down" }) {
       ) : (
         <path d="m7 10 5 5 5-5" />
       )}
+    </svg>
+  );
+}
+
+function MenuIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4.5 8h15M4.5 16h9" />
     </svg>
   );
 }
@@ -94,13 +109,10 @@ function entryTime(timestamp: string | undefined, locale: string) {
   });
 }
 
-function findTranscriptEntryElement(
-  container: HTMLElement,
-  entryKey: string,
-) {
-  return [...container.querySelectorAll<HTMLElement>(
-    "[data-cockpit-entry-key]",
-  )].find((element) => element.dataset.cockpitEntryKey === entryKey);
+function findTranscriptEntryElement(container: HTMLElement, entryKey: string) {
+  return [
+    ...container.querySelectorAll<HTMLElement>("[data-cockpit-entry-key]"),
+  ].find((element) => element.dataset.cockpitEntryKey === entryKey);
 }
 
 function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
@@ -266,6 +278,15 @@ export function CockpitSessionDetail({
 }: CockpitSessionDetailProps) {
   const { locale, t } = useI18n();
   const runtime = useCurrentSourceRuntime();
+  const openDrawer = useCockpitDrawerOpener();
+  // Files dropped anywhere on the session go to the composer, not only on
+  // the input itself (Joscha 26.09.2026).
+  const attachFilesRef = useRef<((files: File[]) => void) | null>(null);
+  const sessionDrop = useCockpitAttachmentDropTarget((files) =>
+    attachFilesRef.current?.(files),
+  );
+  const { onPaste: _pasteStaysWithComposer, ...sessionDropHandlers } =
+    sessionDrop.handlers;
   const navigation = useMemo(
     () => createCockpitNavigation(basePath),
     [basePath],
@@ -282,7 +303,14 @@ export function CockpitSessionDetail({
       replace: true,
       state: location.state,
     });
-  }, [actualSessionId, location.state, navigate, navigation, projectId, sessionId]);
+  }, [
+    actualSessionId,
+    location.state,
+    navigate,
+    navigation,
+    projectId,
+    sessionId,
+  ]);
   const deferredEntries = useDeferredValue(detail.entries);
   const transcriptEntries = selectCockpitTranscriptSnapshot(
     detail.entries,
@@ -496,17 +524,39 @@ export function CockpitSessionDetail({
     projectLabelFromId(projectId) ||
     t("cockpitUnknownProject");
   const classicHref = navigation.classicSession(projectId, sessionId);
+  const contextUsage = cockpitContextUsage(
+    detail.session?.contextUsage,
+    locale,
+  );
 
   return (
-    <article className={styles.root} aria-labelledby="cockpit-session-title">
+    <article
+      {...sessionDropHandlers}
+      aria-labelledby="cockpit-session-title"
+      className={styles.root}
+      data-dragging-files={sessionDrop.draggingFiles || undefined}
+    >
       <header className={styles.sessionHeader}>
-        <Link
-          aria-label={t("cockpitSessionBack")}
-          className={styles.backLink}
-          to={navigation.cockpit}
-        >
-          <ArrowIcon direction="left" />
-        </Link>
+        {openDrawer ? (
+          <button
+            aria-haspopup="dialog"
+            aria-label={t("cockpitMenuOpen")}
+            data-cockpit-drawer-opener=""
+            className={styles.backLink}
+            onClick={openDrawer}
+            type="button"
+          >
+            <MenuIcon />
+          </button>
+        ) : (
+          <Link
+            aria-label={t("cockpitSessionBack")}
+            className={styles.backLink}
+            to={navigation.cockpit}
+          >
+            <ArrowIcon direction="left" />
+          </Link>
+        )}
         <div className={styles.titleGroup}>
           <p>{projectName}</p>
           <h2 id="cockpit-session-title" title={title}>
@@ -528,6 +578,21 @@ export function CockpitSessionDetail({
             }`}
             stop={detail.attention.stop}
           />
+          <CockpitQuickActions
+            basePath={basePath}
+            classicHref={classicHref}
+            busy={
+              state === "active" ||
+              state === "external" ||
+              state === "waiting" ||
+              detail.processState !== "idle"
+            }
+            entries={detail.entries}
+            port={detail.composer}
+            projectId={projectId}
+            sessionId={sessionId}
+            sessionTitle={title}
+          />
           <CockpitModelControls
             actualSessionId={detail.composer.actualSessionId}
             projectId={projectId}
@@ -537,6 +602,28 @@ export function CockpitSessionDetail({
             setStatus={detail.composer.setStatus}
             status={detail.status}
           />
+          {contextUsage && (
+            <span
+              className={styles.contextUsage}
+              title={
+                contextUsage.percent === null
+                  ? t("cockpitSessionContextTokensTitle", {
+                      used: contextUsage.used,
+                    })
+                  : t("cockpitSessionContextUsageTitle", {
+                      percent: contextUsage.percent,
+                      used: contextUsage.used,
+                      window: contextUsage.window,
+                    })
+              }
+            >
+              {contextUsage.percent === null
+                ? contextUsage.short
+                : t("cockpitSessionContextUsage", {
+                    percent: contextUsage.percent,
+                  })}
+            </span>
+          )}
           <span
             aria-live="polite"
             className={styles.sessionState}
@@ -648,9 +735,15 @@ export function CockpitSessionDetail({
       )}
 
       <CockpitComposer
+        dropTargetRef={attachFilesRef}
         projectId={projectId}
         sessionId={sessionId}
         sessionPort={detail.composer}
+      />
+
+      <CockpitAttachmentDropCue
+        label={t("cockpitComposerDropFiles")}
+        visible={sessionDrop.draggingFiles}
       />
 
       {!following && hasEntries && (
@@ -676,8 +769,9 @@ export function projectLabelFromId(projectId: string): string | undefined {
   try {
     const base64 = projectId.replace(/-/g, "+").replace(/_/g, "/");
     const path = decodeURIComponent(
-      Array.from(atob(base64), (char) =>
-        `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
+      Array.from(
+        atob(base64),
+        (char) => `%${char.charCodeAt(0).toString(16).padStart(2, "0")}`,
       ).join(""),
     );
     const name = path.split("/").filter(Boolean).pop()?.trim();

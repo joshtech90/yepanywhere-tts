@@ -7,8 +7,8 @@
   padding: 0.3rem;
   background: var(--cockpit-surface-raised, var(--cockpit-surface));
   border: 1px solid var(--cockpit-border);
-  border-radius: 12px;
-  box-shadow: 0 4px 18px var(--cockpit-shadow);
+  border-radius: var(--cockpit-radius-sm);
+  box-shadow: var(--cockpit-elevation-float);
   color: var(--cockpit-text);
   box-sizing: border-box;
   animation: popoverFadeIn 120ms ease-out;
@@ -41,13 +41,13 @@
   display: flex;
   align-items: center;
   width: 100%;
-  min-height: 2.5rem;
-  padding: 0 0.75rem;
+  min-height: 2.2rem;
+  padding: 0 0.7rem;
   border: 0;
-  border-radius: 8px;
+  border-radius: var(--cockpit-radius-xs);
   background: transparent;
   color: var(--cockpit-text);
-  font-size: 0.9rem;
+  font-size: var(--cockpit-text-sm);
   font-family: inherit;
   text-align: left;
   cursor: pointer;
@@ -58,7 +58,18 @@
 
 .item:hover,
 .item:focus-visible {
-  background: var(--cockpit-hover, color-mix(in srgb, currentColor 8%, transparent));
+  background: var(
+    --cockpit-hover,
+    color-mix(in srgb, currentColor 8%, transparent)
+  );
+}
+
+/* Fingers get the larger rows and type of the phone layout. */
+@media (max-width: 700px) {
+  .item {
+    min-height: 2.75rem;
+    font-size: var(--cockpit-text-md);
+  }
 }
 
 .destructive {
@@ -86,7 +97,7 @@
 
 .confirmText {
   margin: 0;
-  font-size: 0.85rem;
+  font-size: var(--cockpit-text-md);
   line-height: 1.35;
   color: var(--cockpit-muted, var(--cockpit-text));
   word-break: break-word;
@@ -97,10 +108,10 @@
   min-height: 2.2rem;
   padding: 0.35rem 0.5rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 6px;
+  border-radius: var(--cockpit-radius-xs);
   background: var(--cockpit-surface);
   color: var(--cockpit-text);
-  font-size: 0.9rem;
+  font-size: var(--cockpit-text-md);
   font-family: inherit;
   box-sizing: border-box;
   outline: none;
@@ -112,7 +123,7 @@
 }
 
 .error {
-  font-size: 0.8rem;
+  font-size: var(--cockpit-text-sm);
   color: var(--cockpit-danger);
   line-height: 1.3;
 }
@@ -131,10 +142,11 @@
   min-height: 2rem;
   padding: 0.25rem 0.65rem;
   border: 1px solid var(--cockpit-border);
-  border-radius: 6px;
+  border-radius: var(--cockpit-radius-sm);
   background: transparent;
   color: var(--cockpit-text);
-  font-size: 0.85rem;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
   font-family: inherit;
   cursor: pointer;
   outline: none;
@@ -142,7 +154,10 @@
 
 .buttonSecondary:hover,
 .buttonSecondary:focus-visible {
-  background: var(--cockpit-hover, color-mix(in srgb, currentColor 8%, transparent));
+  background: var(
+    --cockpit-hover,
+    color-mix(in srgb, currentColor 8%, transparent)
+  );
 }
 
 .buttonPrimary {
@@ -152,11 +167,11 @@
   min-height: 2rem;
   padding: 0.25rem 0.65rem;
   border: 1px solid transparent;
-  border-radius: 6px;
+  border-radius: var(--cockpit-radius-sm);
   background: var(--cockpit-accent, #356ae6);
   color: var(--cockpit-on-accent, #ffffff);
-  font-size: 0.85rem;
-  font-weight: 500;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
   font-family: inherit;
   cursor: pointer;
   outline: none;
@@ -167,9 +182,11 @@
   filter: brightness(1.08);
 }
 
+/* The accent's text colour also reads on the danger colour: white on the
+   light theme's deep red, dark on the dark theme's light red. */
 .destructiveButton {
   background: var(--cockpit-danger);
-  color: #ffffff;
+  color: var(--cockpit-on-accent);
 }
 
 .destructiveButton:hover,

@@ -22,6 +22,9 @@
         html:not([data-theme]) { background-color: #faf9f5; }
         html[data-theme="auto"] { background-color: #faf9f5; }
       }
+      /* Cockpit routes paint the Cockpit's own background from the start. */
+      html[data-cockpit-theme="light"] { background-color: #f6f7fb; }
+      html[data-cockpit-theme="dark"] { background-color: #10141d; }
     </style>
     <script>
       // Apply theme before page renders to prevent flash
@@ -29,6 +32,19 @@
         var stored = localStorage.getItem('yep-anywhere-theme');
         var theme = stored || 'auto';
         document.documentElement.setAttribute('data-theme', theme);
+        // The start address and /cockpit open the Cockpit; paint its colours.
+        var path = location.pathname;
+        var cockpitTheme = 'auto';
+        var saved = null;
+        if (path !== '/' && path !== '/cockpit' && path.indexOf('/cockpit/') !== 0) return;
+        try {
+          saved = JSON.parse(localStorage.getItem('yep-anywhere-cockpit-appearance') || 'null');
+        } catch (e) {}
+        if (saved && (saved.theme === 'light' || saved.theme === 'dark')) cockpitTheme = saved.theme;
+        if (cockpitTheme === 'auto') {
+          cockpitTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-cockpit-theme', cockpitTheme);
       })();
     </script>
   </head>

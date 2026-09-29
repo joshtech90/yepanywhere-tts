@@ -298,3 +298,123 @@ export function CockpitProjectsView({ basePath }: CockpitProjectsViewProps) {
     </section>
   );
 }
+
+export interface CockpitHiddenViewProps {
+  basePath: string;
+  organization: CockpitOrganizationController;
+  shellKind: CockpitShellState["kind"];
+}
+
+/** Hidden (archived) sessions, each with a way back into the lists. */
+export function CockpitHiddenView({
+  basePath,
+  organization,
+  shellKind,
+}: CockpitHiddenViewProps) {
+  const { t } = useI18n();
+  const runtime = useCurrentSourceRuntime();
+  const navigation = createCockpitNavigation(basePath);
+  const projectsFeed = useProjects();
+  const sessionsFeed = useGlobalSessionsFeed({
+    limit: 100,
+    includeArchived: true,
+    includeStats: false,
+  });
+  const records = useSessionCollectionQueryRecords(sessionsFeed.query);
+  const summaryState = useClientSummaryState();
+  const menu = useCockpitSessionMenu(organization);
+  const [failed, setFailed] = useState<string | null>(null);
+  const rows = useMemo(
+    () =>
+      flattenCockpitCatalog(
+        createCockpitCatalog({
+          sourceKey: runtime.sourceKey,
+          projects: projectsFeed.projects,
+          sessions: records,
+          providerRuntimeBySessionId: summaryState.providerRuntime.bySessionId,
+          connection:
+            shellKind === "offline"
+              ? "offline"
+              : shellKind === "error"
+                ? "error"
+                : "online",
+          archived: "only",
+        }),
+      ),
+    [
+      projectsFeed.projects,
+      records,
+      runtime.sourceKey,
+      shellKind,
+      summaryState.providerRuntime.bySessionId,
+    ],
+  );
+
+  return (
+    <section className={styles.root} aria-labelledby="cockpit-list-title">
+      <header className={styles.header}>
+        <div className={styles.headingGroup}>
+          <h2 id="cockpit-list-title">{t("cockpitHiddenTitle")}</h2>
+        </div>
+      </header>
+      {failed && (
+        <p className={styles.notice} role="status">
+          {t("cockpitHiddenRestoreError")}
+        </p>
+      )}
+      {rows.length === 0 && !sessionsFeed.loading && (
+        <p className={styles.empty}>{t("cockpitHiddenEmpty")}</p>
+      )}
+      <ul className={styles.list}>
+        {rows.map(({ session, projectName }) => {
+          const title = session.title || t("cockpitUntitledSession");
+          return (
+            <li className={styles.projectRow} key={session.key}>
+              <div className={styles.rowGrow}>
+                <CockpitSessionRow
+                  href={
+                    session.projectId
+                      ? navigation.session(session.projectId, session.id)
+                      : navigation.sessions
+                  }
+                  onOpenMenu={menu.open}
+                  projectName={projectName}
+                  session={session}
+                />
+              </div>
+              <button
+                aria-label={t("cockpitHiddenRestoreLabel", { name: title })}
+                className={styles.restoreButton}
+                onClick={() => {
+                  setFailed(null);
+                  void organization
+                    .unarchiveSession(session.id)
+                    .then((ok) => {
+                      if (!ok) setFailed(session.id);
+                    });
+                }}
+                type="button"
+              >
+                {t("cockpitHiddenRestore")}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {(sessionsFeed.hasMore || sessionsFeed.loading) && (
+        <div className={styles.more}>
+          <button
+            disabled={sessionsFeed.loading}
+            onClick={() => void sessionsFeed.loadMore()}
+            type="button"
+          >
+            {sessionsFeed.loading
+              ? t("cockpitCatalogLoading")
+              : t("cockpitCatalogLoadMore")}
+          </button>
+        </div>
+      )}
+      {menu.element}
+    </section>
+  );
+}

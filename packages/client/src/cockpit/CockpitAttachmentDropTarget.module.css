@@ -7,7 +7,7 @@
   place-items: center;
   padding: 1rem;
   border: 2px dashed var(--cockpit-accent);
-  border-radius: 1rem;
+  border-radius: var(--cockpit-radius-lg);
   color: var(--cockpit-accent);
   background: color-mix(
     in srgb,
@@ -15,7 +15,7 @@
     transparent
   );
   backdrop-filter: blur(10px);
-  font-size: 0.82rem;
-  font-weight: 780;
+  font-size: var(--cockpit-text-md);
+  font-weight: var(--cockpit-weight-medium);
   pointer-events: none;
 }

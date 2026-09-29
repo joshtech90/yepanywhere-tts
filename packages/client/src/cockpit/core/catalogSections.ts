@@ -1,8 +1,4 @@
-import type {
-  CockpitCatalogProject,
-  CockpitCatalogSession,
-  CockpitCatalogView,
-} from "./catalog";
+import type { CockpitCatalogSession, CockpitCatalogView } from "./catalog";
 
 export interface CockpitFavoriteSession {
   session: CockpitCatalogSession;
@@ -11,32 +7,22 @@ export interface CockpitFavoriteSession {
 
 export interface CockpitCatalogSections {
   favorites: CockpitFavoriteSession[];
-  projects: CockpitCatalogProject[];
+  others: CockpitFavoriteSession[];
 }
 
 /**
- * Favourites lead the sidebar as one flat list across projects; every other
- * session stays in its project group. A group that only held favourites
- * disappears instead of showing as empty.
+ * The sidebar reads by time: favourites first, then every other session,
+ * each part newest first, with its project named on the row.
  */
 export function splitCockpitFavorites(
   catalog: CockpitCatalogView,
 ): CockpitCatalogSections {
   const favorites: CockpitFavoriteSession[] = [];
-  const projects: CockpitCatalogProject[] = [];
-  for (const project of catalog.projects) {
-    const rest = project.sessions.filter((session) => {
-      if (!session.pinned) return true;
-      favorites.push({ session, projectName: project.name });
-      return false;
-    });
-    if (rest.length === project.sessions.length) {
-      projects.push(project);
-    } else if (rest.length > 0) {
-      projects.push({ ...project, sessions: rest });
-    }
+  const others: CockpitFavoriteSession[] = [];
+  for (const row of flattenCockpitCatalog(catalog)) {
+    (row.session.pinned ? favorites : others).push(row);
   }
-  return { favorites, projects };
+  return { favorites, others };
 }
 
 function activityMs(value: string | undefined): number {

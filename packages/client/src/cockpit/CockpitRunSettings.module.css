@@ -6,9 +6,9 @@
 
 .label {
   color: var(--cockpit-muted);
-  font-size: 0.66rem;
-  font-weight: 750;
-  letter-spacing: 0.06em;
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
   text-transform: uppercase;
 }
 
@@ -17,11 +17,11 @@
   min-height: 2.6rem;
   padding: 0 0.7rem;
   border: 1px solid var(--cockpit-border-strong);
-  border-radius: 0.7rem;
+  border-radius: var(--cockpit-radius-md);
   color: var(--cockpit-text);
   background: var(--cockpit-surface);
   font: inherit;
-  font-size: 0.8rem;
+  font-size: var(--cockpit-text-sm);
 }
 
 .select:focus-visible {
@@ -43,8 +43,8 @@
   color: var(--cockpit-muted);
   background: var(--cockpit-surface);
   font: inherit;
-  font-size: 0.74rem;
-  font-weight: 650;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
   cursor: pointer;
 }
 
@@ -53,10 +53,12 @@
   color: var(--cockpit-text);
 }
 
+/* A chosen option looks the same in every choice group of the Cockpit;
+   the filled accent stays reserved for the action that starts something. */
 .segment[aria-checked="true"] {
   border-color: var(--cockpit-accent);
-  color: var(--cockpit-on-accent);
-  background: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
 }
 
 .segment:focus-visible {
@@ -72,7 +74,7 @@
 .hint {
   margin: 0;
   color: var(--cockpit-faint);
-  font-size: 0.7rem;
+  font-size: var(--cockpit-text-xs);
   line-height: 1.45;
 }
 

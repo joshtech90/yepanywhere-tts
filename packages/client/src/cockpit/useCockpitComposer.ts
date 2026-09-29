@@ -18,6 +18,7 @@ import {
   type ComposerUploadedAttachment,
 } from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
+import { sendCockpitDirectMessage } from "./cockpitSend";
 import type { PermissionMode, SessionMetadata, SessionStatus } from "../types";
 import {
   cockpitComposerDraftKey,
@@ -328,64 +329,16 @@ export function useCockpitComposer(
             submittedAt,
           ).tempId;
           sessionPort.setProcessState("in-turn");
-          if (sessionPort.status.owner === "none") {
-            const result = await runtime.transport.fetch<{
-              processId: string;
-              permissionMode: PermissionMode;
-              appliedPermissionMode?: PermissionMode;
-              modeVersion: number;
-              recapAfterSeconds?: number;
-            }>(
-              `/projects/${projectId}/sessions/${sessionPort.actualSessionId}/resume`,
-              {
-                method: "POST",
-                body: JSON.stringify({
-                  message: text,
-                  attachments: uploaded.length ? uploaded : undefined,
-                  tempId: pendingId,
-                  clientTimestamp: Date.parse(submittedAt),
-                  messageMetadata: metadata,
-                  mode: sessionPort.permissionMode,
-                  model: sessionPort.session?.model,
-                  provider: sessionPort.session?.provider,
-                  thinking: getThinkingSetting(),
-                  showThinking: getShowThinkingSetting(),
-                }),
-              },
-            );
-            sessionPort.setStatus({
-              owner: "self",
-              processId: result.processId,
-              permissionMode: result.permissionMode,
-              appliedPermissionMode: result.appliedPermissionMode,
-              modeVersion: result.modeVersion,
-              recapAfterSeconds: result.recapAfterSeconds,
-            });
-          } else {
-            const result = await runtime.transport.fetch<{
-              restarted?: boolean;
-              processId?: string;
-            }>(`/sessions/${sessionPort.actualSessionId}/messages`, {
-              method: "POST",
-              body: JSON.stringify({
-                message: text,
-                mode: sessionPort.permissionMode,
-                attachments: uploaded.length ? uploaded : undefined,
-                tempId: pendingId,
-                thinking: getThinkingSetting(),
-                showThinking: getShowThinkingSetting(),
-                clientTimestamp: Date.parse(submittedAt),
-                messageMetadata: metadata,
-              }),
-            });
-            if (result.restarted && result.processId) {
-              sessionPort.setStatus({
-                owner: "self",
-                processId: result.processId,
-              });
-              sessionPort.reconnectStream();
-            }
-          }
+          await sendCockpitDirectMessage({
+            transport: runtime.transport,
+            projectId,
+            port: sessionPort,
+            text,
+            tempId: pendingId,
+            submittedAt,
+            attachments: uploaded,
+            messageMetadata: metadata,
+          });
         }
 
         rememberCockpitPrompt(runtime.sourceKey, text, submittedAt);

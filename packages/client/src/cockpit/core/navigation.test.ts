@@ -9,6 +9,7 @@ describe("Cockpit navigation", () => {
       sessions: "/cockpit?view=sessions",
       projects: "/cockpit?view=projects",
       classicSessions: "/sessions",
+      hidden: "/cockpit?view=hidden",
       newSession: "/cockpit?view=new",
       settings: "/settings",
     });
@@ -33,6 +34,7 @@ describe("Cockpit navigation", () => {
       sessions: "/-/relay/studio/cockpit?view=sessions",
       projects: "/-/relay/studio/cockpit?view=projects",
       classicSessions: "/-/relay/studio/sessions",
+      hidden: "/-/relay/studio/cockpit?view=hidden",
       newSession: "/-/relay/studio/cockpit?view=new",
       settings: "/-/relay/studio/settings",
     });

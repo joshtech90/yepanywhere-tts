@@ -7,7 +7,7 @@
   padding: 0;
   place-items: center;
   border: 0;
-  border-radius: 0.6rem;
+  border-radius: var(--cockpit-radius-sm);
   color: var(--cockpit-faint);
   background: transparent;
   font: inherit;

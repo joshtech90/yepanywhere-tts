@@ -12,7 +12,7 @@
     var(--cockpit-surface-raised) 86%,
     transparent
   );
-  font-size: 0.75rem;
+  font-size: var(--cockpit-text-sm);
 }
 
 .copy {
@@ -37,11 +37,11 @@
   min-height: 2.25rem;
   padding: 0 0.75rem;
   border: 1px solid var(--cockpit-border-strong);
-  border-radius: 0.68rem;
+  border-radius: var(--cockpit-radius-sm);
   color: var(--cockpit-text);
   background: var(--cockpit-surface);
   font: inherit;
-  font-weight: 700;
+  font-weight: var(--cockpit-weight-medium);
   text-decoration: none;
   cursor: pointer;
 }
@@ -52,23 +52,27 @@
 }
 
 @media (max-width: 700px) {
+  /* One slim line on a phone: the headline and both actions; the details
+     wait behind "Update ansehen". */
   .root {
     min-height: 0;
-    padding: 0.6rem 0.75rem;
-    align-items: flex-start;
-    flex-direction: column;
+    padding: 0.4rem 0.4rem 0.4rem 0.75rem;
     gap: 0.5rem;
+    font-size: var(--cockpit-text-xs);
+  }
+
+  .detail {
+    display: none;
   }
 
   .actions {
-    width: 100%;
+    gap: 0.3rem;
   }
 
   .actions a,
   .actions button {
-    min-height: 2.75rem;
-    flex: 1;
-    justify-content: center;
+    min-height: 2.3rem;
+    padding: 0 0.6rem;
   }
 }
 

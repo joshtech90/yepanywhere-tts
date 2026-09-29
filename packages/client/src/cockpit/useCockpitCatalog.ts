@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useGlobalSessionsFeed } from "../hooks/useGlobalSessionsFeed";
 import { useProjects } from "../hooks/useProjects";
@@ -60,6 +60,17 @@ export function useCockpitCatalog(
     [ordered.starred, ordered.recent, ordered.older],
   );
   const summaryState = useClientSummaryState();
+  const hasExternal = orderedSessions.some(
+    (session) => session.ownership?.owner === "external",
+  );
+  const [now, setNow] = useState(() => Date.now());
+  // External freshness expires with time alone, without another event.
+  useEffect(() => {
+    if (!hasExternal) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [hasExternal]);
   const catalog = useMemo(
     () =>
       createCockpitCatalog({
@@ -69,8 +80,10 @@ export function useCockpitCatalog(
         orderedSessionIds: orderedSessions.map((session) => session.id),
         providerRuntimeBySessionId: summaryState.providerRuntime.bySessionId,
         connection: connectionKind(shellKind),
+        now,
       }),
     [
+      now,
       runtime.sourceKey,
       projectsFeed.projects,
       orderedSessions,

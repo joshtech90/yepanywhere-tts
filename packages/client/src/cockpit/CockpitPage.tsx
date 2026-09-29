@@ -7,7 +7,12 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { Link, useParams, useSearchParams } from "react-router-dom";
+import {
+  Link,
+  useLocation,
+  useParams,
+  useSearchParams,
+} from "react-router-dom";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useMediaQuery } from "../hooks/useMediaQuery";
@@ -18,8 +23,17 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
-import { CockpitProjectsView, CockpitSessionsView } from "./CockpitListViews";
+import {
+  CockpitHiddenView,
+  CockpitProjectsView,
+  CockpitSessionsView,
+} from "./CockpitListViews";
+import {
+  CockpitDrawerOpenerProvider,
+  CockpitMobileDrawer,
+} from "./CockpitMobileDrawer";
 import { CockpitNewSession } from "./CockpitNewSession";
+import { CockpitQuote } from "./CockpitQuote";
 import styles from "./CockpitPage.module.css";
 import { CockpitSearchPanel } from "./CockpitSearchPanel";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
@@ -29,7 +43,11 @@ import {
 } from "./CockpitShortcutHelp";
 import type { CockpitResolvedTheme } from "./core/appearance";
 import { markCockpitSessionWorkingElsewhere } from "./core/catalogSections";
-import { createCockpitNavigation } from "./core/navigation";
+import {
+  clearCockpitReturn,
+  createCockpitNavigation,
+  rememberCockpitReturn,
+} from "./core/navigation";
 import {
   deriveCockpitShellState,
   type CockpitShellState,
@@ -99,6 +117,15 @@ function AppearanceIcon() {
   );
 }
 
+function HiddenIcon() {
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M3.5 12s3-6 8.5-6c1.6 0 3 .5 4.2 1.2M20.5 12s-3 6-8.5 6c-1.6 0-3-.5-4.2-1.2" />
+      <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M4 4l16 16" />
+    </svg>
+  );
+}
+
 function StateIcon({ kind }: { kind: CockpitShellState["kind"] }) {
   if (kind === "loading") {
     return <span className={styles.loadingSpinner} aria-hidden="true" />;
@@ -154,6 +181,7 @@ export function CockpitShell({
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchFocusRequested, setSearchFocusRequested] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const rootRef = useRef<HTMLElement>(null);
   const searchTriggerRef = useRef<HTMLButtonElement>(null);
   const searchFocusReturnRef = useRef<HTMLElement | null>(null);
@@ -166,16 +194,24 @@ export function CockpitShell({
   );
   const viewport = useCockpitViewportGeometry();
   const mobileLayout = useMediaQuery("(max-width: 700px)");
+  const location = useLocation();
+  // Back in the Cockpit, a way back offered by the settings is spent.
+  useEffect(() => clearCockpitReturn(), []);
+  // Every navigation, also from inside the drawer, closes the drawer.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: location.key is the trigger
+  useEffect(() => setDrawerOpen(false), [location.key]);
+  const openDrawer = useCallback(() => setDrawerOpen(true), []);
+  const closeDrawer = useCallback(() => setDrawerOpen(false), []);
   const sidebarWidth = useCockpitSidebarWidth(
     !mobileLayout,
     t("cockpitSidebarResize"),
   );
   const openSearch = useCallback(
     (focusInput: boolean, focusOrigin: HTMLElement | null) => {
+      // Without a visible origin the close effect picks the target: the
+      // session's menu button on a phone, otherwise the search button.
       searchFocusReturnRef.current =
-        focusOrigin?.isConnected === true
-          ? focusOrigin
-          : searchTriggerRef.current;
+        focusOrigin?.isConnected === true ? focusOrigin : null;
       setSearchFocusRequested(focusInput);
       setSearchOpen(true);
     },
@@ -218,14 +254,21 @@ export function CockpitShell({
     searchWasOpenRef.current = false;
     const focusTarget = searchFocusReturnRef.current;
     searchFocusReturnRef.current = null;
+    // The phone session hides the bottom bar; its header menu button is the
+    // visible way back into the navigation.
+    const drawerOpener = rootRef.current?.querySelector<HTMLElement>(
+      "[data-cockpit-drawer-opener]",
+    );
     const destination =
       focusTarget?.isConnected === true
         ? focusTarget
-        : searchTriggerRef.current;
+        : (drawerOpener ?? searchTriggerRef.current);
     destination?.focus({ preventScroll: true });
   }, [searchOpen]);
   useCockpitShortcuts({
+    drawerOpen,
     navigation,
+    onCloseDrawer: closeDrawer,
     onCloseHelp: closeShortcuts,
     onCloseSearch: closeSearch,
     onOpenHelp: openShortcutsFromShortcut,
@@ -243,6 +286,8 @@ export function CockpitShell({
     icon: ReactNode;
     /** Leaves the Cockpit; a new tab keeps the Cockpit open to return to. */
     external?: boolean;
+    /** Leaves the Cockpit in the same window, which remembers the way back. */
+    leaves?: boolean;
   }> = [
     {
       href: navigation.sessions,
@@ -264,16 +309,45 @@ export function CockpitShell({
     },
     {
       href: navigation.settings,
-      label: t("cockpitSettingsNewTab"),
+      // Only the new-tab variant announces a new tab.
+      label: mobileLayout ? t("sidebarSettings") : t("cockpitSettingsNewTab"),
       shortLabel: t("cockpitNavShortSettings"),
       icon: <SettingsIcon />,
-      external: true,
+      // An installed phone app has no tabs: a new window there had no way
+      // back to the Cockpit. Phones stay in the window and remember the way.
+      external: !mobileLayout,
+      leaves: mobileLayout,
     },
   ];
+  // The sidebar marks the view on screen, like the search button does, also
+  // when the view carries a project filter (?view=new&project=...).
+  const currentView = new URLSearchParams(location.search).get("view");
+  const isCurrentView = (href: string) => {
+    const target = new URL(href, "https://cockpit.invalid");
+    const view = target.searchParams.get("view");
+    return (
+      view !== null &&
+      view === currentView &&
+      target.pathname === location.pathname
+    );
+  };
+  const leaveCockpit = () => {
+    rememberCockpitReturn(`${location.pathname}${location.search}`);
+    navigateFromSearch();
+  };
+  // The open session on a phone: no bottom bar; the header opens a drawer
+  // with the navigation and the latest sessions (Joscha 26.09.2026).
+  const sessionDrawer =
+    mobileLayout && hasDetail && detailView === "session" && !searchOpen;
+  // Leaving the phone session (search, wider screen) forgets an open drawer,
+  // so it does not reappear on the way back.
+  useEffect(() => {
+    if (!sessionDrawer) setDrawerOpen(false);
+  }, [sessionDrawer]);
   const stateCopy = {
     empty: {
-      title: t("cockpitEmptyTitle"),
-      body: t("cockpitEmptyBody"),
+      title: "",
+      body: "",
       status: t("cockpitStatusConnected"),
     },
     loading: {
@@ -297,8 +371,21 @@ export function CockpitShell({
     <main
       className={styles.root}
       data-accent={accent}
+      data-session-drawer={sessionDrawer ? "true" : undefined}
       data-keyboard={viewport.keyboardOpen ? "open" : "closed"}
       data-theme={resolvedTheme}
+      // A file dropped beside a drop surface would make the browser open it
+      // and leave the Cockpit; refuse it instead.
+      onDragOver={(event) => {
+        if (event.defaultPrevented) return;
+        if (!Array.from(event.dataTransfer.types).includes("Files")) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "none";
+      }}
+      onDrop={(event) => {
+        if (event.defaultPrevented) return;
+        if (event.dataTransfer.files.length > 0) event.preventDefault();
+      }}
       ref={rootRef}
       style={{ ...viewport.style, ...sidebarWidth.style }}
     >
@@ -342,10 +429,19 @@ export function CockpitShell({
               aria-keyshortcuts={
                 destination.href === navigation.newSession ? "N" : undefined
               }
+              aria-current={
+                isCurrentView(destination.href) ? "page" : undefined
+              }
               aria-label={destination.label}
               className={styles.navigationItem}
               key={destination.href}
-              onClick={destination.external ? undefined : navigateFromSearch}
+              onClick={
+                destination.external
+                  ? undefined
+                  : destination.leaves
+                    ? leaveCockpit
+                    : navigateFromSearch
+              }
               rel={destination.external ? "noopener" : undefined}
               target={destination.external ? "_blank" : undefined}
               title={destination.external ? destination.label : undefined}
@@ -353,7 +449,9 @@ export function CockpitShell({
             >
               <span className={styles.icon}>{destination.icon}</span>
               <span aria-hidden="true" className={styles.labelLong}>
-                {destination.external ? t("sidebarSettings") : destination.label}
+                {destination.external
+                  ? t("sidebarSettings")
+                  : destination.label}
               </span>
               <span aria-hidden="true" className={styles.labelShort}>
                 {destination.shortLabel}
@@ -367,28 +465,40 @@ export function CockpitShell({
           />
         </nav>
 
-        <details
-          aria-label={t("cockpitAppearanceLabel")}
-          className={styles.desktopAppearance}
-        >
-          <summary>
-            <AppearanceIcon />
-            <span>{t("cockpitAppearanceLabel")}</span>
-          </summary>
-          <div className={styles.desktopAppearancePanel}>
-            <CockpitAppearanceControls
-              accent={accent}
-              onAccentChange={onAccentChange}
-              onThemeChange={onThemeChange}
-              theme={theme}
-            />
-          </div>
-        </details>
+        <div className={styles.sidebarFooter}>
+          <details
+            aria-label={t("cockpitAppearanceLabel")}
+            className={styles.desktopAppearance}
+          >
+            <summary>
+              <span className={styles.icon}>
+                <AppearanceIcon />
+              </span>
+              <span>{t("cockpitAppearanceLabel")}</span>
+            </summary>
+            <div className={styles.desktopAppearancePanel}>
+              <CockpitAppearanceControls
+                accent={accent}
+                onAccentChange={onAccentChange}
+                onThemeChange={onThemeChange}
+                theme={theme}
+              />
+            </div>
+          </details>
+          <Link
+            aria-current={isCurrentView(navigation.hidden) ? "page" : undefined}
+            className={styles.footerLink}
+            onClick={navigateFromSearch}
+            to={navigation.hidden}
+          >
+            <span className={styles.icon}>
+              <HiddenIcon />
+            </span>
+            <span>{t("cockpitHiddenNav")}</span>
+          </Link>
+        </div>
         {sidebarWidth.handleProps && (
-          <div
-            className={resizeStyles.handle}
-            {...sidebarWidth.handleProps}
-          />
+          <div className={resizeStyles.handle} {...sidebarWidth.handleProps} />
         )}
       </aside>
 
@@ -399,6 +509,65 @@ export function CockpitShell({
         triggerRef={shortcutTriggerRef}
       />
 
+      <CockpitMobileDrawer
+        label={t("cockpitNavigationAria")}
+        onClose={closeDrawer}
+        open={drawerOpen && sessionDrawer}
+      >
+        <div className={styles.drawerHeader}>
+          <Link className={styles.drawerTitle} to={navigation.cockpit}>
+            Cockpit
+          </Link>
+          <button
+            aria-label={t("cockpitGlobalSearchNav")}
+            className={styles.drawerIconButton}
+            onClick={() => {
+              setDrawerOpen(false);
+              openSearch(true, null);
+            }}
+            title={t("cockpitGlobalSearchNav")}
+            type="button"
+          >
+            <SearchIcon />
+          </button>
+        </div>
+        <nav
+          aria-label={t("cockpitNavigationAria")}
+          className={styles.drawerNav}
+        >
+          {destinations.map((destination) => (
+            <Link
+              className={styles.drawerItem}
+              key={destination.href}
+              onClick={destination.leaves ? leaveCockpit : undefined}
+              to={destination.href}
+            >
+              <span className={styles.icon}>{destination.icon}</span>
+              <span>{destination.label}</span>
+            </Link>
+          ))}
+          <Link className={styles.drawerItem} to={navigation.hidden}>
+            <span className={styles.icon}>
+              <HiddenIcon />
+            </span>
+            <span>{t("cockpitHiddenNav")}</span>
+          </Link>
+        </nav>
+        <div className={styles.drawerCatalog}>
+          <CockpitCatalog
+            basePath={basePath}
+            catalog={catalogData.catalog}
+            error={catalogData.error}
+            hasMore={catalogData.hasMore}
+            loading={catalogData.loading}
+            onLoadMore={catalogData.loadMore}
+            onQueryChange={setCatalogQuery}
+            organization={catalogData.organization}
+            query={catalogQuery}
+          />
+        </div>
+      </CockpitMobileDrawer>
+
       <section
         aria-labelledby={hasDetail || searchOpen ? undefined : "cockpit-title"}
         className={styles.workspace}
@@ -406,10 +575,7 @@ export function CockpitShell({
       >
         {notice}
         <header className={styles.header} hidden={hasDetail || searchOpen}>
-          <div>
-            <div className={styles.eyebrow}>{t("cockpitEyebrow")}</div>
-            <h1 id="cockpit-title">Cockpit</h1>
-          </div>
+          <h1 id="cockpit-title">Cockpit</h1>
           <div className={styles.headerActions}>
             <span
               className={styles.connectionStatus}
@@ -418,6 +584,14 @@ export function CockpitShell({
               <span aria-hidden="true" />
               {stateCopy.status}
             </span>
+            <Link
+              aria-label={t("cockpitHiddenNav")}
+              className={styles.mobileHiddenLink}
+              title={t("cockpitHiddenNav")}
+              to={navigation.hidden}
+            >
+              <HiddenIcon />
+            </Link>
             <details className={styles.mobileAppearance}>
               <summary aria-label={t("cockpitAppearanceLabel")}>
                 <AppearanceIcon />
@@ -455,7 +629,11 @@ export function CockpitShell({
               onNavigate={navigateFromSearch}
             />
           ) : hasDetail ? (
-            children
+            <CockpitDrawerOpenerProvider
+              value={sessionDrawer ? openDrawer : null}
+            >
+              {children}
+            </CockpitDrawerOpenerProvider>
           ) : (
             <>
               {mobileLayout && (
@@ -478,17 +656,25 @@ export function CockpitShell({
                 data-catalog={hasCatalog ? "true" : "false"}
                 data-state={shellState.kind}
               >
-                <span className={styles.stateIcon}>
-                  <StateIcon kind={shellState.kind} />
-                </span>
-                <div
-                  aria-live="polite"
-                  role={shellState.kind === "error" ? "alert" : "status"}
-                >
-                  <p className={styles.stateKicker}>{stateCopy.status}</p>
-                  <h2>{stateCopy.title}</h2>
-                  <p className={styles.stateBody}>{stateCopy.body}</p>
-                </div>
+                {shellState.kind === "empty" ? (
+                  // Nothing to report: a line of German literature instead of
+                  // an explanation (Joscha 26.09.2026).
+                  <CockpitQuote />
+                ) : (
+                  <>
+                    <span className={styles.stateIcon}>
+                      <StateIcon kind={shellState.kind} />
+                    </span>
+                    <div
+                      aria-live="polite"
+                      role={shellState.kind === "error" ? "alert" : "status"}
+                    >
+                      <p className={styles.stateKicker}>{stateCopy.status}</p>
+                      <h2>{stateCopy.title}</h2>
+                      <p className={styles.stateBody}>{stateCopy.body}</p>
+                    </div>
+                  </>
+                )}
                 <Link
                   className={styles.secondaryAction}
                   to={navigation.classicSessions}
@@ -515,7 +701,8 @@ function CockpitSourcePage() {
   const [searchParams] = useSearchParams();
   const view = sessionId ? null : searchParams.get("view");
   const newSession = view === "new";
-  const listView = view === "sessions" || view === "projects";
+  const listView =
+    view === "sessions" || view === "projects" || view === "hidden";
   // Subscribe to the derived primitive only: getSnapshot() returns a fresh
   // object on every call, which makes useSyncExternalStore loop forever
   // (React error 185). useActivityBusState selects `.state` for the same reason.
@@ -565,6 +752,12 @@ function CockpitSourcePage() {
           key={searchParams.get("project") ?? ""}
           organization={catalogData.organization}
           projectId={searchParams.get("project")}
+          shellKind={shellKind}
+        />
+      ) : view === "hidden" ? (
+        <CockpitHiddenView
+          basePath={basePath}
+          organization={catalogData.organization}
           shellKind={shellKind}
         />
       ) : view === "projects" ? (

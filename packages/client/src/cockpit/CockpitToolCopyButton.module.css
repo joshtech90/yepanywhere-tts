@@ -6,7 +6,7 @@
   padding: 0;
   place-items: center;
   border: 1px solid var(--cockpit-border);
-  border-radius: 0.58rem;
+  border-radius: var(--cockpit-radius-sm);
   color: var(--cockpit-muted);
   background: var(--cockpit-surface);
   cursor: pointer;

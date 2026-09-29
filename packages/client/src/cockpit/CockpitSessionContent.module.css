@@ -27,7 +27,7 @@
   margin: 1.35em 0 0.55em;
   color: var(--cockpit-text);
   line-height: 1.22;
-  letter-spacing: -0.025em;
+  letter-spacing: var(--cockpit-tracking-tight);
 }
 
 .renderedMarkdown :where(h1, h2) {
@@ -64,7 +64,7 @@
   padding: 0.85rem;
   overflow: auto;
   border: 1px solid var(--cockpit-border);
-  border-radius: 0.78rem;
+  border-radius: var(--cockpit-radius-md);
   background: color-mix(in srgb, var(--cockpit-bg) 76%, transparent);
   font-size: 0.82em;
   line-height: 1.55;
@@ -72,7 +72,7 @@
 
 .renderedMarkdown :not(pre) > code {
   padding: 0.12em 0.32em;
-  border-radius: 0.35rem;
+  border-radius: var(--cockpit-radius-xs);
   background: var(--cockpit-hover);
   font-size: 0.88em;
 }
@@ -106,9 +106,9 @@
   padding: 0 0.3rem;
   align-items: center;
   gap: 0.4rem;
-  border-radius: 0.5rem;
-  font-size: 0.7rem;
-  font-weight: 650;
+  border-radius: var(--cockpit-radius-xs);
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
   cursor: pointer;
   list-style: none;
 }
@@ -145,13 +145,13 @@
   padding: 0.1rem 0 0.1rem 0.85rem;
   border-left: 2px solid var(--cockpit-border);
   color: var(--cockpit-muted);
-  font-size: 0.74rem;
+  font-size: var(--cockpit-text-sm);
   line-height: 1.58;
 }
 
 .interrupted {
   margin: 0.85rem 0 0;
   color: var(--cockpit-warning);
-  font-size: 0.7rem;
-  font-weight: 700;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
 }
