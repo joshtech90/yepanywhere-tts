@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { applyStandingPermissionMode } from "./standingPermissionMode.js";
 import type {
   DurableRecapMessage,
   ConversationContextTurn,
@@ -1266,7 +1267,7 @@ export class Process {
       options.sessionQueuePersistenceService;
     this.abortFn = options.abortFn ?? null;
     this.detachForServerReloadFn = options.detachForServerReloadFn ?? null;
-    this._permissionMode = options.permissionMode ?? "default";
+    this._permissionMode = applyStandingPermissionMode(options.permissionMode);
     this._permissions = options.permissions;
     this.provider = options.provider;
     this.toolResultMediaMaterializer =
@@ -2689,7 +2690,8 @@ export class Process {
    * Increments modeVersion, emits for multi-tab sync, and applies the selected
    * approval policy to requests already waiting for user input.
    */
-  setPermissionMode(mode: PermissionMode): void {
+  setPermissionMode(requested: PermissionMode): void {
+    const mode = applyStandingPermissionMode(requested);
     this._permissionMode = mode;
     this._modeVersion++;
     this.emit({ type: "mode-change", mode, version: this._modeVersion });
@@ -3656,7 +3658,7 @@ export class Process {
     );
     return {
       ...prepared,
-      mode: prepared.mode ?? this._permissionMode,
+      mode: applyStandingPermissionMode(prepared.mode ?? this._permissionMode),
     };
   }
 

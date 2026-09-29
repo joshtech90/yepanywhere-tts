@@ -1,4 +1,5 @@
 import { ConversationSubscriptions } from "./experimental/conversation-subscriptions.js";
+import { setStandingPermissionModeSource } from "./supervisor/standingPermissionMode.js";
 import { ComputerControlService } from "./computer-control/service.js";
 import { createComputerControlRoutes } from "./routes/computer-control.js";
 import { createComputerControlReleaseRoutes } from "./routes/computer-control-releases.js";
@@ -641,6 +642,10 @@ export function createApp(options: AppOptions): AppResult {
       options.serverSettingsService?.getSetting("subagentMaxDepth");
     return configured === undefined ? DEFAULT_SUBAGENT_MAX_DEPTH : configured;
   };
+  const getStandingPermissionMode = () =>
+    options.serverSettingsService?.getSetting("newSessionDefaults")
+      ?.permissionMode;
+  setStandingPermissionModeSource(getStandingPermissionMode);
   configureProviderRuntime({
     codexCliPath: options.codexCliPath,
     getClaudeAdditionalModels: () =>
@@ -1658,9 +1663,7 @@ export function createApp(options: AppOptions): AppResult {
           : undefined,
     idleTimeoutMs: options.idleTimeoutMs,
     defaultPermissionMode: options.defaultPermissionMode,
-    getStandingPermissionMode: () =>
-      options.serverSettingsService?.getSetting("newSessionDefaults")
-        ?.permissionMode,
+    getStandingPermissionMode: getStandingPermissionMode,
     eventBus: options.eventBus,
     sessionMetadataService: options.sessionMetadataService,
     notificationService: options.notificationService,

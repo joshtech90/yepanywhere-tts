@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { resolveStandingPermissionMode } from "./standingPermissionMode.js";
 import {
   DEFAULT_PROMPT_CACHE_KEEPALIVE_INACTIVITY_MINUTES,
   type CacheMissBillingSettings,
@@ -340,20 +341,6 @@ export function shouldYaOrchestrateCompactThreshold(
     forceYaOrchestratedCompaction === true ||
     provider?.supportsNativeCompactThreshold !== true
   );
-}
-
-export function resolveStandingPermissionMode(
-  requested: PermissionMode | undefined,
-  standing: PermissionMode | undefined,
-  fallback: PermissionMode,
-): PermissionMode {
-  if (
-    standing === "bypassPermissions" &&
-    (requested === undefined || requested === "default")
-  ) {
-    return "bypassPermissions";
-  }
-  return requested ?? standing ?? fallback;
 }
 
 function getStaleInTurnThresholdMs(provider: ProviderName): number {
