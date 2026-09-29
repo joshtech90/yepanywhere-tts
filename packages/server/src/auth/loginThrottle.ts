@@ -21,7 +21,8 @@ export const PUBLIC_LOGIN_POLICY: LoginThrottlePolicy = {
   maxFailures: 5,
   windowMs: 15 * 60_000,
   lockMs: 15 * 60_000,
-  maxLockMs: 24 * 60 * 60_000,
+  // Kept short: anyone on the internet can trigger a public lockout.
+  maxLockMs: 2 * 60 * 60_000,
 };
 
 export const PRIVATE_LOGIN_POLICY: LoginThrottlePolicy = {
@@ -33,6 +34,8 @@ export const PRIVATE_LOGIN_POLICY: LoginThrottlePolicy = {
 
 interface BucketState {
   failures: number[];
+  /** Attempts whose password check is still running. */
+  pending: number;
   lockedUntil: number;
   lockouts: number;
 }
@@ -51,17 +54,46 @@ export class LoginThrottle {
     return Math.max(0, state.lockedUntil - this.now());
   }
 
-  recordFailure(key: string, policy: LoginThrottlePolicy): void {
+  /**
+   * Reserve an attempt before the password is checked, so parallel requests
+   * cannot all slip past the limit. Returns false when the bucket is locked
+   * or its remaining attempts are already in flight; every true must be
+   * followed by exactly one recordFailure or recordSuccess.
+   */
+  tryBegin(key: string, policy: LoginThrottlePolicy): boolean {
     const now = this.now();
+    const state = this.bucket(key);
+    if (state.lockedUntil > now) return false;
+    state.failures = state.failures.filter((at) => now - at < policy.windowMs);
+    if (state.failures.length + state.pending >= policy.maxFailures) {
+      return false;
+    }
+    state.pending += 1;
+    return true;
+  }
+
+  private bucket(key: string): BucketState {
     let state = this.buckets.get(key);
     if (!state) {
       if (this.buckets.size >= MAX_BUCKETS) {
-        const oldest = this.buckets.keys().next().value;
-        if (oldest !== undefined) this.buckets.delete(oldest);
+        // Evict an idle bucket; never one with attempts in flight.
+        for (const [candidate, value] of this.buckets) {
+          if (value.pending === 0) {
+            this.buckets.delete(candidate);
+            break;
+          }
+        }
       }
-      state = { failures: [], lockedUntil: 0, lockouts: 0 };
+      state = { failures: [], pending: 0, lockedUntil: 0, lockouts: 0 };
       this.buckets.set(key, state);
     }
+    return state;
+  }
+
+  recordFailure(key: string, policy: LoginThrottlePolicy): void {
+    const now = this.now();
+    const state = this.bucket(key);
+    state.pending = Math.max(0, state.pending - 1);
     state.failures = state.failures.filter((at) => now - at < policy.windowMs);
     state.failures.push(now);
     if (state.failures.length >= policy.maxFailures) {
@@ -76,7 +108,18 @@ export class LoginThrottle {
   }
 
   recordSuccess(key: string): void {
-    this.buckets.delete(key);
+    const state = this.buckets.get(key);
+    if (!state) return;
+    state.pending = Math.max(0, state.pending - 1);
+    state.failures = [];
+    state.lockouts = 0;
+    if (state.pending === 0) this.buckets.delete(key);
+  }
+
+  /** An attempt that ended without a password verdict (e.g. bad request). */
+  release(key: string): void {
+    const state = this.buckets.get(key);
+    if (state) state.pending = Math.max(0, state.pending - 1);
   }
 }
 

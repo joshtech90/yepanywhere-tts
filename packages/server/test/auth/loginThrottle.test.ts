@@ -105,4 +105,54 @@ describe("POST /login throttling", () => {
     expect(locked.status).toBe(429);
     expect(Number(locked.headers.get("Retry-After"))).toBeGreaterThan(0);
   });
+
+  it("counts parallel attempts before any password check finishes", async () => {
+    const routes = createAuthRoutes({
+      authService,
+      loginThrottle: new LoginThrottle(),
+    });
+    const attempts = await Promise.all(
+      Array.from({ length: 25 }, () =>
+        routes.request("/login", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Tailscale-Funnel-Request": "?1",
+          },
+          body: JSON.stringify({ password: "wrong" }),
+        }),
+      ),
+    );
+    const checked = attempts.filter((res) => res.status === 401).length;
+    expect(checked).toBe(PUBLIC_LOGIN_POLICY.maxFailures);
+    expect(attempts.filter((res) => res.status === 429)).toHaveLength(
+      25 - PUBLIC_LOGIN_POLICY.maxFailures,
+    );
+  });
+
+  it("refuses oversized auth bodies before reading them", async () => {
+    const routes = createAuthRoutes({ authService });
+    const res = await routes.request("/enable", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: "x".repeat(64 * 1024) }),
+    });
+    expect(res.status).toBe(413);
+  });
+});
+
+describe("unreadable auth.json", () => {
+  it("fails closed instead of switching auth off", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-broken-"));
+    const file = path.join(dir, "auth.json");
+    await fs.writeFile(file, "{ not json");
+    const service = new AuthService({ dataDir: dir, cookieSecret: "s" });
+    await service.initialize();
+
+    expect(service.isLoadFailed()).toBe(true);
+    expect(service.isEnabled()).toBe(true);
+    await service.flushPendingWrites();
+    expect(await fs.readFile(file, "utf8")).toBe("{ not json");
+    await fs.rm(dir, { recursive: true, force: true });
+  });
 });

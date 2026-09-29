@@ -88,6 +88,11 @@ export function createAuthMiddleware(
       return;
     }
 
+    // An unreadable auth.json must never mean "auth off".
+    if (authService.isLoadFailed?.()) {
+      return c.json({ error: "Authentication state could not be loaded" }, 503);
+    }
+
     const desktopSession = getCookie(c, DESKTOP_SESSION_COOKIE_NAME);
     if (desktopBootstrapService?.validateSession(desktopSession)) {
       c.set("authenticated", true);

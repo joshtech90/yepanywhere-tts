@@ -25,7 +25,16 @@ export function isLoopbackDesktopRequest(
 ): boolean {
   const incoming = c.env?.incoming;
   const socket = incoming?.socket;
+  // A local reverse proxy (tailscale serve/funnel) also connects from
+  // loopback; its forwarding headers show the caller is not on this machine.
+  const proxied = [
+    "x-forwarded-for",
+    "forwarded",
+    "tailscale-funnel-request",
+    "tailscale-user-login",
+  ].some((name) => c.req.header(name) !== undefined);
   return (
+    !proxied &&
     isLoopbackAddress(socket?.remoteAddress) &&
     isLoopbackAddress(socket?.localAddress)
   );

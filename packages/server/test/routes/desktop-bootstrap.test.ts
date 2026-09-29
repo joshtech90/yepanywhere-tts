@@ -101,6 +101,27 @@ describe("desktop bootstrap routes", () => {
     expect(wrongSecret.status).toBe(404);
   });
 
+  it("treats a local reverse proxy (tailscale funnel) as not local", async () => {
+    const routes = createDesktopBootstrapRoutes(
+      new DesktopBootstrapService({ masterSecret: MASTER_SECRET }),
+    );
+
+    const proxied = await routes.request(
+      "http://127.0.0.1/mint",
+      {
+        method: "POST",
+        headers: {
+          "x-yep-desktop-bootstrap-secret": MASTER_SECRET,
+          "tailscale-funnel-request": "?1",
+          "x-forwarded-for": "203.0.113.9",
+        },
+      },
+      socketBindings(),
+    );
+
+    expect(proxied.status).toBe(404);
+  });
+
   it("returns a bootstrapped dashboard to its saved same-origin route", async () => {
     const service = new DesktopBootstrapService({
       masterSecret: MASTER_SECRET,

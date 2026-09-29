@@ -4,6 +4,7 @@
 
 import * as crypto from "node:crypto";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import {
   DESKTOP_SESSION_COOKIE_NAME,
@@ -14,6 +15,7 @@ import type { LimitedUsersService } from "./LimitedUsersService.js";
 import { LoginThrottle, loginThrottleKey } from "./loginThrottle.js";
 
 const defaultLoginThrottle = new LoginThrottle();
+const AUTH_MAX_BODY_BYTES = 16 * 1024;
 
 export const SESSION_COOKIE_NAME = "yep-anywhere-session";
 
@@ -85,6 +87,10 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     loginThrottle = defaultLoginThrottle,
   } = deps;
 
+  // Auth requests are small and reachable without a session; never read an
+  // unbounded body before deciding what to do with it.
+  app.use("*", bodyLimit({ maxSize: AUTH_MAX_BODY_BYTES }));
+
   // Every failed password answer counts; a locked bucket gets 429 before the
   // password is even checked (./loginThrottle.ts).
   app.use("/login", async (c, next) => {
@@ -94,14 +100,20 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     const { key, policy } = loginThrottleKey(remoteAddress, (name) =>
       c.req.header(name),
     );
-    const waitMs = loginThrottle.retryAfterMs(key);
-    if (waitMs > 0) {
-      c.header("Retry-After", String(Math.ceil(waitMs / 1000)));
+    if (!loginThrottle.tryBegin(key, policy)) {
+      const waitMs = loginThrottle.retryAfterMs(key);
+      c.header("Retry-After", String(Math.max(1, Math.ceil(waitMs / 1000))));
       return c.json({ error: "Too many failed logins. Try again later." }, 429);
     }
-    await next();
+    try {
+      await next();
+    } catch (error) {
+      loginThrottle.release(key);
+      throw error;
+    }
     if (c.res.status === 401) loginThrottle.recordFailure(key, policy);
     else if (c.res.ok) loginThrottle.recordSuccess(key);
+    else loginThrottle.release(key);
   });
 
   /**

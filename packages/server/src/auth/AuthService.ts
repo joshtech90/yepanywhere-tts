@@ -80,6 +80,12 @@ export class AuthService {
   private cookieSecret: string;
   private saver = createCoalescingSaver(() => this.doSave());
   private save = this.saver.save;
+  /**
+   * auth.json exists but could not be read. Starting "fresh" would switch
+   * auth off and open the whole API, so the server refuses every request
+   * instead and never overwrites the unreadable file.
+   */
+  private loadFailed = false;
 
   constructor(options: AuthServiceOptions) {
     this.dataDir = options.dataDir;
@@ -129,12 +135,15 @@ export class AuthService {
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(
-          "[AuthService] Failed to load state, starting fresh:",
+        console.error(
+          "[AuthService] Failed to load auth.json; refusing all requests until it is repaired:",
           error,
         );
+        this.loadFailed = true;
+        this.state = { version: CURRENT_VERSION, enabled: true, sessions: {} };
+      } else {
+        this.state = { version: CURRENT_VERSION, sessions: {} };
       }
-      this.state = { version: CURRENT_VERSION, sessions: {} };
     }
 
     // Generate cookie secret if not provided
@@ -151,6 +160,11 @@ export class AuthService {
    */
   isEnabled(): boolean {
     return this.state.enabled === true;
+  }
+
+  /** True when auth.json exists but could not be read (fail closed). */
+  isLoadFailed(): boolean {
+    return this.loadFailed;
   }
 
   /**
@@ -391,6 +405,7 @@ export class AuthService {
   }
 
   private async doSave(): Promise<void> {
+    if (this.loadFailed) return; // keep the unreadable file for repair
     try {
       const content = JSON.stringify(this.state, null, 2);
       await fs.writeFile(this.filePath, content, {
