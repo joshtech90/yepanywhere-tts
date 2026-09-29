@@ -10,6 +10,7 @@ import {
 } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../api/client";
+import { isRequestDeadlineError } from "../api/requestDeadline";
 import { useModelSettings } from "../hooks/useModelSettings";
 import { useProjects } from "../hooks/useProjects";
 import { useProviders } from "../hooks/useProviders";
@@ -186,10 +187,14 @@ export function CockpitNewSession({
       });
     } catch (err) {
       if (!mountedRef.current) return;
+      // A sleeping or unreachable host surfaced as the bare "signal timed
+      // out" (Joscha 29.09.2026); say what is going on instead.
       setError(
-        err instanceof Error && err.message
-          ? err.message
-          : t("newSessionStartError"),
+        isRequestDeadlineError(err) || isNetworkFailure(err)
+          ? t("cockpitHostUnreachable")
+          : err instanceof Error && err.message
+            ? err.message
+            : t("newSessionStartError"),
       );
       setStarting(false);
     }
@@ -361,5 +366,13 @@ export function CockpitNewSession({
         </div>
       </section>
     </form>
+  );
+}
+
+/** fetch() rejects with a TypeError when the host cannot be reached at all. */
+function isNetworkFailure(error: unknown): boolean {
+  return (
+    error instanceof TypeError &&
+    /failed to fetch|networkerror|load failed/i.test(error.message)
   );
 }

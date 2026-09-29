@@ -144,6 +144,8 @@
   "cockpitHandoffSummarizing": "Die Sitzung schreibt die Übergabe …",
   "cockpitHandoffStarting": "Neue Sitzung wird gestartet …",
   "cockpitHandoffWaitingApproval": "Die Sitzung wartet auf eine Freigabe. Mit Abbrechen kommst du dorthin; die Übergabe entfällt dann.",
+  "cockpitUploadStalled": "Keine Verbindung zum Rechner, das Hochladen hing. Erneut versuchen, sobald er wach ist.",
+  "cockpitHostUnreachable": "Der Rechner antwortet nicht. Vermutlich schläft er oder ist offline; erneut versuchen, sobald er wach ist.",
   "cockpitHandoffNoSummary": "Die Sitzung hat keine Übergabe geliefert. Bitte erneut versuchen.",
   "cockpitHandoffSendFailed": "Die Anfrage an die Sitzung ist gescheitert: {message}",
   "cockpitHandoffNewTitle": "Fortsetzung: {title}",

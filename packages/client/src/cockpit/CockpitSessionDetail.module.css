@@ -238,6 +238,11 @@
 }
 
 .transcript {
+  /* The containing block for visually hidden labels inside the rows. Without
+     it they were positioned against .root, escaped this scroller and made
+     the whole view ~40 000 px tall; a focus or file-picker scroll could then
+     shift the page out of reach on phones (Joscha 29.09.2026). */
+  position: relative;
   min-height: 0;
   flex: 1;
   overflow: auto;

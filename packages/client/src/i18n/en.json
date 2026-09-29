@@ -551,6 +551,8 @@
   "cockpitHandoffSummarizing": "The session is writing the handoff…",
   "cockpitHandoffStarting": "Starting the new session…",
   "cockpitHandoffWaitingApproval": "The session is waiting for an approval. Cancel to answer it; the handoff is then abandoned.",
+  "cockpitUploadStalled": "No connection to the computer, the upload stopped. Try again once it is awake.",
+  "cockpitHostUnreachable": "The computer is not answering. It may be asleep or offline; try again once it is awake.",
   "cockpitHandoffNoSummary": "The session did not return a handoff. Please try again.",
   "cockpitHandoffSendFailed": "Sending to the session failed: {message}",
   "cockpitHandoffNewTitle": "Continued: {title}",

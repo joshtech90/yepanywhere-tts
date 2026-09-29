@@ -520,7 +520,9 @@
 
 .canvas[data-view="session"],
 .canvas[data-view="list"] {
-  overflow: hidden;
+  /* clip, not hidden: a hidden box can still be scrolled by focus or
+     scrollIntoView, and then no gesture brings it back. */
+  overflow: clip;
 }
 
 .statePanel {

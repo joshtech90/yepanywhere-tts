@@ -19,6 +19,13 @@ import {
 } from "../lib/sessionComposerAttachments";
 import { uploadComposerAttachmentFile } from "../lib/sessionComposerSubmission";
 import { sendCockpitDirectMessage } from "./cockpitSend";
+
+/**
+ * An upload that makes no progress this long is given up. The shared
+ * transport waits indefinitely for a host that went to sleep; the attachment
+ * then sat at 0% and blocked sending (Joscha 29.09.2026).
+ */
+export const COCKPIT_UPLOAD_STALL_MS = 30_000;
 import type { PermissionMode, SessionMetadata, SessionStatus } from "../types";
 import {
   cockpitComposerDraftKey,
@@ -166,6 +173,16 @@ export function useCockpitComposer(
     (attachment: CockpitComposerAttachment) => {
       const controller = new AbortController();
       uploadsRef.current.set(attachment.id, controller);
+      let stalled = false;
+      let stallTimer: ReturnType<typeof setTimeout> | undefined;
+      const armStallTimer = () => {
+        clearTimeout(stallTimer);
+        stallTimer = setTimeout(() => {
+          stalled = true;
+          controller.abort();
+        }, COCKPIT_UPLOAD_STALL_MS);
+      };
+      armStallTimer();
       setAttachments((current) =>
         current.map((candidate) =>
           candidate.id === attachment.id
@@ -186,6 +203,7 @@ export function useCockpitComposer(
         maxLongEdgePx: getAttachmentUploadLongEdgePx(attachmentQuality),
         signal: controller.signal,
         onProgress: (bytesUploaded, uploadFile) => {
+          armStallTimer();
           setAttachments((current) =>
             current.map((candidate) =>
               candidate.id === attachment.id
@@ -215,7 +233,7 @@ export function useCockpitComposer(
         })
         .catch((uploadError: unknown) => {
           if (!mountedRef.current) return;
-          const cancelled = controller.signal.aborted;
+          const cancelled = controller.signal.aborted && !stalled;
           setAttachments((current) =>
             current.map((candidate) =>
               candidate.id === attachment.id
@@ -224,7 +242,9 @@ export function useCockpitComposer(
                     status: cancelled ? "cancelled" : "failed",
                     error: cancelled
                       ? undefined
-                      : uploadError instanceof Error
+                      : stalled
+                        ? t("cockpitUploadStalled")
+                        : uploadError instanceof Error
                         ? uploadError.message
                         : String(uploadError),
                   }
@@ -232,9 +252,12 @@ export function useCockpitComposer(
             ),
           );
         })
-        .finally(() => uploadsRef.current.delete(attachment.id));
+        .finally(() => {
+          clearTimeout(stallTimer);
+          uploadsRef.current.delete(attachment.id);
+        });
     },
-    [attachmentQuality, projectId, runtime.transport, sessionId],
+    [attachmentQuality, projectId, runtime.transport, sessionId, t],
   );
 
   const attachFiles = useCallback(
