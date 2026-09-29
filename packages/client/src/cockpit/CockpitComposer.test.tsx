@@ -557,6 +557,53 @@ describe("Cockpit composer", () => {
     vi.useRealTimers();
   });
 
+  it("ignores a stalled attempt that answers late after a retry", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const late: Array<(file: unknown) => void> = [];
+    runtime.transport.upload.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          late.push(resolve); // never settles by itself, like a sleeping host
+        }),
+    );
+    runtime.transport.upload.mockImplementationOnce(async () => ({
+      id: "second",
+      originalName: "slow.txt",
+      name: "slow.txt",
+      path: "/tmp/slow.txt",
+      size: 4,
+      mimeType: "text/plain",
+    }));
+    const view = render(composer());
+    const input =
+      view.container.querySelector<HTMLInputElement>('input[type="file"]');
+    if (!input) throw new Error("file input missing");
+    fireEvent.change(input, {
+      target: {
+        files: [new File(["demo"], "slow.txt", { type: "text/plain" })],
+      },
+    });
+    await waitFor(() => expect(runtime.transport.upload).toHaveBeenCalled());
+    await act(async () => {
+      vi.advanceTimersByTime(COCKPIT_UPLOAD_STALL_MS + 100);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "Try again" }));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector('li[data-status="ready"]'),
+      ).not.toBeNull(),
+    );
+
+    await act(async () => {
+      late[0]?.({ id: "first" });
+    });
+    expect(
+      view.container.querySelector('li[data-status="ready"]'),
+    ).not.toBeNull();
+    expect(screen.queryByText(/No connection to the computer/)).toBeNull();
+    vi.useRealTimers();
+  });
+
   it("isolates drafts and uploads when the session identity changes", async () => {
     let observedSignal: AbortSignal | undefined;
     runtime.transport.upload.mockImplementation(
