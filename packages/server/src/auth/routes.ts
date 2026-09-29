@@ -11,6 +11,9 @@ import {
 } from "../desktop/DesktopBootstrapService.js";
 import type { AuthService } from "./AuthService.js";
 import type { LimitedUsersService } from "./LimitedUsersService.js";
+import { LoginThrottle, loginThrottleKey } from "./loginThrottle.js";
+
+const defaultLoginThrottle = new LoginThrottle();
 
 export const SESSION_COOKIE_NAME = "yep-anywhere-session";
 
@@ -28,6 +31,8 @@ export interface AuthRoutesDeps {
   isLimitedUsersEnabled?: () => boolean;
   /** The owner's Remote Access (relay) username, when one is registered. */
   getOwnerRelayUsername?: () => string | null;
+  /** Shared across route instances by default; tests pass their own. */
+  loginThrottle?: LoginThrottle;
 }
 
 interface SetupBody {
@@ -77,7 +82,30 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     limitedUsers,
     isLimitedUsersEnabled,
     getOwnerRelayUsername,
+    loginThrottle = defaultLoginThrottle,
   } = deps;
+
+  // Every failed password answer counts; a locked bucket gets 429 before the
+  // password is even checked (./loginThrottle.ts).
+  app.use("/login", async (c, next) => {
+    const remoteAddress = (
+      c.env as { incoming?: { socket?: { remoteAddress?: string } } }
+    )?.incoming?.socket?.remoteAddress;
+    const { key, policy } = loginThrottleKey(remoteAddress, (name) =>
+      c.req.header(name),
+    );
+    const waitMs = loginThrottle.retryAfterMs(key);
+    if (waitMs > 0) {
+      c.header("Retry-After", String(Math.ceil(waitMs / 1000)));
+      return c.json(
+        { error: "Too many failed logins. Try again later." },
+        429,
+      );
+    }
+    await next();
+    if (c.res.status === 401) loginThrottle.recordFailure(key, policy);
+    else if (c.res.ok) loginThrottle.recordSuccess(key);
+  });
 
   /**
    * GET /api/auth/status
