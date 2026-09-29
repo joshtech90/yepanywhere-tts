@@ -88,11 +88,6 @@ export function createAuthMiddleware(
       return;
     }
 
-    // An unreadable auth.json must never mean "auth off".
-    if (authService.isLoadFailed?.()) {
-      return c.json({ error: "Authentication state could not be loaded" }, 503);
-    }
-
     const desktopSession = getCookie(c, DESKTOP_SESSION_COOKIE_NAME);
     if (desktopBootstrapService?.validateSession(desktopSession)) {
       c.set("authenticated", true);
@@ -113,6 +108,12 @@ export function createAuthMiddleware(
       c.set("authenticated", true);
       await next();
       return;
+    }
+
+    // An unreadable auth.json must never mean "auth off". Only the explicit
+    // --auth-disable above, or `--setup-auth` rewriting the file, gets past.
+    if (authService.isLoadFailed?.()) {
+      return c.json({ error: "Authentication state could not be loaded" }, 503);
     }
 
     // Skip local password auth for requests from the SRP tunnel.
