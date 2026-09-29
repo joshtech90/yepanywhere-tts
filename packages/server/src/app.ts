@@ -1658,6 +1658,9 @@ export function createApp(options: AppOptions): AppResult {
           : undefined,
     idleTimeoutMs: options.idleTimeoutMs,
     defaultPermissionMode: options.defaultPermissionMode,
+    getStandingPermissionMode: () =>
+      options.serverSettingsService?.getSetting("newSessionDefaults")
+        ?.permissionMode,
     eventBus: options.eventBus,
     sessionMetadataService: options.sessionMetadataService,
     notificationService: options.notificationService,

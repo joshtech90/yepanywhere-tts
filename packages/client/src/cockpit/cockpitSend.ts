@@ -50,7 +50,11 @@ export async function sendCockpitDirectMessage({
         tempId,
         clientTimestamp,
         messageMetadata,
-        mode: port.permissionMode,
+        // Without a live process "default" is only the view's placeholder;
+        // leave the mode out so the server restores the session's own mode
+        // or the owner's standing default instead of downgrading it.
+        mode:
+          port.permissionMode === "default" ? undefined : port.permissionMode,
         model: port.session?.model,
         provider: port.session?.provider,
         thinking: getThinkingSetting(),

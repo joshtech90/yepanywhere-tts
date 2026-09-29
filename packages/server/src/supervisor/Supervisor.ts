@@ -342,6 +342,20 @@ export function shouldYaOrchestrateCompactThreshold(
   );
 }
 
+export function resolveStandingPermissionMode(
+  requested: PermissionMode | undefined,
+  standing: PermissionMode | undefined,
+  fallback: PermissionMode,
+): PermissionMode {
+  if (
+    standing === "bypassPermissions" &&
+    (requested === undefined || requested === "default")
+  ) {
+    return "bypassPermissions";
+  }
+  return requested ?? standing ?? fallback;
+}
+
 function getStaleInTurnThresholdMs(provider: ProviderName): number {
   return provider === "codex" || provider === "codex-oss"
     ? CODEX_STALE_IN_TURN_THRESHOLD_MS
@@ -544,6 +558,13 @@ export interface SupervisorOptions {
   projectDisplayName?: ProjectDisplayNameResolver;
   /** Default permission mode for new sessions */
   defaultPermissionMode?: PermissionMode;
+  /**
+   * The owner's saved default mode (Settings -> new session defaults). When it
+   * bypasses permissions, every launch or resume that asks for nothing or
+   * only for "default" bypasses too, so a resumed chat never falls back to
+   * asking for approval (Joscha 29.09.2026).
+   */
+  getStandingPermissionMode?: () => PermissionMode | undefined;
   /** EventBus for emitting session status changes */
   eventBus?: EventBus;
   /** Maximum concurrent workers. 0 = unlimited (default for backward compat) */
@@ -646,6 +667,7 @@ export class Supervisor {
   private idleTimeoutMs: number;
   private readonly projectDisplayName: ProjectDisplayNameResolver;
   private defaultPermissionMode: PermissionMode;
+  private getStandingPermissionMode?: () => PermissionMode | undefined;
   private eventBus?: EventBus;
   private maxWorkers: number;
   private idlePreemptThresholdMs: number;
@@ -756,6 +778,7 @@ export class Supervisor {
     this.idleTimeoutMs = options.idleTimeoutMs ?? DEFAULT_IDLE_TIMEOUT_MS;
     this.projectDisplayName = options.projectDisplayName ?? getProjectName;
     this.defaultPermissionMode = options.defaultPermissionMode ?? "default";
+    this.getStandingPermissionMode = options.getStandingPermissionMode;
     this.eventBus = options.eventBus;
     this.maxWorkers = options.maxWorkers ?? 0; // 0 = unlimited
     this.idlePreemptThresholdMs =
@@ -1226,7 +1249,7 @@ export class Supervisor {
     }
 
     const processHolder: { process: Process | null } = { process: null };
-    const effectiveMode = permissionMode ?? this.defaultPermissionMode;
+    const effectiveMode = this.resolvePermissionMode(permissionMode);
     const promptSuggestionMode = this.resolvePromptSuggestionMode(
       modelSettings?.promptSuggestionMode,
       { supportsNativePromptSuggestions: true },
@@ -2031,7 +2054,7 @@ export class Supervisor {
     const processHolder: { process: Process | null } = { process: null };
 
     // Use provided mode or fall back to default
-    const effectiveMode = permissionMode ?? this.defaultPermissionMode;
+    const effectiveMode = this.resolvePermissionMode(permissionMode);
     const promptSuggestionMode = this.resolvePromptSuggestionMode(
       modelSettings?.promptSuggestionMode,
       { supportsNativePromptSuggestions: true },
@@ -2223,7 +2246,7 @@ export class Supervisor {
     }
 
     const processHolder: { process: Process | null } = { process: null };
-    const effectiveMode = permissionMode ?? this.defaultPermissionMode;
+    const effectiveMode = this.resolvePermissionMode(permissionMode);
     const promptSuggestionMode = this.resolvePromptSuggestionMode(
       modelSettings?.promptSuggestionMode,
       activeProvider,
@@ -2466,7 +2489,7 @@ export class Supervisor {
     const processHolder: { process: Process | null } = { process: null };
 
     // Use provided mode or fall back to default
-    const effectiveMode = permissionMode ?? this.defaultPermissionMode;
+    const effectiveMode = this.resolvePermissionMode(permissionMode);
     const promptSuggestionMode = this.resolvePromptSuggestionMode(
       modelSettings?.promptSuggestionMode,
       activeProvider,
@@ -2705,7 +2728,7 @@ export class Supervisor {
     const sessionId = resumeSessionId ?? randomUUID();
 
     // Use provided mode or fall back to default
-    const effectiveMode = permissionMode ?? this.defaultPermissionMode;
+    const effectiveMode = this.resolvePermissionMode(permissionMode);
 
     const options: ProcessConstructorOptions = {
       projectPath,
@@ -5931,6 +5954,15 @@ export class Supervisor {
       this.emitWorkerActivity();
     }
     return preservedCount;
+  }
+
+  /** See `getStandingPermissionMode`: a standing bypass wins over "default". */
+  private resolvePermissionMode(requested?: PermissionMode): PermissionMode {
+    return resolveStandingPermissionMode(
+      requested,
+      this.getStandingPermissionMode?.(),
+      this.defaultPermissionMode,
+    );
   }
 
   // ============ Staleness Detection ============
