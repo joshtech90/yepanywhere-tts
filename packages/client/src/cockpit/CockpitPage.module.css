@@ -865,7 +865,7 @@
 
   .canvas[data-view="session"],
   .canvas[data-view="list"] {
-    overflow: hidden;
+    overflow: clip;
   }
 
   /* No card around the list: the phone's full width goes to the names

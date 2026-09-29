@@ -171,92 +171,89 @@ export function useCockpitComposer(
 
   const startUpload = useCallback(
     (attachment: CockpitComposerAttachment) => {
+      uploadsRef.current.get(attachment.id)?.abort();
       const controller = new AbortController();
       uploadsRef.current.set(attachment.id, controller);
-      let stalled = false;
+      // Only the newest attempt of an attachment may change its state; a
+      // retried or stalled upload that settles late is ignored.
+      const isCurrent = () =>
+        mountedRef.current &&
+        uploadsRef.current.get(attachment.id) === controller;
+      const update = (patch: Partial<CockpitComposerAttachment>) => {
+        if (!isCurrent()) return;
+        setAttachments((current) =>
+          current.map((candidate) =>
+            candidate.id === attachment.id
+              ? { ...candidate, ...patch }
+              : candidate,
+          ),
+        );
+      };
       let stallTimer: ReturnType<typeof setTimeout> | undefined;
+      // Armed only once bytes go to the host, so shrinking a large photo
+      // first never counts as a stall.
       const armStallTimer = () => {
         clearTimeout(stallTimer);
         stallTimer = setTimeout(() => {
-          stalled = true;
+          // Fail right away: the shared transport may not settle at all
+          // while the host sleeps.
+          update({ status: "failed", error: t("cockpitUploadStalled") });
+          uploadsRef.current.delete(attachment.id);
           controller.abort();
         }, COCKPIT_UPLOAD_STALL_MS);
       };
-      armStallTimer();
-      setAttachments((current) =>
-        current.map((candidate) =>
-          candidate.id === attachment.id
-            ? {
-                ...candidate,
-                progress: 0,
-                status: "uploading",
-                error: undefined,
-              }
-            : candidate,
-        ),
-      );
+      const transport = runtime.transport;
+      const watchedTransport: Pick<
+        typeof transport,
+        "upload" | "uploadStagedAttachment"
+      > = {
+        upload: (...args) => {
+          armStallTimer();
+          return transport.upload(...args);
+        },
+        uploadStagedAttachment: (...args) => {
+          armStallTimer();
+          return transport.uploadStagedAttachment(...args);
+        },
+      };
+      update({ progress: 0, status: "uploading", error: undefined });
       void uploadComposerAttachmentFile({
         file: attachment.file,
-        sourceTransport: runtime.transport,
+        sourceTransport: watchedTransport,
         projectId,
         sessionId,
         maxLongEdgePx: getAttachmentUploadLongEdgePx(attachmentQuality),
         signal: controller.signal,
         onProgress: (bytesUploaded, uploadFile) => {
           armStallTimer();
-          setAttachments((current) =>
-            current.map((candidate) =>
-              candidate.id === attachment.id
-                ? {
-                    ...candidate,
-                    progress: Math.round(
-                      (bytesUploaded / uploadFile.size) * 100,
-                    ),
-                  }
-                : candidate,
-            ),
-          );
+          update({
+            progress: Math.round((bytesUploaded / uploadFile.size) * 100),
+          });
         },
       })
         .then((uploaded) => {
-          if (!mountedRef.current) return;
-          setAttachments((current) =>
-            current.map((candidate) =>
-              candidate.id === attachment.id
-                ? {
-                    ...candidate,
-                    progress: 100,
-                    status: "ready",
-                    uploaded: uploaded as ComposerUploadedAttachment,
-                  }
-                : candidate,
-            ),
-          );
+          update({
+            progress: 100,
+            status: "ready",
+            uploaded: uploaded as ComposerUploadedAttachment,
+          });
         })
         .catch((uploadError: unknown) => {
-          if (!mountedRef.current) return;
-          const cancelled = controller.signal.aborted && !stalled;
-          setAttachments((current) =>
-            current.map((candidate) =>
-              candidate.id === attachment.id
-                ? {
-                    ...candidate,
-                    status: cancelled ? "cancelled" : "failed",
-                    error: cancelled
-                      ? undefined
-                      : stalled
-                        ? t("cockpitUploadStalled")
-                        : uploadError instanceof Error
-                          ? uploadError.message
-                          : String(uploadError),
-                  }
-                : candidate,
-            ),
-          );
+          const cancelled = controller.signal.aborted;
+          update({
+            status: cancelled ? "cancelled" : "failed",
+            error: cancelled
+              ? undefined
+              : uploadError instanceof Error
+                ? uploadError.message
+                : String(uploadError),
+          });
         })
         .finally(() => {
           clearTimeout(stallTimer);
-          uploadsRef.current.delete(attachment.id);
+          if (uploadsRef.current.get(attachment.id) === controller) {
+            uploadsRef.current.delete(attachment.id);
+          }
         });
     },
     [attachmentQuality, projectId, runtime.transport, sessionId, t],

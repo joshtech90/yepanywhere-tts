@@ -54,10 +54,16 @@ describe("Cockpit mobile navigation layout", () => {
     expect(rules(detailCss, ".transcript")[0]).toMatch(
       /position:\s*relative\s*;/,
     );
-    // ... and the session canvas clips instead of being a hidden scroller.
-    expect(
-      rule(pageCss, '.canvas[data-view="session"],\n.canvas[data-view="list"]'),
-    ).toMatch(/overflow:\s*clip\s*;/);
+    // ... and the session canvas clips instead of being a hidden scroller,
+    // on every breakpoint (a phone override once kept overflow: hidden).
+    const canvasRules = [
+      ...pageCss.matchAll(
+        /\.canvas\[data-view="session"\],\s*\.canvas\[data-view="list"\]\s*\{([^}]*)\}/g,
+      ),
+    ].map((match) => match[1] ?? "");
+    expect(canvasRules.length).toBeGreaterThanOrEqual(2);
+    for (const declarations of canvasRules) {
+      expect(declarations).toMatch(/overflow:\s*clip\s*;/);
+    }
   });
 });
-
