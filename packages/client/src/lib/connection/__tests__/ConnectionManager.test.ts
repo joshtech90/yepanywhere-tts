@@ -123,7 +123,7 @@ describe("ConnectionManager", () => {
       ]);
     });
 
-    it("connected → reconnecting → disconnected (max attempts)", async () => {
+    it("keeps exhausted retryable connections recoverable", async () => {
       const { cm, reconnectFn, timers, stateChanges, reconnectFailures } =
         setup({ maxAttempts: 3 });
       reconnectFn.mockRejectedValue(new Error("fail"));
@@ -143,10 +143,10 @@ describe("ConnectionManager", () => {
       timers.advance(4000);
       await flush();
 
-      expect(cm.state).toBe("disconnected");
+      expect(cm.state).toBe("reconnecting");
+      expect(cm.waitingForRecovery).toBe(true);
       expect(reconnectFn).toHaveBeenCalledTimes(3);
-      expect(reconnectFailures).toHaveLength(1);
-      expect(reconnectFailures[0]?.message).toMatch(/failed after 3 attempts/);
+      expect(reconnectFailures).toHaveLength(0);
     });
 
     it("transitions to disconnected on stop()", () => {
@@ -862,7 +862,7 @@ describe("ConnectionManager", () => {
       expect(states).toEqual(["connected"]);
     });
 
-    it("emits reconnectFailed on max attempts", async () => {
+    it("does not emit a terminal failure on max attempts", async () => {
       const { cm, reconnectFn, timers, reconnectFailures } = setup({
         maxAttempts: 1,
       });
@@ -873,7 +873,7 @@ describe("ConnectionManager", () => {
       timers.advance(1000);
       await flush();
 
-      expect(reconnectFailures).toHaveLength(1);
+      expect(reconnectFailures).toHaveLength(0);
     });
   });
 

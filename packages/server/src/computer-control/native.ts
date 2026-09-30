@@ -47,10 +47,12 @@ export interface NativeRuntime {
 }
 
 /** Runs only YA-authored code. Imported scripts are authenticated before use. */
-function powershell(
+async function powershell(
   code: string,
   input: unknown,
+  signal?: AbortSignal,
 ): Promise<Record<string, unknown>> {
+  signal?.throwIfAborted();
   return new Promise((resolve, reject) => {
     const env = { ...process.env };
     delete env.PSModulePath;
@@ -75,31 +77,58 @@ function powershell(
     );
     let output = "";
     let error = "";
-    const timeout = setTimeout(() => {
+    const started = Date.now();
+    let spawned = false;
+    let failed = false;
+    let failure: unknown;
+    const stop = (cause: unknown) => {
+      if (!failed) failure = cause;
+      failed = true;
       child.kill();
-      reject(new Error("Preview management deadline exceeded"));
+    };
+    const abort = () => stop(signal?.reason);
+    const timeout = setTimeout(() => {
+      stop(new Error("Preview management deadline exceeded"));
     }, 120_000);
+    child.on("spawn", () => {
+      spawned = true;
+    });
     child.on("error", (cause) => {
-      clearTimeout(timeout);
-      reject(cause);
+      if (!failed) failure = cause;
+      failed = true;
     });
-    child.stdout.on("data", (data: Buffer) => {
+    child.stdin.on("error", stop);
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (data: string) => {
       output += data;
-      if (output.length > 65536) child.kill();
+      if (output.length > 65536) {
+        output = output.slice(0, 65536);
+        stop(new Error("Preview management response exceeded size limit"));
+      }
     });
-    child.stderr.on("data", (data: Buffer) => {
+    child.stderr.on("data", (data: string) => {
       error = (error + data).slice(0, 4096);
     });
-    child.on("exit", (code) => {
+    // Exit can precede the last stdout chunk. Close also joins cancellation,
+    // so callers may safely remove the staging directory after rejection.
+    child.on("close", (code) => {
       clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+      if (failed) return reject(failure);
       if (code !== 0)
-        return reject(new Error(`Preview management failed: ${error}`));
+        return reject(
+          new Error(
+            `Preview management failed after ${Date.now() - started}ms (spawned=${spawned}, code=${code}, stdout=${output.length}): ${error}`,
+          ),
+        );
       try {
         resolve(JSON.parse(output.trim()) as Record<string, unknown>);
       } catch {
         reject(new Error("Invalid preview management response"));
       }
     });
+    signal?.addEventListener("abort", abort, { once: true });
     child.stdin.end(JSON.stringify(input));
   });
 }
@@ -130,6 +159,7 @@ export async function managePreview(
 export async function extractComputerPackage(
   archive: string,
   destination: string,
+  signal?: AbortSignal,
 ) {
   await powershell(
     `
@@ -152,6 +182,7 @@ try {
 @{extracted=$true} | ConvertTo-Json -Compress
 `,
     { archive, destination },
+    signal,
   );
 }
 

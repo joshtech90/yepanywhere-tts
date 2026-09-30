@@ -34,6 +34,7 @@ function installLocalStorageMock(): Map<string, string> {
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {
+      clear: vi.fn(() => store.clear()),
       getItem: vi.fn((key: string) => store.get(key) ?? null),
       setItem: vi.fn((key: string, value: string) => {
         store.set(key, value);

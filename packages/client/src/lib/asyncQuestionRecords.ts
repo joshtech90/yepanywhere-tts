@@ -1,3 +1,9 @@
+import {
+  draftStorage,
+  subscribeDraftStorage,
+  DRAFT_STORAGE_EVENT,
+  confirmSyncedDraft,
+} from "./draftSyncStorage";
 import { useSyncExternalStore } from "react";
 import { z } from "zod";
 
@@ -46,10 +52,9 @@ function parse(raw: string | null): AsyncQuestionRecord | undefined {
 function read(key: string): Records {
   const records: Records = {};
   try {
-    for (let index = 0; index < localStorage.length; index++) {
-      const storedKey = localStorage.key(index);
+    for (const storedKey of draftStorage.keys()) {
       if (!storedKey?.startsWith(`${key}:`)) continue;
-      const record = parse(localStorage.getItem(storedKey));
+      const record = parse(draftStorage.getItem(storedKey));
       if (record) records[storedKey.slice(key.length + 1)] = record;
     }
   } catch {
@@ -85,7 +90,7 @@ function receive(event: StorageEvent) {
     else if (event.key.startsWith(`${key}:`)) {
       const id = event.key.slice(key.length + 1);
       const records = { ...store(key).records };
-      const next = parse(event.newValue);
+      const next = parse(draftStorage.getItem(event.key));
       if (next)
         records[id] = {
           ...next,
@@ -97,12 +102,31 @@ function receive(event: StorageEvent) {
   }
 }
 
+function receiveDraft(event: Event) {
+  const key = (event as CustomEvent<{ key: string }>).detail.key;
+  for (const prefix of stores.keys())
+    if (key === `${prefix}:*`) publish(prefix, read(prefix));
+    else if (key.startsWith(`${prefix}:`)) {
+      const id = key.slice(prefix.length + 1);
+      const current = parse(draftStorage.getItem(key));
+      const records = { ...store(prefix).records };
+      if (current) records[id] = current;
+      else delete records[id];
+      publish(prefix, records);
+    }
+}
 function subscribe(listeners: Set<() => void>, listener: () => void) {
-  if (subscriptions++ === 0) window.addEventListener("storage", receive);
+  if (subscriptions++ === 0) {
+    window.addEventListener("storage", receive);
+    window.addEventListener(DRAFT_STORAGE_EVENT, receiveDraft);
+  }
   listeners.add(listener);
   return () => {
     listeners.delete(listener);
-    if (--subscriptions === 0) window.removeEventListener("storage", receive);
+    if (--subscriptions === 0) {
+      window.removeEventListener("storage", receive);
+      window.removeEventListener(DRAFT_STORAGE_EVENT, receiveDraft);
+    }
   };
 }
 
@@ -119,17 +143,19 @@ export function updateQuestionRecord(
   const previous = value.records[id] ?? emptyQuestionRecord;
   let current = previous;
   try {
-    current = parse(localStorage.getItem(`${key}:${id}`)) ?? current;
+    current = parse(draftStorage.getItem(`${key}:${id}`)) ?? current;
   } catch {
     /* Preserve this tab's state without browser storage. */
   }
+  if (patch.answer != null && patch.draft === "")
+    confirmSyncedDraft(`${key}:${id}`);
   const next = {
     ...current,
     ...patch,
     edits: Math.max(previous.edits, current.edits, patch.edits ?? 0),
   };
   try {
-    localStorage.setItem(`${key}:${id}`, JSON.stringify(next));
+    draftStorage.setItem(`${key}:${id}`, JSON.stringify(next));
   } catch {
     /* Keep drafts and answers usable in memory. */
   }
@@ -146,7 +172,14 @@ export function updateQuestionRecord(
 
 export function useQuestionRecords(key: string): Records {
   return useSyncExternalStore(
-    (listener) => subscribe(store(key).listeners, listener),
+    (listener) => {
+      const unsubscribe = subscribe(store(key).listeners, listener);
+      const unobserve = subscribeDraftStorage(`${key}:*`, () => {});
+      return () => {
+        unsubscribe();
+        unobserve();
+      };
+    },
     () => store(key).records,
   );
 }

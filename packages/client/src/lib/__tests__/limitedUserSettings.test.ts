@@ -6,7 +6,13 @@ import { limitedUserMaySeeSettingsCategory } from "../limitedUserSettings";
 
 describe("settings categories for a limited user", () => {
   it("keeps their own account and the browser-local panes", () => {
-    for (const id of ["users", "appearance", "toolbar", "notifications"]) {
+    for (const id of [
+      "users",
+      "appearance",
+      "toolbar",
+      "notifications",
+      "speech",
+    ]) {
       expect(limitedUserMaySeeSettingsCategory(id)).toBe(true);
     }
   });

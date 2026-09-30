@@ -89,6 +89,10 @@ describe("MessageList rendering", () => {
       configurable: true,
       value: vi.fn(),
     });
+    Object.defineProperty(Element.prototype, "scrollTo", {
+      configurable: true,
+      value: vi.fn(),
+    });
     let pointerFrame: FrameRequestCallback | null = null;
     vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
       pointerFrame = callback;
@@ -244,9 +248,15 @@ describe("MessageList rendering", () => {
     window.localStorage.setItem(UI_KEYS.inlineMediaExpandedByDefault, "false");
     window.localStorage.setItem(UI_KEYS.compactMultiImageGalleries, "true");
     invalidateLocalStorageValues();
+    const scrollIntoView = vi.fn();
     Object.defineProperty(Element.prototype, "scrollIntoView", {
       configurable: true,
-      value: vi.fn(),
+      value: scrollIntoView,
+    });
+    const scrollTo = vi.fn();
+    Object.defineProperty(Element.prototype, "scrollTo", {
+      configurable: true,
+      value: scrollTo,
     });
 
     const { container } = render(
@@ -281,6 +291,15 @@ describe("MessageList rendering", () => {
     expect(container.querySelector(`.${galleryStyles.gallery}`)).toBeTruthy();
     expect(galleryAction?.getAttribute("aria-label")).toBe("Collapse gallery");
     expect(galleryAction?.textContent).toBe("−Gallery");
+    // Centering the shown image moves only the gallery's own scroller; the
+    // transcript around it must never be scrolled sideways.
+    expect(scrollTo.mock.contexts).toContain(
+      container.querySelector(`.${galleryStyles.rows}`),
+    );
+    expect(scrollIntoView).toHaveBeenCalled();
+    for (const [options] of scrollIntoView.mock.calls) {
+      expect(options).toMatchObject({ inline: "nearest" });
+    }
 
     fireEvent.pointerEnter(
       container.querySelectorAll(`.${galleryStyles.item}`)[1] as HTMLElement,

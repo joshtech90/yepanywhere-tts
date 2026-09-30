@@ -16,6 +16,7 @@ export type RemoteRouteModuleKey =
   | "issuesPage"
   | "layouts"
   | "legacyRelayRouteRedirect"
+  | "localSourcePage"
   | "multiHostMonitorPage"
   | "newSessionPage"
   | "projectSessionsRedirect"
@@ -57,6 +58,9 @@ function selectedAppPageModules(pathname: string): RemoteRouteModuleKey[] {
   }
   if (/^\/projects\/[^/]+\/file(?:\/|$)/.test(pathname)) {
     return [...modules, "filePage"];
+  }
+  if (/^\/projects\/[^/]+\/browse(?:\/|$)/.test(pathname)) {
+    return [...modules, "localSourcePage"];
   }
   if (/^\/projects\/[^/]+(?:\/|$)/.test(pathname)) {
     return [...modules, "projectSessionsRedirect"];

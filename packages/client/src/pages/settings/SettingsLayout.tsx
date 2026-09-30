@@ -364,29 +364,25 @@ export function SettingsLayout() {
     scrollSettingsToTop();
   };
 
-  const handleCategoryClick = (categoryId: string, jumpToItemId?: string) => {
-    setSearchQuery("");
-    const openedFromList =
-      !category || shouldPopSettingsDetailBack(location.state);
-    const navigationState = createSettingsDetailNavigationState(openedFromList);
-    navigate(`${basePath}/settings/${categoryId}`, {
-      replace: shouldReplaceSettingsCategoryNavigation({
-        currentCategory: category,
-        useTwoColumnSettings,
-      }),
-      state: jumpToItemId
-        ? { ...navigationState, settingsJumpTarget: jumpToItemId }
-        : navigationState,
-    });
-  };
-
-  const handleSearchOpenCategory = (categoryId: string) => {
-    handleCategoryClick(categoryId);
-  };
-
-  const handleSearchJumpToItem = (categoryId: string, itemId: string) => {
-    handleCategoryClick(categoryId, itemId);
-  };
+  const handleCategoryClick = useCallback(
+    (categoryId: string, jumpToItemId?: string) => {
+      setSearchQuery("");
+      const openedFromList =
+        !category || shouldPopSettingsDetailBack(location.state);
+      const navigationState =
+        createSettingsDetailNavigationState(openedFromList);
+      navigate(`${basePath}/settings/${categoryId}`, {
+        replace: shouldReplaceSettingsCategoryNavigation({
+          currentCategory: category,
+          useTwoColumnSettings,
+        }),
+        state: jumpToItemId
+          ? { ...navigationState, settingsJumpTarget: jumpToItemId }
+          : navigationState,
+      });
+    },
+    [basePath, category, location.state, navigate, useTwoColumnSettings],
+  );
 
   const searchBar = (
     <SettingsSearchBar
@@ -404,8 +400,8 @@ export function SettingsLayout() {
         components={CATEGORY_COMPONENTS}
         query={deferredSearchQuery || searchQuery.trim()}
         matchValues={matchValues}
-        onJumpToItem={handleSearchJumpToItem}
-        onOpenCategory={handleSearchOpenCategory}
+        onJumpToItem={handleCategoryClick}
+        onOpenCategory={handleCategoryClick}
       />
     ) : null;
 

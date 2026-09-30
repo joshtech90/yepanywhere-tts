@@ -9,6 +9,8 @@ import {
 import { useSessionRightPaneSetting } from "./useSessionRightPaneSetting";
 import { sessionViewerUsesRightPane } from "../lib/sessionViewerPlacement";
 import { type SessionApps, useSessionApps } from "../lib/sessionApps";
+import { useProcesses } from "./useProcesses";
+import { useSandboxSessionApps } from "./useSandboxSessionApps";
 import { useVhostAccess } from "./useVhostAccess";
 import { useVhostListener } from "./useVhostListener";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
@@ -53,10 +55,35 @@ export function useSessionRightPane(
   suppliedConfig: ArtifactViewerStatus | undefined,
   active: boolean,
   sessionId: string,
+  options: {
+    /** Absent: this pane resolves no sandboxed session apps. */
+    projectId?: string;
+    /** False for a limited user, whom the operator app-links route refuses. */
+    fetchAppLinks?: boolean;
+  } = {},
 ) {
   const { sessionRightPaneEnabled } = useSessionRightPaneSetting();
-  const access = useVhostAccess(suppliedConfig);
-  const config = access.config;
+  const access = useVhostAccess(suppliedConfig, options.fetchAppLinks ?? true);
+  const { processes } = useProcesses();
+  const firewalled =
+    Boolean(options.projectId) &&
+    processes.find((process) => process.sessionId === sessionId)
+      ?.sandboxEnforcement?.networkFirewall === true;
+  const sessionApps = useSandboxSessionApps({
+    projectId: options.projectId ?? "",
+    sessionId,
+    messages,
+    config: access.config,
+    firewalled,
+    active,
+  });
+  const config = useMemo(
+    () =>
+      access.config && sessionApps
+        ? { ...access.config, sessionApps }
+        : access.config,
+    [access.config, sessionApps],
+  );
   const controller = useSessionViewerController();
   const runtime = useCurrentSourceRuntime();
   const version = useRetainedVersionInfo(runtime.sourceKey);

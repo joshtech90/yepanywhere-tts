@@ -58,6 +58,15 @@ test("template palette preserves sequential input and inline state at desktop an
       .click();
     const form = page.getByRole("region", { name: "New project", exact: true });
     await expect(form.getByRole("radio")).toHaveCount(3);
+    // The superuser's path entry comes first; typing there drops the chooser.
+    const pathEntry = page.getByRole("textbox", { name: "Project path" });
+    await recordUiCapture(page, `template-project-open-${viewport.width}`);
+    await pathEntry.pressSequentially("~/src");
+    await expect(pathEntry).toHaveValue("~/src", { timeout: 100 });
+    await expect(form).toBeHidden();
+    await recordUiCapture(page, `template-project-path-${viewport.width}`);
+    await pathEntry.fill("");
+    await expect(form).toBeVisible();
     const name = form.getByRole("textbox", { name: "Name", exact: true });
     let typed = "";
     for (const character of "Sketch garden") {
@@ -236,7 +245,11 @@ for (const limited of [false, true]) {
         });
         expect(created.status()).toBe(201);
         await page.goto(`${baseURL}/settings/users`);
-        await page.getByRole("button", { name: "Edit", exact: true }).click();
+        const userChip = page.getByRole("button", {
+          name: "template-user",
+          exact: true,
+        });
+        await userChip.click();
         const grant = page.getByRole("group", {
           name: "New projects from templates",
           exact: true,
@@ -251,24 +264,23 @@ for (const limited of [false, true]) {
           .getByRole("radio", { name: "Selected templates", exact: true })
           .check();
         await grant.getByRole("checkbox", { name: selectedTitle }).check();
-        await page
-          .getByRole("button", { name: "Save user", exact: true })
-          .click();
-        await expect(grant).toHaveCount(0);
+        // Each choice saves as it is made; the editor stays open.
+        await expect(page.getByText(/· Saved$/)).toBeVisible();
         for (const viewport of [
           { width: 1200, height: 600 },
           { width: 375, height: 812 },
         ]) {
           await page.setViewportSize(viewport);
           await page.goto(`${baseURL}/settings/users`);
-          await page.getByRole("button", { name: "Edit", exact: true }).click();
+          await userChip.click();
           await expect(
             grant.getByRole("checkbox", { name: selectedTitle }),
           ).toBeChecked();
           await grant.scrollIntoViewIfNeeded();
           await recordUiCapture(page, `template-user-grant-${viewport.width}`);
         }
-        await page.getByRole("button", { name: "Cancel", exact: true }).click();
+        // Pressing the open user's name again closes the editor.
+        await userChip.click();
         await expect(grant).toHaveCount(0);
         const saved = await (
           await request.get(`${baseURL}/api/users`, { headers })

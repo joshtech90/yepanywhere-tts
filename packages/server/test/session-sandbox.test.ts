@@ -18,7 +18,7 @@ import {
 } from "node:fs/promises";
 import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { SessionMetadataService } from "../src/metadata/SessionMetadataService.js";
 import { AuthService } from "../src/auth/AuthService.js";
 import { SESSION_COOKIE_NAME } from "../src/auth/routes.js";
@@ -31,12 +31,25 @@ import {
   probeSessionSandboxAvailability,
   type SessionSandboxSpawn,
 } from "../src/session-sandbox.js";
+import {
+  describeSessionSandboxForAgent,
+  withSessionSandboxAgentContext,
+} from "../src/session-sandbox-agent-context.js";
 import { ClaudeSessionReader } from "../src/sessions/reader.js";
 import { ClaudeProvider } from "../src/sdk/providers/claude.js";
+import {
+  createAgentctlSessionEnvBridge,
+  createLaunchAgentctlSessionEnvBridge,
+} from "../src/sdk/providers/agentctl-session-env.js";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 
+// The availability probe mounts throwaway state under its state root; keep
+// that out of the real YA data directory.
+const probeStateRoot = await mkdtemp(join(tmpdir(), "ya-sandbox-probe-"));
+afterAll(() => rm(probeStateRoot, { recursive: true }));
 const hostSandboxAvailable =
-  (await probeSessionSandboxAvailability()).state === "available";
+  (await probeSessionSandboxAvailability({ stateRoot: probeStateRoot }))
+    .state === "available";
 async function isTrustedSystemFile(path: string): Promise<boolean> {
   return stat(path)
     .then(
@@ -207,7 +220,9 @@ describe("session sandbox", { timeout: 20_000 }, () => {
       availability.blocker?.kind === "missing-packages"
         ? availability.blocker.packages
         : [];
-    expect(packages.slice(0, 2)).toEqual(["bubblewrap", "slirp4netns"]);
+    expect(packages).toEqual(
+      expect.arrayContaining(["bubblewrap", "slirp4netns"]),
+    );
   });
 
   trustedBwrapIt(
@@ -222,6 +237,7 @@ describe("session sandbox", { timeout: 20_000 }, () => {
       // so the others are never run and need not be installed.
       const failingHelpers = {
         platform: "linux" as const,
+        stateRoot: join(root, "state"),
         unsharePath: "/usr/bin/false",
         slirp4netnsPath: "/usr/bin/false",
         ipPath: "/usr/bin/false",
@@ -242,8 +258,34 @@ describe("session sandbox", { timeout: 20_000 }, () => {
       });
       expect(unexplained.state).toBe("probe-failed");
       expect(unexplained.blocker).toBeUndefined();
+      // A failed probe still removes its throwaway state.
+      expect(await readdir(join(root, "state"))).toEqual([]);
     },
   );
+
+  t("probes the launch mounts and removes its throwaway state", async () => {
+    const root = await fixtureRoot();
+    const stateRoot = join(root, "state");
+    await expect(
+      probeSessionSandboxAvailability({ stateRoot }),
+    ).resolves.toMatchObject({ state: "available" });
+    expect(await readdir(stateRoot)).toEqual([]);
+  });
+
+  t("reports unavailable when a launch mount cannot be installed", async () => {
+    // The launch mounts its private resolver over the host's resolver path.
+    // A path whose directory is missing from the read-only host view cannot
+    // take that mount, so every launch would fail; the probe must say so.
+    // Outside /tmp, which the sandbox replaces with a writable directory.
+    const root = await fixtureRoot(process.cwd());
+    const stateRoot = join(root, "state");
+    const availability = await probeSessionSandboxAvailability({
+      stateRoot,
+      resolvConfPath: join(root, "missing", "resolv.conf"),
+    });
+    expect(availability.state).toBe("probe-failed");
+    expect(await readdir(stateRoot)).toEqual([]);
+  });
 
   trustedFalseIt("reports a trusted but unusable Linux backend", async () => {
     await expect(
@@ -366,6 +408,83 @@ describe("session sandbox", { timeout: 20_000 }, () => {
       });
     },
   );
+
+  t(
+    "shares the host Claude login instead of a copy that goes stale",
+    async () => {
+      const root = await fixtureRoot();
+      const projectPath = join(root, "project");
+      const stateRoot = join(root, "state");
+      const sourceConfig = join(root, "claude-source");
+      await Promise.all([mkdir(projectPath), mkdir(sourceConfig)]);
+      const hostCredentials = join(sourceConfig, ".credentials.json");
+      await writeFile(hostCredentials, "host-v1\n");
+      // An older sandbox's one-time copy, since rotated away on the host.
+      const privateConfig = join(stateRoot, "test-session", "claude");
+      await mkdir(privateConfig, { recursive: true });
+      await writeFile(join(privateConfig, ".credentials.json"), "stale\n");
+      await writeFile(
+        join(stateRoot, "test-session", ".ya-claude-sandbox-initialized"),
+        "",
+      );
+      vi.stubEnv("CLAUDE_CONFIG_DIR", sourceConfig);
+
+      const runtime = await prepareSessionSandbox({
+        level: "project-write",
+        provider: "claude",
+        projectPath,
+        stateKey: "test-session",
+        stateRoot,
+      });
+      if (!runtime) throw new Error("sandbox runtime was not prepared");
+      // Claude rewrites the file in place when it refreshes.
+      const script = `
+      set -eu
+      [ "$(cat "$CLAUDE_CONFIG_DIR/.credentials.json")" = host-v1 ] || exit 10
+      printf 'sandbox-v2\\n' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+    `;
+      await runSandboxed(
+        runtime.wrapSpawn("/bin/sh", ["-c", script], process.env),
+      );
+      expect(await readFile(hostCredentials, "utf8")).toBe("sandbox-v2\n");
+
+      await writeFile(hostCredentials, "host-v3\n");
+      await runSandboxed(
+        runtime.wrapSpawn(
+          "/bin/sh",
+          [
+            "-c",
+            '[ "$(cat "$CLAUDE_CONFIG_DIR/.credentials.json")" = host-v3 ]',
+          ],
+          process.env,
+        ),
+      );
+    },
+  );
+
+  t("launches without a host Claude login to share", async () => {
+    const root = await fixtureRoot();
+    const projectPath = join(root, "project");
+    const sourceConfig = join(root, "claude-source");
+    await Promise.all([mkdir(projectPath), mkdir(sourceConfig)]);
+    vi.stubEnv("CLAUDE_CONFIG_DIR", sourceConfig);
+
+    const runtime = await prepareSessionSandbox({
+      level: "project-write",
+      provider: "claude",
+      projectPath,
+      stateKey: "test-session",
+      stateRoot: join(root, "state"),
+    });
+    if (!runtime) throw new Error("sandbox runtime was not prepared");
+    await runSandboxed(
+      runtime.wrapSpawn(
+        "/bin/sh",
+        ["-c", '[ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]'],
+        process.env,
+      ),
+    );
+  });
 
   t.each(["claude", "codex"] as const)(
     "preserves relative bootstrap links through a symlinked %s home",
@@ -757,6 +876,63 @@ describe("session sandbox", { timeout: 20_000 }, () => {
     ).rejects.toThrow(/not supported for remote executors/);
   });
 
+  it("states the enforced boundary for the agent's launch context", () => {
+    const enforced = {
+      requested: "project-write",
+      effective: "project-write",
+      state: "enforced",
+      hostBackend: "bubblewrap:bwrap",
+    } as const;
+    const firewalled = describeSessionSandboxForAgent({
+      ...enforced,
+      networkFirewall: true,
+    });
+    expect(firewalled).toMatch(/^\[Session sandbox\]\n/);
+    for (const fact of [
+      /entire provider process/,
+      /dangerouslyDisableSandbox, do not leave this one/,
+      /do not offer host-side previews/,
+      /\/tmp is private/,
+      /loopback is private/,
+      /YA server .* unreachable/,
+      /not reachable directly from the user's browser or an SSH forward/,
+      // How the user sees it instead: the printed loopback URL, through YA.
+      /print its http:\/\/127\.0\.0\.1:<port>\/ URL from a command/,
+      /App pane through this sandbox/,
+      // Only tool output announces apps (session-right-pane.md).
+      /in command output, not in your reply/,
+      /Do not claim to verify host reachability/,
+    ]) {
+      expect(firewalled).toMatch(fact);
+    }
+    // Serving inside the sandbox is the intended design; do not steer away.
+    expect(firewalled).not.toMatch(/(avoid|do not|don't) (start|run|serv)/i);
+
+    // Without the firewall the network is the host's; claim nothing private.
+    const shared = describeSessionSandboxForAgent({
+      ...enforced,
+      networkFirewall: false,
+    });
+    expect(shared).toMatch(/Networking is shared with the host/);
+    expect(shared).not.toMatch(/loopback|unreachable/);
+
+    expect(
+      describeSessionSandboxForAgent({
+        requested: "project-write",
+        effective: "none",
+        state: "setup-failed",
+      }),
+    ).toBeUndefined();
+    expect(withSessionSandboxAgentContext("Be terse.", undefined)).toBe(
+      "Be terse.",
+    );
+    expect(
+      withSessionSandboxAgentContext("Be terse.", {
+        enforcement: { ...enforced, networkFirewall: true },
+      }),
+    ).toBe(`Be terse.\n\n${firewalled}`);
+  });
+
   it("allows sandboxed fork helpers but rejects side-session helpers", () => {
     expect(
       getSessionSandboxSettingsError("project-write", "side-session"),
@@ -796,6 +972,135 @@ describe("session sandbox", { timeout: 20_000 }, () => {
     expect(claude?.stateKey).toMatch(/^project-[0-9a-f]{32}$/);
     expect(codex?.stateKey).toBe(claude?.stateKey);
     expect(codex?.projectPath).toBe(projectPath);
+  });
+
+  t(
+    "shows sandboxed shells only their own live session-env bridge",
+    async () => {
+      const root = await fixtureRoot();
+      const projectPath = join(root, "project");
+      await mkdir(projectPath);
+      // Another launch's bridge and an unrelated file, both in host temp.
+      const otherBridge = createAgentctlSessionEnvBridge("other-session");
+      const hostTemp = await fixtureRoot();
+      await writeFile(join(hostTemp, "unrelated.txt"), "host only\n");
+      const runtime = await prepareSessionSandbox({
+        level: "project-write",
+        provider: "codex",
+        projectPath,
+        stateRoot: join(root, "state"),
+      });
+      if (!runtime) throw new Error("sandbox runtime was not prepared");
+      const { bridge, sessionSandbox } = createLaunchAgentctlSessionEnvBridge({
+        sessionSandbox: runtime,
+      });
+      if (!sessionSandbox) throw new Error("bridge runtime was not derived");
+
+      const marker = (name: string) => join(projectPath, name);
+      const waitForMarker = async (name: string) => {
+        const deadline = Date.now() + 10_000;
+        while (!existsSync(marker(name))) {
+          if (Date.now() > deadline) throw new Error(`${name} never appeared`);
+          await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+        }
+      };
+      // One long-lived sandboxed process runs a fresh Bash tool shell at each
+      // stage, so publication after spawn must reach it through the mount.
+      const script = `
+        set -eu
+        report() {
+          bash -c 'printf "%s" "\${AGENTCTL_SESSION_ID-}"' > "$PROJECT_PATH/$1.tmp"
+          mv "$PROJECT_PATH/$1.tmp" "$PROJECT_PATH/$1"
+        }
+        wait_for() {
+          while [ ! -e "$PROJECT_PATH/$1" ]; do sleep 0.02; done
+        }
+        report before
+        wait_for go-publish
+        report published
+        wait_for go-replace
+        report replaced
+        if [ -e "$OTHER_BRIDGE" ] || [ -e "$HOST_TEMP/unrelated.txt" ]; then
+          exit 20
+        fi
+        ls -A "$BRIDGE_DIR" > "$PROJECT_PATH/bridge-listing"
+        if touch "$BRIDGE_DIR/agent-write" 2>/dev/null; then
+          exit 21
+        fi
+      `;
+      const env = bridge.extendEnv({
+        ...process.env,
+        BASH_ENV: undefined,
+        PROJECT_PATH: projectPath,
+        OTHER_BRIDGE: otherBridge.directory,
+        HOST_TEMP: hostTemp,
+        BRIDGE_DIR: sessionSandbox.sessionEnvBridgeDirectory,
+      });
+      try {
+        const finished = runSandboxed(
+          sessionSandbox.wrapSpawn("/bin/sh", ["-c", script], env),
+        );
+        const stages = (async () => {
+          await waitForMarker("before");
+          bridge.publishSessionId("sess-first");
+          await writeFile(marker("go-publish"), "");
+          await waitForMarker("published");
+          bridge.publishSessionId("sess-second");
+          await writeFile(marker("go-replace"), "");
+        })();
+        await Promise.all([finished, stages]);
+        expect(await readFile(marker("before"), "utf8")).toBe("");
+        expect(await readFile(marker("published"), "utf8")).toBe("sess-first");
+        expect(await readFile(marker("replaced"), "utf8")).toBe("sess-second");
+        expect(
+          (await readFile(marker("bridge-listing"), "utf8")).split("\n"),
+        ).toEqual(["agentctl-session.env", "bash-env.sh", ""]);
+        expect(existsSync(join(bridge.directory, "agent-write"))).toBe(false);
+      } finally {
+        bridge.cleanup();
+        otherBridge.cleanup();
+      }
+    },
+  );
+
+  t("gives a resumed sandboxed launch its session id at once", async () => {
+    const root = await fixtureRoot();
+    const projectPath = join(root, "project");
+    await mkdir(projectPath);
+    const runtime = await prepareSessionSandbox({
+      level: "project-write",
+      provider: "claude",
+      projectPath,
+      stateRoot: join(root, "state"),
+    });
+    if (!runtime) throw new Error("sandbox runtime was not prepared");
+    const { bridge, sessionSandbox } = createLaunchAgentctlSessionEnvBridge({
+      initialSessionId: "sess-resumed",
+      sessionSandbox: runtime,
+    });
+    if (!sessionSandbox) throw new Error("bridge runtime was not derived");
+    try {
+      const script = `bash -c 'printf "%s" "\${AGENTCTL_SESSION_ID-}"' > "$PROJECT_PATH/resumed"`;
+      await runSandboxed(
+        sessionSandbox.wrapSpawn(
+          "/bin/sh",
+          ["-c", script],
+          bridge.extendEnv({
+            ...process.env,
+            BASH_ENV: undefined,
+            PROJECT_PATH: projectPath,
+          }),
+        ),
+      );
+      expect(await readFile(join(projectPath, "resumed"), "utf8")).toBe(
+        "sess-resumed",
+      );
+      expect(() =>
+        sessionSandbox.withSessionEnvBridge(bridge.directory),
+      ).toThrow(/already mounts/);
+    } finally {
+      bridge.cleanup();
+    }
   });
 
   t(

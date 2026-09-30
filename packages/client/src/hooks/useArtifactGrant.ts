@@ -4,7 +4,9 @@ import {
   type ArtifactViewerGrant,
 } from "@yep-anywhere/shared";
 import { useEffect, useState } from "react";
+import { useLocalFileScope } from "./useLocalFileScope";
 import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import {
   artifactAudience,
@@ -44,6 +46,18 @@ export function useArtifactGrant(
     serverHasCapability(version, SERVER_CAPABILITIES.artifactViewer.name)
       ? artifactOrigin(config, audience, window.location.href)
       : undefined;
+  // Inside a session, preview the file as that session names it (a sandboxed
+  // session's /tmp is its own, and a limited user may preview only through a
+  // session); the session route takes the absolute path.
+  const fileScope = useLocalFileScope();
+  const sessionProjectPath = useOptionalSessionMetadata()?.projectPath;
+  const sessionPath = !fileScope
+    ? undefined
+    : path.startsWith("/") || path.startsWith("~")
+      ? path
+      : sessionProjectPath
+        ? `${sessionProjectPath.replace(/\/+$/, "")}/${path}`
+        : undefined;
   const [grant, setGrant] = useState<ArtifactViewerGrant | null>(null);
   const [failed, setFailed] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -88,10 +102,16 @@ export function useArtifactGrant(
         clearTimeout(timer);
         if (cancelled) return;
         admitted = await runtime.transport.fetch<ArtifactViewerGrant>(
-          "/artifacts",
+          sessionPath
+            ? `/sessions/${encodeURIComponent(fileScope?.sessionId ?? "")}/artifacts`
+            : "/artifacts",
           {
             method: "POST",
-            body: JSON.stringify({ path, projectId, audience }),
+            body: JSON.stringify(
+              sessionPath
+                ? { path: sessionPath, audience }
+                : { path, projectId, audience },
+            ),
           },
         );
         if (new URL(admitted.url).origin !== origin) {
@@ -119,7 +139,16 @@ export function useArtifactGrant(
         onPolicyViolation,
       );
     };
-  }, [attempt, origin, audience, path, projectId, runtime]);
+  }, [
+    attempt,
+    origin,
+    audience,
+    path,
+    projectId,
+    runtime,
+    sessionPath,
+    fileScope,
+  ]);
 
   return { origin, grant, busy, failed, frameBlocked };
 }

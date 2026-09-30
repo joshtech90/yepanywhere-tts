@@ -564,6 +564,13 @@ export const CodexItemCompletedEventSchema = z
   })
   .passthrough();
 
+const CodexPersistedErrorEventSchema = z
+  .object({
+    message: z.string(),
+    codex_error_info: z.unknown().optional(),
+  })
+  .passthrough();
+
 /**
  * Turn aborted event.
  */
@@ -572,6 +579,7 @@ export const CodexTurnAbortedEventSchema = z
     type: z.literal("turn_aborted"),
     reason: z.string().optional(),
     message: z.string().optional(),
+    error: CodexPersistedErrorEventSchema.optional(),
   })
   .passthrough();
 
@@ -586,13 +594,6 @@ export const CodexTaskStartedEventSchema = z.object({
   model_context_window: z.number(),
   collaboration_mode_kind: z.string(),
 });
-
-const CodexPersistedErrorEventSchema = z
-  .object({
-    message: z.string(),
-    codex_error_info: z.unknown().optional(),
-  })
-  .passthrough();
 
 /**
  * Task complete event - emitted when an agent turn finishes.

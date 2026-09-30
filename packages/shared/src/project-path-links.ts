@@ -16,8 +16,12 @@ export interface ProjectPathToken {
 /** Characters that can occur in a project-relative path token. */
 const RELATIVE_PATH_TOKEN = /[^\s"'`<>&,:;()[\]{}=|]+/g;
 
-/** One absolute token runs from a whitespace boundary to the next whitespace. */
-const ABSOLUTE_PATH_TOKEN = /(?:^|\s)((?:\/(?!\/)|[A-Za-z]:[\\/])\S+)/g;
+/**
+ * One absolute token runs from a whitespace boundary to the next whitespace.
+ * `~/…` counts: it names one file under the server's home directory, which the
+ * server expands; it is never a project-relative path.
+ */
+const ABSOLUTE_PATH_TOKEN = /(?:^|\s)((?:\/(?!\/)|~\/|[A-Za-z]:[\\/])\S+)/g;
 
 /** Sentence punctuation is not part of a project-relative path. */
 const TRAILING_NOISE = /[.!?]+$/;
@@ -64,7 +68,12 @@ export function findProjectPathTokens(text: string): ProjectPathToken[] {
     const absolute = absoluteTokens[absoluteIndex];
     const overlapsAbsolute =
       !!absolute && start < absolute.end && end > absolute.start;
-    if (token && !token.startsWith("/") && !overlapsAbsolute) {
+    if (
+      token &&
+      !token.startsWith("/") &&
+      !token.startsWith("~/") &&
+      !overlapsAbsolute
+    ) {
       tokens.push({ end, kind: "relative", start, text: token });
     }
     relativeMatch = RELATIVE_PATH_TOKEN.exec(text);

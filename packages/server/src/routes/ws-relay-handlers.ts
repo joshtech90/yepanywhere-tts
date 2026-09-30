@@ -428,6 +428,27 @@ export function authenticatedConnectionIdentity(
 }
 
 /**
+ * The account whose draft-staging store this socket's uploads enter: the
+ * limited username, or null for the superuser. The owner's relay identity is
+ * the superuser, exactly as the tunneled routes resolve it, so a draft staged
+ * here is the one those routes validate, materialize, and queue.
+ */
+export function draftStagingOwnerForConnection(
+  connState: ConnectionState,
+  superuserIdentity: string | null,
+): string | null {
+  const identity = authenticatedConnectionIdentity(connState);
+  if (
+    identity !== null &&
+    hasEstablishedSrpTransport(connState) &&
+    identity === superuserIdentity
+  ) {
+    return null;
+  }
+  return identity;
+}
+
+/**
  * Create an initial connection state.
  */
 export function createConnectionState(options?: {
@@ -2270,7 +2291,10 @@ export async function handleMessage(
     limitedUsers,
   } = deps;
   const attachmentStagingService = sharedAttachmentStagingService?.forUser(
-    authenticatedConnectionIdentity(connState),
+    draftStagingOwnerForConnection(
+      connState,
+      remoteAccessService?.getUsername() ?? null,
+    ),
   );
   const srpRequiredPolicy = isPolicySrpRequired(connState.connectionPolicy);
   const getSpeechSession = (): SpeechWebSocketSession | null => {

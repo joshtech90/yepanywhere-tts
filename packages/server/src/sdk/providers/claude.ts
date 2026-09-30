@@ -81,7 +81,7 @@ import type {
   ProviderLivenessProbeResult,
   SDKMessage,
 } from "../types.js";
-import { createAgentctlSessionEnvBridge } from "./agentctl-session-env.js";
+import { createLaunchAgentctlSessionEnvBridge } from "./agentctl-session-env.js";
 import { filterEnvForChildProcess } from "./env-filter.js";
 import { normalizeClaudeSubscriptionUsage } from "./provider-subscription-usage.js";
 import type {
@@ -99,9 +99,11 @@ import type {
 } from "./types.js";
 import {
   PROVIDER_SESSION_OPTION_KEYS,
+  agentServerEnvironmentFor,
   resolveProviderSessionOptions,
 } from "./types.js";
 import type { SessionSandboxRuntime } from "../../session-sandbox.js";
+import { withSessionSandboxAgentContext } from "../../session-sandbox-agent-context.js";
 
 type ClaudeSdkModelInfo = Awaited<ReturnType<Query["supportedModels"]>>[number];
 type ClaudeSdkSlashCommand = Awaited<
@@ -1365,6 +1367,31 @@ export class ClaudeProvider implements AgentProvider {
     return disallowedTools ? { disallowedTools } : {};
   }
 
+  /** Apply at every confined query, including resumes and helper forks. */
+  private getSessionToolOptions(
+    model: string | undefined,
+    sandbox: SessionSandboxRuntime | undefined,
+  ): Pick<
+    Options,
+    "settings" | "disallowedTools" | "strictMcpConfig" | "mcpServers"
+  > {
+    const settings = this.getSettings(model);
+    if (!sandbox) {
+      return { settings, ...this.getDisallowedToolOptions(model) };
+    }
+    return {
+      settings: {
+        ...settings,
+        disableClaudeAiConnectors: true,
+        allowedMcpServers: [],
+        deniedMcpServers: [{ serverUrl: "*" }],
+      },
+      strictMcpConfig: true,
+      mcpServers: {},
+      disallowedTools: [...(this.getDisallowedTools(model) ?? []), "mcp__*"],
+    };
+  }
+
   /**
    * Normalize a live SDK model catalog and update this provider instance only.
    * Gateway subclasses may replace the SDK's built-in-plus-gateway catalog
@@ -1398,6 +1425,31 @@ export class ClaudeProvider implements AgentProvider {
           append: globalInstructions,
         }
       : { type: "preset" as const, preset: "claude_code" as const };
+  }
+
+  private getSessionSystemPrompt(
+    globalInstructions: string | undefined,
+    sandbox: SessionSandboxRuntime | undefined,
+  ): Options["systemPrompt"] {
+    const instructions = sandbox?.instructions;
+    if (instructions && !instructions.startFromDefault) {
+      return {
+        type: "custom",
+        prompt:
+          withSessionSandboxAgentContext(instructions.text, sandbox) ?? "",
+        snapshot: false,
+      };
+    }
+    const append = [globalInstructions, instructions?.text]
+      .filter(Boolean)
+      .join("\n\n");
+    const prompt = this.getSystemPrompt(
+      withSessionSandboxAgentContext(append, sandbox),
+    );
+    if (!instructions || !prompt) return prompt;
+    return typeof prompt === "string"
+      ? { type: "custom", prompt, snapshot: false }
+      : { ...prompt, snapshot: false };
   }
 
   private async runControlProbe<T>(
@@ -1724,20 +1776,27 @@ export class ClaudeProvider implements AgentProvider {
           permissionMode: "default",
           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
           env: this.getEnv(request.model),
-          settings: this.getSettings(request.model),
-          ...this.getDisallowedToolOptions(request.model),
+          ...this.getSessionToolOptions(request.model, request.sessionSandbox),
           model: normalizeClaudeLaunchModel(request.model),
           resume: request.generatorSessionId,
           maxTurns: 1,
           spawnClaudeCodeProcess: request.sessionSandbox
             ? createSandboxedClaudeSpawn(request.sessionSandbox)
             : undefined,
-          systemPrompt:
-            request.purpose === "session-retitle"
-              ? "You are a title helper. Reply with the session title only, no preamble."
-              : request.purpose === "recap"
-                ? "You are a recap helper. Reply with the recap text only, no preamble."
-                : "You are a handoff summary helper. Reply with the summary text only, no preamble.",
+          systemPrompt: {
+            type: "custom",
+            snapshot: false,
+            prompt: [
+              request.sessionSandbox?.instructions?.text,
+              request.purpose === "session-retitle"
+                ? "You are a title helper. Reply with the session title only, no preamble."
+                : request.purpose === "recap"
+                  ? "You are a recap helper. Reply with the recap text only, no preamble."
+                  : "You are a handoff summary helper. Reply with the summary text only, no preamble.",
+            ]
+              .filter(Boolean)
+              .join("\n\n"),
+          },
         },
       });
 
@@ -1881,7 +1940,11 @@ export class ClaudeProvider implements AgentProvider {
             message: "Prompt-cache keepalive does not run tools",
             interrupt: true,
           }),
-          systemPrompt: this.getSystemPrompt(options.globalInstructions),
+          // Must match the session's own system prompt to reuse its cache.
+          systemPrompt: this.getSessionSystemPrompt(
+            options.globalInstructions,
+            options.sessionSandbox,
+          ),
           settingSources: ["user", "project", "local"],
           includePartialMessages: false,
           persistSession: false,
@@ -1892,8 +1955,7 @@ export class ClaudeProvider implements AgentProvider {
           effort: options.effort,
           pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
           env: options.env,
-          settings: this.getSettings(options.model),
-          ...this.getDisallowedToolOptions(options.model),
+          ...this.getSessionToolOptions(options.model, options.sessionSandbox),
           spawnClaudeCodeProcess,
         },
       });
@@ -1977,18 +2039,27 @@ export class ClaudeProvider implements AgentProvider {
     const providerSessionOptions = getClaudeSessionLaunchOptions(
       options.sessionOptions,
     );
-    const agentctlSessionEnvBridge = options.executor
+    const launchBridge = options.executor
       ? null
-      : createAgentctlSessionEnvBridge(
-          options.resumeSessionId,
-          options.getSessionChildEnv,
-        );
+      : createLaunchAgentctlSessionEnvBridge({
+          initialSessionId: options.resumeSessionId,
+          getSessionEnv: options.getSessionChildEnv,
+          sessionSandbox: options.sessionSandbox,
+        });
+    const agentctlSessionEnvBridge = launchBridge?.bridge ?? null;
+    // Spawns must use this runtime: it also mounts the bridge directory.
+    const sessionSandbox = launchBridge
+      ? launchBridge.sessionSandbox
+      : options.sessionSandbox;
     const autoCompactOverrideEnv = getClaudeAutoCompactOverrideEnv(
       options.launchCompactPercentOverride,
     );
     const baseClaudeEnv = {
       ...this.getEnv(options.model),
       ...options.agentEnvironment,
+      // The Supervisor never mints one for a sandboxed or remote launch;
+      // refusing here too keeps the token out if that ever changes.
+      ...agentServerEnvironmentFor(options),
       ...autoCompactOverrideEnv,
     };
     const claudeEnv = agentctlSessionEnvBridge
@@ -2116,12 +2187,12 @@ export class ClaudeProvider implements AgentProvider {
         host: options.executor,
         remoteEnv,
       });
-    } else if (USE_SPAWN_WRAPPER || options.sessionSandbox) {
+    } else if (USE_SPAWN_WRAPPER || sessionSandbox) {
       // Local spawn wrapper: delegates to child_process.spawn but captures the
       // SpawnedProcess reference so we can check liveness (exitCode) later.
       spawnClaudeCodeProcess = (spawnOpts) => {
         const stderrTail: string[] = [];
-        const sandboxed = options.sessionSandbox?.wrapSpawn(
+        const sandboxed = sessionSandbox?.wrapSpawn(
           spawnOpts.command,
           spawnOpts.args,
           spawnOpts.env as NodeJS.ProcessEnv,
@@ -2290,7 +2361,10 @@ export class ClaudeProvider implements AgentProvider {
               ? "default"
               : (options.permissionMode ?? "default"),
           canUseTool,
-          systemPrompt: this.getSystemPrompt(options.globalInstructions),
+          systemPrompt: this.getSessionSystemPrompt(
+            options.globalInstructions,
+            sessionSandbox,
+          ),
           settingSources: ["user", "project", "local"],
           includePartialMessages: true,
           title: providerSessionOptions.sdk.title,
@@ -2304,8 +2378,7 @@ export class ClaudeProvider implements AgentProvider {
           pathToClaudeCodeExecutable,
           // Filter env to exclude npm_*, yep-anywhere specific, and other irrelevant vars
           env: claudeEnv,
-          settings: this.getSettings(options.model),
-          ...this.getDisallowedToolOptions(options.model),
+          ...this.getSessionToolOptions(options.model, sessionSandbox),
           hooks: {
             Stop: [
               {
@@ -2448,7 +2521,7 @@ export class ClaudeProvider implements AgentProvider {
           remoteEnv,
           pathToClaudeCodeExecutable,
           env: claudeEnv,
-          sessionSandbox: options.sessionSandbox,
+          sessionSandbox,
         }),
       publishAgentctlSessionId: (
         sessionId: string,

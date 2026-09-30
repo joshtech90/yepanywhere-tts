@@ -6,8 +6,9 @@ directory. YA now offers authorized creation through a radio palette in Projects
 and an inline New session expansion. Native setup, Git initialization,
 registration and preparation dispatch are connected. Settings → Users has
 None / Selected / Any template grants, enforced by the server. Limited-user
-setup runs in the project-write sandbox. App-pane integration, personal
-workspace scopes and the full recovery contract remain unfinished.
+setup runs in the project-write sandbox. Project App/service integration is
+implemented; personal workspace scopes and the full recovery contract remain
+unfinished.
 
 The agreed format and product behavior live in
 [project templates](../topics/project-templates.md#current-contract--config-driven-templates).
@@ -38,6 +39,14 @@ without navigating away. The mockup-first fixture is
 `packages/client/mockups/project-template-placement/`; it does not close this
 runtime gap. Optional template-provided thumbnails/icons have a separate
 [specification sketch](sketches/project-template-artwork.md).
+Contributing-model: 6-Astra.
+
+Personal removal landed, 2026-09-28: a limited owner's DELETE now persists a
+personal hidden marker and actor/time event, without changing canonical
+project metadata. List projections honor it after reconnect; direct access
+still follows grants. The Projects confirmation is capability-gated. Retained
+artifact association, first-claim-wins reservations, serving routes and the
+administrator audit/restore UI in project App Settings are implemented.
 Contributing-model: 6-Astra.
 
 With templates enabled and a ready source configured, permitted users can create a
@@ -72,7 +81,7 @@ releasable on its own:
 4. **Limited-user creation (§2, §5), core implemented.** Configured root,
    filtered ready templates, project-write setup and owned registration are
    verified through the real browser and server with a mock provider. Personal
-   workspace scopes and the private-apps ceiling remain with App integration.
+   workspace scopes and creation-time app publication remain with App integration.
 5. **App names and pane (§4)**, then **documentation (§6)**, as the tactical
    orders them.
 
@@ -81,16 +90,50 @@ project; the grant UI is not useful before creation exists.
 
 ## Remaining integration
 
+Backend foundation landed, 2026-09-28: YA validates the optional versioned
+service declaration and has a project-owned sandbox runner with private-broker
+readiness, serialized lifecycle actions and persisted interrupted/stop state.
+API admission, association storage, direct/relay delivery and the full-height
+project/session App UI are implemented. Native sandbox and browser checks cover
+these paths. Existing static source declarations are adapted; source-library
+server add-ons still need the versioned service declaration. Fine-grained
+creation-time reservations remain broader template work. Administrator app
+inventory and retained orphan-name release are available in Settings → Apps.
+Publication grants and private-link copy controls landed on
+2026-09-28, with server-enforced owner permissions and live revocation.
+Contributing-model: 6-Astra.
+
+- User-directed, 2026-09-28: implement the standardized declaration and
+  main-pane App / project Settings surface in
+  [project service](../topics/project-service.md). Reuse the existing sandbox
+  broker and HTTP proxy, but add project-owned runtime lifetime and delivery
+  without configured vhosts. Show any previous reservation only when vhost
+  serving is enabled; reservation, publication and service startup are separate.
+  A limited user's project removal must hide it only from that principal,
+  retaining superuser visibility and audit history. The spec and isolated
+  mockup do not close these runtime requirements. Contributing-model: 6-Astra.
+
 - User report, 2026-09-28: a limited user may be unable to create an App pane
   or start the template app. Reproduce both separately. Local `*.localhost`
   routing must work without configuring the maintainer's public wildcard.
   The existing public-name design is first successful claim, persistent
   reservation and superuser-only release, scoped to the configured wildcard;
   it is not implemented merely because `*.graehl.org` exists.
-- [Own-session lists and images](limited-user-session-visibility-and-media.md)
-  have separate reported access failures. Template boilerplate also becomes
-  the session title; provide a meaningful title/preview from the user's intent
-  without hiding the actual setup instructions from the transcript.
+- Template boilerplate becomes the session title; provide a meaningful
+  title/preview from the user's intent without hiding the actual setup
+  instructions from the transcript.
+- The original App canvas preparation prompt served the starter only on an
+  available loopback port for its own checks. A sandboxed session's
+  loopback server is now offered in the App pane, a limited user's included,
+  once its URL appears in command output
+  ([sandboxed session apps](../topics/session-right-pane.md#sandboxed-session-apps)),
+  independently of project App delivery. The template now declares its built
+  static app and optional Live preview service. Persistent artifact association,
+  the YA-owned sandbox runner and manual address publication are implemented
+  under [project service](../topics/project-service.md); they do not depend on
+  retaining a preparation session's loopback server. With provider hosting
+  enabled, apps survive Hono replacement under the
+  [managed lifecycle](../topics/project-service.md#managed-app-lifetime).
 - Approved administrator controls, 2026-09-28: a per-limited-user choice of
   whether standard harness-global instructions are imported into its isolated
   harness home, and administrator-editable instructions before and after
@@ -123,7 +166,7 @@ project; the grant UI is not useful before creation exists.
 - Show the usable starter as soon as deterministic setup has built it, then
   auto-send the project-context prepare turn with intent. Keep setup, agent
   preparation and readiness distinguishable; agent failure retains the starter.
-- Complete the app-exposure ceiling alongside App integration. Template
+- Apply the implemented app-exposure ceiling to creation-time publication. Template
   grants, configured project root, provider locks, project-write setup,
   ownership and operation permission rechecks are implemented.
 - Implement the

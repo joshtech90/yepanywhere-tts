@@ -90,7 +90,13 @@ Notifications use `VITE_API_PORT` when explicitly set, otherwise the launch's
 Manual mode preserves the current page only while it can use its loaded code.
 Before acquiring a dynamic module, the browser checks the Vite source
 generation. If source has changed, it reloads the current URL before executing
-the import, preserving query/hash and browser-stored drafts. The generation is
+the import, preserving query/hash and browser-stored drafts, including the
+pre-boot new-session composer's text
+([early typing handoff](early-typing-handoff.md#pre-boot-composer)). Only a
+change to a file in Vite's served module graph moves the generation; a file no
+page has loaded (a test, scratch output, a doc under the client root) cannot
+leave a page stale, and treating it as a change made every booting tab reload
+and restart its load while peers wrote unrelated files. The generation is
 checked again after acquisition (including failed imports), so a concurrent
 edit cannot return a stale module to the caller. An unchanged generation does
 not reload; a fresh document adopts the new generation. Check failures remain

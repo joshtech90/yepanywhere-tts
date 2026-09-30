@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { InstallService } from "../../server/src/services/InstallService.js";
 import { e2ePaths, expect, test, waitForRelayStatus } from "./fixtures.js";
 import { startMultiHostRelayHarness } from "./support/multi-host-relay-harness.js";
-import { stopYaServerProcess } from "./support/ya-server-process.js";
+import { disposeYaServerProcess } from "./support/ya-server-process.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 
 test("experimental preview isolates real encrypted sources and groups without reopening sessions", async ({
@@ -180,7 +180,7 @@ test("experimental preview isolates real encrypted sources and groups without re
       }
     });
     if (!gamma) throw new Error("Missing Gamma");
-    stopYaServerProcess(gamma.server);
+    await disposeYaServerProcess(gamma.server);
     await expect(source("Gamma")).toHaveAttribute(
       "data-source-status",
       "offline",
@@ -213,6 +213,6 @@ test("experimental preview isolates real encrypted sources and groups without re
   } catch (error) {
     throw new Error(`${String(error)}\n${harness.formatOutput()}`);
   } finally {
-    harness.stop();
+    await harness.stop();
   }
 });

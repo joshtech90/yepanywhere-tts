@@ -9,6 +9,7 @@ import {
 } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionMetadataProvider } from "../../../contexts/SessionMetadataContext";
 import { setInlineMediaExpandedPreference } from "../../../hooks/useInlineMedia";
 import { I18nProvider } from "../../../i18n";
 import { asClientSummarySourceKey } from "../../../lib/clientSummaryStore";
@@ -21,7 +22,11 @@ import {
   ExploredImageStrip,
 } from "../ExploredImageStrip";
 
-function imageParent(id: string, path: string): ExplorationParent {
+function imageParent(
+  id: string,
+  path: string,
+  mediaId?: string,
+): ExplorationParent {
   return {
     item: {
       type: "tool_call",
@@ -37,6 +42,20 @@ function imageParent(id: string, path: string): ExplorationParent {
           type: "image",
           file: { type: "image/png", originalSize: 5152 },
         },
+        ...(mediaId
+          ? {
+              media: [
+                {
+                  state: "stored" as const,
+                  toolCallId: id,
+                  id: mediaId,
+                  mimeType: "image/png",
+                  byteLength: 5152,
+                  filename: path.split("/").at(-1),
+                },
+              ],
+            }
+          : {}),
       },
     },
     entries: [],
@@ -109,6 +128,22 @@ describe("collectExploredImages", () => {
       ]),
     ).toHaveLength(1);
   });
+
+  it("keeps the stored bytes of the latest read of a path", () => {
+    expect(
+      collectExploredImages([
+        imageParent("a", "/tmp/phone.png", "first-read"),
+        imageParent("b", "/tmp/phone.png", "second-read"),
+      ]),
+    ).toEqual([
+      {
+        id: "a",
+        name: "phone.png",
+        path: "/tmp/phone.png",
+        mediaId: "second-read",
+      },
+    ]);
+  });
 });
 
 describe("ExploredImageStrip", () => {
@@ -149,5 +184,52 @@ describe("ExploredImageStrip", () => {
     });
     const thumbnail = await screen.findByRole("img", { name: "phone.png" });
     expect(thumbnail.getAttribute("src")).toBe("blob:explored-image");
+  });
+
+  it("reads a stored image through the session, never the host path", async () => {
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:explored-image"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
+    const fetchBlob = vi.fn(
+      async () => new Blob(["png"], { type: "image/png" }),
+    );
+    const runtime = createRuntime(
+      new FakeSourceTransport({
+        kind: "secure",
+        capabilities: { sameOriginUrls: false },
+        fetchBlob,
+      }),
+    );
+
+    renderWithRuntime(
+      <SessionMetadataProvider
+        projectId="project-1"
+        projectPath={null}
+        sessionId="session-1"
+      >
+        <ExploredImageStrip
+          images={collectExploredImages([
+            imageParent("a", "/tmp/sp-prep/phone.png", "media-1"),
+          ])}
+        />
+      </SessionMetadataProvider>,
+      runtime,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "1 image" }));
+
+    await waitFor(() => {
+      expect(fetchBlob).toHaveBeenCalledWith(
+        "/projects/project-1/sessions/session-1/media/media-1",
+      );
+    });
+    expect(fetchBlob).not.toHaveBeenCalledWith(
+      expect.stringContaining("/local-image"),
+    );
   });
 });

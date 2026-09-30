@@ -14,6 +14,7 @@ import type {
   BrowserProfileOrigin,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 const CURRENT_VERSION = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -316,7 +317,7 @@ export class BrowserProfileService {
   private async doSave(): Promise<void> {
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      await writeFileAtomically(this.filePath, content);
     } catch (error) {
       console.error("[BrowserProfileService] Failed to save profiles:", error);
       throw error;

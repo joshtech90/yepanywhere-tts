@@ -145,6 +145,8 @@
 
 .docked {
   position: relative;
+  flex-direction: column;
+  align-items: flex-end;
   width: max-content;
   margin: 0 10px 34px auto;
 }

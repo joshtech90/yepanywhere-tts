@@ -410,6 +410,55 @@ outside these YA transcript links still need ordinary hostname resolution.
 The local address's port is the browser's forwarded port, which can differ
 from YA's actual listening port.
 
+### File vhosts
+
+A vhost row may serve a file or directory itself instead of a loopback port
+(**Serves: File or directory** in the same table). The row maps
+`name.localhost` and `name.<public root>` to an absolute server path, read
+live on every request. A file answers at `/`; when it is HTML it also answers
+at the paths of the assets its elements load, decided by the live file
+share's `findHtmlRootAssetReferences` rule with the file's directory as site
+root, so an `<a href>`, CSS `url()` or sibling file gains nothing. A directory
+serves the files beneath it, `index.html` for a folder (redirecting a
+slashless folder URL to its slash). Dot segments, dotfiles, backslashes and
+encoded escapes fail; symlinks must resolve inside the root; every served file
+must also pass the local file policy. Only GET and HEAD are served, with the
+artifact origin's CSP sandbox, `nosniff`, `no-referrer`, `no-store` and
+permissions policy.
+
+Names are first come, first served across port rows, file rows and project app
+addresses: a claim or save that collides is refused, as is a new row named
+`localhost`, `artifacts`, `relay`, `www`, `ya`, one starting `app-` or
+`sbx-`, or one whose public hostname is YA's own client or artifact host.
+File rows are saved in a separate `vhostSites` list; a save that omits the
+list keeps it, so a client or server predating file rows never drops or
+misreads one. Releasing a row rotates its app-link generation, so a later
+claim of the same name and path does not revive old private links.
+
+Access is one of three: **App link required** (the private-link bearer,
+default for Settings rows), **Public**, or **Password**. A password row is
+public with a visitor password: without an app link, a visitor must answer the
+browser's Basic prompt (any user name). The server stores only a salted scrypt
+hash, never returns it (clients see `passwordProtected`), and checks it off the
+event loop. A correct password or app link earns the host-only app cookie, so
+assets are not re-hashed. The superuser sets, replaces or removes the password
+from the row at any time; an app link still opens the page without it. Basic
+credentials travel inside the tunnel's HTTPS; on `name.localhost` they are
+plain local HTTP.
+
+The File Viewer's public-share dialog offers **Serve at its own address** for
+the viewed file to the superuser: a suggested name from the file name, the
+host suffix, and the access choice (Public by default there, since a pretty
+public address is the purpose). It claims a file row through
+`POST /api/artifacts/vhost-sites`, lists this file's rows, and copies or stops
+serving them; Settings → Apps lists and edits every row.
+
+`vhost-file-sites` (ID 105, version-implied from 0.9.4; maintainer approval
+2026-09-30, `Qcompat`) owns the `vhostSites` field and the
+`/api/artifacts/vhost-sites` routes. v0.9.0–v0.9.2 lack them: without the
+capability, clients hide the Serves selector and the dialog section and send
+neither.
+
 A configured public HTTPS address additionally starts a plain HTTP listener on
 `127.0.0.1:<artifact port>`, default port 4402, for a reverse proxy or tunnel.
 The proxy preserves the artifact Host and terminates HTTPS. No second SSH
@@ -469,12 +518,39 @@ leftmost entry is only as trustworthy as the proxy that wrote it.
 
 **Copy app link** and **Revoke existing links** live beside each saved vhost.
 Revocation durably increments that app's generation and rejects old URLs and
-cookies on subsequent requests. It does not stop the app or erase already
+cookies on subsequent requests and closes established app WebSockets. It does
+not stop the app or erase already
 received content. App links have no automatic expiry in this version.
 Browsers that prohibit embedded cookies may require opening the signed link
 in a new tab; broader browser verification remains tracked in the access gap.
-Vhost WebSocket proxying remains unsupported (501 after authorization; 401
-without it), rather than bypassing the gate.
+WebSocket upgrades use the same app gate, as described below.
+
+### App WebSocket access
+
+The Node main listener and separate artifact listener route app upgrades to
+`AppWebSocketProxy`, through the same `ArtifactServer` / `ProjectAppDelivery`
+authorization path as HTTP. Configured vhosts, session app hosts, project app
+hosts and scoped `/p/<launch-token>/` services are supported. Static `/a/`
+grants are not socket capabilities; neither artifact hosts nor artifact origins
+gain access to YA's control WebSockets.
+
+Private host upgrades require the app bearer or its host cookie. Cookie-only
+upgrades additionally require the exact app Origin, preventing cross-site
+WebSocket hijacking; an opaque Origin must use the explicit bearer instead.
+Path-based service upgrades use the unguessable active launch path, including
+from an opaque iframe. All YA credentials and app-access credentials are
+stripped before forwarding. Only WebSocket handshake fields return from the
+upstream; upstream Set-Cookie is not forwarded in a 101 response.
+
+The upstream is the configured loopback port or the active sandbox's broker,
+never a target supplied by the upgrade request. Authorization is checked on
+each connection; revocation closes that hostname's established connections and
+rejects subsequent connections, without erasing already received data.
+Connections are capped at 128, handshakes at ten seconds, and
+idle connections at five minutes. Disconnect, upstream exit, app-server close,
+and serving-configuration changes tear down owned sockets. Stopping the owned
+service closes its broker connections. HTTP/SSE continue through their existing
+proxy; a synthetic Fetch upgrade without a raw socket still refuses with 501.
 
 The 32-byte random signing key is created once under
 `{dataDir}/artifacts/app-access.key`; generations live in `app-access.json`.
@@ -556,8 +632,10 @@ permits only YA's nonce-authorized selection script and a validated target-id
 message to the parent. That message can open source; it cannot write or invoke
 a script. Producer scripts and event handlers are removed.
 
-The artifact handler exposes only GET/HEAD health and granted files. `/api`,
-`/public-api`, desktop bootstrap, and WebSocket upgrades are unavailable.
+The static artifact handler exposes only GET/HEAD health and granted files.
+The separate `/p/<launch-token>/` service route supports app HTTP/WebSockets
+as described above. `/api`, `/public-api`, desktop bootstrap, and YA control
+WebSocket upgrades remain unavailable on artifact hosts.
 Registered artifact hostnames stay excluded from YA host/CORS/WebSocket trust
 until process exit, including after disable/reconfiguration and with wildcard
 allowed-host settings. Opaque `Origin: null` is also rejected once an artifact

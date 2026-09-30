@@ -8,6 +8,9 @@ import {
 } from "react";
 import { useToolApprovalFeedbackDraft } from "../hooks/useDrafts";
 import { useI18n } from "../i18n";
+import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
+import { draftLocalKey } from "../lib/draftSyncStorage";
+import { DraftSyncNotice } from "./DraftSyncNotice";
 import {
   makeSecurityVisibleText,
   makeSecurityVisibleValue,
@@ -55,6 +58,8 @@ export function ToolApprovalPanel({
   projectPath,
 }: Props) {
   const { t } = useI18n();
+  const sourceKey = useClientSummarySourceKey();
+  const draftKey = draftLocalKey(sourceKey, { kind: "approval", sessionId });
   const [submitting, setSubmitting] = useState(false);
   // Prevent accidental clicks by disabling buttons briefly when panel appears
   const [armedRequestId, setArmedRequestId] = useState<string | null>(null);
@@ -131,6 +136,12 @@ export function ToolApprovalPanel({
   const handleKeyDown = useCallback(
     (e: ReactKeyboardEvent<HTMLDivElement>) => {
       if (submitting || !armed) return;
+      // Native keyboard activation of draft-review buttons is not approval.
+      if (
+        e.target instanceof Element &&
+        e.target.closest("[data-draft-notice]")
+      )
+        return;
 
       // Don't handle shortcuts when typing in feedback
       if (showFeedback) {
@@ -238,7 +249,12 @@ export function ToolApprovalPanel({
 
   return (
     // biome-ignore lint/a11y/noStaticElementInteractions: keyboard shortcuts for the focusable buttons inside
-    <div className={styles.root} onKeyDown={handleKeyDown}>
+    <div
+      className={styles.root}
+      onKeyDown={handleKeyDown}
+      data-draft-key={draftKey}
+    >
+      <DraftSyncNotice draftKey={draftKey} sessionId={sessionId} />
       {/* Floating toggle button */}
       <button
         type="button"

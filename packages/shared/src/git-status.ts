@@ -323,6 +323,22 @@ export interface GitWorkingTreeFileListResult {
   truncated: boolean;
   /** Effective response bound. */
   limit: number;
+  /** The browsed directory, present only when the request named a `root`. */
+  root?: LocalSourceRoot;
+}
+
+/**
+ * A directory outside the project browsed as a read-only snapshot: the
+ * enclosing Git checkout when the file-access allow-set covers it, else the
+ * requested directory. Paths in the inventory are relative to `path`.
+ */
+export interface LocalSourceRoot {
+  /** Realpath of the browsed directory. */
+  path: string;
+  /** Whether Git classified the inventory (tracked/untracked). */
+  isGitRepo: boolean;
+  /** The requested file relative to `path`, when the request named a file. */
+  requestedFile?: string;
 }
 
 /** Rudimentary commit-delta / filename search results. */

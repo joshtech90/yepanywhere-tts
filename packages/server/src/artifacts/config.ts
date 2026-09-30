@@ -1,10 +1,13 @@
+import { expandHomePath } from "../utils/expandHomePath.js";
 import {
   parseVhostPublicRoot,
   parseVhosts,
+  parseVhostSites,
   type ArtifactVhost,
+  type ArtifactVhostSite,
 } from "./vhosts.js";
 
-export type { ArtifactVhost };
+export type { ArtifactVhost, ArtifactVhostSite };
 
 export interface ArtifactConfig {
   port: number;
@@ -16,6 +19,8 @@ export interface ArtifactConfig {
   expiryHours?: number;
   /** Static loopback Host maps; empty means none. */
   vhosts?: ArtifactVhost[];
+  /** Vhosts serving a file or directory; names are unique across both lists. */
+  vhostSites?: ArtifactVhostSite[];
   /** Optional apex such as graehl.org; unset means name.localhost only. */
   vhostPublicRoot?: string;
   /** Rewrite name.localhost links even outside a public relay session. */
@@ -36,7 +41,7 @@ export function validateArtifactConfig(
   defaultExpiryDays = DEFAULT_ARTIFACT_EXPIRY_DAYS,
   previous?: Pick<
     ArtifactConfig,
-    "vhosts" | "vhostPublicRoot" | "alwaysRewriteVhostLinks"
+    "vhosts" | "vhostSites" | "vhostPublicRoot" | "alwaysRewriteVhostLinks"
   >,
 ): ArtifactConfig {
   if (!value || typeof value !== "object")
@@ -88,6 +93,12 @@ export function validateArtifactConfig(
   const vhosts = parseVhosts(input.vhosts, previous?.vhosts);
   if (vhosts.some((vhost) => vhost.port === config.port))
     throw new Error("Vhost port cannot be the artifact listener port");
+  const vhostSites = parseVhostSites(
+    input.vhostSites,
+    vhosts,
+    previous?.vhostSites,
+    expandHomePath,
+  );
   const vhostPublicRoot = parseVhostPublicRoot(
     input.vhostPublicRoot,
     previous?.vhostPublicRoot,
@@ -101,6 +112,7 @@ export function validateArtifactConfig(
     expiryDays,
     expiryHours: expiryDays * 24,
     vhosts,
+    vhostSites,
     ...(vhostPublicRoot ? { vhostPublicRoot } : {}),
     ...(alwaysRewriteVhostLinks ? { alwaysRewriteVhostLinks: true } : {}),
   };

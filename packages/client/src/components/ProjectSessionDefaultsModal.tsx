@@ -2,27 +2,39 @@ import {
   DEFAULT_HEARTBEAT_TURN_TEXT,
   DEFAULT_HEARTBEAT_TURNS_AFTER_MINUTES,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
+  SERVER_CAPABILITIES,
+  serverHasCapability,
 } from "@yep-anywhere/shared";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "../api/client";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
 import { HeartbeatTextArea } from "./HeartbeatTextArea";
+import { ProjectSharingSection } from "./ProjectSharingSection";
 import styles from "./ProjectSessionDefaultsModal.module.css";
 import { Modal } from "./ui/Modal";
+import { Link } from "react-router-dom";
+import { useVersion } from "../hooks/useVersion";
+import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
+import { ProjectAppViewer } from "./ProjectAppViewer";
 
 interface ProjectSessionDefaultsModalProps {
   projectId: string;
   projectName?: string;
+  /** The limited user who created the project, who may share it. */
+  ownerUsername?: string;
   onClose: () => void;
 }
 
 export function ProjectSessionDefaultsModal({
   projectId,
   projectName,
+  ownerUsername,
   onClose,
 }: ProjectSessionDefaultsModalProps) {
   const { t } = useI18n();
+  const { version } = useVersion();
+  const basePath = useRemoteBasePath();
   const { settings } = useServerSettings();
   const globalMinutes =
     settings?.heartbeatTurnsAfterMinutes ??
@@ -110,107 +122,132 @@ export function ProjectSessionDefaultsModal({
   return (
     <Modal title={title} onClose={onClose}>
       <div className={styles.body}>
-        <p className={styles.intro}>{t("projectSettingsHeartbeatIntro")}</p>
-
-        <section className={styles.section}>
-          <div className={styles.headingRow}>
-            <div>
-              <h3>{t("projectSettingsHeartbeatInterval")}</h3>
-              <p>{t("projectSettingsHeartbeatIntervalDescription")}</p>
-            </div>
-            <label className={styles.inheritToggle}>
-              <input
-                type="checkbox"
-                checked={inheritMinutes}
-                disabled={loading}
-                onChange={(event) => setInheritMinutes(event.target.checked)}
-              />
-              <span>
-                {t("projectSettingsUseGlobalMinutes", {
-                  minutes: globalMinutes,
-                })}
-              </span>
-            </label>
-          </div>
-          <label className={styles.numberField}>
-            <span>{t("projectSettingsMinutes")}</span>
-            <input
-              type="number"
-              min={1}
-              max={1440}
-              value={minutes}
-              disabled={loading || inheritMinutes}
-              onChange={(event) => setMinutes(event.target.value)}
-            />
-          </label>
-        </section>
-
-        <section className={styles.section}>
-          <div className={styles.headingRow}>
-            <div>
-              <h3>{t("projectSettingsHeartbeatMessage")}</h3>
-              <p>{t("projectSettingsHeartbeatMessageDescription")}</p>
-            </div>
-            <label className={styles.inheritToggle}>
-              <input
-                type="checkbox"
-                checked={inheritText}
-                disabled={loading}
-                onChange={(event) => {
-                  const inherit = event.target.checked;
-                  setInheritText(inherit);
-                  if (!inherit && !text.trim()) setText(globalText);
-                }}
-              />
-              <span>{t("projectSettingsUseGlobalMessage")}</span>
-            </label>
-          </div>
-          {recentTexts.length > 0 && (
-            <label className={styles.recentField}>
-              <span>{t("projectSettingsRecentMessages")}</span>
-              <select
-                value=""
-                disabled={loading}
-                onChange={(event) => {
-                  if (!event.target.value) return;
-                  setText(event.target.value);
-                  setInheritText(false);
-                }}
-              >
-                <option value="">{t("projectSettingsChooseRecent")}</option>
-                {recentTexts.map((recent) => (
-                  <option key={recent} value={recent}>
-                    {recent}
-                  </option>
-                ))}
-              </select>
-            </label>
+        <div className={styles.column}>
+          {serverHasCapability(
+            version,
+            SERVER_CAPABILITIES.projectService.name,
+          ) && (
+            <section className={styles.section}>
+              <div className={styles.sectionTitle}>
+                <h3>{t("projectAppLabel")}</h3>
+                <Link
+                  to={`${basePath}/projects/${projectId}/app`}
+                  onClick={onClose}
+                >
+                  {t("projectAppOpen")}
+                </Link>
+              </div>
+              <ProjectAppViewer projectId={projectId} presentation="settings" />
+            </section>
           )}
-          <HeartbeatTextArea
-            value={text}
-            disabled={loading || inheritText}
-            placeholder={globalText}
-            aria-label={t("projectSettingsHeartbeatMessage")}
-            className={styles.textarea}
-            onChange={(value) => {
-              setText(value);
-              setInheritText(false);
-            }}
+          <ProjectSharingSection
+            projectId={projectId}
+            ownerUsername={ownerUsername}
           />
-          <div className={styles.textMeta}>
-            <span>{t("projectSettingsMessageHint")}</span>
-            <span>
-              {text.length.toLocaleString()} /{" "}
-              {MAX_HEARTBEAT_TURN_TEXT_LENGTH.toLocaleString()}
-            </span>
-          </div>
-        </section>
+        </div>
+        <div className={styles.column}>
+          <p className={styles.intro}>{t("projectSettingsHeartbeatIntro")}</p>
 
-        {error && (
-          <p className={styles.error} role="alert">
-            {error}
-          </p>
-        )}
+          <section className={styles.section}>
+            <div className={styles.headingRow}>
+              <div>
+                <h3>{t("projectSettingsHeartbeatInterval")}</h3>
+                <p>{t("projectSettingsHeartbeatIntervalDescription")}</p>
+              </div>
+              <label className={styles.inheritToggle}>
+                <input
+                  type="checkbox"
+                  checked={inheritMinutes}
+                  disabled={loading}
+                  onChange={(event) => setInheritMinutes(event.target.checked)}
+                />
+                <span>
+                  {t("projectSettingsUseGlobalMinutes", {
+                    minutes: globalMinutes,
+                  })}
+                </span>
+              </label>
+            </div>
+            <label className={styles.numberField}>
+              <span>{t("projectSettingsMinutes")}</span>
+              <input
+                type="number"
+                min={1}
+                max={1440}
+                value={minutes}
+                disabled={loading || inheritMinutes}
+                onChange={(event) => setMinutes(event.target.value)}
+              />
+            </label>
+          </section>
+
+          <section className={styles.section}>
+            <div className={styles.headingRow}>
+              <div>
+                <h3>{t("projectSettingsHeartbeatMessage")}</h3>
+                <p>{t("projectSettingsHeartbeatMessageDescription")}</p>
+              </div>
+              <label className={styles.inheritToggle}>
+                <input
+                  type="checkbox"
+                  checked={inheritText}
+                  disabled={loading}
+                  onChange={(event) => {
+                    const inherit = event.target.checked;
+                    setInheritText(inherit);
+                    if (!inherit && !text.trim()) setText(globalText);
+                  }}
+                />
+                <span>{t("projectSettingsUseGlobalMessage")}</span>
+              </label>
+            </div>
+            {recentTexts.length > 0 && (
+              <label className={styles.recentField}>
+                <span>{t("projectSettingsRecentMessages")}</span>
+                <select
+                  value=""
+                  disabled={loading}
+                  onChange={(event) => {
+                    if (!event.target.value) return;
+                    setText(event.target.value);
+                    setInheritText(false);
+                  }}
+                >
+                  <option value="">{t("projectSettingsChooseRecent")}</option>
+                  {recentTexts.map((recent) => (
+                    <option key={recent} value={recent}>
+                      {recent}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <HeartbeatTextArea
+              value={text}
+              disabled={loading || inheritText}
+              placeholder={globalText}
+              aria-label={t("projectSettingsHeartbeatMessage")}
+              className={styles.textarea}
+              onChange={(value) => {
+                setText(value);
+                setInheritText(false);
+              }}
+            />
+            <div className={styles.textMeta}>
+              <span>{t("projectSettingsMessageHint")}</span>
+              <span>
+                {text.length.toLocaleString()} /{" "}
+                {MAX_HEARTBEAT_TURN_TEXT_LENGTH.toLocaleString()}
+              </span>
+            </div>
+          </section>
+
+          {error && (
+            <p className={styles.error} role="alert">
+              {error}
+            </p>
+          )}
+        </div>
 
         <div className={styles.actions}>
           <button type="button" className={styles.secondary} onClick={onClose}>

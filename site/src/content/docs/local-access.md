@@ -75,7 +75,8 @@ to sign in as the owner. Your Remote Access username also signs you in as the
 owner, so a browser that fills it in from a saved relay login still works.
 Over the relay, enter the limited username in **Log in
 as** at [yepanywhere.com/remote](https://yepanywhere.com/remote); the server name
-stays the same.
+stays the same. To give a limited user an app icon on an iPad or iPhone, see
+[iPad and iPhone Home Screen](/docs/home-screen).
 
 This preview helps prevent accidental access. It is not hardened isolation
 between people who do not trust each other.

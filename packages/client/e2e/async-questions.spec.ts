@@ -6,10 +6,9 @@ import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
-import { createTestViteServer as createServer } from "./support/vite-server";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process";
 
 test.use({ serviceWorkers: "block" });
@@ -22,6 +21,7 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
   const projectPath = dirname(dirname(fileURLToPath(import.meta.url)));
   const backend = await startYaServerProcess({
     label: "async question test",
+    serveBuiltClient: true,
     mockClaudeSession: {
       projectPath,
       sessionId,
@@ -30,19 +30,6 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
   });
   const projectId = Buffer.from(projectPath).toString("base64url");
   const apiPath = `/api/projects/${projectId}/sessions/${sessionId}`;
-  const source = await createServer({
-    configFile: join(
-      dirname(fileURLToPath(import.meta.url)),
-      "../vite.config.ts",
-    ),
-    define: { __VITE_DEV_PORT__: "-1" },
-    server: {
-      port: 0,
-      strictPort: false,
-      host: "127.0.0.1",
-      proxy: { "/api": { target: backend.baseUrl, ws: true } },
-    },
-  });
   let busy = true;
   let fail = false;
   let structured = true;
@@ -189,11 +176,7 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
     });
   });
   try {
-    await source.listen();
-    const address = source.httpServer?.address();
-    if (!address || typeof address === "string")
-      throw new Error("Missing Vite test port");
-    const origin = `http://127.0.0.1:${address.port}`;
+    const origin = backend.baseUrl;
     const captures = process.env.YEP_E2E_UI_CAPTURE_DIR;
     if (captures) mkdirSync(captures, { recursive: true });
     const cdp = await page.context().newCDPSession(page);
@@ -220,6 +203,19 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
       await expect(badge).toBeVisible();
       expect(sends).toHaveLength(viewport.name === "phone" ? 0 : 1);
       const scroller = page.locator("main.session-messages");
+      // An unrevealed viewport also has bottom distance zero. Establish the
+      // actual transcript volume before capturing the question's return position.
+      await expect(
+        page.getByText(
+          "Later progress 17. Independent work continues while the user considers the question.",
+          { exact: true },
+        ),
+      ).toBeVisible();
+      await expect
+        .poll(() =>
+          scroller.evaluate((el) => el.scrollHeight > el.clientHeight),
+        )
+        .toBe(true);
       await expect
         .poll(() =>
           scroller.evaluate(
@@ -807,7 +803,6 @@ test("async questions preserve context, drafts, scroll and ordinary delivery", a
   } finally {
     replyGate.release?.();
     await page.unrouteAll({ behavior: "wait" });
-    await source.close();
-    stopYaServerProcess(backend);
+    await disposeYaServerProcess(backend);
   }
 });

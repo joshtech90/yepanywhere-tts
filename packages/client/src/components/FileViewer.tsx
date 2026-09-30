@@ -105,6 +105,7 @@ import {
   FilePathContextMenu,
   type FileViewPresentation,
   supportsSourceAndPreview,
+  localSourceTarget,
   useStartNewSessionFromFile,
   useStartNewSessionWithPrefillAction,
 } from "./FileResourceActions";
@@ -788,6 +789,7 @@ export const FileViewer = memo(function FileViewer({
     fileViewerBodyRef,
     diffActive ? undefined : fileData?.content,
     quoteableSourceContext,
+    showPreview ? "rendered" : "literal",
   );
   const startNewSessionWithPrefill = useStartNewSessionWithPrefillAction();
   const startNewSessionFromSelection = useCallback(
@@ -1446,6 +1448,12 @@ export const FileViewer = memo(function FileViewer({
     : null;
   const openImageInNewTabLabel = t("fileViewerOpenImageNewTab" as never);
   const startNewSession = useStartNewSessionFromFile(projectId, filePath);
+  const localSource = localSourceTarget(
+    projectId,
+    absoluteCopyPath,
+    projectRelativeCopyPath,
+    publicShareContext !== null,
+  );
 
   const handleDownload = useCallback(() => {
     if (!fileData) return;
@@ -2190,6 +2198,7 @@ export const FileViewer = memo(function FileViewer({
               : undefined
           }
           onStartNewSession={startNewSession}
+          localSource={localSource}
           onCopyProjectRelativePath={
             projectRelativeCopyPath
               ? () => void writeClipboardText(projectRelativeCopyPath)

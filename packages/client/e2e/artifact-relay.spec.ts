@@ -15,7 +15,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
-import { createServer as createViteServer } from "vite";
+import { getRemotePreviewPort } from "./fixtures.js";
 import { checkMockup } from "./fixtures/mockup-checks";
 import { viewports } from "../mockups/export";
 import { createRelayServer } from "../../relay/src/server";
@@ -35,14 +35,13 @@ import { EventBus } from "../../server/src/watcher";
 import { createApp } from "../../server/test/setup/create-app";
 
 // The dedicated gateway below uses a generated, self-signed test certificate.
-test.use({ ignoreHTTPSErrors: true });
+test.use({ ignoreHTTPSErrors: true, serviceWorkers: "block" });
 
 const clientRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const serverRequire = createRequire(join(clientRoot, "../server/package.json"));
 const username = "artifact-relay-test";
 const password = "artifact-relay-test-password";
 let directory: string;
-let vite: Awaited<ReturnType<typeof createViteServer>>;
 let relay: Awaited<ReturnType<typeof createRelayServer>>;
 let gateway: ReturnType<typeof createHttpsServer>;
 let instance: ReturnType<typeof createApp>;
@@ -101,17 +100,7 @@ test.beforeAll(async () => {
     tempPaths: [directory],
     envPaths: [directory],
   });
-  vite = await createViteServer({
-    root: clientRoot,
-    cacheDir: join(directory, "node_modules", ".vite"),
-    configFile: join(clientRoot, "vite.config.remote.ts"),
-    server: { host: "127.0.0.1", port: 0, strictPort: false },
-  });
-  await vite.listen();
-  const viteAddress = vite.httpServer?.address();
-  if (!viteAddress || typeof viteAddress === "string")
-    throw new Error("Missing hosted-client port");
-  clientOrigin = `http://viewer.localhost:${viteAddress.port}`;
+  clientOrigin = `http://viewer.localhost:${getRemotePreviewPort()}`;
   relay = await createRelayServer({
     inMemoryDb: true,
     disablePrettyPrint: true,
@@ -234,6 +223,10 @@ test.beforeAll(async () => {
   await expect.poll(() => relayClient.getState().status).toBe("waiting");
 });
 
+test.beforeEach(() => {
+  artifactRequests.length = 0;
+});
+
 test.afterAll(async () => {
   relayClient?.stop();
   if (relay) await relay.close();
@@ -244,9 +237,48 @@ test.afterAll(async () => {
       gateway.close((error) => (error ? reject(error) : done())),
     );
   }
-  if (instance) await instance.disposeSessionReaders();
-  if (vite) await vite.close();
+  if (instance) {
+    instance.stopNotifications();
+    await instance.disposeSessionReaders();
+  }
   if (directory) await rm(directory, { recursive: true });
+});
+
+test("opens the project App latest artifact through the relay without vhosts", async ({
+  page,
+}) => {
+  const directApiRequests: string[] = [];
+  page.on("request", (request) => {
+    if (new URL(request.url()).pathname.startsWith("/api/projects/"))
+      directApiRequests.push(request.url());
+  });
+  await page.goto(clientOrigin);
+  await page.getByTestId("relay-mode-button").click();
+  await page.getByTestId("relay-username-input").fill(username);
+  await page.getByTestId("srp-password-input").fill(password);
+  await page.getByText("Show Advanced Options", { exact: true }).click();
+  await page.getByTestId("custom-relay-url-input").fill(relayUrl);
+  await page.getByTestId("login-button").click();
+  await expect(page.getByTestId("relay-login-form")).not.toBeVisible({
+    timeout: 15000,
+  });
+  await page.goto(
+    `${clientOrigin}/-/relay/${username}/projects/${projectId}/app`,
+  );
+  const viewer = page.getByRole("region", { name: "Project App" });
+  await expect(viewer.locator("iframe")).toBeVisible();
+  await expect(viewer.locator("iframe")).toHaveAttribute(
+    "src",
+    new RegExp(`^${artifactOrigin}/a/`),
+  );
+  await expect(page.frameLocator("iframe").getByRole("status")).toHaveText(
+    "3 sample notes",
+  );
+  await viewer.getByRole("button", { name: "App settings" }).click();
+  await expect(viewer.getByRole("group", { name: "App address" })).toHaveCount(
+    0,
+  );
+  expect(directApiRequests).toEqual([]);
 });
 
 test("opens original interactive files through relay grants and a separate HTTPS origin", async ({
@@ -280,7 +312,10 @@ test("opens original interactive files through relay grants and a separate HTTPS
   const fileResponse = await page.goto(
     `${clientOrigin}/-/relay/${username}/projects/${projectId}/file?path=index.html`,
   );
-  expect(await fileResponse?.text()).toContain("/src/remote-main.tsx");
+  const fileShell = await fileResponse?.text();
+  expect(fileShell).toContain('<div id="root"></div>');
+  expect(fileShell).toContain("<title>Yep Anywhere - Remote</title>");
+  expect(fileShell).not.toContain("<title>Field notes mockup</title>");
   expect(artifactRequests).toEqual([]);
   // HTML opens in the confined static preview; the play toggle admits the
   // interactive grant through the relay rather than a direct API call.

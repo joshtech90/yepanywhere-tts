@@ -3,7 +3,14 @@ import { createRoot } from "react-dom/client";
 import { I18nProvider } from "../../src/i18n";
 import { PromptHistoryRail } from "../../src/components/PromptHistoryRail";
 import { rememberComposerPrompt } from "../../src/lib/composerHistory";
+import { UI_KEYS } from "../../src/lib/storageKeys";
 import "../../src/styles/index.css";
+
+// The rail is opt-in; `?rail=off` exercises the default.
+localStorage.setItem(
+  UI_KEYS.composerPromptRail,
+  String(new URLSearchParams(location.search).get("rail") !== "off"),
+);
 
 await Promise.all(
   Array.from({ length: 50 }, (_, i) =>

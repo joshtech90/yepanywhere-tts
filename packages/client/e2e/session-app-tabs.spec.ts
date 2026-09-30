@@ -15,6 +15,7 @@ test("different App snapshots in two tabs settle without storage feedback", asyn
   );
   const sessionId = "mock-session-001";
   const url = `${baseURL}/projects/${projectId}/sessions/${sessionId}`;
+  const timestamp = new Date().toISOString();
   const other = await context.newPage();
   await context.addInitScript(() => {
     let events = 0;
@@ -50,7 +51,6 @@ test("different App snapshots in two tabs settle without storage feedback", asyn
     (route) => {
       const snapshot =
         route.request().frame().page() === page ? "older" : "newer";
-      const timestamp = new Date().toISOString();
       return route.fulfill({
         json: {
           session: {
@@ -111,6 +111,11 @@ test("different App snapshots in two tabs settle without storage feedback", asyn
   await expect(
     other.getByRole("link", { name: "App ↗", exact: true }),
   ).toBeVisible();
+  for (const tab of [page, other])
+    await expect(tab.locator('[data-render-id="history-239"]')).toHaveCount(1);
+  await page.bringToFront();
+  const input = page.locator("[data-composer-input]").first();
+  await input.focus();
   // Two independently loaded snapshots must reach quiescence, even with the
   // pane disabled and no artifact iframe ever opened.
   const eventCount = () =>
@@ -122,9 +127,6 @@ test("different App snapshots in two tabs settle without storage feedback", asyn
   const settled = await eventCount();
   console.log("[storage-recovery] settled events", settled);
   expect(settled).toBeLessThan(30);
-  await page.bringToFront();
-  const input = page.locator("[data-composer-input]").first();
-  await input.focus();
   let typed = "";
   for (const char of "Still responsive across tabs.") {
     typed += char;

@@ -348,9 +348,12 @@ be reachable. A transport route and an access grant remain separate decisions.
 ## Multiplayer and participatory sharing
 
 The existing [Participatory Live Share sketch](relay-origin-and-share-gating.sketches.md#participatory-live-share)
-proposes driver/guest composers, visible synchronized drafts, guest turn
-proposals, optional direct send/steer/queue rights, and later N-way participation.
-It is a candidate UI and authority design, not implemented multiplayer.
+now proposes shared human discussion, owner-reviewed suggestions, and optional
+explicit send, queue, and separate steer grants for one session. Multiple
+participants fit the model; synchronized composer previews and grids are later
+presentation candidates. [Session notes and discussion](session-notes-and-discussion.md)
+owns the human-only space, also useful as a personal scratchpad. These are
+proposals, not implemented participatory sharing.
 [Restricted collaboration](managed-runner-execution-targets.md#future-restricted-collaboration)
 separately explores read-only versus writable session/workspace grants.
 
@@ -368,10 +371,16 @@ those broader contracts. Zed's Delta is the nearest external prior art for a
 live multi-person agent thread; the
 [DeltaDB review](../docs/competitive/deltadb.md) compares it and motivates
 [named participant seats](../gaps/sketches/named-participant-seats.md) as the
-display-identity step that precedes any principal design. “Write” must distinguish sending agent input from
-editing files, approving tools, managing sessions or publishing changes.
+display-attribution work alongside authenticated principals. “Write” must
+distinguish sending agent input from editing files, approving tools, managing
+sessions or publishing changes.
 Today's [public bearer-link shares](relay-origin-and-share-gating.md#public-share-authorization)
 remain read-only and must not silently acquire these rights.
+
+Invitation-to-account convergence belongs to
+[principals and grants](principals-and-grants.md#session-collaboration-and-future-accounts).
+The hosted-discovery section above remains the optional issuer/trust discussion;
+email invitations and external login do not themselves grant session access.
 
 ## Authority and failure questions to resolve
 

@@ -2,14 +2,27 @@
 
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { invalidateLocalStorageValues } from "../../lib/localStorageValue";
 import { UI_KEYS } from "../../lib/storageKeys";
 import {
   getProjectCodeNamePreferences,
   useProjectCodeNamePreferences,
 } from "../useProjectCodeNamePreferences";
 
+const principalState = vi.hoisted(() => ({ username: null as string | null }));
+
+vi.mock("../useActingPrincipal", () => ({
+  useActingPrincipal: () => ({
+    principal: { username: principalState.username },
+  }),
+  isLimitedPrincipal: (principal: { username: string | null }) =>
+    principal.username !== null,
+}));
+
 describe("useProjectCodeNamePreferences", () => {
   beforeEach(() => {
+    principalState.username = null;
+    invalidateLocalStorageValues();
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => storage.get(key) ?? null,
@@ -65,5 +78,16 @@ describe("useProjectCodeNamePreferences", () => {
     expect(
       localStorage.getItem(UI_KEYS.projectCodeNameActivityPulseEnabled),
     ).toBe("true");
+  });
+
+  it("defaults code names on for a limited user until they choose", () => {
+    principalState.username = "archer";
+    const { result } = renderHook(() => useProjectCodeNamePreferences());
+    expect(result.current.projectCodeNamesEnabled).toBe(true);
+    expect(result.current.projectCodeNameActivityPulseEnabled).toBe(false);
+
+    act(() => result.current.setProjectCodeNamesEnabled(false));
+    expect(result.current.projectCodeNamesEnabled).toBe(false);
+    expect(localStorage.getItem(UI_KEYS.projectCodeNamesEnabled)).toBe("false");
   });
 });

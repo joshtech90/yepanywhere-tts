@@ -175,7 +175,13 @@ capability.
 Preflight is advisory and cached briefly for routine version reads; it has no
 background polling loop. A fresh version request rechecks it. The probe covers
 Bubblewrap, `unshare`, `slirp4netns`, the route utility, and a real namespace
-setup. Every requested `project-write` launch repeats the authoritative checks
+setup built from the same Bubblewrap arguments a firewalled Claude launch uses:
+the project descriptor bind, private provider-state, cache and temporary
+binds, the provider-host runtime mask, and the private resolver mount. It
+mounts throwaway directories created under the launch's private-state root
+and removes them whether or not the probe passes, so a host whose launches
+would all fail at a mount is not advertised as available. Every requested
+`project-write` launch repeats the authoritative checks
 with the final project, private-state, and network policy. Capability or
 preflight staleness must therefore produce a closed launch failure, never an
 unlocked provider process.
@@ -205,11 +211,114 @@ Prompt instructions, approval callbacks, tool-name deny rules, and setting the
 provider `cwd` are cooperative controls. None satisfies `project-write` on its
 own.
 
-The first version also does not inject an informational message about the
-restriction into the provider conversation. Ordinary denied operations expose
-the boundary through normal command/tool failures. A later opt-in notification
-could avoid wasted attempts, but it must be weighed against encouraging an
-agent to search for a surprising bypass and against changing provider context.
+### Boundary statement in launch context
+
+A sandboxed session's launch context carries a short `[Session sandbox]`
+statement of today's boundary, appended to YA's effective agent context
+([placement](agent-context-injection.md#current-ya-placement)): the Claude
+system-prompt append on every provider process, and Codex's hidden
+first-message `[Global context]` prefix. An unsandboxed session gets none. It
+states that:
+
+- the sandbox encloses the entire provider process and everything it runs, so
+  provider-native "disable sandbox" tool options (Claude's Bash
+  `dangerouslyDisableSandbox`) do not leave it, and host-side previews are not
+  to be offered;
+- writes outside the project fail and `/tmp` is private; and
+- with the network firewall, loopback is private, the YA server and other host
+  services are unreachable, and a server the agent starts is not reachable
+  directly from the user's browser or an SSH forward; printing its
+  `http://127.0.0.1:<port>/` URL from a command (for example with `echo`) is
+  how the user gets it, since YA takes app URLs only from tool output and
+  offers such a URL in the session's App pane through the sandbox's port broker
+  ([sandboxed session apps](session-right-pane.md#sandboxed-session-apps)).
+  It must not claim to verify host reachability from inside. Without the
+  firewall it says only that networking is shared with the host.
+
+It states facts, not policy: it does not discourage serving inside the
+sandbox, which is the intended way to show a built app. Motivation: an agent in a firewalled
+session (2026-09-28) offered to run a preview "outside the sandbox" with
+Claude's Bash option, planned to confirm it with `ss` from inside its own
+namespace, and wrote that model into project instructions. The OS boundary
+held; only the agent's account of it was wrong.
+
+The statement belongs to the sandbox the user already chose, which is
+default-off, so it adds no default behavior under
+[vanilla defaults](vanilla-defaults.md). It describes that choice's effect
+rather than adding a feature, and it reaches Codex only through the hidden
+prefix YA already uses for global instructions. Ordinary denied operations
+still surface through normal command/tool failures.
+
+## Additional launch restrictions and instructions
+
+### Claude MCP and connectors
+
+Every sandboxed Claude-family launch disables configured MCP servers and
+auto-fetched Claude.ai connectors. Fresh launches, resumes, prompt-cache
+refreshes and fork-backed helpers apply the same restriction, including homes
+bootstrapped before this feature existed. The SDK receives strict MCP config
+with an empty server map, `disableClaudeAiConnectors: true`, an empty server
+allowlist, a remote-server deny rule, and `mcp__*` disallowed tools. Ordinary
+unsandboxed sessions retain their provider configuration. This restriction is
+independent of the editable instructions below.
+
+### Limited-user instructions
+
+Settings → Users lets the superuser edit shared instruction blocks for all
+limited users and additional blocks on each user's record. Blocks concatenate
+in displayed order with a blank line between nonempty blocks: shared first,
+then per-user. Text is preserved; each list permits at most 32 blocks and
+10,000 characters in total. Invalid saves fail without truncation. An empty
+list deliberately contributes no text. Per-user lists default empty.
+
+The editable shared default is two blocks:
+
+> When using any external image/video generation API or MCP tool, enable the provider's safety filtering at its strictest setting (e.g. moderation="auto", enable_safety_checker=true, safety_filter_level="block_most"). Never disable a safety checker. Prefer providers with server-side filtering.
+
+and an App block (`DEFAULT_LIMITED_USER_APP_INSTRUCTION` in
+`packages/shared/src/limited-users.ts`) telling the agent to make what it
+builds open from the App button by declaring `.project-template/app.json`
+([project service](project-service.md#standard-declaration-where-start-status-stop-serving)),
+never by handing over a loopback link the user's device cannot reach
+(user-directed 2026-09-28). A test holds its static and server examples to the
+declaration schema. A saved shared policy still equal to an earlier shipped
+default is upgraded to the current default on load; any edit is kept as
+written.
+
+**Start from default**, checked initially, retains the provider's base prompt.
+Unchecked requests replacement. Claude uses its preset plus append or a custom
+prompt, with prompt snapshots disabled for limited users so relaunches adopt
+edits. Codex uses developer instructions for editable text and an empty base
+prompt for a newly created replacement session. Codex persists its original
+base prompt in saved threads: changing the checkbox requires a new Codex
+session; text edits still apply on resume. Forks retain the source base choice.
+The UI states this distinction.
+
+Project instruction files (`CLAUDE.md`, `AGENTS.md`), provider-managed policy,
+and the sandbox boundary statement remain separate from the base prompt.
+These controls neither rewrite those files nor remove their instructions.
+The safety text is cooperative guidance, not an OS security boundary.
+
+The session creator selects the per-user list, independent of who later joins
+the session. New direct, queued and template-preparation launches resolve the
+trusted acting username before provider creation. Resumes, background wakes
+and helpers use persisted `createdByUser`. A deleted account cannot silently
+resume with its instructions omitted. Saving settings does not mutate a
+running process; the next launch resolves current text. The provider worker
+receives a per-launch value, never a per-user write to the project-shared
+provider home, preventing cross-user prompt contamination.
+
+The permanent `limited-user-instructions` capability covers shared
+`limitedUserInstructions: { startFromDefault, blocks }` in `/api/settings`
+and `instructionBlocks` in user records and create/update requests. Supported
+stable releases 0.9.0, 0.9.1 and 0.9.2 lack these fields. Older servers show no
+new controls and receive neither field; existing capabilities keep their
+meaning. The maintainer approved this compatibility plan on 2026-09-28.
+
+**Decision:** use provider launch parameters rather than rewriting a sandbox
+home's global boot file. Homes are shared by project, whereas these blocks
+belong to a principal and must be resolved afresh per process. Native launch
+parameters also keep user-editable prompt text distinct from provider config.
 
 ## Existing Sandbox Vocabulary
 
@@ -365,6 +474,16 @@ state. Claude and Codex have separate provider subtrees within that root:
 Claude receives a private `CLAUDE_CONFIG_DIR`; Codex receives a private
 `CODEX_HOME`.
 
+A path a sandboxed session prints under `/tmp` or `/var/tmp` therefore names
+a file in that private root, not the host's. The session-scoped file doors
+(`/api/sessions/:id/local-file`, `/local-image`, and the interactive preview
+grant `POST /api/sessions/:id/artifacts`) read a path as its session sees it:
+those two prefixes map to the session's private temp directories, except
+inside the project, which the sandbox binds at its own path. Artifact reads
+admit every sandbox's private temp directories, never the provider state or
+cache beside them. The host-wide doors keep reading host paths. Limited-user
+confinement of these doors is in [limited users](limited-users.md).
+
 Those provider trees contain the authoritative live transcripts. Each session
 and explicit fork still has its own provider transcript file; they share the
 project's provider configuration, agents/skills, cache, and temporary space,
@@ -389,6 +508,20 @@ does not turn an outside read-only asset into a private writable copy. Existing
 initialized homes retain their configuration; bootstrap does not overwrite
 them on resume.
 
+The Claude login is the one exception to private copies. Claude rotates
+its refresh token on every refresh and the old one stops working. A copied
+`.credentials.json` therefore failed as soon as the host refreshed, and
+every later launch of that sandbox, whoever resumed it, failed with "OAuth
+session expired and could not be refreshed". A sandbox that refreshed
+first logged the host out instead. Every Claude launch now bind-mounts the
+host's `.credentials.json`, writable, over the private path, including
+sandboxes that already hold a stale copy. With one shared login, whichever
+side refreshes, the other re-reads the new tokens. With no host credentials
+file, nothing is mounted. The sandbox gains write access to the host login
+it could already read; that exposure, Codex's still-copied `auth.json`, and
+a proposed optional read-only mode with YA-brokered refresh are in the
+[shared credentials gap](../gaps/sandbox-shared-provider-credentials.md).
+
 A generic writable exception for the real `$HOME`, provider state directory,
 `/tmp`, cache root, or shared language environment is not equivalent to
 Project writes only. If a provider cannot function with the private-state
@@ -397,12 +530,32 @@ shape, it is unsupported for this level until the boundary is redesigned.
 Project-local temporary/cache directories may be used when doing so preserves
 provider behavior and does not rewrite unrelated user configuration.
 
+### Session environment bridge
+
+A sandboxed session's Bash tool shells read `AGENTCTL_SESSION_ID` and the
+other session-scoped outputs from YA's `BASH_ENV` bridge
+([subprocess environment](subprocess-environment.md#shell-startup-contracts)),
+the same as an unsandboxed session. The bridge lives in host temp, which the
+private `/tmp` hides, so each Claude or Codex launch mounts its own bridge
+directory, and no other, read-only at `/run/ya-agentctl-session` inside the
+sandbox's private `/run`. It is a directory mount, so an id the server
+publishes after the provider started, or a later replacement of it, reaches
+the next shell. A resumed launch's shells see its id at once. The sandbox
+cannot write the bridge, and other launches' bridges and host temp files stay
+hidden.
+
 ### Future global transcript integration
 
 V1 keeps Claude and Codex transcripts in their project-private provider-state
 directories and merges those directories into YA's ordinary session readers.
 This preserves one authoritative file while providing list, detail, replay,
 resume, and same-session process recreation after a YA server restart.
+Every project read carries its Claude sandbox transcript directories among
+its merged session directories, joined per read rather than cached, so a
+sandboxed session appears in the project's session list and count, the
+All Sessions and sidebar catalog, and the focused-session watcher after its
+process stops, exactly as a host-tree session does. Codex sandbox roots
+reach the same lists through the Codex reader's own file listing.
 
 A follow-up should continuously integrate sandboxed Claude and Codex
 transcripts into each provider's conventional global session tree. Besides the
@@ -498,13 +651,23 @@ transcript reports a native sandbox policy.
 
 New-session derivatives must not silently weaken confinement:
 
-- an explicit transcript fork, fork-after-summary target, retitle helper,
-  recap fork, handoff, or restart-as-new flow inherits the source level;
+- an explicit transcript fork, clone (including a `/btw` aside),
+  fork-after-summary target, retitle helper, recap fork, handoff, or
+  restart-as-new flow inherits the source level;
 - an explicit fork cannot override the source level;
 - a separately created New Session settles its own visible pre-launch choice;
   and
 - resuming the same session uses its persisted level, not the user's newer
   global default.
+
+The supervisor enforces the last rule itself rather than trusting each caller
+to restate the level. Every resume or reactivation of a session whose metadata
+records `project-write` launches with that level, its firewall selection,
+state key and sandbox project path. That covers internal relaunches that name
+no sandbox: wake, heartbeat turns, deferred messages after a hard abort, and
+effort or provider restarts. A request that names `none`, or turns off a
+recorded firewall, is refused rather than applied, whoever makes it, including
+through `POST …/reactivate`. A weaker boundary takes a new session.
 
 Provider children created beneath the provider process inherit its Bubblewrap
 namespace. Same-session process recreation reloads the persisted level and
@@ -514,9 +677,13 @@ file remains distinct.
 
 Linux v1 runs explicit transcript forks, retitle-via-fork, fork-summary
 generation and target creation, and fork-mode recaps through the inherited
-private provider-state launcher. Host-side Claude transcript copying opens the
-private transcript directory component by component without following
-agent-controlled symlinks. YA-simulated `side-session` recaps remain
+private provider-state launcher. A clone of a sandboxed Claude session copies
+its transcript verbatim from and into that project's private transcript
+directory and records the source's level, firewall, state key and project
+path, so the readers that merge that directory list and open it. Host-side
+Claude transcript copying opens the private transcript directory component by
+component without following agent-controlled symlinks, and never writes
+through a link or over an existing file. YA-simulated `side-session` recaps remain
 unavailable and are rejected before launch; Off, Native, and fork recaps remain
 available.
 
@@ -713,6 +880,10 @@ verifier receives 401 rather than operator authority. Network cases verify
 public IPv4 DNS and routing; deny private and IPv6 routes, loopback, the slirp
 host alias, and the host's concrete IPv4 address; isolate host abstract
 sockets; and mask an explicitly configured provider-host runtime directory.
+Bridge cases run Bash inside one long-lived sandboxed process before and after
+publication and after a replaced id, for fresh and resumed launches, including
+through the Claude and Codex adapters' own spawn paths, and verify that
+another bridge and unrelated host temp files stay hidden.
 
 ## Linux Backend Evidence
 
@@ -794,8 +965,5 @@ Project writes only.
   outside the project, nested mounts, and pre-existing hard links behave?
 - Which temporary/cache locations can be made project-local without changing
   provider semantics?
-- Would an optional provider-context notification about the active boundary
-  save enough failed attempts to outweigh context churn and bypass-seeking
-  behavior?
 - What exact admission, approval, and audit contract should the future locked
   share use?

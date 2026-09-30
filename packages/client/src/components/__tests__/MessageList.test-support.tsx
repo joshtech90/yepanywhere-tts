@@ -70,7 +70,7 @@ vi.mock("../../i18n", async (importOriginal) => ({
         sessionQuoteSelection: "Quote reply",
         sessionQuoteSelectionShort: "Quote",
         sessionCopySelectionText: "Copy text",
-        sessionCopySelectionSource: "Copy source",
+        sessionCopySelectionSource: "Copy Markdown",
         sessionCopySelectionRich: "Copy selection as rich text",
         sessionNewSessionFromSelection: "New session",
         sessionSelectionActionMenu: "Selected text actions",

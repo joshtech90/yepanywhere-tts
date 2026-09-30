@@ -9,5 +9,9 @@ export default defineConfig({
   workers: 1,
   timeout: 60000,
   reporter: "list",
-  use: { browserName: "chromium", locale: "en-US", reducedMotion: "reduce" },
+  use: {
+    browserName: "chromium",
+    locale: "en-US",
+    contextOptions: { reducedMotion: "reduce" },
+  },
 });

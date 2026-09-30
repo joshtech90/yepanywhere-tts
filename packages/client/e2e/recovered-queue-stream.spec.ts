@@ -5,7 +5,7 @@ import type { Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
   type YaServerProcess,
 } from "./support/ya-server-process.js";
 
@@ -143,8 +143,8 @@ test.describe("Recovered queue stream snapshots", () => {
     }
   });
 
-  test.afterAll(() => {
-    stopYaServerProcess(server);
+  test.afterAll(async () => {
+    await disposeYaServerProcess(server);
     if (projectPath) {
       rmSync(projectPath, { recursive: true, force: true });
     }

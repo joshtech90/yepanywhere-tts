@@ -111,8 +111,13 @@ and the route it pulls from.
   "Explored" group would otherwise show only by filename. It sits below the
   entry list rather than inside it, since that list is a short scrolling box.
   Its `+ / -` toggle takes its initial state from Expand Inline Media by
-  Default; thumbnails load lazily through `/api/local-image` and open
-  `LocalMediaModal` with prev/next across the strip.
+  Default; thumbnails load lazily and open `LocalMediaModal` with prev/next
+  across the strip. A read whose bytes the server stored loads that copy
+  through the session media route: it is the image the model saw, it is
+  readable by anyone who may read the session, including a limited user, and
+  it exists even when the path was a sandbox's private `/tmp`. Several reads
+  of one path show one entry with the latest read's bytes. Only a read with
+  no stored copy falls back to `/api/local-image` by path.
 - **Embedded media inside rendered Markdown/HTML** — an `![](...)` image or
   video that appears inline within an assistant/user message body.
   `useLocalMediaInlinePreviews` (`components/LocalMediaModal.tsx`) hydrates the

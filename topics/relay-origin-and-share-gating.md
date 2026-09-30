@@ -308,6 +308,13 @@ ordinary file link. File links reuse the established public-share
 relay registration and secret-only `/public-api/shares/:secret/files` reads;
 they do not add a relay protocol or registration mode.
 
+A live file share's URL is a relay bearer link. For a readable address such as
+`https://name.graehl.org/`, the same dialog can serve the file itself as a
+file vhost; that path uses the operator's tunnel rather than the relay, has
+its own public, password or app-link access, and is specified in
+[file vhosts](active-content-security.md#file-vhosts). Revoking the file share
+does not stop a file vhost, and stopping the vhost does not revoke the share.
+
 The same architecture rule applies to the public session viewport: an
 independent unauthenticated shell can be safer, but transcript rows, rendered
 item flow, inspection affordances, copy interactions, spacing, and other

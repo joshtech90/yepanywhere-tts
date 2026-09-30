@@ -145,7 +145,7 @@ function shareResponse(shape: Shape): PublicSessionShareResponse {
   };
 }
 
-async function openShare(page: Page, remoteClientURL: string, shape: Shape) {
+async function openShare(page: Page, remotePreviewURL: string, shape: Shape) {
   await page.routeWebSocket("wss://share-relay.test/ws", (socket) => {
     socket.onMessage((wire) => {
       const message = JSON.parse(String(wire));
@@ -171,7 +171,7 @@ async function openShare(page: Page, remoteClientURL: string, shape: Shape) {
       "/share/public-secret?h=owner&r=wss%3A%2F%2Fshare-relay.test%2Fws",
     );
   });
-  await page.goto(`${remoteClientURL}/remote.html`);
+  await page.goto(`${remotePreviewURL}/remote.html`);
   await expect(page.locator(".conversation-activity-summary")).not.toHaveCount(
     0,
   );
@@ -253,10 +253,10 @@ const PHONE = { width: 375, height: 812 };
 
 test("a wrapped previous card takes only the room left in the viewport", async ({
   page,
-  remoteClientURL,
+  remotePreviewURL,
 }) => {
   await page.setViewportSize(TABLET);
-  await openShare(page, remoteClientURL, "working");
+  await openShare(page, remotePreviewURL, "working");
   await expect(
     page.locator(
       '.conversation-thinking-preview[data-preview-slot="previous"]',
@@ -303,10 +303,10 @@ test("a wrapped previous card takes only the room left in the viewport", async (
 
 test("a short window drops the previous card instead of clipping the current one", async ({
   page,
-  remoteClientURL,
+  remotePreviewURL,
 }) => {
   await page.setViewportSize(SHORT_WINDOW);
-  await openShare(page, remoteClientURL, "working");
+  await openShare(page, remotePreviewURL, "working");
   await expect(page.locator(".conversation-activity-row")).toHaveAttribute(
     "data-previous-thinking",
     "dropped",
@@ -324,10 +324,10 @@ test("a short window drops the previous card instead of clipping the current one
 
 test("thinking the turn spoke past and resumed work after is not previewed", async ({
   page,
-  remoteClientURL,
+  remotePreviewURL,
 }) => {
   await page.setViewportSize(TABLET);
-  await openShare(page, remoteClientURL, "spoke-and-resumed");
+  await openShare(page, remotePreviewURL, "spoke-and-resumed");
 
   await expect(page.locator(".conversation-thinking-preview")).toHaveCount(0);
   await expect(

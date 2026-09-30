@@ -181,6 +181,8 @@ const REMAP_MERGE_GROUPS = {
     "customTitle",
     "isArchived",
     "isStarred",
+    "sidebarCategory",
+    "createdByUser",
     "autoResumeDisabled",
     "parentSessionId",
     "parentSessionKind",
@@ -1256,6 +1258,8 @@ function withMetadataFields(
     nonHumanUserTurn?: GlobalSessionItem["nonHumanUserTurn"];
     isArchived?: boolean;
     isStarred?: boolean;
+    sidebarCategory?: string | null;
+    createdByUser?: string;
     autoResumeDisabled?: boolean;
     parentSessionId?: string | null;
     parentSessionKind?: "btw-aside" | null;
@@ -1288,6 +1292,24 @@ function withMetadataFields(
       : {}),
     ...(canApplyObservedField(record.isStarred, fields.isStarred, isFresh)
       ? { isStarred: fields.isStarred }
+      : {}),
+    ...(fields.sidebarCategory === null
+      ? isFresh
+        ? { sidebarCategory: undefined }
+        : {}
+      : canApplyObservedField(
+            record.sidebarCategory,
+            fields.sidebarCategory,
+            isFresh,
+          )
+        ? { sidebarCategory: fields.sidebarCategory }
+        : {}),
+    ...(canApplyObservedField(
+      record.createdByUser,
+      fields.createdByUser,
+      isFresh,
+    )
+      ? { createdByUser: fields.createdByUser }
       : {}),
     ...(canApplyObservedField(
       record.autoResumeDisabled,
@@ -1525,6 +1547,9 @@ function upsertSnapshotRecord(
       nonHumanUserTurn: row.nonHumanUserTurn,
       isArchived: row.isArchived,
       isStarred: row.isStarred,
+      // A list row is a whole row: no category here means none.
+      sidebarCategory: row.sidebarCategory ?? null,
+      createdByUser: row.createdByUser,
       clearloop: row.clearloop,
       autoResumeDisabled: row.autoResumeDisabled,
       parentSessionId: row.parentSessionId,
@@ -1679,6 +1704,9 @@ function recordMatchesQuery(
     return false;
   }
   if (query.starred === true && record.isStarred !== true) {
+    return false;
+  }
+  if (query.categorized === true && !record.sidebarCategory) {
     return false;
   }
   return true;
@@ -2154,6 +2182,7 @@ export function applySessionCollectionMetadataChanged(
       nonHumanUserTurn: event.nonHumanUserTurn,
       isArchived: event.archived,
       isStarred: event.starred,
+      sidebarCategory: event.sidebarCategory,
       parentSessionId: event.parentSessionId,
       parentSessionKind: event.parentSessionKind,
       forkedFromSessionId: event.forkedFromSessionId,

@@ -24,6 +24,7 @@ import { useCanAdministerHost } from "./hooks/useActingPrincipal";
 import { useActivityBusConnection } from "./hooks/useActivityBusConnection";
 import { useNeedsAttentionBadge } from "./hooks/useNeedsAttentionBadge";
 import { useSyncNotifyInAppSetting } from "./hooks/useNotifyInApp";
+import { useLimitedUserBrowserDefaults } from "./hooks/useLimitedUserBrowserDefaults";
 import { useOnboarding } from "./hooks/useOnboarding";
 import { primeProviderCache } from "./hooks/useProviders";
 import {
@@ -49,6 +50,18 @@ const OnboardingWizard = lazy(() =>
     default: OnboardingWizard,
   })),
 );
+
+/**
+ * First-run setup is the host owner's: its steps configure the install, and
+ * a limited user is refused completing it, so they would meet it on every
+ * load of a host whose owner never finished it (topics/limited-users.md,
+ * host-administration notices).
+ */
+function HostOnboardingWizard({ onComplete }: { onComplete: () => void }) {
+  return useCanAdministerHost() ? (
+    <OnboardingWizard onComplete={onComplete} />
+  ) : null;
+}
 
 interface Props {
   children: ReactNode;
@@ -92,6 +105,9 @@ function AppContent({ children, showCodexUpdatePrompt }: AppContentProps) {
 
   // Sync notifyInApp setting to service worker on app startup and SW restarts
   useSyncNotifyInAppSetting();
+
+  // A limited user's browser takes the superuser's published defaults once.
+  useLimitedUserBrowserDefaults();
 
   // Update tab title with needs-attention badge count (uses InboxContext)
   useNeedsAttentionBadge(hostIdentityIcon ?? undefined);
@@ -191,7 +207,7 @@ export function App({ children }: Props) {
                 </AppContent>
                 <Suspense fallback={null}>
                   {!disableOnboarding && !isLoading && showWizard && (
-                    <OnboardingWizard onComplete={completeOnboarding} />
+                    <HostOnboardingWizard onComplete={completeOnboarding} />
                   )}
                 </Suspense>
               </SchemaValidationProvider>

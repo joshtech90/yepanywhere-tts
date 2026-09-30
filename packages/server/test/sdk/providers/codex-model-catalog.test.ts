@@ -271,10 +271,12 @@ describe("Codex model catalog", () => {
       { id: "gpt-5.6-sol", model: "gpt-5.6-sol" },
       { id: "gpt-6-luna", model: "gpt-6-luna" },
       { id: "gpt-6-sol", model: "gpt-6-sol" },
-      { id: "gpt-6-astra", model: "gpt-6-astra", isDefault: true },
+      { id: "gpt-6-astra", model: "gpt-6-astra" },
+      { id: "gpt-6.1-sol", model: "gpt-6.1-sol", isDefault: true },
     ]);
 
     expect(models.map((model) => model.id)).toEqual([
+      "gpt-6.1-sol",
       "gpt-6-astra",
       "gpt-6-sol",
       "gpt-6-luna",

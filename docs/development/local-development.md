@@ -101,6 +101,14 @@ Note: By default, all instances share `~/.claude/projects/` (SDK-managed session
 
 ## Provider & Feature Configuration
 
+The optional provider host keeps supported agent turns and pending approvals
+alive across web-server reloads on Linux and macOS Node source checkouts. On
+Linux it also preserves project apps and Live preview, including HMR, with
+the same process and URL. Apps keep their own enforced project sandbox;
+macOS provider hosting does not enable Linux-only process apps. See the
+[user guide](../../site/src/content/docs/updating.md#keep-work-running-during-server-reloads)
+for benefits and restart boundaries.
+
 Restrict which agent providers and features are available:
 
 ```bash
@@ -125,6 +133,9 @@ Environment variables:
 - `VOICE_INPUT` - Set to `false` to disable the voice input button server-side (default: `true`)
 - `YEP_PROVIDER_HOST_ENABLED` - Set to `true` or `false` to control shared
   provider hosting. It defaults to `false` on macOS and `true` on Linux.
+  macOS remains opt-in while the
+  [active-turn interruption issue](../../gaps/macos-provider-host-turn-interruptions.md)
+  is investigated.
   Disabled sessions use ordinary in-backend provider ownership and are not
   reported as a degraded host. The setting takes effect on the next full dev
   wrapper restart and does not change the default manual-only backend reload

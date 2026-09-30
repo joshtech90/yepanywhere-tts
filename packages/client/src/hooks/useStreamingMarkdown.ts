@@ -3,6 +3,7 @@ import {
   isBrowserDebugPerformanceRecording,
   recordBrowserDebugPerformanceMetric,
 } from "../lib/browserDebugPerformance";
+import { setInnerHtmlIfChanged } from "../lib/setInnerHtmlIfChanged";
 
 const STREAMING_MARKDOWN_BASE_UPDATE_MS = 100;
 const STREAMING_MARKDOWN_MAX_UPDATE_MS = 750;
@@ -162,7 +163,7 @@ export function useStreamingMarkdown(
         const existingBlock = blocksRef.current.get(blockIndex);
         if (existingBlock) {
           debugLog("dom", "Updating existing block", { blockIndex });
-          existingBlock.innerHTML = renderedHtml;
+          setInnerHtmlIfChanged(existingBlock, renderedHtml);
         }
         return;
       }
@@ -171,7 +172,7 @@ export function useStreamingMarkdown(
       const blockElement = document.createElement("div");
       blockElement.className = "streaming-block";
       blockElement.dataset.blockIndex = String(blockIndex);
-      blockElement.innerHTML = renderedHtml;
+      setInnerHtmlIfChanged(blockElement, renderedHtml);
 
       debugLog("dom", "Created new block element", {
         blockIndex,
@@ -248,8 +249,10 @@ export function useStreamingMarkdown(
       markStreaming();
 
       sourcePendingHtmlRef.current = pending.html;
-      pendingElement.innerHTML =
-        transformHtmlRef.current?.(pending.html) ?? pending.html;
+      setInnerHtmlIfChanged(
+        pendingElement,
+        transformHtmlRef.current?.(pending.html) ?? pending.html,
+      );
       debugLog("pending", "Updated pending element innerHTML");
     },
     [markStreaming],
@@ -389,7 +392,7 @@ export function useStreamingMarkdown(
     const pendingElement = pendingRef.current;
     sourcePendingHtmlRef.current = "";
     if (pendingElement) {
-      pendingElement.innerHTML = "";
+      setInnerHtmlIfChanged(pendingElement, "");
       debugLog("event", "Cleared pending element");
     }
     setIsStreaming(false);
@@ -418,7 +421,7 @@ export function useStreamingMarkdown(
       debugLog("event", "Cleared container");
     }
     if (pendingElement) {
-      pendingElement.innerHTML = "";
+      setInnerHtmlIfChanged(pendingElement, "");
       debugLog("event", "Cleared pending element");
     }
 
@@ -459,14 +462,19 @@ export function useStreamingMarkdown(
     for (const [blockIndex, block] of blocksRef.current) {
       const source = sourceAugmentsRef.current.get(blockIndex);
       if (source) {
-        block.innerHTML = options.transformHtml?.(source.html) ?? source.html;
+        setInnerHtmlIfChanged(
+          block,
+          options.transformHtml?.(source.html) ?? source.html,
+        );
       }
     }
     const pending = pendingRef.current;
     if (pending && sourcePendingHtmlRef.current) {
-      pending.innerHTML =
+      setInnerHtmlIfChanged(
+        pending,
         options.transformHtml?.(sourcePendingHtmlRef.current) ??
-        sourcePendingHtmlRef.current;
+          sourcePendingHtmlRef.current,
+      );
     }
   }, [options.transformHtml]);
 

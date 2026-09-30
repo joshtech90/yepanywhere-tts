@@ -29,6 +29,7 @@ import {
   fetchLocalMediaBlob,
   LocalMediaModal,
   type LocalMediaSource,
+  useLocalFileScope,
 } from "./LocalMediaModal";
 import { LocalImageThumbnail } from "./LocalImageThumbnail";
 import styles from "./TurnImageGallery.module.css";
@@ -98,9 +99,17 @@ function GalleryThumbnail({
 }: GalleryThumbnailProps) {
   const { t } = useI18n();
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
   const loadBlob = useCallback(
-    () => fetchLocalMediaBlob(candidate.path, mediaSource, "inline", transport),
-    [candidate.path, mediaSource, transport],
+    () =>
+      fetchLocalMediaBlob(
+        candidate.path,
+        mediaSource,
+        "inline",
+        transport,
+        fileScope,
+      ),
+    [candidate.path, mediaSource, transport, fileScope],
   );
 
   return (
@@ -234,11 +243,33 @@ export function AssistantTurnImageGallery({
       pendingCenterIdRef.current = id;
       return;
     }
-    element.scrollIntoView({
-      behavior: "smooth",
-      block: "center",
-      inline: "center",
-    });
+    // Center the image inside the gallery's own scroller only. Asking the
+    // thumbnail to center itself inline also scrolls every ancestor that
+    // can move sideways, and the transcript can: an image near the gallery
+    // edge left the whole session panned left until reload.
+    const rows = galleryRowsRef.current;
+    if (rows) {
+      const rowsRect = rows.getBoundingClientRect();
+      const rect = element.getBoundingClientRect();
+      rows.scrollTo({
+        behavior: "smooth",
+        left:
+          rows.scrollLeft +
+          rect.left +
+          rect.width / 2 -
+          (rowsRect.left + rows.clientWidth / 2),
+        top:
+          rows.scrollTop +
+          rect.top +
+          rect.height / 2 -
+          (rowsRect.top + rows.clientHeight / 2),
+      });
+      rows.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "nearest",
+      });
+    }
     element.focus({ preventScroll: true });
     pendingCenterIdRef.current = null;
   }, []);

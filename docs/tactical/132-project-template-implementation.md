@@ -21,8 +21,9 @@ actual App canvas source, pastes an image before creation, reloads the operation
 and reaches preparation with attachments. It then reuses that upload in an
 ordinary new session. Setup, storage, authorization and routing are real; only
 the provider is mocked. The expanded New project panel spans both desktop
-columns. Draft upload indexes are account-owned. Queue transfer of those
-account-owned drafts remains in its explicit attachment gap.
+columns. Draft upload indexes are account-owned. Project Queue carries those
+account-owned drafts in the queuing account's store through admission,
+restart, dispatch and cleanup (`topics/project-queue.md` § Attachments).
 
 The working implementation now connects the authorized radio palette and inline
 New session expansion to native materialization, setup, initial Git commit,

@@ -34,6 +34,7 @@ import {
   ProviderRuntimeTurnLedger,
   normalizeProviderSessionOptions,
 } from "./provider-runtime-turns.mjs";
+import { ProviderProjectServices } from "./provider-project-services.mjs";
 
 const HOST_PROTOCOL_VERSION = PROVIDER_HOST_PROTOCOL_VERSION;
 const WORKER_READY_TIMEOUT_MS = 30_000;
@@ -246,6 +247,26 @@ export class ProviderRuntimeHost {
     this.runtimeIdsBySessionId = new Map();
     this.retainedProcessGroups = new Map();
     this.registeredServers = new Map();
+    this.appAuthorizations = new Map();
+    this.projectServices = new ProviderProjectServices(
+      (pid, target) => this.retainOwnedGroup(pid, target),
+      (pid) => {
+        const target = this.retainedProcessGroups.get(pid);
+        if (!target) return true;
+        if (isOwnedProcessGroupAlive(target)) return false;
+        this.retainedProcessGroups.delete(pid);
+        this.refreshDescriptor();
+        this.notifyWrapper({
+          type: "runtimeExited",
+          runtimeId: `provider-resource-${pid}`,
+          processGroupIds: [pid],
+          processGroups: [target],
+          reason: "app exited",
+        });
+        return true;
+      },
+      this.terminateGroup,
+    );
     this.connections = new Set();
     this.recentRuntimeCandidates = initialRecentRuntimes;
     this.publishRecentRuntimes = publishRecentRuntimes;
@@ -355,6 +376,14 @@ export class ProviderRuntimeHost {
           );
           continue;
         }
+        if (request.op === "projectServiceAuthorization") {
+          const pending = this.appAuthorizations.get(request.authorizationId);
+          if (pending?.socket === socket) {
+            if (request.error) pending.reject(new Error(String(request.error)));
+            else pending.resolve();
+          }
+          continue;
+        }
         if (request.op === "sessionTurn") {
           try {
             this.validateRequest(request);
@@ -427,6 +456,9 @@ export class ProviderRuntimeHost {
 
     socket.on("close", () => {
       this.connections.delete(socket);
+      for (const pending of this.appAuthorizations.values())
+        if (pending.socket === socket)
+          pending.reject(new Error("App controller disconnected"));
       if (!registeredGeneration) return;
       if (this.registeredServers.get(registeredGeneration) === socket) {
         this.registeredServers.delete(registeredGeneration);
@@ -455,6 +487,7 @@ export class ProviderRuntimeHost {
             "session-turn-idle-timeout",
             "recent-runtime-recovery",
             "provider-session-options",
+            "project-services",
           ],
         };
       case "registerServer": {
@@ -466,6 +499,21 @@ export class ProviderRuntimeHost {
           );
         }
         return { generation, protocolVersion: HOST_PROTOCOL_VERSION };
+      }
+      case "projectService": {
+        const generation = this.requireString(request.generation, "generation");
+        if (!this.registeredServers.has(generation) || this.shuttingDown)
+          throw new Error(
+            "App controller is not registered or host is closing",
+          );
+        return this.projectServices.request(
+          { ...request.service, op: "service" },
+          async () => {
+            if (!this.registeredServers.has(generation) || socket.destroyed)
+              throw new Error("App controller disconnected");
+            await this.authorizeProjectService(request.id, socket);
+          },
+        );
       }
       case "launch":
         return await this.launch(request);
@@ -510,6 +558,29 @@ export class ProviderRuntimeHost {
           `Unknown provider runtime host operation: ${request.op}`,
         );
     }
+  }
+
+  authorizeProjectService(id, socket) {
+    const authorizationId = randomUUID();
+    return new Promise((resolve, reject) => {
+      const finish = (callback, value) => {
+        clearTimeout(timer);
+        this.appAuthorizations.delete(authorizationId);
+        callback(value);
+      };
+      const timer = setTimeout(
+        () => finish(reject, new Error("App authorization timed out")),
+        15_000,
+      );
+      this.appAuthorizations.set(authorizationId, {
+        socket,
+        resolve: () => finish(resolve),
+        reject: (error) => finish(reject, error),
+      });
+      socket.write(
+        `${JSON.stringify({ id, type: "authorize", authorizationId })}\n`,
+      );
+    });
   }
 
   validateRequest(request) {
@@ -1255,14 +1326,19 @@ export class ProviderRuntimeHost {
     if (!this.registeredServers.has(generation)) {
       throw new Error(`Server generation ${generation} is not registered`);
     }
-    const processGroupId = Number(request.processGroupId);
+    return this.retainOwnedGroup(Number(request.processGroupId));
+  }
+
+  retainOwnedGroup(processGroupId, identity) {
     if (!Number.isInteger(processGroupId) || processGroupId <= 1) {
       throw new Error("Invalid retained process group");
     }
+    if (identity && !isOwnedProcessGroupAlive(identity))
+      return { processGroupId };
     if (!isProcessGroupAlive(processGroupId)) {
       throw new Error(`Process group ${processGroupId} is not alive`);
     }
-    const target = captureProcessGroup(processGroupId);
+    const target = identity ?? captureProcessGroup(processGroupId);
     this.retainedProcessGroups.set(processGroupId, target);
     this.refreshDescriptor();
     this.notifyWrapper({
@@ -1400,6 +1476,9 @@ export class ProviderRuntimeHost {
           launch: entry.launchRecipe,
         }));
       this.turnLedger.shutdown("interrupted");
+      const appResults = await Promise.allSettled([
+        this.projectServices.close(),
+      ]);
       for (const socket of this.registeredServers.values()) socket.destroy();
       this.registeredServers.clear();
       const results = await Promise.allSettled(
@@ -1408,6 +1487,9 @@ export class ProviderRuntimeHost {
         ),
       );
       const failures = results.filter((result) => result.status === "rejected");
+      failures.push(
+        ...appResults.filter((result) => result.status === "rejected"),
+      );
       const retainedResults = await Promise.allSettled(
         [...this.retainedProcessGroups.values()].map(async (target) => {
           await this.terminateGroup(target);

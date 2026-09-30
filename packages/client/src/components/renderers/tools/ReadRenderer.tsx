@@ -28,6 +28,7 @@ import {
   fetchLocalMediaBlob,
   LocalMediaModal,
   type LocalMediaSource,
+  useLocalFileScope,
 } from "../../LocalMediaModal";
 import { SchemaWarning } from "../../SchemaWarning";
 import { ShikiHtml } from "../../ShikiHtml";
@@ -37,6 +38,7 @@ import {
   renderFixedFontMath,
   renderFixedFontRichContent,
 } from "../../ui/FixedFontMathToggle";
+import { InnerHtml } from "../../ui/InnerHtml";
 import { RenderModeGlyph } from "../../ui/RenderModeGlyph";
 import type {
   ImageFile,
@@ -121,11 +123,8 @@ function getReadInputLineRange(input: ReadInput): {
 function renderReadMathPanel(html: string) {
   return (
     <div className="file-viewer-code fixed-font-rendered-panel">
-      <div
-        className="fixed-font-rendered__content"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      {/* KaTeX output is trusted HTML from local rendering. */}
+      <InnerHtml className="fixed-font-rendered__content" trustedHtml={html} />
     </div>
   );
 }
@@ -448,6 +447,7 @@ function ImageFileResult({
   const expanded = override ?? inlineMediaExpandedByDefault;
   const [modalOpen, setModalOpen] = useState(false);
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
   // Provider bytes survive only until YA materializes tool-result media, after
   // which the result carries metadata and a path. Read the file back for those
   // rows rather than showing a broken preview.
@@ -455,10 +455,16 @@ function ImageFileResult({
   const loadBlob = useCallback(async () => {
     if (inlineBase64) return blobFromBase64(inlineBase64, file.type);
     if (filePath) {
-      return fetchLocalMediaBlob(filePath, undefined, "inline", transport);
+      return fetchLocalMediaBlob(
+        filePath,
+        undefined,
+        "inline",
+        transport,
+        fileScope,
+      );
     }
     throw new Error("Read image result carries neither bytes nor a file path");
-  }, [file.type, filePath, inlineBase64, transport]);
+  }, [file.type, filePath, inlineBase64, transport, fileScope]);
   const mediaSource = useMemo<LocalMediaSource | undefined>(
     () =>
       inlineBase64

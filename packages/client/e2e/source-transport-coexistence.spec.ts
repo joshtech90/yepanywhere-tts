@@ -2,7 +2,7 @@ import { join } from "node:path";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
   type YaServerProcess,
 } from "./support/ya-server-process.js";
 
@@ -53,8 +53,8 @@ test.describe("Source transport coexistence", () => {
     });
   });
 
-  test.afterAll(() => {
-    stopYaServerProcess(secondaryServer);
+  test.afterAll(async () => {
+    await disposeYaServerProcess(secondaryServer);
   });
 
   test("keeps localhost and second direct WebSocket sources independent", async ({

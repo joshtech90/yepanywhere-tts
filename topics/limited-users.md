@@ -14,6 +14,13 @@ Topic: limited-users
 Status: **v1 delivered (2026-09-20); the rest remains proposal.** See
 § Delivery v1 — Settings → Users for the committed contract.
 
+The superuser can configure shared append/replace instruction blocks and
+per-user appended blocks in Settings → Users. The implemented ordering,
+defaults, provider mapping, relaunch timing and compatibility contract live
+under [limited-user instructions](session-sandboxing.md#limited-user-instructions).
+Every sandboxed Claude-family session also disables MCP servers and connectors,
+independently of that editable prompt text.
+
 The implemented template-creation extension is specified in
 [project templates](project-templates.md#limited-user-permissions): server-enforced
 None / Selected / Any permissions in Settings → Users. A configured creation
@@ -30,13 +37,11 @@ turn off part of an allowed feature set are only a
 [sketch](../gaps/sketches/limited-user-preference-narrowing.md), not implemented
 preferences or an additional source of authority.
 
-The same extension adds a superuser-managed **Private apps only** ceiling,
-default-on for new and migrated limited users. It is a negative authority cap:
-when enabled, project-template creation and later app-row mutations for that
-user's projects must remain bearer-protected. When disabled, the user may opt a
-new template app into Public access; private remains the default. The server
-checks the ceiling at reservation creation/update, independently of the client
-control.
+The implemented **Allow public apps** permission defaults off for new and
+existing limited users. It supplies the publication ceiling for their app
+addresses; the server rechecks it for row updates and incoming requests.
+The earlier **Private apps only** proposal describes the inverse of this
+permission. Creation-time template publication remains in the stand-up gap.
 
 ### Approved workspace direction (2026-09-21; not implemented)
 
@@ -182,7 +187,8 @@ way, because it is where the switch and the first user both live.
   it at once.
 - `newSessionProjects: string[]` — projects where the user may start
   sessions. Every session they start is forced to `sandboxLevel:
-  "project-write"`; the request cannot select `none`.
+  "project-write"` with its network firewall on; the request cannot select
+  `none`, and a request that sets `sandboxNetworkFirewall: false` is refused.
 - `joinProjects: string[]` — projects where the user may act in a
   **fresh**, **sandboxed** existing session started by anyone: send and
   shape turns, attach files, answer and approve tool requests, interrupt,
@@ -202,7 +208,7 @@ only needs the read-only extras.
 
 ### Freshness
 
-A session in a join project is joinable while
+A session is fresh for a limited user while
 `now − lastActivity ≤ providerCacheWarmMinutes + joinStaleOffsetMinutes`.
 `lastActivity` is the running process's last provider message; before the
 process has seen one (a session just resumed) and for a session with no
@@ -211,18 +217,123 @@ neither is not fresh.
 `providerCacheWarmMinutes` is a believed prompt-cache-warm window per
 provider, shipped as **60 for Claude-family providers and 10 for everything
 else, Codex included** — the same zero point the stale-session cutoff above
-describes. Outside the window the session is visible but read-only for that
-user, with the reason stated; starting a new session stays available where
-`newSessionProjects` allows it. v1 does not implement the redirect-into-a-new-
-session behavior described above; it refuses the turn instead.
+describes.
+
+The cutoff **always applies** to a limited user (user-directed 2026-09-28):
+to sessions they started themselves exactly as to anyone else's, whether the
+session still has a live process or must be resumed, and whatever grants
+they hold. It gates every request that makes the provider answer on the
+session's existing context — a turn (`messages`), an answer or approval
+that continues one (`input`, `approve`, `approvals`), a queued or steered
+deferred message (`queue`, `POST deferred/…/steer`), and `resume` — and a
+Project Queue existing-session item, judged at dispatch. Actions that start
+no provider work stay open on a cold session: reading, marking seen,
+interrupting, changing the permission mode, uploading, opening its sandbox
+apps and artifact previews, dropping a deferred message, and reactivating a
+process without a turn. A refused request answers 403 with reason
+`stale-session`; a refused Project Queue item fails, saying the session has
+gone cold.
+
+**Redirect into a new session.** Where the user holds `newSessionProjects`
+on the session's project, the refusal also carries
+`staleRedirect: "stale-handoff"`, and the client resends the same message
+to `POST …/sessions/:id/stale-handoff`. That starts a **new session** in the
+same project whose first turn is a YA-generated handoff of the old one — the
+bounded transcript the manual Handoff builds, with its Source Session block
+— introduced as context for a message that **may be a new, independent
+request**, followed by the user's message under **New Message**. That
+framing is specific to this redirect; the manual Handoff keeps its own. The
+new session is the user's own, launched under the same policy as session
+create (sandbox and firewall forced, the lock applied, this host only),
+otherwise inheriting the old session's provider, model and effort. The old
+session is left exactly as it was: not compacted, interrupted, or resumed,
+since each would spend the cold context this exists to avoid. The client
+then opens the new session. With only a join grant there is no redirect:
+the session is read-only for that user, with the reason stated. The
+composer does not yet say before sending that a message will start a new
+session.
+
+### Approved project removal retention
+
+User-directed, 2026-09-28; **personal removal, retained audit storage and
+administrator restore in project App Settings implemented**. A limited user's project
+delete action only removes the project from that user's view. Label it
+**Remove from my projects** and explain that files and history remain. Store
+the personal hidden marker and an actor/time audit event in YA app data.
+Project lists and selectors honor it across reconnects and restarts; it does
+not revoke grants or erase the canonical project, sessions, ownership or
+audit records. The superuser retains visibility, including who removed it
+and when, and can restore it with a recorded action. Do not implicitly stop
+its app or release a reserved hostname. The `personal-project-hiding`
+capability guarantees these removal semantics; older servers retain their
+existing removal label and confirmation. Administrator restoration also
+invalidates connected project lists.
+The [project service contract](project-service.md) and existing
+[template integration gap](../gaps/project-template-standup.md) track this
+auditability requirement together with project App access.
+
+### Project sharing
+
+User-directed, 2026-09-28. A project's settings (the Projects gear) carry
+**Share with limited users** for the superuser and for the limited user who
+created the project, recorded as its `ownerUsername`. Each other limited
+user is listed with a per-project level, any level including Start
+sessions, saved as it is chosen; a covering directory grant is shown beside
+it, since this panel cannot remove one. It edits the same per-project grants
+as Settings → Users, where the superuser reviews and revokes them. The
+routes are `GET`/`PUT /api/projects/:projectId/access` under the
+`project-access-sharing` capability. A limited user who did not create the
+project gets 403 there; the creator's own access is not offered.
+
+### Project copy
+
+User-directed, 2026-09-28. Anyone who can see a project, View sessions
+included, may make their own copy: `POST /api/projects/:projectId/copy`
+with a directory name (`project-copy` capability). A limited user's copy
+lands under their configured project directory (none configured: 403); the
+superuser's beside the source. The destination is claimed exclusively,
+checked on disk against the project directory, and filled with the source's
+working tree minus `node_modules`, symbolic links (which could name any host
+file) and special files, bounded at 512 MB and 50,000 entries; a failed or
+oversized copy removes what it made. The response names the new directory,
+which the client adds through the ordinary add-project route, so the copy is
+owned and granted Start sessions like any project the user adds.
 
 ### Authorization
+
+**No project sessions.** A per-user `allowNoProjectSessions` checkbox defaults
+off. When enabled, both detached creation routes launch in a stable private
+scratch workspace for that username, with the usual sandbox, network firewall,
+provider/model/effort locks, creator attribution and limited-user instructions.
+This creates no grant on the superuser's shared No project workspace or another
+user's private one. Private workspaces remain hidden from Projects and named
+No project in session lists. Disabling creation retains read/join access to
+existing private sessions; it does not admit new sessions in that workspace.
+The `limited-user-no-project-sessions` capability gates the checkbox, submitted
+field and limited-user detached option. Without it, omit the field and deny
+detached creation in the client. Supported v0.9.0–v0.9.2 lack this contract;
+the capability and fallback were approved on 2026-09-28.
+
+**App distribution.** Per-user `allowPublicApps` defaults false;
+`allowPrivateAppLinks` defaults true. These are independent of project view
+and Start sessions grants. [Project service](project-service.md#app-address-in-project-settings)
+owns publication, owner ceilings, inline links and revocation behavior.
 
 Enforcement is a single server-side middleware ahead of every API route, so
 a route added later is refused for limited users until it is listed. It is
 **default-deny**: a request path a limited principal is not explicitly
 allowed gets 403, and a project or session outside the user's grants gets
 404 (existence is not disclosed).
+
+**Directory grants** (`pathGrants`, user-directed 2026-09-28) give one access
+level to every project at or beneath a directory, including projects created
+there later; the editor fills one from a limited user's project directory
+by username. The server stores each path resolved (`~` expanded, `..`
+collapsed) and refuses a relative one. A project's level is the higher of
+its per-project grant and any covering directory grant, judged on the path
+its id encodes. Surfaces that list a user's projects instead of asking
+about one see the grants with every known covered project (added projects
+plus the last scan) written into the per-project lists.
 
 The decision is made on the path the router dispatches, after
 percent-decoding, so an encoded spelling such as `/api/%69ssues` is judged
@@ -235,32 +346,49 @@ percent-encoding is refused.
 |---|---|
 | any API path not on the v1 allowlist | 403 |
 | `GET` of a project-scoped path | allowed when the project is in any of the three lists, else 404 |
-| rename, caption, code name, or remove a project | only a project the user owns, which also needs its `newSessionProjects` grant, else 403: these are one value every principal sees, so a grant to start sessions in someone else's project is no say in how it is presented. For every principal, an id naming no listed project is 404 and nothing is stored |
-| session create in a project | `newSessionProjects` only; sandbox forced; lock applied; a remote executor or computer control is refused |
-| resume or reactivate a session | `newSessionProjects` on its project; the session must already run sandboxed and on this host, else 403; the lock applies as at create, replacing the session's model and effort with locked ones |
+| rename, caption, or code name | only a project the user owns, which also needs its `newSessionProjects` grant, else 403: these are one value every principal sees, so a grant to start sessions in someone else's project is no say in how it is presented. For every principal, an id naming no listed project is 404 and nothing is stored |
+| remove a project | owner and `newSessionProjects` checks still apply; persist a personal hidden marker and audit event instead of hiding the canonical project. List projections omit it for that user, while direct access follows unchanged grants. Superuser removal retains its existing global-hide meaning |
+| session create in a project | `newSessionProjects` only; sandbox forced, with its network firewall on when the request names none; a request with `sandboxNetworkFirewall: false` 403, stating that the firewall stays on; lock applied; a remote executor or computer control is refused |
+| resume or reactivate a session | `newSessionProjects` on its project; the session must already run sandboxed with its network firewall on, and on this host, else 403; the lock applies as at create, replacing the session's model and effort with locked ones. A resume carries a turn, so it must also be fresh, else 403 with reason `stale-session` ([Freshness](#freshness)) |
+| redirect a cold session's turn (`stale-handoff`) | `newSessionProjects` on its project; starts a new session under the create rule, seeded with a handoff of this one ([Freshness](#freshness)) |
 | fork or clone a session | `newSessionProjects` on its project; the copy is recorded as the user's own; running it is a resume, under the row above |
 | any other session action that starts a provider process (restart, recap, retitle, fork-after-summary, rewind, clearloop, resuming or steering a restart-paused queued message, session bang commands) and moving a session to another project | 403: only listed session actions are open, and each listed one that launches applies this launch policy |
-| turn/approval/interrupt/permission-mode change on a session | the session's project in `newSessionProjects` or `joinProjects`, **and** the session runs sandboxed (its live process enforces project-write, or with no process its last launch recorded it), else 403 with reason `unsandboxed-session`, **and** it is fresh or started by this user, else 403 with reason `stale-session` |
+| turn/approval/interrupt/permission-mode change on a session | the session's project in `newSessionProjects` or `joinProjects`, **and** the session runs sandboxed with its network firewall on (its live process enforces both, or with no process its last launch recorded both), else 403 with reason `unsandboxed-session`, **and**, for a request that starts provider work (a turn, an answer or approval, a delivered deferred message), it is fresh — whoever started it — else 403 with reason `stale-session` ([Freshness](#freshness)) |
 | any session the user started | always at least readable, including after its project grant is removed |
 | Issues & PRs (`/api/issues*`) | 403, and the nav entry is hidden: it spends the host's ticket-system credentials |
 | Inbox, Projects, Source Control, All Sessions | served, with every project and session outside the user's grants removed before pagination; All Sessions project options and aggregate statistics use the same scope |
 | Project Queue | global list and promote-now responses include only ordinary items, recovered items and project statuses (including blocker session titles) in granted projects; the route builds them from the user's grants so other projects' entries are never read for them, and a response-field allowlist backs that up. The global dispatch pause remains visible because it gates the user's own items. Promote-now needs `newSessionProjects` on the project in its path; pausing or resuming dispatch 403 |
-| Project Queue items | queuing needs `newSessionProjects`; a new-session target is held to the create rule (sandbox forced, lock applied, remote executor refused) and an existing-session target may name neither a remote executor nor a value outside the lock; a queued YA command 403. The item records the user, who alone may edit, retry, reorder, or delete it (404 otherwise). At dispatch their grants are read again: without `newSessionProjects` the item fails, an existing-session target must run sandboxed and be in the item's project or one they started, and the turn and any new session are attributed to them |
-| settings | `GET /api/settings` only, answered with a projection holding the fields their client reads to render and default their own work; secrets and host inventory (webhook URL and token, remote executors, gateway and Ollama endpoints and start commands, file-access rules, the readiness command, global instructions) are withheld, and a field added later is withheld until listed. Every write and every settings subpath (browser-settings backup, remote executors, cache-billing events, file-access and host-awake status) 403 |
+| Project Queue items | queuing needs `newSessionProjects`; a new-session target is held to the create rule (sandbox and its firewall forced, a firewall opt-out refused, lock applied, remote executor refused) and an existing-session target may name neither a remote executor nor a value outside the lock; a queued YA command 403. The item records the user, who alone may edit, retry, reorder, or delete it (404 otherwise). At dispatch their grants are read again: without `newSessionProjects` the item fails, an existing-session target must run sandboxed with its firewall on and be in the item's project or one they started, and the turn and any new session are attributed to them. Staged attachments are taken only from their own draft store and stay in it through restart, dispatch and cleanup; a reference from another account's store is refused (400), and a superuser edit of their item cannot add the superuser's drafts to it ([Project Queue § Attachments](project-queue.md#attachments)) |
+| settings | `GET /api/settings` only, answered with a projection holding the fields their client reads to render and default their own work; secrets and host inventory (webhook URL and token, remote executors, gateway and Ollama endpoints and start commands, file-access rules, the readiness command, global instructions) are withheld, and a field added later is withheld until listed. Every write and every other settings subpath (browser-settings backup, remote executors, cache-billing events, file-access and host-awake status) 403; `GET /api/settings/limited-user-defaults` is theirs to read ([browser defaults](#browser-defaults-for-limited-users)) |
+| speech | dictation through the backends the superuser configured: the streaming socket (`GET /api/speech/ws`, and the relayed speech channel), `POST /api/speech/transcribe` and `/prewarm`, and `POST /api/speech/xai-client-secret`, the five-minute xAI secret the direct Grok method streams with. A fresh browser starts on the server-wide speech default in `/api/version` `clientDefaults`, as any client does. `POST /api/speech/xai-client-key` 403 even when the superuser shares the raw key with their own browsers, since a limited user could keep it; backend setup (`/api/speech/backends*`) and the learned vocabulary (`/api/speech/vocabulary*`), drawn from every session's text, 403 |
 | recents | the install's shared list, read filtered; clearing 403; `POST /api/recents/visit` answers `{recorded: false}` and records nothing |
 | activity REST (`/api/activity/*`) | 403: watcher status and every connected tab and browser profile are host inventory with no project to filter by |
 | user administration | 403 except `GET /api/users/me` and `POST /api/users/logout` |
-| public shares, app links, devices, bang commands, absolute-path file reads, file editing and artifact rebuild (`/api/file-edit*`), server admin, relay/remote-access config | 403 |
-| pre-session draft uploads, validation and deletion | allowed only in the acting account's isolated draft store |
+| public shares, app links, devices, bang commands, absolute-path file reads, file editing and artifact rebuild (`/api/file-edit*`), server admin, relay/remote-access config | 403; the session page neither polls share status nor fetches app links for them, so no refusal takes the place of a control |
+| images a session read (an Explored image strip and its viewer) | read with the session: served from the session's stored copy through its media route, never by the host-path image read, which also cannot see a sandbox's private `/tmp` |
+| refreshing a session's list preview (`refresh-preview`) | anyone who may read the session; it recomputes the excerpt and launches nothing |
+| a file a session names (`/api/sessions/:id/local-file`, `/local-image`) and an interactive preview of one (`POST /api/sessions/:id/artifacts`) | reading needs view on the session, a preview `join`. The path is taken as that session sees it — a sandboxed session's `/tmp` and `/var/tmp` are its private ones — and they reach only the session's project and its sandbox's private temp directories, never the host-wide file allow-set; the host-wide `/api/local-file`, `/api/local-image` and `/api/artifacts` stay 403 |
+| a server their sandboxed session started (`sandbox-apps`) | `join` on the session, as for a turn: YA mints a private app name reaching that session's sandbox loopback, and the session page offers it in the App pane though operator app links stay withheld ([sandboxed session apps](session-right-pane.md#sandboxed-session-apps)) |
+| pre-session draft uploads, validation and deletion | allowed only in the acting account's isolated draft store. A relay upload socket selects the store the same way its tunneled requests resolve the principal, so the owner's relay identity stages into the superuser's store |
+
+The client reaches a session's files through those session-scoped routes
+whenever it is on a session page and the server advertises
+`session-scoped-local-files`, for the owner too, so a sandboxed session's
+`/tmp` path resolves the same way for everyone; an older server gets the
+host-wide routes.
 
 Session-to-project resolution for session-scoped paths uses the live process
 first and the session catalog second — the same retained catalog All Sessions
-and Inbox read, re-read at most every few seconds. A session that resolves to
+and Inbox read. Its access projection refreshes when that retained catalog
+publishes a different epoch or generation; otherwise unknown-id and failed-read
+bursts remain throttled to one read every five seconds. The publication identity
+is read from memory and never initiates provider discovery. A session that resolves to
 no project, including one the catalog files under two projects, is refused. List filtering is by project only: a session the user started in a
 project whose grant was later removed stays directly readable but no longer
 appears in their lists. Sessions the user starts are recorded with `createdByUser` in
 session metadata at create time, which is what makes the "always readable"
-row above durable.
+row above durable. A start that waits for a free worker records it, with the
+rest of its launch metadata and sandbox, when the worker starts it.
 
 The same principal check gates websocket subscriptions: a limited user may
 subscribe to a session channel only for sessions they may read, and the
@@ -352,16 +480,28 @@ for, so nothing about limited users appears anywhere else until one exists.
   the switch comes first: the `limitedUsersEnabled` toggle, then the list of
   users, then an editor. Turning the toggle on is enough to add the first
   user — creating one also turns the feature on server-side, so neither step
-  waits on the other. Each row carries the username, a grant summary, any
-  lock, and Act as / Edit / Delete. The editor takes username and password,
-  the three project lists as one per-project access level, the join-freshness
-  offset, and the lock; model and effort completions populate from the
-  provider catalog once a provider is chosen, and a blank field is unlocked.
-- **Sidebar.** Nothing. No panel, no shortcut, no switcher, and no logout
-  button: user management is reached through Settings like any other
-  administration. The acting principal still reports `hasLimitedUsers`, a
-  boolean and never a count, for surfaces that need to know an install has
-  more than one principal.
+  waits on the other. Users appear as one wrapped bar of names, a disabled
+  one struck through; pressing a name opens its editor below, and pressing
+  it again closes it. The editor header carries the grant summary, any lock,
+  an **Enabled** checkbox (disabling keeps the account and asks nothing),
+  Act as, and Delete. It takes a new password, the project lists as one
+  per-project access level (ungranted projects behind an expander), the
+  join-freshness offset and the lock; model and effort completions populate
+  from the provider catalog once a provider is chosen, and a blank field is
+  unlocked. Nothing waits on a Save button, which is easy to miss beneath
+  long sections (maintainer direction, 2026-09-28): a choice saves at once,
+  typed text when its field loses focus, and pending text when the editor
+  closes, all without leaving the editor. Adding a user asks only name and
+  password, then opens that user's editor.
+- **Sidebar.** No panel, no shortcut, no switcher, and no logout button for
+  a limited login: user management is reached through Settings like any
+  other administration. The one exception is the way back for a superuser
+  acting as a limited user: while switched, the nav list ends with *Stop
+  acting as <username>*, which ends the switch and reloads. Acting as a user
+  shows that user's app, so without it the only exit was Settings → Users
+  (maintainer direction, 2026-09-28). The acting principal still reports
+  `hasLimitedUsers`, a boolean and never a count, for surfaces that need to
+  know an install has more than one principal.
 
 - **Delete.** Confirmation names the user and explains that deletion removes
   the account, its grants and usage history while keeping project directories
@@ -371,7 +511,8 @@ for, so nothing about limited users appears anywhere else until one exists.
 - **New Session, acting as a limited user.** The form offers only what the
   user can actually affect. A locked provider, model, or effort loses its
   picker — provider buttons, the model dropdown and its composer chip menu,
-  and the thinking/effort panel — and the sandbox loses its toggle. What was
+  and the thinking/effort panel — and the sandbox and its network firewall
+  lose their toggles; the form launches with both on. What was
   withheld is stated instead, as a non-interactive "Set by your account"
   caption carrying the same abbreviated indicators the rest of YA uses (the
   provider badge for provider and model), plus the locked effort and
@@ -402,7 +543,12 @@ for, so nothing about limited users appears anywhere else until one exists.
   denied, so a category they cannot operate is hidden rather than shipped
   inert — Local Access otherwise waits forever on `/api/network-binding`,
   which they may not call. They keep Appearance, Toolbar, Message delivery,
-  Notifications, Users, and About. Like the route policy, the list is
+  Speech, Notifications, Users, and About. Speech shows them its
+  browser-local dictation choices (backend among those the server
+  advertises, their own xAI key, capture and Smart Turn options) but not
+  the learned vocabulary or backend setup, which are the superuser's; their
+  backend choice is saved in their browser only, since the server-wide
+  speech default is a settings write. Like the route policy, the list is
   default-deny: a category added later is hidden from limited users until
   someone lists it. A hidden category does not render from a typed URL
   either. Until the server has named the acting principal, Settings offers
@@ -423,11 +569,41 @@ Nav entries a limited user cannot use are hidden, and the sidebar session
 list shows only sessions in their accessible projects plus sessions they
 started. Host-administration notices are not shown to a limited user: the
 server-changed reload banner, the Codex update prompt, the YA server
-update/compatibility notices, the desktop missing-provider notice, and the
-network-filesystem storage warning (`useCanAdministerHost`). The frontend-changed
+update/compatibility notices, the desktop missing-provider notice, the
+network-filesystem storage warning, and the first-run onboarding wizard, whose
+completion they are refused (`useCanAdministerHost`). The frontend-changed
 reload banner stays, since reloading their own page is theirs to do. Hiding is
 cosmetic; the middleware above is the enforcement, and it refuses the restart,
 safe-restart, and Codex update routes.
+
+### Browser defaults for limited users
+
+User direction, 2026-09-28. The superuser sets browser-local preferences
+(theme, fonts, composer and speech options, and the rest of the portable
+list the Settings-menu backup carries) once for every limited user's
+browser, which each user may then change on their own device.
+
+- **Storage.** A second server-side slot beside the Settings-menu backup,
+  with the same shape and bounds, in `limited-user-browser-defaults.json`
+  under the data directory. `GET /api/settings/limited-user-defaults` is
+  open to limited users; `PUT` is the superuser's alone.
+- **Settings → Users** shows a *Browser defaults for limited users* panel
+  with the published list, one editable value per setting and a remove
+  control per row. *Load from my saved settings* replaces the list with the
+  superuser's Settings-menu backup, keeping only portable preferences;
+  *Save to limited user settings* publishes it with a new revision time.
+  Loading alone publishes nothing.
+- **Applying.** A limited user's client applies each published revision
+  once per browser, server and account, the next time it opens YA: listed
+  settings overwrite the browser's values, unlisted ones are left alone,
+  and keys outside the portable list are ignored. When any value changed,
+  the page reloads once so every reader picks them up. Later local changes
+  stand until the superuser saves again, when the new revision applies once
+  more. A storage failure restores the prior values and leaves the revision
+  unapplied for the next load. A superuser acting as a limited user is
+  skipped, since that browser's settings are the superuser's own.
+- **Older servers** lack the `limited-user-browser-defaults` capability:
+  the panel is hidden and limited users' clients request nothing.
 
 ### Usage
 
@@ -636,9 +812,11 @@ A limited user creates projects only where the superuser said they may.
 
 Viewers-versus-editors semantics beyond the three lists, session guests,
 template-only project creation, the Settings → Limited Users grants recap
-and summary line, HTTP Basic, per-user server sockets, the stale-session
-redirect (v1 refuses instead), and mid-session lock enforcement for model or
-effort changes made by the superuser.
+and summary line, HTTP Basic, per-user server sockets, the composer's
+before-send notice that a message to a cold session will start a new one
+(the redirect itself is delivered; see [Freshness](#freshness)), the
+superuser's own opt-in to the cutoff, and mid-session lock enforcement for
+model or effort changes made by the superuser.
 
 ## Principals and login
 
@@ -758,15 +936,21 @@ owner, creates a username and password whose entire scope is **one named
 session**. Through the relay (the "reflector") the guest logs in with the
 server name plus their own username as SRP identity, like any limited user,
 so the server always knows which guest a connection is; on direct access it
-uses the same login or HTTP Basic path. A guest sees that session's transcript, may send turns and approvals in
-it (or is read-only, chosen at creation), and sees nothing else: no project
+uses the same login or HTTP Basic path. This credential flow remains a candidate;
+the newer collaboration direction below also considers redeemed invitations.
+A guest sees that session's transcript and only the participation actions
+explicitly granted to them, and sees nothing else: no project
 page, no file APIs beyond what the transcript shows, no session creation, no
 fork. Anticipating the grant, the host may launch the session sandboxed at
-creation so the guest's turns are confined; a guest grant on an unsandboxed
-session is allowed but the members UI says so plainly. Guest records live in
-`project-access.json` beside memberships as
-`{ session: sessionId, guests: [{ username, mode: "turns" | "read" }] }`,
-and revoking one ends its relay claim and cookie sessions. The
+creation so the guest's turns are confined; the earlier proposal allowed an
+unsandboxed guest session with a plain warning in the members UI. This remains
+an admission/execution-boundary decision before implementation, not a claim that
+an exact-session API grant confines the provider's OS authority. The earlier
+storage sketch placed guest records in `project-access.json` beside memberships:
+`{ session: sessionId, guests: [{ username, mode: "turns" | "read" }] }`.
+Its coarse modes are superseded by the separate action grants below. Exact
+storage and credential formats remain unselected.
+Revoking a guest ends their access and ongoing subscriptions. The
 stale-session cutoff applies to guests too, but as **expiry rather than
 redirect**: a guest grant is temporary and ends when the shared session has
 been inactive for the configured cutoff, since a redirect into a new session
@@ -775,6 +959,27 @@ resumed at full cost. The guest sees the remaining time and, once expired, a
 plain "this share has ended" page; the host may re-share. A
 session-continuation authority (which successor session a guest may follow
 into) is not proposed here.
+
+**Session collaboration refinement (2026-09-30; not implemented).** The
+[Participatory Live Share sketch](relay-origin-and-share-gating.sketches.md#participatory-live-share)
+now owns the narrower trusted-colleague direction: human discussion first,
+owner-reviewed prompt suggestions next, and optionally explicit send and
+session-queue grants. Steer is separately granted; Project Queue is a later
+possibility, not part of an exact-session input grant. A suggestion remains
+outside the execution queue until the owner applies an exact revision.
+The earlier idea that guest turn access includes tool approvals is superseded.
+Approvals, bypass/permission modes, model/effort settings, stop/restart, and
+share management remain owner-only. This refinement does not narrow or change
+the delivered project-level limited-user join contract above.
+
+[Session notes and discussion](session-notes-and-discussion.md) owns human-only
+scratch notes and chat, which confer no provider authority. Invitation-bound
+participants and eventual local/hosted accounts share the conceptual boundary
+in [principals and grants](principals-and-grants.md#session-collaboration-and-future-accounts);
+neither a full limited-user account nor project membership is a prerequisite
+selected for temporary session collaboration. The inactivity-based expiry above
+remains a candidate; actual invitation/grant lifetimes and interaction with
+freshness need a contract before implementation.
 
 **Provider lock.** The superuser may pin a limited user to a provider, a
 provider plus model, or provider plus model plus effort; any subset is

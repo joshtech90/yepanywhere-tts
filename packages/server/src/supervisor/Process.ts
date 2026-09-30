@@ -607,6 +607,7 @@ function normalizeCodexTerminalReason(
     case "usageLimitExceeded":
     case "sessionBudgetExceeded":
     case "rateLimitExceeded":
+    case "flexUnavailable":
       return "rate_limit";
     case "internalServerError":
       return "server_error";

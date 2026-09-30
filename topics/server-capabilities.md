@@ -10,6 +10,36 @@ Topic: server-capabilities
 
 ## Source Of Truth
 
+The optional `session.effectiveLaunchSettings` response snapshot uses field
+presence rather than a new capability or handshake, approved by the maintainer
+on 2026-09-29. The core release corpus v0.8.0, v0.8.1, v0.9.0, v0.9.1 and
+v0.9.2 lacks that snapshot. Without it, the client retains the previous resume
+request mapping and browser-local fallback. With it, dormant controls use the
+saved values and resume sends only deliberate overrides through existing
+request fields. No new endpoint or existing capability meaning changes. See
+[session defaults](session-defaults.md#per-session-live-picks-vs-global-defaults).
+
+`vhost-file-sites` (permanent ID 105, version-implied from 0.9.4) owns the
+`vhostSites` artifact configuration/status field and the owner routes
+`GET`/`POST /api/artifacts/vhost-sites` and
+`DELETE /api/artifacts/vhost-sites/:name`. v0.9.0–v0.9.2 lack them; clients
+hide the vhost Serves selector and the share dialog's address section and send
+neither without it. See
+[file vhosts](active-content-security.md#file-vhosts).
+
+`local-source-browse` (permanent ID 104, version-implied from 0.9.4) owns the
+`root` query and response field on
+`GET /api/projects/:projectId/git/working-tree-files`. Older servers ignore
+`root` and would list the session project instead, so clients hide **Open in
+Source Control** on outside paths and send no `root` request. See
+[source control](source-control.md#browsing-a-path-outside-the-project).
+
+`limited-user-path-grants` (permanent ID 96, version-implied from 0.9.4) owns
+the `pathGrants` field on `POST`/`PATCH /api/users` and in user records.
+Older servers ignore the field, so a directory grant would look saved and
+grant nothing; clients hide the directory editor and never send it. See
+[limited users § Authorization](limited-users.md#authorization).
+
 `session-creation-provenance` (permanent ID 84, version-implied from v0.9.3)
 owns the optional `creationProvenance` field on session starts, restarts, and
 forks, plus its session summary/detail projections. Hosted clients omit the
@@ -872,6 +902,14 @@ sandbox or device-bridge availability own their own bounded snapshots and
 in-flight coalescing. `fresh=1` remains the explicit path for bypassing the
 applicable caches; a normal capability read must not repeatedly launch Git,
 package-manager, sandbox, bridge, or provider subprocesses.
+
+A source launch also reports `sourceRevision`, taken once at startup: the
+checked-out commit, its committer date, and whether `packages/` had tracked or
+untracked changes, with the newest modification time among them. Other paths
+such as docs do not count. Settings → About shows it under the server version
+as the short commit and date, adding "modified at launch; last change <time>"
+when the running code may differ from the commit. The field is display-only;
+packages and older servers omit it and About shows nothing extra.
 
 This delivery contract does not change any capability's meaning and therefore
 does not itself require a new capability flag. A new route or response field

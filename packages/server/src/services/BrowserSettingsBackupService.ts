@@ -1,9 +1,10 @@
 /**
- * Persists one explicit backup of portable browser UI preferences.
+ * Persists one explicit snapshot of portable browser UI preferences.
  *
- * Server settings remain live, server-owned configuration. This file only
- * holds the client-provided, allowlisted localStorage snapshot used by the
- * Settings navigation Save/Load controls.
+ * Server settings remain live, server-owned configuration. Each instance is
+ * one slot holding a client-provided, allowlisted localStorage snapshot: the
+ * Settings navigation Save/Load backup, or the defaults Settings → Users
+ * publishes to limited users' browsers.
  */
 
 import { randomUUID } from "node:crypto";
@@ -75,6 +76,12 @@ export class BrowserSettingsBackupValidationError extends Error {}
 
 export interface BrowserSettingsBackupServiceOptions {
   dataDir: string;
+  /**
+   * The slot's file under `dataDir`. The default is the superuser's own
+   * backup; `limited-user-browser-defaults.json` holds the defaults the
+   * superuser publishes to limited users' browsers.
+   */
+  fileName?: string;
 }
 
 export class BrowserSettingsBackupService {
@@ -86,7 +93,10 @@ export class BrowserSettingsBackupService {
 
   constructor(options: BrowserSettingsBackupServiceOptions) {
     this.dataDir = options.dataDir;
-    this.filePath = path.join(this.dataDir, "browser-settings-backup.json");
+    this.filePath = path.join(
+      this.dataDir,
+      options.fileName ?? "browser-settings-backup.json",
+    );
   }
 
   async initialize(): Promise<void> {

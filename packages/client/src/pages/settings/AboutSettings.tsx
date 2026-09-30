@@ -27,6 +27,14 @@ import {
   getDesktopRuntimeMetadata,
 } from "../../lib/desktopRuntime";
 
+/** A commit or file time in the reader's locale, to the minute. */
+function formatRevisionTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+}
+
 export function AboutSettings() {
   const { t } = useI18n();
   const sourceKey = useClientSummarySourceKey();
@@ -201,6 +209,29 @@ export function AboutSettings() {
                         t("loginLoading")
                       )}
                     </p>
+                    {versionInfo?.sourceRevision && (
+                      <p>
+                        {t("aboutServerCommit")}{" "}
+                        <code title={versionInfo.sourceRevision.commit}>
+                          {versionInfo.sourceRevision.commit.slice(0, 12)}
+                        </code>{" "}
+                        {formatRevisionTime(
+                          versionInfo.sourceRevision.committedAt,
+                        )}
+                        {versionInfo.sourceRevision.modified && (
+                          <span className="settings-update-available">
+                            {" "}
+                            {versionInfo.sourceRevision.modifiedAt
+                              ? t("aboutServerModifiedAt", {
+                                  time: formatRevisionTime(
+                                    versionInfo.sourceRevision.modifiedAt,
+                                  ),
+                                })
+                              : t("aboutServerModified")}
+                          </span>
+                        )}
+                      </p>
+                    )}
                     <p>
                       {t("aboutClientVersion")} v{__APP_VERSION__}
                     </p>

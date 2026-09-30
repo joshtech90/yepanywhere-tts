@@ -1,3 +1,9 @@
+import {
+  draftStorage,
+  subscribeDraftStorage,
+  confirmSyncedDraft,
+  resumeSyncedDraft,
+} from "../lib/draftSyncStorage";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { ClientSummarySourceKey } from "../lib/clientSummaryStore";
 import {
@@ -93,12 +99,12 @@ function saveToStorage(
   }
 
   try {
-    const previousValue = localStorage.getItem(key);
+    const previousValue = draftStorage.getItem(key);
     const nextValue = draftStorageValueForText(value, previousValue);
     if (nextValue) {
-      localStorage.setItem(key, nextValue);
+      draftStorage.setItem(key, nextValue);
     } else {
-      localStorage.removeItem(key);
+      draftStorage.removeItem(key);
     }
     const previousHasContent = hasDraftContentValue(previousValue);
     const nextHasContent = hasDraftContentValue(nextValue);
@@ -124,12 +130,12 @@ function saveAttachmentStateToStorage(
   }
 
   try {
-    const previousValue = localStorage.getItem(key);
+    const previousValue = draftStorage.getItem(key);
     const nextValue = draftStorageValueForAttachments(value, previousValue);
     if (nextValue) {
-      localStorage.setItem(key, nextValue);
+      draftStorage.setItem(key, nextValue);
     } else {
-      localStorage.removeItem(key);
+      draftStorage.removeItem(key);
     }
     const previousHasContent = hasDraftContentValue(previousValue);
     const nextHasContent = hasDraftContentValue(nextValue);
@@ -160,11 +166,11 @@ function markPendingSendInStorage(
 
   try {
     const nextValue = draftStorageValueForPendingSend(
-      localStorage.getItem(key),
+      draftStorage.getItem(key),
       sentAtMs,
     );
     if (nextValue) {
-      localStorage.setItem(key, nextValue);
+      draftStorage.setItem(key, nextValue);
     }
   } catch {
     // localStorage might be full or unavailable.
@@ -181,8 +187,8 @@ function removeFromStorage(
   }
 
   try {
-    const previousValue = localStorage.getItem(key);
-    localStorage.removeItem(key);
+    const previousValue = draftStorage.getItem(key);
+    draftStorage.removeItem(key);
     if (hasDraftContentValue(previousValue)) {
       publishDraftPresenceChange({
         storageKey: key,
@@ -196,7 +202,7 @@ function removeFromStorage(
 
 function readStorageText(key: string): string {
   try {
-    return readDraftTextValue(localStorage.getItem(key));
+    return readDraftTextValue(draftStorage.getItem(key));
   } catch {
     return "";
   }
@@ -204,7 +210,7 @@ function readStorageText(key: string): string {
 
 function readStoragePendingSend(key: string): boolean {
   try {
-    return readDraftPendingSendValue(localStorage.getItem(key));
+    return readDraftPendingSendValue(draftStorage.getItem(key));
   } catch {
     return false;
   }
@@ -213,7 +219,7 @@ function readStoragePendingSend(key: string): boolean {
 /** One read and one parse for callers that need more than a single field. */
 function readStorageDraft(key: string): DraftEnvelopeV1 | null {
   try {
-    return readDraftEnvelopeValue(localStorage.getItem(key)).envelope;
+    return readDraftEnvelopeValue(draftStorage.getItem(key)).envelope;
   } catch {
     return null;
   }
@@ -221,7 +227,7 @@ function readStorageDraft(key: string): DraftEnvelopeV1 | null {
 
 function readStorageAttachmentState(key: string): DraftAttachmentState | null {
   try {
-    return readDraftAttachmentStateValue(localStorage.getItem(key));
+    return readDraftAttachmentStateValue(draftStorage.getItem(key));
   } catch {
     return null;
   }
@@ -234,7 +240,7 @@ function updateStoredSessionDraftIndex(
   try {
     updateSessionDraftIndex(
       sessionDraft,
-      localStorage.getItem(createSessionDraftStorageKey(sessionDraft)),
+      draftStorage.getItem(createSessionDraftStorageKey(sessionDraft)),
     );
   } catch {
     updateSessionDraftIndex(sessionDraft, "");
@@ -337,6 +343,18 @@ export function useDraftPersistence(
       setValueInternal("");
     }
   }, [key, preserveValueOnKeyChange, sessionDraft]);
+
+  useEffect(
+    () =>
+      subscribeDraftStorage(key, () => {
+        const stored = readStorageDraft(key);
+        valueRef.current = stored?.text ?? "";
+        pendingSendRef.current = stored?.pendingSendAt !== undefined;
+        setValueInternal(valueRef.current);
+        updateStoredSessionDraftIndex(sessionDraftRef.current);
+      }),
+    [key],
+  );
 
   // Flush pending value to localStorage
   const flushPending = useCallback(() => {
@@ -515,6 +533,7 @@ export function useDraftPersistence(
         clearTimeout(timeoutRef.current);
         timeoutRef.current = null;
       }
+      confirmSyncedDraft(key);
       removeFromStorage(key, sessionDraftRef.current);
       pendingSendRef.current = false;
       return true;
@@ -527,6 +546,7 @@ export function useDraftPersistence(
   // clear still owns an empty live input; otherwise localStorage now contains
   // the newer draft and must remain untouched.
   const confirmInputClear = useCallback(() => {
+    confirmSyncedDraft(keyRef.current);
     if (valueRef.current !== "") return;
     removeFromStorage(keyRef.current, sessionDraftRef.current);
     pendingSendRef.current = false;
@@ -534,6 +554,7 @@ export function useDraftPersistence(
 
   // Clear both state and localStorage (for confirmed successful send)
   const clearDraft = useCallback(() => {
+    confirmSyncedDraft(keyRef.current);
     valueRef.current = "";
     pendingSendRef.current = false;
     setValueInternal("");
@@ -547,6 +568,7 @@ export function useDraftPersistence(
 
   // Restore from localStorage (for failure recovery)
   const restoreFromStorage = useCallback(() => {
+    resumeSyncedDraft(keyRef.current);
     try {
       const storedText = readStorageText(keyRef.current);
       valueRef.current = storedText;

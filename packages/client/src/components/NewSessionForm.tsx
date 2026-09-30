@@ -1,4 +1,8 @@
+import { DraftSyncNotice } from "./DraftSyncNotice";
+import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
 import { ComputerSessionSelection } from "./ComputerSessionSelection";
+import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
+import type { ProjectAppTarget } from "../api/projectApp";
 import { TemplateProjectForm } from "./TemplateProjectForm";
 import { ComposerRecents } from "./ComposerRecents";
 import { PromptHistoryRail } from "./PromptHistoryRail";
@@ -302,6 +306,8 @@ function unprobedProviderRow(name: ProviderName): ProviderInfo {
 }
 
 export interface NewSessionFormProps {
+  projectApp?: ProjectAppTarget;
+  onVoiceControl?: (control: VoiceInputButtonRef | null) => void;
   projectId?: string;
   selectedProject?: Project | null;
   projects?: Project[];
@@ -389,6 +395,8 @@ function NewSessionOptionSection({
 }
 
 export function NewSessionForm({
+  projectApp,
+  onVoiceControl,
   projectId,
   selectedProject,
   projects = [],
@@ -522,6 +530,7 @@ export function NewSessionForm({
   const mainStackRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
+  const sharedVoiceRef = useComposerVoiceRef(voiceButtonRef, onVoiceControl);
   const speechTurnIdRef = useRef<string | null>(null);
   const speechInsertionRangeRef = useRef<SpeechInsertionRange | null>(null);
   const activeSpeechTargetIdRef = useRef<string | null>(null);
@@ -600,8 +609,11 @@ export function NewSessionForm({
     : canConfigureSessionSandbox
       ? sandboxLevel
       : "none";
+  // The firewall is part of the sandbox a limited user cannot clear; the server
+  // refuses a limited launch that turns it off.
   const effectiveSandboxNetworkFirewall =
-    effectiveSandboxLevel === "project-write" && sandboxNetworkFirewall;
+    effectiveSandboxLevel === "project-write" &&
+    (launchLock.limited || sandboxNetworkFirewall);
   // Open local access does not block the sandbox; it earns a standing warning.
   const sandboxLocalAuthOpen =
     effectiveSandboxLevel === "project-write" &&
@@ -770,23 +782,45 @@ export function NewSessionForm({
       return;
     }
 
+    const syncEnabled = serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.draftSync.name,
+    );
     if (
+      !syncEnabled &&
       pendingFilesRef.current.some(
         (file) => file.kind === "uploading" || isPendingStagedFile(file),
       )
-    ) {
+    )
       return;
-    }
+    if (syncEnabled)
+      setPendingFiles(
+        (prev) => [
+          ...prev.filter((file) => !isPendingStagedFile(file)),
+          ...state.refs.map(
+            (ref): PendingStagedFile => ({ ...ref, kind: "staged" }),
+          ),
+        ],
+        { persistDraft: false, revokeRemovedPreviewUrls: true },
+      );
 
     const hydrationId = draftAttachmentHydrationRef.current + 1;
     draftAttachmentHydrationRef.current = hydrationId;
 
     try {
       const refs = await validateDraftAttachmentRefs(sourceTransport, state);
-      if (draftAttachmentHydrationRef.current !== hydrationId) {
+      if (
+        draftAttachmentHydrationRef.current !== hydrationId ||
+        JSON.stringify(draftControls.getAttachmentState()?.refs) !==
+          JSON.stringify(state.refs)
+      ) {
         return;
       }
 
+      if (syncEnabled && refs.length !== state.refs.length) {
+        showToast(t("sessionDraftAttachmentsUnavailable"), "info");
+        return;
+      }
       const nextState: DraftAttachmentState | null =
         refs.length > 0
           ? {
@@ -813,7 +847,15 @@ export function NewSessionForm({
         },
       );
     } catch (err) {
-      if (draftAttachmentHydrationRef.current !== hydrationId) {
+      if (
+        draftAttachmentHydrationRef.current !== hydrationId ||
+        JSON.stringify(draftControls.getAttachmentState()?.refs) !==
+          JSON.stringify(state.refs)
+      ) {
+        return;
+      }
+      if (syncEnabled) {
+        showToast(t("sessionDraftAttachmentsUnavailable"), "info");
         return;
       }
       console.warn(
@@ -839,12 +881,24 @@ export function NewSessionForm({
     setPendingFiles,
     showToast,
     supportsProjectQueue,
+    versionInfo,
     t,
   ]);
 
   useEffect(() => {
     void newSessionDraftKey;
     void hydrateDraftAttachments();
+  }, [hydrateDraftAttachments, newSessionDraftKey]);
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if (
+        (event as CustomEvent<{ key: string }>).detail.key ===
+        newSessionDraftKey
+      )
+        void hydrateDraftAttachments();
+    };
+    window.addEventListener(DRAFT_STORAGE_EVENT, changed);
+    return () => window.removeEventListener(DRAFT_STORAGE_EVENT, changed);
   }, [hydrateDraftAttachments, newSessionDraftKey]);
 
   const addPendingFiles = useCallback(
@@ -1319,13 +1373,32 @@ export function NewSessionForm({
       projectQueueBlockingCount,
       projectQueueItemCount,
     });
+  // A named project whose record has not arrived yet is neither detached nor
+  // ready to start. The composer does not wait for it: typing starts at once,
+  // and starting waits for the project.
+  const projectPending =
+    Boolean(projectId) &&
+    !hasCustomProjectPath &&
+    currentProjectSelection === null;
   const isDetachedProject =
-    !hasCustomProjectPath && currentProjectSelection === null;
+    !hasCustomProjectPath &&
+    currentProjectSelection === null &&
+    !projectPending;
+  const canCreateDetached =
+    principalResolved &&
+    (!launchLock.limited ||
+      (principal.grants?.allowNoProjectSessions === true &&
+        serverHasCapability(
+          versionInfo,
+          SERVER_CAPABILITIES.limitedUserNoProjectSessions.name,
+        )));
   const projectSummaryTitle =
-    currentProjectSelection?.name ?? t("newSessionProjectDetached");
+    currentProjectSelection?.name ??
+    (projectPending ? t("newSessionLoading") : t("newSessionProjectDetached"));
   const projectSummaryMeta = hasCustomProjectPath
     ? normalizedProjectInput
-    : (currentProjectSelection?.path ?? t("newSessionProjectDetachedHint"));
+    : (currentProjectSelection?.path ??
+      (projectPending ? "" : t("newSessionProjectDetachedHint")));
   const displayedProjectSummaryMeta =
     hasCustomProjectPath || currentProjectSelection
       ? shortenPath(projectSummaryMeta)
@@ -1427,21 +1500,23 @@ export function NewSessionForm({
   const projectPanelRows = useMemo(() => {
     if (!isProjectChooserExpanded) return null;
 
-    const rows: ReactNode[] = [
-      <button
-        key="detached"
-        type="button"
-        className={`new-session-project-option ${isDetachedProject ? "selected" : ""}`}
-        onClick={handleDetachedProject}
-      >
-        <span className="new-session-project-option-name">
-          {t("newSessionProjectDetached")}
-        </span>
-        <span className="new-session-project-option-path">
-          {t("newSessionProjectDetachedHint")}
-        </span>
-      </button>,
-    ];
+    const rows: ReactNode[] = canCreateDetached
+      ? [
+          <button
+            key="detached"
+            type="button"
+            className={`new-session-project-option ${isDetachedProject ? "selected" : ""}`}
+            onClick={handleDetachedProject}
+          >
+            <span className="new-session-project-option-name">
+              {t("newSessionProjectDetached")}
+            </span>
+            <span className="new-session-project-option-path">
+              {t("newSessionProjectDetachedHint")}
+            </span>
+          </button>,
+        ]
+      : [];
 
     if (hasCustomProjectPath) {
       rows.push(
@@ -1503,6 +1578,7 @@ export function NewSessionForm({
     return rows;
   }, [
     currentProjectSelection?.id,
+    canCreateDetached,
     handleDetachedProject,
     handleProjectOptionSelect,
     hasCustomProjectPath,
@@ -1705,9 +1781,16 @@ export function NewSessionForm({
     applyLaunchLock();
   }, [applyLaunchLock]);
 
-  useEffect(() => {
+  // A layout effect, so the field is filled before any key can start the
+  // session: an empty field would start it detached.
+  useLayoutEffect(() => {
     const nextProjectId = projectId ?? null;
     if (lastSyncedProjectIdRef.current === nextProjectId) {
+      return;
+    }
+    // The form mounts before the named project's record arrives; fill the
+    // project field from that record once it does.
+    if (nextProjectId && !selectedProject) {
       return;
     }
 
@@ -2297,7 +2380,7 @@ export function NewSessionForm({
       }
 
       const batchId = stagedRefs[0]?.batchId;
-      if (!batchId || stagedRefs.some((ref) => ref.batchId !== batchId)) {
+      if (!batchId) {
         throw new Error("Draft attachments are split across staging batches");
       }
 
@@ -2362,7 +2445,8 @@ export function NewSessionForm({
         creatingTemplateProject ||
         templateProjectBusy ||
         isStarting ||
-        !hasSelectedProviderModel
+        !hasSelectedProviderModel ||
+        projectPending
       )
         return;
 
@@ -2430,6 +2514,9 @@ export function NewSessionForm({
       try {
         let resolvedProjectId =
           await resolveProjectIdForSubmission(trimmedProjectInput);
+        if (!resolvedProjectId && !canCreateDetached) {
+          throw new Error("Choose a project to start a session.");
+        }
 
         let sessionId: string;
         let processId: string;
@@ -2669,6 +2756,7 @@ export function NewSessionForm({
           `${basePath}/projects/${resolvedProjectId}/sessions/${sessionId}`,
           {
             state: createSessionNavigationState({
+              projectApp,
               initialStatus: {
                 owner: "self",
                 processId,
@@ -2741,6 +2829,7 @@ export function NewSessionForm({
       effectiveThinkingMode,
       helperSideModel,
       hasSelectedProviderModel,
+      canCreateDetached,
       isStarting,
       launch,
       launchLock,
@@ -2751,6 +2840,8 @@ export function NewSessionForm({
       navigate,
       pendingFiles,
       projectInput,
+      projectApp,
+      projectPending,
       recapAfterSeconds,
       effectiveSandboxLevel,
       effectiveSandboxNetworkFirewall,
@@ -3359,7 +3450,10 @@ export function NewSessionForm({
     speechPending !== null ||
     interimTranscript;
   const canStart = Boolean(
-    (hasContent || composerMuted) && hasSelectedProviderModel,
+    (hasContent || composerMuted) &&
+      hasSelectedProviderModel &&
+      !projectPending &&
+      (!isDetachedProject || canCreateDetached),
   );
   const hasProjectQueueTargetProject = Boolean(projectQueueTargetProjectId);
   const pendingFilesReadyForProjectQueue =
@@ -3456,6 +3550,7 @@ export function NewSessionForm({
   // Shared input area with toolbar (textarea + attach/voice on left, send on right)
   const inputArea = (
     <>
+      <DraftSyncNotice draftKey={newSessionDraftKey} />
       <ComposerRecents
         scope={historyScope}
         onFiles={addPendingFiles}
@@ -3487,6 +3582,7 @@ export function NewSessionForm({
               </div>
             )}
             <textarea
+              data-draft-key={newSessionDraftKey}
               ref={attachComposerTextarea}
               data-composer-input
               value={message}
@@ -3651,7 +3747,7 @@ export function NewSessionForm({
               onPointerNearTrigger={() => voiceButtonRef.current?.prewarm?.()}
               trigger={
                 <VoiceInputButton
-                  ref={voiceButtonRef}
+                  ref={sharedVoiceRef}
                   onTranscript={handleVoiceTranscript}
                   onInterimTranscript={handleInterimTranscript}
                   onListeningStart={handleListeningStart}
@@ -4361,7 +4457,7 @@ export function NewSessionForm({
           )}
         </NewSessionOptionSection>
       )}
-      {effectiveSandboxLevel === "project-write" && (
+      {effectiveSandboxLevel === "project-write" && !launchLock.limited && (
         <NewSessionOptionSection
           className="new-session-helper-section new-session-sandbox-firewall-section"
           title={sessionDefaultCopy.sandboxFirewall.title}

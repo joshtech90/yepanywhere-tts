@@ -20,7 +20,7 @@ if (!PORT_FILE) {
   process.exit(1);
 }
 
-async function main() {
+async function main(portFile: string) {
   const clientRoot = join(__dirname, "..");
 
   const server = await createServer({
@@ -41,7 +41,7 @@ async function main() {
   }
 
   const port = address.port;
-  writeFileSync(PORT_FILE, String(port));
+  writeFileSync(portFile, String(port));
   console.log(`[Vite Remote] Development server listening on port ${port}`);
 
   // Keep the process alive
@@ -56,7 +56,7 @@ async function main() {
   });
 }
 
-main().catch((err) => {
+main(PORT_FILE).catch((err) => {
   console.error("Failed to start Vite server:", err);
   process.exit(1);
 });

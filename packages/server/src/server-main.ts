@@ -95,6 +95,7 @@ import { syncGatewayServiceExports } from "./sdk/providers/gatewayServiceExport.
 import { ClaudeOllamaProvider } from "./sdk/providers/claude-ollama.js";
 import { grokACPProvider } from "./sdk/providers/grok-acp.js";
 import { RealClaudeSDK } from "./sdk/real.js";
+import { configureAuthAudit } from "./security/authAuditLog.js";
 import {
   BrowserProfileService,
   BrowserSettingsBackupService,
@@ -283,6 +284,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
   }
 
   if (supervisorForShutdown) {
+    // Join a heartbeat launch admitted before the early stop fence so its
+    // provider is included in the abort/detach inventory below.
+    await supervisorForShutdown.stopBackgroundTasks();
     const processes = supervisorForShutdown.getAllProcesses();
     if (processes.length > 0) {
       console.log(
@@ -383,6 +387,25 @@ async function gracefulShutdown(signal: string): Promise<void> {
     }
   }
 
+  // Let a credential save already in progress finish before exiting. An exit
+  // during an in-place save once left auth.json empty, and the next start came
+  // up with no password (topics/security.md). This waits only: shutdown
+  // itself writes no credential file.
+  const credentialStores = [
+    ["auth", authService],
+    ["limited users", limitedUsersService],
+    ["remote access", remoteAccessService],
+    ["remote sessions", remoteSessionService],
+  ] as const;
+  for (const [name, store] of credentialStores) {
+    try {
+      await store.waitForPendingWrites();
+    } catch (error) {
+      console.error(`[Shutdown] Error waiting on ${name} state:`, error);
+    }
+  }
+  console.log("[Shutdown] Credential saves settled");
+
   closeCodexCorrelationDebugLogger();
   console.log("[Shutdown] Cleanup complete, exiting");
   process.exit(0);
@@ -414,6 +437,7 @@ initCodexCorrelationDebugLogger();
 
 // Log configuration for discoverability
 console.log(`[Config] Data dir: ${config.dataDir}`);
+configureAuthAudit(config.dataDir);
 console.log(
   `[Config] Log file: ${getLogFilePath({ logDir: config.logDir, logFile: config.logFile })}`,
 );
@@ -663,6 +687,10 @@ hostAwakeForShutdown = hostAwakeService;
 const browserSettingsBackupService = new BrowserSettingsBackupService({
   dataDir: config.dataDir,
 });
+const limitedUserBrowserDefaultsService = new BrowserSettingsBackupService({
+  dataDir: config.dataDir,
+  fileName: "limited-user-browser-defaults.json",
+});
 const workstreamService = new WorkstreamService({
   dataDir: config.dataDir,
   eventBus,
@@ -820,6 +848,8 @@ async function startServer() {
   markStartup("hostAwakeService initialized");
   await browserSettingsBackupService.initialize();
   markStartup("browserSettingsBackupService initialized");
+  await limitedUserBrowserDefaultsService.initialize();
+  markStartup("limitedUserBrowserDefaultsService initialized");
   await workstreamService.initialize();
   markStartup("workstreamService initialized");
   await sharingService.initialize();
@@ -1141,6 +1171,7 @@ async function startServer() {
     connectedBrowsers: connectedBrowsersService,
     browserProfileService,
     browserSettingsBackupService,
+    limitedUserBrowserDefaultsService,
     serverSettingsService,
     ttsService,
     sessionWakeSecret,
@@ -1565,6 +1596,8 @@ async function startServer() {
     });
 
     attachUnifiedUpgradeHandler(server, {
+      appUpgrade: (request, socket, head) =>
+        artifactServer.handleUpgrade(request, socket, head),
       frontendProxy,
       isApiPath: (urlPath) => urlPath.startsWith("/api"),
       app,
@@ -1887,6 +1920,7 @@ async function startServer() {
           responseSerialization: relayResponseSerializationDiagnostics(),
         },
         background: {
+          providerSessionWatchers: providerSessionWatchers.getDiagnostics(),
           externalSessionTracker: externalTracker?.getDiagnostics() ?? null,
           liveWorktree: projectWorktreeSubscriptionManager.diagnostics(),
         },

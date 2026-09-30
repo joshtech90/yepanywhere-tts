@@ -17,6 +17,9 @@ const LIMITED_USER_SETTINGS_CATEGORIES: ReadonlySet<string> = new Set([
   "appearance",
   "toolbar",
   "message-delivery",
+  // Dictation choices are browser-local, and the speech routes they use are
+  // open to them; the pane hides its backend setup and vocabulary sections.
+  "speech",
   // Push lives on their own device; subscribe/unsubscribe are self-writes.
   "notifications",
   // Their own account: username, grants, lock, and Log out.

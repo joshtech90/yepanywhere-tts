@@ -2,6 +2,7 @@ import type {
   ActingPrincipal,
   LimitedUserLock,
   LimitedUserSummary,
+  PathGrant,
   TemplateCreationGrant,
   UsageReport,
 } from "@yep-anywhere/shared";
@@ -19,6 +20,8 @@ export interface LimitedUserDraft {
   /** Directory the user may create projects under; empty revokes the grant. */
   projectRoot?: string;
   templateCreation?: TemplateCreationGrant;
+  instructionBlocks?: string[];
+  pathGrants?: PathGrant[];
   disabled?: boolean;
 }
 

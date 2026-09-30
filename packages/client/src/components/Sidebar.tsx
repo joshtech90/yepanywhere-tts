@@ -11,7 +11,7 @@ import {
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import type { GlobalSessionItem } from "../api/client";
+import { api, type GlobalSessionItem } from "../api/client";
 import { useOptionalRemoteConnection } from "../contexts/RemoteConnectionContext";
 import { useNewSessionDraft } from "../hooks/useDrafts";
 import { useProjectCodeNamePreferences } from "../hooks/useProjectCodeNamePreferences";
@@ -49,6 +49,7 @@ import {
   useKnownProjectQueueItems,
   useProjectQueuedSessionIds,
   useProjectQueueSidebarCount,
+  useCategorizedSessionRecords,
   useSessionCollectionQueryRecords,
   useStarredSessionRecords,
 } from "../lib/clientSummaryStore";
@@ -96,6 +97,7 @@ const EMPTY_PROJECT_QUEUE_PROJECTS: readonly {
   snapshotObservedAt?: number;
 }[] = [];
 const EMPTY_PROJECT_QUEUE_SESSION_IDS: ReadonlySet<string> = new Set();
+const EMPTY_RECORDS: readonly SessionCollectionRecord[] = [];
 
 /**
  * Live sessions must remain visible even when another row shares their title.
@@ -195,7 +197,13 @@ function isSidebarPendingProjectQueueItem(
 }
 
 type SidebarSectionKey = keyof typeof DEFAULT_SECTION_EXPANSION;
-type SidebarSectionExpansion = Record<SidebarSectionKey, boolean>;
+type SidebarSectionExpansion = Record<SidebarSectionKey, boolean> & {
+  /** Named sections (`category:…`, `user:…`) the reader closed; others open. */
+  collapsedGroups?: readonly string[];
+};
+
+const CATEGORY_SECTION_PREFIX = "category:";
+const CREATOR_SECTION_PREFIX = "user:";
 
 function getLocalStorage(): Storage | null {
   return typeof window !== "undefined" && window.localStorage
@@ -218,8 +226,16 @@ function loadSidebarSectionExpansion(): SidebarSectionExpansion {
     if (!parsed || typeof parsed !== "object") {
       return DEFAULT_SECTION_EXPANSION;
     }
-    const value = parsed as Partial<Record<SidebarSectionKey, unknown>>;
+    const value = parsed as Partial<
+      Record<SidebarSectionKey | "collapsedGroups", unknown>
+    >;
+    const collapsedGroups = Array.isArray(value.collapsedGroups)
+      ? value.collapsedGroups.filter(
+          (key): key is string => typeof key === "string",
+        )
+      : [];
     return {
+      collapsedGroups,
       projectQueue:
         typeof value.projectQueue === "boolean"
           ? value.projectQueue
@@ -262,8 +278,19 @@ interface SidebarSectionHeaderProps {
   controlsId: string;
   expandLabel: string;
   collapseLabel: string;
+  /** Rows in the section, shown only while it is collapsed. */
+  count?: number;
+  /** More rows exist than are loaded, so `count` is a lower bound. */
+  countIsPartial?: boolean;
+  /** A limited user's section: marked with a person glyph, name as typed. */
+  isPerson?: boolean;
 }
 
+/**
+ * The whole header row toggles its section. A chevron after the name points
+ * down while open and right while closed; a closed section shows its count.
+ * Rows below are never indented, so every section keeps the same left edge.
+ */
 function SidebarSectionHeader({
   title,
   expanded,
@@ -271,24 +298,53 @@ function SidebarSectionHeader({
   controlsId,
   expandLabel,
   collapseLabel,
+  count,
+  countIsPartial = false,
+  isPerson = false,
 }: SidebarSectionHeaderProps) {
   const actionLabel = expanded ? collapseLabel : expandLabel;
 
   return (
-    <div className="sidebar-section-header">
-      <h3 className="sidebar-section-title">{title}</h3>
+    <h3 className={sidebarStyles.sectionHeading}>
       <button
         type="button"
-        className="sidebar-section-toggle"
+        className={sidebarStyles.sectionToggle}
         onClick={onToggle}
         aria-expanded={expanded}
         aria-controls={controlsId}
         aria-label={`${actionLabel}: ${title}`}
-        title={`${actionLabel}: ${title}`}
       >
-        {expanded ? "-" : "+"}
+        <span
+          className={isPerson ? sidebarStyles.sectionTitleAsTyped : undefined}
+        >
+          {title}
+        </span>
+        {isPerson && (
+          <svg
+            className={sidebarStyles.sectionPersonGlyph}
+            viewBox="0 0 10 10"
+            aria-hidden="true"
+          >
+            <circle cx="5" cy="3.2" r="2" />
+            <path d="M1.2 9.3C1.6 6.8 3.2 6 5 6s3.4.8 3.8 3.3" />
+          </svg>
+        )}
+        <svg
+          className={sidebarStyles.sectionChevron}
+          data-expanded={expanded}
+          viewBox="0 0 8 8"
+          aria-hidden="true"
+        >
+          <path d="M1 2.5 4 5.5 7 2.5" />
+        </svg>
+        {!expanded && count !== undefined && (
+          <span className={sidebarStyles.sectionCount} aria-hidden="true">
+            {count}
+            {countIsPartial ? "+" : ""}
+          </span>
+        )}
       </button>
-    </div>
+    </h3>
   );
 }
 
@@ -373,13 +429,21 @@ export function Sidebar({
     loadMoreGlobalSessions,
     hasMoreStarredSessions,
     loadMoreStarredSessions,
+    sidebarCategoriesSupported,
+    hasMoreCategorizedSessions,
+    loadMoreCategorizedSessions,
   } = useSidebarSessionFeeds();
 
   const globalQueryRecords = useSessionCollectionQueryRecords(globalQuery);
   const starredSessionRecords = useStarredSessionRecords();
+  const categorizedSessionRecords = useCategorizedSessionRecords();
+  // A limited user sees only their own sessions; grouping them under their
+  // own name would just rename Last 24 Hours.
   const orderedSessions = useSidebarSessionOrder(
     globalQueryRecords,
     starredSessionRecords,
+    sidebarCategoriesSupported ? categorizedSessionRecords : EMPTY_RECORDS,
+    sidebarCategoriesSupported && !isLimitedUser,
   );
 
   const hasNewSessionDraft = useNewSessionDraft();
@@ -444,6 +508,7 @@ export function Sidebar({
   const olderExpanded = sectionExpansion.older;
   const loadingMoreGlobalSessionsRef = useRef(false);
   const loadingMoreStarredSessionsRef = useRef(false);
+  const loadingMoreCategorizedSessionsRef = useRef(false);
 
   const setSidebarSectionExpanded = useCallback(
     (
@@ -460,6 +525,16 @@ export function Sidebar({
     },
     [],
   );
+
+  const toggleSidebarGroupExpanded = useCallback((groupKey: string) => {
+    setSectionExpansion((current) => {
+      const collapsed = new Set(current.collapsedGroups);
+      if (!collapsed.delete(groupKey)) collapsed.add(groupKey);
+      const next = { ...current, collapsedGroups: [...collapsed] };
+      saveSidebarSectionExpansion(next);
+      return next;
+    });
+  }, []);
 
   const maybeLoadMoreGlobalSessions = useCallback(async () => {
     if (!hasMoreGlobalSessions || loadingMoreGlobalSessionsRef.current) {
@@ -485,6 +560,21 @@ export function Sidebar({
     }
   }, [hasMoreStarredSessions, loadMoreStarredSessions]);
 
+  const maybeLoadMoreCategorizedSessions = useCallback(async () => {
+    if (
+      !hasMoreCategorizedSessions ||
+      loadingMoreCategorizedSessionsRef.current
+    ) {
+      return;
+    }
+    loadingMoreCategorizedSessionsRef.current = true;
+    try {
+      await loadMoreCategorizedSessions();
+    } finally {
+      loadingMoreCategorizedSessionsRef.current = false;
+    }
+  }, [hasMoreCategorizedSessions, loadMoreCategorizedSessions]);
+
   const maybeLoadMoreSidebarSessions = useCallback(() => {
     const element = sidebarSessionsRef.current;
     if (!element || !isNearScrollEnd(element)) {
@@ -492,9 +582,16 @@ export function Sidebar({
     }
     void maybeLoadMoreGlobalSessions();
     void maybeLoadMoreStarredSessions();
-  }, [maybeLoadMoreGlobalSessions, maybeLoadMoreStarredSessions]);
+    void maybeLoadMoreCategorizedSessions();
+  }, [
+    maybeLoadMoreGlobalSessions,
+    maybeLoadMoreStarredSessions,
+    maybeLoadMoreCategorizedSessions,
+  ]);
   const sidebarLoadMoreKey = [
     starredSessionRecords.length,
+    categorizedSessionRecords.length,
+    sectionExpansion.collapsedGroups?.length ?? 0,
     orderedSessions.recent.length,
     orderedSessions.older.length,
     projectQueueExpanded,
@@ -599,6 +696,12 @@ export function Sidebar({
 
   // Disconnect, cache-bust this document, then open the host picker after
   // reload. Reloading /login can leave a session-pinned installed window.
+  const handleReturnToSuperuser = async () => {
+    await api.logoutUser();
+    // Acting as a different principal changes every list in the app.
+    window.location.reload();
+  };
+
   const handleSwitchHost = () => {
     remoteConnection?.disconnect();
     markSwitchHostReload();
@@ -623,15 +726,44 @@ export function Sidebar({
     [orderedSessions.older],
   );
 
+  // Named sections, keyed for the layout hold and remembered expansion.
+  const groupSessionLists = useMemo(() => {
+    const lists: Record<string, SidebarSessionItem[]> = {};
+    for (const { name, rows } of orderedSessions.categories) {
+      lists[CATEGORY_SECTION_PREFIX + name] =
+        sessionCollectionRecordsToSidebarSessionItems(rows);
+    }
+    for (const { name, rows } of orderedSessions.creators) {
+      lists[CREATOR_SECTION_PREFIX + name] =
+        sessionCollectionRecordsToSidebarSessionItems(rows);
+    }
+    return lists;
+  }, [orderedSessions.categories, orderedSessions.creators]);
+
+  const sidebarCategoryNames = useMemo(
+    () => orderedSessions.categories.map(({ name }) => name),
+    [orderedSessions.categories],
+  );
+
   const sidebarProjectIds = useMemo(
     () => [
       ...new Set(
-        [...filteredStarredSessions, ...recentDaySessions, ...olderSessions]
+        [
+          ...filteredStarredSessions,
+          ...recentDaySessions,
+          ...olderSessions,
+          ...Object.values(groupSessionLists).flat(),
+        ]
           .map((session) => session.projectId)
           .filter(Boolean),
       ),
     ],
-    [filteredStarredSessions, recentDaySessions, olderSessions],
+    [
+      filteredStarredSessions,
+      recentDaySessions,
+      olderSessions,
+      groupSessionLists,
+    ],
   );
   const projectQueueProjectIds = useMemo(
     () =>
@@ -844,6 +976,7 @@ export function Sidebar({
   const { lists: displayed, handlers: orderInteractionHandlers } =
     useHeldSidebarLists(
       {
+        ...groupSessionLists,
         starred: filteredStarredSessions,
         recent: visibleRecent,
         hiddenRecent,
@@ -852,6 +985,39 @@ export function Sidebar({
       },
       isDesktop ? !isCollapsed : isOpen,
     );
+  const displayedByKey: Record<string, readonly SidebarSessionItem[]> =
+    displayed;
+  const displayedGroupKeys = (prefix: string) =>
+    Object.keys(displayedByKey).filter(
+      (key) => key.startsWith(prefix) && (displayedByKey[key]?.length ?? 0) > 0,
+    );
+  const renderGroupSection = (key: string, name: string, isPerson: boolean) => {
+    const rows = displayedByKey[key] ?? [];
+    const expanded = !sectionExpansion.collapsedGroups?.includes(key);
+    const listId = `sidebar-group-${encodeURIComponent(key)}`;
+    return (
+      <div className="sidebar-section" key={key}>
+        <SidebarSectionHeader
+          title={name}
+          expanded={expanded}
+          onToggle={() => toggleSidebarGroupExpanded(key)}
+          controlsId={listId}
+          expandLabel={t("sidebarSectionExpand")}
+          collapseLabel={t("sidebarSectionCollapse")}
+          count={rows.length}
+          countIsPartial={
+            isPerson ? hasMoreGlobalSessions : hasMoreCategorizedSessions
+          }
+          isPerson={isPerson}
+        />
+        {expanded && (
+          <ul id={listId} className="sidebar-session-list">
+            {rows.map(renderCompactSession)}
+          </ul>
+        )}
+      </div>
+    );
+  };
 
   // Dev-only: flag a true repeated id, which title grouping cannot fix.
   useEffect(() => {
@@ -892,6 +1058,10 @@ export function Sidebar({
         hasUnread={session.hasUnread}
         isStarred={session.isStarred}
         isArchived={session.isArchived}
+        sidebarCategory={session.sidebarCategory}
+        sidebarCategoryNames={
+          sidebarCategoriesSupported ? sidebarCategoryNames : undefined
+        }
         clearloop={session.clearloop}
         mode="compact"
         isCurrent={session.id === currentSessionId}
@@ -1127,6 +1297,34 @@ export function Sidebar({
               onClick={onNavigate}
               basePath={basePath}
             />
+            {/* A switched superuser sees the limited user's app; this is the way
+                back that does not require finding Settings > Users. */}
+            {actingPrincipal.switched && actingPrincipal.username && (
+              <SidebarNavButton
+                className="sidebar-return-to-superuser"
+                onClick={() => void handleReturnToSuperuser()}
+                label={t("sidebarReturnToSuperuser", {
+                  username: actingPrincipal.username,
+                })}
+                icon={
+                  <svg
+                    width="16"
+                    height="16"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    aria-hidden="true"
+                  >
+                    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                    <polyline points="16 17 21 12 16 7" />
+                    <line x1="21" y1="12" x2="9" y2="12" />
+                  </svg>
+                }
+              />
+            )}
             {/* Relay-connected Switch Host uses nav-item markup so the mini rail stays icon-only. */}
             {remoteConnection && (
               <SidebarNavButton
@@ -1240,6 +1438,8 @@ export function Sidebar({
                 controlsId="sidebar-starred-list"
                 expandLabel={t("sidebarSectionExpand")}
                 collapseLabel={t("sidebarSectionCollapse")}
+                count={displayed.starred.length}
+                countIsPartial={hasMoreStarredSessions}
               />
               {starredExpanded && (
                 <ul id="sidebar-starred-list" className="sidebar-session-list">
@@ -1247,6 +1447,14 @@ export function Sidebar({
                 </ul>
               )}
             </div>
+          )}
+
+          {displayedGroupKeys(CATEGORY_SECTION_PREFIX).map((key) =>
+            renderGroupSection(
+              key,
+              key.slice(CATEGORY_SECTION_PREFIX.length),
+              false,
+            ),
           )}
 
           {displayed.recent.length > 0 && (
@@ -1260,6 +1468,7 @@ export function Sidebar({
                 controlsId="sidebar-last-24-hours-list"
                 expandLabel={t("sidebarSectionExpand")}
                 collapseLabel={t("sidebarSectionCollapse")}
+                count={displayed.recent.length + displayed.hiddenRecent.length}
               />
               {recentDayExpanded && (
                 <ul
@@ -1292,6 +1501,14 @@ export function Sidebar({
             </div>
           )}
 
+          {displayedGroupKeys(CREATOR_SECTION_PREFIX).map((key) =>
+            renderGroupSection(
+              key,
+              key.slice(CREATOR_SECTION_PREFIX.length),
+              true,
+            ),
+          )}
+
           {displayed.older.length > 0 && (
             <div className="sidebar-section">
               <SidebarSectionHeader
@@ -1303,6 +1520,8 @@ export function Sidebar({
                 controlsId="sidebar-older-list"
                 expandLabel={t("sidebarSectionExpand")}
                 collapseLabel={t("sidebarSectionCollapse")}
+                count={displayed.older.length + displayed.hiddenOlder.length}
+                countIsPartial={hasMoreGlobalSessions}
               />
               {olderExpanded && (
                 <ul id="sidebar-older-list" className="sidebar-session-list">
@@ -1335,7 +1554,9 @@ export function Sidebar({
           {displayed.starred.length === 0 &&
             pendingProjectQueueItems.length === 0 &&
             displayed.recent.length === 0 &&
-            displayed.older.length === 0 && (
+            displayed.older.length === 0 &&
+            displayedGroupKeys(CATEGORY_SECTION_PREFIX).length === 0 &&
+            displayedGroupKeys(CREATOR_SECTION_PREFIX).length === 0 && (
               <p className="sidebar-empty">
                 {sessionsLoading
                   ? t("sidebarLoadingSessions")

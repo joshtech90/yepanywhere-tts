@@ -11,6 +11,13 @@
 - Pluggable speech recognition providers
 - Browser-load session UI reliability
 - Public read-only session shares
+- [Session notes and discussion](session-notes-and-discussion.md) (proposal:
+  human-only scratch notes and shared chat, with explicit audience boundaries)
+- [Participatory Live Share](relay-origin-and-share-gating.sketches.md#participatory-live-share)
+  (proposal: shared discussion, owner-reviewed suggestions, and explicit
+  session-input grants)
+- [Principals and grants](principals-and-grants.md) (implemented limited-user
+  context and proposed convergence of invitations, accounts, and scoped grants)
 - Public share content censorship
 - Approval and local access security hardening
 - Security trust boundaries

@@ -18,6 +18,10 @@
 import * as crypto from "node:crypto";
 import type { MiddlewareHandler } from "hono";
 import { getCookie } from "hono/cookie";
+import {
+  type AgentServerTokens,
+  bearerToken,
+} from "../auth/AgentServerTokens.js";
 import type { AuthService } from "../auth/AuthService.js";
 import { SESSION_COOKIE_NAME } from "../auth/routes.js";
 import {
@@ -34,6 +38,8 @@ export interface AuthMiddlewareOptions {
   desktopAuthToken?: string;
   /** Reload-safe desktop session authentication for bootstrap-v1 shells. */
   desktopBootstrapService?: DesktopBootstrapService;
+  /** Launch-scoped bearer tokens held by unsandboxed superuser sessions. */
+  agentServerTokens?: AgentServerTokens;
 }
 
 /**
@@ -77,6 +83,7 @@ export function createAuthMiddleware(
     authDisabled = false,
     desktopAuthToken,
     desktopBootstrapService,
+    agentServerTokens,
   } = options;
 
   return async (c, next) => {
@@ -103,17 +110,20 @@ export function createAuthMiddleware(
       return;
     }
 
-    // If auth is disabled by env var, always pass through
-    if (authDisabled) {
+    // An agent session's launch token. It carries no cookie, so the limited
+    // users middleware resolves it to the superuser who started the session.
+    const agentToken = bearerToken(c.req.header("authorization"));
+    if (agentToken && agentServerTokens?.accepts(agentToken)) {
       c.set("authenticated", true);
       await next();
       return;
     }
 
-    // An unreadable auth.json must never mean "auth off". Only the explicit
-    // --auth-disable above, or `--setup-auth` rewriting the file, gets past.
-    if (authService.isLoadFailed?.()) {
-      return c.json({ error: "Authentication state could not be loaded" }, 503);
+    // If auth is disabled by env var, always pass through
+    if (authDisabled) {
+      c.set("authenticated", true);
+      await next();
+      return;
     }
 
     // Skip local password auth for requests from the SRP tunnel.

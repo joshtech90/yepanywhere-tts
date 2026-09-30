@@ -79,6 +79,11 @@ const EmulatorPage = lazy(() =>
 const FilePage = lazy(() =>
   import("./pages/FilePage").then(({ FilePage }) => ({ default: FilePage })),
 );
+const LocalSourcePage = lazy(() =>
+  import("./pages/LocalSourcePage").then(({ LocalSourcePage }) => ({
+    default: LocalSourcePage,
+  })),
+);
 const ViewerModePage = lazy(() =>
   import("./pages/ViewerModePage").then(({ ViewerModePage }) => ({
     default: ViewerModePage,
@@ -112,6 +117,11 @@ const LoginPage = lazy(() =>
 const NewSessionPage = lazy(() =>
   import("./pages/NewSessionPage").then(({ NewSessionPage }) => ({
     default: NewSessionPage,
+  })),
+);
+const ProjectAppPage = lazy(() =>
+  import("./pages/ProjectAppPage").then(({ ProjectAppPage }) => ({
+    default: ProjectAppPage,
   })),
 );
 const ProjectsPage = lazy(() =>
@@ -380,6 +390,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     />
                     {/* Project-scoped pages */}
                     <Route
+                      path="/projects/:projectId/app"
+                      element={routeModule(<ProjectAppPage />)}
+                    />
+                    <Route
                       path="/projects/:projectId/workstreams"
                       element={routeModule(<WorkstreamsPage />)}
                     />
@@ -410,6 +424,10 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
                     <Route
                       path="/projects/:projectId/file"
                       element={routeModule(<FilePage />)}
+                    />
+                    <Route
+                      path="/projects/:projectId/browse"
+                      element={routeModule(<LocalSourcePage />)}
                     />
                     <Route
                       path="/file-view"

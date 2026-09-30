@@ -6,6 +6,7 @@ import {
   sessionLocalhostRewriteApplies,
   sessionToolUrls,
   sessionVhostApp,
+  unmappedLoopbackPorts,
 } from "./sessionVhostApps";
 import { rewriteSessionAppLinksHtml } from "../components/SessionAppLinks";
 
@@ -20,6 +21,60 @@ const vhostConfig: ArtifactViewerStatus = {
   vhosts: [{ name: "plan", port: 19432 }],
 };
 describe("session vhost apps", () => {
+  it("offers a sandboxed session's loopback server under its minted name", () => {
+    const config = {
+      ...vhostConfig,
+      // A limited user knows no operator tokens.
+      accessTokens: {},
+      sessionApps: { 5173: { name: "sbx-0123", accessToken: "minted" } },
+    };
+    expect(
+      sessionVhostApp(
+        "http://127.0.0.1:5173/play?x=1#top",
+        config,
+        "http://localhost:3400",
+      ),
+    ).toEqual({
+      sourceUrl: "http://127.0.0.1:5173/play?x=1#top",
+      url: "http://sbx-0123.localhost:9876/play?x=1&ya_access=minted#top",
+      label: "127.0.0.1:5173/play",
+    });
+    expect(
+      sessionVhostApp(
+        "http://localhost:5173/",
+        config,
+        "https://ya.example.org",
+      )?.url,
+    ).toBe("https://sbx-0123.example.org/?ya_access=minted");
+    // The operator row still owns its port, and without a token is withheld.
+    expect(
+      sessionVhostApp(
+        "http://localhost:19432/",
+        {
+          ...config,
+          sessionApps: { 19432: { name: "sbx-9", accessToken: "x" } },
+        },
+        "https://ya.example.org",
+      ),
+    ).toBeUndefined();
+  });
+  it("lists loopback ports no operator row serves", () => {
+    expect(
+      unmappedLoopbackPorts(
+        [
+          "http://127.0.0.1:5173/",
+          "http://localhost:19432/",
+          "http://localhost/",
+          "http://plan.localhost:3400/",
+          "https://127.0.0.1:8443/",
+          // A source-template placeholder, in its URL-encoded form.
+          "http://127.0.0.1:$%7bPORT%7d/",
+          "http://127.0.0.1:5173/other",
+        ],
+        vhostConfig,
+      ),
+    ).toEqual([5173, 80]);
+  });
   it("adds app-scoped bearers only when the server supplies them", () => {
     expect(
       sessionVhostApp(

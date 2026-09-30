@@ -1,4 +1,11 @@
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -15,6 +22,7 @@ import {
 import { createApp } from "../setup/create-app.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
 import { ProjectMetadataService } from "../../src/metadata/ProjectMetadataService.js";
+import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { LimitedUsersService } from "../../src/auth/LimitedUsersService.js";
 import { probeSessionSandboxAvailability } from "../../src/session-sandbox.js";
 
@@ -134,6 +142,54 @@ it("creates and commits a real starter, then dispatches intent once across retri
   ).rejects.toThrow("different request");
 });
 
+it("names the limited owner of each started preparation session", async () => {
+  const data = join(root, "data");
+  const directory = join(data, "project-template-operations");
+  await mkdir(directory, { recursive: true });
+  const record = (fields: Record<string, unknown>) =>
+    JSON.stringify({
+      request: {
+        operationId: randomUUID(),
+        sourceId: "local",
+        templateId: "app",
+        path: join(root, "project"),
+        name: "Garden",
+        intent: "Draw",
+      },
+      log: "",
+      ...fields,
+    });
+  await writeFile(
+    join(directory, `${randomUUID()}.json`),
+    record({
+      phase: "started",
+      sessionId: "archer-session",
+      ownerUsername: "archer",
+    }),
+  );
+  // The superuser's own creations and ones that never started a session name
+  // no owner to restore.
+  await writeFile(
+    join(directory, `${randomUUID()}.json`),
+    record({
+      phase: "started",
+      sessionId: "owner-session",
+      ownerUsername: null,
+    }),
+  );
+  await writeFile(
+    join(directory, `${randomUUID()}.json`),
+    record({ phase: "failed", ownerUsername: "archer" }),
+  );
+  const service = new TemplateCreationService(
+    data,
+    new TemplateSourceService(data),
+  );
+  expect(await service.startedSessionOwners()).toEqual([
+    { sessionId: "archer-session", ownerUsername: "archer" },
+  ]);
+});
+
 it("revalidates local source edits before allocating any project", async () => {
   const sources = await source();
   await rm(join(root, "source/templates/app/file-0"));
@@ -202,6 +258,7 @@ it("serves ready choices and creates through HTTP without accepting a forged sou
   expect(dispatched).toEqual([
     "/api/projects",
     "/api/projects/created/sessions",
+    "/api/sessions/prepared/metadata",
   ]);
 });
 
@@ -295,11 +352,16 @@ it("enforces source-qualified grants, owner-only operations and real sandboxed l
       async (_context, path, body) => {
         if (path === "/api/projects")
           return Response.json({ project: { id: "owned" } });
+        if (path === "/api/sessions/prepared/metadata") {
+          expect(body).toEqual({ title: "Make a game" });
+          return Response.json({ updated: true });
+        }
         launches++;
         expect(body).toMatchObject({
           provider: "claude",
           model: "locked-model",
           sandboxLevel: "project-write",
+          sandboxNetworkFirewall: true,
         });
         return Response.json({ sessionId: "prepared" });
       },
@@ -334,6 +396,12 @@ it("enforces source-qualified grants, owner-only operations and real sandboxed l
   expect(
     (await post({ ...request, session: { model: "different" } })).status,
   ).toBe(409);
+  const firewallOff = await post({
+    ...request,
+    session: { sandboxNetworkFirewall: false },
+  });
+  expect(firewallOff.status).toBe(409);
+  expect((await firewallOff.json()).error).toContain("network firewall");
   await users.update("archer", {
     templateCreation: { mode: "selected", templates: [] },
   });
@@ -343,29 +411,39 @@ it("enforces source-qualified grants, owner-only operations and real sandboxed l
   expect((await post(request)).status).toBe(409);
   await users.update("archer", { templateCreation: { mode: "any" } });
   const availability = await probeSessionSandboxAvailability();
-  expect((await post(request)).status).toBe(202);
-  await service.wait(request.operationId);
-  const outcome = await service.get(request.operationId);
-  if (availability.state === "available") {
-    expect(await readFile(outside, "utf8")).toBe("protected");
-    expect(outcome, outcome?.error).toMatchObject({
-      phase: "started",
-      ownerUsername: "archer",
-    });
-    expect(launches).toBe(1);
-    expect(await readFile(join(request.path, "dist/index.html"), "utf8")).toBe(
-      "Ready",
-    );
-  } else {
-    expect(outcome).toMatchObject({ phase: "failed" });
+  const response = await post(request);
+  // Non-Linux hosts refuse admission before creating a sandbox operation.
+  if (availability.state === "unsupported-platform") {
+    expect(response.status).toBe(409);
     expect(launches).toBe(0);
+    expect(await service.get(request.operationId)).toBeNull();
+  } else {
+    expect(response.status).toBe(202);
+    await service.wait(request.operationId);
+    const outcome = await service.get(request.operationId);
+    if (availability.state === "available") {
+      expect(await readFile(outside, "utf8")).toBe("protected");
+      expect(outcome, outcome?.error).toMatchObject({
+        phase: "started",
+        ownerUsername: "archer",
+      });
+      expect(launches).toBe(1);
+      expect(
+        await readFile(join(request.path, "dist/index.html"), "utf8"),
+      ).toBe("Ready");
+    } else {
+      expect(outcome).toMatchObject({ phase: "failed" });
+      expect(launches).toBe(0);
+    }
   }
   username = "other";
   expect(
     (await app.request(`/project-templates/operations/${request.operationId}`))
       .status,
   ).toBe(404);
-  expect((await post(request)).status).toBe(404);
+  expect((await post(request)).status).toBe(
+    availability.state === "unsupported-platform" ? 409 : 404,
+  );
   await users.update("other", { templateCreation: { mode: "none" } });
   expect((await app.request("/project-templates/choices")).status).toBe(403);
 }, 30_000);
@@ -447,6 +525,10 @@ it("stops an in-flight setup on shutdown and records an interruption", async () 
 
 it("wires the production creation route through project registration and session launch", async () => {
   await source();
+  const sessionMetadataService = new SessionMetadataService({
+    dataDir: join(root, "data"),
+  });
+  await sessionMetadataService.initialize();
   const projectMetadataService = new ProjectMetadataService({
     dataDir: join(root, "data"),
   });
@@ -454,6 +536,7 @@ it("wires the production creation route through project registration and session
   const instance = createApp({
     sdk: new MockClaudeSDK(),
     projectMetadataService,
+    sessionMetadataService,
     dataDir: join(root, "data"),
     projectsDir: join(root, "sessions"),
   });
@@ -497,7 +580,7 @@ it("wires the production creation route through project registration and session
     ).json();
     expect(project.project).toMatchObject({
       name: "Wired",
-      path: request.path,
+      path: await realpath(request.path),
     });
     expect(await readFile(join(request.path, "dist/index.html"), "utf8")).toBe(
       "Ready",

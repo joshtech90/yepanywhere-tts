@@ -5,7 +5,7 @@ import { createTestViteServer } from "./support/vite-server";
 import { recordUiCapture } from "./support/ui-capture.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process";
 
 test.use({ serviceWorkers: "block" });
@@ -255,6 +255,6 @@ test("a long-context effort change asks first and can fork at the new effort", a
     expect(errors).toEqual([]);
   } finally {
     await source.close();
-    stopYaServerProcess(backend);
+    await disposeYaServerProcess(backend);
   }
 });

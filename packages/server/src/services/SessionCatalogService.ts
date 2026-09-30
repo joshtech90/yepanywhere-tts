@@ -504,6 +504,11 @@ export class SessionCatalogService {
     return this.snapshotFrom(this.requireManifest());
   }
 
+  /** Fixed-cost publication identity without copying rows or touching disk. */
+  getToken(): SessionCatalogToken {
+    return this.tokenFrom(this.requireManifest());
+  }
+
   /** Read one coherent compact generation without consulting provider storage. */
   /**
    * Hold a generation directory against cleanup while a reader walks it.

@@ -235,6 +235,8 @@ export interface StartSessionOptions {
     sessionId: string,
     executor?: string,
   ) => Record<string, string>;
+  /** This launch's operator API token; see the provider StartSessionOptions. */
+  agentServerEnvironment?: Record<string, string>;
   /** Global instructions to append to system prompt (from server settings) */
   globalInstructions?: string;
   /** Explicit provider-owned generation controls; omission means all off. */

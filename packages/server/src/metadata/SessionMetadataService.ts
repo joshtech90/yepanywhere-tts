@@ -14,8 +14,7 @@ import {
   type DurableRecapMessage,
   type DurableLocalCommandMessage,
   type DurableSyntheticDoneMessage,
-  type EffortLevel,
-  type PermissionMode,
+  type EffectiveSessionLaunchSettings,
   type ProviderName,
   type PromptSuggestionMode,
   type RecapMode,
@@ -25,7 +24,6 @@ import {
   type SessionRewindRecord,
   type SessionSandboxLevel,
   type SlashCommand,
-  type ThinkingConfig,
   type TranscriptDisplayObject,
   type UrlProjectId,
   type WorkstreamId,
@@ -36,22 +34,7 @@ import {
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 
-export interface EffectiveSessionLaunchSettings {
-  /** Record schema, independent of the containing metadata-file schema. */
-  schemaVersion: 1;
-  /** Monotonic session-local revision for ordered client/server updates. */
-  revision: number;
-  /** Standing permission selector restored when YA owns a new process. */
-  permissionMode: PermissionMode;
-  /** Exact YA model token, including "default"; null means provider default. */
-  requestedModel: string | null;
-  /** Provider-visible service tier; null means provider/default behavior. */
-  serviceTier: string | null;
-  /** Effective thinking configuration; null means disabled/default behavior. */
-  thinking: ThinkingConfig | null;
-  /** Effective effort selection; null means provider/default behavior. */
-  effort: EffortLevel | null;
-}
+export type { EffectiveSessionLaunchSettings } from "@yep-anywhere/shared";
 
 export type EffectiveSessionLaunchSettingsValue = Omit<
   EffectiveSessionLaunchSettings,
@@ -82,6 +65,8 @@ export interface SessionMetadata {
   isArchived?: boolean;
   /** Whether the session is starred/favorited */
   isStarred?: boolean;
+  /** User-named sidebar category this session is filed under. */
+  sidebarCategory?: string;
   /** Interactive Mother session for a YA-owned `/btw` aside. */
   parentSessionId?: string;
   /** Explicit meaning of parentSessionId; absent on legacy records. */
@@ -1140,6 +1125,7 @@ export class SessionMetadataService {
       title?: string;
       archived?: boolean;
       starred?: boolean;
+      sidebarCategory?: string | null;
       parentSessionId?: string | null;
       parentSessionKind?: "btw-aside" | null;
       forkedFromSessionId?: string | null;
@@ -1175,6 +1161,10 @@ export class SessionMetadataService {
       // Handle starred
       if (updates.starred !== undefined) {
         result.isStarred = updates.starred || undefined;
+      }
+
+      if (updates.sidebarCategory !== undefined) {
+        result.sidebarCategory = updates.sidebarCategory || undefined;
       }
 
       if (updates.parentSessionId !== undefined) {
@@ -1287,12 +1277,16 @@ export class SessionMetadataService {
     if (updated.creationProvenance) {
       cleaned.creationProvenance = updated.creationProvenance;
     }
+    if (updated.createdByUser) cleaned.createdByUser = updated.createdByUser;
     if (updated.nonHumanUserTurn) {
       cleaned.nonHumanUserTurn = updated.nonHumanUserTurn;
     }
     if (updated.customTitle) cleaned.customTitle = updated.customTitle;
     if (updated.isArchived) cleaned.isArchived = updated.isArchived;
     if (updated.isStarred) cleaned.isStarred = updated.isStarred;
+    if (updated.sidebarCategory) {
+      cleaned.sidebarCategory = updated.sidebarCategory;
+    }
     if (updated.parentSessionId)
       cleaned.parentSessionId = updated.parentSessionId;
     if (updated.parentSessionId && updated.parentSessionKind) {

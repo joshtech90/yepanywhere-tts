@@ -1,4 +1,5 @@
 import {
+  AGENT_SERVER_ACCESS_CAPABILITY,
   APPROVAL_AUDIT_LOG_CAPABILITY,
   serverHasCapability,
 } from "@yep-anywhere/shared";
@@ -134,6 +135,10 @@ export function LocalAccessSettings() {
   const approvalAuditLogEnabled = supportsApprovalAuditLog
     ? (serverSettings?.approvalAuditLogEnabled ?? false)
     : true;
+  const supportsAgentServerAccess = serverHasCapability(
+    versionInfo,
+    AGENT_SERVER_ACCESS_CAPABILITY,
+  );
 
   // Network binding form state
   const [localhostPort, setLocalhostPort] = useState<string>("");
@@ -649,6 +654,28 @@ export function LocalAccessSettings() {
             updateServerSetting("approvalAuditLogEnabled", e.target.checked)
           }
           aria-label={t("localAccessApprovalAuditTitle")}
+        />
+        <span className="toggle-slider" />
+      </label>
+    </SettingsItem>
+  );
+
+  // Only meaningful once local requests need a password: without one, any
+  // local process can already call the API.
+  const renderAgentServerAccessSetting = () => (
+    <SettingsItem
+      label={t("localAccessAgentServerAccessTitle")}
+      description={t("localAccessAgentServerAccessDescription")}
+    >
+      <label className="toggle-switch">
+        <input
+          type="checkbox"
+          checked={serverSettings?.agentServerAccessEnabled ?? false}
+          disabled={!serverSettings}
+          onChange={(e) =>
+            updateServerSetting("agentServerAccessEnabled", e.target.checked)
+          }
+          aria-label={t("localAccessAgentServerAccessTitle")}
         />
         <span className="toggle-slider" />
       </label>
@@ -1195,6 +1222,10 @@ export function LocalAccessSettings() {
               </HideInSettingsSearch>
             </div>
           )}
+
+          {supportsAgentServerAccess &&
+            auth.authEnabled &&
+            renderAgentServerAccessSetting()}
 
           {/* Allow Localhost Access - shown in desktop mode when password auth is off */}
           {auth.hasDesktopToken &&

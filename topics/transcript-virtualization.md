@@ -334,12 +334,26 @@ around it, so the selected anchor does not move under the reader.
 
 Both an older-page preview click and a loaded-result click activate that
 result while keeping search open. Enter and Go activate it and close search.
+Clicking a rail preview hides the preview lines until the reader hovers a
+side dash again or changes the search selection/query. The dashes remain
+available. Escape after a clicked result closes search at the reading
+position; without a clicked result it cancels back to the original position.
+Accepting an already framed result by clicking its body also keeps that
+reading position. Enter and Go align the selected match. Restoring the
+surrounding transcript and its scroll anchor happens before the same paint,
+without a second centering jump.
 The resolved row receives a visible outline/tint, and the matching visible
 text receives a contrasting highlight where the browser supports CSS custom
 highlights. Scrolling aligns the matching text itself inside the viewport,
 including when its row is taller than the viewport. The cue survives closing
 search; another search navigation replaces it and Follow clears it. The
 highlight does not alter React-owned text nodes or the user's text selection.
+The needle stays solid for two seconds of reader inactivity and fades over
+the next three seconds, then clears. Its clock starts only after the actual
+destination has mounted and been aligned, including an asynchronously loaded
+historical page. Pointer/key/wheel activity renews the idle interval instead
+of abruptly removing the cue. The accepted row frame fades with the needle;
+reduced-motion preferences suppress the interpolation.
 
 Only one historical page is mounted. It is outside the canonical active
 session store, and trim, fork, and store-backed copy actions are unavailable on

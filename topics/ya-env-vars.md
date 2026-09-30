@@ -128,6 +128,11 @@ the current value to remote environments, and refresh it through the session
 Bash bridge on binding or reattachment. Ordinary child filtering preserves it.
 It conveys neither authentication nor permission to create an artifact grant.
 
+`AGENT_SERVER_TOKEN` is the exception that does authenticate: an optional,
+per-launch bearer token for unsandboxed superuser sessions, delivered only in
+the provider process environment and never through the Bash bridge. See
+[agent session access](agent-session-access.md#operator-api-token).
+
 The artifact capture CLI uses it for local HTML when `--ya-url` is absent.
 Explicit `--ya-url` takes precedence; `--local-only` makes no YA requests.
 Existing HTTP(S) input uses its own URL and ignores the informational default.

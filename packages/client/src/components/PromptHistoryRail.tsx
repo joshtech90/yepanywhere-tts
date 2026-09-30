@@ -11,19 +11,45 @@ import { useI18n } from "../i18n";
 import { readComposerHistory } from "../lib/composerHistory";
 import { replaceTextareaRangeUndoably } from "../lib/composerTextarea";
 import { textareaDropCaret } from "../lib/textareaDropCaret";
+import { useComposerPromptRail } from "../hooks/useComposerPromptRail";
 import styles from "./PromptHistoryRail.module.css";
 
-export function PromptHistoryRail({
-  scope,
-  textareaRef,
-  onChange,
-  children,
-}: {
+interface PromptHistoryRailProps {
   scope: string | null;
   textareaRef: RefObject<HTMLTextAreaElement | null>;
   onChange: (value: string) => void;
   children: ReactNode;
-}) {
+}
+
+/**
+ * Wrap `value` so text inserted at `offset` occupies its own line(s): a
+ * newline separates it from any text before or after on the same line.
+ */
+export function lineIsolatedInsertion(
+  value: string,
+  offset: number,
+  text: string,
+): string {
+  const before = value.slice(0, offset);
+  const after = value.slice(offset);
+  const lead = before && !before.endsWith("\n") ? "\n" : "";
+  const trail = after && !after.startsWith("\n") ? "\n" : "";
+  return `${lead}${text}${trail}`;
+}
+
+/** The rail is an opt-in Appearance setting; off, the composer is bare. */
+export function PromptHistoryRail(props: PromptHistoryRailProps) {
+  const { composerPromptRailEnabled } = useComposerPromptRail();
+  if (!composerPromptRailEnabled) return <>{props.children}</>;
+  return <EnabledPromptHistoryRail {...props} />;
+}
+
+function EnabledPromptHistoryRail({
+  scope,
+  textareaRef,
+  onChange,
+  children,
+}: PromptHistoryRailProps) {
   const { t } = useI18n();
   const id = useId();
   const [history, setHistory] = useState<{
@@ -83,7 +109,12 @@ export function PromptHistoryRail({
   function insert(text: string, offset: number) {
     const textarea = textareaRef.current;
     if (!textarea || textarea.disabled || textarea.readOnly) return;
-    replaceTextareaRangeUndoably(textarea, offset, offset, text);
+    replaceTextareaRangeUndoably(
+      textarea,
+      offset,
+      offset,
+      lineIsolatedInsertion(textarea.value, offset, text),
+    );
     onChange(textarea.value);
     cancel();
   }

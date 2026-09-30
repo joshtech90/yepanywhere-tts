@@ -20,6 +20,15 @@ export interface VersionInfo {
   updateAvailable: boolean;
   /** Best-effort install source for update guidance. Undefined on older servers. */
   installSource?: "npm-global" | "source" | "release-package" | "unknown";
+  /** A source launch's checkout at startup. Undefined for packages and older servers. */
+  sourceRevision?: {
+    commit: string;
+    committedAt: string;
+    /** `packages/` differed from the commit at launch. */
+    modified: boolean;
+    /** Newest mtime among those changed files. */
+    modifiedAt?: string;
+  };
   /** Session resume protocol version supported by server (undefined on older servers). */
   resumeProtocolVersion?: number;
   /** Coarse hosted remote UI/server compatibility level. Undefined on older servers. */

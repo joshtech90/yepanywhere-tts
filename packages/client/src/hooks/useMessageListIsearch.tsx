@@ -102,6 +102,7 @@ interface UseMessageListIsearchResult {
     activate: (id: string, targetId: string, close: boolean) => void,
   ) => ReactNode;
   closeSearch: (restoreScroll: boolean) => void;
+  getCommittedSearchTargetId: () => string | null;
   getSelectedSearchAnchorId: () => string | null;
   getSelectedSearchTargetId: () => string | null;
   handleSearchArrowKey: (
@@ -247,7 +248,6 @@ export function useMessageListIsearch({
       expects: () => searchQueryRef.current,
       applyKey: (key) => {
         setBoundary(null);
-        committedSearchTargetIdRef.current = null;
         setUserTurnSearch((previous) =>
           previous.active
             ? {
@@ -805,7 +805,6 @@ export function useMessageListIsearch({
 
   const moveSearchSelection = useCallback(
     (direction: "previous" | "next") => {
-      committedSearchTargetIdRef.current = null;
       cancelSearchTargetPreparation();
       const currentIndex = selectedSearchAnchorIdRef.current
         ? userTurnSearchMatches.findIndex(
@@ -1091,7 +1090,6 @@ export function useMessageListIsearch({
   );
   const handleQueryChange = useCallback((query: string) => {
     setBoundary(null);
-    committedSearchTargetIdRef.current = null;
     setUserTurnSearch((previous) => ({
       ...previous,
       query,
@@ -1100,7 +1098,6 @@ export function useMessageListIsearch({
   }, []);
   const toggleCaseSensitive = useCallback(() => {
     setBoundary(null);
-    committedSearchTargetIdRef.current = null;
     setUserTurnSearch((previous) =>
       previous.active
         ? {
@@ -1113,6 +1110,10 @@ export function useMessageListIsearch({
   }, []);
   const getSelectedSearchTargetId = useCallback(
     () => selectedSearchTargetIdRef.current,
+    [],
+  );
+  const getCommittedSearchTargetId = useCallback(
+    () => committedSearchTargetIdRef.current,
     [],
   );
   const getSelectedSearchAnchorId = useCallback(
@@ -1149,18 +1150,6 @@ export function useMessageListIsearch({
     userTurnSearchMatches,
     userTurnSearchMatchIds,
   ]);
-
-  useLayoutEffect(() => {
-    if (!userTurnSearch.active || !committedSearchTargetIdRef.current) {
-      return;
-    }
-    const retainedTargetIds = new Set(
-      userTurnSearchMatches.map((anchor) => anchor.targetId ?? anchor.id),
-    );
-    if (!retainedTargetIds.has(committedSearchTargetIdRef.current)) {
-      committedSearchTargetIdRef.current = null;
-    }
-  }, [userTurnSearch.active, userTurnSearchMatches]);
 
   useEffect(() => {
     if (inert) {
@@ -1420,6 +1409,7 @@ export function useMessageListIsearch({
     searchState,
     renderSearchPanel,
     closeSearch,
+    getCommittedSearchTargetId,
     getSelectedSearchAnchorId,
     getSelectedSearchTargetId,
     handleSearchArrowKey,

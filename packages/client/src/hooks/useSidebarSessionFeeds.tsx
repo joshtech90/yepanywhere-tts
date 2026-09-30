@@ -1,5 +1,10 @@
+import {
+  SIDEBAR_SESSION_CATEGORIES_CAPABILITY,
+  serverHasCapability,
+} from "@yep-anywhere/shared";
 import { createContext, type ReactNode, useContext, useMemo } from "react";
 import { useGlobalSessionsFeed } from "./useGlobalSessionsFeed";
+import { useVersion } from "./useVersion";
 import type { SessionCollectionQueryDescriptor } from "../lib/clientSummaryCollections";
 
 export const SIDEBAR_SESSION_FEED_LIMIT = 50;
@@ -12,6 +17,10 @@ export interface SidebarSessionFeeds {
   loadMoreGlobalSessions: () => Promise<void>;
   hasMoreStarredSessions: boolean;
   loadMoreStarredSessions: () => Promise<void>;
+  /** The server stores sidebar categories and reports session creators. */
+  sidebarCategoriesSupported: boolean;
+  hasMoreCategorizedSessions: boolean;
+  loadMoreCategorizedSessions: () => Promise<void>;
 }
 
 const SidebarSessionFeedsContext = createContext<SidebarSessionFeeds | null>(
@@ -19,7 +28,7 @@ const SidebarSessionFeedsContext = createContext<SidebarSessionFeeds | null>(
 );
 
 /**
- * Mounts the sidebar's two session feeds once for the whole navigation tree.
+ * Mounts the sidebar's session feeds once for the whole navigation tree.
  *
  * They cannot live in `Sidebar`: it renders in two places (the desktop rail and
  * the mobile overlay) and unmounts with the route, so feeds the component owned
@@ -54,6 +63,21 @@ export function SidebarSessionFeedsProvider({
     includeStats: false,
   });
 
+  // Categorized sessions keep their section however old they are, so they
+  // need their own feed rather than whatever the recent page happens to hold.
+  // An older server ignores `categorized` and would answer with every session.
+  const { version } = useVersion();
+  const sidebarCategoriesSupported = serverHasCapability(
+    version,
+    SIDEBAR_SESSION_CATEGORIES_CAPABILITY,
+  );
+  const categorizedFeed = useGlobalSessionsFeed({
+    enabled: enabled && sidebarCategoriesSupported,
+    categorized: true,
+    limit,
+    includeStats: false,
+  });
+
   const value = useMemo<SidebarSessionFeeds>(
     () => ({
       globalQuery: globalFeed.query,
@@ -63,8 +87,15 @@ export function SidebarSessionFeedsProvider({
       loadMoreGlobalSessions: globalFeed.loadMore,
       hasMoreStarredSessions: starredFeed.hasMore,
       loadMoreStarredSessions: starredFeed.loadMore,
+      sidebarCategoriesSupported,
+      hasMoreCategorizedSessions:
+        sidebarCategoriesSupported && categorizedFeed.hasMore,
+      loadMoreCategorizedSessions: categorizedFeed.loadMore,
     }),
     [
+      sidebarCategoriesSupported,
+      categorizedFeed.hasMore,
+      categorizedFeed.loadMore,
       globalFeed.query,
       globalFeed.loading,
       globalFeed.hasMore,

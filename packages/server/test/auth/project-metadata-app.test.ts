@@ -14,9 +14,8 @@ import { ServerSettingsService } from "../../src/services/ServerSettingsService.
 import { createApp } from "../setup/create-app.js";
 
 /**
- * A project's name, caption, code name and listing are one value shared by
- * every principal, so a limited user changes them only on a project they own,
- * whatever grant they hold on someone else's.
+ * Shared project metadata changes require ownership. Removal by a limited
+ * owner changes only that user's visibility and retains the canonical project.
  * topics/limited-users.md § Delivery v1 — Authorization.
  */
 describe("a limited user's edits to shared project metadata through the app", () => {
@@ -170,7 +169,20 @@ describe("a limited user's edits to shared project metadata through the app", ()
       ).status,
     ).toBe(200);
     expect((await send(limitedCookie, "DELETE", base)).status).toBe(200);
-    expect(projectMetadataService.isHiddenProjectPath(ownPath)).toBe(true);
+    expect(projectMetadataService.isHiddenProjectPath(ownPath)).toBe(false);
+    const limitedProjects = await (
+      await send(limitedCookie, "GET", "/api/projects")
+    ).json();
+    expect(limitedProjects.projects).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: ownId })]),
+    );
+    const superuserProjects = await (
+      await send(superuserCookie, "GET", "/api/projects")
+    ).json();
+    expect(superuserProjects.projects).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: ownId })]),
+    );
+    expect((await send(limitedCookie, "GET", base)).status).toBe(200);
   });
 
   it("lets the superuser rename any listed project and no other directory", async () => {

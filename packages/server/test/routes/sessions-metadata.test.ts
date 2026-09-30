@@ -817,61 +817,79 @@ describe("Sessions metadata route", () => {
     );
   });
 
-  it("returns durable model settings after the live process is gone", async () => {
-    const project = createProject();
-    const summary = createSummary();
-    const claudeReader = {
-      getSessionSummary: vi.fn(async () => null),
-    } as unknown as ISessionReader;
-    const codexReader = {
-      getSessionSummary: vi.fn(async () => summary),
-    } as unknown as ISessionReader;
+  it.each(["/metadata", ""])(
+    "returns complete durable settings after the live process is gone (%s)",
+    async (suffix) => {
+      const project = createProject();
+      const summary = createSummary();
+      const claudeReader = {
+        getSessionSummary: vi.fn(async () => null),
+        getSession: vi.fn(async () => null),
+      } as unknown as ISessionReader;
+      const codexReader = {
+        getSessionSummary: vi.fn(async () => summary),
+        getSession: vi.fn(async () => createLoadedCodexSession()),
+      } as unknown as ISessionReader;
 
-    const routes = createSessionsRoutes({
-      supervisor: {
-        getProcessForSession: vi.fn(() => null),
-      } as unknown as SessionsDeps["supervisor"],
-      scanner: {
-        getProject: vi.fn(async () => project),
-        getOrCreateProject: vi.fn(async () => project),
-      } as unknown as SessionsDeps["scanner"],
-      readerFactory: vi.fn(() => claudeReader),
-      codexSessionsDir: "/tmp/codex-sessions",
-      codexReaderFactory: vi.fn(
-        () => codexReader as unknown as CodexSessionReader,
-      ),
-      sessionMetadataService: {
-        getMetadata: vi.fn(() => ({
-          provider: "codex",
-          effectiveLaunchSettings: {
-            schemaVersion: 1,
-            revision: 2,
-            permissionMode: "default",
-            requestedModel: "gpt-5-codex",
-            serviceTier: null,
-            thinking: { type: "adaptive", display: "summarized" },
-            effort: "high",
-          },
-        })),
-        getProvider: vi.fn(() => "codex"),
-        getRecapMessages: vi.fn(() => []),
-      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
-    });
+      const routes = createSessionsRoutes({
+        supervisor: {
+          getProcessForSession: vi.fn(() => null),
+          wasEverOwned: vi.fn(() => true),
+        } as unknown as SessionsDeps["supervisor"],
+        scanner: {
+          getProject: vi.fn(async () => project),
+          getOrCreateProject: vi.fn(async () => project),
+        } as unknown as SessionsDeps["scanner"],
+        readerFactory: vi.fn(() => claudeReader),
+        codexSessionsDir: "/tmp/codex-sessions",
+        codexReaderFactory: vi.fn(
+          () => codexReader as unknown as CodexSessionReader,
+        ),
+        sessionMetadataService: {
+          getMetadata: vi.fn(() => ({
+            provider: "codex",
+            effectiveLaunchSettings: {
+              schemaVersion: 1,
+              revision: 2,
+              permissionMode: "bypassPermissions",
+              requestedModel: "gpt-5-codex",
+              serviceTier: "fast",
+              thinking: { type: "adaptive", display: "summarized" },
+              effort: "high",
+            },
+          })),
+          getProvider: vi.fn(() => "codex"),
+          getRecapMessages: vi.fn(() => []),
+        } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+      });
 
-    const response = await routes.request(
-      `/projects/${project.id}/sessions/sess-1/metadata`,
-    );
+      const response = await routes.request(
+        `/projects/${project.id}/sessions/sess-1${suffix}`,
+      );
 
-    expect(response.status).toBe(200);
-    const body = (await response.json()) as {
-      session: { effectiveModelSettings?: unknown };
-    };
-    expect(body.session.effectiveModelSettings).toEqual({
-      requestedModel: "gpt-5-codex",
-      thinking: { type: "adaptive", display: "summarized" },
-      effort: "high",
-    });
-  });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        session: {
+          effectiveModelSettings?: unknown;
+          effectiveLaunchSettings?: unknown;
+        };
+      };
+      expect(body.session.effectiveModelSettings).toEqual({
+        requestedModel: "gpt-5-codex",
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "high",
+      });
+      expect(body.session.effectiveLaunchSettings).toEqual({
+        schemaVersion: 1,
+        revision: 2,
+        permissionMode: "bypassPermissions",
+        requestedModel: "gpt-5-codex",
+        serviceTier: "fast",
+        thinking: { type: "adaptive", display: "summarized" },
+        effort: "high",
+      });
+    },
+  );
 
   it("attaches provider children to session metadata", async () => {
     const project = createProject();
@@ -3478,6 +3496,7 @@ describe("Sessions metadata route", () => {
       modeVersion: 0,
     }));
     let sandboxLevel: "none" | "project-write" = "none";
+    let sandboxNetworkFirewall: boolean | undefined;
     const routes = createSessionsRoutes({
       supervisor: {
         resumeSession,
@@ -3496,7 +3515,7 @@ describe("Sessions metadata route", () => {
           }) as unknown as ISessionReader,
       ),
       sessionMetadataService: {
-        getMetadata: vi.fn(() => ({ sandboxLevel })),
+        getMetadata: vi.fn(() => ({ sandboxLevel, sandboxNetworkFirewall })),
         getProvider: vi.fn(() => "codex"),
         getRequestedModel: vi.fn(() => "gpt-4"),
         setRequestedModel: vi.fn(async () => undefined),
@@ -3537,6 +3556,15 @@ describe("Sessions metadata route", () => {
     expect(resumeSession).not.toHaveBeenCalled();
 
     sandboxLevel = "project-write";
+    sandboxNetworkFirewall = false;
+    const firewallOff = await resume();
+    expect(firewallOff.status).toBe(403);
+    expect((await firewallOff.json()).error).toContain(
+      "without the sandbox network firewall",
+    );
+    expect(resumeSession).not.toHaveBeenCalled();
+
+    sandboxNetworkFirewall = undefined;
     const resumed = await resume();
     expect(resumed.status).toBe(200);
     expect(resumeSession).toHaveBeenCalledWith(
@@ -3550,6 +3578,76 @@ describe("Sessions metadata route", () => {
         requestedModel: "gpt-5",
       }),
       { requireProviderSessionId: true },
+    );
+  });
+
+  it("starts a limited user's session behind the firewall and refuses an opt-out", async () => {
+    const project = createProject();
+    const startSession = vi.fn(async () => ({
+      id: "proc-1",
+      sessionId: "sess-new",
+      projectId: project.id,
+      projectPath: project.path,
+      permissionMode: "default",
+      modeVersion: 0,
+    }));
+    const routes = createSessionsRoutes({
+      supervisor: {
+        startSession,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(() => ({}) as unknown as ISessionReader),
+    });
+    const app = new Hono<{
+      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+    }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, {
+        kind: "limited",
+        username: "alice",
+        grants: {
+          newSessionProjects: [project.id],
+          joinProjects: [],
+          viewProjects: [],
+          joinStaleOffsetMinutes: 0,
+          lock: {},
+        },
+        switched: false,
+        locked: true,
+        via: "direct",
+      });
+      await next();
+    });
+    app.route("/", routes);
+    const start = (body: Record<string, unknown>) =>
+      app.request(`/projects/${project.id}/sessions`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "hello", ...body }),
+      });
+
+    const refused = await start({
+      sandboxLevel: "project-write",
+      sandboxNetworkFirewall: false,
+    });
+    expect(refused.status).toBe(403);
+    expect((await refused.json()).error).toContain("network firewall");
+    expect(startSession).not.toHaveBeenCalled();
+
+    // An unsandboxed request is forced into the sandbox, firewall included.
+    const started = await start({ sandboxLevel: "none" });
+    expect(started.status).toBe(200);
+    expect(startSession).toHaveBeenCalledWith(
+      project.path,
+      expect.objectContaining({ text: "hello" }),
+      undefined,
+      expect.objectContaining({
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: true,
+      }),
+      expect.anything(),
     );
   });
 
@@ -4517,6 +4615,126 @@ describe("Sessions metadata route", () => {
     });
     await Promise.resolve();
     expect(abortProcess).toHaveBeenCalledWith("proc-old");
+  });
+
+  it("redirects a cold session's turn into a new sandboxed handoff session", async () => {
+    // topics/limited-users.md § Freshness: the source is neither compacted
+    // nor interrupted, and the lock and sandbox apply to the new session.
+    const project = createProject();
+    const startSession = vi.fn(async () => ({
+      id: "proc-new",
+      sessionId: "sess-new",
+      projectId: project.id,
+      provider: "codex",
+      model: "gpt-5",
+      permissionMode: "default",
+      modeVersion: 0,
+    }));
+    const interruptProcess = vi.fn();
+    const abortProcess = vi.fn();
+    const routes = createSessionsRoutes({
+      supervisor: {
+        getProcessForSession: vi.fn(() => ({
+          id: "proc-old",
+          provider: "codex",
+          resolvedModel: "gpt-5.5",
+          state: { type: "idle", since: new Date() },
+          getMessageHistory: vi.fn(() => [
+            {
+              type: "user",
+              uuid: "u1",
+              timestamp: "2026-04-24T20:00:00.000Z",
+              message: { role: "user", content: "build me a maze game" },
+            },
+          ]),
+        })),
+        startSession,
+        interruptProcess,
+        abortProcess,
+      } as unknown as SessionsDeps["supervisor"],
+      scanner: {
+        getOrCreateProject: vi.fn(async () => project),
+      } as unknown as SessionsDeps["scanner"],
+      readerFactory: vi.fn(
+        () =>
+          ({
+            getSessionSummary: vi.fn(async () => null),
+          }) as unknown as ISessionReader,
+      ),
+      sessionMetadataService: {
+        getProvider: vi.fn(() => "codex"),
+        getRequestedModel: vi.fn(() => undefined),
+        getExecutor: vi.fn(() => undefined),
+        getMetadata: vi.fn(() => ({
+          customTitle: "Maze game",
+          sandboxLevel: "project-write",
+          effectiveLaunchSettings: {
+            schemaVersion: 1,
+            revision: 1,
+            permissionMode: "default",
+            requestedModel: "gpt-5.5",
+            effort: "high",
+          },
+        })),
+        updateMetadata: vi.fn(async () => undefined),
+      } as unknown as NonNullable<SessionsDeps["sessionMetadataService"]>,
+    });
+    const app = new Hono<{
+      Variables: Record<typeof PRINCIPAL_VARIABLE, Principal>;
+    }>();
+    app.use("*", async (c, next) => {
+      c.set(PRINCIPAL_VARIABLE, {
+        kind: "limited",
+        username: "alice",
+        grants: {
+          newSessionProjects: [project.id],
+          joinProjects: [],
+          viewProjects: [],
+          joinStaleOffsetMinutes: 0,
+          lock: { model: "gpt-5" },
+        },
+        switched: false,
+        locked: true,
+        via: "direct",
+      });
+      await next();
+    });
+    app.route("/", routes);
+
+    const response = await app.request(
+      `/projects/${project.id}/sessions/sess-1/stale-handoff`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: "what is a volcano?" }),
+      },
+    );
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      sessionId: "sess-new",
+      staleHandoffFrom: "sess-1",
+    });
+    expect(interruptProcess).not.toHaveBeenCalled();
+    expect(abortProcess).not.toHaveBeenCalled();
+    expect(startSession).toHaveBeenCalledWith(
+      project.path,
+      expect.anything(),
+      "default",
+      expect.objectContaining({
+        providerName: "codex",
+        model: "gpt-5",
+        effort: "high",
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: true,
+        instructionUsername: "alice",
+      }),
+      expect.anything(),
+    );
+    const text = startSession.mock.calls[0]?.[1].text as string;
+    expect(text).toContain("may be a new, independent request");
+    expect(text).toContain("build me a maze game");
+    expect(text.endsWith("## New Message\n\nwhat is a volcano?")).toBe(true);
   });
 
   it("does not allow a handoff restart to weaken the source sandbox", async () => {

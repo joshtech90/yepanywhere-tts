@@ -252,8 +252,11 @@ export const gitApi = {
   listGitWorkingTreeFiles: (
     projectId: string,
     coverage?: GitWorktreeCoverage,
+    /** Browse this allowed absolute path instead of the project. */
+    root?: string,
   ) => {
     const query = new URLSearchParams();
+    if (root !== undefined) query.set("root", root);
     if (coverage) {
       query.set("tracked", String(coverage.tracked));
       query.set("untracked", String(coverage.untracked));

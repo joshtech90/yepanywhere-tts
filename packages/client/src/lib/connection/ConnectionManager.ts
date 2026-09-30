@@ -1,3 +1,4 @@
+import { observeRecoverySignals } from "./recoverySignals";
 import { isNonRetryableError } from "./types";
 
 export type ConnectionState = "connected" | "reconnecting" | "disconnected";
@@ -9,8 +10,9 @@ export interface ConnectionManagerConfig {
   baseDelayMs?: number;
   /** Maximum delay between reconnect attempts (default: 30000ms) */
   maxDelayMs?: number;
-  /** Maximum number of reconnect attempts before giving up (default: 10) */
+  /** Rapid retry budget before visible-only slow probes (default: 10) */
   maxAttempts?: number;
+  recoveryDelayMs?: number;
   /** Jitter factor for backoff randomization (default: 0.3) */
   jitterFactor?: number;
   /** Time without events before connection is considered stale (default: 45000ms) */
@@ -62,6 +64,7 @@ export interface TimerInterface {
 export interface VisibilityInterface {
   isVisible(): boolean;
   onVisibilityChange(cb: (visible: boolean) => void): () => void;
+  onRecoveryOpportunity?(cb: () => void): () => void;
 }
 
 type EventMap = {
@@ -74,6 +77,7 @@ const DEFAULT_CONFIG = {
   baseDelayMs: 1000,
   maxDelayMs: 30000,
   maxAttempts: 10,
+  recoveryDelayMs: 60000,
   jitterFactor: 0.3,
   staleThresholdMs: 45000,
   staleCheckIntervalMs: 10000,
@@ -95,6 +99,7 @@ const realTimers: TimerInterface = {
  * Default visibility implementation using the Page Visibility API.
  */
 const realVisibility: VisibilityInterface = {
+  onRecoveryOpportunity: observeRecoverySignals,
   isVisible: () => typeof document !== "undefined" && !document.hidden,
   onVisibilityChange(cb) {
     if (typeof document === "undefined") return () => {};
@@ -114,7 +119,8 @@ const realVisibility: VisibilityInterface = {
  * States:
  * - connected: socket is up, events flowing
  * - reconnecting: attempting to re-establish connection with backoff
- * - disconnected: gave up (max attempts or non-retryable error)
+ * - disconnected: stopped or non-retryable error
+ * Exhausted rapid retries remain reconnecting; visible sources probe slowly.
  *
  * Consumers call handleClose/handleError to report problems.
  * ConnectionManager decides when and how to reconnect via the provided reconnectFn.
@@ -127,6 +133,9 @@ export class ConnectionManager {
   private _label: string | null = null;
   private _driveReconnect = true;
   private _started = false;
+  private _waitingForRecovery = false;
+  private _lastRecoverySignal = -Infinity;
+  private _removeRecoveryListener: (() => void) | null = null;
 
   // Stale detection
   private _lastEventTime = 0;
@@ -173,6 +182,7 @@ export class ConnectionManager {
       baseDelayMs: config.baseDelayMs ?? DEFAULT_CONFIG.baseDelayMs,
       maxDelayMs: config.maxDelayMs ?? DEFAULT_CONFIG.maxDelayMs,
       maxAttempts: config.maxAttempts ?? DEFAULT_CONFIG.maxAttempts,
+      recoveryDelayMs: config.recoveryDelayMs ?? DEFAULT_CONFIG.recoveryDelayMs,
       jitterFactor: config.jitterFactor ?? DEFAULT_CONFIG.jitterFactor,
       staleThresholdMs:
         config.staleThresholdMs ?? DEFAULT_CONFIG.staleThresholdMs,
@@ -186,6 +196,10 @@ export class ConnectionManager {
 
   get state(): ConnectionState {
     return this._state;
+  }
+
+  get waitingForRecovery(): boolean {
+    return this._waitingForRecovery;
   }
 
   get reconnectAttempts(): number {
@@ -213,6 +227,8 @@ export class ConnectionManager {
     this._driveReconnect = options?.driveReconnect ?? true;
     if (this._started) return;
     this._started = true;
+    this._waitingForRecovery = false;
+    this._lastRecoverySignal = -Infinity;
     this._setState("connected");
     this._startStaleCheck();
     this._startVisibilityListener();
@@ -223,6 +239,7 @@ export class ConnectionManager {
    */
   stop(): void {
     this._started = false;
+    this._waitingForRecovery = false;
     this._reconnectFn = null;
     this._sendPing = null;
     this._label = null;
@@ -285,6 +302,7 @@ export class ConnectionManager {
   markConnected(): void {
     if (!this._started) return;
     this._reconnectAttempts = 0;
+    this._waitingForRecovery = false;
     this._reconnectPromise = null;
     this._cancelBackoff();
     this._setState("connected");
@@ -346,7 +364,9 @@ export class ConnectionManager {
       return;
     }
     this._log(`force reconnect${reason ? `: ${reason}` : ""}`);
+    if (!this._started) return;
     this._reconnectAttempts = 0;
+    this._waitingForRecovery = false;
     this._cancelBackoff();
     this._reconnectPromise = null;
     this._startReconnecting(reason ?? "force");
@@ -390,6 +410,9 @@ export class ConnectionManager {
   }
 
   private _emitReconnectFailed(error: Error): void {
+    this._waitingForRecovery = false;
+    this._cancelBackoff();
+    this._reconnectPromise = null;
     for (const cb of this._listeners.reconnectFailed) {
       cb(error);
     }
@@ -417,12 +440,22 @@ export class ConnectionManager {
     }
 
     if (this._reconnectAttempts >= this.config.maxAttempts) {
-      this._setState("disconnected");
-      this._emitReconnectFailed(
-        new Error(
-          `Reconnection failed after ${this.config.maxAttempts} attempts`,
-        ),
-      );
+      if (!this._waitingForRecovery) {
+        this._log(
+          "rapid retry budget exhausted; waiting for recovery opportunity",
+        );
+      }
+      this._waitingForRecovery = true;
+      this._cancelBackoff();
+      if (this.visibility.isVisible()) {
+        const delay =
+          this.config.recoveryDelayMs *
+          (1 + Math.random() * this.config.jitterFactor);
+        this._backoffTimerId = this.timers.setTimeout(() => {
+          this._backoffTimerId = null;
+          this._executeReconnect();
+        }, delay);
+      }
       return;
     }
 
@@ -516,10 +549,31 @@ export class ConnectionManager {
 
   // --- Visibility ---
 
+  /** Request one recovery probe, coalescing bursty browser/user signals. */
+  requestRecovery(): void {
+    if (
+      !this._started ||
+      !this._driveReconnect ||
+      !this._waitingForRecovery ||
+      this._state !== "reconnecting" ||
+      this._reconnectPromise ||
+      !this.visibility.isVisible() ||
+      this.timers.now() - this._lastRecoverySignal < 5000
+    )
+      return;
+    this._lastRecoverySignal = this.timers.now();
+    this._cancelBackoff();
+    this._executeReconnect();
+  }
+
   private _startVisibilityListener(): void {
+    this._removeRecoveryListener =
+      this.visibility.onRecoveryOpportunity?.(() => this.requestRecovery()) ??
+      null;
     this._removeVisibilityListener = this.visibility.onVisibilityChange(
       (visible) => {
         if (!visible) {
+          if (this._waitingForRecovery) this._cancelBackoff();
           this._hiddenSince = this.timers.now();
           this._log(`visibility hidden (${this._formatReconnectContext()})`);
         } else {
@@ -530,6 +584,8 @@ export class ConnectionManager {
   }
 
   private _stopVisibilityListener(): void {
+    this._removeRecoveryListener?.();
+    this._removeRecoveryListener = null;
     if (this._removeVisibilityListener) {
       this._removeVisibilityListener();
       this._removeVisibilityListener = null;
@@ -543,15 +599,18 @@ export class ConnectionManager {
       hiddenDuration != null ? ` after ${hiddenDuration}ms hidden` : ""
     }`;
 
-    if (this._state !== "connected") {
-      const context = this._formatReconnectContext();
-      this._log(
-        `${visiblePrefix}, keeping existing reconnect cycle (${context})`,
-      );
+    this._hiddenSince = null;
+    if (this._waitingForRecovery) {
+      // Re-arm a probe even if a rapid visibility toggle is rate-limited.
+      this._scheduleReconnect();
+      this.requestRecovery();
       return;
     }
-
-    this._hiddenSince = null;
+    if (this._state !== "connected") {
+      const context = this._formatReconnectContext();
+      this._log(`${visiblePrefix}, no wake ping (${context})`);
+      return;
+    }
 
     // Notify consumers immediately so they can refresh data in parallel
     // with the ping/pong health check below.
@@ -617,6 +676,7 @@ export class ConnectionManager {
 
   private _formatReconnectContext(): string {
     const parts = [`state=${this._state}`];
+    if (this._waitingForRecovery) parts.push("waitingForRecovery=true");
     if (this._reconnectAttempts > 0) {
       parts.push(`attempts=${this._reconnectAttempts}`);
     }

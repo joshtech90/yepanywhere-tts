@@ -32,6 +32,10 @@ type LocalResourceFileResult =
   | { file: LocalResourceFile; ok: true }
   | (LocalResourceFileError & { ok: false });
 
+type LocalResourceDirectoryResult =
+  | { directory: string; file?: string; ok: true }
+  | (LocalResourceFileError & { ok: false });
+
 const MAX_KNOWN_ALLOWED_FILE_PATHS = 512;
 
 export const LOCAL_FILE_CONTENT_TYPES: Record<string, string> = {
@@ -219,6 +223,55 @@ export function createLocalResourcePathPolicy(deps: LocalResourcePolicyDeps) {
     }
   }
 
+  /**
+   * Resolve an absolute file or directory to the directory that contains it,
+   * when that directory is an allowed prefix or lies inside one. A prefix
+   * itself qualifies here, unlike a file: browsing the allowed directory is
+   * what the prefix permits.
+   */
+  async function resolveAllowedDirectory(
+    requestedPath: string,
+  ): Promise<LocalResourceDirectoryResult> {
+    const normalizedPath = normalizePathForPlatform(requestedPath);
+    if (!isSupportedAbsoluteLocalPath(normalizedPath, platform)) {
+      return { error: "Path must be absolute", ok: false, status: 400 };
+    }
+    let resolvedPath: string;
+    let stats: Stats;
+    try {
+      resolvedPath = await realpath(normalizedPath);
+      stats = await stat(resolvedPath);
+    } catch {
+      return { error: "Path not found", ok: false, status: 404 };
+    }
+    if (!stats.isFile() && !stats.isDirectory()) {
+      return { error: "Not a file or directory", ok: false, status: 404 };
+    }
+    const directory = stats.isFile()
+      ? path.dirname(resolvedPath)
+      : resolvedPath;
+    if (!(await isAllowedDirectory(directory))) {
+      return {
+        error: "Path not in allowed directories",
+        ok: false,
+        status: 403,
+      };
+    }
+    return {
+      directory,
+      ok: true,
+      ...(stats.isFile() ? { file: resolvedPath } : {}),
+    };
+  }
+
+  async function isAllowedDirectory(directory: string): Promise<boolean> {
+    const allowedPaths = await getAllowedPaths();
+    return allowedPaths.some(
+      (prefix) =>
+        directory === prefix || isPathInsideDirectory(directory, prefix),
+    );
+  }
+
   async function findAllowedFilePaths(
     filePaths: readonly string[],
   ): Promise<ReadonlySet<string>> {
@@ -258,6 +311,8 @@ export function createLocalResourcePathPolicy(deps: LocalResourcePolicyDeps) {
       );
     },
     getAllowedPaths,
+    isAllowedDirectory,
+    resolveAllowedDirectory,
     isAbsolutePath(filePath: string) {
       return isSupportedAbsoluteLocalPath(
         normalizePathForPlatform(filePath),

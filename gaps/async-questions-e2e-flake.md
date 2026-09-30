@@ -36,3 +36,17 @@ The first full-suite CI run with these checkpoints passed the case without a
 retry ([run 36325789955](https://github.com/kzahel/yepanywhere/actions/runs/36325789955)).
 The historical failure was intermittent, so this single run is not enough to
 close the gap.
+
+## Initial transcript readiness — 2026-09-30
+
+The immutable built-client fixture reproduced the desktop pinning failure.
+A bounded diagnostic recorded a captured return position with
+`scrollHeight == clientHeight == 392`, no anchor, and sometimes `following=false`:
+the initial bottom-distance poll accepted an unrevealed empty viewport. The
+case now waits for the expected last-context row and actual overflowing volume
+before the initial bottom check and question navigation. It preserves all reply,
+historical-anchor, focus, typing, transport and older-server fallback assertions.
+Four focused worker-two repeats passed without retries; the next full worker-four
+run passed this case too. The earlier CI cold-source reload failure is avoided by
+serving the private YA's immutable invocation bundle. Repeat exact CI first-attempt
+evidence is still required before closing this intermittent gap.

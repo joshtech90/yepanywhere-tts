@@ -1,4 +1,4 @@
-import { execFileSync, spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import {
   existsSync,
@@ -12,27 +12,27 @@ import { hostname, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { providerHostRuntimeDir } from "./provider-host-runtime.js";
-import { getE2ERunDirectory } from "./run-directory.js";
+import { InstallService } from "../../../server/src/services/InstallService.js";
+import { stopProviderHostRuntime } from "./provider-host-runtime.js";
+import { getE2EProfileDirectory, getE2ERunDirectory } from "./run-directory.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const repoRoot = join(__dirname, "..", "..", "..", "..");
 const serverRoot = join(repoRoot, "packages", "server");
+const fixtureRuntimePreload = pathToFileURL(
+  join(__dirname, "fixture-runtime.mjs"),
+).href;
 const tsxLoader = pathToFileURL(
   createRequire(import.meta.url).resolve("tsx"),
 ).href;
 
-function signalServerProcess(pid: number): void {
-  if (process.platform === "win32") {
-    execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
-      windowsHide: true,
-      stdio: "ignore",
-    });
-  } else {
-    process.kill(-pid, "SIGTERM");
-  }
-}
+import { terminateChildProcess } from "./process-lifecycle.js";
+import {
+  registerProcess,
+  unregisterProcess,
+  readRegisteredProcess,
+} from "./process-registry.js";
 
 export interface MockClaudeSession {
   assistantContent?: string;
@@ -53,10 +53,15 @@ export interface YaServerProfilePaths {
 
 export interface StartYaServerProcessOptions {
   label: string;
+  /** Serve this invocation's immutable bundle from the private YA listener. */
+  serveBuiltClient?: boolean;
   tempPrefix?: string;
   mockClaudeSession?: MockClaudeSession;
   setupProfile?: (paths: YaServerProfilePaths) => void | Promise<void>;
   env?: NodeJS.ProcessEnv;
+  /** A seeded profile owned by the worker; global teardown removes it. */
+  profilePaths?: YaServerProfilePaths;
+  startupDeadline?: number;
 }
 
 export interface YaServerProcess {
@@ -76,15 +81,18 @@ export interface YaServerProcess {
   restartEnv: NodeJS.ProcessEnv;
   tempDir: string;
   wsUrl: string;
+  ownsTempDir: boolean;
+  registryFile?: string;
 }
 
 async function waitForPortFile(
   portFile: string,
   label: string,
-  timeoutMs = 30_000,
+  deadline: number,
+  assertRunning: () => void,
 ): Promise<number> {
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+  while (Date.now() < deadline) {
+    assertRunning();
     if (existsSync(portFile)) {
       const content = readFileSync(portFile, "utf-8").trim();
       const port = Number.parseInt(content, 10);
@@ -98,13 +106,18 @@ async function waitForPortFile(
 async function waitForHealth(
   baseUrl: string,
   label: string,
-  timeoutMs = 30_000,
+  deadline: number,
+  assertRunning: () => void,
 ): Promise<void> {
   const healthUrl = `${baseUrl}/health`;
-  const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+  while (Date.now() < deadline) {
+    assertRunning();
     try {
-      const response = await fetch(healthUrl);
+      const response = await fetch(healthUrl, {
+        signal: AbortSignal.timeout(
+          Math.max(1, Math.min(1_000, deadline - Date.now())),
+        ),
+      });
       if (response.ok) return;
     } catch {
       // The child process is still starting.
@@ -173,10 +186,15 @@ function captureOutput(
   stream: NodeJS.ReadableStream | null,
   target: string[],
 ): void {
+  let retained = 0;
   stream?.on("data", (data: Buffer | string) => {
     const text = data.toString();
     if (!text.includes("ExperimentalWarning")) {
-      target.push(text);
+      const tail = text.slice(-16_384);
+      target.push(tail);
+      retained += tail.length;
+      while (retained > 16_384 && target.length > 1)
+        retained -= target.shift()!.length;
     }
   });
 }
@@ -195,18 +213,62 @@ function formatStartFailure(
   );
 }
 
+function monitorStartup(child: ChildProcess, label: string): () => void {
+  let launchError: Error | undefined;
+  child.on("error", (error) => {
+    launchError = error;
+  });
+  return () => {
+    if (launchError) throw launchError;
+    if (child.exitCode !== null || child.signalCode !== null)
+      throw new Error(
+        `${label} exited during startup (${child.exitCode}/${child.signalCode})`,
+      );
+  };
+}
+
 export async function startYaServerProcess(
   options: StartYaServerProcessOptions,
 ): Promise<YaServerProcess> {
-  const tempDir = mkdtempSync(
-    join(tmpdir(), options.tempPrefix ?? "ya-e2e-server-"),
-  );
-  const profileDir = join(tempDir, "profile");
+  const frontendEnv: NodeJS.ProcessEnv = {};
+  if (options.serveBuiltClient) {
+    const runDirectory = getE2ERunDirectory();
+    const clientDist = runDirectory && join(runDirectory, "client-dist");
+    if (!clientDist || !existsSync(join(clientDist, "index.html"))) {
+      throw new Error("Built client fixture requires the E2E invocation build");
+    }
+    frontendEnv.SERVE_FRONTEND = "true";
+    frontendEnv.CLIENT_DIST_PATH = clientDist;
+  }
+  const deadline = options.startupDeadline ?? Date.now() + 30_000;
+  const parent = getE2EProfileDirectory() ?? tmpdir();
+  mkdirSync(parent, { recursive: true });
+  const tempDir =
+    options.profilePaths?.tempDir ??
+    mkdtempSync(join(parent, options.tempPrefix ?? "ya-e2e-server-"));
+  const profileDir =
+    options.profilePaths?.profileDir ?? join(tempDir, "profile");
   const portFile = join(tempDir, "port");
-  const claudeSessionsDir = join(profileDir, "claude", "projects");
-  const codexSessionsDir = join(profileDir, "codex", "sessions");
-  const geminiSessionsDir = join(profileDir, "gemini", "tmp");
-  const dataDir = join(profileDir, "yep-anywhere");
+  const claudeSessionsDir =
+    options.profilePaths?.claudeSessionsDir ??
+    join(profileDir, "claude", "projects");
+  const codexSessionsDir =
+    options.profilePaths?.codexSessionsDir ??
+    join(profileDir, "codex", "sessions");
+  const geminiSessionsDir =
+    options.profilePaths?.geminiSessionsDir ??
+    join(profileDir, "gemini", "tmp");
+  const dataDir =
+    options.profilePaths?.dataDir ?? join(profileDir, "yep-anywhere");
+  // A short run-owned sibling path keeps per-provider Unix sockets below
+  // macOS's limit regardless of the profile label or retry worker index.
+  const runtimeDir = mkdtempSync(
+    join(
+      getE2ERunDirectory() ??
+        (process.platform === "darwin" ? "/tmp" : tmpdir()),
+      "h-",
+    ),
+  );
 
   mkdirSync(claudeSessionsDir, { recursive: true });
   mkdirSync(codexSessionsDir, { recursive: true });
@@ -214,6 +276,10 @@ export async function startYaServerProcess(
   writeServerSettings(dataDir);
   if (options.mockClaudeSession) {
     writeMockClaudeSession(claudeSessionsDir, options.mockClaudeSession);
+    // A retained-session fixture must enroll its store as well as write history.
+    const install = new InstallService({ dataDir });
+    await install.initialize();
+    await install.recordSuccessfulProviders(["claude"]);
   }
   await options.setupProfile?.({
     claudeSessionsDir,
@@ -224,8 +290,27 @@ export async function startYaServerProcess(
     tempDir,
   });
 
+  const inheritedEnv = { ...process.env };
+  for (const name of [
+    "YEP_PROVIDER_RUNTIME_SOCKET",
+    "YEP_PROVIDER_RUNTIME_TOKEN",
+    "YEP_PROVIDER_RUNTIME_TOKEN_FILE",
+    "YEP_PROVIDER_RUNTIME_DESCRIPTOR",
+    "YEP_PROVIDER_RUNTIME_DIR",
+    "YEP_PROVIDER_RUNTIME_RECEIPTS",
+    "YEP_SERVER_GENERATION",
+  ])
+    delete inheritedEnv[name];
   const childEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...inheritedEnv,
+    // Provider installation gates are per OS-user home, not YEP_DATA_DIR.
+    // A private fixture must not contend with the developer's live providers.
+    HOME: profileDir,
+    USERPROFILE: profileDir,
+    // Ordinary fixtures exercise the production shell. Development-session
+    // reload flags otherwise enable source watchers and obstruct phone controls.
+    NO_BACKEND_RELOAD: "false",
+    NO_FRONTEND_RELOAD: "false",
     PORT: "0",
     PORT_FILE: portFile,
     MAINTENANCE_PORT: "0",
@@ -241,16 +326,10 @@ export async function startYaServerProcess(
     CODEX_SESSIONS_DIR: codexSessionsDir,
     GEMINI_SESSIONS_DIR: geminiSessionsDir,
     YEP_DATA_DIR: dataDir,
-    // Without this the server reaches for the per-user provider-host runtime
-    // path, which a developer's own running YA already holds with a host built
-    // from different sources. This server would then decline to replace it and
-    // run every test in degraded mode. Share the run's directory so these
-    // servers attach to the host global setup already started, and global
-    // teardown has a single host to stop.
-    YEP_PROVIDER_HOST_RUNTIME_DIR: providerHostRuntimeDir(
-      getE2ERunDirectory() ?? tempDir,
-    ),
+    // Each server owns its runtime inventory as well as its persisted profile.
+    YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeDir,
     ...options.env,
+    ...frontendEnv,
   };
   if (childEnv.FORCE_COLOR) {
     delete childEnv.NO_COLOR;
@@ -258,7 +337,15 @@ export async function startYaServerProcess(
 
   const child = spawn(
     process.execPath,
-    ["--import", tsxLoader, "--conditions", "source", "src/index.ts"],
+    [
+      "--import",
+      tsxLoader,
+      "--import",
+      fixtureRuntimePreload,
+      "--conditions",
+      "source",
+      "src/index.ts",
+    ],
     {
       cwd: serverRoot,
       env: childEnv,
@@ -267,6 +354,7 @@ export async function startYaServerProcess(
       windowsHide: true,
     },
   );
+  const assertRunning = monitorStartup(child, options.label);
   const output = { stderr: [] as string[], stdout: [] as string[] };
   captureOutput(child.stdout, output.stdout);
   captureOutput(child.stderr, output.stderr);
@@ -285,12 +373,26 @@ export async function startYaServerProcess(
     restartEnv: childEnv,
     tempDir,
     wsUrl: "",
+    ownsTempDir: !options.profilePaths,
   };
 
   try {
-    const port = await waitForPortFile(portFile, options.label);
+    if (child.pid) {
+      writeFileSync(join(tempDir, "pid"), String(child.pid));
+      pending.registryFile = await registerProcess({
+        pid: child.pid,
+        label: options.label,
+        runtimeDir: childEnv.YEP_PROVIDER_HOST_RUNTIME_DIR,
+      });
+    }
+    const port = await waitForPortFile(
+      portFile,
+      options.label,
+      deadline,
+      assertRunning,
+    );
     const baseUrl = `http://127.0.0.1:${port}`;
-    await waitForHealth(baseUrl, options.label);
+    await waitForHealth(baseUrl, options.label, deadline, assertRunning);
     child.unref();
     return {
       ...pending,
@@ -299,35 +401,18 @@ export async function startYaServerProcess(
       wsUrl: `ws://127.0.0.1:${port}/api/ws`,
     };
   } catch (error) {
-    stopYaServerProcess(pending);
-    throw formatStartFailure(options.label, error, output);
+    throw await failedStart(pending, error);
   }
 }
 
 export async function terminateYaServerProcess(
   server: YaServerProcess,
 ): Promise<void> {
-  const pid = server.process.pid;
-  if (!pid || server.process.exitCode !== null) return;
-
-  const exited = new Promise<void>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      reject(new Error(`${server.label} did not stop after SIGTERM`));
-    }, 10_000);
-    server.process.once("exit", () => {
-      clearTimeout(timer);
-      resolve();
-    });
-  });
-  try {
-    signalServerProcess(pid);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-      throw error;
-    }
-    return;
-  }
-  await exited;
+  await terminateChildProcess(
+    server.process,
+    server.label,
+    readRegisteredProcess(server.registryFile)?.leaderStartTime,
+  );
 }
 
 export async function restartYaServerProcess(
@@ -345,7 +430,15 @@ export async function restartYaServerProcess(
   };
   const child = spawn(
     process.execPath,
-    ["--import", tsxLoader, "--conditions", "source", "src/index.ts"],
+    [
+      "--import",
+      tsxLoader,
+      "--import",
+      fixtureRuntimePreload,
+      "--conditions",
+      "source",
+      "src/index.ts",
+    ],
     {
       cwd: serverRoot,
       env: childEnv,
@@ -354,55 +447,96 @@ export async function restartYaServerProcess(
       windowsHide: true,
     },
   );
+  const deadline = Date.now() + 30_000;
+  const assertRunning = monitorStartup(child, `${server.label} restart`);
   const output = { stderr: [] as string[], stdout: [] as string[] };
   captureOutput(child.stdout, output.stdout);
   captureOutput(child.stderr, output.stderr);
-  const pending = {
+  const pending: YaServerProcess = {
     ...server,
     output,
     process: child,
     restartEnv: childEnv,
+    registryFile: undefined,
   };
 
   try {
+    if (child.pid) {
+      writeFileSync(join(server.tempDir, "pid"), String(child.pid));
+      pending.registryFile = await registerProcess(
+        {
+          pid: child.pid,
+          label: server.label,
+          runtimeDir: childEnv.YEP_PROVIDER_HOST_RUNTIME_DIR,
+        },
+        server.registryFile,
+      );
+    }
     const port = await waitForPortFile(
       server.portFile,
       `${server.label} restart`,
+      deadline,
+      assertRunning,
     );
     if (port !== server.port) {
       throw new Error(
         `${server.label} restarted on port ${port}, expected ${server.port}`,
       );
     }
-    await waitForHealth(server.baseUrl, `${server.label} restart`);
+    await waitForHealth(
+      server.baseUrl,
+      `${server.label} restart`,
+      deadline,
+      assertRunning,
+    );
     child.unref();
     return pending;
   } catch (error) {
-    stopYaServerProcess(pending);
-    throw formatStartFailure(`${server.label} restart`, error, output);
+    throw await failedStart(pending, error);
   }
 }
 
-export function stopYaServerProcess(server: YaServerProcess | null): void {
-  if (!server) return;
-  const pid = server.process.pid;
-  if (
-    pid &&
-    server.process.exitCode === null &&
-    server.process.signalCode === null
-  ) {
-    try {
-      signalServerProcess(pid);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
-        throw error;
-      }
-    }
+async function failedStart(
+  server: YaServerProcess,
+  error: unknown,
+): Promise<Error> {
+  const startup = formatStartFailure(server.label, error, server.output);
+  try {
+    await disposeYaServerProcess(server);
+    return startup;
+  } catch (cleanup) {
+    return new AggregateError(
+      [startup, cleanup],
+      `${server.label} startup and cleanup failed`,
+    );
   }
-  rmSync(server.tempDir, {
-    recursive: true,
-    force: true,
-    maxRetries: 10,
-    retryDelay: 100,
-  });
+}
+
+/** Reap the server and its detached host before removing owned storage. */
+export async function disposeYaServerProcess(
+  server: YaServerProcess | null,
+): Promise<void> {
+  if (!server) return;
+  const failures: unknown[] = [];
+  try {
+    await terminateYaServerProcess(server);
+  } catch (error) {
+    failures.push(error);
+  }
+  const runtimeDir = server.restartEnv.YEP_PROVIDER_HOST_RUNTIME_DIR!;
+  try {
+    await stopProviderHostRuntime(runtimeDir);
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      `Failed to dispose ${server.label}; recovery records retained`,
+    );
+  rmSync(runtimeDir, { recursive: true, force: true });
+  unregisterProcess(server.registryFile);
+  rmSync(join(server.tempDir, "pid"), { force: true });
+  if (server.ownsTempDir)
+    rmSync(server.tempDir, { recursive: true, force: true });
 }

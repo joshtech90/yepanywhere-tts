@@ -18,4 +18,13 @@ defect instead of repairing it. Focused and exact-file checks do pass on
 Windows; that is not the aggregate. Broader platform coverage is tracked in
 [ci-platform-coverage-holes.md](ci-platform-coverage-holes.md).
 
+2026-09-29 — origin's Server Runtime And SQLite run
+[36500646071](https://github.com/kzahel/yepanywhere/actions/runs/36500646071)
+at `3a0281f83` failed the Windows Node 22.16.0 leg during Bun startup-fixture
+cleanup: both disabled and ready startup checks passed, then removing the
+temporary `ya-sqlite-startup-*` directory failed with `EBUSY` under Bun 1.3.14.
+The mirror's same-tip runtime matrix passed. This is a cleanup failure, not
+evidence that SQLite startup failed; handle/process ownership needs diagnosis.
+Contributing-model: 6-Astra.
+
 Found 2026-09-12 while validating Windows directory-sync persistence fixes.

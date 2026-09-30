@@ -1,3 +1,8 @@
+import {
+  draftStorage,
+  subscribeDraftStorage,
+  confirmSyncedDraft,
+} from "../lib/draftSyncStorage";
 import { useCallback, useEffect, useState } from "react";
 import {
   type ClientSummarySourceKey,
@@ -98,7 +103,7 @@ function checkNewSessionDraft(
 ): boolean {
   try {
     return getNewSessionDraftKeys(sourceKey, projectId).some((key) => {
-      const value = localStorage.getItem(key);
+      const value = draftStorage.getItem(key);
       return hasDraftContentValue(value);
     });
   } catch {
@@ -135,7 +140,7 @@ export function createQuestionOtherDraftKey(
 
 function readStringDraft(key: string): string {
   try {
-    return readDraftTextValue(localStorage.getItem(key));
+    return readDraftTextValue(draftStorage.getItem(key));
   } catch {
     return "";
   }
@@ -143,7 +148,7 @@ function readStringDraft(key: string): string {
 
 function readQuestionOtherDrafts(key: string): Record<string, string> {
   try {
-    const stored = localStorage.getItem(key);
+    const stored = draftStorage.getItem(key);
     if (!stored) return {};
     const parsed: unknown = JSON.parse(stored);
     return parsed && typeof parsed === "object" && !Array.isArray(parsed)
@@ -173,14 +178,18 @@ export function useToolApprovalFeedbackDraft(
     setValueState(readStringDraft(key));
   }, [key]);
 
+  useEffect(
+    () => subscribeDraftStorage(key, () => setValueState(readStringDraft(key))),
+    [key],
+  );
   const setValue = useCallback(
     (newValue: string) => {
       setValueState(newValue);
       try {
         if (newValue) {
-          localStorage.setItem(key, newValue);
+          draftStorage.setItem(key, newValue);
         } else {
-          localStorage.removeItem(key);
+          draftStorage.removeItem(key);
         }
       } catch {
         // localStorage might be unavailable
@@ -190,9 +199,10 @@ export function useToolApprovalFeedbackDraft(
   );
 
   const clearValue = useCallback(() => {
+    confirmSyncedDraft(key);
     setValueState("");
     try {
-      localStorage.removeItem(key);
+      draftStorage.removeItem(key);
     } catch {
       // localStorage might be unavailable
     }
@@ -230,6 +240,13 @@ export function useQuestionOtherDrafts(
     setOtherTextsState(readQuestionOtherDrafts(key));
   }, [key]);
 
+  useEffect(
+    () =>
+      subscribeDraftStorage(key, () =>
+        setOtherTextsState(readQuestionOtherDrafts(key)),
+      ),
+    [key],
+  );
   const setOtherText = useCallback(
     (question: string, value: string) => {
       setOtherTextsState((prev) => {
@@ -241,9 +258,9 @@ export function useQuestionOtherDrafts(
         }
         try {
           if (Object.keys(next).length > 0) {
-            localStorage.setItem(key, JSON.stringify(next));
+            draftStorage.setItem(key, JSON.stringify(next));
           } else {
-            localStorage.removeItem(key);
+            draftStorage.removeItem(key);
           }
         } catch {
           // localStorage might be unavailable
@@ -255,9 +272,10 @@ export function useQuestionOtherDrafts(
   );
 
   const clearAll = useCallback(() => {
+    confirmSyncedDraft(key);
     setOtherTextsState({});
     try {
-      localStorage.removeItem(key);
+      draftStorage.removeItem(key);
     } catch {
       // localStorage might be unavailable
     }

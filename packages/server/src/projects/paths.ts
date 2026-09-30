@@ -59,7 +59,7 @@
 
 import { open } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { basename, isAbsolute, join, sep } from "node:path";
+import { basename, dirname, isAbsolute, join, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import type { UrlProjectId } from "@yep-anywhere/shared";
 import { stripBom } from "../utils/jsonl.js";
@@ -81,6 +81,15 @@ export const CLAUDE_PROJECTS_DIR =
   process.env.CLAUDE_SESSIONS_DIR ?? join(CLAUDE_DIR, "projects");
 export const DETACHED_PROJECT_PATH = join(tmpdir(), "yep-anywhere-no-project");
 export const DETACHED_PROJECT_NAME = "No project";
+
+/** Stable private workspace; never grants access to the shared detached root. */
+export function limitedDetachedProjectPath(username: string): string {
+  return join(
+    DETACHED_PROJECT_PATH,
+    "users",
+    Buffer.from(username).toString("base64url"),
+  );
+}
 
 /** Root for Grok Build sessions (persistent across restarts, similar to Gemini/Codex) */
 export const GROK_DIR =
@@ -141,7 +150,12 @@ export function decodeProjectId(id: UrlProjectId): string {
  * // => "my-project"
  */
 export function isDetachedProjectPath(projectPath: string): boolean {
-  return canonicalizeProjectPath(projectPath) === DETACHED_PROJECT_PATH;
+  const normalized = canonicalizeProjectPath(projectPath);
+  return (
+    normalized === canonicalizeProjectPath(DETACHED_PROJECT_PATH) ||
+    dirname(normalized) ===
+      canonicalizeProjectPath(join(DETACHED_PROJECT_PATH, "users"))
+  );
 }
 
 export function getProjectName(projectPath: string): string {

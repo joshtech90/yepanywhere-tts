@@ -772,3 +772,72 @@ describe("ProjectScanner cache", () => {
     });
   });
 });
+
+describe("ProjectScanner sandbox transcript directories", () => {
+  const tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(
+      tempDirs
+        .splice(0)
+        .map((dir) => rm(dir, { recursive: true, force: true })),
+    );
+  });
+
+  it("joins sandbox directories to every read without a rescan", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    tempDirs.push(projectsDir);
+    await createClaudeProject(
+      projectsDir,
+      "localhost",
+      "/home/user/project-one",
+      "sess-1",
+    );
+    const projectId = encodeProjectId("/home/user/project-one");
+    const sandboxDirs = new Map<string, string[]>();
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      cacheTtlMs: 60000,
+      getSandboxSessionDirs: () => sandboxDirs,
+    });
+
+    const [before] = await scanner.listProjects();
+    expect(before?.mergedSessionDirs).toBeUndefined();
+
+    // A sandboxed session starting later must not wait for the cached scan.
+    const sandboxDir = join(projectsDir, "sandbox", "claude", "p");
+    await mkdir(sandboxDir, { recursive: true });
+    await writeFile(join(sandboxDir, "sandboxed.jsonl"), "{}\n");
+    await writeFile(join(sandboxDir, "agent-warmup.jsonl"), "{}\n");
+    sandboxDirs.set(projectId, [sandboxDir]);
+    const [after] = await scanner.listProjects();
+    expect(after?.mergedSessionDirs).toEqual([sandboxDir]);
+    expect(after?.sessionCount).toBe((before?.sessionCount ?? 0) + 1);
+    expect((await scanner.getProject(projectId))?.mergedSessionDirs).toEqual([
+      sandboxDir,
+    ]);
+  });
+
+  it("gives a project known only by id its sandbox directories", async () => {
+    const projectsDir = join(tmpdir(), `project-scanner-${randomUUID()}`);
+    const projectPath = join(tmpdir(), `sandboxed-project-${randomUUID()}`);
+    tempDirs.push(projectsDir, projectPath);
+    await mkdir(projectsDir, { recursive: true });
+    await mkdir(projectPath, { recursive: true });
+    const projectId = encodeProjectId(projectPath);
+    const scanner = new ProjectScanner({
+      projectsDir,
+      enableCodex: false,
+      enableGemini: false,
+      getSandboxSessionDirs: () =>
+        new Map([[projectId, ["/data/session-sandboxes/key/claude/p"]]]),
+    });
+
+    const project = await scanner.getOrCreateProject(projectId);
+    expect(project?.mergedSessionDirs).toEqual([
+      "/data/session-sandboxes/key/claude/p",
+    ]);
+  });
+});

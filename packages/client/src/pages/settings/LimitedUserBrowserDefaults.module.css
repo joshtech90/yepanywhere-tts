@@ -1,0 +1,86 @@
+.panel {
+  font-size: var(--font-size-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.panel h3 {
+  margin: 0;
+  font-size: 15px;
+}
+.hint {
+  color: var(--text-muted);
+  font-size: 13px;
+  margin: 0;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.actions > button {
+  min-height: 40px;
+}
+.status {
+  color: var(--text-muted);
+  font-size: 13px;
+}
+.error {
+  color: var(--error-color);
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 16em) minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 6px;
+}
+.key {
+  overflow-wrap: anywhere;
+  color: var(--text-secondary);
+}
+.value {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 8px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font: inherit;
+}
+.remove {
+  width: 40px;
+  min-height: 40px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 24px;
+  line-height: 1;
+  cursor: pointer;
+}
+.remove:hover {
+  background: var(--bg-hover);
+}
+.remove:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+@media (max-width: 480px) {
+  .row {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+  .key {
+    grid-column: 1 / -1;
+  }
+}

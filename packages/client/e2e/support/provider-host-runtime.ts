@@ -1,4 +1,6 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { terminateRegisteredProcess } from "./process-lifecycle.js";
+import type { OwnedProcess } from "./process-registry.js";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -29,6 +31,56 @@ export function providerHostRuntimeDir(runTempDir: string): string {
 export async function stopProviderHostRuntime(
   runtimeDir: string,
 ): Promise<void> {
+  const failures: unknown[] = [];
+  try {
+    await recoverPublishedHost(runtimeDir);
+  } catch (error) {
+    failures.push(error);
+  }
+  // Receipts cover the detached startup window before descriptor publication.
+  // The caller has already terminated the YA launcher, so it cannot add more.
+  const launches = join(runtimeDir, "e2e-launches");
+  if (existsSync(launches)) {
+    const results = await Promise.allSettled(
+      readdirSync(launches)
+        .filter((file) => file.endsWith(".json"))
+        .map(async (file) => {
+          const path = join(launches, file);
+          const record = JSON.parse(
+            readFileSync(path, "utf8"),
+          ) as OwnedProcess & { pending?: boolean };
+          if (
+            record.pending ||
+            !Number.isInteger(record.pid) ||
+            record.pid <= 1
+          )
+            throw new Error(`Incomplete E2E host launch receipt at ${path}`);
+          await terminateRegisteredProcess(
+            record.pid,
+            record.label,
+            record.leaderStartTime,
+          );
+          rmSync(path);
+        }),
+    );
+    for (const result of results)
+      if (result.status === "rejected") failures.push(result.reason);
+  }
+  // A booting host can publish after the first descriptor read. Its final
+  // descriptor still owns any workers even when the host leader is now gone.
+  try {
+    await recoverPublishedHost(runtimeDir);
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length)
+    throw new AggregateError(
+      failures,
+      `Could not reclaim E2E host in ${runtimeDir}`,
+    );
+}
+
+async function recoverPublishedHost(runtimeDir: string): Promise<void> {
   if (!existsSync(join(runtimeDir, "host.json"))) return;
   try {
     const discovery = (await import(
@@ -57,10 +109,8 @@ export async function stopProviderHostRuntime(
       !existsSync(join(runtimeDir, "host.json"))
     )
       return;
-    console.warn(
-      `[E2E] Could not stop provider host in ${runtimeDir}: ${
-        error instanceof Error ? error.message : String(error)
-      }`,
-    );
+    throw new Error(`Could not stop E2E provider host in ${runtimeDir}`, {
+      cause: error,
+    });
   }
 }

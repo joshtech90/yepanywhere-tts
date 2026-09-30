@@ -10,6 +10,7 @@ import { ProjectCodeNameEditor } from "./ProjectCodeNameEditor";
 import { ThinkingIndicator } from "./ThinkingIndicator";
 
 interface ProjectCardProps {
+  appEnabled?: boolean;
   project: Project;
   /** Number of sessions needing approval/input in this project */
   needsAttentionCount: number;
@@ -23,8 +24,11 @@ interface ProjectCardProps {
   basePath?: string;
   /** Called when the user asks to remove the project from YA lists */
   onDeleteProject?: (project: Project) => void;
+  deleteLabel?: string;
   /** Called when the user opens this project's defaults */
   onOpenSettings?: (project: Project) => void;
+  /** Present when this user may make their own copy of the project. */
+  onCopy?: (project: Project) => void;
   /** Persists an inline edit to this project's short code name. */
   onUpdateCodeName?: (project: Project, codeName: string) => Promise<void>;
   /** Persists an inline caption override; `null` restores the derived caption. */
@@ -56,6 +60,7 @@ function formatRelativeTime(timestamp: string): string {
  * Matches visual style of SessionListItem card mode.
  */
 export function ProjectCard({
+  appEnabled = false,
   project,
   needsAttentionCount,
   thinkingCount,
@@ -63,7 +68,9 @@ export function ProjectCard({
   hasQueueWarning = false,
   basePath = "",
   onDeleteProject,
+  deleteLabel,
   onOpenSettings,
+  onCopy,
   onUpdateCodeName,
   onUpdateCaption,
   isDeleting = false,
@@ -99,6 +106,36 @@ export function ProjectCard({
         data-project-card-link=""
       >
         <div className={styles.header}>
+          {appEnabled && (
+            <button
+              type="button"
+              className={styles.newSession}
+              aria-label={t("projectAppOpen")}
+              title={t("projectAppOpen")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                navigate(`${basePath}/projects/${project.id}/app`);
+              }}
+            >
+              {t("projectAppLabel")}
+            </button>
+          )}
+          {onCopy && (
+            <button
+              type="button"
+              className={styles.newSession}
+              aria-label={t("projectCopyTitle")}
+              title={t("projectCopyTitle")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onCopy(project);
+              }}
+            >
+              {t("projectCopyLabel")}
+            </button>
+          )}
           {onOpenSettings && (
             <button
               type="button"
@@ -129,8 +166,8 @@ export function ProjectCard({
               className={styles.deleteTrigger}
               onClick={handleDeleteProject}
               disabled={isDeleting}
-              title={t("projectsDelete")}
-              aria-label={t("projectsDelete")}
+              title={deleteLabel ?? t("projectsDelete")}
+              aria-label={deleteLabel ?? t("projectsDelete")}
             >
               <svg
                 width="16"

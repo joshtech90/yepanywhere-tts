@@ -101,6 +101,10 @@ Apps text/number fields save on defocus (Enter also commits); toggles, slider
 commits and row removal save immediately. There is no bottom Save button.
 Writes are serialized while typing remains enabled, and server metadata refresh
 must not remount the form or replace another field's in-progress draft.
+Manual domains and project apps use compact tables with one selected item's
+options in a neighboring pane. On narrow screens the pane replaces the table
+until **Back to list**. [Growable settings collections](settings-collections.md)
+owns this convention for settings lists with per-item options.
 
 The following controls and descriptions were checked against their current
 implementation on 2026-08-16. These are the user-visible contracts the Settings

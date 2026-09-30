@@ -680,6 +680,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resolve = vi.fn();
     const reject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({
         type: "srp_resumed",
@@ -766,6 +767,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resolve = vi.fn();
     const reject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({
         type: "srp_resumed",
@@ -854,6 +856,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resumeResolve = vi.fn();
     const resumeReject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({ type: "srp_invalid", reason: "expired" }),
       resumeResolve,
@@ -941,6 +944,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resolve = vi.fn();
     const reject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({
         type: "srp_resumed",
@@ -1004,6 +1008,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resolve = vi.fn();
     const reject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({
         type: "srp_resumed",
@@ -1074,6 +1079,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resolve = vi.fn();
     const reject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({
         type: "srp_resumed",
@@ -1149,6 +1155,7 @@ describe("SecureConnection protocol compatibility", () => {
 
     const resolve = vi.fn();
     const reject = vi.fn();
+    Object.assign(conn, { connectionState: "srp_resume_proof_sent" });
     await conn.handleSrpResumeResponse(
       JSON.stringify({
         type: "srp_resumed",

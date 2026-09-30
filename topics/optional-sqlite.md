@@ -184,6 +184,15 @@ Node versions without an accessible SQLite builtin still load the published
 modules and report `unsupported` in auto mode. Node's experimental-module notice
 on applicable versions is not suppressed by the service.
 
+## Personal draft data
+
+[Draft synchronization](draft-synchronization.md) stores current snapshots,
+operation receipts, recovery copies and file ownership in migration 008 of the
+existing database. These are durable personal data, not rebuildable discovery
+indexes. Disabling SQLite hides the optional draft capability and leaves browser
+persistence working; it does not delete these tables. Backups and migrations
+must preserve them along with the other non-rebuildable tables.
+
 ## Database ownership and migration
 
 The database is `{dataDir}/discovery.sqlite`, using the existing profile and

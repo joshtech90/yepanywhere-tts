@@ -279,3 +279,56 @@ describe("SessionMenu CSS module contracts", () => {
     ).toBeTruthy();
   });
 });
+
+describe("SessionMenu sidebar categories", () => {
+  it("files under an existing or newly typed category, or none", () => {
+    const onSetSidebarCategory = vi.fn();
+    renderMenu({
+      sidebarCategory: "Paper",
+      sidebarCategoryNames: ["Paper", "PII program"],
+      onSetSidebarCategory,
+    });
+    const open = () => {
+      fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+      fireEvent.click(screen.getByRole("button", { name: "Move to category" }));
+    };
+
+    // The choices stay folded until asked for.
+    fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+    expect(screen.queryByRole("button", { name: /PII program/ })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Move to category" }));
+    fireEvent.click(screen.getByRole("button", { name: /PII program/ }));
+    expect(onSetSidebarCategory).toHaveBeenLastCalledWith("PII program");
+
+    // Choosing the current category again takes the session out of it.
+    open();
+    fireEvent.click(screen.getByRole("button", { name: /Paper/ }));
+    expect(onSetSidebarCategory).toHaveBeenLastCalledWith(null);
+
+    open();
+    fireEvent.click(screen.getByRole("button", { name: "New category…" }));
+    const input = screen.getByRole("textbox", { name: "New category…" });
+    let typed = "";
+    for (const key of "  Grant  work") {
+      typed += key;
+      fireEvent.change(input, { target: { value: typed } });
+      expect((input as HTMLInputElement).value).toBe(typed);
+    }
+    fireEvent.submit(input);
+    expect(onSetSidebarCategory).toHaveBeenLastCalledWith("Grant work");
+
+    open();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove from category" }),
+    );
+    expect(onSetSidebarCategory).toHaveBeenLastCalledWith(null);
+  });
+
+  it("offers no category entry when the caller cannot store one", () => {
+    renderMenu();
+    fireEvent.click(screen.getByRole("button", { name: "Session options" }));
+    expect(
+      screen.queryByRole("button", { name: "Move to category" }),
+    ).toBeNull();
+  });
+});

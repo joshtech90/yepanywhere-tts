@@ -646,6 +646,8 @@ describe("api file facade", () => {
   it("preserves file endpoint paths, methods, query params, and bodies", async () => {
     await api.getFile("project-a", "src/a b.ts");
     await api.getFile("project-a", "src/a b.ts", true, 10, 12, "range");
+    await api.getFileMetadata("project-a", "src/a b.ts");
+    await api.getFileOwner("project-a", "~/other/a b.ts");
     const rawUrl = api.getFileRawUrl("project-a", "media/a b.png", true);
     await api.expandDiffContext(
       "project-a",
@@ -675,6 +677,16 @@ describe("api file facade", () => {
       },
       {
         url: "/api/projects/project-a/files?path=src%2Fa+b.ts&highlight=true&line=10&lineEnd=12&view=range",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "/api/projects/project-a/files?path=src%2Fa+b.ts&metadata=only",
+        method: "GET",
+        body: undefined,
+      },
+      {
+        url: "/api/projects/project-a/file-owner?path=%7E%2Fother%2Fa+b.ts",
         method: "GET",
         body: undefined,
       },

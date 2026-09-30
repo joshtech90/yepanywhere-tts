@@ -1,11 +1,32 @@
+import {
+  unregisterProcess,
+  readRegisteredProcess,
+} from "./support/process-registry.js";
+import { drainManagedRoutes } from "./support/managed-routes.js";
+import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test as base } from "@playwright/test";
 
-import { getE2ERunDirectory } from "./support/run-directory.js";
+import {
+  getE2EProfileDirectory,
+  getE2ERunDirectory,
+  usesWorkerServers,
+} from "./support/run-directory.js";
+import { defaultProfilePaths } from "./support/profile-paths.js";
+import {
+  startWorkerRelay,
+  startWorkerServer,
+  type WorkerRelay,
+} from "./support/worker-services.js";
+import {
+  disposeYaServerProcess,
+  type YaServerProcess,
+} from "./support/ya-server-process.js";
+import { terminateChildProcess } from "./support/process-lifecycle.js";
 
 function getTempDir(): string {
-  const tempDir = getE2ERunDirectory();
+  const tempDir = getE2EProfileDirectory();
   if (tempDir) return tempDir;
   throw new Error("Run directory unavailable. Did global-setup run?");
 }
@@ -13,8 +34,12 @@ function getTempDir(): string {
 /**
  * Read a port from a file in the temp directory.
  */
-function getPort(filename: string, description: string): number {
-  const tempDir = getTempDir();
+function getPort(
+  filename: string,
+  description: string,
+  shared = false,
+): number {
+  const tempDir = shared ? getE2ERunDirectory()! : getTempDir();
   const portFile = join(tempDir, filename);
   if (existsSync(portFile)) {
     return Number.parseInt(readFileSync(portFile, "utf-8"), 10);
@@ -33,11 +58,11 @@ function getMaintenancePort(): number {
 }
 
 function getRemoteClientPort(): number {
-  return getPort("remote-port", "Remote client");
+  return getPort("remote-port", "Remote client", true);
 }
 
-function getRemotePreviewPort(): number {
-  return getPort("remote-preview-port", "Remote preview");
+export function getRemotePreviewPort(): number {
+  return getPort("remote-preview-port", "Remote preview", true);
 }
 
 function getRelayPort(): number {
@@ -63,18 +88,13 @@ interface E2EPaths {
 }
 
 function getTestPaths(): E2EPaths {
-  const tempDir = getTempDir();
-  const pathsFile = join(tempDir, "paths.json");
-  if (existsSync(pathsFile)) {
-    return JSON.parse(readFileSync(pathsFile, "utf-8"));
-  }
-  throw new Error(`Paths file not found: ${pathsFile}. Did global-setup run?`);
+  return defaultProfilePaths(getTempDir());
 }
 
 // Export paths for tests to use instead of hardcoded homedir() paths
 export const e2ePaths = {
   get clientDist() {
-    return join(getTempDir(), "client-dist");
+    return join(getE2ERunDirectory()!, "client-dist");
   },
   get tempDir() {
     return getTestPaths().tempDir;
@@ -248,6 +268,8 @@ export async function waitForRelayStatus(
 
 // Extended test fixtures
 interface TestFixtures {
+  draftSessionIds: string[];
+  resetSeededDrafts: undefined;
   baseURL: string;
   maintenanceURL: string;
   wsURL: string;
@@ -257,28 +279,143 @@ interface TestFixtures {
   relayWsURL: string;
 }
 
+interface WorkerFixtures {
+  workerServer: YaServerProcess | undefined;
+  workerRelay: WorkerRelay | undefined;
+}
+
 // Extend base test with dynamic baseURL and maintenanceURL
-export const test = base.extend<TestFixtures>({
+export const test = base.extend<TestFixtures, WorkerFixtures>({
+  workerServer: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture signature
+    async ({}, use) => {
+      const server = usesWorkerServers()
+        ? await startWorkerServer()
+        : undefined;
+      try {
+        await use(server);
+      } finally {
+        await disposeYaServerProcess(server ?? null);
+      }
+    },
+    { scope: "worker", timeout: 60_000 },
+  ],
+  workerRelay: [
+    // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture signature
+    async ({}, use) => {
+      // Keep the existing opt-out behavior even when services start lazily.
+      if (
+        ["0", "false", "no"].includes(
+          (process.env.YEP_E2E_START_RELAY ?? "").toLowerCase(),
+        )
+      ) {
+        throw new Error(
+          "Relay fixture requested while YEP_E2E_START_RELAY is disabled",
+        );
+      }
+      const relay = usesWorkerServers() ? await startWorkerRelay() : undefined;
+      try {
+        await use(relay);
+      } finally {
+        if (relay) {
+          await terminateChildProcess(
+            relay.process,
+            "worker relay",
+            readRegisteredProcess(relay.registryFile)?.leaderStartTime,
+          );
+          unregisterProcess(relay.registryFile);
+        }
+      }
+    },
+    { scope: "worker", timeout: 45_000 },
+  ],
+  draftSessionIds: [["mock-session-001"], { option: true }],
+  resetSeededDrafts: [
+    async ({ baseURL, draftSessionIds }, use) => {
+      // The shared server survives between cases, while browser contexts start
+      // empty. Clear the seeded session's synced draft before another case uses it.
+      const serverURL = baseURL;
+      const headers = {
+        "Content-Type": "application/json",
+        "X-Yep-Anywhere": "true",
+      };
+      for (const sessionId of draftSessionIds) {
+        const slot = { kind: "session", sessionId };
+        const read = await fetch(`${serverURL}/api/drafts/read`, {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ slot }),
+        });
+        // The optional SQLite route or the seeded session catalog can be absent
+        // on a supported local runtime; then the client cannot load this draft.
+        if (read.status !== 404) {
+          if (!read.ok)
+            throw new Error(
+              `Draft fixture read failed: ${read.status} ${await read.text()}`,
+            );
+          const { snapshot, ticket } = (await read.json()) as {
+            snapshot: {
+              revision: string | null;
+              payload: {
+                fields: Record<string, string>;
+                attachments: unknown[];
+              };
+            };
+            ticket: string;
+          };
+          if (
+            snapshot.revision !== null &&
+            (Object.values(snapshot.payload.fields).some((value) =>
+              value.trim(),
+            ) ||
+              snapshot.payload.attachments.length > 0)
+          ) {
+            const clear = await fetch(`${serverURL}/api/drafts/clear`, {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                slot,
+                baseRevision: snapshot.revision,
+                ticket,
+                operationId: randomUUID(),
+              }),
+            });
+            if (!clear.ok)
+              throw new Error(`Draft fixture clear failed: ${clear.status}`);
+            const result = (await clear.json()) as { outcome: string };
+            if (result.outcome !== "accepted")
+              throw new Error(`Draft fixture clear was ${result.outcome}`);
+          }
+        }
+      }
+      await use(undefined);
+    },
+    { auto: true },
+  ],
   page: async ({ page }, use) => {
     await use(page);
     // A completed assertion does not imply intercepted background requests
     // have finished. Drain handlers before the base context fixture closes.
     // Some tests own an earlier page close before stopping their dev server.
-    if (!page.isClosed()) await page.unrouteAll({ behavior: "wait" });
+    if (!page.isClosed()) {
+      try {
+        await drainManagedRoutes(page);
+      } finally {
+        await page.unrouteAll({ behavior: "wait" });
+      }
+    }
   },
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
-  baseURL: async ({}, use) => {
-    const port = getServerPort();
+  baseURL: async ({ workerServer }, use) => {
+    const port = workerServer?.port ?? getServerPort();
     await use(`http://localhost:${port}`);
   },
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
-  maintenanceURL: async ({}, use) => {
+  maintenanceURL: async ({ workerServer }, use) => {
+    void workerServer;
     const port = getMaintenancePort();
     await use(`http://localhost:${port}`);
   },
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
-  wsURL: async ({}, use) => {
-    const port = getServerPort();
+  wsURL: async ({ workerServer }, use) => {
+    const port = workerServer?.port ?? getServerPort();
     await use(`ws://localhost:${port}/api/ws`);
   },
   // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
@@ -291,14 +428,12 @@ export const test = base.extend<TestFixtures>({
     const port = getRemotePreviewPort();
     await use(`http://localhost:${port}`);
   },
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
-  relayPort: async ({}, use) => {
-    const port = getRelayPort();
+  relayPort: async ({ workerRelay }, use) => {
+    const port = workerRelay?.port ?? getRelayPort();
     await use(port);
   },
-  // biome-ignore lint/correctness/noEmptyPattern: Playwright fixture pattern requires empty destructure
-  relayWsURL: async ({}, use) => {
-    const port = getRelayPort();
+  relayWsURL: async ({ workerRelay }, use) => {
+    const port = workerRelay?.port ?? getRelayPort();
     await use(`ws://localhost:${port}/ws`);
   },
 });

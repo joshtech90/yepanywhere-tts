@@ -106,6 +106,8 @@ export async function readRetainedSessionItems(
       hasUnread,
       isArchived,
       isStarred: metadata?.isStarred ?? false,
+      sidebarCategory: metadata?.sidebarCategory,
+      createdByUser: metadata?.createdByUser,
       customTitle: metadata?.customTitle,
       initialPrompt: metadata?.initialPrompt ?? fullTitle,
       nonHumanUserTurn: nonHumanUserTurnField(

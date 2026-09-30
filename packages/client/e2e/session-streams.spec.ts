@@ -75,7 +75,9 @@ test.describe("Session streams", () => {
           },
         }),
     );
-    let emitSession: ((eventType: string, data: object) => void) | undefined;
+    const sessionStream: { emit?: (eventType: string, data: object) => void } =
+      {};
+    const getSessionEmitter = () => sessionStream.emit;
     await page.routeWebSocket("**/api/ws", (socket) => {
       const upstream = socket.connectToServer();
       socket.onMessage((wire) => {
@@ -86,7 +88,7 @@ test.describe("Session streams", () => {
         } | null;
         if (message?.type === "subscribe" && message.channel === "session") {
           let eventId = 0;
-          emitSession = (eventType, data) =>
+          sessionStream.emit = (eventType, data) =>
             socket.send(
               JSON.stringify({
                 type: "event",
@@ -96,7 +98,7 @@ test.describe("Session streams", () => {
                 data,
               }),
             );
-          emitSession("connected", {
+          sessionStream.emit("connected", {
             sessionId,
             processId: "heartbeat-process",
             state: "in-turn",
@@ -111,7 +113,7 @@ test.describe("Session streams", () => {
       { name: "desktop", width: 1200, height: 600 },
       { name: "phone", width: 375, height: 812 },
     ]) {
-      emitSession = undefined;
+      sessionStream.emit = undefined;
       await page.setViewportSize(viewport);
       await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
       await dismissOnboardingIfVisible(page);
@@ -124,8 +126,8 @@ test.describe("Session streams", () => {
         `heartbeat-before-${viewport.name}`,
         viewport,
       );
-      await expect.poll(() => Boolean(emitSession)).toBe(true);
-      emitSession?.("heartbeat", {
+      await expect.poll(() => Boolean(sessionStream.emit)).toBe(true);
+      getSessionEmitter()?.("heartbeat", {
         timestamp,
         liveness: {
           checkedAt: timestamp,

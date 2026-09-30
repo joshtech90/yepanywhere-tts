@@ -10,6 +10,7 @@ import {
   DESKTOP_SESSION_COOKIE_NAME,
   type DesktopBootstrapService,
 } from "../desktop/DesktopBootstrapService.js";
+import { recordAuthEvent } from "../security/authAuditLog.js";
 import type { AuthService } from "./AuthService.js";
 import type { LimitedUsersService } from "./LimitedUsersService.js";
 import { LoginThrottle, loginThrottleKey } from "./loginThrottle.js";
@@ -234,6 +235,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     }
 
     if (authService.isEnabled()) {
+      await recordAuthEvent(c, {
+        event: "auth-enable",
+        outcome: "failure",
+        account: "owner",
+        reason: "already-enabled",
+      });
       return c.json(
         { error: "Authentication is already enabled. Use change-password." },
         409,
@@ -241,6 +248,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     }
 
     const success = await authService.enableAuth(body.password);
+    await recordAuthEvent(c, {
+      event: "auth-enable",
+      outcome: success ? "success" : "failure",
+      account: "owner",
+      ...(success ? {} : { reason: "save-failed" }),
+    });
     if (!success) {
       return c.json({ error: "Failed to enable auth" }, 500);
     }
@@ -258,10 +271,21 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     // Require authenticated session to disable
     const sessionId = getCookie(c, SESSION_COOKIE_NAME);
     if (!sessionId || !(await authService.validateSession(sessionId))) {
+      await recordAuthEvent(c, {
+        event: "auth-disable",
+        outcome: "failure",
+        account: "owner",
+        reason: "not-authenticated",
+      });
       return c.json({ error: "Not authenticated" }, 401);
     }
 
     await authService.disableAuth();
+    await recordAuthEvent(c, {
+      event: "auth-disable",
+      outcome: "success",
+      account: "owner",
+    });
 
     // Clear the session cookie
     deleteCookie(c, SESSION_COOKIE_NAME, {
@@ -278,6 +302,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
    */
   app.post("/setup", async (c) => {
     if (authService.hasAccount()) {
+      await recordAuthEvent(c, {
+        event: "auth-setup",
+        outcome: "failure",
+        account: "owner",
+        reason: "account-exists",
+      });
       return c.json({ error: "Account already exists" }, 400);
     }
 
@@ -293,6 +323,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
 
     // Use enableAuth to also set the enabled flag
     const success = await authService.enableAuth(body.password);
+    await recordAuthEvent(c, {
+      event: "auth-setup",
+      outcome: success ? "success" : "failure",
+      account: "owner",
+      ...(success ? {} : { reason: "save-failed" }),
+    });
     if (!success) {
       return c.json({ error: "Failed to create account" }, 500);
     }
@@ -336,6 +372,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
         : typedUsername;
     if (requestedUsername) {
       if (!limitedUsers || !isLimitedUsersEnabled?.()) {
+        await recordAuthEvent(c, {
+          event: "login",
+          outcome: "failure",
+          account: requestedUsername,
+          reason: "limited-users-off",
+        });
         return c.json({ error: "Invalid username or password" }, 401);
       }
       if (
@@ -346,9 +388,25 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
           rawBody.password,
         ))
       ) {
+        // The attempted name is recorded as typed: repeated failures against
+        // one name, or against names that do not exist, are what an audit of
+        // guessing looks for. The response still does not say which.
+        await recordAuthEvent(c, {
+          event: "login",
+          outcome: "failure",
+          account: requestedUsername,
+          reason: limitedUsers.get(requestedUsername.toLowerCase())
+            ? "bad-password"
+            : "unknown-user",
+        });
         return c.json({ error: "Invalid username or password" }, 401);
       }
       await limitedUsers.recordLogin(requestedUsername);
+      await recordAuthEvent(c, {
+        event: "login",
+        outcome: "success",
+        account: requestedUsername,
+      });
       const sessionId = await authService.createSession(
         c.req.header("User-Agent"),
         requestedUsername,
@@ -364,6 +422,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     }
 
     if (!authService.hasAccount()) {
+      await recordAuthEvent(c, {
+        event: "login",
+        outcome: "failure",
+        account: "owner",
+        reason: "no-account",
+      });
       c.header("X-Setup-Required", "true");
       return c.json(
         { error: "No account configured", setupRequired: true },
@@ -379,9 +443,20 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
 
     const valid = await authService.verifyPassword(body.password);
     if (!valid) {
+      await recordAuthEvent(c, {
+        event: "login",
+        outcome: "failure",
+        account: "owner",
+        reason: "bad-password",
+      });
       return c.json({ error: "Invalid password" }, 401);
     }
 
+    await recordAuthEvent(c, {
+      event: "login",
+      outcome: "success",
+      account: "owner",
+    });
     const userAgent = c.req.header("User-Agent");
     const sessionId = await authService.createSession(userAgent);
 
@@ -404,7 +479,17 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     const sessionId = getCookie(c, SESSION_COOKIE_NAME);
 
     if (sessionId) {
+      // An unknown login names nobody; do not guess "owner" for it.
+      const known = await authService.validateSession(sessionId);
+      const account = known
+        ? (authService.getSessionUsername(sessionId) ?? "owner")
+        : undefined;
       await authService.invalidateSession(sessionId);
+      await recordAuthEvent(c, {
+        event: "logout",
+        outcome: "success",
+        ...(account ? { account } : { reason: "login-already-ended" }),
+      });
     }
 
     deleteCookie(c, SESSION_COOKIE_NAME, {
@@ -422,6 +507,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     // Require authenticated session
     const sessionId = getCookie(c, SESSION_COOKIE_NAME);
     if (!sessionId || !(await authService.validateSession(sessionId))) {
+      await recordAuthEvent(c, {
+        event: "password-change",
+        outcome: "failure",
+        account: "owner",
+        reason: "not-authenticated",
+      });
       return c.json({ error: "Not authenticated" }, 401);
     }
 
@@ -439,6 +530,12 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     }
 
     const success = await authService.changePassword(body.newPassword);
+    await recordAuthEvent(c, {
+      event: "password-change",
+      outcome: success ? "success" : "failure",
+      account: "owner",
+      ...(success ? {} : { reason: "save-failed" }),
+    });
     if (!success) {
       return c.json({ error: "Failed to change password" }, 500);
     }
@@ -477,6 +574,11 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
     }
 
     if (!authorized) {
+      await recordAuthEvent(c, {
+        event: "localhost-access",
+        outcome: "failure",
+        reason: "not-authenticated",
+      });
       return c.json({ error: "Not authenticated" }, 401);
     }
 
@@ -485,6 +587,11 @@ export function createAuthRoutes(deps: AuthRoutesDeps): Hono {
       return c.json({ error: "open must be a boolean" }, 400);
     }
     await authService.setLocalhostOpen(body.open);
+    await recordAuthEvent(c, {
+      event: "localhost-access",
+      outcome: "success",
+      details: { open: body.open },
+    });
     return c.json({ success: true, localhostOpen: body.open });
   });
 

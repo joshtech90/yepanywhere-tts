@@ -213,3 +213,68 @@ describe("sidebar user chronology", () => {
     expect(saved.at(-1)[0]).toBe("session-2");
   });
 });
+
+describe("sidebar named sections", () => {
+  it("files each session once: starred, category, creator, then by time", () => {
+    setCurrentClientSummarySourceKey(
+      createClientSummaryHostSourceKey("named-sections"),
+    );
+    const now = new Date().toISOString();
+    const old = new Date(Date.now() - 3 * 86400000).toISOString();
+    const row = (
+      id: string,
+      fields: Partial<SessionCollectionRecord> = {},
+    ): SessionCollectionRecord => ({
+      id,
+      createdAt: now,
+      observedAt: 0,
+      ...fields,
+    });
+    const starredFiled = row("starred-filed", {
+      isStarred: true,
+      sidebarCategory: "Paper",
+    });
+    const records = [
+      starredFiled,
+      row("paper", { sidebarCategory: "Paper", createdByUser: "bob" }),
+      row("bob-new", { createdByUser: "bob" }),
+      row("bob-old", { createdByUser: "bob", createdAt: old }),
+      row("alice", { createdByUser: "alice" }),
+      row("mine"),
+      row("archived", { sidebarCategory: "Paper", isArchived: true }),
+    ];
+    // A categorized session beyond the recent page arrives through its feed.
+    const categorized = [
+      row("pii-old", { sidebarCategory: "pii", createdAt: old }),
+    ];
+
+    const grouped = renderHook(() =>
+      useSidebarSessionOrder(records, [starredFiled], categorized, true),
+    ).result.current;
+    const names = (groups: typeof grouped.categories) =>
+      groups.map(({ name, rows }) => [name, rows.map(({ id }) => id)]);
+    expect(grouped.starred.map(({ id }) => id)).toEqual(["starred-filed"]);
+    expect(names(grouped.categories)).toEqual([
+      ["Paper", ["paper"]],
+      ["pii", ["pii-old"]],
+    ]);
+    expect(names(grouped.creators)).toEqual([
+      ["alice", ["alice"]],
+      ["bob", ["bob-new", "bob-old"]],
+    ]);
+    expect(grouped.recent.map(({ id }) => id)).toEqual(["mine"]);
+    expect(grouped.older).toEqual([]);
+
+    // Without creator grouping, limited users' sessions stay in time order.
+    const ungrouped = renderHook(() =>
+      useSidebarSessionOrder(records, [starredFiled], categorized, false),
+    ).result.current;
+    expect(ungrouped.creators).toEqual([]);
+    expect(ungrouped.recent.map(({ id }) => id).sort()).toEqual([
+      "alice",
+      "bob-new",
+      "mine",
+    ]);
+    expect(ungrouped.older.map(({ id }) => id)).toEqual(["bob-old"]);
+  });
+});

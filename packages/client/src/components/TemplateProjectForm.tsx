@@ -25,6 +25,7 @@ import {
 } from "@yep-anywhere/shared";
 import { useVersion } from "../hooks/useVersion";
 import { useToastContext } from "../contexts/ToastContext";
+import { TemplateCreationProgress } from "./TemplateCreationProgress";
 
 interface Props {
   templates: ProjectTemplateChoice[];
@@ -430,20 +431,15 @@ export function TemplateProjectForm({
           !path
         }
       >
-        {pending ? t("projectsAdding") : t("templateCreatePrepare")}
+        {pending
+          ? t("projectsAdding")
+          : running && operation
+            ? t(`templatePhase_${operation.phase}`)
+            : t("templateCreatePrepare")}
       </button>
       {disabledReason && <p role="status">{disabledReason}</p>}
-      {operation && (
-        <div role="status">
-          <p>{t(`templatePhase_${operation.phase}`)}</p>
-          {operation.error && <p role="alert">{operation.error}</p>}
-          {operation.log && (
-            <details>
-              <summary>{t("templateSetupLog")}</summary>
-              <pre className={styles.log}>{operation.log}</pre>
-            </details>
-          )}
-        </div>
+      {(pending || operation) && (
+        <TemplateCreationProgress operation={operation} />
       )}
       {error && <p role="alert">{error}</p>}
       {operation && ["failed", "interrupted"].includes(operation.phase) && (

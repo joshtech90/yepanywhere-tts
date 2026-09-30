@@ -12,6 +12,15 @@ describe("filterEnvForChildProcess", () => {
     expect(env.AGENT_YA_API_TOKEN).toBeUndefined();
     expect(env.AGENT_LAUNCH_MODEL).toBe("launch-history");
   });
+  it("never passes an inherited operator API token to a child", () => {
+    // A YA server started from an agent shell must not hand its caller's
+    // token to every session, sandboxed ones included.
+    const env = filterEnvForChildProcess({
+      AGENT_SERVER_TOKEN: "caller-token",
+      AGENT_SERVER_URL: "http://127.0.0.1:3400",
+    });
+    expect(env.AGENT_SERVER_TOKEN).toBeUndefined();
+  });
   it("sets Claude Code's one-hour prompt cache TTL by default", () => {
     const env = filterEnvForChildProcess({
       HOME: "/home/test",

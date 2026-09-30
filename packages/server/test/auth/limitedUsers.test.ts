@@ -12,6 +12,7 @@ import {
   actingUsername,
   applyLimitedLaunchPolicy,
   applyLimitedResumePolicy,
+  limitQueuedLaunch,
 } from "../../src/auth/limitedLaunchPolicy.js";
 import type { ModelSettings } from "../../src/supervisor/Supervisor.js";
 import { buildUserMessageMetadata } from "../../src/routes/session-request-helpers.js";
@@ -77,6 +78,41 @@ describe("limited-user route policy", () => {
     }
   });
 
+  it("reads the browser defaults published for them, never writes them", () => {
+    const url = "/api/settings/limited-user-defaults";
+    expect(decide("GET", url)).toEqual({ kind: "allow" });
+    expect(decide("PUT", url)).toEqual({ kind: "deny" });
+  });
+
+  it("dictates through the configured backends but never administers them", () => {
+    for (const [method, url] of [
+      ["GET", "/api/speech/ws"],
+      ["POST", "/api/speech/transcribe"],
+      ["POST", "/api/speech/prewarm"],
+      ["POST", "/api/speech/xai-client-secret"],
+    ] as const) {
+      expect(decide(method, url), `${method} ${url}`).toEqual({
+        kind: "allow",
+      });
+    }
+    for (const [method, url] of [
+      // The raw key would outlive the session; the secret expires.
+      ["POST", "/api/speech/xai-client-key"],
+      ["GET", "/api/speech/backends"],
+      ["POST", "/api/speech/backends/restart"],
+      ["POST", "/api/speech/backends/ya-whisper/install"],
+      ["POST", "/api/speech/backends/ya-whisper/gpu"],
+      ["GET", "/api/speech/vocabulary"],
+      ["PUT", "/api/speech/vocabulary"],
+      ["POST", "/api/speech/ws"],
+      ["GET", "/api/speech/transcribe"],
+    ] as const) {
+      expect(decide(method, url), `${method} ${url}`).toEqual({
+        kind: "deny",
+      });
+    }
+  });
+
   it("reads recents filtered, never clears them, and lets a visit through", () => {
     expect(decide("GET", "/api/recents?limit=5")).toEqual({
       kind: "allow-filtered",
@@ -108,8 +144,68 @@ describe("limited-user route policy", () => {
     });
   });
 
+  it("lets a view grant open and start a project's app, but not stop it", () => {
+    for (const action of ["open", "start"]) {
+      expect(decide("POST", `/api/projects/p1/app/${action}`)).toEqual({
+        kind: "project",
+        projectId: "p1",
+        required: "view",
+      });
+    }
+    expect(decide("POST", "/api/projects/p1/app/stop")).toEqual({
+      kind: "project",
+      projectId: "p1",
+      required: "new-session",
+    });
+  });
+
+  it("treats opening a sandboxed session's app as acting in that session", () => {
+    expect(
+      decide("POST", "/api/projects/abc/sessions/s1/sandbox-apps"),
+    ).toEqual({ kind: "session", sessionId: "s1", required: "join" });
+  });
+
+  it("scopes file reads and previews to a session, never the host-wide doors", () => {
+    expect(decide("GET", "/api/sessions/s1/local-file?path=/tmp/a")).toEqual({
+      kind: "session",
+      sessionId: "s1",
+      required: "view",
+    });
+    expect(decide("GET", "/api/sessions/s1/local-image?path=/tmp/a")).toEqual({
+      kind: "session",
+      sessionId: "s1",
+      required: "view",
+    });
+    expect(decide("POST", "/api/sessions/s1/artifacts")).toEqual({
+      kind: "session",
+      sessionId: "s1",
+      required: "join",
+    });
+    // The host-wide doors stay closed to them.
+    expect(decide("GET", "/api/local-file?path=/tmp/a")).toEqual({
+      kind: "deny",
+    });
+    expect(decide("POST", "/api/artifacts")).toEqual({ kind: "deny" });
+  });
+
+  it("lets a reader refresh a session's list preview, which launches nothing", () => {
+    expect(
+      decide("POST", "/api/projects/abc/sessions/s1/refresh-preview"),
+    ).toEqual({ kind: "session", sessionId: "s1", required: "view" });
+    expect(
+      decide("DELETE", "/api/projects/abc/sessions/s1/refresh-preview"),
+    ).toEqual({ kind: "deny" });
+  });
+
   it("treats sending a turn as a join and anything heavier as new-session", () => {
     expect(decide("POST", "/api/sessions/s1/messages")).toEqual({
+      kind: "session",
+      sessionId: "s1",
+      required: "join",
+      startsTurn: true,
+    });
+    // Changing the permission mode joins the session without a turn.
+    expect(decide("PUT", "/api/sessions/s1/mode")).toEqual({
       kind: "session",
       sessionId: "s1",
       required: "join",
@@ -122,11 +218,17 @@ describe("limited-user route policy", () => {
   });
 
   it("allows only listed session actions, whose launches apply the launch policy", () => {
+    expect(decide("POST", "/api/projects/abc/sessions/s1/resume")).toEqual({
+      kind: "session",
+      sessionId: "s1",
+      required: "new-session",
+      startsTurn: true,
+    });
     for (const action of [
-      "resume",
       "reactivate",
       "fork",
       "clone",
+      "stale-handoff",
       "attachments/staging/materialize",
     ]) {
       expect(
@@ -192,7 +294,12 @@ describe("limited-user route policy", () => {
       kind: "allow-filtered",
       filter: "sessions",
     });
-    expect(decide("POST", "/api/sessions")).toEqual({ kind: "deny" });
+    expect(decide("POST", "/api/sessions")).toEqual({
+      kind: "detached-create",
+    });
+    expect(decide("POST", "/api/sessions/create")).toEqual({
+      kind: "detached-create",
+    });
   });
 
   it("refuses restarting the server and updating host software", () => {
@@ -443,6 +550,47 @@ describe("limited-user launch policy", () => {
     expect(body.model).toBe("gpt-5");
   });
 
+  it("turns the network firewall on when the request names none", () => {
+    const body: { sandboxNetworkFirewall?: boolean } = {};
+    expect(applyLimitedLaunchPolicy(contextFor(alice), body).kind).toBe(
+      "applied",
+    );
+    expect(body.sandboxNetworkFirewall).toBe(true);
+  });
+
+  it("refuses a request that turns the network firewall off", () => {
+    const body = {
+      sandboxLevel: "project-write",
+      sandboxNetworkFirewall: false,
+    };
+    expect(applyLimitedLaunchPolicy(contextFor(alice), body)).toEqual({
+      kind: "error",
+      error:
+        "This user's sessions always run with the sandbox network firewall on",
+    });
+    expect(body.sandboxNetworkFirewall).toBe(false);
+  });
+
+  it("holds a queued new-session target to the same firewall rule", () => {
+    const refused = limitQueuedLaunch(alice.grants, {
+      target: {
+        type: "new-session",
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall: false,
+      },
+      message: { text: "go" },
+    });
+    expect(refused?.error).toContain("network firewall");
+    const target = { type: "new-session" as const };
+    expect(
+      limitQueuedLaunch(alice.grants, { target, message: { text: "go" } }),
+    ).toBeNull();
+    expect(target).toMatchObject({
+      sandboxLevel: "project-write",
+      sandboxNetworkFirewall: true,
+    });
+  });
+
   it("refuses a request that names a value outside the lock", () => {
     const outcome = applyLimitedLaunchPolicy(contextFor(alice), {
       provider: "claude",
@@ -493,6 +641,22 @@ describe("limited-user launch policy", () => {
         );
         expect(outcome.kind, String(sandboxLevel)).toBe("error");
       }
+    });
+
+    it("refuses a sandboxed session whose network firewall is off", () => {
+      const outcome = applyLimitedResumePolicy(
+        contextFor(alice),
+        { ...sandboxed(), sandboxNetworkFirewall: false },
+        {},
+      );
+      expect(outcome).toMatchObject({
+        kind: "error",
+        error: expect.stringContaining("without the sandbox network firewall"),
+      });
+      // Absent is on, as at every launch.
+      expect(
+        applyLimitedResumePolicy(contextFor(alice), sandboxed(), {}).kind,
+      ).toBe("applied");
     });
 
     it("refuses a session on a remote executor", () => {
@@ -593,8 +757,19 @@ describe("limited-user middleware", () => {
         provider: string;
         lastActivityMs: number;
         sandboxLevel?: string;
+        createdByUser?: string;
       }
     >([
+      [
+        "own",
+        {
+          projectId: "view-project",
+          provider: "codex",
+          lastActivityMs: 0,
+          sandboxLevel: "project-write",
+          createdByUser: "alice",
+        },
+      ],
       [
         "fresh",
         {
@@ -621,6 +796,7 @@ describe("limited-user middleware", () => {
         })),
       getSessionMetadata: (sessionId) => ({
         sandboxLevel: sessions.get(sessionId)?.sandboxLevel,
+        createdByUser: sessions.get(sessionId)?.createdByUser,
       }),
       now,
     });
@@ -702,7 +878,21 @@ describe("limited-user middleware", () => {
     app.post("/api/sessions/:sessionId/messages", (c) => c.json({ ok: true }));
     app.put("/api/sessions/:sessionId/mode", (c) => c.json({ ok: true }));
     app.post("/api/sessions/:sessionId/input", (c) => c.json({ ok: true }));
+    app.post("/api/sessions/:sessionId/mark-seen", (c) => c.json({ ok: true }));
+    app.post("/api/projects/:projectId/sessions/:sessionId/resume", (c) =>
+      c.json({ ok: true }),
+    );
+    app.post(
+      "/api/projects/:projectId/sessions/:sessionId/stale-handoff",
+      (c) => c.json({ ok: true }),
+    );
     app.get("/api/issues", (c) => c.json({ issues: [] }));
+    app.post("/api/speech/transcribe", (c) => c.json({ text: "hi" }));
+    app.post("/api/speech/xai-client-secret", (c) =>
+      c.json({ clientSecret: "ephemeral" }),
+    );
+    app.post("/api/speech/xai-client-key", (c) => c.json({ apiKey: "raw" }));
+    app.get("/api/speech/backends", (c) => c.json({ catalog: [] }));
     return app;
   };
 
@@ -722,6 +912,15 @@ describe("limited-user middleware", () => {
   afterEach(async () => {
     await service.flushPendingWrites();
     await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("lets a limited login dictate but not administer speech", async () => {
+    const app = await buildApp();
+    const post = (url: string) => app.request(url, { method: "POST" });
+    expect((await post("/api/speech/transcribe")).status).toBe(200);
+    expect((await post("/api/speech/xai-client-secret")).status).toBe(200);
+    expect((await post("/api/speech/xai-client-key")).status).toBe(403);
+    expect((await app.request("/api/speech/backends")).status).toBe(403);
   });
 
   it("answers 404, not 403, for a project outside the grants", async () => {
@@ -834,9 +1033,48 @@ describe("limited-user middleware", () => {
       method: "POST",
     });
     expect(response.status).toBe(403);
-    expect(((await response.json()) as { reason?: string }).reason).toBe(
-      "stale-session",
-    );
+    const body = (await response.json()) as {
+      reason?: string;
+      staleRedirect?: string;
+    };
+    expect(body.reason).toBe("stale-session");
+    // A join grant cannot start the session a redirect would need.
+    expect(body.staleRedirect).toBeUndefined();
+  });
+
+  it("applies the cutoff to a session the user started, and to its resume", async () => {
+    const cold = await buildApp({ now: () => 30 * 60 * 1000 });
+    for (const path of [
+      "/api/sessions/own/messages",
+      "/api/projects/view-project/sessions/own/resume",
+    ]) {
+      const response = await cold.request(path, { method: "POST" });
+      expect(response.status, path).toBe(403);
+      expect(await response.json(), path).toMatchObject({
+        reason: "stale-session",
+        staleRedirect: "stale-handoff",
+      });
+    }
+
+    const fresh = await buildApp({ now: () => 5 * 60 * 1000 });
+    expect(
+      (
+        await fresh.request("/api/projects/view-project/sessions/own/resume", {
+          method: "POST",
+        })
+      ).status,
+    ).toBe(200);
+  });
+
+  it("leaves actions that start no turn open on a cold session", async () => {
+    const cold = await buildApp({ now: () => 30 * 60 * 1000 });
+    for (const [method, path] of [
+      ["POST", "/api/sessions/own/mark-seen"],
+      ["PUT", "/api/sessions/own/mode"],
+      ["POST", "/api/projects/view-project/sessions/own/stale-handoff"],
+    ] as const) {
+      expect((await cold.request(path, { method })).status, path).toBe(200);
+    }
   });
 
   it("refuses every join action on a fresh session outside the sandbox", async () => {
@@ -965,6 +1203,159 @@ describe("session access resolver", () => {
   const hours = (count: number) => count * 60 * 60 * 1000;
   const now = hours(10);
 
+  it("observes newly published sessions and revoked identities inside the TTL", async () => {
+    let version = "epoch:1";
+    let rows: Array<{ sessionId: string; projectId: string }> = [];
+    let reads = 0;
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => version,
+      readCatalogRows: async () => {
+        reads += 1;
+        return rows;
+      },
+      now: () => now,
+    });
+    expect(await resolver.resolve("new-session")).toBeNull();
+    expect(await resolver.resolve("another-missing-id")).toBeNull();
+    expect(reads).toBe(1);
+    rows = [{ sessionId: "new-session", projectId: "owned-project" }];
+    version = "epoch:2";
+    expect((await resolver.resolve("new-session"))?.projectId).toBe(
+      "owned-project",
+    );
+    expect(reads).toBe(2);
+    rows.push({ sessionId: "new-session", projectId: "other-project" });
+    version = "epoch:3";
+    expect(await resolver.resolve("new-session")).toBeNull();
+    rows = [];
+    version = "replacement-epoch:0";
+    expect(await resolver.resolve("new-session")).toBeNull();
+    expect(reads).toBe(4);
+  });
+
+  it("throttles failed catalog reads per version and retries on publication", async () => {
+    let version = "epoch:1";
+    let reads = 0;
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => version,
+      readCatalogRows: async () => {
+        reads += 1;
+        if (reads === 1) throw new Error("catalog read failed");
+        return [{ sessionId: "published", projectId: "owned-project" }];
+      },
+      now: () => now,
+    });
+    await expect(resolver.resolve("published")).rejects.toThrow(
+      "catalog read failed",
+    );
+    expect(await resolver.resolve("published")).toBeNull();
+    expect(reads).toBe(1);
+    version = "epoch:2";
+    expect((await resolver.resolve("published"))?.projectId).toBe(
+      "owned-project",
+    );
+    expect(reads).toBe(2);
+  });
+
+  it("does not consume a publication that races an in-flight read", async () => {
+    let version = "epoch:1";
+    let reads = 0;
+    let release!: (
+      rows: Array<{ sessionId: string; projectId: string }>,
+    ) => void;
+    const pendingRows = new Promise<
+      Array<{ sessionId: string; projectId: string }>
+    >((resolve) => {
+      release = resolve;
+    });
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => version,
+      readCatalogRows: async () => {
+        reads += 1;
+        return reads === 1
+          ? pendingRows
+          : [{ sessionId: "published", projectId: "owned-project" }];
+      },
+      now: () => now,
+    });
+    const first = resolver.resolve("published");
+    const coalesced = resolver.resolve("missing");
+    version = "epoch:2";
+    release([]);
+    expect((await first)?.projectId).toBe("owned-project");
+    expect(await coalesced).toBeNull();
+    expect(reads).toBe(2);
+    expect((await resolver.resolve("published"))?.projectId).toBe(
+      "owned-project",
+    );
+    expect(reads).toBe(2);
+  });
+
+  it("does not reuse obsolete positive facts after a failed refresh", async () => {
+    let version = "epoch:1";
+    let reads = 0;
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => version,
+      readCatalogRows: async () => {
+        reads += 1;
+        if (reads > 1) throw new Error("replacement unreadable");
+        return [{ sessionId: "allowed", projectId: "granted" }];
+      },
+      now: () => now,
+    });
+    expect((await resolver.resolve("allowed"))?.projectId).toBe("granted");
+    version = "epoch:2";
+    await expect(resolver.resolve("allowed")).rejects.toThrow(
+      "replacement unreadable",
+    );
+    expect(await resolver.resolve("allowed")).toBeNull();
+    expect(await resolver.resolve("allowed")).toBeNull();
+    expect(reads).toBe(2);
+  });
+
+  it("keeps fully observed live sessions independent of catalog publication and failures", async () => {
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => ({
+        projectId: "live-project",
+        lastActivityMs: now,
+      }),
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => "new-publication",
+      readCatalogRows: async () => {
+        throw new Error("must not read catalog");
+      },
+      now: () => now,
+    });
+    expect((await resolver.resolve("live"))?.projectId).toBe("live-project");
+    expect(resolver.resolveKnown("live")?.projectId).toBe("live-project");
+  });
+
+  it("does not return an old positive mapping when both bounded reads are superseded", async () => {
+    let generation = 1;
+    let reads = 0;
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => `epoch:${generation}`,
+      readCatalogRows: async () => {
+        reads += 1;
+        generation += 1;
+        return [{ sessionId: "old", projectId: "granted" }];
+      },
+      now: () => now,
+    });
+    expect(await resolver.resolve("old")).toBeNull();
+    expect(reads).toBe(2);
+  });
+
   it("dates a live process that has seen no provider message by its catalog row", async () => {
     const resolver = new SessionAccessResolver({
       getLiveSession: () => ({
@@ -985,9 +1376,7 @@ describe("session access resolver", () => {
     });
     const facts = await resolver.resolve("resumed");
     expect(facts?.lastActivityMs).toBe(now - hours(3));
-    expect(
-      facts && resolver.canJoin(facts, { username: "alice", offsetMinutes: 0 }),
-    ).toBe(false);
+    expect(facts && resolver.isFresh(facts, { offsetMinutes: 0 })).toBe(false);
   });
 
   it("dates a live process by its last provider message", async () => {
@@ -1002,9 +1391,7 @@ describe("session access resolver", () => {
       now: () => now,
     });
     const facts = await resolver.resolve("running");
-    expect(
-      facts && resolver.canJoin(facts, { username: "alice", offsetMinutes: 0 }),
-    ).toBe(false);
+    expect(facts && resolver.isFresh(facts, { offsetMinutes: 0 })).toBe(false);
   });
 
   it("takes a live process's sandbox over the level its metadata recorded", async () => {

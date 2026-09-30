@@ -464,6 +464,7 @@ test("Apps settings explains wildcard hosting without a domain default", async (
   page,
   baseURL,
 }) => {
+  let locked = false;
   await page.route("**/api/artifacts/vhosts/links", (route) =>
     route.fulfill({ json: { tokens: { plan: "test-app-bearer" } } }),
   );
@@ -475,7 +476,7 @@ test("Apps settings explains wildcard hosting without a domain default", async (
         artifactViewer: {
           port: 4402,
           available: true,
-          locked: false,
+          locked,
           defaultLocalOrigin: "http://artifacts.localhost:3400",
           localOrigin: "http://artifacts.localhost:3400",
           vhosts: [{ name: "plan", port: 19432 }],
@@ -492,6 +493,9 @@ test("Apps settings explains wildcard hosting without a domain default", async (
   await expect(field).toHaveValue("");
   await expect(field).not.toHaveAttribute("placeholder");
   await expect(page.getByText(/public-tunnel \*\.example.com/)).toBeVisible();
+  await page
+    .getByRole("button", { name: "plan .localhost", exact: true })
+    .click();
   await expect(
     page.getByRole("checkbox", { name: "Public — no link required" }),
   ).not.toBeChecked();
@@ -507,11 +511,29 @@ test("Apps settings explains wildcard hosting without a domain default", async (
       await field.scrollIntoViewIfNeeded();
     }).toPass();
     await recordUiCapture(page, `apps-settings-${size.width}`);
+    if (size.width === 375) {
+      await page
+        .getByRole("button", { name: "plan .localhost", exact: true })
+        .click();
+    }
     await page
       .getByRole("checkbox", { name: "Public — no link required" })
       .scrollIntoViewIfNeeded();
     await recordUiCapture(page, `apps-access-${size.width}`);
   }
+  locked = true;
+  await page.reload();
+  await page
+    .getByRole("button", { name: "plan .localhost", exact: true })
+    .click();
+  await expect(
+    page.getByRole("textbox", { name: "Name", exact: true }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("button", { name: "Add vhost", exact: true }),
+  ).toBeDisabled();
+  await page.getByRole("button", { name: "Back to list", exact: true }).click();
+  await expect(page.getByRole("table", { name: "HTTP vhosts" })).toBeVisible();
 });
 
 test("older servers expose no app-link management requests", async ({
@@ -564,7 +586,21 @@ test("Apps saves on defocus without losing typing during a pending save", async 
     localOrigin: "http://artifacts.localhost:3400",
     expiryDays: 7,
     vhostPublicRoot: "",
-    vhosts: [{ name: "plan", port: 19432 }],
+    vhosts: [
+      { name: "plan", port: 19432 },
+      ...Array.from({ length: 38 }, (_, index) => ({
+        name: `service-${index + 1}`,
+        port: 19500 + index,
+      })),
+    ],
+    vhostSites: [
+      {
+        name: "reports",
+        path: "~/research/reports/index.html",
+        public: true,
+        passwordProtected: true,
+      },
+    ],
   };
   await page.route("**/api/version*", async (route) => {
     const response = await route.fetch();
@@ -595,6 +631,9 @@ test("Apps saves on defocus without losing typing during a pending save", async 
   expect(writes).toHaveLength(0);
   await root.press("Tab");
   await expect.poll(() => writes.length).toBe(1);
+  await page
+    .getByRole("button", { name: "plan .example.com", exact: true })
+    .click();
   const name = page.getByRole("textbox", { name: "Name", exact: true });
   await name.focus();
   await name.press("End");
@@ -615,10 +654,143 @@ test("Apps saves on defocus without losing typing during a pending save", async 
   await expect(saved).toBeVisible();
   await page.reload();
   await expect(root).toHaveValue("example.com");
+  await page
+    .getByRole("button", { name: "plan-review .example.com", exact: true })
+    .click();
   await expect(name).toHaveValue("plan-review");
   await expect(
     page.getByRole("button", { name: /Save.*settings/ }),
   ).toHaveCount(0);
+  const table = page.getByRole("table", { name: "HTTP vhosts" });
+  const back = page.getByRole("button", { name: "Back to list", exact: true });
+  for (const size of [
+    { width: 1200, height: 600 },
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await back.click();
+    await page.setViewportSize(size);
+    await expect(table.getByRole("row")).toHaveCount(41);
+    await table.evaluate((element) =>
+      element.scrollIntoView({ block: "start" }),
+    );
+    await recordUiCapture(page, `apps-table-${size.width}`);
+    await table
+      .getByRole("button", { name: "service-2 .example.com", exact: true })
+      .click();
+    await expect(name).toHaveCount(1);
+    await expect(name).toHaveValue("service-2");
+    if (size.width !== 375) {
+      await table
+        .getByRole("button", { name: "service-3 .example.com", exact: true })
+        .click();
+      await expect(name).toHaveValue("service-3");
+      await expect(table).toBeVisible();
+      expect(
+        (await table.getByRole("row").nth(1).boundingBox())!.height,
+      ).toBeLessThan(72);
+    }
+    if (size.width === 375) await expect(table).not.toBeVisible();
+    await back
+      .locator("../..")
+      .evaluate((element) => element.scrollIntoView({ block: "start" }));
+    await recordUiCapture(page, `apps-detail-${size.width}`);
+  }
+  await back.click();
+  await expect(
+    table.getByRole("button", { name: "service-2 .example.com", exact: true }),
+  ).toBeFocused();
+  await page.getByRole("button", { name: "Add vhost", exact: true }).click();
+  await expect(name).toHaveValue("");
+  await name.pressSequentially("new-app");
+  await page.getByRole("button", { name: "Remove", exact: true }).click();
+  await expect(table).toBeVisible();
+  await expect(table.getByRole("row")).toHaveCount(41);
+  await table
+    .getByRole("button", { name: "service-2 .example.com", exact: true })
+    .click();
+  await expect(name).toHaveValue("service-2");
+});
+
+test("Apps project inventory uses one options pane", async ({
+  page,
+  baseURL,
+}) => {
+  const projects = Array.from({ length: 12 }, (_, index) => ({
+    projectId: `demo-${index}`,
+    name: `Project ${index + 1}`,
+    path: `/workspace/project-${index + 1}`,
+    info: {
+      projectId: `demo-${index}`,
+      state: "ready",
+      declaration: null,
+      latestArtifact: null,
+      canExecute: true,
+      canPublish: true,
+      canShare: true,
+      removedFrom: [],
+    },
+  }));
+  await page.route("**/api/project-apps", (route) =>
+    route.fulfill({
+      json: {
+        projects,
+        reservations: projects.map((project, index) => ({
+          projectId: project.projectId,
+          name: `app-${index + 1}`,
+          namespace: "example.com",
+          owner: "superuser",
+        })),
+      },
+    }),
+  );
+  await page.route("**/api/projects/demo-*/app", (route) =>
+    route.fulfill({ json: projects[0]!.info }),
+  );
+  await page.route("**/api/projects/demo-*/app/address", (route) =>
+    route.fulfill({
+      json: {
+        enabled: false,
+        namespace: null,
+        requiredPrefix: "",
+        canReserve: false,
+        canPublish: false,
+        reservations: [],
+      },
+    }),
+  );
+  for (const size of [
+    { width: 1200, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(size);
+    await page.goto(`${baseURL}/settings/apps`);
+    const table = page.getByRole("table", {
+      name: "Project apps",
+      exact: true,
+    });
+    await expect(table.getByRole("row")).toHaveCount(13);
+    await table.getByRole("button", { name: "Project 1", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Project 1", exact: true }),
+    ).toBeVisible();
+    const back = page.getByRole("button", {
+      name: "Back to list",
+      exact: true,
+    });
+    await back.click();
+    await table.getByRole("button", { name: "Project 2", exact: true }).click();
+    await expect(
+      page.getByRole("heading", { name: "Project 1", exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      page.getByRole("heading", { name: "Project 2", exact: true }),
+    ).toBeVisible();
+    await back
+      .locator("../..")
+      .evaluate((element) => element.scrollIntoView({ block: "start" }));
+    await recordUiCapture(page, `project-apps-detail-${size.width}`);
+  }
 });
 
 test("Appearance defaults off and persists its setting", async ({

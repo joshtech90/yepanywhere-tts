@@ -1824,56 +1824,6 @@ a.sidebar-nav-item {
   margin-bottom: var(--sidebar-section-gap, 1rem);
 }
 
-.sidebar-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  padding: 0 var(--sidebar-navigation-inline-spacing, 0.75rem);
-  margin-bottom: var(--sidebar-section-header-gap, 0.5rem);
-}
-
-.sidebar-section-title {
-  font-size: var(--font-size-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--text-dimmed);
-  padding: 0 var(--sidebar-navigation-inline-spacing, 0.75rem);
-  margin: 0 0 var(--sidebar-section-header-gap, 0.5rem);
-}
-
-.sidebar-section-header .sidebar-section-title {
-  padding: 0;
-  margin: 0;
-}
-
-.sidebar-section-toggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
-  color: var(--text-dimmed);
-  cursor: pointer;
-  font-size: var(--font-size-sm);
-  font-weight: 600;
-  line-height: 1;
-  transition:
-    color 0.15s,
-    border-color 0.15s,
-    background 0.15s;
-}
-
-.sidebar-section-toggle:hover {
-  background: transparent;
-  border-color: transparent;
-  color: var(--text-dimmed);
-}
-
 .sidebar-session-list {
   list-style: none;
   padding: 0;
@@ -11971,7 +11921,6 @@ a.sidebar-nav-item {
   .sidebar-collapsed .sidebar-nav-label,
   .sidebar-collapsed .sidebar-nav-badge,
   .sidebar-collapsed .sidebar-section,
-  .sidebar-collapsed .sidebar-section-title,
   .sidebar-collapsed .sidebar-empty {
     display: none;
   }

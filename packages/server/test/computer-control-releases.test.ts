@@ -99,7 +99,11 @@ describe("signed release contract", () => {
 
 describe("download and extraction boundaries", () => {
   let directory: string;
+  const extractions: Promise<void>[] = [];
   afterEach(async () => {
+    // A Vitest timeout aborts its signal before afterEach; join native close
+    // before removing the directory the extractor may still be using.
+    await Promise.allSettled(extractions.splice(0));
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
     if (directory) await rm(directory, { recursive: true, force: true });
@@ -204,19 +208,33 @@ describe("download and extraction boundaries", () => {
   it.runIf(process.platform === "win32")(
     "native extraction rejects traversal and handles a valid ZIP",
     { timeout: 20_000 },
-    async () => {
+    async ({ signal }) => {
       directory = await mkdtemp(path.join(tmpdir(), "ya-release-zip-"));
       const fixtures = new URL("./fixtures/computer-release/", import.meta.url);
-      await expect(
-        native.extractComputerPackage(
-          fileURLToPath(new URL("traversal.zip", fixtures)),
-          path.join(directory, "bad"),
-        ),
-      ).rejects.toThrow("Unsafe archive member");
-      await native.extractComputerPackage(
-        fileURLToPath(new URL("valid.zip", fixtures)),
-        path.join(directory, "good"),
-      );
+      const phases: Array<{ name: string; elapsedMs: number }> = [];
+      const extract = (name: string, destination: string) => {
+        const started = Date.now();
+        const pending = native
+          .extractComputerPackage(
+            fileURLToPath(new URL(`${name}.zip`, fixtures)),
+            path.join(directory, destination),
+            signal,
+          )
+          .finally(() => {
+            phases.push({ name, elapsedMs: Date.now() - started });
+          });
+        extractions.push(pending);
+        return pending;
+      };
+      try {
+        await expect(extract("traversal", "bad")).rejects.toThrow(
+          "Unsafe archive member",
+        );
+        await extract("valid", "good");
+      } catch (error) {
+        console.error("Native ZIP extraction phases:", phases);
+        throw error;
+      }
       expect(
         await readFile(path.join(directory, "good", "hello.txt"), "utf8"),
       ).toBe("fixture");

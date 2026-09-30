@@ -202,6 +202,18 @@ export class AttachmentStagingService {
   private readonly records = new Map<string, StagedAttachmentRecord>();
   private initialized = false;
   private mutationQueue: Promise<void> = Promise.resolve();
+  private draftProtection?: (username: string | null, id: string) => boolean;
+  private draftUsername: string | null = null;
+  setDraftProtection(
+    check: (username: string | null, id: string) => boolean,
+  ): void {
+    this.draftProtection = check;
+    for (const store of this.userStores.values())
+      store.setDraftProtection(check);
+  }
+  private protectedDraft(id: string): boolean {
+    return this.draftProtection?.(this.draftUsername, id) ?? false;
+  }
   private readonly userStores = new Map<string, AttachmentStagingService>();
 
   /** Drafts belong to the acting account before they belong to a project. */
@@ -220,6 +232,8 @@ export class AttachmentStagingService {
         draftTtlMs: this.draftTtlMs,
         now: this.now,
       });
+      store.draftUsername = username;
+      if (this.draftProtection) store.setDraftProtection(this.draftProtection);
       this.userStores.set(username, store);
     }
     return store;
@@ -545,6 +559,7 @@ export class AttachmentStagingService {
 
   async deleteAttachment(id: string): Promise<boolean> {
     await this.ensureInitialized();
+    if (this.protectedDraft(id)) return false;
     const record = this.records.get(id);
     if (!record) return false;
     await rm(record.path, { force: true }).catch(() => {});
@@ -557,6 +572,7 @@ export class AttachmentStagingService {
 
   async deleteDraftAttachment(batchId: string, id: string): Promise<boolean> {
     await this.ensureInitialized();
+    if (this.protectedDraft(id)) return false;
     if (!isSafeUploadPathSegment(batchId)) {
       throw new Error("Invalid staging batch id");
     }
@@ -572,6 +588,30 @@ export class AttachmentStagingService {
       return false;
     }
 
+    await rm(record.path, { force: true }).catch(() => {});
+    await this.withMutation(async () => {
+      this.records.delete(id);
+      await this.saveIndex();
+    });
+    return true;
+  }
+
+  /** Delete one attachment only while it is still owned by this queue item. */
+  async deleteQueueAttachment(
+    queueItemId: string,
+    id: string,
+  ): Promise<boolean> {
+    await this.ensureInitialized();
+    if (!isSafeUploadPathSegment(queueItemId)) {
+      throw new Error("Invalid queue item id");
+    }
+    const record = this.records.get(id);
+    if (
+      record?.owner.type !== "project-queue" ||
+      record.owner.queueItemId !== queueItemId
+    ) {
+      return false;
+    }
     await rm(record.path, { force: true }).catch(() => {});
     await this.withMutation(async () => {
       this.records.delete(id);
@@ -633,14 +673,42 @@ export class AttachmentStagingService {
           (record) => {
             return (
               record.owner.type === "draft" &&
-              record.owner.batchId === params.batchId
+              (record.owner.batchId === params.batchId ||
+                (!!this.draftProtection &&
+                  params.refs.some(
+                    (ref) =>
+                      ref.id === record.id && ref.batchId === record.batchId,
+                  )))
             );
           },
         );
-        const originals: StagedAttachmentRecord[] = records.map((record) => ({
-          ...record,
-          owner: { ...record.owner },
-        }));
+        const transferable: StagedAttachmentRecord[] = [];
+        for (const record of records) {
+          if (!this.protectedDraft(record.id)) {
+            transferable.push(record);
+            continue;
+          }
+          const id = randomUUID();
+          const name = `${id}_${record.originalName.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
+          const clone = {
+            ...record,
+            id,
+            name,
+            path: join(dirname(record.path), name),
+          };
+          await copyFile(record.path, clone.path);
+          this.records.set(id, clone);
+          transferable.push(clone);
+        }
+        // Persist clones first: interruption leaves ordinary TTL-owned staging,
+        // while the original synced references remain valid.
+        await this.saveIndex();
+        const originals: StagedAttachmentRecord[] = transferable.map(
+          (record) => ({
+            ...record,
+            owner: { ...record.owner },
+          }),
+        );
         const queueDir = this.ownerDir({
           type: "project-queue",
           queueItemId: params.queueItemId,
@@ -732,7 +800,8 @@ export class AttachmentStagingService {
     await this.ensureInitialized();
     const cutoff = nowMs - this.draftTtlMs;
     const stale = [...this.records.values()].filter((record) => {
-      if (record.owner.type !== "draft") return false;
+      if (record.owner.type !== "draft" || this.protectedDraft(record.id))
+        return false;
       const updatedAt = Date.parse(record.updatedAt);
       return !Number.isFinite(updatedAt) || updatedAt < cutoff;
     });

@@ -5,6 +5,8 @@
 import {
   CODEX_REASONING_SUMMARIES,
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
+  limitedUserInstructionsError,
+  type LimitedUserInstructions,
   CODEX_PLAN_TOOL_MODES,
   CODEX_CYBER_ACCESS_PROGRAMS,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
@@ -323,6 +325,9 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
       }
       if (typeof body.approvalAuditLogEnabled === "boolean") {
         updates.approvalAuditLogEnabled = body.approvalAuditLogEnabled;
+      }
+      if (typeof body.agentServerAccessEnabled === "boolean") {
+        updates.agentServerAccessEnabled = body.agentServerAccessEnabled;
       }
       if (typeof body.publicSharesEnabled === "boolean") {
         updates.publicSharesEnabled = body.publicSharesEnabled;
@@ -685,6 +690,15 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
           return c.json({ error: "Invalid fileAccess setting" }, 400);
         }
         updates.fileAccess = parsed;
+      }
+
+      if ("limitedUserInstructions" in body) {
+        const error = limitedUserInstructionsError(
+          body.limitedUserInstructions,
+        );
+        if (error) return c.json({ error }, 400);
+        updates.limitedUserInstructions =
+          body.limitedUserInstructions as LimitedUserInstructions;
       }
 
       // Handle globalInstructions string (free-form text, or undefined/null/"" to clear)

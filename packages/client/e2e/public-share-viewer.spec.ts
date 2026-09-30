@@ -1,9 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { PublicSessionShareResponse } from "@yep-anywhere/shared";
+import {
+  toUrlProjectId,
+  type PublicSessionShareResponse,
+} from "@yep-anywhere/shared";
 import { expect, test } from "./fixtures.js";
 
-const projectId = Buffer.from("/project").toString("base64url");
+const projectId = toUrlProjectId("/project");
 const attachmentPath =
   "/app-data/projects/0123456789abcdef0123456789abcdef/attachments/source-session/12345678-1234-1234-1234-123456789abc_image.svg";
 const timestamp = "2026-09-07T00:00:00.000Z";
@@ -92,7 +95,7 @@ function shareResponse(): PublicSessionShareResponse {
   };
 }
 
-test.beforeEach(async ({ page, remoteClientURL }) => {
+test.beforeEach(async ({ page, remotePreviewURL }) => {
   await page.routeWebSocket("wss://share-relay.test/ws", (socket) => {
     socket.onMessage((wire) => {
       const message = JSON.parse(String(wire));
@@ -120,8 +123,8 @@ test.beforeEach(async ({ page, remoteClientURL }) => {
     });
   });
   await page.setViewportSize({ width: 1000, height: 600 });
-  // remote.html avoids the dev server's document fallback; the browser route
-  // still enters the actual public share page before React initializes.
+  // Use the deployed remote bundle; this contract does not import source
+  // modules. Enter the actual public share route before React initializes.
   await page.addInitScript(() => {
     history.replaceState(
       null,
@@ -129,7 +132,7 @@ test.beforeEach(async ({ page, remoteClientURL }) => {
       "/share/public-secret?h=owner&r=wss%3A%2F%2Fshare-relay.test%2Fws",
     );
   });
-  await page.goto(`${remoteClientURL}/remote.html`);
+  await page.goto(`${remotePreviewURL}/remote.html`);
   await expect(page.locator(".conversation-activity-summary")).toHaveCount(1);
 });
 

@@ -93,6 +93,34 @@ user who needs one must turn the firewall off and accept the captioned escape
 risk; the implementation does not create a privileged per-port exception that
 could become another process launderer.
 
+### Inbound: the loopback port broker
+
+The firewall stops the sandbox reaching out; it also leaves a server the
+session starts on its private loopback unreachable from the user. One inbound
+path exists, and only YA holds it (user-directed 2026-09-28: a specific hole
+that the YA server proxies thoughtfully). A firewalled launch starts a small
+broker inside the sandbox's user and network namespaces but outside
+Bubblewrap, so the agent can neither see nor signal it. The broker listens on
+a Unix socket named for the launcher's pid in
+`<host tmp>/ya-sandbox-ports-<uid>/`; each connection names one TCP port on
+its first line and is spliced to `127.0.0.1:<port>` inside the namespace.
+
+- No host port opens and no firewall route changes; outbound policy is
+  unchanged.
+- Every sandbox replaces `/tmp` with its own, so no sandbox can reach another
+  session's broker. Host `/tmp` is shared with other accounts, so the directory
+  is used only when it is a real directory owned by YA's account with no group
+  or other access; otherwise app exposure is unavailable for that launch.
+- A missing `nsenter` or a broker that fails to start also leaves only app
+  exposure unavailable; the session launches as before.
+- Connections are capped, a port line that does not arrive promptly or is not
+  a port in 1–65535 closes the connection, and idle spliced connections close
+  after ten minutes. The broker exits with its launch and removes its socket.
+
+Servers bound to the sandbox's loopback need no change. How YA offers such a
+server to the logged-in user is the session-app contract in
+[session right pane](session-right-pane.md#sandboxed-session-apps).
+
 ## Private IPC Enforcement
 
 The existing private `/run`, `/tmp`, and `/var/tmp` mounts hide the normal
@@ -143,9 +171,10 @@ Observed 2026-09-27 on an Ubuntu host with every package installed.
 The private resolver file is mounted at the resolved target of
 `/etc/resolv.conf`, not at the link itself. systemd-resolved hosts point it
 into `/run/systemd/resolve/`, and the sandbox's fresh `/run` tmpfs lacks that
-directory, so the launch creates it first. Mounting at the link failed every
-Ubuntu launch while the availability probe, which omits this mount, still
-passed ([gap](../gaps/sandbox-availability-probe-omits-launch-mounts.md)).
+directory, so the launch creates it first. Mounting at the link once failed
+every Ubuntu launch while the availability probe, which then omitted this
+mount, still passed. The probe now builds the launch's own argument set, so a
+mount that every launch would fail also fails availability.
 
 ## Implementation
 

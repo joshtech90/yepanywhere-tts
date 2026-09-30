@@ -4,7 +4,11 @@ import { useCallback, useState } from "react";
 import { useCurrentSourceRuntime } from "../../../contexts/SourceRuntimeContext";
 import { getPathBasename, makeDisplayPath } from "../../../lib/text";
 import { useImageResourceActions } from "../../ImageResourceActions";
-import { fetchLocalMediaBlob, LocalMediaModal } from "../../LocalMediaModal";
+import {
+  fetchLocalMediaBlob,
+  LocalMediaModal,
+  useLocalFileScope,
+} from "../../LocalMediaModal";
 
 function getFileName(path: string): string {
   return getPathBasename(path);
@@ -57,9 +61,10 @@ function ViewImageClickable({
 }) {
   const [showModal, setShowModal] = useState(false);
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
   const loadBlob = useCallback(
-    () => fetchLocalMediaBlob(path, undefined, "modal", transport),
-    [path, transport],
+    () => fetchLocalMediaBlob(path, undefined, "modal", transport, fileScope),
+    [path, transport, fileScope],
   );
   const openViewer = useCallback(() => setShowModal(true), []);
   const imageActions = useImageResourceActions({

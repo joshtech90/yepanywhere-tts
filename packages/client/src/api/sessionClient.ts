@@ -238,6 +238,7 @@ export function createSessionApi(fetchJSON: typeof FetchJson) {
         title?: string;
         archived?: boolean;
         starred?: boolean;
+        sidebarCategory?: string | null;
         parentSessionId?: string | null;
         heartbeatTurnsEnabled?: boolean;
         heartbeatTurnsAfterMinutes?: number | null;

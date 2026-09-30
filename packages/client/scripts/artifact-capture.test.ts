@@ -13,14 +13,23 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { chromium } from "@playwright/test";
 import {
-  captureArtifact,
+  captureArtifact as runCaptureArtifact,
   markdownLink,
   writeCapturePreview,
 } from "./artifact-capture";
 
 const directories: string[] = [];
 const servers: Server[] = [];
+const captures: ReturnType<typeof runCaptureArtifact>[] = [];
+function captureArtifact(options: Parameters<typeof runCaptureArtifact>[0]) {
+  const capture = runCaptureArtifact(options);
+  captures.push(capture);
+  return capture;
+}
 afterEach(async () => {
+  // The capture owns Chromium until its finally closes it. A test timeout
+  // must not remove the served files or close grant endpoints underneath it.
+  await Promise.allSettled(captures.splice(0));
   for (const server of servers.splice(0)) {
     server.closeAllConnections();
     await new Promise<void>((done, reject) =>
@@ -122,7 +131,17 @@ async function serverFixture({
   return { requests, yaUrl: `http://127.0.0.1:${address.port}`, artifactUrl };
 }
 
-describe("portable artifact capture", () => {
+// These are cold Chromium integration checks, not API-only unit checks. Phase
+// probes measured 1.68s isolated and 1.89s with the workspace suite running:
+// launch up to 611ms, two network-idle navigations about 500ms each, screenshots
+// up to 20ms, and joined close up to 31ms. Earlier loaded runs exceeded 5000ms
+// in three different cases. Apply 3x that observed floor to every real capture,
+// rather than budgeting only the first case. Assertions still use their own
+// configured navigation/readiness deadline (including the 750ms failure case).
+describe("portable artifact capture", { timeout: 15000 }, () => {
+  // CI36641621916 took 3903ms; two full local runs with concurrent typechecks
+  // exceeded 5000ms. This cold Chromium/two-viewport capture tests output,
+  // not latency; its budget is 3x the observed timeout floor.
   it("captures a standalone bundle in both standard sizes without YA", async () => {
     const files = await fixture();
     const result = await captureArtifact({
@@ -153,7 +172,7 @@ describe("portable artifact capture", () => {
       `${result.markdown}\n`,
     );
     await expect(captureArtifact(files)).rejects.toThrow("EEXIST");
-  });
+  }, 15000);
 
   it.each([{ configured: false }, { available: false }, { capable: false }])(
     "skips health and grants when delivery is absent: %j",

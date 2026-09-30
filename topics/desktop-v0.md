@@ -281,6 +281,21 @@ surface when the app is current or the check fails, so selecting **Check for
 Updates** never leaves its result hidden behind another application. Automatic
 checks remain silent when no update is available or when the check fails.
 
+A manual check immediately shows checking feedback, including when a startup
+or periodic check is already running. It joins that check without sending a
+duplicate request and makes its success or failure visible. Repeated clicks
+restore the current updater surface, including during installation. Dismissing
+a pending check suppresses its late result; a subsequent manual request still
+receives feedback and a fresh check once the dismissed request finishes.
+
+The native tray action shows the trusted updater window before delivering the
+manual-check event. Hidden or minimized webviews may suspend during extended
+inactivity; waking the window must not depend on JavaScript in that suspended
+view. Manual checks after extended idle still report that the app is current
+when no update exists. The startup check runs after five seconds, and periodic
+checks are scheduled every 24 hours while the renderer is active; these are
+best-effort discovery, not a reason to suppress explicit user feedback.
+
 The v0 recovery path is a manual reinstall of a signed release. Automatic
 downgrade and unattended background update installation are not claimed.
 
@@ -325,11 +340,16 @@ packaged desktop inputs differ from the last successfully published Latest.
 Client, server, shared, desktop, bundled helper and build/dependency changes
 qualify; documentation, marketing and test-only changes do not.
 
-The selector chooses the newest eligible `main` commit whose general CI run
-passed and pins that exact SHA throughout the existing desktop packaging
+The selector reads the workflow run inventory and filters `main` push runs
+locally, avoiding GitHub's capped filtered-search results. It chooses the
+newest eligible `main` commit whose general CI run passed and pins that exact SHA throughout the existing desktop packaging
 workflow. Failed or pending newer commits are not packaged merely because they
 are branch HEAD. A missing verified candidate fails rather than publishing
-unverified source. Signing and native checks cover Apple Silicon macOS, Intel
+unverified source. Source history must advance from the published Latest:
+if CI eligibility falls back to an older ancestor, the nightly skips and waits
+for newer verified source. Force may rebuild equal or newer verified source,
+but cannot publish older code under a higher nightly version. Divergent release
+history fails for review. Signing and native checks cover Apple Silicon macOS, Intel
 macOS and Windows x64/ARM64-compatible NSIS. Linux continues through server/web.
 
 For source Stable `M.m.p`, nightly versions are `M.(m+1).S`, where

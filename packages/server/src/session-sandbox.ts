@@ -1,6 +1,13 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync } from "node:fs";
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readdirSync,
+} from "node:fs";
 import {
   constants as fsConstants,
   chmod,
@@ -8,15 +15,17 @@ import {
   cp,
   lstat,
   mkdir,
+  mkdtemp,
   open,
   readFile,
   readlink,
   realpath,
+  rm,
   stat,
   writeFile,
   type FileHandle,
 } from "node:fs/promises";
-import { homedir, networkInterfaces } from "node:os";
+import { homedir, networkInterfaces, tmpdir } from "node:os";
 import {
   basename,
   dirname,
@@ -52,8 +61,12 @@ const IP_CANDIDATES = [
   "/usr/bin/ip",
   "/bin/ip",
 ] as const;
+const NSENTER_CANDIDATES = ["/usr/bin/nsenter", "/bin/nsenter"] as const;
 const NETWORK_LAUNCHER_PATH = fileURLToPath(
   new URL("./session-sandbox-network-launcher.mjs", import.meta.url),
+);
+const PORT_BROKER_PATH = fileURLToPath(
+  new URL("./session-sandbox-port-broker.mjs", import.meta.url),
 );
 const NETWORK_BLOCKED_IPV4_DESTINATIONS = [
   "0.0.0.0/8",
@@ -71,27 +84,13 @@ const NETWORK_BLOCKED_IPV4_DESTINATIONS = [
   "224.0.0.0/4",
   "240.0.0.0/4",
 ] as const;
-const BWRAP_PREFLIGHT_ARGS = [
-  "--unshare-all",
-  "--share-net",
-  "--die-with-parent",
-  "--new-session",
-  "--cap-drop",
-  "ALL",
-  "--ro-bind",
-  "/",
-  "/",
-  "--proc",
-  "/proc",
-  "--dev",
-  "/dev",
-  "--tmpfs",
-  "/run",
-  "--tmpfs",
-  "/tmp",
-  "--tmpfs",
-  "/var/tmp",
-] as const;
+/**
+ * Mount point for one launch's session-environment bridge, inside the
+ * sandbox's fresh /run tmpfs, where no other session's bridge can appear.
+ */
+const SESSION_ENV_BRIDGE_MOUNT_POINT = "/run/ya-agentctl-session";
+/** Prefix of the availability probe's throwaway state; never a state key. */
+const AVAILABILITY_PROBE_STATE_PREFIX = ".availability-probe-";
 const SUPPORTED_PROVIDERS = new Set<ProviderName>([
   "claude",
   "claude-gateway",
@@ -144,6 +143,7 @@ export interface SessionSandboxSpawn {
 }
 
 export interface SessionSandboxRuntime {
+  readonly instructions?: import("@yep-anywhere/shared").ResolvedLimitedUserInstructions;
   readonly enforcement: SessionSandboxEnforcement;
   readonly stateKey: string;
   /** Canonical project path whose writable bind defines this sandbox. */
@@ -155,6 +155,14 @@ export interface SessionSandboxRuntime {
    * Host-side fork helpers must not resolve agent-controlled symlinks.
    */
   openTranscriptDirectory(): Promise<FileHandle>;
+  /** Where a launch's session-environment bridge appears inside the sandbox. */
+  readonly sessionEnvBridgeDirectory: string;
+  /**
+   * A runtime whose spawns also mount this one launch's bridge directory
+   * read-only at `sessionEnvBridgeDirectory`. It is a directory bind, so the
+   * server's later atomic replacements inside it stay visible.
+   */
+  withSessionEnvBridge(hostDirectory: string): SessionSandboxRuntime;
   wrapSpawn(
     command: string,
     args: readonly string[],
@@ -163,6 +171,7 @@ export interface SessionSandboxRuntime {
 }
 
 export interface PrepareSessionSandboxOptions {
+  instructions?: import("@yep-anywhere/shared").ResolvedLimitedUserInstructions;
   level: SessionSandboxLevel | undefined;
   /** Public-only egress boundary; absent defaults on for project-write. */
   networkFirewall?: boolean;
@@ -356,6 +365,57 @@ interface SessionSandboxNetworkTools {
   ipPath: string;
 }
 
+interface SessionSandboxPortBroker {
+  nsenterPath: string;
+  nodePath: string;
+  script: string;
+  directory: string;
+}
+
+/**
+ * Host directory of firewalled sandboxes' loopback port brokers. It is under
+ * host /tmp because every sandbox replaces /tmp with its own private one, so
+ * no sandbox can reach another's broker.
+ */
+export function sandboxPortBrokerDirectory(): string {
+  return join(tmpdir(), `ya-sandbox-ports-${process.getuid?.() ?? "user"}`);
+}
+
+/** The broker socket of the firewalled launch whose launcher pid is `pid`. */
+export function sandboxPortBrokerSocketPath(pid: number): string {
+  return join(sandboxPortBrokerDirectory(), `${pid}.sock`);
+}
+
+/**
+ * The broker a firewalled launch starts, or undefined when app exposure is
+ * unavailable here. Host /tmp is shared with other accounts, so the directory
+ * is used only when it is a real directory this account owns with no group
+ * or other access; anything else could let another account plant a socket.
+ */
+async function resolveSessionSandboxPortBroker(): Promise<
+  SessionSandboxPortBroker | undefined
+> {
+  const nsenter = await findTrustedSystemExecutable(NSENTER_CANDIDATES);
+  const script = await stat(PORT_BROKER_PATH).catch(() => undefined);
+  if (!nsenter.path || !script?.isFile()) return undefined;
+  const directory = sandboxPortBrokerDirectory();
+  await mkdir(directory, { recursive: true, mode: 0o700 });
+  const info = lstatSync(directory);
+  if (
+    !info.isDirectory() ||
+    (process.getuid !== undefined && info.uid !== process.getuid()) ||
+    (info.mode & 0o077) !== 0
+  ) {
+    return undefined;
+  }
+  return {
+    nsenterPath: nsenter.path,
+    nodePath: process.execPath,
+    script: PORT_BROKER_PATH,
+    directory,
+  };
+}
+
 function blockedIpv4Destinations(): string[] {
   const destinations = new Set<string>(NETWORK_BLOCKED_IPV4_DESTINATIONS);
   for (const addresses of Object.values(networkInterfaces())) {
@@ -374,6 +434,7 @@ function buildNetworkLauncherArgs(options: {
   bwrapArgs: readonly string[];
   blockedDestinations: readonly string[];
   passProjectFd: boolean;
+  portBroker?: SessionSandboxPortBroker;
   command: string;
   commandArgs: readonly string[];
 }): string[] {
@@ -387,6 +448,7 @@ function buildNetworkLauncherArgs(options: {
       bwrapArgs: options.bwrapArgs,
       blockedDestinations: options.blockedDestinations,
       passProjectFd: options.passProjectFd,
+      ...(options.portBroker ? { portBroker: options.portBroker } : {}),
     }),
     options.command,
     ...options.commandArgs,
@@ -572,6 +634,13 @@ export interface ProbeSessionSandboxAvailabilityOptions {
   ipPath?: string;
   /** Test-only override for the AppArmor user-namespace restriction knob. */
   usernsRestrictionPath?: string;
+  /**
+   * Private-state root whose throwaway subdirectory the probe mounts, as a
+   * launch mounts its real state. Defaults to the launch default.
+   */
+  stateRoot?: string;
+  /** Test-only override for the host resolver path the launch mounts over. */
+  resolvConfPath?: string;
 }
 
 /**
@@ -594,7 +663,8 @@ async function withMissingNetworkPackages(
 
 /**
  * Check whether this server host can currently offer a local session sandbox.
- * The project-specific launch path repeats all checks with its final binds.
+ * The probe mounts what a launch mounts, over throwaway state; the
+ * project-specific launch path repeats all checks with its final binds.
  */
 export async function probeSessionSandboxAvailability(
   options: ProbeSessionSandboxAvailabilityOptions = {},
@@ -612,11 +682,11 @@ export async function probeSessionSandboxAvailability(
     const version = await requireSupportedBwrapVersion(bwrapPath);
     const tools = await resolveSessionSandboxNetworkTools(options);
     try {
-      await runNetworkSandboxProbe({
+      await probeLaunchShape({
         tools,
         bwrapPath,
-        bwrapArgs: BWRAP_PREFLIGHT_ARGS,
-        blockedDestinations: blockedIpv4Destinations(),
+        stateRoot: options.stateRoot,
+        resolvConfPath: options.resolvConfPath,
       });
     } catch (error) {
       // Bubblewrap ships its own AppArmor exemption; the namespace helper
@@ -668,6 +738,8 @@ export async function probeSessionSandboxAvailability(
  */
 export function getSessionSandboxAvailability(options?: {
   forceRefresh?: boolean;
+  /** The private-state root launches use; the probe mounts from it too. */
+  stateRoot?: string;
 }): Promise<SessionSandboxAvailability> {
   const now = Date.now();
   if (
@@ -682,7 +754,9 @@ export function getSessionSandboxAvailability(options?: {
     return pendingSessionSandboxAvailability;
   }
 
-  const request = probeSessionSandboxAvailability().then((value) => {
+  const request = probeSessionSandboxAvailability({
+    stateRoot: options?.stateRoot,
+  }).then((value) => {
     cachedSessionSandboxAvailability = {
       checkedAt: Date.now(),
       value,
@@ -758,13 +832,9 @@ async function bootstrapProviderState(options: {
       await copyBootstrapEntry(source, options.providerStateDir, entry);
     }
   } else {
-    const source = process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
-    for (const entry of [
-      ".credentials.json",
-      "settings.json",
-      "plugins",
-      "skills",
-    ]) {
+    // .credentials.json is shared, not copied: see sharedClaudeCredentials.
+    const source = hostClaudeConfigDir();
+    for (const entry of ["settings.json", "plugins", "skills"]) {
       await copyBootstrapEntry(source, options.providerStateDir, entry);
     }
     const hostClaudeJson = join(homedir(), ".claude.json");
@@ -783,6 +853,37 @@ async function bootstrapProviderState(options: {
 
   await writeEmptyFile(marker);
   await chmod(marker, 0o600);
+}
+
+function hostClaudeConfigDir(): string {
+  return process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude");
+}
+
+/**
+ * The host's Claude login, mounted writable over the private config's
+ * `.credentials.json`. Claude rotates its refresh token on every refresh and
+ * the old one dies, so a private copy stops working as soon as either side
+ * refreshes, and a sandbox refreshing first logs the host out. One shared
+ * file keeps both current: Claude rewrites it in place and re-reads it when
+ * another process refreshed first. Sandboxes can already read this file
+ * through the read-only host view; sharing adds write access to it.
+ */
+async function sharedClaudeCredentials(
+  providerStateDir: string,
+): Promise<{ source: string; target: string } | undefined> {
+  const source = join(hostClaudeConfigDir(), ".credentials.json");
+  try {
+    // Claude itself refuses a symlinked credentials file.
+    if (!(await lstat(source)).isFile()) return undefined;
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return undefined;
+    throw error;
+  }
+  const target = join(providerStateDir, ".credentials.json");
+  // The bind needs an existing mount point; an older sandbox's stale copy
+  // serves, and is hidden under the mount.
+  await writeFile(target, "", { flag: "a", mode: 0o600 });
+  return { source, target };
 }
 
 async function writeEmptyFile(destination: string): Promise<void> {
@@ -930,6 +1031,7 @@ function buildBwrapBaseArgs(options: {
   tempDir: string;
   varTempDir: string;
   privateClaudeJson?: string;
+  sharedCredentials?: { source: string; target: string };
   providerHostRuntimeDir?: string;
   networkResolvConf?: { source: string; mountPoint: string };
 }): string[] {
@@ -965,6 +1067,14 @@ function buildBwrapBaseArgs(options: {
     options.cacheDir,
     options.cacheDir,
   ];
+  if (options.sharedCredentials) {
+    // After the provider-state bind, so it overlays the private path.
+    args.push(
+      "--bind",
+      options.sharedCredentials.source,
+      options.sharedCredentials.target,
+    );
+  }
   if (options.privateClaudeJson) {
     args.push(
       "--bind-try",
@@ -1047,6 +1157,145 @@ async function resolveProviderHostRuntimeMask(options: {
   return runtimeDir;
 }
 
+/**
+ * Create the configured private-state root and return its real path.
+ * Bubblewrap mount destinations must name the real directory, not an ancestor
+ * symlink that it cannot create through the read-only host bind.
+ */
+async function resolveSandboxStateRoot(configured?: string): Promise<string> {
+  const configuredRoot = sessionSandboxStateRoot(configured);
+  await mkdir(configuredRoot, { recursive: true, mode: 0o700 });
+  return realpath(configuredRoot);
+}
+
+function sandboxStatePaths(stateDir: string, provider: ProviderName) {
+  return {
+    providerStateDir: join(stateDir, provider === "codex" ? "codex" : "claude"),
+    cacheDir: join(stateDir, "cache"),
+    ...sandboxPrivateTempDirs(stateDir),
+    privateClaudeJson: join(stateDir, "claude.json"),
+    networkResolvConf: join(stateDir, "network-resolv.conf"),
+  };
+}
+
+/**
+ * Host directories a sandbox mounts as its private /tmp and /var/tmp, so a
+ * path a sandboxed session printed under those names can be found on the
+ * host. `stateDir` is `<state root>/<state key>`.
+ */
+export function sandboxPrivateTempDirs(stateDir: string): {
+  tempDir: string;
+  varTempDir: string;
+} {
+  return {
+    tempDir: join(stateDir, "tmp"),
+    varTempDir: join(stateDir, "var-tmp"),
+  };
+}
+
+/**
+ * Every existing sandbox's private /tmp and /var/tmp under `stateRoot`: the
+ * scratch sandboxed sessions write artifacts to. Provider state, credentials
+ * and caches beside them are not included.
+ */
+export function listSandboxPrivateTempRoots(stateRoot: string): string[] {
+  let keys: string[];
+  try {
+    keys = readdirSync(stateRoot);
+  } catch (error) {
+    if (hasErrorCode(error, "ENOENT")) return [];
+    throw error;
+  }
+  return keys
+    .filter((key) => SANDBOX_STATE_KEY_PATTERN.test(key))
+    .flatMap((key) => {
+      const { tempDir, varTempDir } = sandboxPrivateTempDirs(
+        join(stateRoot, key),
+      );
+      return [tempDir, varTempDir].filter((dir) => existsSync(dir));
+    });
+}
+
+async function makePrivateDirectories(
+  directories: readonly string[],
+): Promise<void> {
+  await Promise.all(
+    directories.map(async (directory) => {
+      await mkdir(directory, { recursive: true, mode: 0o700 });
+      await chmod(directory, 0o700);
+    }),
+  );
+}
+
+async function writeNetworkResolvConf(path: string): Promise<void> {
+  await writeFile(path, "nameserver 10.0.2.3\noptions timeout:2 attempts:2\n", {
+    mode: 0o600,
+  });
+  await chmod(path, 0o600);
+}
+
+/**
+ * Run the network launcher once with the argument shape a firewalled Claude
+ * launch builds, the superset of the provider shapes, over throwaway private
+ * state and project directories. A host that passes can mount everything a
+ * launch mounts; the launch still repeats the probe with its real state.
+ */
+async function probeLaunchShape(options: {
+  tools: SessionSandboxNetworkTools;
+  bwrapPath: string;
+  stateRoot?: string;
+  resolvConfPath?: string;
+}): Promise<void> {
+  const root = await resolveSandboxStateRoot(options.stateRoot);
+  const stateDir = await mkdtemp(join(root, AVAILABILITY_PROBE_STATE_PREFIX));
+  try {
+    const projectPath = join(stateDir, "project");
+    const paths = sandboxStatePaths(stateDir, "claude");
+    await makePrivateDirectories([
+      projectPath,
+      paths.providerStateDir,
+      paths.cacheDir,
+      paths.tempDir,
+      paths.varTempDir,
+    ]);
+    await writeEmptyFile(paths.privateClaudeJson);
+    await writeNetworkResolvConf(paths.networkResolvConf);
+    const args = buildBwrapBaseArgs({
+      projectPath,
+      projectSourcePath: `/proc/self/fd/${PROJECT_DIRECTORY_CHILD_FD}`,
+      providerStateDir: paths.providerStateDir,
+      cacheDir: paths.cacheDir,
+      tempDir: paths.tempDir,
+      varTempDir: paths.varTempDir,
+      privateClaudeJson: (await hasClaudeJsonMountPoint())
+        ? paths.privateClaudeJson
+        : undefined,
+      providerHostRuntimeDir: await resolveProviderHostRuntimeMask({
+        projectPath,
+        stateDir,
+      }),
+      networkResolvConf: {
+        source: paths.networkResolvConf,
+        mountPoint: await resolvConfMountPoint(options.resolvConfPath),
+      },
+    });
+    const projectAnchor = openProjectDirectoryAnchor(projectPath);
+    try {
+      await runNetworkSandboxProbe({
+        tools: options.tools,
+        bwrapPath: options.bwrapPath,
+        bwrapArgs: args,
+        blockedDestinations: blockedIpv4Destinations(),
+        projectDirectoryFd: projectAnchor.fd,
+      });
+    } finally {
+      projectAnchor.release();
+    }
+  } finally {
+    await rm(stateDir, { recursive: true, force: true });
+  }
+}
+
 async function openAnchoredDirectory(
   root: string,
   relativePath: string,
@@ -1068,6 +1317,40 @@ async function openAnchoredDirectory(
     await current.close();
     throw error;
   }
+}
+
+/** The root holding every project's private sandbox state. */
+function sessionSandboxStateRoot(stateRoot: string | undefined): string {
+  return resolve(
+    stateRoot ?? join(homedir(), ".yep-anywhere", "session-sandboxes"),
+  );
+}
+
+/**
+ * Open a sandboxed Claude session's private transcript directory for a
+ * host-side copy, the same directory `prepareSessionSandbox` gives the
+ * provider and `getClaudeSandboxProjectDir` gives the readers. The state root
+ * and key are YA's own; everything below them is writable from inside the
+ * sandbox, so each of those components is opened without following links.
+ */
+export async function openClaudeSandboxTranscriptDirectory(options: {
+  stateRoot?: string;
+  stateKey: string;
+  projectPath: string;
+}): Promise<FileHandle> {
+  if (!SANDBOX_STATE_KEY_PATTERN.test(options.stateKey)) {
+    throw new Error("Invalid session sandbox state key");
+  }
+  const root = await realpath(sessionSandboxStateRoot(options.stateRoot));
+  return openAnchoredDirectory(
+    root,
+    join(
+      options.stateKey,
+      "claude",
+      "projects",
+      claudeProjectDirectory(options.projectPath),
+    ),
+  );
 }
 
 export async function prepareSessionSandbox(
@@ -1113,13 +1396,7 @@ export async function prepareSessionSandbox(
     throw new Error("Invalid session sandbox state key");
   }
 
-  const configuredRoot = resolve(
-    options.stateRoot ?? join(homedir(), ".yep-anywhere", "session-sandboxes"),
-  );
-  await mkdir(configuredRoot, { recursive: true, mode: 0o700 });
-  // Bubblewrap mount destinations must name the real directory, not an
-  // ancestor symlink that it cannot create through the read-only host bind.
-  const root = await realpath(configuredRoot);
+  const root = await resolveSandboxStateRoot(options.stateRoot);
   const stateDir = resolve(root, stateKey);
   if (!isWithin(root, stateDir)) {
     throw new Error("Session sandbox state escaped its configured root");
@@ -1133,42 +1410,43 @@ export async function prepareSessionSandbox(
   const blockedDestinations = networkFirewall
     ? blockedIpv4Destinations()
     : undefined;
-  const providerStateDir = join(
-    stateDir,
-    options.provider === "codex" ? "codex" : "claude",
-  );
-  const cacheDir = join(stateDir, "cache");
-  const tempDir = join(stateDir, "tmp");
-  const varTempDir = join(stateDir, "var-tmp");
-  const privateClaudeJson = join(stateDir, "claude.json");
-  const networkResolvConf = join(stateDir, "network-resolv.conf");
+  const portBroker = networkFirewall
+    ? await resolveSessionSandboxPortBroker()
+    : undefined;
+  const {
+    providerStateDir,
+    cacheDir,
+    tempDir,
+    varTempDir,
+    privateClaudeJson,
+    networkResolvConf,
+  } = sandboxStatePaths(stateDir, options.provider);
   const transcriptDir =
     options.provider === "codex"
       ? join(providerStateDir, "sessions")
       : join(providerStateDir, "projects", claudeProjectDirectory(projectPath));
-  await Promise.all(
-    [root, stateDir, providerStateDir, cacheDir, tempDir, varTempDir].map(
-      async (directory) => {
-        await mkdir(directory, { recursive: true, mode: 0o700 });
-        await chmod(directory, 0o700);
-      },
-    ),
-  );
+  await makePrivateDirectories([
+    root,
+    stateDir,
+    providerStateDir,
+    cacheDir,
+    tempDir,
+    varTempDir,
+  ]);
   await bootstrapProviderState({
     provider: options.provider,
     providerStateDir,
     privateClaudeJson,
   });
   if (networkFirewall) {
-    await writeFile(
-      networkResolvConf,
-      "nameserver 10.0.2.3\noptions timeout:2 attempts:2\n",
-      { mode: 0o600 },
-    );
-    await chmod(networkResolvConf, 0o600);
+    await writeNetworkResolvConf(networkResolvConf);
   }
   const mountPrivateClaudeJson =
     options.provider !== "codex" && (await hasClaudeJsonMountPoint());
+  const sharedCredentials =
+    options.provider === "codex"
+      ? undefined
+      : await sharedClaudeCredentials(providerStateDir);
   const providerHostRuntimeDir = await resolveProviderHostRuntimeMask({
     projectPath,
     stateDir,
@@ -1184,6 +1462,7 @@ export async function prepareSessionSandbox(
     tempDir,
     varTempDir,
     privateClaudeJson: mountPrivateClaudeJson ? privateClaudeJson : undefined,
+    sharedCredentials,
     providerHostRuntimeDir,
     networkResolvConf: networkFirewall
       ? { source: networkResolvConf, mountPoint: await resolvConfMountPoint() }
@@ -1223,7 +1502,11 @@ export async function prepareSessionSandbox(
     sandboxEnv.CLAUDE_SESSIONS_DIR = join(providerStateDir, "projects");
   }
 
-  return {
+  const runtimeWithArgs = (
+    launchArgs: readonly string[],
+    sessionEnvBridgeMounted: boolean,
+  ): SessionSandboxRuntime => ({
+    instructions: options.instructions,
     stateKey,
     projectPath,
     transcriptDir,
@@ -1235,6 +1518,31 @@ export async function prepareSessionSandbox(
       state: "enforced",
       hostBackend: `bubblewrap:${basename(bwrapPath)}`,
       networkFirewall,
+    },
+    sessionEnvBridgeDirectory: SESSION_ENV_BRIDGE_MOUNT_POINT,
+    withSessionEnvBridge(hostDirectory) {
+      if (sessionEnvBridgeMounted) {
+        throw new Error(
+          "Session sandbox already mounts a session environment bridge.",
+        );
+      }
+      if (!isAbsolute(hostDirectory)) {
+        throw new Error(
+          "Session sandbox bridge directory must be an absolute path.",
+        );
+      }
+      if (!lstatSync(hostDirectory).isDirectory()) {
+        throw new Error("Session sandbox bridge path must be a directory.");
+      }
+      return runtimeWithArgs(
+        [
+          ...launchArgs,
+          "--ro-bind",
+          hostDirectory,
+          SESSION_ENV_BRIDGE_MOUNT_POINT,
+        ],
+        true,
+      );
     },
     wrapSpawn(command, args, env) {
       const projectAnchor = openProjectDirectoryAnchor(
@@ -1248,13 +1556,14 @@ export async function prepareSessionSandbox(
             ? buildNetworkLauncherArgs({
                 tools: networkTools,
                 bwrapPath,
-                bwrapArgs: baseArgs,
+                bwrapArgs: launchArgs,
                 blockedDestinations,
                 passProjectFd: true,
+                ...(portBroker ? { portBroker } : {}),
                 command,
                 commandArgs: args,
               })
-            : [...baseArgs, "--", command, ...args],
+            : [...launchArgs, "--", command, ...args],
         // Bubblewrap changes to the project only after installing the
         // descriptor-backed bind. Its host-side cwd must not follow a
         // pathname replacement between wrapSpawn() and spawn().
@@ -1267,5 +1576,6 @@ export async function prepareSessionSandbox(
         release: () => projectAnchor.release(),
       };
     },
-  };
+  });
+  return runtimeWithArgs(baseArgs, false);
 }

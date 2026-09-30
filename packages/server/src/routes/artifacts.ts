@@ -1,77 +1,28 @@
 import { resolve } from "node:path";
 import { Hono } from "hono";
 import type { ArtifactServer } from "../artifacts/ArtifactServer.js";
-import {
-  validateArtifactConfig,
-  type ArtifactConfig,
-} from "../artifacts/config.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { ServerSettingsService } from "../services/ServerSettingsService.js";
 import { expandHomePath } from "../utils/expandHomePath.js";
+import {
+  createArtifactConfigWriter,
+  type ArtifactConfigWriter,
+} from "./artifactConfigWriter.js";
 
 export function createArtifactRoutes(options: {
   server: ArtifactServer;
   scanner: Pick<ProjectScanner, "getProject">;
   settings?: ServerSettingsService;
   locked: boolean;
+  /** Shared with other configuration writers; one is made when absent. */
+  writer?: ArtifactConfigWriter;
+  onArtifactCreated?: (path: string, projectId?: string) => Promise<void>;
 }) {
   const routes = new Hono();
-  let updating = false;
+  const writer = options.writer ?? createArtifactConfigWriter(options);
   routes.put("/artifacts/config", async (c) => {
-    if (options.locked || !options.settings)
-      return c.json(
-        { error: "Artifact configuration is controlled at launch" },
-        409,
-      );
-    if (updating)
-      return c.json({ error: "Artifact configuration is being updated" }, 409);
-    let config: ArtifactConfig;
-    try {
-      config = validateArtifactConfig(
-        await c.req.json(),
-        options.server.config.expiryDays,
-        options.server.config,
-      );
-      const requestHost = new URL(
-        `http://${c.req.header("Host") ?? new URL(c.req.url).host}`,
-      ).hostname;
-      const clientBase = options.settings.getSetting("yaClientBaseUrl");
-      const yaHosts = [
-        requestHost,
-        clientBase ? new URL(clientBase).hostname : undefined,
-      ];
-      if (
-        [config.localOrigin, config.publicOrigin].some(
-          (origin) => origin && yaHosts.includes(new URL(origin).hostname),
-        )
-      ) {
-        throw new Error("Artifacts require a different hostname from YA");
-      }
-    } catch (error) {
-      return c.json(
-        {
-          error:
-            error instanceof Error
-              ? error.message
-              : "Invalid artifact configuration",
-        },
-        400,
-      );
-    }
-    updating = true;
-    const previous = options.server.config;
-    try {
-      await options.server.configure(config);
-      try {
-        await options.settings.updateSettings({ artifactViewer: config });
-      } catch (error) {
-        await options.server.configure(previous);
-        throw error;
-      }
-      return c.json({ success: true });
-    } finally {
-      updating = false;
-    }
+    const body = await c.req.json<unknown>();
+    return (await writer.apply(c, body)) ?? c.json({ success: true });
   });
   routes.post("/artifacts", async (c) => {
     if (!options.server.available)
@@ -96,18 +47,24 @@ export function createArtifactRoutes(options: {
         400,
       );
     let filePath = expandHomePath(path);
+    let canonicalProjectId: string | undefined;
     if (projectId) {
       const project = await options.scanner.getProject(projectId);
       if (!project) return c.json({ error: "Project not found" }, 404);
       filePath = resolve(project.path, filePath);
+      canonicalProjectId = project.id;
     }
-    return c.json(
-      await options.server.createGrant(
-        filePath,
-        audience,
-        owned as boolean | undefined,
-      ),
+    const grant = await options.server.createGrant(
+      filePath,
+      audience,
+      owned as boolean | undefined,
     );
+    if (options.onArtifactCreated)
+      await options.onArtifactCreated(
+        await options.server.resolveSourceUrl(grant.url),
+        canonicalProjectId,
+      );
+    return c.json(grant);
   });
   routes.delete("/artifacts/:id", async (c) => {
     await options.server.revoke(c.req.param("id"));

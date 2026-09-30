@@ -6,6 +6,10 @@ import {
   type UrlProjectId,
 } from "@yep-anywhere/shared";
 import {
+  type LocalFileScope,
+  useLocalFileScope,
+} from "../hooks/useLocalFileScope";
+import {
   type MouseEvent,
   type ReactNode,
   type RefObject,
@@ -229,14 +233,26 @@ function normalizeResourceForProjectContext(
   };
 }
 
-function localMediaApiPath(path: string): string {
-  return `/api/local-image?path=${encodeURIComponent(path)}`;
+export { useLocalFileScope, type LocalFileScope };
+
+function localFileDoor(
+  kind: "local-image" | "local-file",
+  scope: LocalFileScope | undefined,
+): string {
+  return scope
+    ? `/api/sessions/${encodeURIComponent(scope.sessionId)}/${kind}`
+    : `/api/${kind}`;
+}
+
+function localMediaApiPath(path: string, scope?: LocalFileScope): string {
+  return `${localFileDoor("local-image", scope)}?path=${encodeURIComponent(path)}`;
 }
 
 function localResourceApiPath(
   resource: LocalResourceRef,
   renderMarkdown: boolean,
   download = resource.download,
+  scope?: LocalFileScope,
 ): string {
   if (
     resource.kind === "project-raw-file" ||
@@ -262,7 +278,7 @@ function localResourceApiPath(
   if (resource.columnNumber !== undefined) {
     params.set("column", String(resource.columnNumber));
   }
-  return `/api/local-file?${params.toString()}`;
+  return `${localFileDoor("local-file", scope)}?${params.toString()}`;
 }
 
 function isLocalMediaType(
@@ -281,8 +297,9 @@ export async function fetchMediaBlob(
 function buildMediaApiPath(
   path: string,
   mediaSource?: LocalMediaSource,
+  scope?: LocalFileScope,
 ): string | null {
-  return mediaSource?.buildApiPath?.(path) ?? localMediaApiPath(path);
+  return mediaSource?.buildApiPath?.(path) ?? localMediaApiPath(path, scope);
 }
 
 export async function fetchLocalMediaBlob(
@@ -290,8 +307,9 @@ export async function fetchLocalMediaBlob(
   mediaSource: LocalMediaSource | undefined,
   purpose: "inline" | "modal",
   transport = getSourceRuntimeRegistry().getCurrentSourceRuntime().transport,
+  scope?: LocalFileScope,
 ): Promise<Blob> {
-  const apiPath = buildMediaApiPath(path, mediaSource);
+  const apiPath = buildMediaApiPath(path, mediaSource, scope);
   if (!apiPath) {
     throw new Error("Media is outside this view");
   }
@@ -544,6 +562,7 @@ function LocalMediaModalView({
 }) {
   const { t } = useI18n();
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
   const publishedViewer = useFileViewerController();
   const minimized = Boolean(
     inactive ||
@@ -588,7 +607,7 @@ function LocalMediaModalView({
     setLoading(true);
     setError(null);
 
-    void fetchLocalMediaBlob(path, mediaSource, "modal", transport)
+    void fetchLocalMediaBlob(path, mediaSource, "modal", transport, fileScope)
       .then(async (blob) => {
         if (cancelled) return;
         pendingObjectUrl = URL.createObjectURL(blob);
@@ -629,6 +648,7 @@ function LocalMediaModalView({
       }
     };
   }, [
+    fileScope,
     mediaSource,
     mediaType,
     path,
@@ -800,12 +820,18 @@ export function LocalFileModal({
 }: LocalFileModalProps) {
   const sessionMetadata = useOptionalSessionMetadata();
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
   const presentation =
     initialPresentation ??
     (resource.renderMarkdown || /\.html?$/i.test(resource.path)
       ? "preview"
       : "source");
-  const apiPath = localResourceApiPath(resource, presentation === "preview");
+  const apiPath = localResourceApiPath(
+    resource,
+    presentation === "preview",
+    resource.download,
+    fileScope,
+  );
   const fileName = getFileName(resource.path);
   const locationSuffix = `${resource.lineNumber !== undefined ? `:${resource.lineNumber}` : ""}${
     resource.columnNumber !== undefined ? `:${resource.columnNumber}` : ""
@@ -1079,6 +1105,7 @@ function LocalResourceContextMenu({
   ) => void;
 }) {
   const { t } = useI18n();
+  const fileScope = useLocalFileScope();
   const publicShare = usePublicShareContext();
   const basePath = useRemoteBasePath();
   const startNewSessionFromFile = useStartNewSessionFromFileAction();
@@ -1147,7 +1174,13 @@ function LocalResourceContextMenu({
         loadBlob: () => {
           const { projectFileTarget, resource } = contextMenu;
           return isMedia
-            ? fetchLocalMediaBlob(resource.path, undefined, "modal", transport)
+            ? fetchLocalMediaBlob(
+                resource.path,
+                undefined,
+                "modal",
+                transport,
+                fileScope,
+              )
             : fetchLocalResourceBlob(
                 projectFileTarget
                   ? projectRawFileApiPath(
@@ -1155,7 +1188,7 @@ function LocalResourceContextMenu({
                       projectFileTarget.filePath,
                       true,
                     )
-                  : localResourceApiPath(resource, false, true),
+                  : localResourceApiPath(resource, false, true, fileScope),
                 transport,
               );
         },
@@ -1169,6 +1202,7 @@ function LocalResourceContextMenu({
                   undefined,
                   "modal",
                   transport,
+                  fileScope,
                 ),
               );
             }
@@ -1242,7 +1276,12 @@ function LocalResourceContextMenu({
               }
               void writeClipboardTextLater(
                 fetchLocalResourceBlob(
-                  localResourceApiPath(resource, false),
+                  localResourceApiPath(
+                    resource,
+                    false,
+                    resource.download,
+                    fileScope,
+                  ),
                   transport,
                 ).then(readBlobText),
               );
@@ -1272,7 +1311,12 @@ function LocalResourceContextMenu({
               }
               void writeClipboardRichTextLater(
                 fetchLocalResourceBlob(
-                  localResourceApiPath(resource, true),
+                  localResourceApiPath(
+                    resource,
+                    true,
+                    resource.download,
+                    fileScope,
+                  ),
                   transport,
                 )
                   .then(readBlobText)
@@ -1573,6 +1617,7 @@ export function useLocalMediaInlinePreviews(
 ) {
   const { inlineMediaExpandedByDefault } = useInlineMedia();
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
 
   useEffect(() => {
     void refreshKey;
@@ -1664,6 +1709,7 @@ export function useLocalMediaInlinePreviews(
         mediaSource,
         "inline",
         transport,
+        fileScope,
       )
         .then(async (blob) => {
           const objectUrl = URL.createObjectURL(blob);
@@ -1753,5 +1799,6 @@ export function useLocalMediaInlinePreviews(
     mediaSource,
     options.suppressAutomaticImages,
     transport,
+    fileScope,
   ]);
 }

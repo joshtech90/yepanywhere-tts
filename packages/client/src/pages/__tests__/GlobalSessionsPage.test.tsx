@@ -435,6 +435,9 @@ describe("GlobalSessionsPage", () => {
   // The browser test in e2e/all-sessions-search.spec.ts measures key-to-frame
   // latency. fireEvent also flushes deferred React work, so its return time
   // cannot measure when the input acknowledged the key.
+  // The 300-row jsdom rerenders took 5559ms and 5647ms in CI runs
+  // 36539929521 and 36540817702, exceeding the default 5s whole-test budget.
+  // Allow 2.7x that measured maximum; browser key-to-frame limits stay intact.
   it("preserves sequential search typing while provenance filtering and the catalog update", () => {
     versionState.version = {
       capabilities: [SESSION_CREATION_PROVENANCE_CAPABILITY],
@@ -453,7 +456,7 @@ describe("GlobalSessionsPage", () => {
     );
     const view = render(page());
     const input = screen.getByRole("searchbox") as HTMLInputElement;
-    input.focus();
+    act(() => input.focus());
     let typed = "";
     for (const char of "source") {
       typed += char;
@@ -469,7 +472,7 @@ describe("GlobalSessionsPage", () => {
       view.rerender(page());
       expect(input.value).toBe(typed);
     }
-  });
+  }, 15_000);
 
   for (const release of ["0.8.0", "0.8.1"]) {
     it(`keeps ${release} title-only without content-search requests`, async () => {

@@ -439,6 +439,25 @@ describe("ProvidersSettings additional models", () => {
     ).toEqual(["provider-codex", "provider-claude"]);
   });
 
+  it("refreshes the model catalog from the Codex provider card", async () => {
+    hookState.providers = [
+      {
+        name: "codex",
+        displayName: "Codex",
+        installed: true,
+        authenticated: true,
+        enabled: true,
+        models: [{ id: "gpt-6-astra", name: "Astra" }],
+      },
+    ];
+    render(<ProvidersSettings />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "providersModelsRefresh" }),
+    );
+    await waitFor(() => expect(mockReloadProviders).toHaveBeenCalledTimes(1));
+  });
+
   it("hides legacy reload-safe Codex settings when advertised", () => {
     hookState.providers = [
       {

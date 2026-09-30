@@ -30,6 +30,12 @@ idea without turning Project Settings into a general override framework.
 
 ## Heartbeat defaults surface
 
+The project settings dialog combines inline App/address controls, project
+sharing and these session defaults. The App section uses the same controls
+as the App viewer's settings, without opening its iframe. Sharing and app
+actions apply immediately; Save applies the heartbeat overrides. Wide layouts
+place App/sharing beside the defaults, while phones stack them.
+
 - `GET` and `PATCH /api/projects/:projectId/session-defaults` expose the
   project heartbeat interval/message overrides plus up to eight recently used
   project heartbeat messages, most recent first.

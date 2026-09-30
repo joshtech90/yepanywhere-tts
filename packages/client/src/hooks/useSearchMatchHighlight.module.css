@@ -1,26 +1,51 @@
+@property --search-match-opacity {
+  syntax: "<number>";
+  inherits: true;
+  initial-value: 1;
+}
+
 .target {
+  --search-match-opacity: 1;
   outline: 2px solid var(--primary-color);
   outline-offset: -2px;
   background-color: color-mix(in srgb, var(--primary-color) 12%, transparent);
 }
 
-/* Only the landing fades; selecting a match while searching stays instant. */
+/* Keep the destination visible until the reader has been idle. */
 .target.landed {
-  outline-color: transparent;
-  background-color: transparent;
-  transition:
-    outline-color 700ms ease-out,
-    background-color 700ms ease-out;
+  outline-color: color-mix(
+    in srgb,
+    var(--primary-color) calc(var(--search-match-opacity) * 100%),
+    transparent
+  );
+  background-color: color-mix(
+    in srgb,
+    var(--primary-color) calc(var(--search-match-opacity) * 12%),
+    transparent
+  );
+}
+
+.target.fading {
+  --search-match-opacity: 0;
+  transition: --search-match-opacity 3s linear;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .target.landed {
+  .target.fading {
     transition: none;
   }
 }
 
 .target::highlight(session-isearch),
 .target ::highlight(session-isearch) {
-  background-color: #ffdc70;
-  color: #171717;
+  background-color: color-mix(
+    in srgb,
+    #ffdc70 calc(var(--search-match-opacity) * 100%),
+    transparent
+  );
+  color: color-mix(
+    in srgb,
+    #171717 calc(var(--search-match-opacity) * 100%),
+    currentColor
+  );
 }

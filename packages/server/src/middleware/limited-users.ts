@@ -52,6 +52,8 @@ export interface LimitedUsersMiddlewareOptions {
   ) => Promise<string | null>;
   /** Secret used to sign the acting-user cookie. */
   getCookieSecret: () => string;
+  /** Personal list visibility; does not change direct project/session access. */
+  getHiddenProjectIds?: (username: string) => Promise<ReadonlySet<string>>;
 }
 
 function limitedPrincipal(
@@ -354,6 +356,17 @@ export function createLimitedUsersMiddleware(
 
     const isAccessible = (projectId: string) =>
       levelFor(principal.grants, projectId) !== "none";
+    const filterVisible = async (
+      response: Response,
+      filter: FilteredListKind,
+    ) => {
+      const hidden = await options.getHiddenProjectIds?.(principal.username);
+      return filterResponse(
+        response,
+        filter,
+        (projectId) => isAccessible(projectId) && !hidden?.has(projectId),
+      );
+    };
 
     switch (decision.kind) {
       case "deny":
@@ -361,10 +374,21 @@ export function createLimitedUsersMiddleware(
       case "allow":
         await next();
         return;
+      case "detached-create":
+        if (principal.grants.allowNoProjectSessions !== true) {
+          return c.json(
+            {
+              error: "No project session creation is not enabled for this user",
+            },
+            403,
+          );
+        }
+        await next();
+        return;
       case "allow-filtered": {
         await next();
         if (c.res) {
-          c.res = await filterResponse(c.res, decision.filter, isAccessible);
+          c.res = await filterVisible(c.res, decision.filter);
         }
         return;
       }
@@ -378,7 +402,7 @@ export function createLimitedUsersMiddleware(
         }
         await next();
         if (decision.filter && c.res) {
-          c.res = await filterResponse(c.res, decision.filter, isAccessible);
+          c.res = await filterVisible(c.res, decision.filter);
         }
         return;
       }
@@ -403,27 +427,34 @@ export function createLimitedUsersMiddleware(
           // Driving a process that runs outside the sandbox — sending turns,
           // approving tools, changing its permission mode — is the server
           // account's authority, whoever started it and however fresh it is.
+          // Its network firewall is part of that sandbox.
           return c.json(
             {
               error:
-                "This session runs outside the sandbox, so this user cannot act in it; start a new session instead",
+                "This session runs outside the sandbox or without its network firewall, so this user cannot act in it; start a new session instead",
               reason: "unsandboxed-session",
             },
             403,
           );
         }
         if (
-          decision.required === "join" &&
-          !options.sessionAccess.canJoin(facts, {
-            username: principal.username,
+          decision.startsTurn &&
+          !options.sessionAccess.isFresh(facts, {
             offsetMinutes: principal.grants.joinStaleOffsetMinutes,
           })
         ) {
+          // A turn on a cold session re-reads its whole context without the
+          // prompt cache, whoever started it. Where the user may start
+          // sessions, the client redirects the turn into a new one seeded
+          // with a handoff (the `stale-handoff` action) instead.
           return c.json(
             {
               error:
                 "This session has gone cold; start a new session instead of resuming it",
               reason: "stale-session",
+              ...(level === "new-session"
+                ? { staleRedirect: "stale-handoff" }
+                : {}),
             },
             403,
           );

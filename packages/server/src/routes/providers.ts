@@ -123,10 +123,13 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
   const readProviderInfo = async (
     provider: AgentProvider,
     providerName: ProviderName,
+    forceRefresh: boolean,
   ): Promise<ProviderInfoCacheValue> => {
     const [authStatus, models] = await Promise.all([
       provider.getAuthStatus(),
-      provider.getAvailableModels(),
+      forceRefresh
+        ? provider.getAvailableModels({ forceRefresh: true })
+        : provider.getAvailableModels(),
     ]);
     return {
       expiresAt:
@@ -227,7 +230,8 @@ export function createProvidersRoutes(deps: ProviderRouteDeps = {}): Hono {
         const result = await providerInfoOwner.run({
           key: providerName,
           sourceVersion,
-          compute: () => readProviderInfo(provider, providerName),
+          compute: () =>
+            readProviderInfo(provider, providerName, generation.forced),
           isCurrent: (candidate) =>
             admission.current?.sourceVersion === candidate &&
             provider.getModelCatalogCacheKey?.() === generation.catalogCacheKey,

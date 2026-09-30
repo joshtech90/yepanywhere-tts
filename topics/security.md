@@ -105,11 +105,16 @@ names a project the user may read. Hiding a control in the client is cosmetic.
 **Execution.** Every provider process a limited user starts or resumes runs
 in the project-write sandbox on this host, under the user's
 provider/model/effort lock. This covers create, resume, reactivate, a fork or
-clone copy once it runs, and Project Queue dispatch. A new session is forced
-to project-write, and an existing session must already be sandboxed. The same
-holds for acting in a session someone else started: a join grant sends turns,
-approves tools, interrupts, and changes the permission mode only of a session
-whose process runs sandboxed, never of the superuser's unsandboxed ones. Remote
+clone copy once it runs, Project Queue dispatch, and a template creation's
+preparation session. The sandbox includes its network firewall, so the agent
+cannot reach the YA listener, local-network services, or unauthenticated
+localhost services such as the maintenance server. A new session is forced to
+project-write with the firewall on, and a request that turns the firewall off
+is refused; an existing session must already run sandboxed with its firewall
+on. The same holds for acting in a session someone else started: a join grant
+sends turns, approves tools, interrupts, and changes the permission mode only
+of a session whose process runs that way, never of the superuser's unsandboxed
+or firewall-off ones. Remote
 executors and computer control are refused, as is every other session action
 that launches a process, such as restart, recap, rewind, and clearloop. The
 sandbox keeps its own preconditions: enforced authentication, Linux, and a
@@ -127,12 +132,6 @@ new-session access to it, as an ordinary grant the superuser can revoke.
 
 **Outside the boundary.**
 
-- **The network firewall is not forced.** A limited user's create request may
-  turn off the sandbox's network firewall. The session then shares host
-  networking and can reach the YA listener, local-network services, and
-  unauthenticated localhost services such as the maintenance server when it
-  runs. Tracked in
-  [`gaps/limited-user-sandbox-firewall-opt-out.md`](../gaps/limited-user-sandbox-firewall-opt-out.md).
 - **The sandbox confines writes, not reads.** Files the server account can
   read remain readable to a limited user's agent, including other users'
   projects. The layer claims no confidentiality, credential-isolation, or
@@ -179,6 +178,43 @@ absent, `--auth-disable` on, or localhost-open access on, New Session shows a
 standing warning on the enabled sandbox: an agent that reaches YA — readily
 so with the network firewall off — can drive it and escape. Authentication
 remains independent defense in depth, now the operator's choice.
+
+`auth.json` fails closed, and so do `limited-users.json`,
+`remote-access.json` and `project-metadata.json`, whose project ownership
+backs limited users' grants. Each is saved by atomic replacement, never
+rewritten in place, and only when its content changes: checking a login does
+not write `auth.json` (it once stamped a last-active time and saved on every
+request), and shutdown itself writes none of them. It only waits for
+credential saves already under way (and the relay session cache's) before
+exiting. A file that exists but cannot be read, or an `auth.json` with an
+unrecognized version or a malformed shape (for example a non-boolean
+`enabled`, which would otherwise read as auth off), stops startup with an
+error naming it; the file is left as it is, and nothing later in that process
+rewrites it. Only a missing file means never configured. The other data-directory
+state (relay session cache, browser profiles, network binding, recents, push
+subscriptions, notifications) is also saved atomically but still starts fresh
+when unreadable, since losing any of it costs a sign-in or a preference, not
+an authorization decision.
+Observed 2026-09-28: a restart interrupted an in-place save, the server
+treated the empty file as a fresh install, and with no password left, a
+browser holding the owner's desktop session was the owner again even while a
+limited user was signed in there. Deleting `auth.json` is the deliberate
+reset.
+
+### Authentication audit
+
+Every login, logout, password setup or change, authentication enable or
+disable, localhost-access change, limited-user create, update, delete or
+switch, remote-access credential or relay change, and `--setup-auth` password
+reset is recorded in `<dataDir>/logs/auth-events.jsonl` (owner-only, rotated
+with gzip at 10 MB) and in the server log as `event: "auth_event"`. An entry
+names the event, outcome, account, a short failure reason, the transport
+(`direct`, `relay` or `cli`), the client address and user agent. It never
+carries a password, hash, cookie or token; an update records which kinds of
+fields changed, not their values. Recording never blocks the action it
+describes. This exists so a changed credential state can be attributed to a
+request or to the command line after the fact: the 2026-09-28 empty
+`auth.json` could be ruled out as a remote change only by elimination.
 
 Browser bearer tokens never appear in `auth.json`; it stores domain-separated
 SHA-256 verifiers of the random tokens instead. Provider environments omit the

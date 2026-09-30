@@ -8,6 +8,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { getLogger } from "../logging/logger.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 import type { EventBus, SessionSeenEvent } from "../watcher/EventBus.js";
 
 export type { SessionSeenEvent };
@@ -205,7 +206,7 @@ export class NotificationService {
   private async doSave(): Promise<void> {
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      await writeFileAtomically(this.filePath, content);
     } catch (error) {
       console.error("[NotificationService] Failed to save state:", error);
       throw error;

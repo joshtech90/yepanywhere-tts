@@ -89,3 +89,14 @@ export function useCanAdministerHost(): boolean {
   const { principal, resolved } = useActingPrincipal();
   return resolved && !isLimitedPrincipal(principal);
 }
+
+/**
+ * Whether this client may use public session shares and app links, the
+ * bearer grants the server refuses to a limited user. False until the
+ * principal is known, so a limited user sends none of those refused requests
+ * and is shown no refusal in their place.
+ */
+export function useCanUseBearerGrants(): boolean {
+  const { principal, resolved } = useActingPrincipal();
+  return resolved && !isLimitedPrincipal(principal);
+}

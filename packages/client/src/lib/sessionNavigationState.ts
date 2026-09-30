@@ -5,6 +5,7 @@ import {
   type ProviderName,
   normalizeRecapAfterSeconds,
 } from "@yep-anywhere/shared";
+import type { ProjectAppTarget } from "../api/projectApp";
 
 export interface InitialSessionStatus {
   owner: "self";
@@ -16,6 +17,7 @@ export interface InitialSessionStatus {
 }
 
 export interface SessionNavigationState {
+  projectApp?: ProjectAppTarget;
   asyncQuestion?: { messageId: string; index: number };
   initialStatus?: InitialSessionStatus;
   initialTitle?: string;
@@ -99,6 +101,18 @@ export function parseSessionNavigationState(
 
   const initialStatus = normalizeInitialSessionStatus(value.initialStatus);
   return {
+    ...(isRecord(value.projectApp) &&
+    (value.projectApp.target === "app" ||
+      value.projectApp.target === "artifact")
+      ? {
+          projectApp: {
+            target: value.projectApp.target,
+            ...(typeof value.projectApp.artifactId === "string"
+              ? { artifactId: value.projectApp.artifactId }
+              : {}),
+          },
+        }
+      : {}),
     ...(isRecord(value.asyncQuestion) &&
     typeof value.asyncQuestion.messageId === "string" &&
     typeof value.asyncQuestion.index === "number" &&
@@ -135,6 +149,7 @@ export function createSessionNavigationState(
   state: SessionNavigationState,
 ): SessionNavigationState {
   return {
+    ...(state.projectApp ? { projectApp: state.projectApp } : {}),
     ...(state.asyncQuestion ? { asyncQuestion: state.asyncQuestion } : {}),
     ...(state.initialStatus ? { initialStatus: state.initialStatus } : {}),
     ...(state.initialTitle ? { initialTitle: state.initialTitle } : {}),

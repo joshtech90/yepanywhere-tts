@@ -1689,8 +1689,12 @@ export function ProvidersSettings() {
   const [showClaudeOllamaDeprecation, setShowClaudeOllamaDeprecation] =
     useState(shouldShowClaudeOllamaDeprecation);
   const { showToast } = useToastContext();
-  const { providers: serverProviders, refetch: reloadProviders } =
-    useProviders();
+  const {
+    providers: serverProviders,
+    loading: providersLoading,
+    error: providersError,
+    refetch: reloadProviders,
+  } = useProviders();
   const { settings, updateSetting } = useServerSettings();
   const { version } = useVersion();
   const supportsAdditionalModels = serverHasCapability(
@@ -2071,7 +2075,26 @@ export function ProvidersSettings() {
                       </>
                     )}
                   {provider.id === "codex" && provider.installed && (
-                    <CodexUpdatePanel />
+                    <>
+                      <div style={{ marginTop: "var(--space-2)" }}>
+                        <button
+                          type="button"
+                          className="settings-button"
+                          disabled={providersLoading}
+                          onClick={() => void reloadProviders()}
+                        >
+                          {providersLoading
+                            ? t("providersModelsRefreshing")
+                            : t("providersModelsRefresh")}
+                        </button>
+                        {providersError && (
+                          <p className="settings-hint" role="alert">
+                            {t("providersModelsRefreshFailed")}
+                          </p>
+                        )}
+                      </div>
+                      <CodexUpdatePanel />
+                    </>
                   )}
                 </>
               }

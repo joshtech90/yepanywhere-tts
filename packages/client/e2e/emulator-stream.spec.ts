@@ -242,6 +242,7 @@ test("emits adaptive profile downshift/upshift events via APK transport override
     const exactRow =
       rows.find(
         (row) =>
+          serial !== null &&
           row.textContent?.includes(serial) &&
           connectButtonForRow(row) !== null,
       ) ?? null;

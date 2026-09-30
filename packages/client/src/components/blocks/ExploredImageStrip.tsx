@@ -1,21 +1,62 @@
-import { useCallback, useState } from "react";
+import type { ToolResultMedia } from "@yep-anywhere/shared";
+import { useCallback, useMemo, useState } from "react";
+import { useOptionalSessionMetadata } from "../../contexts/SessionMetadataContext";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useInlineMedia } from "../../hooks/useInlineMedia";
 import { useI18n } from "../../i18n";
 import type { ExplorationParent } from "../../lib/sessionDetail/explorationProjection";
 import { getPathBasename } from "../../lib/text";
 import { LocalImageThumbnail } from "../LocalImageThumbnail";
-import { fetchLocalMediaBlob, LocalMediaModal } from "../LocalMediaModal";
+import {
+  fetchLocalMediaBlob,
+  LocalMediaModal,
+  type LocalMediaSource,
+  useLocalFileScope,
+} from "../LocalMediaModal";
 import styles from "./ExploredImageStrip.module.css";
 
 export interface ExploredImage {
   id: string;
   name: string;
   path: string;
+  /** The session's stored copy of the bytes the read returned, when kept. */
+  mediaId?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function storedImageMediaId(
+  media: readonly ToolResultMedia[] | undefined,
+): string | undefined {
+  for (const entry of media ?? []) {
+    if (entry.state === "stored" && entry.mimeType.startsWith("image/")) {
+      return entry.id;
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Where an image's bytes come from. The stored copy is served by the session's
+ * own media route, which anyone who may read the session may use, and it is
+ * the image the model saw even when the file has since changed, moved, or only
+ * ever existed in a sandbox's private scratch space. The host-path read is the
+ * fallback for a read the server kept no copy of.
+ */
+function useExploredImageSource(
+  image: ExploredImage | null,
+): LocalMediaSource | undefined {
+  const session = useOptionalSessionMetadata();
+  const projectId = session?.projectId;
+  const sessionId = session?.sessionId;
+  const mediaId = image?.mediaId;
+  return useMemo(() => {
+    if (!mediaId || !projectId || !sessionId) return undefined;
+    const apiPath = `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/media/${encodeURIComponent(mediaId)}`;
+    return { buildApiPath: () => apiPath };
+  }, [mediaId, projectId, sessionId]);
 }
 
 function imagePathForTool(input: unknown, structured: unknown): string | null {
@@ -40,15 +81,28 @@ export function collectExploredImages(
   parents: readonly ExplorationParent[],
 ): ExploredImage[] {
   const images: ExploredImage[] = [];
-  const seen = new Set<string>();
+  const byPath = new Map<string, ExploredImage>();
   for (const parent of parents) {
     const structured = parent.item.toolResult?.structured;
     const isImageResult = isRecord(structured) && structured.type === "image";
     if (!isImageResult) continue;
     const path = imagePathForTool(parent.item.toolInput, structured);
-    if (!path || seen.has(path)) continue;
-    seen.add(path);
-    images.push({ id: parent.item.id, name: getPathBasename(path), path });
+    if (!path) continue;
+    const mediaId = storedImageMediaId(parent.item.toolResult?.media);
+    const seen = byPath.get(path);
+    if (seen) {
+      // One entry per path, showing the latest bytes read from it.
+      if (mediaId) seen.mediaId = mediaId;
+      continue;
+    }
+    const image: ExploredImage = {
+      id: parent.item.id,
+      name: getPathBasename(path),
+      path,
+      ...(mediaId ? { mediaId } : {}),
+    };
+    byPath.set(path, image);
+    images.push(image);
   }
   return images;
 }
@@ -61,9 +115,12 @@ function ExploredImageThumbnail({
   onOpen: () => void;
 }) {
   const transport = useCurrentSourceRuntime().transport;
+  const fileScope = useLocalFileScope();
+  const source = useExploredImageSource(image);
   const loadBlob = useCallback(
-    () => fetchLocalMediaBlob(image.path, undefined, "inline", transport),
-    [image.path, transport],
+    () =>
+      fetchLocalMediaBlob(image.path, source, "inline", transport, fileScope),
+    [image.path, source, transport, fileScope],
   );
 
   return (
@@ -94,7 +151,8 @@ export function ExploredImageStrip({
   const [override, setOverride] = useState<boolean | null>(null);
   const expanded = override ?? inlineMediaExpandedByDefault;
   const [openIndex, setOpenIndex] = useState<number | null>(null);
-  const open = openIndex === null ? null : images[openIndex];
+  const open = openIndex === null ? null : (images[openIndex] ?? null);
+  const openSource = useExploredImageSource(open);
   const label = t(
     images.length === 1 ? "exploredImagesOne" : "exploredImagesMany",
     { count: images.length },
@@ -129,6 +187,7 @@ export function ExploredImageStrip({
         <LocalMediaModal
           path={open.path}
           mediaType="image"
+          mediaSource={openSource}
           imageNavigation={
             images.length > 1 && openIndex !== null
               ? {

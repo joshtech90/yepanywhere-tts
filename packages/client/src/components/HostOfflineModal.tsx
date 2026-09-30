@@ -5,6 +5,10 @@
  * session resumption, with options to retry or go to the login page.
  */
 
+import {
+  canRetryResume,
+  requiresResumeLogin,
+} from "../lib/connection/remoteErrors";
 import type {
   AutoResumeError,
   AutoResumeErrorReason,
@@ -24,6 +28,12 @@ interface HostOfflineModalProps {
 
 function getErrorTitle(reason: AutoResumeErrorReason, t: Translate): string {
   switch (reason) {
+    case "auth_failed":
+      return t("hostOfflineTitleResumeRejected");
+    case "resume_timeout":
+      return t("hostOfflineTitleResumeTimeout");
+    case "resume_verification":
+      return t("hostOfflineTitleResumeVerification");
     case "server_offline":
       return t("hostOfflineTitleServerOffline");
     case "unknown_username":
@@ -45,6 +55,12 @@ function getErrorMessage(error: AutoResumeError, t: Translate): string {
   const { reason, mode, relayUsername } = error;
 
   switch (reason) {
+    case "auth_failed":
+      return t("hostOfflineMessageResumeRejected");
+    case "resume_timeout":
+      return t("hostOfflineMessageResumeTimeout");
+    case "resume_verification":
+      return t("hostOfflineMessageResumeVerification");
     case "server_offline":
       return relayUsername
         ? t("hostOfflineMessageServerOfflineNamed", { relayUsername })
@@ -91,6 +107,11 @@ export function HostOfflineModal({
       <div className={styles.content}>
         <p className={styles.message}>{message}</p>
 
+        {(requiresResumeLogin(error.reason) ||
+          error.reason === "resume_verification") && (
+          <p className={styles.detail}>{error.message}</p>
+        )}
+
         {error.relayUsername && (
           <p className={styles.detail}>
             <strong>{t("relayLoginServerName")}:</strong> {error.relayUsername}
@@ -104,20 +125,26 @@ export function HostOfflineModal({
         )}
 
         <p className={styles.hint}>
-          {error.reason === "resume_incompatible"
-            ? t("hostOfflineHintResumeIncompatible")
-            : error.mode === "relay"
-              ? t("hostOfflineHintRelay")
-              : t("hostOfflineHintDirect")}
+          {error.reason === "auth_failed"
+            ? t("hostOfflineHintResumeRejected")
+            : error.reason === "resume_incompatible"
+              ? t("hostOfflineHintResumeIncompatible")
+              : error.reason === "resume_verification"
+                ? t("hostOfflineHintResumeVerification")
+                : error.mode === "relay"
+                  ? t("hostOfflineHintRelay")
+                  : t("hostOfflineHintDirect")}
         </p>
 
         <div className={styles.actions}>
           <button type="button" className="btn-secondary" onClick={onGoToLogin}>
             {t("hostOfflineGoToLogin")}
           </button>
-          <button type="button" className="btn-primary" onClick={onRetry}>
-            {t("hostOfflineRetry")}
-          </button>
+          {canRetryResume(error.reason) && (
+            <button type="button" className="btn-primary" onClick={onRetry}>
+              {t("hostOfflineRetry")}
+            </button>
+          )}
         </div>
       </div>
     </Modal>

@@ -86,11 +86,27 @@ function publishedTips() {
  *
  * A brand-new remote ref reports no remote sha, which makes the local tip's
  * whole history technically outgoing; the exclusions handle that case too.
+ * So does a remote that advanced since the last fetch: its sha is not a local
+ * object, so it cannot bound a range, and git will refuse the non-fast-forward
+ * push on its own terms once the hook passes.
  */
 function outgoingRevisions(localSha, remoteSha) {
   const excluded = publishedTips();
-  if (remoteSha === ZERO) return [localSha, ...excluded];
+  if (remoteSha === ZERO || !isLocalCommit(remoteSha)) {
+    return [localSha, ...excluded];
+  }
   return [`${remoteSha}..${localSha}`, ...excluded];
+}
+
+function isLocalCommit(sha) {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function commitsIn(revArgs) {

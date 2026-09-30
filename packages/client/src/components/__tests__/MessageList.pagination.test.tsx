@@ -38,6 +38,8 @@ function installIntersectionObserverMock(): ObservedIntersection {
       observed.target = target;
     }
 
+    unobserve() {}
+
     disconnect() {}
   }
 

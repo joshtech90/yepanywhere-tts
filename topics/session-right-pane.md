@@ -248,6 +248,37 @@ An observable parent CSP violation shows an explanation. Cross-origin frame
 errors, app shutdown, and remote framing policies cannot all be detected by
 the parent, so an Open-in-window action is always present.
 
+### Sandboxed session apps
+
+A session running behind the sandbox network firewall has a private loopback,
+so a server it starts is reachable only through the sandbox's port broker
+([network boundary § Inbound](session-sandbox-network-boundary.md#inbound-the-loopback-port-broker)).
+When such a session's tool output names a loopback URL whose port no operator
+row serves, the client asks YA once per session and port
+(`POST /api/projects/:projectId/sessions/:sessionId/sandbox-apps {port}`). YA
+mints a random private app name, `sbx-<hex>`, for that session and port and
+returns it with its app bearer; from there the URL is offered exactly as an
+operator row's would be: `<name>.localhost` locally, `<name>.<public root>`
+through a public page, with `ya_access`. The link label is the host and path
+the agent printed, since the minted name means nothing to a reader.
+
+- The name resolves at each request to the session's current provider
+  process, so it follows the session across a provider restart once the agent
+  restarts its server; with no live firewalled process it answers 503.
+- Names are in memory, reused for the same session and port, and capped at
+  256 (oldest dropped). A YA restart forgets them; the client asks again.
+  Every minted name stays excluded from YA's host, CORS and WebSocket trust
+  until process exit, like an operator row's host. An operator row for the
+  same port or name always wins.
+- A session without a firewalled sandbox, or with no broker, is refused with
+  409 `no-sandbox-broker`, and so is a server with no app serving configured
+  (`apps-unconfigured`); the URL then stays an ordinary transcript link. The
+  client asks only for sessions whose live process reports the firewall.
+- A limited user may mint for a session they may act in (the `join` access of
+  [limited users](limited-users.md)), and sees these apps and artifact links
+  though operator app links stay withheld from them.
+- WebSocket upgrades remain unsupported, as for every app host.
+
 ## Design decisions
 
 - **Transferable durable app bearers** protect proxied content from hostname

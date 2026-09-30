@@ -70,10 +70,10 @@
 
 .vhostRow {
   display: grid;
-  grid-template-columns: minmax(6rem, 1fr) minmax(5rem, 6.5rem) minmax(
-      8rem,
-      1.2fr
-    ) auto;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
   align-items: end;
   min-width: 0;
@@ -81,6 +81,44 @@
 
 .vhostRow label {
   min-width: 0;
+}
+
+.vhostRow select {
+  min-height: 36px;
+  padding: 7px 8px;
+  color: var(--text-primary);
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.password {
+  display: flex;
+  flex: 1 1 100%;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+}
+
+.password p {
+  flex: 1 1 100%;
+  margin: 0;
+}
+
+.pathField {
+  min-width: 0;
+}
+.domainSuffix {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+.target {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .access {
   grid-column: 1 / -1;
@@ -104,6 +142,10 @@
 
   .vhostRow {
     grid-template-columns: 1fr;
+  }
+
+  .pathField {
+    grid-column: auto;
   }
 
   .vhostRow button {

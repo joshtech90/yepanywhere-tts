@@ -48,7 +48,7 @@ function CopyTextGlyph() {
 const GLYPHS: Record<SelectionActionKind, ReactNode> = {
   text: <CopyTextGlyph />,
   quote: ">",
-  source: "</>",
+  source: <CopyTextGlyph />,
   rich: "Aa",
   newSession: "+",
 };

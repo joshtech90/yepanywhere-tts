@@ -111,7 +111,10 @@ test.afterAll(async () => {
       listener.close((error) => (error ? reject(error) : resolve())),
     );
   }
-  if (instance) await instance.disposeSessionReaders();
+  if (instance) {
+    instance.stopNotifications();
+    await instance.disposeSessionReaders();
+  }
   if (vite) await vite.close();
   if (directory) await rm(directory, { recursive: true });
 });
@@ -202,6 +205,10 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
   page,
   context,
 }) => {
+  // CI 36665933364: cold fixture 6.6s + first popup 5.7s exhausted 15s
+  // during the second gesture. Keep two full mode boots and use the verified
+  // URL for each duplicate gesture; 30s is twice the observed deadline.
+  test.setTimeout(30_000);
   const htmlPath = join(directory, "bundle", "mode-controls.html");
   await writeFile(htmlPath, "<!doctype html><h1>Viewer mode controls</h1>");
   await page.goto(
@@ -219,14 +226,19 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
     expect(box?.width).toBe(36);
     expect(box?.height).toBe(36);
     expect(await control.locator("svg").count()).toBe(1);
+    let verifiedModeUrl: string | undefined;
     for (const gesture of ["shift", "middle"]) {
       const opened = context.waitForEvent("page");
       await control.click(
         gesture === "shift" ? { modifiers: ["Shift"] } : { button: "middle" },
       );
       const tab = await opened;
-      await tab.waitForURL("**/file-view?**");
-      if (control === edit) {
+      if (verifiedModeUrl) {
+        // Both real gestures must open the same mode without toggling the
+        // source viewer. The first tab already verifies that mode end to end.
+        await tab.waitForURL(verifiedModeUrl, { waitUntil: "commit" });
+      } else if (control === edit) {
+        await tab.waitForURL("**/file-view?**");
         await expect(
           tab.getByRole("dialog", { name: "Edit source", exact: true }),
         ).toBeVisible();
@@ -234,10 +246,12 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
           tab.getByRole("button", { name: "Exit edit mode" }),
         ).toHaveAttribute("aria-pressed", "true");
       } else {
+        await tab.waitForURL("**/file-view?**");
         await expect(
           tab.getByRole("button", { name: "Stop interactive preview" }),
         ).toHaveAttribute("aria-pressed", "true");
       }
+      verifiedModeUrl ??= tab.url();
       await expect(control).toHaveAttribute("aria-pressed", "false");
       await tab.close();
     }

@@ -121,7 +121,7 @@ import type {
 } from "./codex-protocol/index.js";
 import type { SandboxPolicy as CodexSandboxPolicy } from "./codex-protocol/generated/v2/SandboxPolicy.js";
 import {
-  createAgentctlSessionEnvBridge,
+  createLaunchAgentctlSessionEnvBridge,
   type AgentctlSessionEnvBridge,
 } from "./agentctl-session-env.js";
 import {
@@ -182,8 +182,12 @@ import type {
   SummaryGenerationRequest,
   SummaryGenerationResult,
 } from "./types.js";
-import { inactiveProviderSessionOptionsResult } from "./types.js";
+import {
+  agentServerEnvironmentFor,
+  inactiveProviderSessionOptionsResult,
+} from "./types.js";
 import type { SessionSandboxRuntime } from "../../session-sandbox.js";
+import { withSessionSandboxAgentContext } from "../../session-sandbox-agent-context.js";
 
 const log = {
   debug(bindings: Record<string, unknown>, message: string): void {
@@ -1265,6 +1269,7 @@ export class CodexProvider implements AgentProvider {
     expiresAt: number;
     installationSourceVersion: string;
   } | null = null;
+  private modelCacheReadGeneration = 0;
   private getConfiguredReasoningSummary: () => CodexReasoningSummary = () =>
     DEFAULT_CODEX_REASONING_SUMMARY;
   private getConfiguredPlanToolMode: () => CodexPlanToolMode = () =>
@@ -1288,6 +1293,7 @@ export class CodexProvider implements AgentProvider {
   setCodexPath(codexPath: string | undefined): void {
     this.config.codexPath = codexPath;
     this.modelCache = null;
+    this.modelCacheReadGeneration += 1;
   }
 
   setReasoningSummaryGetter(getter: () => CodexReasoningSummary): void {
@@ -1423,16 +1429,21 @@ export class CodexProvider implements AgentProvider {
    * Get available models for Codex cloud.
    * Queries Codex app-server's model/list endpoint with a static fallback.
    */
-  async getAvailableModels(): Promise<ModelInfo[]> {
+  async getAvailableModels(options?: {
+    forceRefresh?: boolean;
+  }): Promise<ModelInfo[]> {
     return this.installationCoordinator.withReadLease(
       CODEX_INSTALLATION_FAMILY,
-      () => this.getAvailableModelsWithLease(),
+      () => this.getAvailableModelsWithLease(options?.forceRefresh === true),
     );
   }
 
-  private async getAvailableModelsWithLease(): Promise<ModelInfo[]> {
+  private async getAvailableModelsWithLease(
+    forceRefresh: boolean,
+  ): Promise<ModelInfo[]> {
     const now = Date.now();
     const installationSourceVersion = this.getModelCatalogCacheKey();
+    if (forceRefresh) this.modelCache = null;
     if (
       this.modelCache &&
       this.modelCache.expiresAt > now &&
@@ -1440,6 +1451,7 @@ export class CodexProvider implements AgentProvider {
     ) {
       return this.modelCache.models;
     }
+    const readGeneration = ++this.modelCacheReadGeneration;
 
     let models: ModelInfo[] = [];
     if (await this.isCodexCliInstalled()) {
@@ -1450,11 +1462,13 @@ export class CodexProvider implements AgentProvider {
       models = await this.getFallbackCodexModels();
     }
 
-    this.modelCache = {
-      models,
-      expiresAt: now + MODEL_CACHE_TTL_MS,
-      installationSourceVersion,
-    };
+    if (readGeneration === this.modelCacheReadGeneration) {
+      this.modelCache = {
+        models,
+        expiresAt: Date.now() + MODEL_CACHE_TTL_MS,
+        installationSourceVersion,
+      };
+    }
 
     return models;
   }
@@ -2726,14 +2740,21 @@ export class CodexProvider implements AgentProvider {
     skillInventory: CodexSessionSkillInventory,
   ): AsyncIterableIterator<SDKMessage> {
     const codexCommand = await this.resolveCodexCommand();
-    const agentctlSessionEnvBridge = createAgentctlSessionEnvBridge(
-      options.resumeSessionId,
-      options.getSessionChildEnv,
-    );
+    const {
+      bridge: agentctlSessionEnvBridge,
+      // Spawns must use this runtime: it also mounts the bridge directory.
+      sessionSandbox,
+    } = createLaunchAgentctlSessionEnvBridge({
+      initialSessionId: options.resumeSessionId,
+      getSessionEnv: options.getSessionChildEnv,
+      sessionSandbox: options.sessionSandbox,
+    });
     setAgentctlSessionEnvBridge(agentctlSessionEnvBridge);
     const codexEnv = agentctlSessionEnvBridge.extendEnv({
       ...this.getCodexEnv(),
       ...options.agentEnvironment,
+      // Never minted for a sandboxed launch; refuse here too.
+      ...agentServerEnvironmentFor(options),
     });
     if (options.resumeSessionId) {
       // The bridge only reaches bash tool shells that source BASH_ENV, which
@@ -2753,7 +2774,7 @@ export class CodexProvider implements AgentProvider {
       codexEnv,
       (notification) =>
         this.shouldSuppressLiveDeltaNotification(notification, options),
-      options.sessionSandbox,
+      sessionSandbox,
     );
     setActiveClient(appServer);
 
@@ -3277,6 +3298,12 @@ export class CodexProvider implements AgentProvider {
       };
       signal.addEventListener("abort", stopMessageWait, { once: true });
       let isFirstMessage = !options.resumeSessionId;
+      const globalContext = withSessionSandboxAgentContext(
+        options.sessionSandbox?.instructions?.startFromDefault === false
+          ? undefined
+          : options.globalInstructions,
+        options.sessionSandbox,
+      );
 
       try {
         while (!signal.aborted) {
@@ -3353,8 +3380,8 @@ export class CodexProvider implements AgentProvider {
           }
 
           // Prepend global instructions to the first message of new sessions
-          if (isFirstMessage && options.globalInstructions) {
-            userPrompt = `[Global context]\n${options.globalInstructions}\n\n---\n\n${userPrompt}`;
+          if (isFirstMessage && globalContext) {
+            userPrompt = `[Global context]\n${globalContext}\n\n---\n\n${userPrompt}`;
             isFirstMessage = false;
           } else {
             isFirstMessage = false;
@@ -3862,7 +3889,11 @@ export class CodexProvider implements AgentProvider {
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
       config: this.buildThreadConfigOverrides(options),
+      ...this.limitedUserThreadInstructions(options.sessionSandbox),
       experimentalRawEvents: false,
+      ...(options.sessionSandbox?.instructions?.startFromDefault === false
+        ? { baseInstructions: "" }
+        : {}),
       ...(options.computerControl
         ? {
             dynamicTools: [
@@ -3893,6 +3924,7 @@ export class CodexProvider implements AgentProvider {
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
       config: this.buildThreadConfigOverrides(options),
+      ...this.limitedUserThreadInstructions(options.sessionSandbox),
     };
     if (experimentalApiEnabled && !includeTurns) {
       params.excludeTurns = true;
@@ -3905,6 +3937,7 @@ export class CodexProvider implements AgentProvider {
       sessionId: string;
       cwd: string;
       lastTurnId?: string;
+      sessionSandbox?: SessionSandboxRuntime;
     },
     policy: CodexThreadPolicy,
     experimentalApiEnabled = false,
@@ -3915,6 +3948,7 @@ export class CodexProvider implements AgentProvider {
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
       config: this.buildThreadConfigOverrides({}),
+      ...this.limitedUserThreadInstructions(options.sessionSandbox),
     };
     if (experimentalApiEnabled) {
       params.excludeTurns = true;
@@ -3922,11 +3956,16 @@ export class CodexProvider implements AgentProvider {
     return params;
   }
 
-  /**
-   * Maps a legacy message-id fork anchor to the completed turn the fork keeps
-   * through. Undefined means the anchor ends the thread, so the fork copies
-   * everything, including a turn that may still be in progress.
-   */
+  private limitedUserThreadInstructions(
+    sandbox?: SessionSandboxRuntime,
+  ): Pick<ThreadStartParams, "developerInstructions"> {
+    const instructions = sandbox?.instructions;
+    if (!instructions) return {};
+    // Saved threads retain their base prompt; editable text must not be frozen into it.
+    return { developerInstructions: instructions.text };
+  }
+
+  /** Maps a legacy message-id fork anchor to the last completed turn to keep. */
   private async resolveCodexForkLastTurnId(
     appServer: CodexAppServerClient,
     sessionId: string,
@@ -5746,7 +5785,7 @@ export class CodexProvider implements AgentProvider {
               subtype: "turn_aborted",
               session_id: sessionId,
               uuid: `codex-turn-interrupted-${params.turn.id}`,
-              content: "Conversation interrupted",
+              content: params.turn.error?.message || "Conversation interrupted",
               reason: "interrupted",
               isSynthetic: true,
               sourceEvent: notification.method,

@@ -72,4 +72,32 @@ describe("browser settings backup routes", () => {
     });
     expect(invalidValue.status).toBe(400);
   });
+
+  it("keeps the limited-user defaults slot apart from the backup", async () => {
+    const defaults = new BrowserSettingsBackupService({
+      dataDir: testDir,
+      fileName: "limited-user-browser-defaults.json",
+    });
+    await defaults.initialize();
+    await service.saveBackup({
+      version: BROWSER_SETTINGS_BACKUP_VERSION,
+      values: { "yep-anywhere-theme": "dark" },
+    });
+    await defaults.saveBackup({
+      version: BROWSER_SETTINGS_BACKUP_VERSION,
+      values: { "yep-anywhere-theme": "light" },
+    });
+
+    const reloaded = new BrowserSettingsBackupService({ dataDir: testDir });
+    await reloaded.initialize();
+    expect(reloaded.getBackup()?.values).toEqual({
+      "yep-anywhere-theme": "dark",
+    });
+    await expect(
+      fs.readFile(
+        path.join(testDir, "limited-user-browser-defaults.json"),
+        "utf8",
+      ),
+    ).resolves.toContain('"light"');
+  });
 });

@@ -219,13 +219,37 @@ suggestion, and sandbox selection flush in that same serialized transaction.
 If a write fails, YA retains the actual live state as pending and retries it
 without repeating an already-applied provider change.
 
-Browser-local permission/model state remains useful for immediate stopped-row
-presentation and compatibility with older servers, while global thinking and
-effort values remain defaults for new or legacy sessions. Once Activate owns a
-process, the existing process-info request and live stream are authoritative;
-the composer and model panel adopt that process's restored configuration. An
-older server that omits newer state therefore retains its established fallback
-instead of causing the client to clear durable server state.
+Authenticated session-detail and metadata responses optionally include
+`session.effectiveLaunchSettings`, the complete last-applied snapshot above.
+Its presence makes server-owned settings authoritative for dormant controls,
+including permissions on a browser or phone with no local history. Merely
+opening a session does not activate a provider or create a missing snapshot.
+
+When the snapshot is present, ordinary resume, process-disappeared retry, and
+existing-session Project Queue submissions omit unchanged permission, model,
+and thinking overrides. Server cold-launch resolution therefore retains the
+exact model token, service tier, thinking and effort, including intentional
+null/default choices. A deliberate Ask or Off selection is still an explicit
+override, even when it happens to equal the browser's default.
+
+Browser-local permission/model state remains the fallback when the optional
+snapshot is absent, and global thinking/effort remain defaults for new or
+legacy sessions. Older servers receive only the established request fields
+and retain their previous, less exact resume behavior. This is field-presence
+detection, with no new capability flag or handshake. The 2026-09-29 maintainer
+review covered stable v0.8.0, v0.8.1, v0.9.0, v0.9.1 and v0.9.2; all lack the
+complete response snapshot, and the approved fallback remains available.
+
+Once Activate owns a process, process-info and the live stream are authoritative;
+the composer and model panel adopt that process's restored configuration.
+
+When retained thinking settings are available, the stopped-session composer
+shows those settings before the next message, including High/other effort
+levels and an intentional Off. The visible selection and submitted selection
+must agree. Changing thinking while stopped stages a session-local override
+for the next message; it does not change the browser's new-session defaults.
+Metadata refreshes preserve that unsent override. Switching sessions discards
+it, and a newly owned process becomes authoritative again.
 
 An effort selection accepted while a turn is active is authoritative pending
 state: process info reports the selected next-turn effort so a browser refresh

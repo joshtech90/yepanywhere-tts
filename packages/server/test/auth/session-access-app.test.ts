@@ -43,11 +43,18 @@ describe("limited-user session access through the app's session catalog", () => 
       lastActivity: minutesAgo(1),
       sandboxed: false,
     },
+    {
+      sessionId: "fresh-firewall-off",
+      lastActivity: minutesAgo(1),
+      sandboxed: true,
+      networkFirewall: false,
+    },
   ];
 
   let testDir: string;
   let instance: AppResult;
   let limitedCookie: string;
+  let starterCookie: string;
 
   beforeEach(async () => {
     testDir = join(tmpdir(), `session-access-app-${randomUUID()}`);
@@ -79,6 +86,7 @@ describe("limited-user session access through the app's session catalog", () => 
       if (seeded.sandboxed) {
         await sessionMetadataService.setSessionSandbox(seeded.sessionId, {
           level: "project-write",
+          networkFirewall: seeded.networkFirewall,
           projectPath,
           projectId,
         });
@@ -125,6 +133,15 @@ describe("limited-user session access through the app's session catalog", () => 
       joinProjects: [projectId],
       joinStaleOffsetMinutes: 0,
     });
+    // Carol started the cold session herself and may start new ones here.
+    starterCookie = `${SESSION_COOKIE_NAME}=${await authService.createSession("carol", "carol")}`;
+    await limitedUsersService.create({
+      username: "carol",
+      password: "correct-horse-battery",
+      newSessionProjects: [projectId],
+      joinStaleOffsetMinutes: 0,
+    });
+    await sessionMetadataService.recordSessionCreator(sessionId, "carol");
     const serverSettingsService = new ServerSettingsService({ dataDir });
     await serverSettingsService.initialize();
     await serverSettingsService.updateSettings({ limitedUsersEnabled: true });
@@ -156,6 +173,14 @@ describe("limited-user session access through the app's session catalog", () => 
     );
   });
 
+  it("refuses a turn to a fresh sandboxed session whose firewall is off", async () => {
+    const response = await postTurn("fresh-firewall-off");
+    expect(response.status).toBe(403);
+    expect(((await response.json()) as { reason?: string }).reason).toBe(
+      "unsandboxed-session",
+    );
+  });
+
   it("passes a turn to a fresh sandboxed session through to the route", async () => {
     // Allowed by the policy; the route itself answers that nothing is running.
     const response = await postTurn("fresh-sandboxed");
@@ -176,6 +201,28 @@ describe("limited-user session access through the app's session catalog", () => 
     expect(((await response.json()) as { reason?: string }).reason).toBe(
       "stale-session",
     );
+  });
+
+  it("holds the user who started a cold session to the cutoff, with a redirect", async () => {
+    for (const path of [
+      `/api/sessions/${sessionId}/messages`,
+      `/api/projects/${projectId}/sessions/${sessionId}/resume`,
+    ]) {
+      const response = await instance.app.request(path, {
+        method: "POST",
+        headers: {
+          Cookie: starterCookie,
+          "X-Yep-Anywhere": "true",
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ message: "what is a volcano?" }),
+      });
+      expect(response.status, path).toBe(403);
+      expect(await response.json(), path).toMatchObject({
+        reason: "stale-session",
+        staleRedirect: "stale-handoff",
+      });
+    }
   });
 
   it("lets a user with a grant on its project subscribe to an idle session", async () => {

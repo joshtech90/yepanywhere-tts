@@ -303,7 +303,11 @@ function CollapsibleText({
   const exceedsLines = lines.length > MAX_LINES;
   const exceedsChars = text.length > MAX_CHARS;
   const needsTruncation = exceedsLines || exceedsChars;
-  const fullTextRef = useQuoteableTextSource<HTMLDivElement>(text);
+  const fullTextRef = useQuoteableTextSource<HTMLDivElement>(
+    text,
+    undefined,
+    "literal",
+  );
 
   // Truncate by lines first, then by characters if still too long
   let truncatedText = exceedsLines
@@ -312,7 +316,11 @@ function CollapsibleText({
   if (truncatedText.length > MAX_CHARS) {
     truncatedText = truncatedText.slice(0, MAX_CHARS);
   }
-  const truncatedRef = useQuoteableTextSource<HTMLDivElement>(truncatedText);
+  const truncatedRef = useQuoteableTextSource<HTMLDivElement>(
+    truncatedText,
+    undefined,
+    "literal",
+  );
 
   if (!needsTruncation || isExpanded) {
     return (

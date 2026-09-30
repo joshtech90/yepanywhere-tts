@@ -143,6 +143,19 @@ stdio://`, send `initialize`, send `initialized`, then call `model/list`.
 contract checks, but it starts a real model turn and is not a routine catalog
 probe.
 
+For a credentialed YA smoke, start the source server on an unused port with an
+isolated `YEP_DATA_DIR`, a scratch project directory, and
+`ENABLED_PROVIDERS=codex`. Keep the user's normal `CODEX_HOME` so the installed
+CLI retains its existing authentication. Register the scratch directory with
+`POST /api/projects`, start a Codex turn with
+`POST /api/projects/:projectId/sessions`, and inspect the saved transcript with
+`GET /api/projects/:projectId/sessions/:sessionId`. After the turn completes,
+stop and restart that isolated server and use the session's `/resume` route for
+a second turn that reads a scratch file. Confirm the same YA session id, chosen
+model, tool result, assistant answer, and terminal turn markers. Validate the
+resulting Codex rollout with `scripts/validate-jsonl.ts` and stop the test
+server when finished.
+
 Difference detectors:
 
 - `pnpm codex:protocol:check` exits nonzero or lists generated file drift.
@@ -164,7 +177,47 @@ older installs may continue to work when YA does not need newer protocol fields,
 and version-sensitive behavior should be capability- or version-gated where
 possible.
 
-Current compatibility audit, 2026-09-25 (0.157.0):
+Current compatibility audit, 2026-09-30 (0.159.2, no-op):
+
+- Installed Codex is `codex-cli 0.159.2`. `pnpm codex:protocol:check` reports
+  the generated app-server subset unchanged, so `expectedVersion` stays
+  `0.159.0` and only `compatibleThroughVersion` advances.
+- Authenticated `model/list` returns the same nine visible models, all already
+  in YA's preferred ordering, with `gpt-6.1-sol` still the default at low
+  effort and the same supported efforts per model.
+- No credentialed start/resume smoke ran: no YA source changed.
+
+Previous compatibility audit, 2026-09-29 (0.159.0):
+
+- Installed Codex is `codex-cli 0.159.0`; the official `rust-v0.159.0` tag
+  peels to `687a119f0fcaace47e1f1abcc77cec6c813fd6da`. Both root version
+  markers and the reference checkout now record `0.159.0`.
+- The generated subset changes only `CodexErrorInfo` and a `Turn.error`
+  comment. The new `flexUnavailable` code represents HTTP 429 and maps to YA's
+  `rate_limit` runtime reason. `tooManyDenials` can accompany an interrupted
+  turn under Codex's strict Guardian circuit breaker. YA now shows its error
+  message in both live and persisted aborted-turn rows. Other changed
+  app-server methods and fields do not change YA's consumed request shapes.
+- Authenticated `model/list` returns nine visible models. `gpt-6.1-sol` is the
+  default with low effort and supported efforts through ultra. YA places it
+  first in its preferred ordering and supplies the bundled GPT-6 context
+  window when the live catalog omits that field. Account-dependent fallback
+  models remain conservative when `model/list` is unavailable.
+- An isolated YA session started with `gpt-6.1-sol` and completed. After the
+  isolated server restarted, `/resume` kept the same YA session id, read a
+  scratch file through a native tool, and completed with the expected answer.
+  The persisted rollout passed schema validation (33/33 JSONL lines).
+
+Status: Codex 0.159.0 protocol, catalog, runtime-error, and interrupted-turn
+surfaces refreshed and verified through a real YA start and durable resume.
+
+The provider route's `GET /api/providers/codex?refresh=1` and Providers page
+**Refresh provider models** control now bypass Codex's one-hour in-process model
+cache as well as the route and browser caches. This matters after an external
+CLI upgrade or a new account-visible model appears. Ordinary provider reads
+retain the one-hour cache; a refresh probes `model/list` immediately.
+
+Previous compatibility audit, 2026-09-25 (0.157.0):
 
 - Installed Codex is `codex-cli 0.157.0`. The official `rust-v0.157.0` tag
   peels to commit `00c972ed5d6ff6499317fd41b7f23605b8e6850d`. Both root version

@@ -11,7 +11,7 @@ import { InstallService } from "../../server/src/services/InstallService.js";
 import type { YaServerProcess } from "./support/ya-server-process.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process.js";
 import {
   configureRemoteAccess,
@@ -24,7 +24,7 @@ import {
 // Remote login changes server-wide credentials. Give this file its own YA
 // process and data directory while reusing the run's remote client build.
 const test = baseTest.extend<
-  Record<string, never>,
+  Record<never, never>,
   { remoteLoginServer: YaServerProcess }
 >({
   remoteLoginServer: [
@@ -47,7 +47,7 @@ const test = baseTest.extend<
       try {
         await use(server);
       } finally {
-        stopYaServerProcess(server);
+        await disposeYaServerProcess(server);
       }
     },
     { scope: "worker" },
@@ -404,8 +404,18 @@ test.describe("Session Resumption", () => {
     // Refresh the page - stored session should now be invalid
     await page.reload();
 
-    // Should show mode selection (session was invalidated, credentials cleared)
-    // This proves the stored credentials were rejected
+    // A confirmed rejection explains why sign-in is required before leaving
+    // the current page; only an explicit user action opens login.
+    await expect(
+      page.getByText("Sign in required", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      page.getByText(/Server rejected session resume:/),
+    ).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Retry", exact: true }),
+    ).toHaveCount(0);
+    await page.getByRole("button", { name: "Go to Login" }).click();
     await expect(
       page.locator('[data-testid="direct-mode-button"]'),
     ).toBeVisible({

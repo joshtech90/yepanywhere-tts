@@ -218,6 +218,10 @@ describe("Providers Routes", () => {
     expect(refreshed.status).toBe(200);
     expect(provider.getAuthStatus).toHaveBeenCalledTimes(2);
     expect(provider.getAvailableModels).toHaveBeenCalledTimes(2);
+    expect(provider.getAvailableModels).toHaveBeenNthCalledWith(1);
+    expect(provider.getAvailableModels).toHaveBeenNthCalledWith(2, {
+      forceRefresh: true,
+    });
 
     const json = (await refreshed.json()) as { providers: Array<unknown> };
     expect(json.providers).toEqual([

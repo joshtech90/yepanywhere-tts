@@ -3,7 +3,7 @@
 > Config-driven project creation from composable capability bases, with
 > vendored instructions, deterministic setup, and an automatic preparation
 > session. Superusers and permitted limited users can create projects;
-> retained App access remains pending.
+> retained App access uses the project service contract.
 
 Topic: project-templates
 
@@ -22,7 +22,8 @@ Settings now fetches ordered GitHub sources into private, revision-stamped
 snapshots, reads local overlays directly, and shows their combined inventory.
 Fresh-target materialization, setup, Git initialization, registration and
 preparation dispatch are connected for both principal kinds. Template permissions
-and project-confined setup are implemented; retained App access, personal-workspace
+and project-confined setup are implemented. Retained App access and project
+address settings are implemented under separate capabilities; personal-workspace
 scope and project-local identity remain open. See the
 [stand-up integration gap](../gaps/project-template-standup.md).
 
@@ -58,8 +59,12 @@ retains its validated bytes, allocates the directory exclusively, executes setup
 as argv with bounded output, verifies the built starter, initializes Git using
 the existing project-creation identity policy, and calls the normal project and
 session routes. The selected provider/model and launch policies therefore use
-the normal session boundary. Local execution without attachments is the current
-creation boundary; the form explains incompatible selections before submission.
+the normal session boundary, and those routes act as the creating login: a
+limited user's preparation session is sandboxed with its network firewall on,
+held to their lock, and recorded as a session they started (`createdByUser`),
+while the superuser's records no creator. Local execution without attachments
+is the current creation boundary; the form explains incompatible selections
+before submission.
 
 Operations persist beneath `dataDir/project-template-operations`. Repeating an
 identical UUID returns its existing outcome; changing its request is refused.
@@ -273,7 +278,30 @@ for `setup`, `build`, `test`, `preview`, a vendored `prepare` prompt, and
 `addons.server`. Activating the server adds `start`. Commands run in the
 project directory without shell interpolation. `.project-template/project.json`
 records entered name/description and composition provenance. The initial CLI
-consumes setup; YA orchestration remains to be implemented.
+consumes setup; YA creation now consumes it too. YA adapts the legacy static
+declaration for App viewing. Process serving requires the versioned service
+declaration below; legacy preview/start commands are not inferred.
+
+### Standard app and service declaration
+
+The approved product extension is specified in
+[project service](project-service.md#standard-declaration-where-start-status-stop-serving):
+an optional versioned `service` object in `.project-template/app.json` with
+explicit **where**, **start**, **status**, **stop**, and **serving** sections.
+Static App canvas declares its built root and entry without inventing a
+process; the activated server add-on declares a foreground command, readiness
+probe and owned-process stop policy. Existing setup/build/test and composition
+fields remain compatible. YA's loader validates the optional declaration and
+the `project-service` capability admits its lifecycle and App viewer. The
+creation capability alone does not advertise project-service support. Source
+authors should emit this declaration when upgrading a server add-on.
+
+That topic also owns main-pane **Open app**, preferring the declared app and
+otherwise the latest authorized project artifact, and project Settings for
+service controls and an optional retained vhost association. Vhost controls
+appear only when server vhost serving is enabled. A reservation does not start
+or publish an app. Sandboxed limited-user projects stay project-confined for
+every service launch, including when exposed through a vhost tunnel.
 
 The build has relative asset URLs and works over static HTTP(S), including
 artifact grants. ES modules do not promise `file://` execution. The portable
@@ -300,11 +328,15 @@ future work, and buying/configuring a custom domain is optional.
 
 ### Creation and preparation
 
-Projects gains a **New project** surface with **From template** and **Existing
-directory** modes for the superuser. Template creation asks for name, intent,
-and parent directory. Always show the template radio palette, including one
-available template (preselected); do not hide it or replace it with a dropdown.
-Existing-directory registration keeps its present behavior. The current
+Projects gains a **New project** surface. For the superuser, the plain
+path/name entry comes first and the template chooser follows it; typing any
+path, name or code into that entry hides the chooser, and clearing it brings
+the chooser back (an in-progress template creation stays visible). There is no
+mode toggle to find. Limited users see only the template chooser. Template
+creation asks for name, intent, and parent directory. Always show the template
+radio palette, including one available template (preselected); do not hide it
+or replace it with a dropdown. Existing-directory registration keeps its
+present behavior. The current
 proposal fixture lives in `packages/client/mockups/project-templates/` and
 reuses the real existing-directory form and settings section component.
 
@@ -336,6 +368,11 @@ thumbnail presentation remain proposed.
    settings and enforce limited-user locks and sandboxing. The turn customizes
    project instructions, refines the README lede, verifies run/test/build,
    and reports readiness to build the requested app.
+
+The preparation session's display title comes from the entered user intent,
+using the normal title-length limit. The full composed preparation prompt
+remains the provider's first turn and the stored recovery prompt; template
+setup text must not become the displayed session title.
 
 Setup seeds a reasonable README summary immediately, so the project description
 does not remain blank while preparation runs. The shipped base instruction
@@ -427,10 +464,14 @@ uses the existing app-scoped bearer; selecting Public is an explicit opt-in to
 hostname-only access and is refused for an owner whose Private apps only
 ceiling is enabled.
 
-The isolated mockup's **App names** layout was approved on 2026-09-21. Persistent
-reservation storage, concurrency and authorization remain unimplemented and
-are included in the stand-up gap. Host-provided static publication is a separate
-path and does not require this wildcard.
+Persistent reservation storage, concurrency and authorization are implemented
+under `project-app-reservations`. Project App Settings shows current and prior
+namespace associations. Serving is available to administrators and limited
+users with Allow public apps; release remains administrator-only. The owner's
+current permission is the publication ceiling, defaulting to private-only,
+as described in [project service](project-service.md#app-address-in-project-settings).
+Creation-time claim and global orphaned-name inventory remain in the stand-up
+gap. Host-provided static publication does not require this wildcard.
 
 ### Next delivery boundary
 

@@ -297,6 +297,7 @@ interface HonoAppLike {
 
 /** Options for the unified upgrade handler */
 export interface UnifiedUpgradeOptions {
+  appUpgrade?: (request: IncomingMessage, socket: Duplex, head: Buffer) => void;
   /** The frontend proxy for Vite (optional, for dev mode) */
   frontendProxy?: FrontendProxy;
   /** Function to check if a path is an API path */
@@ -329,6 +330,10 @@ export function attachUnifiedUpgradeHandler(
   const { frontendProxy, isApiPath, app, wss } = options;
 
   server.on("upgrade", (req, socket, head) => {
+    if (isArtifactHost(req.headers.host) && options.appUpgrade) {
+      options.appUpgrade(req, socket, head);
+      return;
+    }
     if (
       isArtifactHost(req.headers.host) ||
       isArtifactOrigin(req.headers.origin)

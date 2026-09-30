@@ -53,6 +53,8 @@ export interface SessionCollectionRecord {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  sidebarCategory?: string;
+  createdByUser?: string;
   autoResumeDisabled?: boolean;
   activeStartedAt?: number;
   parentSessionId?: string;
@@ -85,6 +87,8 @@ export interface SessionCollectionQueryDescriptor {
   limit?: number;
   includeArchived?: boolean;
   starred?: boolean;
+  /** Only sessions filed under a sidebar category. */
+  categorized?: boolean;
 }
 
 export interface SessionCollectionQueryState {

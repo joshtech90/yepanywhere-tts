@@ -105,3 +105,22 @@ it("unlocks details after the server rejects a request before allocation", async
   await screen.findByText("Source changed");
   expect((name as HTMLInputElement).disabled).toBe(false);
 });
+
+it("shows progress immediately before the creation request returns", async () => {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => new Promise<Response>(() => {})),
+  );
+  form();
+  fireEvent.change(screen.getByRole("textbox", { name: "Name" }), {
+    target: { value: "Garden" },
+  });
+  fireEvent.change(
+    screen.getByRole("textbox", { name: "What would you like to make?" }),
+    { target: { value: "Sketch plants" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Create & prepare" }));
+  expect(screen.getByText("Submitting project creation…")).toBeTruthy();
+  expect(screen.getByText("Waiting for setup output…")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Hide setup log" })).toBeTruthy();
+});

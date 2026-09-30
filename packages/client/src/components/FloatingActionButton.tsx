@@ -1,3 +1,4 @@
+import { DraftSyncNotice } from "./DraftSyncNotice";
 import {
   type KeyboardEvent,
   useCallback,
@@ -601,6 +602,7 @@ export function FloatingActionButton() {
       {/* Input panel appears above the button */}
       {isExpanded && (
         <div className="fab-input-panel">
+          <DraftSyncNotice draftKey={fabDraftKey} />
           <div
             className={`speech-draft-field ${
               interimDisplayTranscript ? "has-interim" : ""
@@ -620,6 +622,7 @@ export function FloatingActionButton() {
                 </div>
               )}
               <textarea
+                data-draft-key={fabDraftKey}
                 ref={textareaRef}
                 value={message}
                 onChange={(e) => {

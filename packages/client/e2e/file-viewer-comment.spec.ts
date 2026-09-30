@@ -11,6 +11,8 @@ const fileBrowserProjectId = Buffer.from(fileBrowserProjectPath).toString(
 );
 const sessionId = "file-viewer-absolute-001";
 
+test.use({ draftSessionIds: [sessionId] });
+
 async function dismissOnboardingIfVisible(page: Page) {
   const skip = page.locator(".onboarding-skip-all");
   if (

@@ -23,6 +23,44 @@
     );
   }
 
+  // Match NavigationLayout's saved desktop mode and width. Reserving that
+  // space keeps the field steady without hiding the reader's sidebar.
+  var sidebarWidth = Number.parseInt(
+    localStorage.getItem("yep-anywhere-sidebar-width") || "280",
+    10,
+  );
+  sidebarWidth = Number.isFinite(sidebarWidth)
+    ? Math.min(560, Math.max(280, sidebarWidth))
+    : 280;
+  var expanded =
+    new URLSearchParams(location.search).get("sidebar") === "expanded" ||
+    localStorage.getItem("yep-anywhere-sidebar-expanded") !== "false";
+  var minimized =
+    !expanded &&
+    localStorage.getItem("yep-anywhere-sidebar-minimized") === "true";
+  document.documentElement.style.setProperty(
+    "--preboot-sidebar-width",
+    `${minimized ? 0 : expanded && innerWidth >= sidebarWidth + 600 ? sidebarWidth : 56}px`,
+  );
+
+  // Page padding and the project-column gap use rem units. Match the saved
+  // UI scale before the app initializes its fonts (default 115%).
+  var storedFontScale = localStorage.getItem("yep-anywhere-font-size");
+  var legacyFontScales = { small: 85, default: 100, large: 115, larger: 130 };
+  var fontScale =
+    storedFontScale === null
+      ? 115
+      : Object.hasOwn(legacyFontScales, storedFontScale)
+        ? legacyFontScales[storedFontScale]
+        : Number(storedFontScale);
+  fontScale = Number.isFinite(fontScale)
+    ? Math.min(300, Math.max(50, fontScale))
+    : 115;
+  document.documentElement.style.setProperty(
+    "--preboot-page-padding",
+    `${(16 * fontScale) / 100}px`,
+  );
+
   var style = document.createElement("style");
   style.textContent =
     // Above page chrome, below the app's modals (1000+), so a blocking
@@ -44,10 +82,10 @@
     "width:calc(100% - 296px)}}" +
     // Wide screens center the page at the reader's content width.
     "@media (min-width:1100px){#yep-preboot-composer{" +
-    "justify-content:center;padding-left:0;padding-right:0}" +
-    "#yep-preboot-composer>div{box-sizing:border-box;padding:0 16px;" +
+    "left:var(--preboot-sidebar-width);justify-content:center;padding-left:0;padding-right:0}" +
+    "#yep-preboot-composer>div{box-sizing:border-box;padding:0 var(--preboot-page-padding);" +
     "width:min(100%,var(--content-max-width,830px))}" +
-    "#yep-preboot-composer>div>*{max-width:calc(100% - 296px)}}" +
+    "#yep-preboot-composer>div>*{max-width:calc(100% - 280px - var(--preboot-page-padding))}}" +
     "#yep-preboot-composer textarea{display:block;width:100%;" +
     "box-sizing:border-box;padding:.6rem .7rem;border-radius:8px;resize:none;" +
     "font:inherit;font-size:15px;line-height:1.35;color:inherit;" +
@@ -79,10 +117,24 @@
     event.preventDefault();
   });
 
+  // A reload before the app adopts this field (a development source-version
+  // check, applied browser defaults) must not cost what was typed: keep it
+  // in the tab's session storage, where prebootComposer.ts also stashes it.
+  var stashKey = "yep-preboot-composer-text";
+  try {
+    textarea.value = sessionStorage.getItem(stashKey) || "";
+  } catch {}
+  textarea.addEventListener("input", () => {
+    try {
+      if (textarea.value) sessionStorage.setItem(stashKey, textarea.value);
+      else sessionStorage.removeItem(stashKey);
+    } catch {}
+  });
+
   column.append(textarea, status);
   overlay.append(column);
   document.head.append(style);
-  document.documentElement.setAttribute("data-preboot-composer", "");
   document.body.append(overlay);
   textarea.focus();
+  textarea.setSelectionRange(textarea.value.length, textarea.value.length);
 })();

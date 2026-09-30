@@ -1,4 +1,8 @@
-import type { PromptSuggestionMode } from "@yep-anywhere/shared";
+import {
+  MAX_SIDEBAR_CATEGORY_LENGTH,
+  type PromptSuggestionMode,
+  normalizeSidebarCategory,
+} from "@yep-anywhere/shared";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "../i18n";
@@ -16,6 +20,12 @@ export interface SessionMenuProps {
   /** Process ID if session has an active process (enables terminate option) */
   processId?: string;
   onToggleStar: () => void | Promise<void>;
+  /** The session's current sidebar category, if any. */
+  sidebarCategory?: string;
+  /** Existing categories to offer, besides creating a new one. */
+  sidebarCategoryNames?: readonly string[];
+  /** File the session under a category, or none with null. Omit to hide. */
+  onSetSidebarCategory?: (category: string | null) => void | Promise<void>;
   onToggleArchive: () => void | Promise<void>;
   onToggleRead?: () => void | Promise<void>;
   onRename: () => void;
@@ -84,6 +94,9 @@ export function SessionMenu({
   hasUnread,
   processId,
   onToggleStar,
+  sidebarCategory,
+  sidebarCategoryNames = [],
+  onSetSidebarCategory,
   onToggleArchive,
   onToggleRead,
   onRename,
@@ -123,6 +136,10 @@ export function SessionMenu({
   // A copied id leaves nothing on screen to confirm it, so the entry reports
   // the outcome in place and closes the menu once the reader has seen it.
   const [copiedSessionId, setCopiedSessionId] = useState<"ok" | "failed">();
+  // The category choices stay folded until asked for, so the menu keeps its
+  // length; a new name is typed in place rather than in a separate dialog.
+  const [categoryPickerOpen, setCategoryPickerOpen] = useState(false);
+  const [newCategoryDraft, setNewCategoryDraft] = useState<string | null>(null);
   // Identifies the current opening, so a copy that finishes after its menu
   // closed cannot report into, or close, a later one.
   const openingRef = useRef<object | null>(null);
@@ -181,7 +198,11 @@ export function SessionMenu({
 
   useEffect(() => {
     openingRef.current = isOpen ? {} : null;
-    if (!isOpen) setCopiedSessionId(undefined);
+    if (!isOpen) {
+      setCopiedSessionId(undefined);
+      setCategoryPickerOpen(false);
+      setNewCategoryDraft(null);
+    }
   }, [isOpen]);
 
   // A failure stays on the entry until the menu closes; only success is
@@ -327,6 +348,94 @@ export function SessionMenu({
         </svg>
         {isStarred ? t("sessionMenuUnstar") : t("sessionMenuStar")}
       </button>
+      {onSetSidebarCategory && (
+        <>
+          <button
+            type="button"
+            aria-expanded={categoryPickerOpen}
+            onClick={() => setCategoryPickerOpen((open) => !open)}
+          >
+            <svg
+              width="14"
+              height="14"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              aria-hidden="true"
+            >
+              <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+            </svg>
+            {t("sessionMenuMoveToCategory")}
+          </button>
+          {categoryPickerOpen && (
+            <div className={styles.categoryChoices}>
+              {sidebarCategoryNames.map((name) => (
+                <button
+                  type="button"
+                  key={name}
+                  aria-pressed={name === sidebarCategory}
+                  onClick={() =>
+                    handleAction(() =>
+                      onSetSidebarCategory(
+                        name === sidebarCategory ? null : name,
+                      ),
+                    )
+                  }
+                >
+                  <span className={styles.categoryCheck} aria-hidden="true">
+                    {name === sidebarCategory ? "✓" : ""}
+                  </span>
+                  {name}
+                </button>
+              ))}
+              {newCategoryDraft === null ? (
+                <button type="button" onClick={() => setNewCategoryDraft("")}>
+                  <span className={styles.categoryCheck} aria-hidden="true" />
+                  {t("sessionMenuNewCategory")}
+                </button>
+              ) : (
+                <form
+                  className={styles.newCategoryForm}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    const name = normalizeSidebarCategory(newCategoryDraft);
+                    if (name) handleAction(() => onSetSidebarCategory(name));
+                  }}
+                >
+                  <input
+                    // biome-ignore lint/a11y/noAutofocus: The reader just asked to type a name here.
+                    autoFocus
+                    type="text"
+                    value={newCategoryDraft}
+                    maxLength={MAX_SIDEBAR_CATEGORY_LENGTH}
+                    placeholder={t("sessionMenuNewCategoryPlaceholder")}
+                    aria-label={t("sessionMenuNewCategory")}
+                    onChange={(event) =>
+                      setNewCategoryDraft(event.target.value)
+                    }
+                    onKeyDown={(event) => {
+                      if (event.key === "Escape") {
+                        event.stopPropagation();
+                        setNewCategoryDraft(null);
+                      }
+                    }}
+                  />
+                </form>
+              )}
+              {sidebarCategory && (
+                <button
+                  type="button"
+                  onClick={() => handleAction(() => onSetSidebarCategory(null))}
+                >
+                  <span className={styles.categoryCheck} aria-hidden="true" />
+                  {t("sessionMenuRemoveFromCategory")}
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
       <button type="button" onClick={() => handleAction(onRename)}>
         <svg
           width="14"

@@ -78,6 +78,12 @@ Maintainer has authorized the exact exception.
 
 ## Known Exceptions
 
+**Copy Markdown** defaults visible in the existing selection actions, authorized
+by graehl on 2026-09-29 to keep Markdown copy accessible on mobile while native
+Copy and `Ctrl/Cmd+C` copy visible text. Its blue copy icon sits above quote
+reply on mobile; an explicit saved visibility choice remains authoritative.
+See [rich-text rendering](rich-text-rendering.md).
+
 The server runtime upgrade notice is default-visible and nonblocking, authorized
 by the Maintainer on 2026-09-08 so remote users can arrange a runtime upgrade
 while continuing to use their existing server. It adds no frontend cutoff or

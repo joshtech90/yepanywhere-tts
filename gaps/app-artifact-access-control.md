@@ -30,9 +30,9 @@ Remaining work:
 - Artifact inventory/manual revocation remains in
   [its existing gap](artifact-grant-revocation-ui.md). Artifact Public visibility
   is deferred; existing long random artifact URLs already act as access grants.
-- WebSocket vhost proxy support is absent: authorized upgrades return 501,
-  unauthorized ones 401. Any future implementation must use the same gate and
-  close active connections on expiry/revocation.
+- WebSocket vhost proxying now uses the app gate, and bearer revocation closes
+  established sockets without stopping the app. Optional future link expiry
+  must use the same connection teardown.
 
 URL possession intentionally grants access; do not replace this with
 login-bound or single-use credentials. Apps lifecycle must not delete unknown

@@ -8,6 +8,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 export interface RecentEntry {
   /** Session ID */
@@ -172,7 +173,7 @@ export class RecentsService {
   private async doSave(): Promise<void> {
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      await writeFileAtomically(this.filePath, content);
     } catch (error) {
       console.error("[RecentsService] Failed to save state:", error);
       throw error;

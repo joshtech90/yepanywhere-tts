@@ -109,20 +109,34 @@ its own composer.
    selection in the ref callback that creates its own textarea and focuses
    it there, so no key falls between the two fields. Text typed there follows
    a restored draft as its own paragraph (rule 7), since it was typed without
-   seeing it. Launch composers (fork, handoff) never adopt it.
+   seeing it. Launch composers (fork, handoff) never adopt it. The form does
+   not wait for the selected project's record: it mounts, adopts and takes
+   typing at once, shows the project as loading rather than detached, and
+   holds Start (button and Enter) until the record arrives and fills the
+   project field.
 3. **Never covers another page.** When routing settles anywhere other than
    the new-session route (a login redirect) or the error boundary catches,
    the overlay is removed and non-empty text is kept in `sessionStorage` for
    the next adoption in that tab. It sits below the app's modals, so a
    blocking dialog raised at the same URL (host offline) shows over it.
-4. **Enter does not send yet.** On a fine pointer, plain Enter is swallowed
+4. **A reload before adoption keeps the text.** The pre-boot field writes its
+   text to the tab's `sessionStorage` stash on every input and restores it,
+   caret at the end, when a reloaded document shows it again. Reloads during
+   boot are real: the development source-version check reloads at a lazy
+   import, and a limited user's newly published browser defaults reload once.
+   Adoption spends the stash, so the text is adopted once; after adoption the
+   form's own draft persistence owns it.
+5. **Enter does not send yet.** On a fine pointer, plain Enter is swallowed
    rather than becoming a newline, because the app's Enter would have sent;
    Shift+Enter still adds a newline. On a coarse pointer, Enter is a newline,
    as in the app.
-5. **The tab starts with the sidebar minimized** (unsaved; see
-   [UI architecture](ui-architecture.md#desktop-sidebar-display-modes)), so
-   loading the sidebar neither competes with the composer nor moves it.
-6. **Geometry follows the page.** The pre-boot textarea sits where the form's
+6. **The tab honors the saved sidebar mode**, including on reload (see
+   [UI architecture](ui-architecture.md#desktop-sidebar-display-modes)). The
+   pre-boot field reserves the saved desktop sidebar width, including the
+   collapsed rail or minimized mode, rather than hiding navigation. An explicit
+   `?sidebar=expanded` overrides the saved mode; responsive width limits still
+   apply.
+7. **Geometry follows the page.** The pre-boot textarea sits where the form's
    textarea will be at each width, including the reader's content width, so
    the handoff does not visibly move the text. Its copy is English only: the
    app's catalog is not loaded yet.

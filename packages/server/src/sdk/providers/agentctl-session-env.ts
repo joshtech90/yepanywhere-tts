@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { quoteShellWord } from "../../utils/posixShell.js";
 import { VHOST_ENV_NAMES } from "../../artifacts/vhosts.js";
+import type { SessionSandboxRuntime } from "../../session-sandbox.js";
 
 const AGENTCTL_SESSION_ID_ENV = "AGENTCTL_SESSION_ID";
 const ORIGINAL_BASH_ENV_ENV = "YEP_ORIGINAL_BASH_ENV";
@@ -42,6 +43,9 @@ const STATIC_AGENT_ENV_NAMES = [
 ] as const;
 
 export interface AgentctlSessionEnvBridge {
+  /** Host directory holding this launch's bridge files. */
+  readonly directory: string;
+  /** `BASH_ENV` value, as the launched provider's shells see it. */
   readonly bashEnvPath: string;
   extendEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   publishSessionId(
@@ -89,17 +93,29 @@ export function pickStaticAgentEnvironment(
   return picked;
 }
 
+export interface AgentctlSessionEnvBridgeOptions {
+  /**
+   * Where the launched provider's shells see the bridge directory, when that
+   * differs from the host path. Paths written into the bridge and returned as
+   * `bashEnvPath` use it; the server keeps writing through the host path.
+   */
+  visibleDirectory?: string;
+}
+
 export function createAgentctlSessionEnvBridge(
   initialSessionId?: string,
   getSessionEnv?: (sessionId: string) => Record<string, string>,
+  options: AgentctlSessionEnvBridgeOptions = {},
 ): AgentctlSessionEnvBridge {
   const dir = mkdtempSync(join(tmpdir(), "ya-agentctl-session-"));
-  const bashEnvPath = join(dir, "bash-env.sh");
-  const sessionEnvPath = join(dir, "agentctl-session.env");
+  const hostBashEnvPath = join(dir, "bash-env.sh");
+  const visibleDirectory = options.visibleDirectory ?? dir;
+  const bashEnvPath = join(visibleDirectory, "bash-env.sh");
+  const sessionEnvPath = join(visibleDirectory, "agentctl-session.env");
 
   const writeBashEnv = (environment: NodeJS.ProcessEnv) =>
     writeFileSync(
-      bashEnvPath,
+      hostBashEnvPath,
       [
         "# yep-anywhere agentctl session bridge",
         // Capture the original file at launch. A shared environment variable
@@ -157,7 +173,7 @@ export function createAgentctlSessionEnvBridge(
       ].join("\n"),
       { encoding: "utf-8", mode: 0o600 },
     );
-    renameSync(tempPath, sessionEnvPath);
+    renameSync(tempPath, join(dir, "agentctl-session.env"));
   };
 
   if (initialSessionId) {
@@ -165,6 +181,7 @@ export function createAgentctlSessionEnvBridge(
   }
 
   return {
+    directory: dir,
     bashEnvPath,
     extendEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
       writeBashEnv(env);
@@ -183,6 +200,39 @@ export function createAgentctlSessionEnvBridge(
       rmSync(dir, { recursive: true, force: true });
     },
   };
+}
+
+/**
+ * Create one provider launch's bridge. A YA session sandbox replaces `/tmp`,
+ * hiding the host temp directory the bridge lives in, so a sandboxed launch
+ * also gets a runtime that mounts this bridge directory, and no other,
+ * read-only at the sandbox's bridge path. Spawn through the returned runtime.
+ */
+export function createLaunchAgentctlSessionEnvBridge(options: {
+  initialSessionId?: string;
+  getSessionEnv?: (sessionId: string) => Record<string, string>;
+  sessionSandbox?: SessionSandboxRuntime;
+}): {
+  bridge: AgentctlSessionEnvBridge;
+  sessionSandbox?: SessionSandboxRuntime;
+} {
+  const bridge = createAgentctlSessionEnvBridge(
+    options.initialSessionId,
+    options.getSessionEnv,
+    { visibleDirectory: options.sessionSandbox?.sessionEnvBridgeDirectory },
+  );
+  if (!options.sessionSandbox) return { bridge };
+  try {
+    return {
+      bridge,
+      sessionSandbox: options.sessionSandbox.withSessionEnvBridge(
+        bridge.directory,
+      ),
+    };
+  } catch (error) {
+    bridge.cleanup();
+    throw error;
+  }
 }
 
 /**

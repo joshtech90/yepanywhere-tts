@@ -131,6 +131,11 @@ update fanned to row-level consumers doing substring checks — pane bodies
 are memo-isolated and do not re-render per keystroke. A contained mutation
 observer recounts results when an asynchronous pane loads dynamic rows. This
 surface is typing-rate, not streaming-rate; no further coalescing is required.
+Navigation callbacks in the scope must retain their identity during urgent
+query edits. Otherwise a changed callback invalidates every consumer even
+while the deferred query is unchanged. The typing regression holds a real row
+consumer's deferred render and verifies that urgent input updates preserve the
+already-visible, operable control until that render completes.
 
 ## Known limitations / candidate refinements
 

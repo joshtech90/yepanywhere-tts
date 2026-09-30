@@ -74,7 +74,7 @@ describe("ConnectionManager integration", () => {
     ]);
   });
 
-  it("2. Repeated failures: give up after maxAttempts", async () => {
+  it("2. Repeated failures: pause rapid retries after maxAttempts", async () => {
     const { cm, reconnectFn, timers, failures } = setup({
       maxAttempts: 10,
     });
@@ -90,10 +90,10 @@ describe("ConnectionManager integration", () => {
       await flush();
     }
 
-    expect(cm.state).toBe("disconnected");
+    expect(cm.state).toBe("reconnecting");
+    expect(cm.waitingForRecovery).toBe(true);
     expect(reconnectFn).toHaveBeenCalledTimes(10);
-    expect(failures).toHaveLength(1);
-    expect(failures[0]?.message).toMatch(/failed after 10 attempts/);
+    expect(failures).toHaveLength(0);
   });
 
   it("3. Auth failure: non-retryable error → immediate disconnected, no retry", () => {

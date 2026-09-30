@@ -1,5 +1,6 @@
 import { authEvents } from "../lib/authEvents";
 import { getClientVersion } from "../lib/clientVersion";
+import { type ApiRefusalFields, refusalFields } from "./refusal";
 import { requestDeadlineSignal } from "./requestDeadline";
 
 export const API_BASE = "/api";
@@ -68,21 +69,23 @@ function createPlainFetchHeaders(
   );
 }
 
-async function getJsonErrorMessage(
+async function getJsonErrorDetail(
   response: Response,
   fallback: string,
-): Promise<string> {
+): Promise<{ message: string; refusal: ApiRefusalFields }> {
   try {
     const body = (await response.json()) as {
       error?: unknown;
       message?: unknown;
     };
-    if (body.error) return String(body.error);
-    if (body.message) return String(body.message);
+    const refusal = refusalFields(body);
+    if (body.error) return { message: String(body.error), refusal };
+    if (body.message) return { message: String(body.message), refusal };
+    return { message: fallback, refusal };
   } catch {
     // Response body was not JSON; keep the status fallback.
   }
-  return fallback;
+  return { message: fallback, refusal: {} };
 }
 
 async function getBlobErrorMessage(response: Response): Promise<string> {
@@ -149,10 +152,8 @@ export async function fetchPlainJSON<T>(
     }
 
     const fallback = `API error: ${response.status} ${response.statusText}`;
-    throw createPlainFetchError(
-      response,
-      await getJsonErrorMessage(response, fallback),
-    );
+    const { message, refusal } = await getJsonErrorDetail(response, fallback);
+    throw Object.assign(createPlainFetchError(response, message), refusal);
   }
 
   return response.json();

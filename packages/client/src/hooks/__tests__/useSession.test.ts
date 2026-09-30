@@ -1,5 +1,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import type {
+  EffectiveSessionLaunchSettings,
   SessionLivenessSnapshot,
   UrlProjectId,
 } from "@yep-anywhere/shared";
@@ -31,6 +32,9 @@ const apiMocks = vi.hoisted(() => ({
 }));
 
 const sessionMessagesMock = vi.hoisted(() => ({
+  effectiveLaunchSettings: undefined as
+    | EffectiveSessionLaunchSettings
+    | undefined,
   messages: [] as Array<Record<string, unknown>>,
   loading: false,
   provider: "codex",
@@ -198,6 +202,7 @@ vi.mock("../useSessionMessages", () => ({
         projectId: "proj-1",
         provider: sessionMessagesMock.provider,
         model: "gpt-5.4",
+        effectiveLaunchSettings: sessionMessagesMock.effectiveLaunchSettings,
         updatedAt: sessionMessagesMock.sessionUpdatedAt,
         messages: [],
       },
@@ -2399,6 +2404,7 @@ describe("useSession completion reconciliation", () => {
 
 describe("useSession permission mode persistence", () => {
   beforeEach(() => {
+    sessionMessagesMock.effectiveLaunchSettings = undefined;
     vi.clearAllMocks();
     apiMocks.getSessionMetadata.mockReset();
     apiMocks.setPermissionMode.mockReset();
@@ -2411,6 +2417,49 @@ describe("useSession permission mode persistence", () => {
     sessionStreamHandler = null;
     sessionMessagesMock.messages = [];
     sessionMessagesMock.provider = "codex";
+  });
+
+  it("adopts saved Bypass on a fresh browser and keeps it while the resumed stream connects", async () => {
+    sessionMessagesMock.effectiveLaunchSettings = {
+      schemaVersion: 1,
+      revision: 2,
+      permissionMode: "bypassPermissions",
+      requestedModel: "gpt-5.4",
+      serviceTier: null,
+      thinking: null,
+      effort: null,
+    };
+    const { result } = renderHook(() => useSession(PROJECT_ID, "sess-1"));
+    expect(result.current.permissionMode).toBe("bypassPermissions");
+    expect(result.current.permissionModeOverride).toBeUndefined();
+    act(() =>
+      result.current.setStatus({ owner: "self", processId: "new-process" }),
+    );
+    expect(result.current.permissionMode).toBe("bypassPermissions");
+  });
+
+  it("preserves an explicit stopped Ask selection across saved-settings refreshes", async () => {
+    sessionMessagesMock.effectiveLaunchSettings = {
+      schemaVersion: 1,
+      revision: 2,
+      permissionMode: "bypassPermissions",
+      requestedModel: "gpt-5.4",
+      serviceTier: null,
+      thinking: null,
+      effort: null,
+    };
+    const { result, rerender } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1"),
+    );
+    await act(async () => result.current.setPermissionMode("default"));
+    sessionMessagesMock.effectiveLaunchSettings = {
+      ...sessionMessagesMock.effectiveLaunchSettings,
+      revision: 3,
+      permissionMode: "plan",
+    };
+    rerender();
+    expect(result.current.permissionMode).toBe("default");
+    expect(result.current.permissionModeOverride).toBe("default");
   });
 
   it("restores the stored mode when no live process reports one", () => {
@@ -2435,6 +2484,44 @@ describe("useSession permission mode persistence", () => {
     );
 
     expect(result.current.permissionMode).toBe("plan");
+  });
+
+  it("does not treat browser defaults or stored modes as explicit overrides", () => {
+    window.localStorage.setItem("permission-mode-sess-1", "default");
+    const { result, rerender } = renderHook(
+      ({ id }) => useSession(PROJECT_ID, id),
+      { initialProps: { id: "sess-1" } },
+    );
+    expect(result.current.permissionModeOverride).toBeUndefined();
+    rerender({ id: "fresh-session" });
+    expect(result.current.permissionModeOverride).toBeUndefined();
+  });
+
+  it("retains an explicit Ask selection only for its stopped session", async () => {
+    const { result, rerender } = renderHook(
+      ({ id }) => useSession(PROJECT_ID, id),
+      { initialProps: { id: "sess-1" } },
+    );
+    await act(async () => result.current.setPermissionMode("default"));
+    expect(result.current.permissionModeOverride).toBe("default");
+    expect(apiMocks.setPermissionMode).not.toHaveBeenCalled();
+    rerender({ id: "sess-2" });
+    expect(result.current.permissionModeOverride).toBeUndefined();
+  });
+
+  it("retires an override once the live provider confirms it", async () => {
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+        permissionMode: "default",
+      }),
+    );
+    await act(async () =>
+      result.current.setPermissionMode("bypassPermissions"),
+    );
+    expect(result.current.permissionMode).toBe("bypassPermissions");
+    expect(result.current.permissionModeOverride).toBeUndefined();
   });
 
   it("persists the selected mode to storage", async () => {

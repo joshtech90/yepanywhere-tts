@@ -1,3 +1,4 @@
+import { ResumeError } from "../../lib/connection/resumeErrors";
 // @vitest-environment jsdom
 
 import {
@@ -326,18 +327,23 @@ describe("RelayConnectionGate", () => {
     expect(testState.connectViaRelay).not.toHaveBeenCalled();
   });
 
-  it("still sends post-connect authentication failures to login", async () => {
+  it("explains explicit rejection before the user chooses login", async () => {
     const view = render(<TestRoutes />);
     await screen.findByRole("button", { name: "Loaded document" });
 
     testState.connectViaRelay.mockRejectedValueOnce(
-      new Error("Authentication failed: session expired"),
+      new ResumeError("rejected", "Server rejected session resume: expired"),
     );
     testState.remote = { ...testState.remote, connection: null };
     view.rerender(<TestRoutes />);
 
-    expect(await screen.findByText("Relay login")).toBeTruthy();
+    expect(
+      await screen.findByText("Server rejected session resume: expired"),
+    ).toBeTruthy();
     expect(testState.clearHostSession).toHaveBeenCalledWith("host-1");
-    expect(documentUnmounts).toBe(1);
+    expect(screen.queryByRole("button", { name: "Retry" })).toBeNull();
+    expect(documentUnmounts).toBe(0);
+    fireEvent.click(screen.getByRole("button", { name: "Go to Login" }));
+    expect(await screen.findByText("Relay login")).toBeTruthy();
   });
 });

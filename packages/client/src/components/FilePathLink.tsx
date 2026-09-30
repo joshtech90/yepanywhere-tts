@@ -63,6 +63,7 @@ import {
   type FileViewPresentation,
   type ResourceDownload,
   supportsSourceAndPreview,
+  localSourceTarget,
   useStartNewSessionFromFile,
 } from "./FileResourceActions";
 import { createPublicShareFileViewerSource } from "./publicShareFileViewerSource";
@@ -213,6 +214,12 @@ export const FilePathLink = memo(function FilePathLink({
       projectPath,
     );
   }, [filePath, projectPath, viewerFilePath]);
+  const localSource = localSourceTarget(
+    projectId,
+    absoluteCopyPath,
+    projectRelativeCopyPath,
+    publicShareContext !== null,
+  );
   const hasPresentationChoice = supportsSourceAndPreview(viewerFilePath);
   const publicShareFileViewUrl = publicShareContext
     ? buildPublicShareFileHref(publicShareContext, {
@@ -415,6 +422,7 @@ export const FilePathLink = memo(function FilePathLink({
             hasPresentationChoice ? () => openFromMenu("preview") : undefined
           }
           onStartNewSession={startNewSession}
+          localSource={localSource}
           onCopyProjectRelativePath={
             projectRelativeCopyPath
               ? () => void writeClipboardText(projectRelativeCopyPath)

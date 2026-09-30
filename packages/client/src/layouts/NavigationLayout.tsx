@@ -13,10 +13,6 @@ import styles from "./NavigationLayout.module.css";
 import { Sidebar, SidebarToggleIcon } from "../components/Sidebar";
 import { GlossaryProjectProvider } from "../contexts/GlossaryContext";
 import { MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO } from "../lib/mobileKeyboardViewport";
-import {
-  isNewSessionPathname,
-  prebootComposerShown,
-} from "../lib/prebootComposer";
 import { useSidebarPreference } from "../hooks/useSidebarPreference";
 import { usePanelSlideAnimations } from "../hooks/usePanelSlideAnimations";
 import {
@@ -92,16 +88,18 @@ function isKeyboardTextEntry(
   return target instanceof HTMLElement && target.isContentEditable;
 }
 
-function getMobileVisualViewportBottomInset(
-  isWideScreen: boolean,
+function getVisualViewportBottomInset(
   activeElement: EventTarget | null = document.activeElement,
 ): number {
   const visualViewport = window.visualViewport;
   const layoutViewportHeight = window.innerHeight;
   if (
-    isWideScreen ||
     !visualViewport ||
-    !isKeyboardTextEntry(activeElement) ||
+    Math.abs((visualViewport.scale ?? 1) - 1) > 0.01 ||
+    !(
+      isKeyboardTextEntry(activeElement) ||
+      activeElement instanceof HTMLIFrameElement
+    ) ||
     layoutViewportHeight <= 0 ||
     visualViewport.height >=
       layoutViewportHeight * MOBILE_KEYBOARD_OPEN_VIEWPORT_RATIO
@@ -213,11 +211,7 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
     forceExpandedSidebar,
     /^(?:\/-\/relay\/[^/]+)?\/settings(?:\/|$)/.test(location.pathname)
       ? "collapsed"
-      : prebootComposerShown() && isNewSessionPathname(location.pathname)
-        ? // A tab opened onto the composer: loading the sidebar would compete
-          // with it and move the field the user is already typing into.
-          "minimized"
-        : null,
+      : null,
   );
   const {
     width: sidebarWidth,
@@ -268,10 +262,7 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
     }
 
     const applyInset = (activeElement: EventTarget | null) => {
-      const inset = getMobileVisualViewportBottomInset(
-        isWideScreen,
-        activeElement,
-      );
+      const inset = getVisualViewportBottomInset(activeElement);
       if (inset > 0) {
         frame.style.paddingBottom = `calc(env(safe-area-inset-bottom, 0px) + ${inset}px)`;
       } else {
@@ -296,7 +287,7 @@ function NavigationLayoutFrame({ sessionElement }: NavigationLayoutProps) {
       document.removeEventListener("focusin", handleFocusIn);
       document.removeEventListener("focusout", handleFocusOut);
     };
-  }, [isWideScreen]);
+  }, []);
 
   // Auto-collapse if viewport too narrow for expanded sidebar, or if user prefers collapsed
   const effectivelyCollapsed =

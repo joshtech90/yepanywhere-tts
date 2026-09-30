@@ -21,6 +21,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll } from "vitest";
+import { drainFixtureApps } from "./app-fixture-lifecycle.js";
 import { CONFIG_ENV_VARS } from "./config-env-vars.js";
 
 for (const name of CONFIG_ENV_VARS) {
@@ -43,6 +44,7 @@ process.env.YEP_SCRATCH_DIR = join(root, "scratch");
 // is right for a machine learning years of history and wrong for every test
 // process. The shape under test is the same at a small size.
 process.env.YEP_SPEECH_VOCABULARY_BYTES = "1M";
-afterAll(() => {
+afterAll(async () => {
+  await drainFixtureApps();
   rmSync(root, { recursive: true, force: true });
 });

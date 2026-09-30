@@ -156,11 +156,17 @@ export async function importFresh(load) {
       });
     },
 
-    handleHotUpdate({ file }) {
+    handleHotUpdate({ file, modules }) {
       if (!enabled || !server) {
         // Let Vite handle normally (HMR)
         return;
       }
+      // A file no page has loaded (a test, a scratch file, a doc under the
+      // client root) cannot leave any page running stale code, so it does
+      // not move the generation. Moving it anyway made every loading tab
+      // reload at its next lazy import, restarting the load while peers
+      // wrote unrelated files.
+      if (modules.length === 0) return [];
 
       // Get relative path from project root
       const relativePath = file.replace(`${server.config.root}/`, "");

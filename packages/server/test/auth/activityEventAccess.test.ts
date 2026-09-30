@@ -18,6 +18,43 @@ const access = {
 const deliver = (event: BusEvent) => limitedActivityEvent(event, access);
 
 describe("limited-user activity events", () => {
+  it("hides a formerly granted session event while its replacement catalog loads", async () => {
+    let version = "epoch:1";
+    let release!: (
+      rows: Array<{ sessionId: string; projectId: string }>,
+    ) => void;
+    const pending = new Promise<
+      Array<{ sessionId: string; projectId: string }>
+    >((resolve) => {
+      release = resolve;
+    });
+    const resolver = new SessionAccessResolver({
+      getLiveSession: () => undefined,
+      getSessionMetadata: () => undefined,
+      getCatalogVersion: () => version,
+      readCatalogRows: async () =>
+        version === "epoch:1"
+          ? [{ sessionId: "moved", projectId: "granted" }]
+          : pending,
+    });
+    await resolver.resolve("moved");
+    const event: BusEvent = {
+      type: "session-seen",
+      sessionId: "moved",
+      timestamp,
+    };
+    const filtered = () =>
+      limitedActivityEvent(event, {
+        isProjectAccessible: access.isProjectAccessible,
+        knownSessionProject: (id) => resolver.resolveKnown(id)?.projectId,
+      });
+    expect(filtered()).toEqual(event);
+    version = "epoch:2";
+    expect(filtered()).toBeNull();
+    release([{ sessionId: "moved", projectId: "other" }]);
+    await resolver.resolve("moved");
+    expect(filtered()).toBeNull();
+  });
   it("delivers a new session only in an accessible project", () => {
     const created = (projectId: string) =>
       ({

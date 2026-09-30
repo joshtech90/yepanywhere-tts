@@ -86,6 +86,25 @@ Three details are load-bearing:
   tooltip on every code block would fire while reading or selecting code, a
   second behind the label and saying the same word.
 
+## Copy control
+
+Every fenced block — labeled, `text`, or bare — carries a small copy button in
+its top-right corner that copies the block's content verbatim: exactly the
+fence body, with indentation, blank lines, and entity-decoded characters, and
+nothing added. It is an established first-party convention (claude.ai code
+blocks), so it ships visible under
+[vanilla defaults](vanilla-defaults.md#contract) rather than behind an option,
+revealed the way the language label is: on hover or focus for pointers, and
+always shown without a hover pointer, where it grows to a touch-sized target.
+The language label moves beside it.
+
+It is a real `<button>` inside the `<pre>`, which the label deliberately is
+not, so it is built to leave every copy path untouched: icon-only (no text in
+the block's `textContent` or a plain selection), marked
+`data-markdown-copy-ignore` for Markdown copy, and stripped by the semantic
+HTML clipboard with the rest of the active content. A confirmation state
+lasts about a second after a successful write.
+
 ## The renderer registry
 
 Dispatch is a lookup in a map keyed by normalized language name. Two properties

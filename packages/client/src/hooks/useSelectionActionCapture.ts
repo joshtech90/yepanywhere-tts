@@ -11,13 +11,13 @@ import {
   SELECTION_ACTION_GAP_PX,
 } from "../components/ui/SelectionActionCluster";
 import {
-  copyMarkdownSelectionToClipboard,
   extractMarkdownSnippetsFromSelection,
   getQuoteSelectionRoot,
   getQuoteSelectionRootForTarget,
   type MarkdownSelectionSnippet,
 } from "../lib/markdownSelectionCopy";
 import { createCommentAnchor, type CommentAnchor } from "../lib/commentAnchors";
+import { getSelectionPlainText } from "../lib/selectionClipboard";
 
 const TRANSCRIPT_SELECTION_ACTIVE_CLASS = "session-transcript-selection-active";
 const SELECTION_ACTION_UPDATE_INTERVAL_MS = 50;
@@ -347,11 +347,18 @@ export function useSelectionActionCapture({
   useEffect(() => {
     if (inert) return;
     const handleCopy = (event: ClipboardEvent) => {
+      if (event.defaultPrevented || !event.clipboardData) return;
       const root = containerRef.current;
       if (!root) return;
       const selectionRoot = getQuoteSelectionRoot(root);
       if (selectionRoot) {
-        copyMarkdownSelectionToClipboard(event, selectionRoot);
+        const snippets = extractMarkdownSnippetsFromSelection(selectionRoot);
+        if (snippets.length === 0) return;
+        event.clipboardData.setData(
+          "text/plain",
+          getSelectionPlainText(snippets),
+        );
+        event.preventDefault();
       }
     };
 

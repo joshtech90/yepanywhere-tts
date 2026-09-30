@@ -323,10 +323,15 @@ describe("Codex native compaction delivery", () => {
     async (path) => {
       expect((await resume("hold")).status).toBe(200);
       const process = server.supervisor.getProcessForSession(sessionId);
-      // Wait for the turn this rejection is about, not for the request that
-      // announces it: the recorded `turn/start` appears before the process is
-      // in a turn, so compaction used to arrive while it was still idle.
+      // Both barriers matter: YA can mark a pending turn active before the
+      // provider records its request, or consume that record before its state.
       await expect.poll(() => process?.state.type).toBe("in-turn");
+      await expect
+        .poll(
+          async () =>
+            (await requests()).filter((r) => r.method === "turn/start").length,
+        )
+        .toBe(1);
       const response = await sendCompact(path);
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({

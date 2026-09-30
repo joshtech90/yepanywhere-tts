@@ -7,6 +7,8 @@ import { recordUiCapture } from "./support/ui-capture.js";
 const mockProjectPath = join(e2ePaths.tempDir, "mockproject");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
 const sessionId = "file-viewer-absolute-001";
+
+test.use({ draftSessionIds: [sessionId] });
 const externalReadmePath = join(
   e2ePaths.tempDir,
   "file-browser-project",

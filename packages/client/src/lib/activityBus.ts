@@ -123,6 +123,8 @@ export interface SessionMetadataChangedEvent {
   title?: string;
   archived?: boolean;
   starred?: boolean;
+  /** Sidebar category after the change; null when removed. */
+  sidebarCategory?: string | null;
   parentSessionId?: string | null;
   parentSessionKind?: "btw-aside" | null;
   forkedFromSessionId?: string | null;

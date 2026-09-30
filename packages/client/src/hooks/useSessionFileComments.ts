@@ -1,3 +1,4 @@
+import { subscribeDraftStorage } from "../lib/draftSyncStorage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SendSessionViewerComment } from "../contexts/SessionViewerCommentContext";
 import {
@@ -54,6 +55,15 @@ export function useSessionFileComments({
     sendingIdsRef.current = idle;
     setSendingIds(idle);
     setError(false);
+  }, [storageKey]);
+
+  useEffect(() => {
+    if (!storageKey) return;
+    return subscribeDraftStorage(storageKey, () => {
+      const next = loadSessionFileCommentDrafts(storageKey);
+      draftsRef.current = next;
+      setDrafts(next);
+    });
   }, [storageKey]);
 
   const persist = useCallback(() => {

@@ -8,9 +8,16 @@
 # versions so this file is portable enough for recovery:
 #   packaging @ file://... -> packaging==26.2
 #   pip @ file://... -> pip==26.1.2
+#
+# Security patch bumps on 2026-09-28 (anyio 4.14.0 -> 4.14.2, msgpack
+# 1.2.0 -> 1.2.1, pip 26.1.2 -> 26.2.0) were checked with a pip dry-run
+# resolve against the live env. setuptools stays below 82 because
+# torch==2.12.0 requires it; its sdist-packaging advisory does not affect
+# this runtime env. Non-applicable advisories are dismissed with reasons in
+# docs/development/dependencies.md.
 accelerate==1.14.0
 annotated-doc==0.0.4
-anyio==4.14.0
+anyio==4.14.2
 audioread==3.1.0
 av==17.1.0
 certifi==2026.5.20
@@ -41,7 +48,7 @@ markdown-it-py==4.2.0
 MarkupSafe==3.0.3
 mdurl==0.1.2
 mpmath==1.3.0
-msgpack==1.2.0
+msgpack==1.2.1
 narwhals==2.22.1
 networkx==3.6.1
 numba==0.65.1
@@ -63,7 +70,7 @@ nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
 onnxruntime==1.27.0
 packaging==26.2
-pip==26.1.2
+pip==26.2.0
 platformdirs==4.10.0
 pooch==1.9.0
 protobuf==7.35.1

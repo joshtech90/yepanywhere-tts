@@ -1,6 +1,7 @@
 import { ARTIFACT_SANDBOX } from "@yep-anywhere/shared";
 import {
   type Ref,
+  type ReactNode,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -14,9 +15,11 @@ import { useI18n } from "../i18n";
 import { createLocalStorageValue } from "../lib/localStorageValue";
 import { UI_KEYS } from "../lib/storageKeys";
 import styles from "./SessionRightPane.module.css";
-import headerStyles from "./ViewerHeader.module.css";
+import { AppViewerToolbar } from "./AppViewerToolbar";
 import { ViewerFindField } from "./ViewerFindField";
 import { ViewerWindowActions } from "./ViewerWindowActions";
+import { ComposerMicAction } from "./ComposerMicAction";
+import type { VoiceInputButtonRef } from "./VoiceInputButton";
 import { suppressTooltipsFor } from "../hooks/useTooltipAppearance";
 import { usePanelSlideAnimations } from "../hooks/usePanelSlideAnimations";
 import { useClosingPaneContent } from "../hooks/useClosingPaneContent";
@@ -66,12 +69,23 @@ export function SessionAppAction({ pane }: { pane: Pane }) {
 
 /** Retain closing content only for the right pane's slide-out animation. */
 export function SessionRightPane({
+  projectApp,
+  projectAppOpen = false,
+  onHideProjectApp,
+  voice,
   pane,
   wide,
+  fullView = false,
   fileContentRef,
 }: {
+  projectApp?: ReactNode;
+  projectAppOpen?: boolean;
+  onHideProjectApp?: () => void;
+  voice?: VoiceInputButtonRef | null;
   pane: Pane;
   wide: boolean;
+  /** Cover the whole window, sidebar and session too, until minimized. */
+  fullView?: boolean;
   fileContentRef?: Ref<HTMLDivElement>;
 }) {
   const { panelSlideDurationMs } = usePanelSlideAnimations();
@@ -81,9 +95,14 @@ export function SessionRightPane({
   );
   return (
     <SessionRightPaneContent
+      projectApp={projectApp}
+      projectAppOpen={projectAppOpen}
+      onHideProjectApp={onHideProjectApp}
+      voice={voice}
       pane={content ?? pane}
-      expanded={pane.expanded}
+      expanded={pane.expanded || projectAppOpen}
       wide={wide}
+      fullView={fullView}
       fileContentRef={fileContentRef}
     />
   );
@@ -91,18 +110,29 @@ export function SessionRightPane({
 
 /** Minimized panes keep their frame mounted for restore. */
 function SessionRightPaneContent({
+  projectApp,
+  projectAppOpen,
+  onHideProjectApp,
+  voice,
   pane,
   expanded,
   wide,
+  fullView,
   fileContentRef,
 }: {
+  projectApp?: ReactNode;
+  projectAppOpen: boolean;
+  onHideProjectApp?: () => void;
+  voice?: VoiceInputButtonRef | null;
   pane: Pane;
   expanded: boolean;
   wide: boolean;
+  fullView: boolean;
   fileContentRef?: Ref<HTMLDivElement>;
 }) {
   const { t } = useI18n();
   const root = useRef<HTMLElement>(null);
+  const appRef = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(widthStore.read);
   const [maxWidth, setMaxWidth] = useState(1600);
   const visibleWidth = Math.min(width, maxWidth);
@@ -125,7 +155,9 @@ function SessionRightPaneContent({
   );
   const url = pane.selected?.url;
   useArtifactTabHandoff(artifactFrame, url);
-  const viewerIdentity = url ?? pane.paneViewer?.id;
+  const viewerIdentity =
+    url ?? pane.paneViewer?.id ?? (projectApp ? "project-app" : undefined);
+  const hide = projectAppOpen ? onHideProjectApp : pane.hide;
   useLayoutEffect(() => {
     if (!viewerIdentity) return;
     const parent = root.current?.parentElement;
@@ -161,14 +193,24 @@ function SessionRightPaneContent({
     return () =>
       document.removeEventListener("securitypolicyviolation", blocked);
   }, [url]);
+  // The pane's ancestors stack below the desktop sidebar, so full view hides
+  // the sidebar rather than trying to paint over it.
   useEffect(() => {
-    if (wide || !expanded || pane.paneViewer) return;
+    if (!fullView) return;
+    document.documentElement.dataset.appFullView = "";
+    return () => {
+      delete document.documentElement.dataset.appFullView;
+    };
+  }, [fullView]);
+  useEffect(() => {
+    // Full view covers everything, so Escape leaves it at any width.
+    if ((wide && !fullView) || !expanded || pane.paneViewer) return;
     const handleEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") pane.hide();
+      if (event.key === "Escape") hide?.();
     };
     document.addEventListener("keydown", handleEscape);
     return () => document.removeEventListener("keydown", handleEscape);
-  }, [wide, expanded, pane.hide, pane.paneViewer]);
+  }, [wide, fullView, expanded, hide, pane.paneViewer]);
   function resize(value: number) {
     const next = Math.max(280, Math.min(maxWidth, value));
     setWidth(next);
@@ -180,7 +222,7 @@ function SessionRightPaneContent({
         <button
           type="button"
           className={styles.backdrop}
-          onClick={pane.hide}
+          onClick={hide}
           aria-label={t("sessionRightPaneHide")}
         />
       )}
@@ -190,8 +232,8 @@ function SessionRightPaneContent({
         aria-hidden={!expanded}
         inert={!expanded}
         data-resizing={dragging}
-        style={wide ? { width: visibleWidth } : undefined}
-        className={`${styles.pane} ${!expanded ? styles.hidden : ""}`}
+        style={wide && !fullView ? { width: visibleWidth } : undefined}
+        className={`${styles.pane} ${!expanded ? styles.hidden : ""} ${projectAppOpen ? styles.projectFullscreen : ""} ${fullView ? styles.fullView : ""}`}
       >
         {wide && (
           <div
@@ -238,16 +280,18 @@ function SessionRightPaneContent({
           />
         )}
         {pane.selected && (
-          <>
-            <header className={`${headerStyles.header} ${styles.header}`}>
-              <span className={headerStyles.identity}>
-                <span className={styles.title} title={pane.selected.label}>
-                  {pane.selected.label}
-                </span>
+          <div
+            ref={appRef}
+            className={styles.appContent}
+            hidden={projectAppOpen}
+          >
+            <AppViewerToolbar viewerRef={appRef}>
+              <span className={styles.title} title={pane.selected.label}>
+                {pane.selected.label}
               </span>
               <ViewerFindField find={find} />
+              {voice && <ComposerMicAction voice={voice} />}
               <ViewerWindowActions
-                className={headerStyles.actions}
                 url={pane.selected.url}
                 copyUrl={pane.copyUrl}
                 onMinimize={pane.hide}
@@ -268,7 +312,7 @@ function SessionRightPaneContent({
                     : "sessionRightPaneKill",
                 )}
               />
-            </header>
+            </AppViewerToolbar>
             {pane.appStatus === "checking" ? (
               <p className={styles.error} role="status">
                 {t("sessionRightPaneChecking")}
@@ -301,13 +345,18 @@ function SessionRightPaneContent({
                 className={styles.frame}
               />
             )}
-          </>
+          </div>
+        )}
+        {projectApp && (
+          <div className={styles.appContent} hidden={!projectAppOpen}>
+            {projectApp}
+          </div>
         )}
         <div
           ref={fileContentRef}
           className={styles.fileContent}
           data-session-right-pane-layer
-          hidden={!pane.paneViewer}
+          hidden={!pane.paneViewer || projectAppOpen}
         />
         {dragging && <div className={styles.dragShield} />}
       </aside>

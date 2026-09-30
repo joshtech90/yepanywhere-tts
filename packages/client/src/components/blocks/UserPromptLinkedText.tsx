@@ -6,6 +6,7 @@ import { type ReactNode, useCallback, useMemo } from "react";
 import { useGlossaryArtifact } from "../../contexts/GlossaryContext";
 import { annotateGlossaryHtml } from "../../lib/glossary/annotateGlossaryHtml";
 import { ProjectPathLinkedText } from "../ProjectPathLinkedText";
+import { InnerHtml } from "../ui/InnerHtml";
 import { LinkifiedText } from "../ui/LinkifiedText";
 
 function escapePlainTextHtml(text: string): string {
@@ -27,12 +28,8 @@ export function GlossaryPlainText({
     [artifact, text],
   );
   if (!annotated.changed) return text;
-  return (
-    <span
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: escaped plain text annotated by the shared glossary transformer
-      dangerouslySetInnerHTML={{ __html: annotated.html }}
-    />
-  );
+  // Escaped plain text annotated by the shared glossary transformer.
+  return <InnerHtml as="span" trustedHtml={annotated.html} />;
 }
 
 export function UserPromptLinkedTextContent({

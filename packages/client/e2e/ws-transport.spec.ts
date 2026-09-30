@@ -344,7 +344,7 @@ test.describe("WebSocket Transport E2E", () => {
     }, baseURL);
 
     expect(result.events.length).toBe(1);
-    expect(result.events[0].eventType).toBe("connected");
+    expect(result.events[0]?.eventType).toBe("connected");
   });
 
   test("can unsubscribe from activity channel", async ({ page, baseURL }) => {

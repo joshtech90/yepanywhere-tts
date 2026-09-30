@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type RelayUploadState,
   cleanupUploads,
+  createConnectionState,
+  draftStagingOwnerForConnection,
   handleStagedUploadStart,
   handleUploadChunk,
   handleUploadEnd,
@@ -161,5 +163,37 @@ describe("WS relay staged uploads", () => {
     await expect(
       stagingService.listDraftAttachments("batch-a"),
     ).resolves.toEqual([]);
+  });
+
+  it("stages the owner's relay uploads in the superuser's own store", () => {
+    const connection = (username: string | null, srp: boolean) => ({
+      ...createConnectionState({ transport: "relay" }),
+      ...(srp
+        ? {
+            authState: "authenticated" as const,
+            sessionKey: new Uint8Array(32),
+          }
+        : {}),
+      username,
+    });
+
+    // The tunneled routes read the owner's relay identity as the superuser,
+    // so drafts they validate and queue must live in the root store.
+    expect(
+      draftStagingOwnerForConnection(connection("owner", true), "owner"),
+    ).toBeNull();
+    expect(
+      draftStagingOwnerForConnection(connection("alice", true), "owner"),
+    ).toBe("alice");
+    // An identity still awaiting its proof names no account.
+    expect(
+      draftStagingOwnerForConnection(connection("owner", false), "owner"),
+    ).toBeNull();
+    expect(
+      draftStagingOwnerForConnection(
+        { ...connection(null, false), directLoginUsername: "alice" },
+        "alice",
+      ),
+    ).toBe("alice");
   });
 });

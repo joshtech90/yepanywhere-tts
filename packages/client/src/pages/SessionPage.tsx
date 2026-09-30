@@ -1,3 +1,4 @@
+import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
 import { SessionIssuesLink } from "../components/SessionIssuesLink";
 import { useNonHumanUserTurnNavigation } from "../hooks/useNonHumanUserTurnNavigation";
 import { useSessionMessageNavigation } from "../hooks/useSessionMessageNavigation";
@@ -52,6 +53,7 @@ import {
 } from "react";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { api } from "../api/client";
+import { isStaleSessionRedirect } from "../api/refusal";
 import { getUiCreationProvenance } from "../lib/sessionCreationProvenance";
 import { createSessionApi } from "../api/sessionClient";
 import type { BangCommandHandlers } from "../components/BangCommandDisplayObject";
@@ -76,6 +78,10 @@ import {
   SessionAppAction,
 } from "../components/SessionRightPane";
 import { useSessionRightPane } from "../hooks/useSessionRightPane";
+import { useSessionThinkingSelection } from "../hooks/useSessionThinkingSelection";
+import { ProjectAppViewer } from "../components/ProjectAppViewer";
+import type { VoiceInputButtonRef } from "../components/VoiceInputButton";
+import { useCanUseBearerGrants } from "../hooks/useActingPrincipal";
 import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
@@ -162,6 +168,8 @@ import { useSessionLoadingProgress } from "../hooks/useSessionLoadingProgress";
 import type { SessionLoadProgress } from "../hooks/useSessionMessages";
 import { useSessionPerformanceSettings } from "../hooks/useSessionPerformanceSettings";
 import { useSessionToolbarPresence } from "../hooks/useSessionToolbarPresence";
+import { useLongPress } from "../hooks/useLongPress";
+import { useProjectAppUpdates } from "../hooks/useProjectAppUpdates";
 import { useVersion } from "../hooks/useVersion";
 import { useSessionSpeechVocabulary } from "../hooks/useSessionSpeechVocabulary";
 import type { DraftTextChangeMetadata } from "../lib/commentAnchors";
@@ -209,11 +217,14 @@ import {
   registerSemanticUiComposerExecutors,
 } from "../lib/semanticUiActions";
 import {
-  liveThinkingSelectionFromProcess,
   thinkingOptionFromProcess,
   thinkingOptionFromSelection,
 } from "../lib/liveThinkingConfig";
 import { getPersistentEditApprovalResponse } from "../lib/permissionModes";
+import {
+  sessionResumeOverrides,
+  stoppedSessionPermissionMode,
+} from "../lib/sessionResumeSettings";
 import { buildConversationHandoffPrefill } from "../lib/sessionDetail/conversationHandoff";
 import { getSessionConnectionBarStatus } from "../lib/sessionConnectionBar";
 import { getCachedWebTranscriptProjection } from "../lib/webTranscriptProjection";
@@ -579,6 +590,20 @@ function SessionPageContent({
   const initialTitle = navState?.initialTitle;
   const initialModel = navState?.initialModel;
   const initialProvider = navState?.initialProvider;
+  const [projectAppTarget] = useState(navState.projectApp);
+  const [projectAppOpen, setProjectAppOpen] = useState(!!navState.projectApp);
+  // Full view hides the session and sidebar behind the app until Back.
+  const [projectAppFull, setProjectAppFull] = useState(false);
+  const projectAppPress = useLongPress(() => {
+    setProjectAppOpen(true);
+    setProjectAppFull(true);
+  });
+  const [projectAppVoice, setProjectAppVoice] =
+    useState<VoiceInputButtonRef | null>(null);
+  const projectServiceSupported = serverHasCapability(
+    versionInfo,
+    SERVER_CAPABILITIES.projectService.name,
+  );
   const clientTailParams = useMemo(() => {
     const params = new URLSearchParams(location.search);
     return {
@@ -695,7 +720,8 @@ function SessionPageContent({
     setIsCompacting,
     pendingInputRequest,
     actualSessionId,
-    permissionMode,
+    permissionMode: browserPermissionMode,
+    permissionModeOverride,
     loading,
     sessionLoadProgress,
     error,
@@ -736,23 +762,59 @@ function SessionPageContent({
     streamingMarkdownCallbacks,
     sessionOptions,
   );
+  const savedLaunchSettings = session?.effectiveLaunchSettings;
+  const permissionMode =
+    status.owner === "self"
+      ? browserPermissionMode
+      : stoppedSessionPermissionMode(
+          browserPermissionMode,
+          permissionModeOverride,
+          savedLaunchSettings?.permissionMode,
+        );
   const providerRuntimeStatus =
     useProviderRuntimeStatusForSession(actualSessionId);
+  // Arriving from the project's App entry names a target; otherwise a project
+  // that declares a root app still offers it, closed until asked for, and
+  // opens it when a turn ends with the app newly declared or rebuilt.
+  const projectDeclaresApp = useProjectAppUpdates(
+    projectId,
+    projectServiceSupported,
+    processState === "in-turn" || processState === "waiting-input",
+    () => setProjectAppOpen(true),
+  );
+  const projectAppEnabled =
+    projectServiceSupported && (!!projectAppTarget || projectDeclaresApp);
   const [rightPaneTarget, setRightPaneTarget] = useState<HTMLDivElement | null>(
     null,
   );
+  // A limited user is refused operator app links, so those apps are not
+  // offered to them; artifacts and their own sandboxed session apps still
+  // are (topics/limited-users.md § Authorization).
+  const canUseBearerGrants = useCanUseBearerGrants();
   const rightPane = useSessionRightPane(
     `${basePath}/${projectId}/${sessionId}`,
     messages,
     versionInfo?.artifactViewer,
     !isDomLingerParked && !loading,
     sessionId,
+    { projectId, fetchAppLinks: canUseBearerGrants },
   );
+  useEffect(() => {
+    if (rightPane.paneViewer?.id) setProjectAppOpen(false);
+  }, [rightPane.paneViewer?.id]);
   useLayoutEffect(() => {
     if (isDomLingerParked) return;
-    setRightPaneExpanded?.(rightPane.expanded);
+    setRightPaneExpanded?.(
+      rightPane.expanded || (projectAppEnabled && projectAppOpen),
+    );
     return () => setRightPaneExpanded?.(false);
-  }, [rightPane.expanded, isDomLingerParked, setRightPaneExpanded]);
+  }, [
+    rightPane.expanded,
+    projectAppEnabled,
+    projectAppOpen,
+    isDomLingerParked,
+    setRightPaneExpanded,
+  ]);
   const goalDetails = readInventoryGoalDetails(slashCommands);
   const currentGoal = goalDetails?.goalObjective;
   const sessionLoadingProgressText =
@@ -791,7 +853,8 @@ function SessionPageContent({
       SERVER_CAPABILITIES.speechVocabularySessionTerms.name,
     ),
   );
-  const publicSharesEnabled = serverSettings?.publicSharesEnabled ?? false;
+  const publicSharesEnabled =
+    (serverSettings?.publicSharesEnabled ?? false) && canUseBearerGrants;
   const { status: publicShareGlobalStatus } = usePublicShareStatus({
     poll: publicSharesEnabled,
   });
@@ -911,10 +974,15 @@ function SessionPageContent({
     () =>
       resolveSessionModelConfig(
         liveModelConfig,
-        session?.effectiveModelSettings,
+        savedLaunchSettings ?? session?.effectiveModelSettings,
         latestCodexConfigAck,
       ),
-    [latestCodexConfigAck, liveModelConfig, session?.effectiveModelSettings],
+    [
+      latestCodexConfigAck,
+      liveModelConfig,
+      savedLaunchSettings,
+      session?.effectiveModelSettings,
+    ],
   );
 
   const [scrollTrigger, setScrollTrigger] = useState(0);
@@ -991,7 +1059,10 @@ function SessionPageContent({
     locationSearch: location.search,
     sourceApi,
     effectiveProvider,
-    isWideScreen: isWideScreen && !rightPane.expanded,
+    isWideScreen:
+      isWideScreen &&
+      !rightPane.expanded &&
+      !(projectAppEnabled && projectAppOpen),
     permissionMode,
     liveModel: effectiveModelConfig?.model,
     sessionModel: session?.model,
@@ -1331,20 +1402,26 @@ function SessionPageContent({
   const supportsThinkingToggle =
     currentProviderInfo?.supportsThinkingToggle ?? true;
   const { generallySupportsSteering, supportsSteerNow } = providerCapabilities;
-  const liveThinkingSelection = useMemo(() => {
-    if (status.owner !== "self" || !effectiveModelConfig) {
-      return null;
-    }
-    return liveThinkingSelectionFromProcess(
-      effectiveModelConfig.thinking,
-      effectiveModelConfig.effort,
-      currentProviderInfo,
-    );
-  }, [currentProviderInfo, effectiveModelConfig, status.owner]);
+  const {
+    selection: liveThinkingSelection,
+    thinkingOverride,
+    setStoppedSelection,
+  } = useSessionThinkingSelection(
+    `${sourceRuntime.sourceKey}/${sessionId}`,
+    status.owner === "self",
+    status.owner === "self" ||
+      savedLaunchSettings ||
+      session?.effectiveModelSettings
+      ? effectiveModelConfig
+      : null,
+    currentProviderInfo,
+  );
   const getImplicitComposerThinking = useCallback(() => {
+    if (thinkingOverride !== undefined) return thinkingOverride;
     const hasRetainedSessionModelConfig =
       status.owner === "self" ||
       liveModelConfig !== null ||
+      savedLaunchSettings !== undefined ||
       session?.effectiveModelSettings !== undefined;
     if (hasRetainedSessionModelConfig) {
       if (!effectiveModelConfig) {
@@ -1361,9 +1438,34 @@ function SessionPageContent({
     currentProviderInfo,
     effectiveModelConfig,
     liveModelConfig,
+    savedLaunchSettings,
     session?.effectiveModelSettings,
     status.owner,
+    thinkingOverride,
   ]);
+  const getResumeSettings = useCallback(
+    (explicitThinking?: ThinkingOption) =>
+      sessionResumeOverrides(
+        savedLaunchSettings !== undefined,
+        {
+          mode: permissionMode,
+          model: session?.model ?? getModelSetting(),
+          thinking: getImplicitComposerThinking(),
+        },
+        {
+          mode: permissionModeOverride,
+          thinking: explicitThinking ?? thinkingOverride,
+        },
+      ),
+    [
+      savedLaunchSettings,
+      permissionMode,
+      session?.model,
+      getImplicitComposerThinking,
+      permissionModeOverride,
+      thinkingOverride,
+    ],
+  );
 
   // Unified Clone/Fork requires both the provider primitive and the server's
   // real-user-turn intent resolver. Older servers get no unsupported request.
@@ -2634,10 +2736,7 @@ function SessionPageContent({
 
       const requestSentAtMs = Date.now();
       if (status.owner === "none") {
-        // Resume the session with current permission mode and model settings
-        // Use session's existing model if available (important for non-Claude providers),
-        // otherwise fall back to user's model preference for new Claude sessions
-        const model = session?.model ?? getModelSetting();
+        // Saved settings stay server-owned; only deliberate edits override them.
         // Use effectiveProvider to ensure correct provider even if session data hasn't loaded
         // effectiveProvider = session?.provider ?? initialProvider (from navigation state)
         const result = await api.resumeSession(
@@ -2645,9 +2744,7 @@ function SessionPageContent({
           sessionId,
           outgoingText,
           {
-            mode: permissionMode,
-            model,
-            thinking,
+            ...getResumeSettings(prepared.thinking),
             showThinking,
             provider: effectiveProvider,
             executor: session?.executor,
@@ -2757,6 +2854,58 @@ function SessionPageContent({
         message: err instanceof Error ? err.message : String(err),
       });
 
+      // The session went cold under the limited-user freshness cutoff: the
+      // server refused the turn and says it belongs in a new session seeded
+      // with a handoff of this one (topics/limited-users.md § Freshness).
+      if (isStaleSessionRedirect(err)) {
+        try {
+          const started = await api.staleHandoffSession(
+            projectId,
+            sessionId,
+            outgoingText,
+            {
+              mode: permissionMode,
+              tempId,
+              clientTimestamp,
+              messageMetadata: metadata,
+            },
+            uploadedAttachments.length > 0 ? uploadedAttachments : undefined,
+          );
+          removePendingMessage(tempId);
+          if (!localControl) setProcessState("idle");
+          confirmSubmission();
+          if (!started.sessionId) {
+            // Accepted but waiting for a free worker; it appears in the
+            // session list when it starts.
+            showToast(t("sessionStaleHandoffQueued"), "success");
+            return true;
+          }
+          showToast(t("sessionStaleHandoffStarted"), "success");
+          navigate(
+            `${basePath}/projects/${started.projectId}/sessions/${started.sessionId}`,
+            {
+              state: createSessionNavigationState({
+                initialStatus: {
+                  owner: "self",
+                  processId: started.processId,
+                  permissionMode: started.permissionMode,
+                  appliedPermissionMode: started.appliedPermissionMode,
+                  modeVersion: started.modeVersion,
+                  recapAfterSeconds: started.recapAfterSeconds,
+                },
+                initialTitle: started.title,
+                initialModel: started.model,
+                initialProvider: started.provider ?? effectiveProvider,
+              }),
+            },
+          );
+          return true;
+        } catch (redirectErr) {
+          // Reported by the toast below, like any other send failure.
+          finalError = redirectErr;
+        }
+      }
+
       // Check if process is dead (404) - auto-retry with resumeSession
       const is404 =
         err instanceof Error &&
@@ -2764,16 +2913,13 @@ function SessionPageContent({
           err.message.includes("No active process"));
       if (is404) {
         try {
-          const model = session?.model ?? getModelSetting();
           const retryRequestSentAtMs = Date.now();
           const result = await api.resumeSession(
             projectId,
             sessionId,
             outgoingText,
             {
-              mode: permissionMode,
-              model,
-              thinking,
+              ...getResumeSettings(prepared.thinking),
               provider: effectiveProvider,
               executor: session?.executor,
             },
@@ -3285,15 +3431,12 @@ function SessionPageContent({
           err.message.includes("Process terminated"));
       if (isProcessUnavailable) {
         try {
-          const model = session?.model ?? getModelSetting();
           const result = await api.resumeSession(
             projectId,
             sessionId,
             outgoingText,
             {
-              mode: permissionMode,
-              model,
-              thinking,
+              ...getResumeSettings(prepared.thinking),
               provider: effectiveProvider,
               executor: session?.executor,
             },
@@ -3616,16 +3759,17 @@ function SessionPageContent({
             : {
                 type: "existing-session",
                 sessionId,
-                mode: permissionMode,
-                model: session?.model ?? getModelSetting(),
-                thinking,
+                ...getResumeSettings(prepared.thinking),
                 showThinking,
                 provider: effectiveProvider,
                 executor: session?.executor,
               },
         message: {
           text: outgoingText,
-          mode: permissionMode,
+          mode:
+            targetType === "new-session"
+              ? permissionMode
+              : getResumeSettings(prepared.thinking).mode,
           ...(yaCommand ? { yaCommand } : {}),
           ...(uploadedAttachments.length > 0
             ? { attachments: uploadedAttachments }
@@ -4123,9 +4267,6 @@ function SessionPageContent({
 
   const handleLiveThinkingChange = useCallback(
     async (mode: ThinkingMode, effortLevel: EffortLevel) => {
-      if (status.owner !== "self" || !currentOwnedProcessId) {
-        return;
-      }
       const nextThinking = thinkingOptionFromSelection(mode, effortLevel);
       const verdict = await guardEffortChange(
         nextThinking,
@@ -4137,6 +4278,10 @@ function SessionPageContent({
           : undefined,
       );
       if (verdict === "skip") return;
+      if (status.owner !== "self" || !currentOwnedProcessId) {
+        setStoppedSelection({ mode, effortLevel });
+        return;
+      }
       try {
         const result = await api.setProcessConfig(currentOwnedProcessId, {
           thinking: nextThinking,
@@ -4179,6 +4324,7 @@ function SessionPageContent({
       currentOwnedProcessId,
       guardEffortChange,
       liveThinkingSelection,
+      setStoppedSelection,
       reconnectStream,
       showToast,
       status.owner,
@@ -4361,12 +4507,29 @@ function SessionPageContent({
         return;
       }
 
+      const syncEnabled = serverHasCapability(
+        versionInfo,
+        SERVER_CAPABILITIES.draftSync.name,
+      );
+      if (syncEnabled)
+        setComposerAttachments(state.refs, {
+          persistDraft: false,
+          revokeRemovedPreviewUrls: true,
+        });
       const hydrationId = draftAttachmentHydrationRef.current + 1;
       draftAttachmentHydrationRef.current = hydrationId;
 
       try {
         const refs = await validateDraftAttachmentRefs(sourceTransport, state);
-        if (draftAttachmentHydrationRef.current !== hydrationId) {
+        if (
+          draftAttachmentHydrationRef.current !== hydrationId ||
+          JSON.stringify(controls.getAttachmentState()?.refs) !==
+            JSON.stringify(state.refs)
+        ) {
+          return;
+        }
+        if (syncEnabled && refs.length !== state.refs.length) {
+          showToast(t("sessionDraftAttachmentsUnavailable"), "info");
           return;
         }
         const nextState = createComposerDraftAttachmentState(refs);
@@ -4377,7 +4540,15 @@ function SessionPageContent({
           revokeRemovedPreviewUrls: true,
         });
       } catch (err) {
-        if (draftAttachmentHydrationRef.current !== hydrationId) {
+        if (
+          draftAttachmentHydrationRef.current !== hydrationId ||
+          JSON.stringify(controls.getAttachmentState()?.refs) !==
+            JSON.stringify(state.refs)
+        ) {
+          return;
+        }
+        if (syncEnabled) {
+          showToast(t("sessionDraftAttachmentsUnavailable"), "info");
           return;
         }
         console.warn(
@@ -4398,6 +4569,7 @@ function SessionPageContent({
       setComposerAttachments,
       showToast,
       stagedAttachmentUploadsEnabled,
+      versionInfo,
       t,
     ],
   );
@@ -4447,6 +4619,16 @@ function SessionPageContent({
   useEffect(() => {
     void sessionDraftKey;
     void hydrateDraftAttachments();
+  }, [hydrateDraftAttachments, sessionDraftKey]);
+  useEffect(() => {
+    const changed = (event: Event) => {
+      if (
+        (event as CustomEvent<{ key: string }>).detail.key === sessionDraftKey
+      )
+        void hydrateDraftAttachments();
+    };
+    window.addEventListener(DRAFT_STORAGE_EVENT, changed);
+    return () => window.removeEventListener(DRAFT_STORAGE_EVENT, changed);
   }, [hydrateDraftAttachments, sessionDraftKey]);
 
   const transferBtwTurnToMotherComposer = useCallback(
@@ -5481,7 +5663,7 @@ function SessionPageContent({
   const content = (
     <MainContent
       isWideScreen={isWideScreen}
-      innerClassName={`${styles.workspace} ${rightPane.expanded ? styles.rightPane : ""}`}
+      innerClassName={`${styles.workspace} ${rightPane.expanded || (projectAppEnabled && projectAppOpen) ? styles.rightPane : ""}`}
     >
       <div className={styles.sessionColumn}>
         <header className="session-header">
@@ -5503,7 +5685,29 @@ function SessionPageContent({
                 </button>
               )}
               <HostIdentityMarker />
-              <SessionAppAction pane={rightPane} />
+              <SessionAppAction
+                pane={{
+                  ...rightPane,
+                  select: (url) => {
+                    setProjectAppOpen(false);
+                    return rightPane.select(url);
+                  },
+                }}
+              />
+              {projectAppEnabled && (
+                <button
+                  type="button"
+                  aria-pressed={projectAppOpen}
+                  title={t("projectAppFullViewHint")}
+                  {...projectAppPress.handlers}
+                  onClick={projectAppPress.click(() => {
+                    setProjectAppFull(false);
+                    setProjectAppOpen((value) => !value);
+                  })}
+                >
+                  {t("projectAppLabel")}
+                </button>
+              )}
               {/* Project breadcrumb */}
               {project?.name && (
                 <div className="project-breadcrumb-wrapper">
@@ -6274,7 +6478,12 @@ function SessionPageContent({
                       inactive={isDomLingerParked}
                       onSendComment={handleSessionViewerCommentSend}
                       onOpenApp={
-                        rightPane.enabled ? rightPane.select : undefined
+                        rightPane.enabled
+                          ? (url) => {
+                              setProjectAppOpen(false);
+                              return rightPane.select(url);
+                            }
+                          : undefined
                       }
                       onAnnounceApp={rightPane.announce}
                       appConfig={rightPane.config}
@@ -6573,6 +6782,7 @@ function SessionPageContent({
                 !isAskUserQuestion
               ) && (
                 <MessageInput
+                  onVoiceControl={setProjectAppVoice}
                   questionAside={
                     !mainComposerForAside && !forkSummaryDraft
                       ? {
@@ -6786,9 +6996,37 @@ function SessionPageContent({
         </div>
       </div>
       <SessionRightPane
+        voice={projectAppVoice}
         pane={rightPane}
         wide={isWideScreen}
         fileContentRef={setRightPaneTarget}
+        projectAppOpen={projectAppEnabled && projectAppOpen}
+        fullView={projectAppEnabled && projectAppOpen && projectAppFull}
+        onHideProjectApp={() =>
+          projectAppFull ? setProjectAppFull(false) : setProjectAppOpen(false)
+        }
+        projectApp={
+          projectAppEnabled && projectId ? (
+            <ProjectAppViewer
+              projectId={projectId}
+              initialTarget={projectAppTarget}
+              voice={projectAppVoice}
+              // From full view, Back returns to the session with the app
+              // still beside it; from the pane, it closes the app.
+              onBack={() =>
+                projectAppFull
+                  ? setProjectAppFull(false)
+                  : setProjectAppOpen(false)
+              }
+              onFullView={
+                projectAppFull ? undefined : () => setProjectAppFull(true)
+              }
+              onSession={() =>
+                navigate(`${basePath}/projects/${projectId}/app?compose=1`)
+              }
+            />
+          ) : undefined
+        }
       />
     </MainContent>
   );

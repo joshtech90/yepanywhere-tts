@@ -18,6 +18,7 @@ import {
   enforceOwnerReadWriteFilePermissions,
 } from "../utils/filePermissions.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 const BCRYPT_ROUNDS = 12;
 const SESSION_ID_BYTES = 32;
@@ -112,12 +113,8 @@ export class AuthService {
   private cookieSecret: string;
   private saver = createCoalescingSaver(() => this.doSave());
   private save = this.saver.save;
-  /**
-   * auth.json exists but could not be read. Starting "fresh" would switch
-   * auth off and open the whole API, so the server refuses every request
-   * instead and never overwrites the unreadable file.
-   */
-  private loadFailed = false;
+  /** initialize() refused auth.json; never overwrite it (see initialize). */
+  private loadRefused = false;
 
   constructor(options: AuthServiceOptions) {
     this.dataDir = options.dataDir;
@@ -162,15 +159,19 @@ export class AuthService {
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.error(
-          "[AuthService] Failed to load auth.json; refusing all requests until it is repaired:",
-          error,
+        // Fail closed. Starting "fresh" here once turned a truncated file into
+        // a server with no password and no logins, so every browser holding
+        // another credential became the owner, limited users included
+        // (topics/security.md § Local Access). The file is left as it is.
+        this.loadRefused = true;
+        throw new Error(
+          `[AuthService] ${this.filePath} is unreadable (${error instanceof Error ? error.message : String(error)}). ` +
+            "Refusing to start with local authentication off. Restore the file, " +
+            "or delete it to deliberately reset local access to its unconfigured default.",
         );
-        this.loadFailed = true;
-        this.state = { version: CURRENT_VERSION, enabled: true, sessions: {} };
-      } else {
-        this.state = { version: CURRENT_VERSION, sessions: {} };
       }
+      // No file at all: local access was never configured.
+      this.state = { version: CURRENT_VERSION, sessions: {} };
     }
 
     // Generate cookie secret if not provided
@@ -187,11 +188,6 @@ export class AuthService {
    */
   isEnabled(): boolean {
     return this.state.enabled === true;
-  }
-
-  /** True when auth.json exists but could not be read (fail closed). */
-  isLoadFailed(): boolean {
-    return this.loadFailed;
   }
 
   /**
@@ -236,9 +232,6 @@ export class AuthService {
    */
   async enableAuth(password: string): Promise<boolean> {
     const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
-    // `--setup-auth` is the documented repair for an unreadable auth.json:
-    // it writes a complete fresh state, so saving is safe again.
-    this.loadFailed = false;
     this.state.enabled = true;
     this.state.account = {
       passwordHash,
@@ -326,8 +319,14 @@ export class AuthService {
   }
 
   /**
-   * Validate a session ID and update last active time.
+   * Validate a session ID.
    * Returns true if valid, false if expired or not found.
+   *
+   * A valid check writes nothing. It used to stamp `lastActiveAt` and save
+   * auth.json on every authenticated request, though nothing reads that field
+   * (expiry follows `createdAt`), which kept the credential file under
+   * constant rewrite; a restart during one of those saves once emptied it.
+   * auth.json now changes only when a credential or login does.
    */
   async validateSession(sessionId: string): Promise<boolean> {
     const verifier = sessionVerifier(sessionId);
@@ -345,11 +344,6 @@ export class AuthService {
       await this.save();
       return false;
     }
-
-    // Update last active time (debounced via save)
-    session.lastActiveAt = new Date().toISOString();
-    // Don't await save here to avoid blocking every request
-    void this.save();
 
     return true;
   }
@@ -414,6 +408,11 @@ export class AuthService {
     await this.saver.flush();
   }
 
+  /** Wait for saves already queued; unlike a flush, never starts a write. */
+  async waitForPendingWrites(): Promise<void> {
+    await this.saver.idle();
+  }
+
   /**
    * Clean up expired sessions.
    */
@@ -435,11 +434,12 @@ export class AuthService {
   }
 
   private async doSave(): Promise<void> {
-    if (this.loadFailed) return; // keep the unreadable file for repair
+    if (this.loadRefused) return;
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, {
-        encoding: "utf-8",
+      // Atomic: saves run on every login check, and an in-place write that a
+      // restart interrupts leaves an empty file (see initialize).
+      await writeFileAtomically(this.filePath, content, {
         mode: OWNER_READ_WRITE_FILE_MODE,
       });
       await enforceOwnerReadWriteFilePermissions(

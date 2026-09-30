@@ -44,6 +44,7 @@ import { useMessageListSelectionQuote } from "../hooks/useMessageListSelectionQu
 import { useRelativeNow } from "../hooks/useRelativeNow";
 import { useRecentProjectPathLinks } from "../hooks/useRecentProjectPathLinks";
 import { useTranscriptRenderWindow } from "../hooks/useTranscriptRenderWindow";
+import { useTranscriptDragSelection } from "../hooks/useTranscriptDragSelection";
 import { useTranscriptMarginNavigation } from "../hooks/useTranscriptMarginNavigation";
 import { useI18n } from "../i18n";
 import {
@@ -473,6 +474,8 @@ const BOTTOM_FOLLOW_VIEWPORT_FRACTION = 0.45;
 const FOLLOW_CATCH_UP_DELAYS_MS = [50, 120, 240, 480, 960, 1600, 2400];
 const SEND_CATCH_UP_DELAYS_MS = [80, 240, 640];
 const TOUCH_SCROLL_CANCEL_THRESHOLD_PX = 6;
+/** A follow-pausing press that moves less than this was a click. */
+const FOLLOW_PRESS_CLICK_DISTANCE_PX = 3;
 const USER_TURN_NAV_SCROLL_OFFSET_PX = 12;
 const USER_TURN_NAV_VISIBILITY_TOLERANCE_PX = 1;
 const EMPTY_RENDER_ID_SET: ReadonlySet<string> = new Set();
@@ -1681,6 +1684,9 @@ export const MessageList = memo(function MessageList({
   const lastHeightRef = useRef(0);
   const lastFollowScrollTopRef = useRef(0);
   const touchStartYRef = useRef<number | null>(null);
+  // A primary-button press on transcript content that interrupted follow,
+  // with where it started, so a plain click can resume following.
+  const followPressRef = useRef<{ x: number; y: number } | null>(null);
   const followUpScrollRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const forcedCurrentScrollTimersRef = useRef<ReturnType<typeof setTimeout>[]>(
     [],
@@ -1688,6 +1694,7 @@ export const MessageList = memo(function MessageList({
   const programmaticScrollReleaseRef = useRef<ReturnType<
     typeof setTimeout
   > | null>(null);
+  const programmaticScrollReleaseFrameRef = useRef<number | null>(null);
   const progressiveActiveRenderKeyRef = useRef<string | null>(null);
   const progressiveCompletedRenderKeyRef = useRef<string | null>(null);
   const previousRenderItemsRef = useRef<RenderItem[]>([]);
@@ -1861,14 +1868,22 @@ export const MessageList = memo(function MessageList({
     effectiveConversationViewEnabled,
   ]);
 
+  const clearProgrammaticScrollRelease = useCallback(() => {
+    if (programmaticScrollReleaseRef.current !== null) {
+      clearTimeout(programmaticScrollReleaseRef.current);
+      programmaticScrollReleaseRef.current = null;
+    }
+    if (programmaticScrollReleaseFrameRef.current !== null) {
+      cancelAnimationFrame(programmaticScrollReleaseFrameRef.current);
+      programmaticScrollReleaseFrameRef.current = null;
+    }
+  }, []);
+
   // Scroll to bottom, marking it as programmatic so scroll handler ignores it
   const scrollToBottom = useCallback(
     (container: HTMLElement, behavior: ScrollBehavior = "auto") => {
       isProgrammaticScrollRef.current = true;
-      if (programmaticScrollReleaseRef.current !== null) {
-        clearTimeout(programmaticScrollReleaseRef.current);
-        programmaticScrollReleaseRef.current = null;
-      }
+      clearProgrammaticScrollRelease();
       const top = Math.max(0, container.scrollHeight - container.clientHeight);
       if (behavior === "auto") {
         container.scrollTop = top;
@@ -1887,6 +1902,7 @@ export const MessageList = memo(function MessageList({
       const releaseProgrammaticScroll = () => {
         isProgrammaticScrollRef.current = false;
         programmaticScrollReleaseRef.current = null;
+        programmaticScrollReleaseFrameRef.current = null;
         if (isNearScrollBottom(container)) {
           shouldAutoScrollRef.current = true;
           setIsScrolledToBottom(true);
@@ -1898,7 +1914,9 @@ export const MessageList = memo(function MessageList({
           520,
         );
       } else {
-        requestAnimationFrame(releaseProgrammaticScroll);
+        programmaticScrollReleaseFrameRef.current = requestAnimationFrame(
+          releaseProgrammaticScroll,
+        );
       }
 
       // Schedule a follow-up scroll to catch any async rendering (markdown, syntax highlighting)
@@ -1920,15 +1938,25 @@ export const MessageList = memo(function MessageList({
           }
           lastHeightRef.current = container.scrollHeight;
           setIsScrolledToBottom(true);
-          if (programmaticScrollReleaseRef.current === null) {
-            requestAnimationFrame(() => {
-              isProgrammaticScrollRef.current = false;
-            });
+          if (
+            programmaticScrollReleaseRef.current === null &&
+            programmaticScrollReleaseFrameRef.current === null
+          ) {
+            programmaticScrollReleaseFrameRef.current = requestAnimationFrame(
+              () => {
+                programmaticScrollReleaseFrameRef.current = null;
+                isProgrammaticScrollRef.current = false;
+              },
+            );
           }
         }
       }, 50);
     },
-    [publishTranscriptPosition, reportFollowingBottom],
+    [
+      clearProgrammaticScrollRelease,
+      publishTranscriptPosition,
+      reportFollowingBottom,
+    ],
   );
 
   const clearForcedCurrentScrollTimers = useCallback(() => {
@@ -1951,10 +1979,7 @@ export const MessageList = memo(function MessageList({
       shouldAutoScrollRef.current = false;
       thinkingDeltaFollowAllowedRef.current = false;
       isProgrammaticScrollRef.current = false;
-      if (programmaticScrollReleaseRef.current !== null) {
-        clearTimeout(programmaticScrollReleaseRef.current);
-        programmaticScrollReleaseRef.current = null;
-      }
+      clearProgrammaticScrollRelease();
       clearFollowUpScrollTimer();
       clearForcedCurrentScrollTimers();
       if (container) {
@@ -1964,6 +1989,7 @@ export const MessageList = memo(function MessageList({
       reportFollowingBottom(false);
     },
     [
+      clearProgrammaticScrollRelease,
       clearFollowUpScrollTimer,
       clearForcedCurrentScrollTimers,
       reportFollowingBottom,
@@ -2372,6 +2398,7 @@ export const MessageList = memo(function MessageList({
     searchState: userTurnNavSearchState,
     renderSearchPanel,
     closeSearch,
+    getCommittedSearchTargetId,
     getSelectedSearchAnchorId,
     getSelectedSearchTargetId,
     handleSearchArrowKey,
@@ -3658,16 +3685,14 @@ export const MessageList = memo(function MessageList({
   );
 
   const beginTurnNavigation = useCallback(() => {
-    shouldAutoScrollRef.current = false;
-    setIsScrolledToBottom(false);
-    reportFollowingBottom(false);
+    stopFollowingForUserScroll(containerRef.current?.parentElement);
     scheduleSettledScrollState();
-  }, [reportFollowingBottom, scheduleSettledScrollState]);
+  }, [stopFollowingForUserScroll, scheduleSettledScrollState]);
 
   const {
     beginSearchMatchReveal,
     clearSearchMatchHighlight,
-    releaseSearchMatchHighlightOnInput,
+    markSearchMatchLanded,
   } = useSearchMatchHighlight(inert);
   const revealSearchMatch = useCallback(
     (targetId: string, showMotionCue: boolean) => {
@@ -3729,30 +3754,40 @@ export const MessageList = memo(function MessageList({
     setRetainedProgressiveWindowKey(null);
   }, [progressiveRenderCycleKey]);
 
-  const commitSearchJump = useCallback(
+  const closeSearchAtMatch = useCallback(
     (targetId: string) => {
-      completeProgressiveReveal();
-      jumpToSearchTarget(targetId, false);
-      preserveScrollAfterTranscriptHeightChange(
-        () => {
-          closeSearch(false);
-          releaseSearchMatchHighlightOnInput();
-          requestAnimationFrame(() => {
-            revealSearchMatch(targetId, false);
-          });
-        },
-        targetId,
-        true,
-      );
+      // A search landing at the tail may have re-acquired Follow before a
+      // subsequent reader scroll event arrives. Own the anchor before closing
+      // search can notify the content ResizeObserver.
+      beginTurnNavigation();
+      if (settleSearchJumpFrameRef.current !== null) {
+        cancelAnimationFrame(settleSearchJumpFrameRef.current);
+        settleSearchJumpFrameRef.current = null;
+      }
+      flushSync(() => {
+        completeProgressiveReveal();
+        preserveScrollAfterTranscriptHeightChange(
+          () => closeSearch(false),
+          targetId,
+          true,
+        );
+      });
+      markSearchMatchLanded();
     },
     [
+      beginTurnNavigation,
       closeSearch,
       completeProgressiveReveal,
-      jumpToSearchTarget,
       preserveScrollAfterTranscriptHeightChange,
-      releaseSearchMatchHighlightOnInput,
-      revealSearchMatch,
+      markSearchMatchLanded,
     ],
+  );
+  const commitSearchJump = useCallback(
+    (targetId: string) => {
+      closeSearchAtMatch(targetId);
+      jumpToSearchTarget(targetId, false);
+    },
+    [closeSearchAtMatch, jumpToSearchTarget],
   );
 
   const startSearch = useCallback(
@@ -3899,7 +3934,9 @@ export const MessageList = memo(function MessageList({
         event.preventDefault();
         event.stopPropagation();
         stopSearchArrowRepeat();
-        closeSearch(true);
+        const committedTargetId = getCommittedSearchTargetId();
+        if (committedTargetId) closeSearchAtMatch(committedTargetId);
+        else closeSearch(true);
         return;
       }
       if (event.key === "Enter") {
@@ -3946,7 +3983,7 @@ export const MessageList = memo(function MessageList({
       if (!selectedAnchorId || !selectedTargetId) return;
       event.preventDefault();
       stopSearchArrowRepeat();
-      handleSearchMatchSelect(selectedAnchorId, selectedTargetId, true);
+      closeSearchAtMatch(selectedTargetId);
     };
     // The toolbar's search button: open in the last-used scope, or return
     // focus to the open search. The synchronous commit mounts the input
@@ -3970,9 +4007,10 @@ export const MessageList = memo(function MessageList({
       window.removeEventListener("keyup", handleKeyUp, true);
     };
   }, [
-    handleSearchMatchSelect,
+    closeSearchAtMatch,
     closeSearch,
     commitSearchJump,
+    getCommittedSearchTargetId,
     getSelectedSearchAnchorId,
     getSelectedSearchTargetId,
     handleSearchArrowKey,
@@ -4204,7 +4242,10 @@ export const MessageList = memo(function MessageList({
   // Track scroll position to determine if user is near bottom.
   // Ignore programmatic scrolls - only user-initiated scrolls should affect auto-scroll state.
   const handleScroll = useCallback(() => {
-    if (isProgrammaticScrollRef.current) return;
+    // A queued scroll event from the last follow write cannot resume following
+    // while a transcript press still owns the view.
+    if (isProgrammaticScrollRef.current || followPressRef.current !== null)
+      return;
 
     pendingInitialScrollRestoreRef.current = null;
 
@@ -4310,8 +4351,20 @@ export const MessageList = memo(function MessageList({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      followPressRef.current = null;
       if (event.button !== 0 || isInteractiveScrollTarget(event.target)) {
         return;
+      }
+      if (
+        event.pointerType === "mouse" &&
+        shouldAutoScrollRef.current &&
+        event.target instanceof Node &&
+        content.contains(event.target)
+      ) {
+        // Hold the view still while the button is down: following new output
+        // would slide the text out from under a drag selection in progress.
+        stopFollowingForUserScroll(container);
+        followPressRef.current = { x: event.clientX, y: event.clientY };
       }
       const scrollbarWidth = container.offsetWidth - container.clientWidth;
       if (scrollbarWidth <= 0) {
@@ -4324,6 +4377,20 @@ export const MessageList = memo(function MessageList({
         // the explicit transcript gesture own subsequent native page keys
         // instead of leaving them attached to the composer or document body.
         container.focus({ preventScroll: true });
+      }
+    };
+
+    const handlePointerRelease = (event: PointerEvent) => {
+      const press = followPressRef.current;
+      followPressRef.current = null;
+      if (!press) return;
+      // A click resumes following; a drag leaves the view where the reader
+      // made their selection, as any selection in the transcript does.
+      if (
+        Math.hypot(event.clientX - press.x, event.clientY - press.y) <
+        FOLLOW_PRESS_CLICK_DISTANCE_PX
+      ) {
+        scrollToBottom(container);
       }
     };
 
@@ -4385,6 +4452,8 @@ export const MessageList = memo(function MessageList({
       passive: true,
     });
     container.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("pointerup", handlePointerRelease, true);
+    document.addEventListener("pointercancel", handlePointerRelease, true);
     document.addEventListener("selectionchange", handleSelectionChange);
     document.addEventListener("keydown", handleKeyDown, true);
 
@@ -4395,6 +4464,9 @@ export const MessageList = memo(function MessageList({
       container.removeEventListener("touchend", handleTouchEnd);
       container.removeEventListener("touchcancel", handleTouchEnd);
       container.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("pointerup", handlePointerRelease, true);
+      document.removeEventListener("pointercancel", handlePointerRelease, true);
+      followPressRef.current = null;
       document.removeEventListener("selectionchange", handleSelectionChange);
       document.removeEventListener("keydown", handleKeyDown, true);
       if (keyboardOlderLoadFrameRef.current !== null) {
@@ -4402,7 +4474,8 @@ export const MessageList = memo(function MessageList({
         keyboardOlderLoadFrameRef.current = null;
       }
     };
-  }, [inert, stopFollowingForUserScroll]);
+  }, [inert, scrollToBottom, stopFollowingForUserScroll]);
+  useTranscriptDragSelection(containerRef, isInteractiveScrollTarget, inert);
 
   // Follow both content changes and space reserved by composer-adjacent panels.
   useEffect(() => {
@@ -4455,15 +4528,14 @@ export const MessageList = memo(function MessageList({
       resizeObserver.disconnect();
       // Clean up any pending scroll on unmount
       clearFollowUpScrollTimer();
-      if (programmaticScrollReleaseRef.current !== null) {
-        clearTimeout(programmaticScrollReleaseRef.current);
-      }
+      clearProgrammaticScrollRelease();
       clearForcedCurrentScrollTimers();
       if (navMotionCueClearTimerRef.current !== null) {
         clearTimeout(navMotionCueClearTimerRef.current);
       }
     };
   }, [
+    clearProgrammaticScrollRelease,
     clearFollowUpScrollTimer,
     clearForcedCurrentScrollTimers,
     restoreRetainedScrollPosition,

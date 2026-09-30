@@ -51,19 +51,24 @@ if (typeof window !== "undefined") {
       };
     },
   });
-  const storage = createTestStorage();
-
-  Object.defineProperty(window, "localStorage", {
-    configurable: true,
-    value: storage,
-  });
-  Object.defineProperty(globalThis, "localStorage", {
-    configurable: true,
-    value: storage,
-  });
+  for (const name of ["localStorage", "sessionStorage"] as const) {
+    const storage = createTestStorage();
+    Object.defineProperty(window, name, {
+      configurable: true,
+      value: storage,
+    });
+    Object.defineProperty(globalThis, name, {
+      configurable: true,
+      value: storage,
+    });
+  }
 }
 
 beforeEach(() => {
+  if (typeof window !== "undefined") {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  }
   invalidateLocalStorageValues();
   invalidateSessionApps();
 });

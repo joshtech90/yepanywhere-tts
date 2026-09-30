@@ -2,7 +2,7 @@ import { readFile, type FileHandle } from "node:fs/promises";
 import { basename, dirname, extname } from "node:path";
 import { Readable } from "node:stream";
 import { parseLineColumn } from "@yep-anywhere/shared";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import { renderMarkdownFilePreview } from "../augments/markdown-file-preview.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import {
@@ -18,13 +18,16 @@ import {
   type MutableFileOpener,
   openMutableFileSnapshot,
 } from "./mutable-file-cache.js";
+import type { SessionPathScopeResolver } from "./session-path-scope.js";
 import { createUntrustedFileResponseHeaders } from "./untrusted-file-response.js";
 
-interface LocalFileDeps {
+export interface LocalFileDeps {
   allowedPaths: string[] | (() => string[]);
   scanner?: Pick<ProjectScanner, "listProjects">;
   includeProjects?: () => boolean;
   openFile?: MutableFileOpener;
+  /** Resolve paths as one session names them (the session-scoped mount). */
+  scope?: SessionPathScopeResolver;
 }
 
 interface LocalFileReference {
@@ -422,9 +425,15 @@ ${lineTargetScript}
  */
 export function createLocalFileRoutes(deps: LocalFileDeps) {
   const routes = new Hono();
+  routes.get("/", createLocalFileHandler(deps));
+  return routes;
+}
+
+/** The local-file GET handler, also mounted session-scoped with `scope`. */
+export function createLocalFileHandler(deps: LocalFileDeps) {
   const pathPolicy = createLocalResourcePathPolicy(deps);
 
-  routes.get("/", async (c) => {
+  return async (c: Context) => {
     const rawFilePath = c.req.query("path");
     if (!rawFilePath) {
       return c.json({ error: "Missing path parameter" }, 400);
@@ -434,11 +443,17 @@ export function createLocalFileRoutes(deps: LocalFileDeps) {
       parsePositiveInteger(c.req.query("line")),
       parsePositiveInteger(c.req.query("column")),
     );
-    const filePath = requested.filePath;
-
-    if (!pathPolicy.isAbsolutePath(filePath)) {
+    if (!pathPolicy.isAbsolutePath(requested.filePath)) {
       return c.json({ error: "Path must be absolute" }, 400);
     }
+    const scoped = deps.scope?.(c, requested.filePath);
+    if (scoped && "status" in scoped) {
+      return c.json({ error: scoped.error }, scoped.status);
+    }
+    const filePath = scoped?.hostPath ?? requested.filePath;
+    const requestPolicy = scoped
+      ? createLocalResourcePathPolicy({ ...deps, ...scoped })
+      : pathPolicy;
 
     const contentType = getLocalFileContentType(filePath);
     if (!contentType) {
@@ -446,7 +461,7 @@ export function createLocalFileRoutes(deps: LocalFileDeps) {
     }
 
     try {
-      const resolved = await pathPolicy.resolveAllowedFilePath(filePath);
+      const resolved = await requestPolicy.resolveAllowedFilePath(filePath);
       if (!resolved.ok) {
         return c.json({ error: resolved.error }, resolved.status);
       }
@@ -534,7 +549,5 @@ export function createLocalFileRoutes(deps: LocalFileDeps) {
       console.error("[LocalFile] Error serving file:", err);
       return c.json({ error: "Internal error" }, 500);
     }
-  });
-
-  return routes;
+  };
 }

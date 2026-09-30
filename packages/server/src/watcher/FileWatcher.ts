@@ -104,6 +104,7 @@ const PERIODIC_RESCAN_RECOVERY_RATIO = 0.1;
 const PERIODIC_RESCAN_DEFAULT_MAX_BACKOFF_MS = 60 * 60 * 1000;
 
 export class FileWatcher {
+  private observationError: string | null = null;
   private watchDir: string;
   private provider: WatchProvider;
   private eventBus: EventBus;
@@ -160,6 +161,7 @@ export class FileWatcher {
       return; // Already watching
     }
 
+    this.observationError = null;
     try {
       const lifecycleGeneration = ++this.lifecycleGeneration;
       this.watcher = watchSharedDirectory(
@@ -178,7 +180,11 @@ export class FileWatcher {
       );
 
       this.watcher.on("error", (error) => {
+        this.observationError = error.message;
         console.error("[FileWatcher] Error:", error);
+      });
+      this.watcher.on("close", () => {
+        this.watcher = null;
       });
 
       getLogger().info(`[FileWatcher] Watching ${this.watchDir}`);
@@ -192,6 +198,8 @@ export class FileWatcher {
         );
       }
     } catch (error) {
+      this.observationError =
+        error instanceof Error ? error.message : String(error);
       console.error("[FileWatcher] Failed to start:", error);
     }
   }
@@ -233,7 +241,15 @@ export class FileWatcher {
    * Check if watcher is active.
    */
   get isWatching(): boolean {
-    return this.watcher !== null;
+    return this.watcher !== null && this.observationError === null;
+  }
+
+  getObservationDiagnostics() {
+    return {
+      watching: this.isWatching,
+      baselineState: this.initialBaselineState,
+      error: this.observationError,
+    };
   }
 
   getLastRescanMetrics(): FileWatcherRescanMetrics | null {

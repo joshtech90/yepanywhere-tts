@@ -1,4 +1,8 @@
-import type { ArtifactVhost, ArtifactViewerStatus } from "@yep-anywhere/shared";
+import type {
+  ArtifactVhost,
+  ArtifactVhostSite,
+  ArtifactViewerStatus,
+} from "@yep-anywhere/shared";
 import { useId, useRef, useState } from "react";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
@@ -9,6 +13,66 @@ import styles from "./ArtifactSettings.module.css";
 import { useVhostAccess } from "../../hooks/useVhostAccess";
 import { sessionVhostApp } from "../../lib/sessionVhostApps";
 import { writeClipboardText } from "../../lib/clipboard";
+import { ProjectAppInventorySection } from "./ProjectAppInventorySection";
+import { SettingsCollection } from "./SettingsCollection";
+
+/**
+ * One row of the vhost table. Port and file rows are saved to separate lists,
+ * so a server or client that predates file rows never sees one as a port row.
+ */
+export type VhostDraft =
+  | (ArtifactVhost & { kind: "port" })
+  | (ArtifactVhostSite & { kind: "files" });
+type EditableVhost = VhostDraft & { id: number };
+
+export function vhostDrafts(status: {
+  vhosts?: ArtifactVhost[];
+  vhostSites?: ArtifactVhostSite[];
+}): VhostDraft[] {
+  return [
+    ...(status.vhosts ?? []).map((row) => ({ ...row, kind: "port" as const })),
+    ...(status.vhostSites ?? []).map((row) => ({
+      ...row,
+      kind: "files" as const,
+    })),
+  ];
+}
+
+/** A row as last saved, which is the one its link and revocation name. */
+function savedRow(status: ArtifactViewerStatus, row: VhostDraft): boolean {
+  return row.kind === "files"
+    ? !!status.vhostSites?.some(
+        (saved) => saved.name === row.name && saved.path === row.path,
+      )
+    : !!status.vhosts?.some(
+        (saved) => saved.name === row.name && saved.port === row.port,
+      );
+}
+
+/**
+ * A file row's address: public when a public root is configured, else the
+ * local name; a private row carries its app bearer.
+ */
+export function vhostSiteUrl(
+  row: Pick<ArtifactVhostSite, "name" | "public">,
+  status: Pick<ArtifactViewerStatus, "vhostPublicRoot" | "localOrigin">,
+  tokens: Record<string, string | null> | undefined,
+): string | undefined {
+  let url: URL;
+  if (status.vhostPublicRoot) {
+    url = new URL(`https://${row.name}.${status.vhostPublicRoot}/`);
+  } else if (status.localOrigin) {
+    url = new URL(status.localOrigin);
+    url.hostname = `${row.name}.localhost`;
+    url.pathname = "/";
+  } else return;
+  if (!row.public) {
+    const token = tokens?.[row.name];
+    if (!token) return;
+    url.searchParams.set("ya_access", token);
+  }
+  return url.href;
+}
 
 export function ArtifactSettings() {
   const { sourceKey } = useCurrentSourceRuntime();
@@ -45,12 +109,16 @@ function ArtifactSettingsForm({
   const [alwaysRewriteVhostLinks, setAlwaysRewriteVhostLinks] = useState(
     status.alwaysRewriteVhostLinks === true,
   );
-  const [vhosts, setVhosts] = useState<ArtifactVhost[]>(() =>
-    (status.vhosts ?? []).map((row) => ({ ...row })),
+  const [vhosts, setVhosts] = useState<EditableVhost[]>(() =>
+    vhostDrafts(status).map((row, id) => ({ ...row, id })),
   );
+  const nextRowId = useRef(vhosts.length);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const selected = vhosts.find((row) => row.id === selectedId);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const vhostsSupported = status.vhosts !== undefined;
+  const sitesSupported = status.vhostSites !== undefined;
   const pending = useRef(Promise.resolve());
   const saveRevision = useRef(0);
   const lastPayload = useRef<string | undefined>(undefined);
@@ -60,7 +128,7 @@ function ArtifactSettingsForm({
       localEnabled: boolean;
       expiryDays: number;
       expiryHours: number;
-      vhosts: ArtifactVhost[];
+      vhosts: VhostDraft[];
       alwaysRewriteVhostLinks: boolean;
     }> = {},
   ) {
@@ -98,12 +166,39 @@ function ArtifactSettingsForm({
           ? {
               vhostPublicRoot: vhostPublicRoot.trim(),
               alwaysRewriteVhostLinks: draft.alwaysRewriteVhostLinks,
-              vhosts: draft.vhosts.map((row) => ({
-                name: row.name.trim(),
-                port: row.port,
-                ...(row.env?.trim() ? { env: row.env.trim() } : {}),
-                ...(access.supported ? { public: row.public === true } : {}),
-              })),
+              vhosts: draft.vhosts.flatMap((row) =>
+                row.kind === "port"
+                  ? [
+                      {
+                        name: row.name.trim(),
+                        port: row.port,
+                        ...(row.env?.trim() ? { env: row.env.trim() } : {}),
+                        ...(access.supported
+                          ? { public: row.public === true }
+                          : {}),
+                      },
+                    ]
+                  : [],
+              ),
+              ...(sitesSupported
+                ? {
+                    vhostSites: draft.vhosts.flatMap((row) =>
+                      row.kind === "files"
+                        ? [
+                            {
+                              name: row.name.trim(),
+                              path: row.path.trim(),
+                              public: row.public === true,
+                              // Absent keeps the saved password.
+                              ...(row.password === undefined
+                                ? {}
+                                : { password: row.password }),
+                            },
+                          ]
+                        : [],
+                    ),
+                  }
+                : {}),
             }
           : {}),
       });
@@ -118,6 +213,18 @@ function ArtifactSettingsForm({
       pending.current = operation.catch(() => {});
       try {
         await operation;
+        // A saved password is sent once; afterward the row only reports it.
+        setVhosts((current) =>
+          current.map((row) =>
+            row.kind === "files" && row.password !== undefined
+              ? {
+                  ...row,
+                  password: undefined,
+                  passwordProtected: row.password !== "",
+                }
+              : row,
+          ),
+        );
         if (revision === saveRevision.current) setMessage(t("artifactSaved"));
       } catch (error) {
         if (revision === saveRevision.current) {
@@ -259,173 +366,382 @@ function ArtifactSettingsForm({
               {t("artifactAlwaysRewriteVhostLinks")}
             </label>
             <p>{t("artifactAlwaysRewriteVhostLinksHint")}</p>
-            <div className={styles.vhosts}>
-              <span className={styles.vhostHeading}>
-                {t("artifactVhostTableTitle")}
-              </span>
-              <p>{t("artifactVhostTableHint")}</p>
-              <p>
-                {t(access.supported ? "appAccessHint" : "appAccessUnavailable")}
-              </p>
-              {access.error && <p role="alert">{access.error}</p>}
-              {vhosts.map((row, index) => (
-                <div key={index} className={styles.vhostRow}>
-                  <label>
-                    {t("artifactVhostName")}
-                    <input
-                      type="text"
-                      value={row.name}
-                      onBlur={() => void save()}
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(e) =>
-                        setVhosts((current) =>
-                          current.map((item, i) =>
-                            i === index
-                              ? { ...item, name: e.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    {t("artifactVhostPort")}
-                    <input
-                      type="number"
-                      min={1}
-                      max={65535}
-                      value={row.port || ""}
-                      onBlur={() => void save()}
-                      onChange={(e) =>
-                        setVhosts((current) =>
-                          current.map((item, i) =>
-                            i === index
-                              ? { ...item, port: Number(e.target.value) }
-                              : item,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <label>
-                    {t("artifactVhostEnv")}
-                    <input
-                      type="text"
-                      value={row.env ?? ""}
-                      onBlur={() => void save()}
-                      placeholder="PLANNOTATOR_PORT"
-                      autoComplete="off"
-                      spellCheck={false}
-                      onChange={(e) =>
-                        setVhosts((current) =>
-                          current.map((item, i) =>
-                            i === index
-                              ? { ...item, env: e.target.value }
-                              : item,
-                          ),
-                        )
-                      }
-                    />
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const next = vhosts.filter((_, i) => i !== index);
-                      setVhosts(next);
-                      void save({ vhosts: next });
-                    }}
-                  >
-                    {t("artifactVhostRemove")}
-                  </button>
-                  {access.supported && (
-                    <div className={styles.access}>
-                      <label className={styles.toggle}>
-                        <input
-                          type="checkbox"
-                          checked={row.public === true}
-                          onChange={(event) => {
-                            const next = vhosts.map((item, i) =>
-                              i === index
-                                ? { ...item, public: event.target.checked }
-                                : item,
-                            );
-                            setVhosts(next);
-                            void save({ vhosts: next });
-                          }}
-                        />
-                        {t("appAccessPublic")}
-                      </label>
-                      {status.vhosts?.some(
-                        (saved) =>
-                          saved.name === row.name && saved.port === row.port,
-                      ) && (
-                        <>
-                          <button
-                            type="button"
-                            disabled={!access.config}
-                            onClick={async () => {
-                              const app = sessionVhostApp(
-                                `http://localhost:${row.port}/`,
-                                access.config,
-                                window.location.href,
-                                status.vhostPublicRoot ? "public" : undefined,
-                              );
-                              setMessage(
-                                app && (await writeClipboardText(app.url))
-                                  ? t("fileViewerCopied")
-                                  : t("viewerCopyLinkFailed"),
-                              );
-                            }}
-                          >
-                            {t("appAccessCopy")}
-                          </button>
-                          <button
-                            type="button"
-                            disabled={saving}
-                            onClick={async () => {
-                              setSaving(true);
-                              try {
-                                await transport.fetch(
-                                  `/artifacts/vhosts/${encodeURIComponent(row.name)}/revoke`,
-                                  { method: "POST" },
-                                );
-                                access.refresh();
-                                setMessage(t("appAccessRevoked"));
-                              } catch (error) {
-                                setMessage(
-                                  error instanceof Error
-                                    ? error.message
-                                    : String(error),
-                                );
-                              } finally {
-                                setSaving(false);
-                              }
-                            }}
-                          >
-                            {t("appAccessRevoke")}
-                          </button>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-              <button
-                type="button"
-                onClick={() =>
-                  setVhosts((current) => [
-                    ...current,
-                    { name: "", port: 19432 },
-                  ])
-                }
-              >
-                {t("artifactVhostAdd")}
-              </button>
-            </div>
           </>
         )}
       </fieldset>
+      {vhostsSupported && (
+        <div className={styles.fields}>
+          <div className={styles.vhosts}>
+            <span className={styles.vhostHeading}>
+              {t("artifactVhostTableTitle")}
+            </span>
+            <p>{t("artifactVhostTableHint")}</p>
+            {sitesSupported && <p>{t("artifactVhostFilesHint")}</p>}
+            <p>
+              {t(access.supported ? "appAccessHint" : "appAccessUnavailable")}
+            </p>
+            {access.error && <p role="alert">{access.error}</p>}
+            <SettingsCollection
+              selectedKey={selectedId}
+              title={selected?.name || t("artifactVhostAdd")}
+              onClose={() => setSelectedId(null)}
+              detail={vhosts.map(
+                (row, index) =>
+                  row.id === selectedId && (
+                    <fieldset
+                      key={row.id}
+                      className={styles.vhostRow}
+                      disabled={status.locked}
+                    >
+                      <label>
+                        {t("artifactVhostName")}
+                        <input
+                          type="text"
+                          value={row.name}
+                          onBlur={() => void save()}
+                          autoComplete="off"
+                          spellCheck={false}
+                          onChange={(e) =>
+                            setVhosts((current) =>
+                              current.map((item, i) =>
+                                i === index
+                                  ? { ...item, name: e.target.value }
+                                  : item,
+                              ),
+                            )
+                          }
+                        />
+                      </label>
+                      {sitesSupported && (
+                        <label>
+                          {t("artifactVhostServes")}
+                          <select
+                            value={row.kind}
+                            onChange={(e) => {
+                              const kind = e.target.value as VhostDraft["kind"];
+                              const next = vhosts.map(
+                                (item, i): EditableVhost => {
+                                  if (i !== index || item.kind === kind)
+                                    return item;
+                                  const shared = {
+                                    id: item.id,
+                                    name: item.name,
+                                    ...(item.public === undefined
+                                      ? {}
+                                      : { public: item.public }),
+                                  };
+                                  return kind === "files"
+                                    ? { ...shared, kind, path: "" }
+                                    : { ...shared, kind, port: 19432 };
+                                },
+                              );
+                              setVhosts(next);
+                            }}
+                          >
+                            <option value="port">
+                              {t("artifactVhostServesPort")}
+                            </option>
+                            <option value="files">
+                              {t("artifactVhostServesFiles")}
+                            </option>
+                          </select>
+                        </label>
+                      )}
+                      {row.kind === "files" ? (
+                        <label className={styles.pathField}>
+                          {t("artifactVhostPath")}
+                          <input
+                            type="text"
+                            value={row.path}
+                            onBlur={() => void save()}
+                            placeholder="~/site/index.html"
+                            autoComplete="off"
+                            spellCheck={false}
+                            onChange={(e) =>
+                              setVhosts((current) =>
+                                current.map((item, i) =>
+                                  i === index && item.kind === "files"
+                                    ? { ...item, path: e.target.value }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                        </label>
+                      ) : (
+                        <>
+                          <label>
+                            {t("artifactVhostPort")}
+                            <input
+                              type="number"
+                              min={1}
+                              max={65535}
+                              value={row.port || ""}
+                              onBlur={() => void save()}
+                              onChange={(e) =>
+                                setVhosts((current) =>
+                                  current.map((item, i) =>
+                                    i === index && item.kind === "port"
+                                      ? {
+                                          ...item,
+                                          port: Number(e.target.value),
+                                        }
+                                      : item,
+                                  ),
+                                )
+                              }
+                            />
+                          </label>
+                          <label>
+                            {t("artifactVhostEnv")}
+                            <input
+                              type="text"
+                              value={row.env ?? ""}
+                              onBlur={() => void save()}
+                              placeholder="PLANNOTATOR_PORT"
+                              autoComplete="off"
+                              spellCheck={false}
+                              onChange={(e) =>
+                                setVhosts((current) =>
+                                  current.map((item, i) =>
+                                    i === index && item.kind === "port"
+                                      ? { ...item, env: e.target.value }
+                                      : item,
+                                  ),
+                                )
+                              }
+                            />
+                          </label>
+                        </>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = vhosts.filter((_, i) => i !== index);
+                          setVhosts(next);
+                          setSelectedId(null);
+                          void save({ vhosts: next });
+                        }}
+                      >
+                        {t("artifactVhostRemove")}
+                      </button>
+                      {access.supported && (
+                        <div className={styles.access}>
+                          <label className={styles.toggle}>
+                            <input
+                              type="checkbox"
+                              checked={row.public === true}
+                              onChange={(event) => {
+                                const next = vhosts.map((item, i) =>
+                                  i === index
+                                    ? {
+                                        ...item,
+                                        public: event.target.checked,
+                                      }
+                                    : item,
+                                );
+                                setVhosts(next);
+                                void save({ vhosts: next });
+                              }}
+                            />
+                            {t("appAccessPublic")}
+                          </label>
+                          {row.kind === "files" && row.public && (
+                            <div className={styles.password}>
+                              <label>
+                                {t("artifactVhostPassword")}
+                                <input
+                                  type="password"
+                                  value={row.password ?? ""}
+                                  autoComplete="new-password"
+                                  placeholder={
+                                    row.passwordProtected ? "••••••••" : ""
+                                  }
+                                  onBlur={() => void save()}
+                                  onChange={(e) =>
+                                    setVhosts((current) =>
+                                      current.map((item, i) =>
+                                        i === index && item.kind === "files"
+                                          ? {
+                                              ...item,
+                                              // Emptying the field keeps the
+                                              // saved password; Remove clears it.
+                                              password:
+                                                e.target.value || undefined,
+                                            }
+                                          : item,
+                                      ),
+                                    )
+                                  }
+                                />
+                              </label>
+                              {row.passwordProtected && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const next = vhosts.map((item, i) =>
+                                      i === index && item.kind === "files"
+                                        ? { ...item, password: "" }
+                                        : item,
+                                    );
+                                    setVhosts(next);
+                                    void save({ vhosts: next });
+                                  }}
+                                >
+                                  {t("artifactVhostPasswordClear")}
+                                </button>
+                              )}
+                              <p>
+                                {t(
+                                  row.passwordProtected
+                                    ? "artifactVhostPasswordSet"
+                                    : "artifactVhostPasswordHint",
+                                )}
+                              </p>
+                            </div>
+                          )}
+                          {savedRow(status, row) && (
+                            <>
+                              <button
+                                type="button"
+                                disabled={!access.config}
+                                onClick={async () => {
+                                  const url =
+                                    row.kind === "files"
+                                      ? vhostSiteUrl(
+                                          row,
+                                          status,
+                                          access.config?.accessTokens,
+                                        )
+                                      : sessionVhostApp(
+                                          `http://localhost:${row.port}/`,
+                                          access.config,
+                                          window.location.href,
+                                          status.vhostPublicRoot
+                                            ? "public"
+                                            : undefined,
+                                        )?.url;
+                                  setMessage(
+                                    url && (await writeClipboardText(url))
+                                      ? t("fileViewerCopied")
+                                      : t("viewerCopyLinkFailed"),
+                                  );
+                                }}
+                              >
+                                {t("appAccessCopy")}
+                              </button>
+                              <button
+                                type="button"
+                                disabled={saving}
+                                onClick={async () => {
+                                  setSaving(true);
+                                  try {
+                                    await transport.fetch(
+                                      `/artifacts/vhosts/${encodeURIComponent(row.name)}/revoke`,
+                                      { method: "POST" },
+                                    );
+                                    access.refresh();
+                                    setMessage(t("appAccessRevoked"));
+                                  } catch (error) {
+                                    setMessage(
+                                      error instanceof Error
+                                        ? error.message
+                                        : String(error),
+                                    );
+                                  } finally {
+                                    setSaving(false);
+                                  }
+                                }}
+                              >
+                                {t("appAccessRevoke")}
+                              </button>
+                            </>
+                          )}
+                        </div>
+                      )}
+                    </fieldset>
+                  ),
+              )}
+            >
+              <table aria-label={t("artifactVhostTableTitle")}>
+                <thead>
+                  <tr>
+                    <th scope="col">{t("settingsCollectionDomain")}</th>
+                    <th scope="col">{t("artifactVhostServes")}</th>
+                    {access.supported && (
+                      <th scope="col">{t("settingsCollectionAccess")}</th>
+                    )}
+                  </tr>
+                </thead>
+                <tbody>
+                  {vhosts.map((row) => (
+                    <tr key={row.id}>
+                      <td>
+                        <button
+                          type="button"
+                          aria-expanded={selectedId === row.id}
+                          onClick={() =>
+                            setSelectedId(selectedId === row.id ? null : row.id)
+                          }
+                        >
+                          <span aria-hidden="true">
+                            {selectedId === row.id ? "▾" : "▸"}{" "}
+                          </span>
+                          {row.name || t("artifactVhostAdd")}
+                          {row.name && (
+                            <small className={styles.domainSuffix}>
+                              .{vhostPublicRoot || "localhost"}
+                            </small>
+                          )}
+                        </button>
+                      </td>
+                      <td>
+                        <span
+                          className={styles.target}
+                          title={
+                            row.kind === "files" ? row.path : String(row.port)
+                          }
+                        >
+                          {row.kind === "files"
+                            ? row.path || t("artifactVhostServesFiles")
+                            : `:${row.port}`}
+                        </span>
+                      </td>
+                      {access.supported && (
+                        <td>
+                          {t(
+                            row.public
+                              ? row.kind === "files" &&
+                                (row.passwordProtected || row.password)
+                                ? "settingsCollectionPassword"
+                                : "settingsCollectionPublic"
+                              : "settingsCollectionPrivate",
+                          )}
+                        </td>
+                      )}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </SettingsCollection>
+            <button
+              type="button"
+              disabled={status.locked}
+              onClick={() => {
+                const id = nextRowId.current++;
+                setVhosts((current) => [
+                  ...current,
+                  { id, kind: "port", name: "", port: 19432 },
+                ]);
+                setSelectedId(id);
+              }}
+            >
+              {t("artifactVhostAdd")}
+            </button>
+          </div>
+        </div>
+      )}
+      <ProjectAppInventorySection />
       {status.locked && <p>{t("artifactLocked")}</p>}
       {saving && <p role="status">{t("artifactSaving")}</p>}
       {message && <p role="status">{message}</p>}

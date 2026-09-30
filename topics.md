@@ -408,3 +408,11 @@
   authorization behind a sticky sidebar Users section.
 - desktop-downloads - Stable desktop installer redirects and one public
   downloads page for the macOS and Windows beta apps.
+- project-service - Project-owned app declarations, sandbox lifecycle, main-pane
+  viewing, retained address reservations and personal project removal.
+- draft-synchronization - Immediate local draft persistence plus revisioned,
+  account-scoped server sync, shared attachments, and bounded recovery.
+- ci-test-isolation - Worker-owned E2E state and hermetic app fixtures, with
+  measured CI cost and reliability checks.
+- session-notes-and-discussion - Human-only session scratch notes and shared
+  discussion, with explicit audiences and deliberate promotion to agent input.

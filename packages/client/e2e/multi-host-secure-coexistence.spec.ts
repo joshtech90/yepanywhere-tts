@@ -227,6 +227,11 @@ async function runSingleSourceDisposal(
       { getSourceRuntimeRegistry },
       { resolveSourceKeyForSavedHost },
       { loadSavedHosts },
+    ]: [
+      typeof import("../src/lib/multiHostMonitor"),
+      typeof import("../src/lib/sourceRuntime"),
+      typeof import("../src/lib/sourceIdentity"),
+      typeof import("../src/lib/hostStorage"),
     ] = await Promise.all([
       import(/* @vite-ignore */ monitorModulePath),
       import(/* @vite-ignore */ runtimeModulePath),
@@ -308,8 +313,8 @@ test.beforeAll(async ({ relayWsURL }) => {
   });
 });
 
-test.afterAll(() => {
-  harness?.stop();
+test.afterAll(async () => {
+  await harness?.stop();
 });
 
 for (const transportMode of ["legacy", "mux"] as const) {
@@ -364,10 +369,11 @@ for (const transportMode of ["legacy", "mux"] as const) {
         connectedCount: 3,
         selectedCount: 3,
       });
+      const relayUrl = harness.relayUrl;
       expect(relaySockets.map((socket) => socket.url())).toEqual(
         transportMode === "mux"
           ? [relaySiblingUrl(harness.relayUrl, "mux")]
-          : Array.from({ length: 3 }, () => harness.relayUrl),
+          : Array.from({ length: 3 }, () => relayUrl),
       );
       expect(relaySockets).toHaveLength(transportMode === "mux" ? 1 : 3);
       expect(result.hosts.map((host) => host.state)).toEqual([

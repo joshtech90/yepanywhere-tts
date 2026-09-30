@@ -51,6 +51,8 @@ async function capture(page: Page, name: string) {
 
 async function dragNativeScrollbarToMiddle(page: Page, transcript: Locator) {
   const metrics = await transcript.evaluate((element) => {
+    if (!(element instanceof HTMLElement))
+      throw new Error("Expected an HTML scroll container");
     const rect = element.getBoundingClientRect();
     return {
       clientHeight: element.clientHeight,

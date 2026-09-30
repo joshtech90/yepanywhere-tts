@@ -3,12 +3,15 @@ import {
   PROMPT_SUGGESTION_MODES,
   type PromptSuggestionMode,
   clampRecapAfterSeconds,
+  normalizeSidebarCategory,
 } from "@yep-anywhere/shared";
 
 export interface SessionMetadataPatch {
   title?: string;
   archived?: boolean;
   starred?: boolean;
+  /** Normalized category name; null files the session under no category. */
+  sidebarCategory?: string | null;
   parentSessionId?: string | null;
   heartbeatTurnsEnabled?: boolean;
   wakeTurnsEnabled?: boolean | null;
@@ -23,6 +26,7 @@ interface SessionMetadataPatchBody {
   title?: string;
   archived?: boolean;
   starred?: boolean;
+  sidebarCategory?: unknown;
   parentSessionId?: string | null;
   heartbeatTurnsEnabled?: boolean;
   wakeTurnsEnabled?: unknown;
@@ -88,6 +92,7 @@ export function parseSessionMetadataPatch(
     body.title === undefined &&
     body.archived === undefined &&
     body.starred === undefined &&
+    body.sidebarCategory === undefined &&
     body.parentSessionId === undefined &&
     body.heartbeatTurnsEnabled === undefined &&
     body.wakeTurnsEnabled === undefined &&
@@ -150,6 +155,17 @@ export function parseSessionMetadataPatch(
     return invalidPatch("parentSessionId must be a string or null");
   }
 
+  let sidebarCategory: string | null | undefined;
+  if (body.sidebarCategory !== undefined) {
+    if (body.sidebarCategory === null) {
+      sidebarCategory = null;
+    } else if (typeof body.sidebarCategory === "string") {
+      sidebarCategory = normalizeSidebarCategory(body.sidebarCategory);
+    } else {
+      return invalidPatch("sidebarCategory must be a string or null");
+    }
+  }
+
   const parentSessionId =
     body.parentSessionId === undefined
       ? undefined
@@ -198,6 +214,7 @@ export function parseSessionMetadataPatch(
       title: body.title,
       archived: body.archived,
       starred: body.starred,
+      sidebarCategory,
       parentSessionId,
       heartbeatTurnsEnabled: body.heartbeatTurnsEnabled,
       wakeTurnsEnabled: body.wakeTurnsEnabled as boolean | null | undefined,

@@ -1,5 +1,12 @@
 # Zed DeltaDB and Delta
 
+> **2026-09-30 update:** Delta entered [public beta on September 16](https://zed.dev/blog/delta-public-beta)
+> with desktop and web access. The body below preserves the September 15
+> research snapshot, including then-current waitlist status and unverified
+> implementation inferences. Use the [multiplayer analysis](multiplayer-ai.md)
+> for the newer collaboration and availability comparison; this is not a fresh
+> audit of DeltaDB internals.
+
 - **Vendor:** Zed Industries (the Zed editor company)
 - **Products:** *DeltaDB*, an operation-based version control store for
   agent-driven work; *Delta*, a multiplayer application built on it in which

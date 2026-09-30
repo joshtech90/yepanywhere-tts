@@ -190,9 +190,15 @@ describe.skipIf(!["linux", "darwin"].includes(process.platform))(
           () => wrapper.exitCode !== null || wrapper.signalCode !== null,
           15_000,
         ).catch(() => wrapper.kill("SIGKILL"));
-        if (worker)
-          await waitFor(() => !processGroupAlive(worker.processGroupId), 5000);
-        expect(existsSync(join(directory, "host/control.sock"))).toBe(false);
+        // Host shutdown terminates workers before closing/unlinking its socket.
+        // Observe both outcomes in the existing cleanup budget; worker exit
+        // alone does not establish that the host has completed shutdown.
+        await waitFor(
+          () =>
+            (!worker || !processGroupAlive(worker.processGroupId)) &&
+            !existsSync(join(directory, "host/control.sock")),
+          5000,
+        );
         await rm(directory, { recursive: true, force: true });
       }
     }, 150_000);

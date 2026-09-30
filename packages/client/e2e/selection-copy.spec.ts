@@ -1,0 +1,135 @@
+import { expect, test } from "@playwright/test";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createTestViteServer } from "./support/vite-server";
+import { recordUiCapture, presentUiCaptures } from "./support/ui-capture";
+
+let server: Awaited<ReturnType<typeof createTestViteServer>>;
+let base: string;
+test.beforeAll(async () => {
+  server = await createTestViteServer({
+    root: resolve(dirname(fileURLToPath(import.meta.url)), ".."),
+    server: { host: "127.0.0.1" },
+  });
+  await server.listen();
+  base = server.resolvedUrls!.local[0]!;
+});
+test.afterAll(async () => {
+  await server?.close();
+  await presentUiCaptures();
+});
+for (const mobile of [false, true]) {
+  test(`visible native copy and explicit Markdown ${mobile ? "touch" : "mouse"}`, async ({
+    browser,
+  }) => {
+    const context = await browser.newContext({
+      viewport: { width: mobile ? 375 : 1000, height: mobile ? 812 : 600 },
+      isMobile: mobile,
+      hasTouch: mobile,
+      permissions: ["clipboard-read", "clipboard-write"],
+    });
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    try {
+      await page.goto(`${base}e2e/fixtures/selection-copy.html`);
+      await expect(page.getByText("Earlier response 249.")).toHaveCount(1);
+      await page
+        .locator('[data-testid="copy-source"] blockquote')
+        .evaluate((element) => {
+          const range = document.createRange();
+          range.selectNodeContents(element);
+          const selection = document.getSelection()!;
+          selection.removeAllRanges();
+          selection.addRange(range);
+          document.dispatchEvent(new Event("selectionchange"));
+        });
+      const copy = page.getByRole("button", {
+        name: "Copy Markdown",
+        exact: true,
+      });
+      await expect(copy).toBeVisible();
+      await page.keyboard.press("ControlOrMeta+c");
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+        "Continue the Android preview in /Users/project.\n\nKeep test data disposable.",
+      );
+      if (mobile) {
+        const quote = page.getByRole("button", {
+          name: "Quote reply",
+          exact: true,
+        });
+        const copyBox = (await copy.boundingBox())!;
+        const quoteBox = (await quote.boundingBox())!;
+        expect(copyBox.width).toBeGreaterThanOrEqual(44);
+        expect(copyBox.height).toBeGreaterThanOrEqual(44);
+        expect(copyBox.y + copyBox.height).toBeLessThanOrEqual(quoteBox.y);
+      }
+      await recordUiCapture(
+        page,
+        `selection-copy-${mobile ? "phone" : "desktop"}`,
+      );
+      // The stored selection must survive native highlight loss during a press.
+      await copy.evaluate((button) =>
+        button.addEventListener(
+          "pointerdown",
+          () => document.getSelection()?.removeAllRanges(),
+          { once: true },
+        ),
+      );
+      if (mobile) await copy.tap();
+      else await copy.click();
+      await expect
+        .poll(() => page.evaluate(() => navigator.clipboard.readText()))
+        .toBe(
+          "> Continue the **Android preview** in `/Users/project`.\n>\n> Keep test data disposable.",
+        );
+      for (const [testId, word] of [
+        ["plain-selection", "assistant"],
+        ["user-selection", "command"],
+        ["raw-selection", "source"],
+      ]) {
+        await page.getByTestId(testId!).evaluate((element, selectedWord) => {
+          const walker = document.createTreeWalker(
+            element,
+            NodeFilter.SHOW_TEXT,
+          );
+          for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+            const text = node as Text;
+            const start = text.data.indexOf(selectedWord!);
+            if (start < 0) continue;
+            const range = document.createRange();
+            range.setStart(text, start);
+            range.setEnd(text, start + selectedWord!.length);
+            const selection = document.getSelection()!;
+            selection.removeAllRanges();
+            selection.addRange(range);
+            document.dispatchEvent(new Event("selectionchange"));
+            return;
+          }
+          throw new Error("Selected word not found");
+        }, word);
+        await expect(copy).not.toBeVisible();
+        await expect(
+          page.getByRole("button", { name: "Quote reply", exact: true }),
+        ).toBeVisible();
+        await page.keyboard.press("ControlOrMeta+c");
+        expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(
+          word,
+        );
+      }
+      const input = page.getByRole("textbox", { name: "Message" });
+      await input.focus();
+      let expected = "";
+      for (const character of "Continue the preview.") {
+        expected += character;
+        const started = Date.now();
+        await page.keyboard.type(character);
+        expect(await input.inputValue()).toBe(expected);
+        expect(Date.now() - started).toBeLessThan(100);
+      }
+      expect(errors).toEqual([]);
+    } finally {
+      await context.close();
+    }
+  });
+}

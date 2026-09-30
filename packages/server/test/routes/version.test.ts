@@ -38,10 +38,29 @@ import {
   SESSION_CREATION_PROVENANCE_CAPABILITY,
   SIDEBAR_SESSION_RESUME_CAPABILITY,
   SECURITY_CLIENT_AUDIT_CAPABILITY,
+  SERVER_CAPABILITIES,
 } from "@yep-anywhere/shared";
 import { getServerCapabilities } from "../../src/routes/version.js";
 
 describe("Version Routes", () => {
+  // A version-implied capability is inferred only from a release at least
+  // its introducedIn. A source build between releases reports the previous
+  // tag's version, so a capability left out of this list is invisible to the
+  // client until that release ships; three went unseen this way on
+  // 2026-09-28. Listing one a release already implies costs nothing: the
+  // versioned encoding drops it.
+  it("advertises every version-implied capability explicitly", () => {
+    const advertised = new Set(getServerCapabilities());
+    const missing = Object.values(SERVER_CAPABILITIES)
+      .filter(
+        (definition) =>
+          definition.advertisement.kind === "version-implied" &&
+          !advertised.has(definition.name),
+      )
+      .map((definition) => definition.name);
+    expect(missing).toEqual([]);
+  });
+
   it("advertises recent local speech model selection", () => {
     expect(getServerCapabilities()).toContain("local-speech-model-selection");
   });
@@ -250,4 +269,14 @@ describe("Version Routes", () => {
       getServerCapabilities({ providerHostControlAvailable: true }),
     ).toContain(PROVIDER_HOST_CONTROL_CAPABILITY);
   });
+});
+
+it("advertises draft synchronization only when its SQLite-backed store is ready", () => {
+  expect(getServerCapabilities()).not.toContain("draft-sync-v1");
+  expect(
+    getServerCapabilities({ getDraftSyncAvailable: () => false }),
+  ).not.toContain("draft-sync-v1");
+  expect(
+    getServerCapabilities({ getDraftSyncAvailable: () => true }),
+  ).toContain("draft-sync-v1");
 });

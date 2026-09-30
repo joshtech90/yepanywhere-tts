@@ -1,7 +1,7 @@
 import type { FileHandle } from "node:fs/promises";
 import * as path from "node:path";
 import { Readable } from "node:stream";
-import { Hono } from "hono";
+import { type Context, Hono } from "hono";
 import type { ProjectScanner } from "../projects/scanner.js";
 import {
   createLocalResourcePathPolicy,
@@ -15,13 +15,16 @@ import {
   type MutableFileOpener,
   openMutableFileSnapshot,
 } from "./mutable-file-cache.js";
+import type { SessionPathScopeResolver } from "./session-path-scope.js";
 import { createUntrustedFileResponseHeaders } from "./untrusted-file-response.js";
 
-interface LocalImageDeps {
+export interface LocalImageDeps {
   allowedPaths: string[] | (() => string[]);
   scanner?: Pick<ProjectScanner, "listProjects">;
   includeProjects?: () => boolean;
   openFile?: MutableFileOpener;
+  /** Resolve paths as one session names them (the session-scoped mount). */
+  scope?: SessionPathScopeResolver;
 }
 
 /**
@@ -34,17 +37,31 @@ interface LocalImageDeps {
  */
 export function createLocalImageRoutes(deps: LocalImageDeps) {
   const routes = new Hono();
+  routes.get("/", createLocalImageHandler(deps));
+  return routes;
+}
+
+/** The local-image GET handler, also mounted session-scoped with `scope`. */
+export function createLocalImageHandler(deps: LocalImageDeps) {
   const pathPolicy = createLocalResourcePathPolicy(deps);
 
-  routes.get("/", async (c) => {
-    const filePath = c.req.query("path");
-    if (!filePath) {
+  return async (c: Context) => {
+    const requestedPath = c.req.query("path");
+    if (!requestedPath) {
       return c.json({ error: "Missing path parameter" }, 400);
     }
 
-    if (!pathPolicy.isAbsolutePath(filePath)) {
+    if (!pathPolicy.isAbsolutePath(requestedPath)) {
       return c.json({ error: "Path must be absolute" }, 400);
     }
+    const scoped = deps.scope?.(c, requestedPath);
+    if (scoped && "status" in scoped) {
+      return c.json({ error: scoped.error }, scoped.status);
+    }
+    const filePath = scoped?.hostPath ?? requestedPath;
+    const requestPolicy = scoped
+      ? createLocalResourcePathPolicy({ ...deps, ...scoped })
+      : pathPolicy;
 
     const ext = path.extname(filePath).toLowerCase();
     const contentType = LOCAL_MEDIA_CONTENT_TYPES[ext];
@@ -53,7 +70,7 @@ export function createLocalImageRoutes(deps: LocalImageDeps) {
     }
 
     try {
-      const resolved = await pathPolicy.resolveAllowedFilePath(filePath);
+      const resolved = await requestPolicy.resolveAllowedFilePath(filePath);
       if (!resolved.ok) {
         return c.json({ error: resolved.error }, resolved.status);
       }
@@ -99,7 +116,5 @@ export function createLocalImageRoutes(deps: LocalImageDeps) {
       console.error("[LocalImage] Error serving file:", err);
       return c.json({ error: "Internal error" }, 500);
     }
-  });
-
-  return routes;
+  };
 }

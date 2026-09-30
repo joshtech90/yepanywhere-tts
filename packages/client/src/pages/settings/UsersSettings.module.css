@@ -1,38 +1,23 @@
 /* Settings → Users: topics/limited-users.md § Delivery v1. Ordinary settings
    list-and-editor shape; nothing here is sidebar-sized. */
 
-.userList {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: 0;
-  margin: 0 0 var(--space-3);
-  list-style: none;
-}
-
-/* Name and grants on the left, actions on the right; the actions wrap under
-   the name on a phone rather than squeezing the username to an ellipsis. */
-.userRow {
+/* One wrapped row of usernames; the pressed one's editor opens below it. */
+.userBar {
   display: flex;
   flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
   gap: var(--space-2);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md, 6px);
-  background: var(--bg-surface);
+  margin: 0 0 var(--space-2);
 }
 
-.userInfo {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
+.userChip[aria-pressed="true"] {
+  border-color: var(--accent-color, currentColor);
+  font-weight: 600;
 }
 
-.userName {
-  overflow-wrap: anywhere;
+/* A disabled account stays listed, visibly out of service. */
+.userChipDisabled {
+  color: var(--text-muted);
+  text-decoration: line-through;
 }
 
 .userMeta {
@@ -40,10 +25,34 @@
   font-size: var(--font-size-sm);
 }
 
+/* Title and status on one line; account actions wrap beneath on a phone. */
+.editorHeader {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.editorHeading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
 .userActions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: var(--space-2);
+}
+
+.enabledToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--font-size-sm);
 }
 
 .editor {
@@ -55,6 +64,23 @@
 .editorTitle {
   margin: 0;
   font-size: var(--font-size-base);
+}
+
+.account {
+  margin-bottom: var(--space-2);
+}
+.account summary {
+  cursor: pointer;
+  min-height: 40px;
+  align-content: center;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+}
+.accountFields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-block: var(--space-2);
 }
 
 .editorActions {
@@ -151,6 +177,27 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Path, level and remove on one line; the path takes the slack. */
+.directoryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 12rem auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+@media (max-width: 600px) {
+  .directoryRow {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .directoryRow > input {
+    grid-column: 1 / -1;
+  }
+}
+
+.projectExpand {
+  align-self: flex-start;
 }
 
 /* Three lock selects side by side where there is room, stacked on a phone. */

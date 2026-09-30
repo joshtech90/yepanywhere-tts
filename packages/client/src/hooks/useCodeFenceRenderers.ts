@@ -13,6 +13,7 @@ import {
   type CodeFenceRenderer,
   getCodeFenceRenderer,
 } from "../lib/codeFence/renderers";
+import { writeClipboardText } from "../lib/clipboard";
 import { getResolvedTheme } from "./useTheme";
 import styles from "./useCodeFenceRenderers.module.css";
 
@@ -24,6 +25,8 @@ import styles from "./useCodeFenceRenderers.module.css";
 export const codeFenceRootClass: string = styles.root ?? "";
 
 const CODE_SELECTOR = "pre > code[class*='language-']";
+/** Every fenced block, labeled or not, gets a copy control. */
+const ANY_CODE_SELECTOR = "pre > code";
 const LANGUAGE_CLASS = /(?:^|\s)language-(\S+)/;
 
 /** How long a tap keeps the language label visible on a touch device. */
@@ -34,6 +37,15 @@ const LABEL_REVEAL_MS = 2500;
 const BLOCK = "data-ya-code-block";
 const RENDERED = "data-ya-code-rendered";
 const TOGGLE = "data-ya-code-toggle";
+const COPY = "data-ya-code-copy";
+
+/** How long the copy control shows its confirmation. */
+const COPIED_MS = 1200;
+
+const COPY_ICON_MARKUP =
+  '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+  '<rect x="5" y="5" width="9" height="9" rx="1.5"/>' +
+  '<path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5"/></svg>';
 
 /**
  * Rendered markup, keyed by renderer, appearance, and source. A React
@@ -80,6 +92,24 @@ function labelBlock(pre: HTMLElement, language: string): void {
   }
   pre.dataset.yaCodeLanguage = language;
   pre.setAttribute("aria-label", `${language} code block`);
+}
+
+/**
+ * A copy control inside the block that copies the fence's verbatim content.
+ * It is icon-only and marked copy-ignored, so text selections and Markdown
+ * copies of the surrounding prose never pick it up.
+ */
+function addCopyButton(pre: HTMLElement): void {
+  if (pre.querySelector(`:scope > [${COPY}]`)) {
+    return;
+  }
+  const button = pre.ownerDocument.createElement("button");
+  button.type = "button";
+  button.setAttribute(COPY, "");
+  button.dataset.markdownCopyIgnore = "true";
+  button.setAttribute("aria-label", "Copy code");
+  button.innerHTML = COPY_ICON_MARKUP;
+  pre.prepend(button);
 }
 
 function makeToggle(doc: Document, renderer: CodeFenceRenderer): HTMLElement {
@@ -184,6 +214,10 @@ async function renderBlock(
 }
 
 function enhance(root: ParentNode): void {
+  for (const code of root.querySelectorAll<HTMLElement>(ANY_CODE_SELECTOR)) {
+    const pre = code.parentElement;
+    if (pre) addCopyButton(pre);
+  }
   for (const code of root.querySelectorAll<HTMLElement>(CODE_SELECTOR)) {
     const pre = code.parentElement;
     if (!pre) {
@@ -241,6 +275,25 @@ export function useCodeFenceRenderers(
     const onClick = (event: Event) => {
       const target = event.target;
       if (!(target instanceof Element)) {
+        return;
+      }
+
+      const copy = target.closest<HTMLElement>(`[${COPY}]`);
+      if (copy && root.contains(copy)) {
+        event.stopPropagation();
+        event.preventDefault();
+        // The block's own text is the fence verbatim; the control adds none.
+        const source =
+          copy.parentElement?.querySelector(":scope > code")?.textContent ?? "";
+        void writeClipboardText(source).then((copied) => {
+          if (!copied) return;
+          copy.dataset.yaCodeCopied = "true";
+          copy.setAttribute("aria-label", "Copied");
+          window.setTimeout(() => {
+            delete copy.dataset.yaCodeCopied;
+            copy.setAttribute("aria-label", "Copy code");
+          }, COPIED_MS);
+        });
         return;
       }
 

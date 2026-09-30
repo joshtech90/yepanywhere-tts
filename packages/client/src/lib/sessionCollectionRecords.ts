@@ -27,6 +27,8 @@ export function sessionCollectionRecordToGlobalSessionItem(
     customTitle: record.customTitle,
     isArchived: record.isArchived,
     isStarred: record.isStarred,
+    sidebarCategory: record.sidebarCategory,
+    createdByUser: record.createdByUser,
     autoResumeDisabled: record.autoResumeDisabled,
     parentSessionId: record.parentSessionId,
     parentSessionKind: record.parentSessionKind,

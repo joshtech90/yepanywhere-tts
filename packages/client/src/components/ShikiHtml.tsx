@@ -1,4 +1,5 @@
 import { type HTMLAttributes, useMemo } from "react";
+import { useInnerHtml } from "../hooks/useInnerHtml";
 import { prepareShikiHtml } from "../lib/shikiHtml";
 import styles from "./ShikiHtml.module.css";
 
@@ -32,12 +33,13 @@ export function ShikiHtml({
     () => prepareShikiHtml(html, source),
     [html, source],
   );
+  const innerHtml = useInnerHtml(prepared);
   return (
     <div
       {...containerProps}
       className={`shiki-container ${styles.container}${className ? ` ${className}` : ""}`}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered HTML
-      dangerouslySetInnerHTML={{ __html: prepared }}
+      dangerouslySetInnerHTML={innerHtml}
     />
   );
 }

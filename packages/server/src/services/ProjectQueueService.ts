@@ -88,6 +88,19 @@ export type ProjectQueueLaunchPolicy = (draft: {
   message: ProjectQueueMessage;
 }) => string | null;
 
+/**
+ * The staging store holding an item's attachments: the draft store of the
+ * account that queued it, which is the root store for the superuser. Only
+ * that one store is ever consulted, so a reference staged by another
+ * account is simply not found (topics/project-queue.md § Attachments).
+ */
+export function queueItemAttachmentStore(
+  staging: AttachmentStagingService,
+  item: Pick<ProjectQueueItem, "createdByUser">,
+): AttachmentStagingService {
+  return staging.forUser(item.createdByUser ?? null);
+}
+
 function applyLaunchPolicy(
   policy: ProjectQueueLaunchPolicy | undefined,
   draft: { target: ProjectQueueTarget; message: ProjectQueueMessage },
@@ -881,8 +894,9 @@ export class ProjectQueueService {
       });
       const createdFrom = normalizeCreatedFrom(params.request.createdFrom);
       const preparedMessage = await this.prepareMessageForItem(
-        itemId,
+        { id: itemId, createdByUser: params.createdByUser },
         normalizedMessage,
+        { editor: params.createdByUser },
       );
       const item: ProjectQueueItem = {
         id: itemId,
@@ -915,8 +929,16 @@ export class ProjectQueueService {
     projectId: UrlProjectId,
     itemId: string,
     request: UpdateProjectQueueItemRequest,
-    launchPolicy?: ProjectQueueLaunchPolicy,
+    options: {
+      launchPolicy?: ProjectQueueLaunchPolicy;
+      /**
+       * The limited user making the edit; absent for the superuser. Newly
+       * added drafts are looked up in this account's store only.
+       */
+      editor?: string;
+    } = {},
   ): Promise<ProjectQueueItemSummary | null> {
+    const { launchPolicy, editor } = options;
     return this.withMutation(async () => {
       this.ensureInitialized();
       const index = this.findProjectItemIndex(projectId, itemId);
@@ -946,11 +968,10 @@ export class ProjectQueueService {
         message: normalizedMessage ?? existing.message,
       });
       const preparedMessage = normalizedMessage
-        ? await this.prepareMessageForItem(
-            existing.id,
-            normalizedMessage,
-            existing.message.stagedAttachments,
-          )
+        ? await this.prepareMessageForItem(existing, normalizedMessage, {
+            existing: existing.message.stagedAttachments,
+            editor,
+          })
         : undefined;
       const updated: StoredProjectQueueItem = {
         ...existing,
@@ -977,7 +998,7 @@ export class ProjectQueueService {
       }
       if (request.message !== undefined) {
         await this.cleanupReplacedQueueAttachments(
-          existing.id,
+          existing,
           existing.message.stagedAttachments,
           updated.message.stagedAttachments,
         );
@@ -1312,9 +1333,13 @@ export class ProjectQueueService {
   }
 
   private async prepareMessageForItem(
-    itemId: string,
+    item: Pick<ProjectQueueItem, "id" | "createdByUser">,
     message: ProjectQueueMessage,
-    existingStagedAttachments?: ProjectQueueStagedAttachments,
+    options: {
+      existing?: ProjectQueueStagedAttachments;
+      /** The limited user adding drafts; absent for the superuser. */
+      editor?: string;
+    },
   ): Promise<PreparedProjectQueueMessage> {
     if (!message.stagedAttachments) {
       return {
@@ -1324,9 +1349,9 @@ export class ProjectQueueService {
       };
     }
     const prepared = await this.prepareStagedAttachmentsForItem(
-      itemId,
+      item,
       message.stagedAttachments,
-      existingStagedAttachments,
+      options,
     );
     return {
       message: {
@@ -1339,24 +1364,34 @@ export class ProjectQueueService {
   }
 
   private async prepareStagedAttachmentsForItem(
-    itemId: string,
+    item: Pick<ProjectQueueItem, "id" | "createdByUser">,
     stagedAttachments: ProjectQueueStagedAttachments,
-    existingStagedAttachments?: ProjectQueueStagedAttachments,
+    options: {
+      existing?: ProjectQueueStagedAttachments;
+      editor?: string;
+    },
   ): Promise<{
     stagedAttachments: ProjectQueueStagedAttachments;
     transfer?: PreparedQueueAttachmentTransfer;
   }> {
-    const staging = this.attachmentStagingService;
-    if (!staging) {
+    if (!this.attachmentStagingService) {
       throw new ProjectQueueValidationError(
         "message.stagedAttachments is not supported",
       );
     }
+    const itemId = item.id;
+    // The item's own attachments stay in its queuing account's store, and
+    // new drafts come only from the editor's; neither lookup ever reaches
+    // a third store.
+    const staging = queueItemAttachmentStore(
+      this.attachmentStagingService,
+      item,
+    );
 
     let transfer: PreparedQueueAttachmentTransfer | undefined;
     try {
       const existingRefIds = new Set(
-        existingStagedAttachments?.refs.map((ref) => ref.id) ?? [],
+        options.existing?.refs.map((ref) => ref.id) ?? [],
       );
       const retainedRefs = stagedAttachments.refs.filter((ref) =>
         existingRefIds.has(ref.id),
@@ -1364,6 +1399,13 @@ export class ProjectQueueService {
       const addedRefs = stagedAttachments.refs.filter(
         (ref) => !existingRefIds.has(ref.id),
       );
+      if (addedRefs.length > 0 && options.editor !== item.createdByUser) {
+        // Moving a draft between two accounts' stores would hand one account
+        // a file the other staged; the item stays wholly its owner's.
+        throw new Error(
+          "new attachments can be added only by the account that queued this item",
+        );
+      }
       const validatedRetainedRefs =
         retainedRefs.length > 0
           ? await staging.validateQueueRefs(itemId, retainedRefs)
@@ -1438,27 +1480,28 @@ export class ProjectQueueService {
     if (!item?.message.stagedAttachments || !this.attachmentStagingService) {
       return;
     }
-    await this.attachmentStagingService.deleteQueueAttachments(item.id);
+    await queueItemAttachmentStore(
+      this.attachmentStagingService,
+      item,
+    ).deleteQueueAttachments(item.id);
   }
 
   private async cleanupReplacedQueueAttachments(
-    itemId: string,
+    item: Pick<ProjectQueueItem, "id" | "createdByUser">,
     previous: ProjectQueueStagedAttachments | undefined,
     next: ProjectQueueStagedAttachments | undefined,
   ): Promise<void> {
     if (!previous || !this.attachmentStagingService) {
       return;
     }
+    const staging = queueItemAttachmentStore(
+      this.attachmentStagingService,
+      item,
+    );
     const keptIds = new Set(next?.refs.map((ref) => ref.id) ?? []);
     for (const ref of previous.refs) {
       if (keptIds.has(ref.id)) continue;
-      const record = this.attachmentStagingService.getRecord(ref.id);
-      if (
-        record?.owner.type === "project-queue" &&
-        record.owner.queueItemId === itemId
-      ) {
-        await this.attachmentStagingService.deleteAttachment(ref.id);
-      }
+      await staging.deleteQueueAttachment(item.id, ref.id);
     }
   }
 

@@ -4,6 +4,7 @@ import type {
   GitWorkingTreePathKind,
   GitWorktreeCoverage,
   GitWorktreeDirectory,
+  LocalSourceRoot,
 } from "@yep-anywhere/shared";
 import {
   type ReactNode,
@@ -72,12 +73,22 @@ export function BlameBrowser({
   supportsCompleteFilesystemScan = false,
   onOpenCommit,
   captureReviewProjections = false,
+  localSourcePath,
+  onLocalSourceRoot,
   t,
 }: {
   projectId: string;
   isWideScreen: boolean;
   /** Seed the open file (the commit-diff → file bridge). */
   initialPath?: string;
+  /**
+   * Browse this allowed absolute path outside the project instead: one
+   * snapshot of its checkout or directory, with no live lease, review
+   * comments, or blame. The project only authorizes the reads. Callers pass
+   * `supportsWorkingTreeFiles` and leave worktree sections off.
+   */
+  localSourcePath?: string;
+  onLocalSourceRoot?: (root: LocalSourceRoot) => void;
   status?: GitStatusInfo;
   supportsWorkingTreeFiles?: boolean;
   supportsWorktreeSections?: boolean;
@@ -170,10 +181,17 @@ export function BlameBrowser({
     path: string;
     width: number;
   } | null>(null);
+  const [localRoot, setLocalRoot] = useState<LocalSourceRoot | null>(null);
+  const onLocalSourceRootRef = useRef(onLocalSourceRoot);
+  onLocalSourceRootRef.current = onLocalSourceRoot;
+  // Outside Git every file is equally "untracked"; list them plainly.
+  const plainInventory = localRoot !== null && !localRoot.isGitRepo;
   const searchInputRef = useRef<HTMLInputElement>(null);
   const fileMenu = useSourceContextMenu(t);
   useSourceSearchShortcut(searchInputRef);
-  const { pending } = useProjectReviewComments(projectId);
+  const { pending } = useProjectReviewComments(
+    localSourcePath === undefined ? projectId : undefined,
+  );
   const pathCommentCount = useMemo(() => {
     const counts = new Map<string, number>();
     for (const comment of pending) {
@@ -201,16 +219,19 @@ export function BlameBrowser({
           .listGitWorkingTreeFiles(
             projectId,
             supportsWorktreeSections ? coverage : undefined,
+            localSourcePath,
           )
           .then((result) => ({
             files: result.files.map((file) => file.path),
             workingTreeFiles: result.files,
             truncated: result.truncated,
+            root: result.root,
           }))
       : api.listGitFiles(projectId).then((result) => ({
           files: result.files,
           workingTreeFiles: [],
           truncated: result.truncated,
+          root: undefined,
         }));
     request
       .then((result) => {
@@ -218,6 +239,12 @@ export function BlameBrowser({
         setFiles(result.files);
         setWorkingTreeFiles(result.workingTreeFiles);
         setInventoryTruncated(result.truncated);
+        if (result.root) {
+          const root = result.root;
+          setLocalRoot(root);
+          if (root.requestedFile) setSelectedPath(root.requestedFile);
+          onLocalSourceRootRef.current?.(root);
+        }
         setLoading(false);
       })
       .catch((err) => {
@@ -232,6 +259,7 @@ export function BlameBrowser({
     coverage,
     projectId,
     initialPath,
+    localSourcePath,
     supportsWorkingTreeFiles,
     supportsWorktreeSections,
   ]);
@@ -399,7 +427,9 @@ export function BlameBrowser({
     const inventoryEntry = workingTreeFileByPath.get(file);
     const fileStatus =
       dirtyStatusByPath.get(file) ??
-      (workingTreeKind(inventoryEntry) === "untracked" ? "?" : undefined);
+      (!plainInventory && workingTreeKind(inventoryEntry) === "untracked"
+        ? "?"
+        : undefined);
     return (
       <li key={file} className={`commit-file-row ${sourceRowMenuSurface}`}>
         <SourceFileRowButton
@@ -484,8 +514,8 @@ export function BlameBrowser({
             <div className="git-diff-error">{effectiveError}</div>
           ) : supportsWorkingTreeFiles ? (
             <WorkingTreeFileList
-              trackedFiles={trackedFiles}
-              untrackedFiles={untrackedFiles}
+              trackedFiles={plainInventory ? filtered : trackedFiles}
+              untrackedFiles={plainInventory ? [] : untrackedFiles}
               ignoredFiles={ignoredFiles}
               directories={effectiveDirectories}
               coverage={coverage}
@@ -528,7 +558,15 @@ export function BlameBrowser({
             <WorkingTreeFileDetail
               projectId={projectId}
               path={selectedPath}
-              tracked={selectedWorkingTreeFile?.tracked ?? false}
+              viewerPath={
+                localRoot
+                  ? joinLocalSourcePath(localRoot.path, selectedPath)
+                  : selectedPath
+              }
+              tracked={
+                localRoot === null &&
+                (selectedWorkingTreeFile?.tracked ?? false)
+              }
               mode={detailMode}
               onModeChange={setDetailMode}
               onOpenCommit={onOpenCommit}
@@ -558,7 +596,15 @@ export function BlameBrowser({
             <WorkingTreeFileDetail
               projectId={projectId}
               path={selectedPath}
-              tracked={selectedWorkingTreeFile?.tracked ?? false}
+              viewerPath={
+                localRoot
+                  ? joinLocalSourcePath(localRoot.path, selectedPath)
+                  : selectedPath
+              }
+              tracked={
+                localRoot === null &&
+                (selectedWorkingTreeFile?.tracked ?? false)
+              }
               mode={detailMode}
               onModeChange={setDetailMode}
               onOpenCommit={onOpenCommit}
@@ -772,9 +818,16 @@ function workingTreeKind(
   );
 }
 
+/** Absolute viewer path for an inventory path under a local source root. */
+function joinLocalSourcePath(root: string, path: string): string {
+  const separator = root.includes("/") || !root.includes("\\") ? "/" : "\\";
+  return `${root.replace(/[\\/]+$/, "")}${separator}${path}`;
+}
+
 function WorkingTreeFileDetail({
   projectId,
   path,
+  viewerPath,
   tracked,
   mode,
   onModeChange,
@@ -784,6 +837,8 @@ function WorkingTreeFileDetail({
 }: {
   projectId: string;
   path: string;
+  /** What the contents viewer opens; differs from `path` for a local root. */
+  viewerPath: string;
   tracked: boolean;
   mode: "contents" | "blame";
   onModeChange: (mode: "contents" | "blame") => void;
@@ -826,7 +881,7 @@ function WorkingTreeFileDetail({
           t={t}
         />
       ) : (
-        <FileViewer projectId={projectId} filePath={path} />
+        <FileViewer projectId={projectId} filePath={viewerPath} />
       )}
     </section>
   );

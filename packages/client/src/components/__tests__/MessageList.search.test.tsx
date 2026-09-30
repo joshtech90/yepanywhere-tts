@@ -115,7 +115,11 @@ function installSearchGeometry(rowOffsets: Record<string, number>) {
   const observer = new MutationObserver(installRowGeometry);
   observer.observe(messageList, { childList: true, subtree: true });
 
-  return { scrollTo, stop: () => observer.disconnect() };
+  return {
+    scrollTo,
+    getScrollTop: () => scrollTop,
+    stop: () => observer.disconnect(),
+  };
 }
 
 function deferred<T>() {
@@ -147,6 +151,132 @@ function historyPage(
 }
 
 describe("MessageList reverse search", () => {
+  it.each(["Escape", "click"] as const)(
+    "holds a match dismissed with %s after an earlier bottom event re-enabled Follow",
+    async (dismiss) => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let frameId = 0;
+      vi.spyOn(window, "requestAnimationFrame").mockImplementation(
+        (callback) => {
+          frames.set(++frameId, callback);
+          return frameId;
+        },
+      );
+      vi.spyOn(window, "cancelAnimationFrame").mockImplementation((id) => {
+        frames.delete(id);
+      });
+      const observers: {
+        callback: ResizeObserverCallback;
+        targets: Element[];
+        active: boolean;
+      }[] = [];
+      class CapturingResizeObserver {
+        targets: Element[] = [];
+        active = true;
+        constructor(readonly callback: ResizeObserverCallback) {
+          observers.push(this);
+        }
+        observe(target: Element) {
+          this.targets.push(target);
+        }
+        disconnect() {
+          this.active = false;
+        }
+      }
+      vi.stubGlobal("ResizeObserver", CapturingResizeObserver);
+      const following = vi.fn();
+      const { container } = render(
+        <MessageList
+          onFollowingBottomChange={following}
+          messages={[
+            userMessage("user-1", "setup request"),
+            assistantMessage("assistant-1", "needle answer"),
+            userMessage("user-2", "later setup"),
+            assistantMessage("assistant-2", "later answer"),
+          ]}
+        />,
+      );
+      const geometry = installSearchGeometry({
+        "user-1": 20,
+        "assistant-1": 900,
+        "user-2": 1300,
+        "assistant-2": 1500,
+      });
+      const flushFrames = () => {
+        for (let round = 0; round < 8 && frames.size; round++) {
+          const pending = [...frames.keys()];
+          act(() => {
+            for (const id of pending) {
+              const callback = frames.get(id);
+              if (!callback) continue;
+              frames.delete(id);
+              callback(performance.now());
+            }
+          });
+        }
+      };
+      const resize = () =>
+        act(() => {
+          for (const observer of observers) {
+            if (!observer.active || !observer.targets.includes(container))
+              continue;
+            observer.callback([], {} as ResizeObserver);
+          }
+        });
+      resize();
+      flushFrames();
+      expect(geometry.getScrollTop()).toBe(1600);
+      fireEvent.keyDown(window, { key: "s", ctrlKey: true });
+      fireEvent.change(
+        screen.getByRole("textbox", { name: "Reverse search all turns" }),
+        { target: { value: "needle" } },
+      );
+      flushFrames();
+      await act(async () => {});
+      flushFrames();
+      fireEvent.click(
+        await screen.findByRole("button", { name: "needle answer" }),
+      );
+      await act(async () => {});
+      flushFrames();
+      // At the rendered tail, the native event can re-acquire Follow. The next
+      // scroll write has not dispatched its event when Escape closes search.
+      const lastChild =
+        container.querySelector(".message-list")!.lastElementChild!;
+      vi.spyOn(lastChild, "getBoundingClientRect").mockReturnValueOnce(
+        rect({ top: 276, height: 24 }),
+      );
+      fireEvent.scroll(container);
+      expect(following).toHaveBeenLastCalledWith(true);
+      container.scrollTop -= 60;
+      const heldTop = geometry.getScrollTop();
+      expect(heldTop).toBe(752);
+      if (dismiss === "Escape") fireEvent.keyDown(window, { key: "Escape" });
+      else
+        fireEvent.click(
+          container.querySelector('[data-render-id="assistant-1"]')!,
+        );
+      expect(screen.queryByRole("search")).toBeNull();
+      expect(following).toHaveBeenLastCalledWith(false);
+      // The queued reader event arrives while forced-anchor restoration owns
+      // the programmatic flag; it cannot repair stale Follow intent itself.
+      fireEvent.scroll(container);
+      setReadonlyNumber(container, "scrollHeight", 1860);
+      resize();
+      flushFrames();
+      expect(geometry.getScrollTop()).toBe(heldTop);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Follow latest session output" }),
+      );
+      flushFrames();
+      expect(geometry.getScrollTop()).toBe(1660);
+      setReadonlyNumber(container, "scrollHeight", 1960);
+      resize();
+      expect(geometry.getScrollTop()).toBe(1760);
+      geometry.stop();
+    },
+  );
+
   it("preserves the query and case when Ctrl+Alt+S changes scope", async () => {
     render(<MessageList messages={[userMessage("first", "Needle first")]} />);
     fireEvent.keyDown(window, { key: "r", ctrlKey: true });
@@ -390,6 +520,12 @@ describe("MessageList reverse search", () => {
         container.querySelectorAll("[data-render-id]").length,
       ).toBeLessThanOrEqual(48);
 
+      // Own geometry before the initial layout settles. Otherwise its queued
+      // bottom positioning can consume newly installed metrics during search.
+      const { scrollTo, getScrollTop, stop } = installSearchGeometry({
+        [targetId]: 900,
+      });
+      await waitFor(() => expect(getScrollTop()).toBe(1600));
       fireEvent.keyDown(window, { key: shortcut, ctrlKey: true });
       const input = await screen.findByRole("textbox", { name: inputName });
       fireEvent.change(input, { target: { value: needle } });
@@ -398,8 +534,6 @@ describe("MessageList reverse search", () => {
           container.querySelector(`[data-render-id="${targetId}"]`),
         ).not.toBeNull();
       });
-      const { scrollTo } = installSearchGeometry({ [targetId]: 900 });
-
       fireEvent.keyDown(window, { key: "Enter" });
 
       await waitFor(() => {
@@ -409,9 +543,11 @@ describe("MessageList reverse search", () => {
         ).not.toBeNull();
       });
       expect(scrollTo).toHaveBeenCalledWith({ top: 812, behavior: "auto" });
+      expect(getScrollTop()).toBe(812);
       expect(
         container.querySelectorAll("[data-render-id]").length,
       ).toBeLessThanOrEqual(48);
+      stop();
     },
   );
 

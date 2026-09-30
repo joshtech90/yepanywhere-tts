@@ -24,13 +24,9 @@
     transform: translateX(100%);
   }
 }
-/* Layout comes from the shared `ViewerHeader.module.css`; only this pane's own
-   padding, rule and title colour live here. */
-.header {
-  padding: 2px 6px;
-  border-bottom: 1px solid var(--border-color);
-}
 .title {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -49,6 +45,16 @@
   min-height: 0;
   min-width: 0;
   overflow: hidden;
+}
+.appContent {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.appContent:not([hidden]) {
+  display: flex;
+  flex-direction: column;
 }
 .splitter {
   position: absolute;
@@ -97,7 +103,20 @@
     padding-left: 8px;
   }
 }
+/* Full view: the app alone fills the window, over the sidebar and session,
+   until its Back minimizes it. Fixed, so it escapes the workspace grid. */
+.pane.fullView {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  padding-left: 0;
+  border-left: none;
+  box-shadow: none;
+}
 @media (max-width: 1099px) {
+  .pane.projectFullscreen {
+    inset: 0;
+  }
   .pane {
     position: absolute;
     inset: 0 0 0 24px;

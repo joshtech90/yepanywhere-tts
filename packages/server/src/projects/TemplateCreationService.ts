@@ -1,4 +1,11 @@
-import { mkdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import {
   basename,
   dirname,
@@ -116,6 +123,36 @@ export class TemplateCreationService {
       state.phase = "interrupted";
     }
     return state;
+  }
+
+  /**
+   * The limited user behind each preparation session a creation started.
+   * The operation record is the authority for who asked: a preparation that
+   * waited for a worker before 2026-09-28 recorded no creator on the session
+   * itself, which left it out of its user's sidebar group.
+   */
+  async startedSessionOwners(): Promise<
+    Array<{ sessionId: string; ownerUsername: string }>
+  > {
+    let names: string[];
+    try {
+      names = await readdir(this.directory);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+      throw error;
+    }
+    const owners: Array<{ sessionId: string; ownerUsername: string }> = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const state = await this.get(name.slice(0, -".json".length));
+      if (state?.sessionId && state.ownerUsername) {
+        owners.push({
+          sessionId: state.sessionId,
+          ownerUsername: state.ownerUsername,
+        });
+      }
+    }
+    return owners;
   }
 
   async start(

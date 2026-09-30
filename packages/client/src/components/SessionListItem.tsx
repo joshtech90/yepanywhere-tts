@@ -20,6 +20,7 @@ import {
   useTooltipMode,
   useVisibilityAwareTextTooltip,
 } from "../hooks/useTooltipAppearance";
+import { useOptionalToastContext } from "../contexts/ToastContext";
 import { useI18n } from "../i18n";
 import { activityBus } from "../lib/activityBus";
 import { toBrowserAppHref } from "../lib/appHref";
@@ -115,6 +116,10 @@ interface SessionListItemProps {
   /** Remaining `/clearloop` iterations; shows a green count badge. */
   clearloop?: SessionClearloopBadge;
   isArchived?: boolean;
+  /** Current sidebar category; the menu can change it when names are given. */
+  sidebarCategory?: string;
+  /** Categories to offer; omit where the server cannot store categories. */
+  sidebarCategoryNames?: readonly string[];
   onToggleStar?: () => void;
   onToggleArchive?: () => void;
   onToggleRead?: () => void;
@@ -220,6 +225,8 @@ export function SessionListItem({
   openNonHumanUserTurn = false,
   // Actions
   isStarred: isStarredProp,
+  sidebarCategory,
+  sidebarCategoryNames,
   clearloop,
   isArchived: isArchivedProp,
   onToggleStar,
@@ -248,6 +255,7 @@ export function SessionListItem({
   publicShareControlsVisible = false,
 }: SessionListItemProps) {
   const { t } = useI18n();
+  const showToast = useOptionalToastContext()?.showToast;
   const hasSessionApp = useSessionHasApp(
     `${basePath}/${projectId}/${sessionId}`,
   );
@@ -345,6 +353,22 @@ export function SessionListItem({
     } catch (err) {
       console.error("Failed to update star status:", err);
       setLocalIsStarred(undefined); // Revert on error
+    }
+  };
+
+  // The row moves between sidebar sections through the store, so there is no
+  // optimistic local copy to revert.
+  const handleSetSidebarCategory = async (category: string | null) => {
+    try {
+      await api.updateSessionMetadata(sessionId, { sidebarCategory: category });
+      activityBus.emitLocal("session-metadata-changed", {
+        type: "session-metadata-changed",
+        sessionId,
+        sidebarCategory: category,
+        timestamp: new Date().toISOString(),
+      });
+    } catch {
+      showToast?.(t("sessionMenuCategoryFailed"), "error");
     }
   };
 
@@ -1073,6 +1097,11 @@ export function SessionListItem({
             hasUnread={hasUnread ?? false}
             provider={provider}
             onToggleStar={handleToggleStar}
+            sidebarCategory={sidebarCategory}
+            sidebarCategoryNames={sidebarCategoryNames}
+            onSetSidebarCategory={
+              sidebarCategoryNames ? handleSetSidebarCategory : undefined
+            }
             onToggleArchive={handleToggleArchive}
             onToggleRead={handleToggleRead}
             onRename={() => {

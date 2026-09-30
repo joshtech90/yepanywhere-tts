@@ -96,6 +96,21 @@ version. The implemented operations are:
 - `setViewerPresence`, `release`, and `terminate`; and
 - `retainProcessGroup` for host-owned auxiliary provider resources.
 
+The negotiated private `project-services` feature adds `projectService` for
+the registered Hono controller. A separate app worker owns project service
+managers across Hono replacement; it is not a provider session. Start/Stop
+requests send same-connection authorization challenges back to Hono, which
+rechecks the current principal's grants before queued execution proceeds.
+The response is a `projectServiceAuthorization` acknowledgement on that
+already authenticated connection. Disconnect fails pending challenges. App
+workers and their sandbox groups participate in host descriptor and terminal
+cleanup. The worker captures each child's process identity at spawn, before
+reporting it; the host verifies that identity and reaps those groups on worker
+loss. It does not discover app processes by port. The app worker's transitive
+source graph participates in
+host compatibility. No new public HTTP contract or client request is required;
+see [managed app lifetime](project-service.md#managed-app-lifetime).
+
 The host permits one registered Hono controller generation per worker. It
 fences stale/concurrent controllers and keeps a canonical provider-session-id
 to worker mapping until verified cleanup.
@@ -389,6 +404,11 @@ The Hono launcher uses attach-or-start:
    start exactly one replacement.
 5. If identity or cleanup cannot be proved, fail closed rather than unlinking a
    socket and creating a concurrent owner.
+
+A host started by this launcher remains classified as started when it becomes
+available during the second bounded discovery window. A different process's
+compatible host is classified as attached; that distinction preserves the
+macOS launcher lease through a slow startup.
 
 Replacing a nonresponsive host may interrupt active provider turns and reports
 that outcome. Endpoint absence alone never authorizes killing an unverified

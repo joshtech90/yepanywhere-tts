@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { expect, it, vi } from "vitest";
 import { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
-import { DiscoverySqliteService } from "../../src/storage/discovery-sqlite.js";
+import {
+  DiscoverySqliteService,
+  migrateDiscoveryDatabase,
+} from "../../src/storage/discovery-sqlite.js";
 import { IssueStore } from "../../src/services/issues/IssueStore.js";
 import { IssueIndexer } from "../../src/services/issues/IssueIndexer.js";
 import { IssueConfirmer } from "../../src/services/issues/confirm.js";
@@ -11,7 +14,11 @@ import { IssueCredentials } from "../../src/services/issues/credentials.js";
 import { DEFAULT_ISSUE_SETTINGS } from "@yep-anywhere/shared";
 import { createIssueRoutes } from "../../src/routes/issues.js";
 import { getServerCapabilities } from "../../src/routes/version.js";
-import type { SqliteDatabase, SqliteValue } from "../../src/storage/sqlite.js";
+import {
+  loadSqliteDriver,
+  type SqliteDatabase,
+  type SqliteValue,
+} from "../../src/storage/sqlite.js";
 import { storedRows } from "./sqlite-rows.js";
 
 it("gates all data routes, validates settings, saves through the shared settings service, and resolves Jira references", async () => {
@@ -178,8 +185,11 @@ it("paginates distinct sessions by catalog activity before loading their first m
   await settings.updateSettings({
     issueAssociations: { enabled: true, scope: "viewed", recentDays: 7 },
   });
-  const db = new DiscoverySqliteService({ dataDir, mode: "auto" });
-  const store = new IssueStore(db.getDatabase()!);
+  // This read/pagination fixture needs real SQL and transactions, but not
+  // 165 durable disk commits. Persistence is covered by the other cases.
+  const db = loadSqliteDriver()!.open(":memory:");
+  migrateDiscoveryDatabase(db);
+  const store = new IssueStore(db);
   const indexer = new IssueIndexer(store, {
     settings: () => settings.getSetting("issueAssociations")!,
     candidates: async function* () {},

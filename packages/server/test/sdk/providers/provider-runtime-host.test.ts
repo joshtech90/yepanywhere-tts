@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -184,19 +184,63 @@ async function waitForChildExit(
   });
 }
 
+const hostDiagnostics = new WeakMap<
+  ChildProcess,
+  { output: string; error?: Error }
+>();
+function spawnHeadlessHost(runtimeRoot: string): ChildProcess {
+  const child = spawn(
+    process.execPath,
+    [providerHostEntrypoint, "--headless"],
+    {
+      cwd: dirname(providerHostEntrypoint),
+      env: {
+        ...process.env,
+        YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
+        YEP_PROVIDER_RUNTIME_WORKER_PATH: fixtureWorker,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  const diagnostics: { output: string; error?: Error } = { output: "" };
+  hostDiagnostics.set(child, diagnostics);
+  const capture = (chunk: Buffer) => {
+    diagnostics.output = `${diagnostics.output}${chunk}`.slice(-16_384);
+  };
+  child.stdout?.on("data", capture);
+  child.stderr?.on("data", capture);
+  child.on("error", (error) => {
+    diagnostics.error = error;
+  });
+  return child;
+}
+
 async function waitForAvailableHost(
   paths: NonNullable<ReturnType<typeof resolveProviderHostPaths>>,
+  child: ChildProcess,
   timeoutMs = 10_000,
 ) {
-  const deadline = Date.now() + timeoutMs;
+  const started = Date.now();
+  const deadline = started + timeoutMs;
   while (true) {
+    const diagnostics = hostDiagnostics.get(child);
+    if (
+      diagnostics?.error ||
+      child.exitCode !== null ||
+      child.signalCode !== null
+    )
+      throw new Error(
+        `Provider host exited before readiness (${child.exitCode}/${child.signalCode}): ${diagnostics?.error?.message ?? ""}\n${diagnostics?.output ?? ""}`,
+      );
     const discovery = await discoverProviderHost(paths, {
       expectedIdentity: expectedProviderHostIdentity,
       timeoutMs: 250,
     });
     if (discovery.state === "available") return discovery;
     if (Date.now() >= deadline) {
-      throw new Error(`provider host stayed ${discovery.state}`);
+      throw new Error(
+        `provider host stayed ${discovery.state} after ${Date.now() - started}ms (${child.exitCode}/${child.signalCode})\n${hostDiagnostics.get(child)?.output ?? ""}`,
+      );
     }
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
@@ -449,6 +493,9 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     expect(existsSync(join(runtimeRoot, "host.json"))).toBe(false);
   });
 
+  // The whole test allows 20s; child publication still has a separate 10s
+  // bound. CI36630063508 reached it without child diagnostics. Report a crash
+  // immediately with its output so cold identity-probe failures are actionable.
   it("publishes one private stable descriptor for a foreground host", async () => {
     const runtimeRoot = await mkdtemp(
       join(runtimeTmpDir, "provider-host-stable-"),
@@ -458,22 +505,10 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
       YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
     });
     if (!paths) throw new Error("expected provider host paths");
-    const host = spawn(
-      process.execPath,
-      [providerHostEntrypoint, "--headless"],
-      {
-        cwd: dirname(providerHostEntrypoint),
-        env: {
-          ...process.env,
-          YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
-          YEP_PROVIDER_RUNTIME_WORKER_PATH: fixtureWorker,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const host = spawnHeadlessHost(runtimeRoot);
 
     try {
-      const connection = await waitForAvailableHost(paths);
+      const connection = await waitForAvailableHost(paths, host);
       expect(connection.descriptor).toMatchObject({
         descriptorVersion: 1,
         hostProtocolVersion: 3,
@@ -572,7 +607,7 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     expect(existsSync(paths.controlSocketPath)).toBe(false);
     expect(existsSync(paths.tokenPath)).toBe(false);
     expect(existsSync(paths.lockPath)).toBe(false);
-  });
+  }, 20_000);
 
   it("consumes only fresh private recent-runtime recovery state", async () => {
     const runtimeRoot = await mkdtemp(
@@ -699,22 +734,10 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
       YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
     });
     if (!paths) throw new Error("expected provider host paths");
-    const host = spawn(
-      process.execPath,
-      [providerHostEntrypoint, "--headless"],
-      {
-        cwd: dirname(providerHostEntrypoint),
-        env: {
-          ...process.env,
-          YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
-          YEP_PROVIDER_RUNTIME_WORKER_PATH: fixtureWorker,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const host = spawnHeadlessHost(runtimeRoot);
 
     try {
-      const connection = await waitForAvailableHost(paths);
+      const connection = await waitForAvailableHost(paths, host);
       const request = {
         op: "sessionTurn",
         submissionId: "headless-turn-1",
@@ -853,22 +876,10 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
       YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
     });
     if (!paths) throw new Error("expected provider host paths");
-    const host = spawn(
-      process.execPath,
-      [providerHostEntrypoint, "--headless"],
-      {
-        cwd: dirname(providerHostEntrypoint),
-        env: {
-          ...process.env,
-          YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
-          YEP_PROVIDER_RUNTIME_WORKER_PATH: fixtureWorker,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const host = spawnHeadlessHost(runtimeRoot);
 
     try {
-      const connection = await waitForAvailableHost(paths);
+      const connection = await waitForAvailableHost(paths, host);
       const submissionId = "detached-turn-1";
       const accepted = await collectProviderHostUntilAccepted(connection, {
         op: "sessionTurn",
@@ -951,16 +962,7 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
       YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
     });
     if (!paths) throw new Error("expected provider host paths");
-    const startHost = () =>
-      spawn(process.execPath, [providerHostEntrypoint, "--headless"], {
-        cwd: dirname(providerHostEntrypoint),
-        env: {
-          ...process.env,
-          YEP_PROVIDER_HOST_RUNTIME_DIR: runtimeRoot,
-          YEP_PROVIDER_RUNTIME_WORKER_PATH: fixtureWorker,
-        },
-        stdio: ["ignore", "pipe", "pipe"],
-      });
+    const startHost = () => spawnHeadlessHost(runtimeRoot);
     let host = startHost();
     const target = {
       harness: "claude",
@@ -969,7 +971,7 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     };
 
     try {
-      const firstConnection = await waitForAvailableHost(paths);
+      const firstConnection = await waitForAvailableHost(paths, host);
       const first = await collectProviderHostStream(firstConnection, {
         op: "sessionTurn",
         submissionId: "before-clean-restart",
@@ -993,7 +995,7 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
       expect((await stat(paths.recentRuntimePath)).mode & 0o077).toBe(0);
 
       host = startHost();
-      const replacementConnection = await waitForAvailableHost(paths);
+      const replacementConnection = await waitForAvailableHost(paths, host);
       expect(existsSync(paths.recentRuntimePath)).toBe(false);
       const receiptOnlyReplay = await collectProviderHostStream(
         replacementConnection,

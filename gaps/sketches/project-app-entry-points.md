@@ -23,7 +23,7 @@ is a claim, not a live process — resolution must go through the same vhost
 rewrite and listener check as an announced URL, and must not present a dead
 port as a working app. Whether an `APPS.md` row can name a start command, and
 who may run it, is a separate lifecycle question owned by
-[app lifecycle](app-lifecycle.md).
+[project service](../../topics/project-service.md#managed-app-lifetime).
 
 **The session should know when the user chose the app.** Today every app the
 pane shows arrived from the session's own tool output, so the agent can assume

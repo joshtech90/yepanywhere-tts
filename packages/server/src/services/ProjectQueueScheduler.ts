@@ -30,6 +30,7 @@ import {
 import type { AttachmentStagingService } from "../uploads/AttachmentStagingService.js";
 import {
   type ProjectQueueService,
+  queueItemAttachmentStore,
   queuedYaCommandToRun,
 } from "./ProjectQueueService.js";
 import {
@@ -204,6 +205,15 @@ export interface ProjectQueueSchedulerOptions {
    * item a limited user queued can run.
    */
   getLimitedUserGrants?: (username: string) => LimitedUserGrants | null;
+  /**
+   * Whether a limited user's queued turn may still resume an existing session
+   * under the freshness cutoff (topics/limited-users.md § Freshness). Without
+   * this option no limited user's existing-session item can run.
+   */
+  isSessionFreshForLimitedTurn?: (
+    sessionId: string,
+    grants: LimitedUserGrants,
+  ) => Promise<boolean>;
   onSessionStarted?: (args: {
     item: ProjectQueueItem;
     process: ProjectQueueProcessSnapshot;
@@ -1102,6 +1112,17 @@ export class ProjectQueueScheduler {
         item.target,
       );
       if (refused) throw new Error(refused.error);
+      // Judged at dispatch, not enqueue: an item that waited past the
+      // cutoff would otherwise resume a cold session at full cost.
+      const fresh = await this.options.isSessionFreshForLimitedTurn?.(
+        item.target.sessionId,
+        grants,
+      );
+      if (!fresh) {
+        throw new Error(
+          "The target session has gone cold; queue a new session instead",
+        );
+      }
     }
     if (yaCommand) {
       // A YA-emulated command is not provider text; the composer deliberately
@@ -1249,14 +1270,15 @@ export class ProjectQueueScheduler {
     if (!this.options.attachmentStagingService) {
       throw new Error("Attachment staging service is unavailable");
     }
-    return this.options.attachmentStagingService.materializeQueueAttachmentsForSession(
-      {
-        queueItemId: item.id,
-        refs: stagedAttachments.refs,
-        projectPath: item.projectPath,
-        sessionId,
-      },
-    );
+    return queueItemAttachmentStore(
+      this.options.attachmentStagingService,
+      item,
+    ).materializeQueueAttachmentsForSession({
+      queueItemId: item.id,
+      refs: stagedAttachments.refs,
+      projectPath: item.projectPath,
+      sessionId,
+    });
   }
 
   private toUserMessage(
@@ -1300,6 +1322,7 @@ export class ProjectQueueScheduler {
       : { thinking: undefined, effort: undefined };
     const globalInstructions = this.options.getGlobalInstructions?.();
     return {
+      instructionUsername: item.createdByUser,
       ...(target.model && target.model !== "default"
         ? { model: target.model }
         : {}),

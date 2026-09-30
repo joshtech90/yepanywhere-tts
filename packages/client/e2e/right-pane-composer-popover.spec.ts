@@ -6,6 +6,7 @@ import {
 } from "@yep-anywhere/shared";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import { recordUiCapture } from "./support/ui-capture.js";
+import { routeWithDrain } from "./support/managed-routes.js";
 
 const projectId = Buffer.from(join(e2ePaths.tempDir, "mockproject")).toString(
   "base64url",
@@ -22,7 +23,14 @@ test("composer popovers draw over the docked right pane", async ({
   await page.addInitScript(() => {
     localStorage.setItem("yep-anywhere-session-right-pane-enabled", "true");
   });
-  await page.route("**/api/version*", async (route) => {
+  // This layout fixture owns context usage only. Subscription usage has its
+  // own coverage and must not change this button's label or popover mode.
+  await routeWithDrain(
+    page,
+    "**/api/providers/*/subscription-usage*",
+    (route) => route.fulfill({ json: { usage: null } }),
+  );
+  await routeWithDrain(page, "**/api/version*", async (route) => {
     const response = await route.fetch();
     const metadata = await response.json();
     await route.fulfill({
@@ -52,7 +60,8 @@ test("composer popovers draw over the docked right pane", async ({
       },
     });
   });
-  await page.route(
+  await routeWithDrain(
+    page,
     new RegExp(
       `/api/projects/[^/]+/sessions/${sessionId}(?:/metadata)?(?:\\?|$)`,
     ),
@@ -132,13 +141,13 @@ test("composer popovers draw over the docked right pane", async ({
       } else upstream.send(wire);
     });
   });
-  await page.route("**/api/artifacts/vhosts/links", (route) =>
+  await routeWithDrain(page, "**/api/artifacts/vhosts/links", (route) =>
     route.fulfill({ json: { tokens: { plan: "test-app-bearer" } } }),
   );
-  await page.route("**/api/artifacts/vhosts/plan/listener", (route) =>
+  await routeWithDrain(page, "**/api/artifacts/vhosts/plan/listener", (route) =>
     route.fulfill({ json: { token: "observed-listener" } }),
   );
-  await page.route("http://plan.localhost:*/**", (route) =>
+  await routeWithDrain(page, "http://plan.localhost:*/**", (route) =>
     route.fulfill({
       contentType: "text/html",
       body: '<html><body style="font:16px system-ui;padding:20px;background:#f8fafc;color:#172033"><h1>Plan review</h1></body></html>',

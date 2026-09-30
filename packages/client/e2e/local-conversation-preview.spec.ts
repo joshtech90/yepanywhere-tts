@@ -6,7 +6,7 @@ import { InstallService } from "../../server/src/services/InstallService.js";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 
@@ -145,7 +145,7 @@ for (const authenticated of [false, true]) {
       throw new Error(`${String(error)}\n${server.output.stderr.join("")}`);
     } finally {
       await page.goto("about:blank");
-      stopYaServerProcess(server);
+      await disposeYaServerProcess(server);
     }
   });
 }

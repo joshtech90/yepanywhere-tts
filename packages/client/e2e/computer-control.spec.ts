@@ -4,7 +4,7 @@ import { expect, test } from "@playwright/test";
 import { createTestViteServer } from "./support/vite-server";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
   terminateYaServerProcess,
 } from "./support/ya-server-process";
 import { recordUiCapture } from "./support/ui-capture";
@@ -204,6 +204,6 @@ test("Computer Control operator actions and old-server fallback", async ({
     await page.close();
     await source.close();
     await terminateYaServerProcess(backend);
-    await stopYaServerProcess(backend);
+    await disposeYaServerProcess(backend);
   }
 });

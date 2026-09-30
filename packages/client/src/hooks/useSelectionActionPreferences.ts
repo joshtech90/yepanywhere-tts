@@ -12,7 +12,7 @@ const textCopyStore = createLocalStorageBoolean(
 );
 const sourceCopyStore = createLocalStorageBoolean(
   UI_KEYS.selectionSourceCopyActionEnabled,
-  false,
+  true,
 );
 const richCopyStore = createLocalStorageBoolean(
   UI_KEYS.selectionRichCopyActionEnabled,

@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { VOICE_INPUT_CAPABILITY } from "@yep-anywhere/shared";
+import {
+  SPEECH_BACKEND_SETUP_CAPABILITY,
+  VOICE_INPUT_CAPABILITY,
+} from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SpeechSettings } from "../SpeechSettings";
 import { SettingsSearchScopeProvider } from "../SettingsSearchContext";
@@ -126,6 +129,16 @@ vi.mock("../../../lib/speechProviders/YaServerProvider", () => ({
 
 vi.mock("../SettingsUndoContext", () => undoMocks);
 
+const principalState = vi.hoisted(() => ({ canAdministerHost: true }));
+
+vi.mock("../../../hooks/useActingPrincipal", () => ({
+  useCanAdministerHost: () => principalState.canAdministerHost,
+}));
+
+vi.mock("../SpeechBackendSetup", () => ({
+  SpeechBackendSetup: () => <div>speech-backend-setup-stub</div>,
+}));
+
 describe("SpeechSettings", () => {
   it.each(["ya-granite", "ya-whisper", "ya-qwen"])(
     "prewarms %s only when selected in settings",
@@ -179,6 +192,32 @@ describe("SpeechSettings", () => {
       </SettingsSearchScopeProvider>,
     );
     expect(screen.queryByText("speechVocabularyTitle")).toBeNull();
+  });
+
+  it("gives a limited user the backend choice without host administration", () => {
+    versionState.capabilities = [
+      VOICE_INPUT_CAPABILITY,
+      SPEECH_BACKEND_SETUP_CAPABILITY,
+    ];
+    const owner = render(<SpeechSettings />);
+    expect(screen.getByText("speechVocabularyTitle")).toBeTruthy();
+    expect(screen.getByText("speech-backend-setup-stub")).toBeTruthy();
+    owner.unmount();
+    principalState.canAdministerHost = false;
+    try {
+      render(<SpeechSettings />);
+      expect(screen.queryByText("speechVocabularyTitle")).toBeNull();
+      expect(screen.queryByText("speech-backend-setup-stub")).toBeNull();
+      expect(
+        screen.getByRole("button", {
+          name: "filterByLabel speechSettingsBackendTitle",
+        }),
+      ).toBeTruthy();
+      expect(screen.getByLabelText("speechSettingsXaiKeyTitle")).toBeTruthy();
+    } finally {
+      principalState.canAdministerHost = true;
+      versionState.capabilities = [];
+    }
   });
 
   it("shows Whisper presets only on a capable server", () => {

@@ -50,4 +50,12 @@ it cannot be safely bundled into a successful-file response serialization
 repair. The issue #121 focused file/relay/public-share suite passes all 159
 tests without warnings, and lint, formatting, and source type checks pass.
 
+2026-09-29: the Codex compaction fixture now waits for both YA's in-turn state
+and the provider's recorded `turn/start`. A full Linux suite exposed the
+opposite ordering from the original failure: rejection correctly returned 409,
+but the pending provider request had not yet reached the fixture log. This
+closes that assertion race without changing provider behavior or time budgets;
+the other timing and diagnostic findings above remain open.
+Contributing-model: 6-Astra.
+
 Found 2026-09-08 while validating issue #121 relay file downloads.

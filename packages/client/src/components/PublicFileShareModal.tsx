@@ -4,9 +4,11 @@ import type {
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
+import { useFileVhostService } from "../hooks/useFileVhostService";
 import { useI18n } from "../i18n";
 import { writeClipboardTextLater } from "../lib/clipboard";
 import { publicSharePlayUrlFromFileShareUrl } from "../lib/publicSharePlay";
+import { FileVhostSection } from "./FileVhostSection";
 import {
   PublicShareFeedback,
   PublicShareInventoryCount,
@@ -40,6 +42,7 @@ export function PublicFileShareModal({
   onClose,
 }: PublicFileShareModalProps) {
   const { t } = useI18n();
+  const vhostService = useFileVhostService(projectId);
   const transformUrl = (url: string) =>
     (playLinks && publicSharePlayUrlFromFileShareUrl(url)) || url;
   const [items, setItems] = useState<PublicFileShareManagementItem[]>([]);
@@ -241,6 +244,9 @@ export function PublicFileShareModal({
             </PublicShareInventoryCount>
           )}
         </div>
+        {vhostService && (
+          <FileVhostSection filePath={filePath} service={vhostService} />
+        )}
       </div>
     </Modal>
   );

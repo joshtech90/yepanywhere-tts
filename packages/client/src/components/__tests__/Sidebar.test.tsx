@@ -34,6 +34,7 @@ const {
   projectsState,
   starredSessionsState,
   versionState,
+  categoriesState,
 } = vi.hoisted(() => ({
   globalSessionsState: {
     sessions: [] as Array<Record<string, unknown>>,
@@ -71,6 +72,9 @@ const {
   },
   versionState: {
     capabilities: [] as string[],
+  },
+  categoriesState: {
+    supported: false,
   },
 }));
 
@@ -135,6 +139,9 @@ vi.mock("../../hooks/useSidebarSessionFeeds", () => ({
     loadMoreGlobalSessions: globalSessionsState.loadMore,
     hasMoreStarredSessions: starredSessionsState.hasMore,
     loadMoreStarredSessions: starredSessionsState.loadMore,
+    sidebarCategoriesSupported: categoriesState.supported,
+    hasMoreCategorizedSessions: false,
+    loadMoreCategorizedSessions: async () => {},
   }),
 }));
 
@@ -169,6 +176,10 @@ vi.mock("../../lib/clientSummaryStore", async (importOriginal) => {
       }
       return Array.from(sessionsById.values());
     },
+    useCategorizedSessionRecords: () =>
+      globalSessionsState.sessions.filter(
+        (session) => session.sidebarCategory && session.isArchived !== true,
+      ),
     useKnownProjectQueueItems: () =>
       Object.values(projectQueuesState.queuesByProject).flat(),
     useProjectQueuedSessionIds: () => {
@@ -377,6 +388,7 @@ describe("Sidebar collapsed toggle", () => {
     mockRemoteConnectionState.value = null;
     mockGlobalLoadMore.mockReset();
     mockStarredLoadMore.mockReset();
+    categoriesState.supported = false;
     globalSessionsState.sessions = [];
     globalSessionsState.loading = false;
     globalSessionsState.hasMore = false;
@@ -1189,6 +1201,70 @@ describe("Sidebar collapsed toggle", () => {
         window.localStorage.getItem(UI_KEYS.sidebarSectionExpansion) ?? "{}",
       ).starred,
     ).toBe(true);
+  });
+
+  it("shows category and limited-user sections that toggle by name", () => {
+    categoriesState.supported = true;
+    const now = new Date().toISOString();
+    globalSessionsState.sessions = [
+      makeSession("filed", now, { sidebarCategory: "Paper" }),
+      makeSession("archer-row", now, { createdByUser: "archer" }),
+      makeSession("mine", now),
+    ];
+
+    const { container } = render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(last24HourIds(container)).toEqual(["mine"]);
+    const headings = Array.from(container.querySelectorAll("h3")).map(
+      (heading) => heading.textContent,
+    );
+    expect(headings).toEqual(["Paper", "Last 24 Hours", "archer"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Collapse: archer" }));
+    expect(screen.queryByText("Session archer-row")).toBeNull();
+    // A closed section tells how many rows it holds.
+    expect(
+      screen.getByRole("button", { name: "Expand: archer" }).textContent,
+    ).toBe("archer1");
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(UI_KEYS.sidebarSectionExpansion) ?? "{}",
+      ).collapsedGroups,
+    ).toEqual(["user:archer"]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Expand: archer" }));
+    expect(screen.getByText("Session archer-row")).toBeDefined();
+  });
+
+  it("keeps the pre-category sections on a server without categories", () => {
+    const now = new Date().toISOString();
+    globalSessionsState.sessions = [
+      makeSession("archer-row", now, { createdByUser: "archer" }),
+    ];
+
+    const { container } = render(
+      <MemoryRouter>
+        <Sidebar
+          isOpen={true}
+          onClose={() => {}}
+          onNavigate={() => {}}
+          isDesktop={true}
+          isCollapsed={false}
+        />
+      </MemoryRouter>,
+    );
+
+    expect(last24HourIds(container)).toEqual(["archer-row"]);
   });
 
   it("initializes sidebar section collapse state from localStorage", () => {

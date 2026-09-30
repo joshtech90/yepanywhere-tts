@@ -21,6 +21,7 @@ import {
   useHoverCardAppearance,
 } from "../../hooks/useHoverCardAppearance";
 import { estimateHoverCardPromptLines } from "../../components/sessionHoverCardLines";
+import { useProjectAppComposing } from "../../hooks/useProjectAppComposing";
 import { useDeveloperMode } from "../../hooks/useDeveloperMode";
 import { useFloatingActionButtonEnabled } from "../../hooks/useFloatingActionButtonEnabled";
 import {
@@ -119,6 +120,7 @@ import {
   settingsCategoryIcons,
 } from "./SettingsCategoryIcons";
 import { CommittedRangeInput } from "../../components/ui/CommittedRangeInput";
+import { InnerHtml } from "../../components/ui/InnerHtml";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
 import { SelectionActionButton } from "../../components/ui/SelectionActionCluster";
 import {
@@ -132,6 +134,7 @@ import { useWiderConversationActivityPreviews } from "../../hooks/useWiderConver
 import { useWorkflowTags } from "../../hooks/useWorkflowTags";
 import { usePdfjsRendererSetting } from "../../hooks/usePdfjsRendererSetting";
 import { useTranscriptMarginNavigation } from "../../hooks/useTranscriptMarginNavigation";
+import { useComposerPromptRail } from "../../hooks/useComposerPromptRail";
 import { useSessionRightPaneSetting } from "../../hooks/useSessionRightPaneSetting";
 import { usePanelSlideAnimations } from "../../hooks/usePanelSlideAnimations";
 import { useAcliCommentarySetting } from "../../hooks/useAcliCommentarySetting";
@@ -239,6 +242,8 @@ export function AppearanceSettings() {
   } = useWiderConversationActivityPreviews();
   const { glossaryHintsEnabled, setGlossaryHintsEnabled } = useGlossaryHints();
   const { workflowTagsEnabled, setWorkflowTagsEnabled } = useWorkflowTags();
+  const { projectAppComposingEnabled, setProjectAppComposingEnabled } =
+    useProjectAppComposing();
   const { sessionRightPaneEnabled, setSessionRightPaneEnabled } =
     useSessionRightPaneSetting();
   const { pdfjsRendererEnabled, setPdfjsRendererEnabled } =
@@ -247,6 +252,8 @@ export function AppearanceSettings() {
     transcriptMarginNavigationEnabled,
     setTranscriptMarginNavigationEnabled,
   } = useTranscriptMarginNavigation();
+  const { composerPromptRailEnabled, setComposerPromptRailEnabled } =
+    useComposerPromptRail();
   const { panelSlideAnimations, setPanelSlideAnimations } =
     usePanelSlideAnimations();
   const { acliCommentaryEnabled, setAcliCommentaryEnabled } =
@@ -396,10 +403,12 @@ export function AppearanceSettings() {
     undoEntry(glossaryHintsEnabled, setGlossaryHintsEnabled),
     undoEntry(workflowTagsEnabled, setWorkflowTagsEnabled),
     undoEntry(sessionRightPaneEnabled, setSessionRightPaneEnabled),
+    undoEntry(projectAppComposingEnabled, setProjectAppComposingEnabled),
     undoEntry(
       transcriptMarginNavigationEnabled,
       setTranscriptMarginNavigationEnabled,
     ),
+    undoEntry(composerPromptRailEnabled, setComposerPromptRailEnabled),
     undoEntry(panelSlideAnimations, setPanelSlideAnimations),
     undoEntry(acliCommentaryEnabled, setAcliCommentaryEnabled),
     undoEntry(tooltipDelayMs, setTooltipDelayMs),
@@ -824,6 +833,23 @@ export function AppearanceSettings() {
           </label>
         </SettingsItem>
         <SettingsItem
+          label={t("appearanceComposerPromptRailTitle")}
+          description={t("appearanceComposerPromptRailDescription")}
+          keywords={["recent", "prompt", "history", "drag", "rail", "composer"]}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={composerPromptRailEnabled}
+              onChange={(event) =>
+                setComposerPromptRailEnabled(event.target.checked)
+              }
+              aria-label={t("appearanceComposerPromptRailTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
           label={t("appearanceSessionRightPaneTitle")}
           description={t("appearanceSessionRightPaneDescription")}
         >
@@ -835,6 +861,23 @@ export function AppearanceSettings() {
                 setSessionRightPaneEnabled(event.target.checked)
               }
               aria-label={t("appearanceSessionRightPaneTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("projectAppWhileComposing")}
+          description={t("appearanceProjectAppComposingDescription")}
+          keywords={["project", "app", "new session", "compose"]}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={projectAppComposingEnabled}
+              onChange={(event) =>
+                setProjectAppComposingEnabled(event.target.checked)
+              }
+              aria-label={t("projectAppWhileComposing")}
             />
             <span className="toggle-slider" />
           </label>
@@ -1899,12 +1942,11 @@ export function AppearanceSettings() {
                   </pre>
                   <p>
                     Inline math:{" "}
-                    <span
+                    {/* KaTeX output from a static settings preview sample. */}
+                    <InnerHtml
+                      as="span"
                       className="output-preview-math"
-                      // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is generated from a static settings preview sample
-                      dangerouslySetInnerHTML={{
-                        __html: outputInlineMathHtml,
-                      }}
+                      trustedHtml={outputInlineMathHtml}
                     />
                   </p>
                   <ul>

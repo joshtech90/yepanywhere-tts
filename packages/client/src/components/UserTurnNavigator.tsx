@@ -703,6 +703,10 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
   // to be under the cursor. The ref lets focusPreview (deps []) short-circuit.
   const notchMenuOpenRef = useRef(false);
   const [previewId, setPreviewId] = useState<string | null>(null);
+  const [dismissedSearchPreview, setDismissedSearchPreview] = useState<{
+    id: string;
+    query: string;
+  } | null>(null);
   const [previewWindowAnchorId, setPreviewWindowAnchorId] = useState<
     string | null
   >(null);
@@ -984,6 +988,9 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
   const handleAnchorClick = useCallback(
     (id: string, targetId = id) => {
       if (searchState && onSearchMatchSelect) {
+        setDismissedSearchPreview({ id, query: searchState.query });
+        setPreviewId(null);
+        setPreviewWindowAnchorId(null);
         onSearchMatchSelect(id, targetId);
         return;
       }
@@ -1089,6 +1096,7 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
   );
   const focusMarkerPreview = useCallback(
     (id: string, event?: ReactPointerEvent<HTMLElement>) => {
+      setDismissedSearchPreview(null);
       if (searchState && event) {
         const previousBand = markerHoverBandRef.current;
         if (
@@ -1151,6 +1159,9 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
 
   const searchActiveId = searchState?.activeId ?? null;
   useEffect(() => {
+    if (!searchState) setDismissedSearchPreview(null);
+  }, [searchState]);
+  useEffect(() => {
     void searchActiveId;
     clearPreview();
   }, [clearPreview, searchActiveId]);
@@ -1169,7 +1180,12 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
   );
 
   const previewLabels = useMemo<UserTurnPreviewLabel[]>(() => {
-    if (!layout) {
+    if (
+      !layout ||
+      (searchState &&
+        dismissedSearchPreview?.id === searchState.activeId &&
+        dismissedSearchPreview.query === searchState.query)
+    ) {
       return [];
     }
 
@@ -1269,7 +1285,13 @@ export const UserTurnNavigator = memo(function UserTurnNavigator({
         pinned: false,
       },
     ];
-  }, [layout, previewId, previewWindowAnchorId, searchState]);
+  }, [
+    dismissedSearchPreview,
+    layout,
+    previewId,
+    previewWindowAnchorId,
+    searchState,
+  ]);
 
   useEffect(() => {
     visiblePreviewIdsRef.current = previewLabels.map((label) => label.id);

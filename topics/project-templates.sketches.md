@@ -317,7 +317,7 @@ keystroke visible within 100 ms) independent of the project list loading.
 | `batch` (stdin/stdout) | none needed; the agent runs it via tools / `!!` | — |
 | `chat-turn`, `state: client` | static bundle via artifact grant | fixed CSP below |
 | `canvas` `ts`/`wasm`, `state: client` | static bundle via artifact grant | fixed CSP below |
-| any shape, `state: server` | vhost row → `name.localhost`, `name.<public root>` | HTTP + SSE only; no WebSocket (501, [gap](../gaps/vhost-websocket-forwarding.md)); row is global operator config |
+| any shape, `state: server` | vhost row → `name.localhost`, `name.<public root>` | HTTP, SSE and [authorized WebSockets](active-content-security.md#app-websocket-access); row is global operator config |
 
 **Wasm confirmed deliverable** on both paths. On the artifact path,
 `getMimeType` maps `.wasm` to `application/wasm`, and `ARTIFACT_CSP` carries

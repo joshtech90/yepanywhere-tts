@@ -68,6 +68,37 @@ describe("AttachmentStagingService", () => {
     expect(await readFile(stored?.path ?? "", "utf-8")).toBe("image bytes");
   });
 
+  it("keeps synced originals through removal and multi-batch queue transfer", async () => {
+    const service = new AttachmentStagingService({ stagingRoot });
+    const a = await completeDraftUpload(service, Buffer.from("first"));
+    const b = await completeDraftUpload(service, Buffer.from("second"));
+    const protectedIds = new Set([a.ref.id, b.ref.id]);
+    service.setDraftProtection((_owner, id) => protectedIds.has(id));
+    expect(await service.deleteDraftAttachment(a.batchId, a.ref.id)).toBe(
+      false,
+    );
+    expect(await service.deleteAttachment(b.ref.id)).toBe(false);
+    const transfer = await service.prepareDraftAttachmentsForQueue({
+      batchId: a.batchId,
+      queueItemId: "shared-queue",
+      refs: [a.ref, b.ref],
+    });
+    expect(transfer.refs).toHaveLength(2);
+    expect(transfer.refs.every((ref) => !protectedIds.has(ref.id))).toBe(true);
+    expect(await service.validateDraftRefs(a.batchId, [a.ref])).toEqual([
+      a.ref,
+    ]);
+    expect(await service.validateDraftRefs(b.batchId, [b.ref])).toEqual([
+      b.ref,
+    ]);
+    await transfer.rollback();
+    expect(await service.validateDraftRefs(a.batchId, [a.ref])).toEqual([
+      a.ref,
+    ]);
+    protectedIds.clear();
+    expect(await service.deleteAttachment(a.ref.id)).toBe(true);
+  });
+
   it("rejects unsafe draft batch ids", async () => {
     const service = new AttachmentStagingService({ stagingRoot });
 

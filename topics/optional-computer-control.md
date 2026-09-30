@@ -28,6 +28,9 @@ byte of every chunk; a write that stores less than it was handed fails the
 download rather than leaving a short archive to verify against the stream. The signed
 manager/catalog verification remains mandatory. Download failure, invalid
 signatures or incompatibility leave the existing installation unchanged.
+Cancellation kills the native extractor and waits for its process and output
+streams to close before deleting staging files. Native management responses
+are read after stdout has closed, including bytes delivered after process exit.
 The installed version is persisted and older release-feed versions are refused.
 A persisted installed version that is not a released `x.y.z` version — settings
 are hand-editable JSON — is ignored with a logged warning and reported as no

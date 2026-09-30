@@ -6,10 +6,12 @@ import type {
 import {
   ALL_PERMISSION_MODES,
   PROJECT_CODE_NAMES_CAPABILITY,
+  SERVER_CAPABILITIES,
   serverHasCapability,
 } from "@yep-anywhere/shared";
 import { useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
+import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { NewSessionForm } from "../components/NewSessionForm";
 import { PageHeader } from "../components/PageHeader";
 import { useDocumentTitle } from "../hooks/useDocumentTitle";
@@ -25,6 +27,7 @@ import { useRecentSessions } from "../hooks/useRecentSessions";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { useToastContext } from "../contexts/ToastContext";
+import { useProjectAppComposing } from "../hooks/useProjectAppComposing";
 
 const RECENT_PROJECT_SESSION_LIMIT = 30;
 const DETACHED_PROJECT_PARAM = "detached";
@@ -49,6 +52,7 @@ function parsePreferredPermissionMode(
 }
 
 export function NewSessionPage() {
+  const basePath = useRemoteBasePath();
   const { t } = useI18n();
   const { showToast } = useToastContext();
   const [incomingShareFiles, setIncomingShareFiles] = useState<readonly File[]>(
@@ -68,6 +72,7 @@ export function NewSessionPage() {
   const requestedDetached =
     !projectId && searchParams.get(DETACHED_PROJECT_PARAM) === "1";
   const { openSidebar, isWideScreen } = useNavigationLayout();
+  const { projectAppComposingEnabled } = useProjectAppComposing();
 
   useIncomingShareFiles(setIncomingShareFiles, {
     onError: () => showToast(t("incomingShareAttachmentUnavailable"), "error"),
@@ -162,11 +167,11 @@ export function NewSessionPage() {
     setSearchParams(nextParams, { replace: true });
   };
 
-  const loading = Boolean(projectId) && projectLoading && !selectedProject;
-  const renderError = !selectedProject ? error : null;
+  // The composer does not wait for the selected project's record: a tab opened
+  // here is for typing, and the form holds the start until the project arrives.
+  const renderError = !selectedProject && !projectLoading ? error : null;
 
-  // Render loading/error states
-  if (loading || renderError) {
+  if (renderError) {
     return (
       <MainContent isWideScreen={isWideScreen}>
         <PageHeader
@@ -176,13 +181,9 @@ export function NewSessionPage() {
         />
         <main className="page-scroll-container">
           <div className="page-content-inner">
-            {loading ? (
-              <div className="loading">{t("newSessionLoading")}</div>
-            ) : (
-              <div className="error">
-                {t("newSessionErrorPrefix")} {renderError?.message}
-              </div>
-            )}
+            <div className="error">
+              {t("newSessionErrorPrefix")} {renderError.message}
+            </div>
           </div>
         </main>
       </MainContent>
@@ -199,6 +200,16 @@ export function NewSessionPage() {
 
       <main className="page-scroll-container">
         <div className="page-content-inner new-session-page-shell">
+          {projectAppComposingEnabled &&
+            projectId &&
+            serverHasCapability(
+              version,
+              SERVER_CAPABILITIES.projectService.name,
+            ) && (
+              <Link to={`${basePath}/projects/${projectId}/app?compose=1`}>
+                {t("projectAppWhileComposing")}
+              </Link>
+            )}
           <NewSessionForm
             incomingShareFiles={incomingShareFiles}
             projectId={projectId}

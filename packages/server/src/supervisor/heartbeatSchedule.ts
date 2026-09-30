@@ -78,6 +78,7 @@ export class HeartbeatSweepScheduler {
   private armedAtMs: number | null = null;
   private pendingArmAtMs: number | null = null;
   private running = false;
+  private runningSweep: Promise<void> | null = null;
   private stopped = false;
   private sweeps = 0;
   private arms = 0;
@@ -117,6 +118,12 @@ export class HeartbeatSweepScheduler {
     this.stopped = true;
     this.disarm();
     this.pendingArmAtMs = null;
+  }
+
+  /** Stop future deadlines and join a sweep already reading its owner's data. */
+  async stopAndDrain(): Promise<void> {
+    this.stop();
+    await this.runningSweep;
   }
 
   getMetrics(): HeartbeatSweepSchedulerMetrics {
@@ -164,6 +171,10 @@ export class HeartbeatSweepScheduler {
   private async runSweep(): Promise<void> {
     if (this.stopped || this.running) return;
     this.running = true;
+    let finished!: () => void;
+    this.runningSweep = new Promise<void>((resolve) => {
+      finished = resolve;
+    });
     let dueAtMs: number | null = null;
     try {
       this.sweeps += 1;
@@ -177,6 +188,8 @@ export class HeartbeatSweepScheduler {
       this.pendingArmAtMs = null;
       const next = earliestDueAt(dueAtMs, pending);
       if (next !== null) this.armAt(next);
+      this.runningSweep = null;
+      finished();
     }
   }
 }

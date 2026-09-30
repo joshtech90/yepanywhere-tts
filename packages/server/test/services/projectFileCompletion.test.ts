@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
+import * as directoryWatcher from "../../src/watcher/SharedDirectoryWatcher.js";
 import { EventBus } from "../../src/watcher/EventBus.js";
 import { getProjectPathIndex } from "../../src/projects/projectPathIndex.js";
 import { ProjectFileCompletion } from "../../src/services/projectFileCompletion.js";
@@ -229,6 +230,16 @@ it("notices checkout through metadata fingerprints without waiting for expiry", 
 });
 
 it("uses existing path-index filesystem observations and activity hints for nested additions", async () => {
+  // Exercise the observation boundary without depending on native watcher
+  // delivery: macOS omitted this event even with a 4s full-suite wait.
+  const observations = new Map<string, () => void>();
+  const watch = directoryWatcher.watchSharedDirectory;
+  const watchSpy = vi
+    .spyOn(directoryWatcher, "watchSharedDirectory")
+    .mockImplementation((path, options, listener) => {
+      observations.set(path, () => listener("rename", "new.txt"));
+      return watch(path, options, listener);
+    });
   const root = await mkdtemp(join(tmpdir(), "ya-completion-fresh-"));
   temporary.push(root);
   const project = join(root, "project");
@@ -242,12 +253,15 @@ it("uses existing path-index filesystem observations and activity hints for nest
     await index.has("nested/old.txt");
     const revision = index.sourceRevision();
     await writeFile(join(project, "nested/new.txt"), "fixture");
-    await vi.waitFor(() => expect(index.sourceRevision()).not.toBe(revision));
+    expect(observations.has(join(project, "nested"))).toBe(true);
+    observations.get(join(project, "nested"))!();
+    expect(index.sourceRevision()).not.toBe(revision);
     expect((await completed(service, project, "new")).entries[0]?.path).toBe(
       "nested/new.txt",
     );
   } finally {
     index.release();
+    watchSpy.mockRestore();
   }
   await writeFile(join(project, "nested/hinted.txt"), "fixture");
   eventBus.emit({

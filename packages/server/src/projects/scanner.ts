@@ -12,6 +12,7 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   DEFAULT_PROVIDER,
+  isClaudeProviderName,
   type ProviderName,
   type UrlProjectId,
 } from "@yep-anywhere/shared";
@@ -48,6 +49,11 @@ export interface ScannerOptions {
   eventBus?: EventBus;
   /** Project snapshot TTL in milliseconds (default: 5000) */
   cacheTtlMs?: number;
+  /**
+   * Claude transcript directories inside session sandboxes, by project id.
+   * Read on every project read, since sandboxes are not in the scanned tree.
+   */
+  getSandboxSessionDirs?: () => ReadonlyMap<string, readonly string[]>;
 }
 
 export interface GetProjectOptions {
@@ -152,6 +158,9 @@ export class ProjectScanner {
   private workstreamFilePath: string | null;
   private projectScanCachePath: string | null;
   private cacheTtlMs: number;
+  private getSandboxSessionDirs:
+    | (() => ReadonlyMap<string, readonly string[]>)
+    | null;
   private cacheRevision = 0;
   private cleanRevision = 0;
   private snapshot: ProjectSnapshot | null = null;
@@ -192,6 +201,7 @@ export class ProjectScanner {
     this.workstreamFilePath = this.workstreamService?.getFilePath?.() ?? null;
     this.cacheTtlMs = Math.max(0, options.cacheTtlMs ?? 5000);
     this.projectScanCachePath = options.projectScanCachePath ?? null;
+    this.getSandboxSessionDirs = options.getSandboxSessionDirs ?? null;
 
     if (options.eventBus) {
       this.unsubscribeEventBus = options.eventBus.subscribe((event) => {
@@ -213,9 +223,22 @@ export class ProjectScanner {
     this.invalidateCache();
   }
 
+  /**
+   * The projects the last scan found, without scanning: empty before the
+   * first scan. For synchronous callers that can tolerate a stale list.
+   */
+  cachedProjects(): readonly Pick<Project, "id" | "path">[] {
+    return this.snapshot?.projects ?? [];
+  }
+
   async listProjects(): Promise<Project[]> {
     const snapshot = await this.getSnapshot();
-    return snapshot.projects.map((project) => this.cloneProject(project));
+    const sandboxDirs = this.sandboxSessionDirs();
+    return Promise.all(
+      snapshot.projects.map((project) =>
+        this.readProject(project, sandboxDirs),
+      ),
+    );
   }
 
   /**
@@ -646,19 +669,92 @@ export class ProjectScanner {
     );
   }
 
-  private cloneProject(project: Project): Project {
+  /**
+   * Sandboxed sessions keep their Claude transcripts in a YA-private provider
+   * root, never in the scanned host tree, and a new one can appear at any
+   * time. So they are joined to every project read rather than to the cached
+   * scan, as further transcript directories of that project.
+   * topics/session-sandboxing.md § Runtime state and scratch space.
+   */
+  private sandboxSessionDirs(): ReadonlyMap<string, readonly string[]> {
+    return this.getSandboxSessionDirs?.() ?? new Map();
+  }
+
+  private mergedSessionDirsFor(
+    project: Project,
+    sandboxDirs: ReadonlyMap<string, readonly string[]>,
+  ): string[] | undefined {
+    const sandbox = isClaudeProviderName(project.provider)
+      ? (sandboxDirs.get(project.id) ?? [])
+      : [];
+    if (!project.mergedSessionDirs && sandbox.length === 0) return undefined;
+    return [
+      ...new Set([
+        ...(project.mergedSessionDirs ?? []),
+        ...sandbox.filter((dir) => dir !== project.sessionDir),
+      ]),
+    ];
+  }
+
+  private cloneProject(
+    project: Project,
+    sandboxDirs = this.sandboxSessionDirs(),
+  ): Project {
     return {
       ...project,
       name: this.displayName(project),
-      mergedSessionDirs: project.mergedSessionDirs
-        ? [...project.mergedSessionDirs]
-        : undefined,
+      mergedSessionDirs: this.mergedSessionDirsFor(project, sandboxDirs),
       sessionCountsByProvider: cloneSessionCountsByProvider(
         project.sessionCountsByProvider,
       ),
       hasCodexSessions: project.hasCodexSessions,
       hasGeminiSessions: project.hasGeminiSessions,
     };
+  }
+
+  /**
+   * A project as read: its sandbox directories joined, and their sessions
+   * counted with its own, so a project whose only sessions ran sandboxed does
+   * not read as empty. Only a project with sandbox directories touches disk.
+   */
+  private async readProject(
+    project: Project,
+    sandboxDirs = this.sandboxSessionDirs(),
+  ): Promise<Project> {
+    const read = this.cloneProject(project, sandboxDirs);
+    const scanned = new Set([
+      project.sessionDir,
+      ...(project.mergedSessionDirs ?? []),
+    ]);
+    for (const dir of read.mergedSessionDirs ?? []) {
+      if (scanned.has(dir)) continue;
+      const info = await this.getSandboxDirInfo(dir);
+      if (!info) continue;
+      addProviderSessionCount(read, "claude", info.sessionCount);
+      read.lastActivity = latestActivity(read.lastActivity, info.lastActivity);
+    }
+    return read;
+  }
+
+  private async getSandboxDirInfo(
+    dir: string,
+  ): Promise<{ sessionCount: number; lastActivity: string } | null> {
+    try {
+      const entries = await readdir(dir, { withFileTypes: true });
+      const dirStat = await stat(dir);
+      return {
+        sessionCount: entries.filter(
+          (entry) =>
+            entry.isFile() &&
+            entry.name.endsWith(".jsonl") &&
+            !entry.name.startsWith("agent-"),
+        ).length,
+        lastActivity: new Date(dirStat.mtimeMs).toISOString(),
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      throw error;
+    }
   }
 
   private handleFileChange(event: FileChangeEvent): void {
@@ -1041,7 +1137,7 @@ export class ProjectScanner {
     if (!project || this.isHiddenProjectPath(project.path)) {
       return null;
     }
-    return this.cloneProject(project);
+    return this.readProject(project);
   }
 
   private isHiddenProjectPath(projectPath: string): boolean {
@@ -1137,13 +1233,10 @@ export class ProjectScanner {
       sessionDir = join(this.projectsDir, encodedPath);
     }
 
-    return {
+    return this.readProject({
       id: resolvedProjectId as UrlProjectId,
       path: projectPath,
-      name: this.displayName({
-        id: resolvedProjectId as UrlProjectId,
-        name: getProjectName(projectPath),
-      }),
+      name: getProjectName(projectPath),
       sessionCount: 0,
       sessionCountsByProvider: { [provider]: 0 },
       sessionDir,
@@ -1151,7 +1244,7 @@ export class ProjectScanner {
       activeExternalCount: 0,
       lastActivity: null,
       provider,
-    };
+    });
   }
 
   /**
@@ -1167,7 +1260,7 @@ export class ProjectScanner {
     const snapshot = await this.getSnapshot();
     const normalizedSuffix = this.normalizeDirSuffix(dirSuffix);
     const project = snapshot.bySessionDirSuffix.get(normalizedSuffix);
-    return project ? this.cloneProject(project) : null;
+    return project ? this.readProject(project) : null;
   }
 
   async dispose(): Promise<void> {

@@ -37,6 +37,7 @@ import {
   codeFenceRootClass,
   useCodeFenceRenderers,
 } from "../../hooks/useCodeFenceRenderers";
+import { useInnerHtml } from "../../hooks/useInnerHtml";
 import { useStreamingMarkdown } from "../../hooks/useStreamingMarkdown";
 import { useI18n } from "../../i18n";
 import { registerMarkdownCopySource } from "../../lib/markdownSelectionCopy";
@@ -101,11 +102,12 @@ const RenderedHtmlIsland = memo(function RenderedHtmlIsland({
     const withGlossary = annotateGlossaryHtml(withProjectPaths, artifact).html;
     return rewriteSessionAppLinksHtml(withGlossary, rewriteHref);
   }, [artifact, html, projectId, projectPathLinks, publicShare, rewriteHref]);
+  const innerHtml = useInnerHtml(renderedHtml);
   return (
     <div
       className={className}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered or local trusted HTML
-      dangerouslySetInnerHTML={{ __html: renderedHtml }}
+      dangerouslySetInnerHTML={innerHtml}
     />
   );
 });

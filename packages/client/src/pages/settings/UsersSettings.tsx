@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
   LimitedUserSummary,
+  PathGrant,
   ProjectAccessLevel,
   UsageReport,
   TemplateCreationGrant,
@@ -11,6 +12,7 @@ import {
   SERVER_CAPABILITIES,
   serverHasCapability,
   templateGrantFor,
+  instructionBlocksError,
 } from "@yep-anywhere/shared";
 import { api } from "../../api/client";
 import { useActingPrincipal } from "../../hooks/useActingPrincipal";
@@ -26,6 +28,15 @@ import { UserUsageTable } from "./UserUsageTable";
 import styles from "./UsersSettings.module.css";
 import { UserTemplateGrant } from "./UserTemplateGrant";
 import { useVersion } from "../../hooks/useVersion";
+import {
+  instructionBlockDrafts,
+  type InstructionBlockDraft,
+} from "./InstructionBlocks";
+import {
+  SharedLimitedUserInstructions,
+  PerUserInstructions,
+} from "./LimitedUserInstructions";
+import { LimitedUserBrowserDefaults } from "./LimitedUserBrowserDefaults";
 
 /**
  * Settings → Users: the superuser's user-management surface.
@@ -42,25 +53,29 @@ const EFFORT_OPTIONS = ["low", "medium", "high", "xhigh", "max"] as const;
 interface DraftState {
   username: string;
   password: string;
+  enabled: boolean;
   access: Record<string, ProjectAccessLevel>;
   joinStaleOffsetMinutes: number;
   provider: string;
   model: string;
   effort: string;
   projectRoot: string;
+  allowNoProjectSessions: boolean;
+  allowPublicApps: boolean;
+  allowPrivateAppLinks: boolean;
   templateCreation?: TemplateCreationGrant;
+  instructionBlocks: InstructionBlockDraft[];
+  pathGrants: PathGrant[];
 }
 
-const EMPTY_DRAFT: DraftState = {
-  username: "",
-  password: "",
-  access: {},
-  joinStaleOffsetMinutes: 0,
-  provider: "",
-  model: "",
-  effort: "",
-  projectRoot: "",
-};
+/** Which optional user fields this server stores; others are never sent. */
+interface EditorSupport {
+  templates: boolean;
+  instructions: boolean;
+  pathGrants: boolean;
+  noProject: boolean;
+  appLinks: boolean;
+}
 
 function draftFromUser(user: LimitedUserSummary): DraftState {
   const access: Record<string, ProjectAccessLevel> = {};
@@ -70,17 +85,23 @@ function draftFromUser(user: LimitedUserSummary): DraftState {
   return {
     username: user.username,
     password: "",
+    enabled: !user.disabled,
     access,
     joinStaleOffsetMinutes: user.joinStaleOffsetMinutes,
     provider: user.lock.provider ?? "",
     model: user.lock.model ?? "",
     effort: user.lock.effort ?? "",
     projectRoot: user.projectRoot ?? "",
+    allowNoProjectSessions: user.allowNoProjectSessions === true,
+    allowPublicApps: user.allowPublicApps === true,
+    allowPrivateAppLinks: user.allowPrivateAppLinks !== false,
     templateCreation: templateGrantFor(user),
+    instructionBlocks: instructionBlockDrafts(user.instructionBlocks ?? []),
+    pathGrants: structuredClone(user.pathGrants ?? []),
   };
 }
 
-function grantsFromDraft(draft: DraftState, supportsTemplates: boolean) {
+function grantsFromDraft(draft: DraftState, support: EditorSupport) {
   const newSessionProjects: string[] = [];
   const joinProjects: string[] = [];
   const viewProjects: string[] = [];
@@ -101,7 +122,30 @@ function grantsFromDraft(draft: DraftState, supportsTemplates: boolean) {
     },
     // Always sent, so clearing the field revokes the grant.
     projectRoot: draft.projectRoot.trim(),
-    ...(supportsTemplates ? { templateCreation: templateGrantFor(draft) } : {}),
+    ...(support.noProject
+      ? { allowNoProjectSessions: draft.allowNoProjectSessions }
+      : {}),
+    ...(support.appLinks
+      ? {
+          allowPublicApps: draft.allowPublicApps,
+          allowPrivateAppLinks: draft.allowPrivateAppLinks,
+        }
+      : {}),
+    disabled: !draft.enabled,
+    ...(support.templates ? { templateCreation: templateGrantFor(draft) } : {}),
+    ...(support.instructions
+      ? {
+          instructionBlocks: draft.instructionBlocks.map((block) => block.text),
+        }
+      : {}),
+    ...(support.pathGrants
+      ? {
+          // A row still being filled in is not a grant yet.
+          pathGrants: draft.pathGrants
+            .map((grant) => ({ ...grant, path: grant.path.trim() }))
+            .filter((grant) => grant.path),
+        }
+      : {}),
   };
 }
 
@@ -113,7 +157,8 @@ function lockSummary(user: LimitedUserSummary): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-type EditorTarget = { kind: "create" } | { kind: "edit"; username: string };
+/** A username being edited, a new user being named, or nothing open. */
+type Selection = { kind: "create" } | { kind: "edit"; username: string };
 
 export function UsersSettings() {
   const { t } = useI18n();
@@ -123,9 +168,38 @@ export function UsersSettings() {
     SERVER_CAPABILITIES.limitedUserProjectTemplates.name,
   );
   useSettingsPaneTitle(t("settingsUsersTitle"));
+  const supportsInstructions = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.limitedUserInstructions.name,
+  );
+  const supportsBrowserDefaults = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.limitedUserBrowserDefaults.name,
+  );
+  const supportsPathGrants = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.limitedUserPathGrants.name,
+  );
+  const support = useMemo<EditorSupport>(
+    () => ({
+      templates: supportsTemplates,
+      instructions: supportsInstructions,
+      pathGrants: supportsPathGrants,
+      noProject: serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.limitedUserNoProjectSessions.name,
+      ),
+      appLinks: serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.projectAppAddressLinks.name,
+      ),
+    }),
+    [supportsTemplates, supportsInstructions, supportsPathGrants, version],
+  );
   const {
     settings,
     updateSetting,
+    updateSettings,
     isLoading: settingsLoading,
   } = useServerSettings();
   const {
@@ -136,8 +210,7 @@ export function UsersSettings() {
 
   const [users, setUsers] = useState<LimitedUserSummary[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [editor, setEditor] = useState<EditorTarget | null>(null);
-  const [draft, setDraft] = useState<DraftState>(EMPTY_DRAFT);
+  const [selection, setSelection] = useState<Selection | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [usage, setUsage] = useState<UsageReport | null>(null);
@@ -186,31 +259,20 @@ export function UsersSettings() {
 
   const enabled = settings?.limitedUsersEnabled === true;
 
-  const submit = async () => {
+  const create = async (username: string, password: string) => {
     setBusy(true);
     setError(null);
     try {
-      const grants = grantsFromDraft(draft, supportsTemplates);
-      if (editor?.kind === "edit") {
-        await api.updateUser(editor.username, {
-          ...grants,
-          ...(draft.password ? { password: draft.password } : {}),
-        });
-      } else {
-        await api.createUser({
-          username: draft.username,
-          password: draft.password,
-          ...grants,
-        });
-      }
-      setDraft(EMPTY_DRAFT);
-      setEditor(null);
+      // The server supplies every grant's default; they are set, and saved,
+      // in the editor that opens next.
+      const { user } = await api.createUser({ username, password });
       await loadUsers();
       // Creating the first user turns the feature on server-side; re-read so
       // this pane and the acting principal agree without a reload.
       await refreshPrincipal();
-    } catch (submitError) {
-      setError((submitError as Error).message);
+      setSelection({ kind: "edit", username: user.username });
+    } catch (createError) {
+      setError((createError as Error).message);
     } finally {
       setBusy(false);
     }
@@ -222,8 +284,7 @@ export function UsersSettings() {
     setError(null);
     try {
       await api.deleteUser(username);
-      setEditor(null);
-      setDraft(EMPTY_DRAFT);
+      setSelection(null);
       await loadUsers();
     } catch (deleteError) {
       setError((deleteError as Error).message);
@@ -270,121 +331,152 @@ export function UsersSettings() {
     return <LimitedUserView onLogout={() => void logout()} busy={busy} />;
   }
 
+  const editing =
+    selection?.kind === "edit"
+      ? users.find((user) => user.username === selection.username)
+      : undefined;
+
   return (
     <SettingsSection
       title={t("settingsUsersTitle")}
-      description={t("settingsUsersDescription")}
+      description={
+        supportsInstructions ? undefined : t("settingsUsersDescription")
+      }
       keywords={["limited users", "accounts", "guest", "sandbox", "grants"]}
     >
       {/* First, because it is the decision the rest of the pane depends on.
           Turning it off keeps the records and refuses their logins. */}
-      <SettingsItem
-        label={t("advancedLimitedUsersTitle")}
-        description={t("advancedLimitedUsersDescription")}
-        keywords={["limited users", "accounts", "enable", "disable"]}
-      >
-        <label className="toggle-switch">
-          <input
-            type="checkbox"
-            checked={enabled}
-            disabled={settingsLoading || busy}
-            onChange={(event) =>
-              void updateSetting("limitedUsersEnabled", event.target.checked)
-            }
-          />
-          <span className="toggle-slider" />
-        </label>
-      </SettingsItem>
+      {selection === null && (
+        <details
+          className={styles.account}
+          open={!supportsInstructions || !enabled}
+        >
+          <summary>{t("usersAccessSettings")}</summary>
+          <SettingsItem
+            label={t("advancedLimitedUsersTitle")}
+            description={t("advancedLimitedUsersDescription")}
+            keywords={["limited users", "accounts", "enable", "disable"]}
+          >
+            <label className="toggle-switch">
+              <input
+                type="checkbox"
+                checked={enabled}
+                disabled={settingsLoading || busy}
+                onChange={(event) =>
+                  void updateSetting(
+                    "limitedUsersEnabled",
+                    event.target.checked,
+                  )
+                }
+              />
+              <span className="toggle-slider" />
+            </label>
+          </SettingsItem>
+          <p className="settings-hint">{t("usersTrustWarning")}</p>
+        </details>
+      )}
 
       <div className="settings-group">
-        <p className="settings-hint">{t("usersTrustWarning")}</p>
-        {loaded && users.length === 0 ? (
+        {loaded && users.length === 0 && (
           <p className="settings-hint">{t("usersEmpty")}</p>
-        ) : (
-          <ul className={styles.userList}>
-            {users.map((user) => {
-              const lock = lockSummary(user);
-              return (
-                <li key={user.username} className={styles.userRow}>
-                  <div className={styles.userInfo}>
-                    <strong className={styles.userName}>{user.username}</strong>
-                    <span className={styles.userMeta}>
-                      {t("usersGrantSummary", {
-                        newSession: user.newSessionProjects.length,
-                        join: user.joinProjects.length,
-                        view: user.viewProjects.length,
-                      })}
-                      {lock ? ` · ${lock}` : ""}
-                    </span>
-                  </div>
-                  <div className={styles.userActions}>
-                    <button
-                      type="button"
-                      className="settings-button"
-                      disabled={busy}
-                      onClick={() => void switchTo(user.username)}
-                    >
-                      {t("usersActAs")}
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-button"
-                      disabled={busy}
-                      onClick={() => {
-                        setEditor({ kind: "edit", username: user.username });
-                        setDraft(draftFromUser(user));
-                      }}
-                    >
-                      {t("usersEdit")}
-                    </button>
-                    <button
-                      type="button"
-                      className="settings-button settings-button-danger-subtle"
-                      disabled={busy}
-                      onClick={() => void remove(user.username)}
-                    >
-                      {t("usersDelete")}
-                    </button>
-                  </div>
-                </li>
-              );
-            })}
-          </ul>
         )}
-
-        {editor === null && (
+        <div
+          className={styles.userBar}
+          role="group"
+          aria-label={t("usersListLabel")}
+        >
+          {users.map((user) => {
+            const selected =
+              selection?.kind === "edit" &&
+              selection.username === user.username;
+            return (
+              <button
+                key={user.username}
+                type="button"
+                className={`settings-button ${styles.userChip} ${user.disabled ? styles.userChipDisabled : ""}`}
+                aria-pressed={selected}
+                title={user.disabled ? t("usersDisabledTitle") : undefined}
+                onClick={() =>
+                  setSelection(
+                    selected ? null : { kind: "edit", username: user.username },
+                  )
+                }
+              >
+                {user.username}
+              </button>
+            );
+          })}
           <button
             type="button"
-            className="settings-button"
+            className={`settings-button ${styles.userChip}`}
+            aria-pressed={selection?.kind === "create"}
             disabled={busy}
-            onClick={() => {
-              setEditor({ kind: "create" });
-              setDraft(EMPTY_DRAFT);
-            }}
+            onClick={() =>
+              setSelection(
+                selection?.kind === "create" ? null : { kind: "create" },
+              )
+            }
           >
-            {t("usersAddUser")}
+            + {t("usersAddUser")}
           </button>
-        )}
+        </div>
       </div>
 
-      {editor !== null && (
-        <UserEditor
-          supportsTemplates={supportsTemplates}
-          editing={editor.kind === "edit" ? editor.username : null}
-          draft={draft}
-          error={error}
+      {selection?.kind === "create" && (
+        <CreateUserForm
           busy={busy}
-          onDraftChange={setDraft}
-          onSubmit={() => void submit()}
+          error={error}
+          onCreate={(username, password) => void create(username, password)}
           onCancel={() => {
-            setEditor(null);
-            setDraft(EMPTY_DRAFT);
+            setSelection(null);
             setError(null);
           }}
         />
       )}
 
-      {error && editor === null && <p className="form-error">{error}</p>}
+      {editing && (
+        <UserEditor
+          key={editing.username}
+          user={editing}
+          users={users}
+          support={support}
+          sharedInstructions={settings?.limitedUserInstructions}
+          busy={busy}
+          onSaved={(saved) =>
+            setUsers((current) =>
+              current.map((user) =>
+                user.username === saved.username ? saved : user,
+              ),
+            )
+          }
+          onActAs={() => void switchTo(editing.username)}
+          onDelete={() => void remove(editing.username)}
+        />
+      )}
+
+      {supportsInstructions &&
+        selection === null &&
+        !settingsLoading &&
+        settings && (
+          <div className="settings-group">
+            <SharedLimitedUserInstructions
+              value={settings.limitedUserInstructions}
+              onSave={(limitedUserInstructions) =>
+                updateSettings({ limitedUserInstructions })
+              }
+            />
+          </div>
+        )}
+
+      {supportsBrowserDefaults && selection === null && (
+        <div className="settings-group">
+          <LimitedUserBrowserDefaults />
+        </div>
+      )}
+
+      {error && selection?.kind !== "create" && (
+        <p className="form-error">{error}</p>
+      )}
 
       {usage && <UserUsageTable report={usage} />}
     </SettingsSection>
@@ -460,7 +552,8 @@ function ProjectRootField({
 }: {
   projectRoot: string;
   username: string;
-  onChange: (projectRoot: string) => void;
+  /** `commit` is true for a whole-value choice, false while typing. */
+  onChange: (projectRoot: string, commit: boolean) => void;
 }) {
   const { t } = useI18n();
   const root = projectRoot.trim().replace(/\/+$/, "");
@@ -483,13 +576,13 @@ function ProjectRootField({
             placeholder={t("usersProjectRootPlaceholder")}
             autoComplete="off"
             spellCheck={false}
-            onChange={(event) => onChange(event.target.value)}
+            onChange={(event) => onChange(event.target.value, false)}
           />
           {suggestion && (
             <button
               type="button"
               className="settings-button"
-              onClick={() => onChange(suggestion)}
+              onClick={() => onChange(suggestion, true)}
             >
               {t("usersProjectRootUseSuggestion", { path: suggestion })}
             </button>
@@ -501,102 +594,63 @@ function ProjectRootField({
   );
 }
 
-interface UserEditorProps {
-  supportsTemplates: boolean;
-  /** The username being edited, or null when creating. */
-  editing: string | null;
-  draft: DraftState;
-  error: string | null;
-  busy: boolean;
-  onDraftChange: (draft: DraftState) => void;
-  onSubmit: () => void;
-  onCancel: () => void;
-}
-
-function UserEditor({
-  supportsTemplates,
-  editing,
-  draft,
-  error,
-  busy,
-  onDraftChange,
-  onSubmit,
-  onCancel,
-}: UserEditorProps) {
+/**
+ * Per-project access selects. A server can hold many projects, and most
+ * users are granted a few, so only granted rows show until the superuser
+ * expands the rest. A row stays shown for the rest of this edit once it was
+ * granted or touched, so revoking one does not make it vanish mid-edit.
+ */
+function ProjectAccessList({
+  projects,
+  access,
+  onChange,
+}: {
+  projects: readonly { id: string; name: string; path: string }[];
+  access: Record<string, ProjectAccessLevel>;
+  onChange: (access: Record<string, ProjectAccessLevel>) => void;
+}) {
   const { t } = useI18n();
-  const { projects } = useProjects();
-  const { providers } = useProviders();
+  const [expanded, setExpanded] = useState(false);
+  const [pinned, setPinned] = useState<ReadonlySet<string>>(
+    () =>
+      new Set(
+        Object.entries(access)
+          .filter(([, level]) => level !== "none")
+          .map(([id]) => id),
+      ),
+  );
 
-  const models = useMemo(() => {
-    const provider = providers.find((entry) => entry.name === draft.provider);
-    return provider?.models ?? [];
-  }, [providers, draft.provider]);
+  if (projects.length === 0) {
+    return <p className="settings-hint">{t("usersNoProjects")}</p>;
+  }
+
+  const shown = expanded
+    ? projects
+    : projects.filter((project) => pinned.has(project.id));
+  const hiddenCount = projects.length - shown.length;
 
   return (
-    <div className={`settings-group ${styles.editor}`}>
-      <h3 className={styles.editorTitle}>
-        {editing
-          ? t("usersEditUserTitle", { username: editing })
-          : t("usersAddUser")}
-      </h3>
-
-      {!editing && (
-        <label className={styles.field}>
-          <span>{t("usersUsernameLabel")}</span>
-          <input
-            className={styles.input}
-            value={draft.username}
-            placeholder={t("usersUsernamePlaceholder")}
-            autoComplete="off"
-            onChange={(event) =>
-              onDraftChange({ ...draft, username: event.target.value })
-            }
-          />
-        </label>
-      )}
-      <label className={styles.field}>
-        <span>
-          {editing ? t("usersNewPasswordLabel") : t("usersPasswordLabel")}
-        </span>
-        <input
-          className={styles.input}
-          type="password"
-          value={draft.password}
-          placeholder={
-            editing
-              ? t("usersNewPasswordPlaceholder")
-              : t("usersPasswordPlaceholder")
-          }
-          autoComplete="new-password"
-          onChange={(event) =>
-            onDraftChange({ ...draft, password: event.target.value })
-          }
-        />
-      </label>
-
-      <p className={styles.subhead}>{t("usersProjectsHeading")}</p>
-      {projects.length === 0 ? (
-        <p className="settings-hint">{t("usersNoProjects")}</p>
+    <>
+      {shown.length === 0 ? (
+        <p className="settings-hint">{t("usersNoProjectAccess")}</p>
       ) : (
         <ul className={styles.projectList}>
-          {projects.map((project) => (
+          {shown.map((project) => (
             <li key={project.id} className={styles.projectRow}>
               <span className={styles.projectName} title={project.path}>
                 {project.name}
               </span>
               <select
                 className={styles.select}
-                value={draft.access[project.id] ?? "none"}
+                value={access[project.id] ?? "none"}
                 aria-label={project.name}
-                onChange={(event) =>
-                  onDraftChange({
-                    ...draft,
-                    access: {
-                      ...draft.access,
-                      [project.id]: event.target.value as ProjectAccessLevel,
-                    },
-                  })
-                }
+                onChange={(event) => {
+                  setPinned((prev) => new Set(prev).add(project.id));
+                  onChange({
+                    ...access,
+                    [project.id]: event.target.value as ProjectAccessLevel,
+                  });
+                }}
               >
                 <option value="none">{t("usersAccessNone")}</option>
                 <option value="view">{t("usersAccessView")}</option>
@@ -609,110 +663,190 @@ function UserEditor({
           ))}
         </ul>
       )}
-
-      <p className={styles.subhead}>{t("usersProjectRootHeading")}</p>
-      <ProjectRootField
-        projectRoot={draft.projectRoot}
-        username={editing ?? draft.username.trim()}
-        onChange={(projectRoot) => onDraftChange({ ...draft, projectRoot })}
-      />
-      {supportsTemplates && (
-        <UserTemplateGrant
-          value={templateGrantFor(draft)}
-          onChange={(templateCreation) =>
-            onDraftChange({ ...draft, templateCreation })
-          }
-        />
+      {(expanded || hiddenCount > 0) && (
+        <button
+          type="button"
+          className={`settings-button ${styles.projectExpand}`}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {expanded
+            ? t("usersProjectsHideNoAccess")
+            : t("usersProjectsShowNoAccess", { count: hiddenCount })}
+        </button>
       )}
+    </>
+  );
+}
 
+/**
+ * Directory grants: one access level for every project at or beneath a path,
+ * including projects created there later. A user's project directory is the
+ * common choice, so it can be picked by username rather than typed.
+ */
+function DirectoryAccessList({
+  grants,
+  users,
+  onChange,
+}: {
+  grants: PathGrant[];
+  users: readonly LimitedUserSummary[];
+  /** `commit` is true for a whole-value choice, false while typing. */
+  onChange: (grants: PathGrant[], commit: boolean) => void;
+}) {
+  const { t } = useI18n();
+  const roots = users.filter((user) => user.projectRoot);
+  const update = (index: number, grant: PathGrant, commit: boolean) =>
+    onChange(
+      grants.map((existing, i) => (i === index ? grant : existing)),
+      commit,
+    );
+  return (
+    <>
+      <p className="settings-hint">{t("usersDirectoriesHint")}</p>
+      {grants.length > 0 && (
+        <ul className={styles.projectList}>
+          {grants.map((grant, index) => (
+            // Rows have no identity beyond their position while edited.
+            <li key={index} className={styles.directoryRow}>
+              <input
+                className={styles.input}
+                value={grant.path}
+                placeholder={t("usersDirectoryPlaceholder")}
+                aria-label={t("usersDirectoryPath")}
+                autoComplete="off"
+                spellCheck={false}
+                onChange={(event) =>
+                  update(index, { ...grant, path: event.target.value }, false)
+                }
+              />
+              <select
+                className={styles.select}
+                value={grant.level}
+                aria-label={t("usersDirectoryLevel", { path: grant.path })}
+                onChange={(event) =>
+                  update(
+                    index,
+                    {
+                      ...grant,
+                      level: event.target.value as PathGrant["level"],
+                    },
+                    true,
+                  )
+                }
+              >
+                <option value="view">{t("usersAccessView")}</option>
+                <option value="join">{t("usersAccessJoin")}</option>
+                <option value="new-session">
+                  {t("usersAccessNewSession")}
+                </option>
+              </select>
+              <button
+                type="button"
+                className="settings-button"
+                aria-label={t("usersDirectoryRemove", { path: grant.path })}
+                onClick={() =>
+                  onChange(
+                    grants.filter((_, i) => i !== index),
+                    true,
+                  )
+                }
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <span className={styles.inputRow}>
+        <button
+          type="button"
+          className="settings-button"
+          onClick={() =>
+            onChange([...grants, { path: "", level: "view" }], false)
+          }
+        >
+          {t("usersDirectoryAdd")}
+        </button>
+        {roots.length > 0 && (
+          <select
+            className={styles.select}
+            value=""
+            aria-label={t("usersDirectoryFromUser")}
+            onChange={(event) => {
+              if (!event.target.value) return;
+              onChange(
+                [...grants, { path: event.target.value, level: "view" }],
+                true,
+              );
+            }}
+          >
+            <option value="">{t("usersDirectoryFromUser")}</option>
+            {roots.map((user) => (
+              <option key={user.username} value={user.projectRoot}>
+                {user.username} — {user.projectRoot}
+              </option>
+            ))}
+          </select>
+        )}
+      </span>
+    </>
+  );
+}
+
+/** Naming a new account; its grants are edited, and saved, once it exists. */
+function CreateUserForm({
+  busy,
+  error,
+  onCreate,
+  onCancel,
+}: {
+  busy: boolean;
+  error: string | null;
+  onCreate: (username: string, password: string) => void;
+  onCancel: () => void;
+}) {
+  const { t } = useI18n();
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  return (
+    <form
+      className={`settings-group ${styles.editor}`}
+      onSubmit={(event) => {
+        event.preventDefault();
+        onCreate(username.trim(), password);
+      }}
+    >
+      <h3 className={styles.editorTitle}>{t("usersAddUser")}</h3>
       <label className={styles.field}>
-        <span>{t("usersJoinOffsetLabel")}</span>
+        <span>{t("usersUsernameLabel")}</span>
         <input
           className={styles.input}
-          type="number"
-          min={JOIN_STALE_OFFSET_MIN_MINUTES}
-          max={JOIN_STALE_OFFSET_MAX_MINUTES}
-          value={draft.joinStaleOffsetMinutes}
-          onChange={(event) =>
-            onDraftChange({
-              ...draft,
-              joinStaleOffsetMinutes: Number(event.target.value),
-            })
-          }
+          value={username}
+          placeholder={t("usersUsernamePlaceholder")}
+          autoComplete="off"
+          onChange={(event) => setUsername(event.target.value)}
         />
       </label>
-      <p className="settings-hint">{t("usersJoinOffsetHint")}</p>
-
-      <p className={styles.subhead}>{t("usersLockHeading")}</p>
-      <p className="settings-hint">{t("usersLockHint")}</p>
-      <div className={styles.lockRow}>
-        <label className={styles.field}>
-          <span>{t("usersLockProvider")}</span>
-          <select
-            className={styles.select}
-            value={draft.provider}
-            onChange={(event) =>
-              onDraftChange({
-                ...draft,
-                provider: event.target.value,
-                model: "",
-              })
-            }
-          >
-            <option value="">{t("usersLockUnset")}</option>
-            {providers.map((provider) => (
-              <option key={provider.name} value={provider.name}>
-                {provider.displayName}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={styles.field}>
-          <span>{t("usersLockModel")}</span>
-          <select
-            className={styles.select}
-            value={draft.model}
-            disabled={!draft.provider}
-            onChange={(event) =>
-              onDraftChange({ ...draft, model: event.target.value })
-            }
-          >
-            <option value="">{t("usersLockUnset")}</option>
-            {models.map((model) => (
-              <option key={model.id} value={model.id}>
-                {model.name}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={styles.field}>
-          <span>{t("usersLockEffort")}</span>
-          <select
-            className={styles.select}
-            value={draft.effort}
-            onChange={(event) =>
-              onDraftChange({ ...draft, effort: event.target.value })
-            }
-          >
-            <option value="">{t("usersLockUnset")}</option>
-            {EFFORT_OPTIONS.map((effort) => (
-              <option key={effort} value={effort}>
-                {effort}
-              </option>
-            ))}
-          </select>
-        </label>
-      </div>
-
+      <label className={styles.field}>
+        <span>{t("usersPasswordLabel")}</span>
+        <input
+          className={styles.input}
+          type="password"
+          value={password}
+          placeholder={t("usersPasswordPlaceholder")}
+          autoComplete="new-password"
+          onChange={(event) => setPassword(event.target.value)}
+        />
+      </label>
       {error && <p className="form-error">{error}</p>}
       <div className={styles.editorActions}>
         <button
-          type="button"
+          type="submit"
           className="settings-button settings-button-primary"
           disabled={busy}
-          onClick={onSubmit}
         >
-          {editing ? t("usersSaveUser") : t("usersCreateUser")}
+          {t("usersCreateUser")}
         </button>
         <button
           type="button"
@@ -723,6 +857,386 @@ function UserEditor({
           {t("usersCancel")}
         </button>
       </div>
+    </form>
+  );
+}
+
+interface UserEditorProps {
+  user: LimitedUserSummary;
+  /** Every user, whose project directories a directory grant may name. */
+  users: readonly LimitedUserSummary[];
+  support: EditorSupport;
+  sharedInstructions:
+    | import("@yep-anywhere/shared").LimitedUserInstructions
+    | undefined;
+  busy: boolean;
+  onSaved: (user: LimitedUserSummary) => void;
+  onActAs: () => void;
+  onDelete: () => void;
+}
+
+type SaveStatus = "idle" | "saving" | "saved" | "error";
+
+/**
+ * One user's settings, saved as they are made: a choice (select, checkbox,
+ * add/remove/move) saves at once, typed text when its field loses focus, and
+ * anything pending when the editor closes. There is no Save button to miss
+ * beneath the long sections above it.
+ */
+function UserEditor({
+  user,
+  users,
+  support,
+  sharedInstructions,
+  busy,
+  onSaved,
+  onActAs,
+  onDelete,
+}: UserEditorProps) {
+  const { templates: supportsTemplates, instructions: supportsInstructions } =
+    support;
+  const { t } = useI18n();
+  const { projects } = useProjects();
+  const { providers } = useProviders();
+  const [draft, setDraft] = useState(() => draftFromUser(user));
+  const [status, setStatus] = useState<SaveStatus>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  // What the server holds, so an unchanged blur sends nothing.
+  const savedKey = useRef<string | null>(
+    JSON.stringify(grantsFromDraft(draftFromUser(user), support)),
+  );
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const onSavedRef = useRef(onSaved);
+  onSavedRef.current = onSaved;
+
+  const persist = useCallback(
+    (next: DraftState) => {
+      const grants = grantsFromDraft(next, support);
+      const key = JSON.stringify(grants);
+      const password = next.password;
+      if (key === savedKey.current && !password) return;
+      if (supportsInstructions) {
+        const invalid = instructionBlocksError(grants.instructionBlocks);
+        if (invalid) {
+          setSaveError(invalid);
+          setStatus("error");
+          return;
+        }
+      }
+      // Claimed now, so a blur racing this save does not send it twice.
+      savedKey.current = key;
+      queue.current = queue.current.then(async () => {
+        setStatus("saving");
+        try {
+          const { user: saved } = await api.updateUser(user.username, {
+            ...grants,
+            ...(password ? { password } : {}),
+          });
+          if (password)
+            setDraft((current) =>
+              current.password === password
+                ? { ...current, password: "" }
+                : current,
+            );
+          setSaveError(null);
+          setStatus("saved");
+          onSavedRef.current(saved);
+        } catch (error) {
+          // Forget the claim so the next blur or choice retries it.
+          if (savedKey.current === key) savedKey.current = null;
+          setSaveError((error as Error).message);
+          setStatus("error");
+        }
+      });
+    },
+    [support, supportsInstructions, user.username],
+  );
+  const persistRef = useRef(persist);
+  persistRef.current = persist;
+  // Closing the editor (another user, the bar, leaving Settings) keeps edits.
+  useEffect(() => () => persistRef.current(draftRef.current), []);
+
+  const change = (next: DraftState, commit: boolean) => {
+    setDraft(next);
+    if (commit) persist(next);
+  };
+
+  const models = useMemo(() => {
+    const provider = providers.find((entry) => entry.name === draft.provider);
+    return provider?.models ?? [];
+  }, [providers, draft.provider]);
+  const lock = lockSummary(user);
+
+  return (
+    <div
+      className={`settings-group ${styles.editor}`}
+      onBlur={() => persist(draftRef.current)}
+      role="group"
+      aria-label={t("usersEditUserTitle", { username: user.username })}
+    >
+      <div className={styles.editorHeader}>
+        <div className={styles.editorHeading}>
+          <h3 className={styles.editorTitle}>
+            {t("usersEditUserTitle", { username: user.username })}
+          </h3>
+          <span className={styles.userMeta}>
+            {t("usersGrantSummary", {
+              newSession: user.newSessionProjects.length,
+              join: user.joinProjects.length,
+              view: user.viewProjects.length,
+            })}
+            {lock ? ` · ${lock}` : ""}
+            {status === "saving" && ` · ${t("usersAutosaveSaving")}`}
+            {status === "saved" && ` · ${t("usersAutosaveSaved")}`}
+          </span>
+        </div>
+        <div className={styles.userActions}>
+          <label className={styles.enabledToggle}>
+            <input
+              type="checkbox"
+              checked={draft.enabled}
+              onChange={(event) =>
+                change({ ...draft, enabled: event.target.checked }, true)
+              }
+            />
+            {t("usersEnabledLabel")}
+          </label>
+          <button
+            type="button"
+            className="settings-button"
+            disabled={busy || !draft.enabled}
+            onClick={onActAs}
+          >
+            {t("usersActAs")}
+          </button>
+          <button
+            type="button"
+            className="settings-button settings-button-danger-subtle"
+            disabled={busy}
+            onClick={onDelete}
+          >
+            {t("usersDelete")}
+          </button>
+        </div>
+      </div>
+      {saveError && (
+        <p role="alert" className="form-error">
+          {saveError}
+        </p>
+      )}
+
+      <details className={styles.account} open={!supportsInstructions}>
+        <summary>{t("usersAccountAndAccess")}</summary>
+        <div className={styles.accountFields}>
+          <label className={styles.field}>
+            <span>{t("usersNewPasswordLabel")}</span>
+            <input
+              className={styles.input}
+              type="password"
+              value={draft.password}
+              placeholder={t("usersNewPasswordPlaceholder")}
+              autoComplete="new-password"
+              onChange={(event) =>
+                change({ ...draft, password: event.target.value }, false)
+              }
+            />
+          </label>
+
+          <p className={styles.subhead}>{t("usersProjectRootHeading")}</p>
+          {support.noProject && (
+            <div>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={draft.allowNoProjectSessions}
+                  onChange={(event) =>
+                    change(
+                      {
+                        ...draft,
+                        allowNoProjectSessions: event.target.checked,
+                      },
+                      true,
+                    )
+                  }
+                />{" "}
+                {t("usersAllowNoProject")}
+              </label>
+              <p className="settings-hint">{t("usersAllowNoProjectHint")}</p>
+            </div>
+          )}
+          {support.appLinks && (
+            <div>
+              <label className={styles.field}>
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={draft.allowPublicApps}
+                    onChange={(event) =>
+                      change(
+                        { ...draft, allowPublicApps: event.target.checked },
+                        true,
+                      )
+                    }
+                  />{" "}
+                  {t("usersAllowPublicApps")}
+                </span>
+              </label>
+              <label className={styles.field}>
+                <span>
+                  <input
+                    type="checkbox"
+                    checked={draft.allowPrivateAppLinks}
+                    onChange={(event) =>
+                      change(
+                        {
+                          ...draft,
+                          allowPrivateAppLinks: event.target.checked,
+                        },
+                        true,
+                      )
+                    }
+                  />{" "}
+                  {t("usersAllowPrivateAppLinks")}
+                </span>
+              </label>
+            </div>
+          )}
+          <ProjectRootField
+            projectRoot={draft.projectRoot}
+            username={user.username}
+            onChange={(projectRoot, commit) =>
+              change({ ...draft, projectRoot }, commit)
+            }
+          />
+          {supportsTemplates && (
+            <UserTemplateGrant
+              value={templateGrantFor(draft)}
+              onChange={(templateCreation) =>
+                change({ ...draft, templateCreation }, true)
+              }
+            />
+          )}
+
+          <p className={styles.subhead}>{t("usersLockHeading")}</p>
+          <p className="settings-hint">{t("usersLockHint")}</p>
+          <div className={styles.lockRow}>
+            <label className={styles.field}>
+              <span>{t("usersLockProvider")}</span>
+              <select
+                className={styles.select}
+                value={draft.provider}
+                onChange={(event) =>
+                  change(
+                    { ...draft, provider: event.target.value, model: "" },
+                    true,
+                  )
+                }
+              >
+                <option value="">{t("usersLockUnset")}</option>
+                {providers.map((provider) => (
+                  <option key={provider.name} value={provider.name}>
+                    {provider.displayName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.field}>
+              <span>{t("usersLockModel")}</span>
+              <select
+                className={styles.select}
+                value={draft.model}
+                disabled={!draft.provider}
+                onChange={(event) =>
+                  change({ ...draft, model: event.target.value }, true)
+                }
+              >
+                <option value="">{t("usersLockUnset")}</option>
+                {models.map((model) => (
+                  <option key={model.id} value={model.id}>
+                    {model.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className={styles.field}>
+              <span>{t("usersLockEffort")}</span>
+              <select
+                className={styles.select}
+                value={draft.effort}
+                onChange={(event) =>
+                  change({ ...draft, effort: event.target.value }, true)
+                }
+              >
+                <option value="">{t("usersLockUnset")}</option>
+                {EFFORT_OPTIONS.map((effort) => (
+                  <option key={effort} value={effort}>
+                    {effort}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          <p className={styles.subhead}>{t("usersProjectsHeading")}</p>
+          <ProjectAccessList
+            projects={projects}
+            access={draft.access}
+            onChange={(access) => change({ ...draft, access }, true)}
+          />
+
+          {support.pathGrants && (
+            <>
+              <p className={styles.subhead}>{t("usersDirectoriesHeading")}</p>
+              <DirectoryAccessList
+                grants={draft.pathGrants}
+                users={users}
+                onChange={(pathGrants, commit) =>
+                  change({ ...draft, pathGrants }, commit)
+                }
+              />
+            </>
+          )}
+
+          <label className={styles.field}>
+            <span>{t("usersJoinOffsetLabel")}</span>
+            <input
+              className={styles.input}
+              type="number"
+              min={JOIN_STALE_OFFSET_MIN_MINUTES}
+              max={JOIN_STALE_OFFSET_MAX_MINUTES}
+              value={draft.joinStaleOffsetMinutes}
+              onChange={(event) =>
+                change(
+                  {
+                    ...draft,
+                    joinStaleOffsetMinutes: Number(event.target.value),
+                  },
+                  false,
+                )
+              }
+            />
+          </label>
+          <p className="settings-hint">{t("usersJoinOffsetHint")}</p>
+        </div>
+      </details>
+      {supportsInstructions && (
+        <PerUserInstructions
+          shared={sharedInstructions}
+          blocks={draft.instructionBlocks}
+          disabled={busy}
+          onChange={(instructionBlocks) =>
+            // Adding, removing or reordering a block is a choice; typing
+            // inside one saves when the field loses focus.
+            change(
+              { ...draft, instructionBlocks },
+              instructionBlocks.map((block) => block.id).join() !==
+                draft.instructionBlocks.map((block) => block.id).join(),
+            )
+          }
+        />
+      )}
     </div>
   );
 }

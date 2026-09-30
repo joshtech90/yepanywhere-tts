@@ -165,6 +165,27 @@ describe("GET /version", () => {
     );
   });
 
+  it("reports a source checkout's commit, date and changed-file time", async () => {
+    const { createVersionRoutes, porcelainPaths } = await importVersion();
+    expect(
+      porcelainPaths(
+        " M packages/a.ts\0R  packages/new.ts\0packages/old.ts\0?? packages/b.ts\0",
+      ),
+    ).toEqual(["packages/a.ts", "packages/new.ts", "packages/b.ts"]);
+    const json = await (
+      await createVersionRoutes({ installId: "test-id" }).request("/")
+    ).json();
+    // Tests run from the workspace source, whose package version is 0.0.1.
+    expect(json.installSource).toBe("source");
+    expect(json.sourceRevision.commit).toMatch(/^[0-9a-f]{40}$/);
+    expect(Number.isNaN(Date.parse(json.sourceRevision.committedAt))).toBe(
+      false,
+    );
+    expect(typeof json.sourceRevision.modified).toBe("boolean");
+    if (json.sourceRevision.modifiedAt)
+      expect(json.sourceRevision.modified).toBe(true);
+  });
+
   it("normalizes only YA semver git describe versions", async () => {
     const { normalizeGitDescribeVersion } = await importVersion();
 

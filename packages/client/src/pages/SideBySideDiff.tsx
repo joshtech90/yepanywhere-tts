@@ -1,5 +1,6 @@
 import type { PatchHunk } from "@yep-anywhere/shared";
 import { memo, type ReactNode, useMemo } from "react";
+import { InnerHtml } from "../components/ui/InnerHtml";
 import {
   buildSideBySideRows,
   parseDiffLineFragments,
@@ -76,15 +77,12 @@ function SideBySideRows({
       {rows.map((row, index) => {
         if (row.type === "header") {
           return (
-            <div
+            <InnerHtml
               key={`h-${index}`}
               className="sbs-header highlighted-diff"
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: server-highlighted diff
-              dangerouslySetInnerHTML={{
-                __html: `<pre class="shiki"><code><span class="line line-hunk">${escapeText(
-                  row.text,
-                )}</span></code></pre>`,
-              }}
+              trustedHtml={`<pre class="shiki"><code><span class="line line-hunk">${escapeText(
+                row.text,
+              )}</span></code></pre>`}
             />
           );
         }
@@ -111,14 +109,12 @@ function SbsCell({ col, html }: { col: "old" | "new"; html: string | null }) {
   if (html === null) {
     return <div className="sbs-cell sbs-empty" />;
   }
+  // Server-highlighted diff.
   return (
-    <div
+    <InnerHtml
       className="sbs-cell highlighted-diff"
       data-diff-col={col}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: server-highlighted diff
-      dangerouslySetInnerHTML={{
-        __html: `<pre class="shiki"><code>${html}</code></pre>`,
-      }}
+      trustedHtml={`<pre class="shiki"><code>${html}</code></pre>`}
     />
   );
 }

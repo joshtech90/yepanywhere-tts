@@ -19,3 +19,11 @@ a trace on recurrence and correlate request failures with document navigation.
 
 Found 2026-09-22 during publication checks for session-stall recovery.
 Contributing-model: 6-Astra
+
+2026-09-30: no longer intermittent on this host. Both the desktop and phone
+file-reference/inline/nested-schema cases fail every run, including a focused
+rerun and upstream `87f933c97`, now with nine console
+`Failed to load resource: … 404 (Not Found)` messages rather than cancelled
+fetches. GitHub CI passed the same commits. Trace which URL returns 404 before
+changing the test.
+Contributing-model: opus-5.5

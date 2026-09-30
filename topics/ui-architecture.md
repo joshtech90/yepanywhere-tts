@@ -121,11 +121,11 @@ preferences or change another open window. A saved minimized mode stays
 minimized, and an explicit `?sidebar=expanded` takes precedence. The reader
 can expand the rail normally; same-window navigation retains its current mode.
 
-A tab opened directly on the new-session page, where the HTML's pre-boot
-composer was shown ([early typing handoff](early-typing-handoff.md#pre-boot-composer)),
-starts minimized the same unsaved way. Its floating toggle restores the saved
-mode rather than the collapsed rail, since the reader never chose to
-minimize; `?sidebar=expanded` still wins.
+A tab opened directly on the new-session page or reloaded there honors the
+saved expanded, collapsed or minimized mode. With no saved choice, it starts
+expanded. The [pre-boot composer](early-typing-handoff.md#pre-boot-composer)
+reserves the same sidebar space so adopting early typing does not require
+hiding navigation; `?sidebar=expanded` still wins.
 
 ## Public Share Example
 

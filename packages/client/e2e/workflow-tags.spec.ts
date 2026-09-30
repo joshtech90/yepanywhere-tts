@@ -12,7 +12,11 @@ import {
 } from "../test-fixtures/workflow";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
-function saveTranscript(sessionId: string, messages: Message[]) {
+async function saveTranscript(
+  baseURL: string,
+  sessionId: string,
+  messages: Message[],
+) {
   const projectPath = join(e2ePaths.tempDir, "mockproject");
   const directory = join(
     e2ePaths.claudeSessionsDir,
@@ -36,6 +40,25 @@ function saveTranscript(sessionId: string, messages: Message[]) {
       )
       .join("\n")}\n`,
   );
+  // This suite tests schema rendering, not provider discovery. Wait for its
+  // owned session to be usable by the composer before opening the browser;
+  // native file discovery and the access resolver update asynchronously.
+  await expect
+    .poll(
+      async () => {
+        const response = await fetch(`${baseURL}/api/drafts/read`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({ slot: { kind: "session", sessionId } }),
+        });
+        return response.status;
+      },
+      { intervals: [25, 50, 100, 250] },
+    )
+    .toBe(200);
   return Buffer.from(projectPath).toString("base64url");
 }
 
@@ -68,7 +91,7 @@ for (const viewport of [
     );
     writeFileSync(reportPath, "# Publication checks\n\nReady to publish.");
     const sessionId = `workflow-lede-${viewport.name}`;
-    const projectId = saveTranscript(sessionId, [
+    const projectId = await saveTranscript(baseURL, sessionId, [
       assistant(
         "publish-lede",
         `${declaration}\n[workflow][start] id=publish-test schema=ya-publish/1\n[publish][prepare] ${progress} Read [the report](<${reportPath}>).`,
@@ -166,7 +189,8 @@ for (const viewport of [
       },
     ]);
     const codeModeFormat = viewport.name === "desktop" ? "command" : "settled";
-    const projectId = saveTranscript(
+    const projectId = await saveTranscript(
+      baseURL,
       sessionId,
       asCodeMode(messages, codeModeFormat),
     );
@@ -315,7 +339,8 @@ for (const viewport of [
     ).toHaveText("Workflow schema · Updated publish");
 
     const inlineSessionId = `workflow-inline-${viewport.name}`;
-    saveTranscript(
+    await saveTranscript(
+      baseURL,
       inlineSessionId,
       asCodeMode(simulatedInline(), codeModeFormat),
     );
@@ -366,7 +391,8 @@ for (const viewport of [
       "matching-lines",
     ] as const) {
       const nestedId = `workflow-nested-${mode}-${viewport.name}`;
-      saveTranscript(
+      await saveTranscript(
+        baseURL,
         nestedId,
         asCodeMode(simulatedNestedTool(mode), codeModeFormat),
       );

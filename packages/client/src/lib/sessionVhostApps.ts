@@ -6,6 +6,11 @@ import type { Message } from "../types";
 import { artifactAudience, isArtifactLink } from "./artifactPreview";
 export type SessionAppConfig = ArtifactViewerStatus & {
   accessTokens?: Record<string, string | null>;
+  /**
+   * Names YA minted for this session's sandboxed loopback servers, by port.
+   * An operator row for the same port always wins.
+   */
+  sessionApps?: Record<number, { name: string; accessToken: string }>;
 };
 
 export interface SessionVhostApp {
@@ -78,7 +83,7 @@ export function sessionVhostApp(
       artifactToken: url.pathname.split("/")[2],
     };
   }
-  if (!config?.vhosts?.length) return;
+  if (!config?.vhosts?.length && !config?.sessionApps) return;
   let source: URL;
   try {
     source = new URL(raw);
@@ -92,9 +97,10 @@ export function sessionVhostApp(
     source.password
   )
     return;
-  const row = config.vhosts.find(
-    (row) => row.port === Number(source.port || 80),
-  );
+  const port = Number(source.port || 80);
+  const staticRow = config.vhosts?.find((row) => row.port === port);
+  const sessionApp = staticRow ? undefined : config.sessionApps?.[port];
+  const row = staticRow ?? (sessionApp && { name: sessionApp.name });
   if (!row) return;
   const client = new URL(clientUrl);
   let target: URL;
@@ -113,15 +119,53 @@ export function sessionVhostApp(
     return;
   target.pathname = source.pathname;
   target.search = source.search;
-  const token = config.accessTokens?.[row.name];
-  if (config.accessTokens && token === undefined) return;
-  if (token) target.searchParams.set("ya_access", token);
+  if (sessionApp) {
+    target.searchParams.set("ya_access", sessionApp.accessToken);
+  } else {
+    const token = config.accessTokens?.[row.name];
+    if (config.accessTokens && token === undefined) return;
+    if (token) target.searchParams.set("ya_access", token);
+  }
   target.hash = source.hash;
   return {
     sourceUrl: raw,
     url: target.href,
-    label: `${row.name}${source.pathname === "/" ? "" : source.pathname}`,
+    // A minted name means nothing to the reader; the port they printed does.
+    label: sessionApp
+      ? `${source.host}${source.pathname === "/" ? "" : source.pathname}`
+      : `${row.name}${source.pathname === "/" ? "" : source.pathname}`,
   };
+}
+
+/**
+ * Loopback ports named by tool URLs that no operator row serves: the ports a
+ * sandboxed session's own servers may be listening on.
+ */
+export function unmappedLoopbackPorts(
+  urls: readonly string[],
+  config: SessionAppConfig | undefined,
+): number[] {
+  const ports = new Set<number>();
+  for (const raw of urls) {
+    if (/\$\{|\$%7b/i.test(raw)) continue;
+    let source: URL;
+    try {
+      source = new URL(raw);
+    } catch {
+      continue;
+    }
+    if (
+      source.protocol !== "http:" ||
+      artifactAudience(source.hostname) !== "local" ||
+      source.hostname.endsWith(".localhost") ||
+      source.username ||
+      source.password
+    )
+      continue;
+    const port = Number(source.port || 80);
+    if (!config?.vhosts?.some((row) => row.port === port)) ports.add(port);
+  }
+  return [...ports];
 }
 
 /**

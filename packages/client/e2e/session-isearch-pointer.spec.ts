@@ -84,6 +84,16 @@ test("search result and transcript clicks keep their own actions", async ({
     )
     .toBeLessThan(2);
   await expect(allTurnInput).toBeFocused();
+  await expect(result).toBeHidden();
+
+  const marker = page.getByRole("button", {
+    name: "Jump to turn: The specimen is ready.",
+    exact: true,
+  });
+  await marker.hover({ position: { x: 2, y: 2 } });
+  await expect(result).toBeVisible();
+  await result.click();
+  await expect(result).toBeHidden();
 
   await page.keyboard.press("Escape");
   await page.keyboard.press("Control+Alt+s");

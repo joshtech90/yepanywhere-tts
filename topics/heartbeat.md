@@ -103,6 +103,20 @@ language, but they do not share ownership or evidence semantics.
   authorize automatic resume and must not retry by repeatedly scanning every
   project/provider.
 
+## Owner disposal
+
+A Supervisor owns its stale-process and liveness intervals, the shared
+heartbeat scheduler, and patient-queue deadlines. `stopBackgroundTasks()`
+cancels future maintenance and joins admitted heartbeat reads and interrupts.
+Stopping maintenance does not abort live provider owners. A late candidate read
+cannot resume work after the stop fence, and schedule announcements cannot
+rearm disposed maintenance.
+
+The app fences automation with notifications before provider shutdown, then
+joins maintenance before closing catalog/metadata dependencies in
+`disposeSessionReaders`. Full-app test fixtures also drain their supervisors
+at file teardown before the hermetic data root is removed.
+
 ## Unowned Resume Exemptions
 
 The unowned-candidate heartbeat path (`Supervisor.queueHeartbeatTurnForCandidate`)

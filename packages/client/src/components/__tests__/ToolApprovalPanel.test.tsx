@@ -9,11 +9,21 @@ import {
 } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { PendingDraft } from "../../lib/draftSyncStorage";
 import type { InputRequest } from "../../types";
 import styles from "../ToolApprovalPanel.module.css";
 import { ToolApprovalPanel } from "../ToolApprovalPanel";
 
+const draftState = vi.hoisted(() => ({ pending: [] as PendingDraft[] }));
+vi.mock("../../lib/draftSyncStorage", async (original) => ({
+  ...(await original<typeof import("../../lib/draftSyncStorage")>()),
+  draftSyncPending: () => draftState.pending,
+}));
+
 const translations: Record<string, string> = {
+  draftSyncNotice: "Draft needs attention",
+  draftSyncReview: "Review draft changes",
+  draftSyncClose: "Close review",
   toolApprovalCollapse: "Collapse approval",
   toolApprovalExpand: "Expand approval",
   toolApprovalNo: "No",
@@ -74,6 +84,7 @@ function renderPanel(
 
 describe("ToolApprovalPanel", () => {
   beforeEach(() => {
+    draftState.pending = [];
     vi.useFakeTimers();
   });
 
@@ -161,5 +172,33 @@ describe("ToolApprovalPanel", () => {
     ).toBe(true);
     fireEvent.click(toggle);
     expect(onCollapsedChange).toHaveBeenLastCalledWith(false);
+  });
+  it("keeps recovery review reachable when approval replaces the composer, without approving on Enter", async () => {
+    draftState.pending = [
+      {
+        key: "draft-tool-approval-feedback:local:session-1",
+        slot: { kind: "approval", sessionId: "session-1" },
+        recovery: true,
+        local: {
+          fields: { text: "Retained approval feedback" },
+          attachments: [],
+        },
+      },
+    ];
+    const onApprove = vi.fn(async () => {}),
+      onDeny = vi.fn(async () => {});
+    renderPanel({ onApprove, onDeny, collapsed: true });
+    await act(async () => {
+      vi.advanceTimersByTime(150);
+    });
+    const review = screen.getByRole("button", { name: "Review draft changes" });
+    fireEvent.keyDown(review, { key: "Enter" });
+    expect(onApprove).not.toHaveBeenCalled();
+    fireEvent.click(review);
+    expect(screen.getByText("Retained approval feedback")).toBeTruthy();
+    fireEvent.keyDown(screen.getByRole("button", { name: "Close review" }), {
+      key: "Escape",
+    });
+    expect(onDeny).not.toHaveBeenCalled();
   });
 });

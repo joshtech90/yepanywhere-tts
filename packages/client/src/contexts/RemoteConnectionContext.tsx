@@ -33,6 +33,7 @@ import type { Connection } from "../lib/connection/types";
 import { SecureSourceTransport } from "../lib/transport";
 import {
   clearRelayHostSession,
+  clearHostSession,
   getHostByDirectWsUrl,
   getHostById,
   getHostByRelayUsername,
@@ -45,6 +46,16 @@ import {
 } from "../lib/sourceIdentity";
 import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
 import { consumeSwitchHostReload } from "../lib/switchHostReload";
+
+import { getResumeError } from "../lib/connection/resumeErrors";
+import { useResumeRecovery } from "../hooks/useResumeRecovery";
+import {
+  canRetryResume,
+  categorizeResumeError,
+  requiresResumeLogin,
+  type AutoResumeErrorReason,
+} from "../lib/connection/remoteErrors";
+export type { AutoResumeErrorReason } from "../lib/connection/remoteErrors";
 
 /** Stored credentials for auto-reconnect */
 interface StoredCredentials {
@@ -65,17 +76,6 @@ export type RelayConnectionStatus =
   | "waiting_server"
   | "authenticating"
   | "error";
-
-/** Categorized auto-resume failure reason */
-export type AutoResumeErrorReason =
-  | "server_offline" // Server not connected to relay
-  | "unknown_username" // No server with that username on relay
-  | "relay_timeout" // Timeout waiting for relay or server
-  | "relay_unreachable" // Can't connect to relay server
-  | "direct_unreachable" // Can't reach server via direct WebSocket
-  | "resume_incompatible" // Server is too old for two-phase session resume
-  | "auth_failed" // Session expired or auth error
-  | "other"; // Unexpected error
 
 /** Structured error from auto-resume failure */
 export interface AutoResumeError {
@@ -208,6 +208,9 @@ function clearStaleResumeSession(stored: StoredCredentials | null): void {
   clearStoredSession();
   if (stored?.mode === "relay" && stored.relayUsername) {
     clearRelayHostSession(stored.relayUsername);
+  } else if (stored?.wsUrl) {
+    const host = getHostByDirectWsUrl(stored.wsUrl);
+    if (host) clearHostSession(host.id);
   }
 }
 
@@ -217,63 +220,6 @@ function clearStoredCredentials(): void {
   } catch {
     // Ignore storage errors
   }
-}
-
-/** Categorize an error message into a structured AutoResumeErrorReason */
-function categorizeError(message: string): AutoResumeErrorReason {
-  const lowerMessage = message.toLowerCase();
-
-  if (
-    lowerMessage.includes("resume_incompatible") ||
-    lowerMessage.includes("session resume unsupported")
-  ) {
-    return "resume_incompatible";
-  }
-
-  // Relay-specific errors
-  if (lowerMessage.includes("server_offline")) {
-    return "server_offline";
-  }
-  if (lowerMessage.includes("unknown_username")) {
-    return "unknown_username";
-  }
-  if (
-    lowerMessage.includes("waiting for server timed out") ||
-    lowerMessage.includes("relay connection timeout")
-  ) {
-    return "relay_timeout";
-  }
-  if (
-    lowerMessage.includes("failed to connect to relay") ||
-    lowerMessage.includes("relay connection closed") ||
-    lowerMessage.includes("relay connection error")
-  ) {
-    return "relay_unreachable";
-  }
-
-  // Direct connection errors
-  if (
-    lowerMessage.includes("websocket") ||
-    lowerMessage.includes("econnrefused") ||
-    lowerMessage.includes("connection refused") ||
-    lowerMessage.includes("failed to connect") ||
-    lowerMessage.includes("connection failed") ||
-    lowerMessage.includes("network error")
-  ) {
-    return "direct_unreachable";
-  }
-
-  // Auth errors
-  if (
-    lowerMessage.includes("authentication") ||
-    lowerMessage.includes("session") ||
-    lowerMessage.includes("invalid_identity") ||
-    lowerMessage.includes("unauthorized")
-  ) {
-    return "auth_failed";
-  }
-
-  return "other";
 }
 
 interface Props {
@@ -390,23 +336,19 @@ export function RemoteConnectionProvider({ children }: Props) {
     );
     connectionRef.current = null;
     setConnection(null);
-    const reason = categorizeError(error.message);
+    const reason = categorizeResumeError(error);
     const currentStored = storedRef.current;
     const isRelay = currentStored?.mode === "relay";
-    if (reason === "resume_incompatible") {
+    if (requiresResumeLogin(reason)) {
       clearStaleResumeSession(currentStored);
     }
-    if (reason !== "auth_failed" && reason !== "other") {
-      setAutoResumeError({
-        reason,
-        mode: isRelay ? "relay" : "direct",
-        relayUsername: isRelay ? currentStored?.relayUsername : undefined,
-        serverUrl: currentStored?.wsUrl,
-        message: error.message,
-      });
-    } else {
-      setError(`Connection lost: ${error.message}`);
-    }
+    setAutoResumeError({
+      reason,
+      mode: isRelay ? "relay" : "direct",
+      relayUsername: isRelay ? currentStored?.relayUsername : undefined,
+      serverUrl: currentStored?.wsUrl,
+      message: getResumeError(error)?.message ?? error.message,
+    });
   }, []);
 
   const subscribeToTransportStatus = useCallback(
@@ -426,7 +368,7 @@ export function RemoteConnectionProvider({ children }: Props) {
           latestSnapshot.channels.find(
             (channel) => channel.name === "secure-websocket",
           )?.lastError ?? "Connection disconnected";
-        handleTransportDisconnected(new Error(message));
+        handleTransportDisconnected(transport.failure ?? new Error(message));
       };
 
       const syncStatus = () => {
@@ -493,6 +435,8 @@ export function RemoteConnectionProvider({ children }: Props) {
     (conn: SecureConnection) => {
       const transport = attachConnectionTransport(conn);
       connectionRef.current = conn;
+      setError(null);
+      setAutoResumeError(null);
       setConnection(conn);
       subscribeToTransportStatus(transport, conn);
     },
@@ -545,20 +489,29 @@ export function RemoteConnectionProvider({ children }: Props) {
       setCurrentDirectUrl(wsUrl);
 
       try {
+        const savedHost = getHostByDirectWsUrl(wsUrl);
+        const savedSession =
+          !password && savedHost?.srpUsername === username
+            ? savedHost.session
+            : undefined;
         // If rememberMe is true, save credentials BEFORE auth so the onSessionEstablished
         // callback can update them. The callback fires during SRP handshake, before
         // conn.fetch() returns.
         if (rememberMe) {
-          saveCredentials(wsUrl, username);
+          saveCredentials(wsUrl, username, savedSession);
         }
 
         // Create and authenticate connection
-        const conn = new SecureConnection(wsUrl, username, password, {
+        const callbacks = {
           onSessionEstablished: rememberMe
-            ? (session) => handleSessionEstablished(attempt, session)
+            ? (session: StoredSession) =>
+                handleSessionEstablished(attempt, session)
             : undefined,
           onDisconnect: handleDisconnect,
-        });
+        };
+        const conn = savedSession
+          ? SecureConnection.forResumeOnly(savedSession, callbacks)
+          : new SecureConnection(wsUrl, username, password, callbacks);
 
         // Test the connection by making a simple request
         // This triggers the SRP handshake and verifies auth
@@ -706,7 +659,7 @@ export function RemoteConnectionProvider({ children }: Props) {
 
         // Store credentials if rememberMe
         if (rememberMe) {
-          saveCredentials(relayUrl, srpUsername, undefined);
+          saveCredentials(relayUrl, srpUsername, session);
           const stored = loadStoredCredentials();
           if (stored) {
             stored.mode = "relay";
@@ -792,7 +745,7 @@ export function RemoteConnectionProvider({ children }: Props) {
       // Use flushSync to ensure state updates are processed synchronously
       // before any navigation happens. This prevents race conditions where
       // ConnectionGate might redirect back to the host before seeing the disconnect.
-      flushSync(() => {
+      const clearConnection = () => {
         if (connectionRef.current) {
           connectionRef.current.close();
         }
@@ -809,7 +762,9 @@ export function RemoteConnectionProvider({ children }: Props) {
         setCurrentRelayUrl(null);
         setCurrentDirectUrl(null);
         setIsIntentionalDisconnect(isIntentional);
-      });
+      };
+      if (isIntentional) flushSync(clearConnection);
+      else clearConnection();
     },
     [
       beginConnectionAttempt,
@@ -835,6 +790,16 @@ export function RemoteConnectionProvider({ children }: Props) {
     setAutoResumeError(null);
     setAutoResumeAttempted(false);
   }, []);
+
+  useResumeRecovery(
+    !connection &&
+      !isAutoResuming &&
+      !isConnecting &&
+      !isIntentionalDisconnect &&
+      !!autoResumeError &&
+      canRetryResume(autoResumeError.reason),
+    retryAutoResume,
+  );
 
   // Auto-resume on mount if we have a stored session
   useEffect(() => {
@@ -949,35 +914,25 @@ export function RemoteConnectionProvider({ children }: Props) {
           setCurrentHostId(null);
           setCurrentDirectUrl(null);
         }
-        const message = err instanceof Error ? err.message : String(err);
-        console.log(
-          "[RemoteConnection] Auto-resume failed, user will need to re-authenticate:",
-          message,
-        );
+        const message =
+          getResumeError(err)?.message ??
+          (err instanceof Error ? err.message : String(err));
+        console.log("[RemoteConnection] Auto-resume failed:", message);
 
         // Create structured error for the modal
-        const reason = categorizeError(message);
+        const reason = categorizeResumeError(err);
         const isRelay = currentStored.mode === "relay";
 
-        if (reason === "resume_incompatible") {
+        if (requiresResumeLogin(reason)) {
           clearStaleResumeSession(currentStored);
-          setError(null);
-          setAutoResumeError(null);
-          return;
         }
-
-        // Only show the modal for connection failures, not auth failures
-        // Auth failures should go straight to login form
-        if (reason !== "auth_failed" && reason !== "other") {
-          setAutoResumeError({
-            reason,
-            mode: isRelay ? "relay" : "direct",
-            relayUsername: isRelay ? currentStored.relayUsername : undefined,
-            serverUrl: currentStored.wsUrl,
-            message,
-          });
-        }
-        // If auth_failed or other, just show login form (no modal)
+        setAutoResumeError({
+          reason,
+          mode: isRelay ? "relay" : "direct",
+          relayUsername: isRelay ? currentStored.relayUsername : undefined,
+          serverUrl: currentStored.wsUrl,
+          message,
+        });
       } finally {
         if (isCurrentConnectionAttempt(attempt)) {
           setIsConnecting(false);

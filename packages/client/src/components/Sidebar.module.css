@@ -31,3 +31,78 @@
   display: flex;
   align-items: center;
 }
+
+.sectionHeading {
+  margin: 0 0 var(--sidebar-section-header-gap, 0.5rem);
+  padding: 0 var(--sidebar-navigation-inline-spacing, 0.75rem);
+  font: inherit;
+}
+
+/*
+ * The name is the control. The button keeps the heading's inset so the name
+ * stays on the rows' left edge; the chevron follows the name rather than
+ * sitting at the far edge, so the cue reads as part of what is clicked.
+ */
+.sectionToggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  min-height: 20px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  color: var(--text-dimmed);
+  cursor: pointer;
+  font-size: var(--font-size-xs);
+  font-weight: 600;
+  text-align: left;
+  text-transform: uppercase;
+  transition: color 0.15s;
+}
+
+.sectionToggle:hover {
+  color: var(--text-muted);
+}
+
+.sectionToggle:focus-visible {
+  outline: 1px solid var(--accent-color);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.sectionTitleAsTyped {
+  text-transform: none;
+}
+
+.sectionChevron,
+.sectionPersonGlyph {
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.sectionChevron {
+  width: 8px;
+  height: 8px;
+  stroke-width: 1.4;
+  transition: transform 0.12s;
+}
+
+.sectionChevron[data-expanded="false"] {
+  transform: rotate(-90deg);
+}
+
+.sectionPersonGlyph {
+  width: 10px;
+  height: 10px;
+  stroke-width: 1.1;
+}
+
+.sectionCount {
+  margin-left: auto;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}

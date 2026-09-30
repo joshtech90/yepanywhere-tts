@@ -20,7 +20,7 @@ if (!PORT_FILE) {
   process.exit(1);
 }
 
-async function main() {
+async function main(portFile: string) {
   const clientRoot = join(__dirname, "..");
 
   const server = await preview({
@@ -40,7 +40,7 @@ async function main() {
   }
 
   const port = address.port;
-  writeFileSync(PORT_FILE, String(port));
+  writeFileSync(portFile, String(port));
   console.log(`[Vite Remote Preview] Server listening on port ${port}`);
 
   process.on("SIGTERM", async () => {
@@ -54,7 +54,7 @@ async function main() {
   });
 }
 
-main().catch((err) => {
+main(PORT_FILE).catch((err) => {
   console.error("Failed to start Vite preview:", err);
   process.exit(1);
 });

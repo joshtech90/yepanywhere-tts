@@ -2,7 +2,8 @@ import { existsSync } from "node:fs";
 import type { ProviderCatalogFamily } from "../sessions/provider-catalog-family.js";
 import { FileWatcher, type FileWatcherOptions } from "./FileWatcher.js";
 
-type ManagedFileWatcher = Pick<FileWatcher, "start" | "stop">;
+type ManagedFileWatcher = Pick<FileWatcher, "start" | "stop"> &
+  Partial<Pick<FileWatcher, "getObservationDiagnostics">>;
 
 export interface ProviderSessionWatcherSpec
   extends Omit<FileWatcherOptions, "eventBus"> {
@@ -127,6 +128,22 @@ export class ProviderSessionWatcherRegistry {
       missingDirectories: this.missingDirectories,
       activeWatchers: this.watchers.size,
       pendingActivations: this.pendingFamilies.size,
+    };
+  }
+
+  /** Fixed-cost observation state; reading it never activates or probes stores. */
+  getDiagnostics() {
+    return {
+      ...this.getMetrics(),
+      families: [...this.specs.keys()].map((family) => ({
+        family,
+        pending: this.pendingFamilies.has(family),
+        ...(this.watchers.get(family)?.getObservationDiagnostics?.() ?? {
+          watching: false,
+          baselineState: "idle" as const,
+          error: null,
+        }),
+      })),
     };
   }
 

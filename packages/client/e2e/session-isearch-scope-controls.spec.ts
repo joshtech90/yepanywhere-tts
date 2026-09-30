@@ -72,7 +72,7 @@ for (const viewport of [
   });
 }
 
-test("committed jumps fade the row frame and clear on the next key", async ({
+test("committed jumps retain the needle through activity then fade after idle", async ({
   page,
   baseURL,
 }) => {
@@ -90,6 +90,20 @@ test("committed jumps fade the row frame and clear on the next key", async ({
   await expect(landed).toHaveClass(/landed/);
 
   await page.keyboard.press("Shift");
+  await expect(landed).toHaveCount(1);
+  await expect
+    .poll(() =>
+      landed.evaluate((row) =>
+        Number(
+          getComputedStyle(row).getPropertyValue("--search-match-opacity"),
+        ),
+      ),
+    )
+    .toBeLessThan(1);
+  const fadingOpacity = await landed.evaluate((row) =>
+    Number(getComputedStyle(row).getPropertyValue("--search-match-opacity")),
+  );
+  expect(fadingOpacity).toBeGreaterThan(0);
   await expect(landed).toHaveCount(0);
 
   await page.keyboard.press("Control+s");
@@ -104,23 +118,82 @@ test("committed jumps fade the row frame and clear on the next key", async ({
   await expect(landed).toHaveClass(/landed/);
 });
 
-test("clicking the framed match row accepts it", async ({ page, baseURL }) => {
-  await page.setViewportSize({ width: 1000, height: 600 });
-  await openSpecimen(page, baseURL);
+for (const { dismiss, viewport } of [
+  { dismiss: "click", viewport: { width: 1200, height: 600 } },
+  { dismiss: "Escape", viewport: { width: 375, height: 812 } },
+] as const) {
+  test(`dismissing a clicked match with ${dismiss} keeps every frame fixed`, async ({
+    page,
+    baseURL,
+  }) => {
+    await page.setViewportSize(viewport);
+    await openSpecimen(page, baseURL);
+    await page.addStyleTag({
+      content:
+        '[data-render-id="specimen-assistant-2"] { padding-top: 700px; padding-bottom: 700px; }',
+    });
 
-  await page.keyboard.press("Control+s");
-  await page
-    .getByRole("textbox", { name: "Reverse search all turns" })
-    .fill("specimen is ready");
-  await page
-    .getByRole("navigation", { name: "Turn navigation" })
-    .getByRole("button", { name: "The specimen is ready.", exact: true })
-    .click();
-  await expect(page.getByRole("search")).toHaveCount(1);
-  const framed = page.locator('[data-search-match="true"]');
-  await expect(framed).toHaveCount(1);
-  await expect(framed).not.toHaveClass(/landed/);
-  await framed.click({ position: { x: 4, y: 4 } });
-  await expect(page.getByRole("search")).toHaveCount(0);
-  await expect(framed).toHaveClass(/landed/);
-});
+    await page.keyboard.press("Control+s");
+    await page
+      .getByRole("textbox", { name: "Reverse search all turns" })
+      .fill("specimen is ready");
+    await page
+      .getByRole("navigation", { name: "Turn navigation" })
+      .getByRole("button", { name: "The specimen is ready.", exact: true })
+      .click();
+    await expect(page.getByRole("search")).toHaveCount(1);
+    const framed = page.locator('[data-search-match="true"]');
+    await expect(framed).toHaveCount(1);
+    await expect(framed).not.toHaveClass(/landed/);
+    await recordUiCapture(page, `selected-${dismiss}`, viewport);
+    await page.waitForTimeout(100);
+    await page.locator(".session-messages").evaluate((port) => {
+      port.scrollTop -= 60;
+    });
+    const text = framed.getByText("The specimen is ready.", { exact: true });
+    const before = await text.boundingBox();
+    expect(before).not.toBeNull();
+    await page.evaluate((dismiss) => {
+      const samples: number[] = [];
+      Object.assign(window, { isearchDismissFrames: samples });
+      window.addEventListener(
+        dismiss === "click" ? "click" : "keydown",
+        () => {
+          const sample = () => {
+            const row = document.querySelector(
+              '[data-render-id="specimen-assistant-2"]',
+            );
+            const text = row?.querySelector("p");
+            samples.push(text?.getBoundingClientRect().top ?? -10000);
+            if (samples.length < 12) requestAnimationFrame(sample);
+          };
+          requestAnimationFrame(sample);
+        },
+        { once: true, capture: true },
+      );
+    }, dismiss);
+    if (dismiss === "click") await text.click();
+    else await page.keyboard.press("Escape");
+    await expect(page.getByRole("search")).toHaveCount(0);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            (window as unknown as { isearchDismissFrames: number[] })
+              .isearchDismissFrames.length,
+        ),
+      )
+      .toBe(12);
+    const frames = await page.evaluate(
+      () =>
+        (window as unknown as { isearchDismissFrames: number[] })
+          .isearchDismissFrames,
+    );
+    expect(
+      frames.every((top) => Math.abs(top - (before?.y ?? 0)) < 2),
+      JSON.stringify({ before, frames }),
+    ).toBe(true);
+    await expect(framed).toHaveClass(/landed/);
+    await recordUiCapture(page, `dismissed-${dismiss}`, viewport);
+  });
+}

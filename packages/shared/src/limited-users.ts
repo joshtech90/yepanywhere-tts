@@ -7,10 +7,149 @@
  * its own rule for what a grant means.
  */
 
+import { fromUrlProjectId, isUrlProjectId } from "./projectId.js";
+
 /** Usernames share the relay label grammar: 3-32 lowercase alphanumerics/hyphens. */
 export const LIMITED_USERNAME_MIN_LENGTH = 3;
 export const LIMITED_USERNAME_MAX_LENGTH = 32;
 export const LIMITED_USER_MIN_PASSWORD_LENGTH = 8;
+
+export const MAX_INSTRUCTION_BLOCKS = 32;
+export const MAX_INSTRUCTION_CHARACTERS = 10_000;
+export const DEFAULT_LIMITED_USER_INSTRUCTION =
+  'When using any external image/video generation API or MCP tool, enable the provider\'s safety filtering at its strictest setting (e.g. moderation="auto", enable_safety_checker=true, safety_filter_level="block_most"). Never disable a safety checker. Prefer providers with server-side filtering.';
+
+/**
+ * The two `.project-template/app.json` shapes the App instruction teaches.
+ * Exported so a test holds them to the service declaration schema; the
+ * contract is topics/project-service.md § Standard declaration.
+ */
+export const LIMITED_USER_STATIC_APP_EXAMPLE = {
+  service: {
+    version: 1,
+    where: { kind: "static", root: "dist", entry: "index.html" },
+    serving: { target: "static-root" },
+  },
+} as const;
+export const LIMITED_USER_SERVER_APP_EXAMPLE = {
+  service: {
+    version: 1,
+    where: { kind: "process", cwd: ".", entry: "/" },
+    start: { argv: ["npm", "run", "start"], portEnv: "PORT" },
+    status: {
+      probe: "http",
+      path: "/",
+      readyStatus: 200,
+      startupTimeoutMs: 30000,
+    },
+    stop: { signal: "SIGTERM", graceMs: 5000 },
+    serving: {
+      target: "sandbox-loopback",
+      protocol: "http",
+      basePathEnv: "BASE_PATH",
+    },
+  },
+} as const;
+
+/**
+ * How an agent makes what it builds openable by a limited user, who is on
+ * another device and cannot reach this machine's loopback ports.
+ */
+export const DEFAULT_LIMITED_USER_APP_INSTRUCTION = [
+  "To show the user a web page, game or app you build, make it open from Yep Anywhere's App button (in the session header and on the project) instead of giving a localhost or 127.0.0.1 link: the user is on another device and cannot reach this machine's ports.",
+  "Declare it in `.project-template/app.json` at the project root, then tell the user to tap App (and Start, if it shows as stopped).",
+  `- Static page (preferred for plain HTML/JS): build into \`dist/\` with an \`index.html\` and relative asset URLs, and declare ${JSON.stringify(LIMITED_USER_STATIC_APP_EXAMPLE)}`,
+  `- App with its own server: declare ${JSON.stringify(LIMITED_USER_SERVER_APP_EXAMPLE)}, adjusting argv and the status path. The server must listen on 127.0.0.1 at the port in $PORT, stay in the foreground, and serve every link, asset and API call under the $BASE_PATH prefix. WebSockets are not supported. Yep Anywhere starts and stops it; do not start it yourself.`,
+].join("\n");
+
+export const DEFAULT_LIMITED_USER_INSTRUCTION_BLOCKS: readonly string[] = [
+  DEFAULT_LIMITED_USER_INSTRUCTION,
+  DEFAULT_LIMITED_USER_APP_INSTRUCTION,
+];
+
+/** Earlier shipped defaults, upgraded on load while still untouched. */
+const SUPERSEDED_DEFAULT_BLOCKS: readonly (readonly string[])[] = [
+  [DEFAULT_LIMITED_USER_INSTRUCTION],
+];
+
+export interface LimitedUserInstructions {
+  startFromDefault: boolean;
+  blocks: string[];
+}
+
+export interface ResolvedLimitedUserInstructions {
+  startFromDefault: boolean;
+  text: string;
+}
+
+export function defaultLimitedUserInstructions(): LimitedUserInstructions {
+  return {
+    startFromDefault: true,
+    blocks: [...DEFAULT_LIMITED_USER_INSTRUCTION_BLOCKS],
+  };
+}
+
+/**
+ * A saved policy that still equals an earlier shipped default was never
+ * edited, so it takes the current default; any edit is kept as written.
+ */
+export function upgradeUntouchedLimitedUserInstructions(
+  value: LimitedUserInstructions,
+): LimitedUserInstructions {
+  const untouched = SUPERSEDED_DEFAULT_BLOCKS.some(
+    (blocks) =>
+      blocks.length === value.blocks.length &&
+      blocks.every((block, index) => block === value.blocks[index]),
+  );
+  return untouched
+    ? { ...value, blocks: [...DEFAULT_LIMITED_USER_INSTRUCTION_BLOCKS] }
+    : value;
+}
+
+/** Validate instruction blocks without trimming or silently truncating text. */
+export function instructionBlocksError(value: unknown): string | null {
+  if (
+    !Array.isArray(value) ||
+    value.some((block) => typeof block !== "string")
+  ) {
+    return "Instruction blocks must be a list of strings";
+  }
+  if (value.length > MAX_INSTRUCTION_BLOCKS) {
+    return `Use at most ${MAX_INSTRUCTION_BLOCKS} instruction blocks`;
+  }
+  if (
+    value.reduce((length, block) => length + block.length, 0) >
+    MAX_INSTRUCTION_CHARACTERS
+  ) {
+    return `Instructions must total at most ${MAX_INSTRUCTION_CHARACTERS} characters`;
+  }
+  return null;
+}
+
+export function resolveLimitedUserInstructions(
+  shared: LimitedUserInstructions,
+  userBlocks: string[] = [],
+): ResolvedLimitedUserInstructions {
+  return {
+    startFromDefault: shared.startFromDefault,
+    text: [...shared.blocks, ...userBlocks]
+      .filter((block) => block.trim())
+      .join("\n\n"),
+  };
+}
+
+export function limitedUserInstructionsError(value: unknown): string | null {
+  if (
+    !value ||
+    typeof value !== "object" ||
+    !("startFromDefault" in value) ||
+    typeof value.startFromDefault !== "boolean" ||
+    !("blocks" in value)
+  ) {
+    return "Instructions require startFromDefault and blocks";
+  }
+  return instructionBlocksError(value.blocks);
+}
 
 /** Lowest and highest join-freshness offsets a superuser may configure. */
 export const JOIN_STALE_OFFSET_MIN_MINUTES = -5;
@@ -111,8 +250,40 @@ export interface LimitedUserGrants {
    * topics/limited-users.md § Delivery v1 — Project creation.
    */
   projectRoot?: string;
+  /** May create sessions in their private No project workspace. Default false. */
+  allowNoProjectSessions?: boolean;
+  /** May publish app addresses without bearer tokens. Default false. */
+  allowPublicApps?: boolean;
+  /** May retrieve transferable private app-address links. Default true. */
+  allowPrivateAppLinks?: boolean;
   templateCreation?: TemplateCreationGrant;
+  /** Appended after the shared limited-user instructions on each launch. */
+  instructionBlocks?: string[];
+  /**
+   * Access to every project at or beneath a directory, including ones made
+   * there later. The server stores each path resolved and absolute.
+   */
+  pathGrants?: PathGrant[];
 }
+
+/**
+ * One limited user's access to one project, as the project's sharing panel
+ * shows it: `level` is the per-project grant this panel sets, and
+ * `directoryLevel` what a directory grant already gives regardless.
+ */
+export interface ProjectAccessEntry {
+  username: string;
+  level: ProjectAccessLevel;
+  directoryLevel: ProjectAccessLevel;
+}
+
+/** A directory-wide grant: `level` for every project under `path`. */
+export interface PathGrant {
+  path: string;
+  level: Exclude<ProjectAccessLevel, "none">;
+}
+
+export const MAX_PATH_GRANTS = 32;
 
 /** A limited user as any API returns it. Never carries credential material. */
 export interface LimitedUserSummary extends LimitedUserGrants {
@@ -232,10 +403,106 @@ export function projectAccessLevel(
   grants: LimitedUserGrants,
   projectId: string,
 ): ProjectAccessLevel {
+  const listed = listedAccessLevel(grants, projectId);
+  if (listed === "new-session" || !grants.pathGrants?.length) return listed;
+  const projectPath = projectPathOf(projectId);
+  if (projectPath === null) return listed;
+  return higherAccessLevel(listed, pathGrantLevel(grants, projectPath));
+}
+
+/** The level the per-project lists alone give. */
+function listedAccessLevel(
+  grants: LimitedUserGrants,
+  projectId: string,
+): ProjectAccessLevel {
   if (grants.newSessionProjects.includes(projectId)) return "new-session";
   if (grants.joinProjects.includes(projectId)) return "join";
   if (grants.viewProjects.includes(projectId)) return "view";
   return "none";
+}
+
+const ACCESS_RANK: Record<ProjectAccessLevel, number> = {
+  none: 0,
+  view: 1,
+  join: 2,
+  "new-session": 3,
+};
+
+export function higherAccessLevel(
+  a: ProjectAccessLevel,
+  b: ProjectAccessLevel,
+): ProjectAccessLevel {
+  return ACCESS_RANK[a] >= ACCESS_RANK[b] ? a : b;
+}
+
+/** A project id is its base64url-encoded absolute path; null if it is not. */
+function projectPathOf(projectId: string): string | null {
+  if (!isUrlProjectId(projectId)) return null;
+  try {
+    const decoded = fromUrlProjectId(projectId);
+    return decoded.startsWith("/") ? decoded : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether `candidate` is `root` or beneath it, comparing normalized
+ * absolute spellings. The server stores roots resolved, and a project id
+ * is the path it was registered under, so no filesystem walk is involved.
+ */
+export function isPathWithin(root: string, candidate: string): boolean {
+  const trim = (value: string) =>
+    value.length > 1 ? value.replace(/\/+$/, "") : value;
+  const base = trim(root);
+  const path = trim(candidate);
+  if (!base.startsWith("/") || !path.startsWith("/")) return false;
+  if (path.split("/").includes("..")) return false;
+  return base === "/" || path === base || path.startsWith(`${base}/`);
+}
+
+/** The highest level any path grant gives a project at `projectPath`. */
+export function pathGrantLevel(
+  grants: Pick<LimitedUserGrants, "pathGrants">,
+  projectPath: string,
+): ProjectAccessLevel {
+  let level: ProjectAccessLevel = "none";
+  for (const grant of grants.pathGrants ?? []) {
+    if (isPathWithin(grant.path, projectPath))
+      level = higherAccessLevel(level, grant.level);
+  }
+  return level;
+}
+
+/**
+ * The grants with each known project a path grant covers written into the
+ * per-project lists, for the surfaces that enumerate a user's projects
+ * (lists, filters, the session index) rather than asking about one.
+ */
+export function withPathGrantProjects(
+  grants: LimitedUserGrants,
+  projects: Iterable<{ id: string; path: string }>,
+): LimitedUserGrants {
+  if (!grants.pathGrants?.length) return grants;
+  const lists = {
+    "new-session": new Set(grants.newSessionProjects),
+    join: new Set(grants.joinProjects),
+    view: new Set(grants.viewProjects),
+  };
+  for (const project of projects) {
+    const level = pathGrantLevel(grants, project.path);
+    if (
+      level !== "none" &&
+      ACCESS_RANK[level] > ACCESS_RANK[listedAccessLevel(grants, project.id)]
+    )
+      lists[level].add(project.id);
+  }
+  return {
+    ...grants,
+    newSessionProjects: [...lists["new-session"]],
+    joinProjects: [...lists.join],
+    viewProjects: [...lists.view],
+  };
 }
 
 /** Every project the user may at least read. */

@@ -61,7 +61,7 @@ export function RelayLoginPage() {
   const { t } = useI18n();
   const { connectViaRelay, isAutoResuming, setCurrentHostId } =
     useRemoteConnection();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const defaultRelayUrl = getDefaultRelayUrl();
 
   // Form state. The relay username names the *server* to route to; the SRP
@@ -250,6 +250,20 @@ export function RelayLoginPage() {
     // Blank means "this server's owner", which is the identity the server
     // name already implies.
     const srpUsername = identity || username;
+
+    // The prefilled `u`/`r` name the sign-in target the login routes redirect
+    // into once connected (matchesRelayLoginTarget). The submitted form is the
+    // target now, so an edited server name or relay must replace them, or the
+    // connected session never leaves this page.
+    setSearchParams(
+      (previous) => {
+        const next = new URLSearchParams(previous);
+        next.set("u", username);
+        if (next.has("r")) next.set("r", relayUrl);
+        return next;
+      },
+      { replace: true },
+    );
 
     if (rememberMe) {
       const host = upsertRelayHost({

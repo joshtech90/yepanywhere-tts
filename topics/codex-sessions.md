@@ -76,6 +76,11 @@ plus in-memory boundary selection. Provider-child ownership projection remains
 physical to avoid assigning inherited subagents to the fork, while logical
 detail parsing still recovers inherited agent mappings for navigation.
 
+An interrupted turn appears as an aborted-turn row. If Codex includes an error
+with that interruption, the row displays the provider's error message in both
+the live stream and the persisted transcript. A plain user interruption keeps
+the ordinary interruption label.
+
 One deliberate exception to "YA never rewrites provider-owned rollouts": when
 the user explicitly Kills a Codex session, YA renames its rollout with a
 `.killed-<timestamp>` suffix so no resume path (YA or Codex app-server) can

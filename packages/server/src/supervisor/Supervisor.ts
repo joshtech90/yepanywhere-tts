@@ -45,6 +45,7 @@ import {
 } from "../projects/paths.js";
 import {
   getSessionSandboxSettingsError,
+  openClaudeSandboxTranscriptDirectory,
   prepareSessionSandbox,
   type PrepareSessionSandboxOptions,
 } from "../session-sandbox.js";
@@ -125,8 +126,13 @@ import {
 import { HeartbeatSweepScheduler, earliestDueAt } from "./heartbeatSchedule.js";
 import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
 import {
+  AGENT_SERVER_TOKEN_ENV,
+  type AgentServerAccess,
+} from "../auth/AgentServerTokens.js";
+import {
   type QueuedRequestInfo,
   type QueuedResponse,
+  type SessionStartedCallback,
   WorkerQueue,
   isQueueFullError,
 } from "./WorkerQueue.js";
@@ -465,8 +471,13 @@ export interface SessionLaunchOptions {
   projectId?: UrlProjectId;
   /** YA workstream lane to persist once a queued launch starts. */
   workstreamId?: WorkstreamId;
-  /** One-shot callback once an immediate or queued launch has a canonical YA id. */
-  onStarted?: (sessionId: string) => void | Promise<void>;
+  /**
+   * One-shot callback once an immediate or queued launch has a canonical YA
+   * id, from `startSession` and `createSession` alike. The single place a
+   * caller records what the launch settled, since a queued launch returns to
+   * its caller before it starts.
+   */
+  onStarted?: SessionStartedCallback;
   /** One-shot callback when a deferred launch cannot start. */
   onFailed?: (reason: string) => void | Promise<void>;
   /** One-shot callback when transient provider startup should be retried. */
@@ -534,6 +545,9 @@ export type RecoverSessionLaunchSettingsCallback = (
 const INITIAL_RECONCILE_DELAYS_MS = [1000, 3000] as const;
 
 export interface SupervisorOptions {
+  getLimitedUserInstructions?: (
+    username: string,
+  ) => import("@yep-anywhere/shared").ResolvedLimitedUserInstructions;
   /** Agent provider interface; null disables registry-backed provider discovery. */
   provider?: AgentProvider | null;
   /** Legacy SDK interface for mock SDK */
@@ -569,6 +583,11 @@ export interface SupervisorOptions {
     sessionId: string,
     executor?: string,
   ) => Record<string, string>;
+  /**
+   * Mint an operator API token for one launch, or nothing while the setting
+   * is off. Called only for unsandboxed local launches.
+   */
+  mintAgentServerAccess?: () => AgentServerAccess | undefined;
   /** Callback invoked when a process observes a model's real context window. */
   onContextWindowObserved?: (
     model: string,
@@ -634,6 +653,13 @@ export interface SupervisorOptions {
 
 export type { SessionDoneResult };
 
+/** The provider environment that hands a launch its operator API token. */
+function agentServerEnvironment(
+  access: AgentServerAccess | undefined,
+): Record<string, string> | undefined {
+  return access ? { [AGENT_SERVER_TOKEN_ENV]: access.token } : undefined;
+}
+
 export class Supervisor {
   computerControl?: import("../computer-control/service.js").ComputerControlService;
   private processes: Map<string, Process> = new Map();
@@ -663,6 +689,12 @@ export class Supervisor {
   private onSessionExecutor?: OnSessionExecutorCallback;
   private onSuccessfulProviderSession?: OnSuccessfulProviderSessionCallback;
   private getSessionChildEnv?: SupervisorOptions["getSessionChildEnv"];
+  private mintAgentServerAccess?: SupervisorOptions["mintAgentServerAccess"];
+  /** Each live process's operator API token, revoked when it unregisters. */
+  private readonly agentServerAccessByProcess = new Map<
+    string,
+    AgentServerAccess
+  >();
   private onContextWindowObserved?: (
     model: string,
     contextWindow: number,
@@ -680,6 +712,9 @@ export class Supervisor {
   }
   private onSessionSummary?: OnSessionSummaryCallback;
   private recoverSessionLaunchSettings?: RecoverSessionLaunchSettingsCallback;
+  private backgroundTasksStopped = false;
+  private backgroundStop: Promise<void> | undefined;
+  private heartbeatInterruptTasks = new Set<Promise<void>>();
   private staleCheckTimer: ReturnType<typeof setInterval>;
   private getHeartbeatTurnSettings?: (
     sessionId: string,
@@ -749,6 +784,7 @@ export class Supervisor {
   private toolResultMediaStore?: ToolResultMediaStore;
   private dirtyFileEditorService?: DirtyFileEditorService;
   private sandboxStateRoot?: string;
+  private getLimitedUserInstructions?: SupervisorOptions["getLimitedUserInstructions"];
   // In-flight forked recaps, keyed by process id. The AbortController cancels
   // the generator-fork helper turn when the parent becomes active again, so a
   // returning user's new turn is never shadowed by a stale recap. See
@@ -778,6 +814,7 @@ export class Supervisor {
     this.onSessionExecutor = options.onSessionExecutor;
     this.onSuccessfulProviderSession = options.onSuccessfulProviderSession;
     this.getSessionChildEnv = options.getSessionChildEnv;
+    this.mintAgentServerAccess = options.mintAgentServerAccess;
     this.onContextWindowObserved = options.onContextWindowObserved;
     this.onSessionSummary = options.onSessionSummary;
     this.recoverSessionLaunchSettings = options.recoverSessionLaunchSettings;
@@ -808,6 +845,7 @@ export class Supervisor {
     this.toolResultMediaStore = options.toolResultMediaStore;
     this.dirtyFileEditorService = options.dirtyFileEditorService;
     this.sandboxStateRoot = options.sandboxStateRoot;
+    this.getLimitedUserInstructions = options.getLimitedUserInstructions;
     this.activationCoordinator = new SessionActivationCoordinator({
       defaultPermissionMode: this.defaultPermissionMode,
       sessionMetadataService: this.sessionMetadataService,
@@ -828,6 +866,9 @@ export class Supervisor {
         ),
       onSuccessfulProviderSession: this.onSuccessfulProviderSession,
     });
+    if (!this.provider && !this.sdk && !this.realSdk) {
+      throw new Error("Either provider, sdk, or realSdk must be provided");
+    }
     this.staleCheckTimer = setInterval(
       () => this.terminateStaleProcesses(),
       STALE_CHECK_INTERVAL_MS,
@@ -852,10 +893,21 @@ export class Supervisor {
       LIVENESS_PROBE_CHECK_INTERVAL_MS,
     );
     this.livenessProbeTimer.unref();
+  }
 
-    if (!this.provider && !this.sdk && !this.realSdk) {
-      throw new Error("Either provider, sdk, or realSdk must be provided");
-    }
+  /** Release this supervisor's timers without terminating provider owners. */
+  stopBackgroundTasks(): Promise<void> {
+    if (this.backgroundStop) return this.backgroundStop;
+    this.backgroundTasksStopped = true;
+    clearInterval(this.staleCheckTimer);
+    clearInterval(this.livenessProbeTimer);
+    for (const timer of this.patientCheckTimers.values()) clearTimeout(timer);
+    this.patientCheckTimers.clear();
+    this.backgroundStop = (async () => {
+      await this.heartbeatScheduler.stopAndDrain();
+      await Promise.allSettled(this.heartbeatInterruptTasks);
+    })();
+    return this.backgroundStop;
   }
 
   /** Sandbox request for a new or resumed provider process. */
@@ -865,7 +917,15 @@ export class Supervisor {
     modelSettings: ModelSettings | undefined,
     resumeSessionId: string | undefined,
   ): PrepareSessionSandboxOptions {
+    const username =
+      (resumeSessionId
+        ? this.sessionMetadataService?.getMetadata(resumeSessionId)
+            ?.createdByUser
+        : undefined) ?? modelSettings?.instructionUsername;
     return {
+      instructions: username
+        ? this.getLimitedUserInstructions?.(username)
+        : undefined,
       level: modelSettings?.sandboxLevel,
       networkFirewall: modelSettings?.sandboxNetworkFirewall,
       provider,
@@ -874,6 +934,45 @@ export class Supervisor {
       stateKey: modelSettings?.sandboxStateKey,
       resumeSessionId,
       stateRoot: this.sandboxStateRoot,
+    };
+  }
+
+  /**
+   * An existing session's launch with its settled sandbox applied. A
+   * persisted project-write sandbox binds every later process for the
+   * session (topics/session-sandboxing.md § Session Lifetime), so wake,
+   * heartbeat, deferred-message and restart relaunches keep it whether or
+   * not their caller restated it. A request to weaken it is refused; only a
+   * new session may choose a weaker boundary.
+   */
+  private withSettledSandbox(
+    sessionId: string,
+    projectPath: string,
+    modelSettings: ModelSettings | undefined,
+  ): { projectPath: string; modelSettings: ModelSettings | undefined } {
+    const settled = this.sessionMetadataService?.getMetadata(sessionId);
+    if (settled?.sandboxLevel !== "project-write") {
+      return { projectPath, modelSettings };
+    }
+    const settledFirewall = settled.sandboxNetworkFirewall !== false;
+    if (
+      modelSettings?.sandboxLevel === "none" ||
+      (settledFirewall && modelSettings?.sandboxNetworkFirewall === false)
+    ) {
+      throw new Error(
+        `Session ${sessionId} keeps its settled sandbox; start a new session for a weaker one.`,
+      );
+    }
+    return {
+      projectPath: settled.sandboxProjectPath ?? projectPath,
+      modelSettings: {
+        ...modelSettings,
+        sandboxLevel: "project-write",
+        sandboxNetworkFirewall:
+          settledFirewall || modelSettings?.sandboxNetworkFirewall === true,
+        sandboxStateKey:
+          settled.sandboxStateKey ?? modelSettings?.sandboxStateKey,
+      },
     };
   }
 
@@ -1036,8 +1135,18 @@ export class Supervisor {
         modelSettings,
       );
     }
+    await this.notifyImmediateStart(launchOptions, process, projectId);
+    return process;
+  }
+
+  /** Run an immediate launch's `onStarted`, as the worker queue does. */
+  private async notifyImmediateStart(
+    launchOptions: SessionLaunchOptions | undefined,
+    process: Process,
+    projectId: UrlProjectId,
+  ): Promise<void> {
     try {
-      await launchOptions?.onStarted?.(process.sessionId);
+      await launchOptions?.onStarted?.(process.sessionId, process);
     } catch (error) {
       getLogger().warn(
         {
@@ -1049,7 +1158,6 @@ export class Supervisor {
         "Session started but its one-shot association callback failed",
       );
     }
-    return process;
   }
 
   /**
@@ -1105,9 +1213,10 @@ export class Supervisor {
       }
     }
 
+    let process: Process;
     // Use provider if available (preferred)
     if (provider) {
-      return this.createProviderSession(
+      process = await this.createProviderSession(
         projectPath,
         projectId,
         permissionMode,
@@ -1117,22 +1226,22 @@ export class Supervisor {
         launchOptions?.retryProviderStartupFailure,
         launchOptions?.requireProviderSessionId,
       );
-    }
-
-    // Use real SDK if available
-    if (this.realSdk) {
-      return this.createRealSession(
+    } else if (this.realSdk) {
+      // Use real SDK if available
+      process = await this.createRealSession(
         projectPath,
         projectId,
         permissionMode,
         modelSettings,
       );
+    } else {
+      // Fall back to legacy mock SDK - not supported for create-only
+      throw new Error(
+        "createSession requires provider or real SDK - legacy mock SDK not supported",
+      );
     }
-
-    // Fall back to legacy mock SDK - not supported for create-only
-    throw new Error(
-      "createSession requires provider or real SDK - legacy mock SDK not supported",
-    );
+    await this.notifyImmediateStart(launchOptions, process, projectId);
+    return process;
   }
 
   /**
@@ -1148,17 +1257,37 @@ export class Supervisor {
    * Claude and Codex reactivate with no synthetic turn.
    */
   async reactivateSession(
-    projectPath: string,
+    requestedProjectPath: string,
     resumeSessionId: string,
     permissionMode?: PermissionMode,
-    modelSettings?: ModelSettings,
+    requestedModelSettings?: ModelSettings,
     options?: SessionReactivationOptions,
   ): Promise<Process> {
+    const { projectPath, modelSettings } = this.withSettledSandbox(
+      resumeSessionId,
+      requestedProjectPath,
+      requestedModelSettings,
+    );
     this.assertSessionSandboxSettings(modelSettings);
-    const requestedOverrides = options?.requestedOverrides ?? {
-      ...(permissionMode !== undefined ? { permissionMode } : {}),
-      ...(modelSettings ? { modelSettings } : {}),
-    };
+    const overrides = options?.requestedOverrides;
+    const overrideSettings = overrides?.modelSettings;
+    const requestedOverrides = overrides
+      ? {
+          ...overrides,
+          ...(overrideSettings
+            ? {
+                modelSettings: this.withSettledSandbox(
+                  resumeSessionId,
+                  projectPath,
+                  overrideSettings,
+                ).modelSettings,
+              }
+            : {}),
+        }
+      : {
+          ...(permissionMode !== undefined ? { permissionMode } : {}),
+          ...(modelSettings ? { modelSettings } : {}),
+        };
 
     const projectId = encodeProjectId(projectPath);
     return this.activationCoordinator.reactivate({
@@ -1250,6 +1379,11 @@ export class Supervisor {
         resumeSessionId,
       ),
     );
+    const agentServerAccess = this.agentServerAccessForLaunch(
+      Boolean(sessionSandbox) ||
+        modelSettings?.sandboxLevel === "project-write",
+      modelSettings?.executor,
+    );
     const truncation = this.resolveLaunchTruncation(
       resumeSessionId,
       "claude",
@@ -1276,6 +1410,7 @@ export class Supervisor {
         ? (sessionId) =>
             this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ?? {}
         : undefined,
+      agentServerEnvironment: agentServerEnvironment(agentServerAccess),
       sessionSandbox,
       onProviderRetentionChange: () =>
         this.handleProviderRetentionChanged(processHolder),
@@ -1375,6 +1510,7 @@ export class Supervisor {
 
     const process = new Process(iterator, options);
     processHolder.process = process;
+    this.holdAgentServerAccess(process, agentServerAccess);
     this.observeProcessEvents(process);
     await this.consumePendingRewind(process, resumeSessionId, truncation);
 
@@ -2054,6 +2190,11 @@ export class Supervisor {
         resumeSessionId,
       ),
     );
+    const agentServerAccess = this.agentServerAccessForLaunch(
+      Boolean(sessionSandbox) ||
+        modelSettings?.sandboxLevel === "project-write",
+      modelSettings?.executor,
+    );
     const truncation = this.resolveLaunchTruncation(
       resumeSessionId,
       "claude",
@@ -2080,6 +2221,7 @@ export class Supervisor {
         ? (sessionId) =>
             this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ?? {}
         : undefined,
+      agentServerEnvironment: agentServerEnvironment(agentServerAccess),
       sessionSandbox,
       onProviderRetentionChange: () =>
         this.handleProviderRetentionChanged(processHolder),
@@ -2179,6 +2321,7 @@ export class Supervisor {
 
     const process = new Process(iterator, options);
     processHolder.process = process;
+    this.holdAgentServerAccess(process, agentServerAccess);
     this.observeProcessEvents(process);
     await this.consumePendingRewind(process, resumeSessionId, truncation);
 
@@ -2261,6 +2404,11 @@ export class Supervisor {
       modelSettings,
       activeProvider,
     );
+    const agentServerAccess = this.agentServerAccessForLaunch(
+      Boolean(sessionSandbox) ||
+        modelSettings?.sandboxLevel === "project-write",
+      modelSettings?.executor,
+    );
     const truncation = this.resolveLaunchTruncation(
       resumeSessionId,
       activeProvider.name,
@@ -2294,6 +2442,7 @@ export class Supervisor {
         ? (sessionId) =>
             this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ?? {}
         : undefined,
+      agentServerEnvironment: agentServerEnvironment(agentServerAccess),
       sessionSandbox,
       sessionSandboxOptions,
       shouldEmitLiveDeltas: () =>
@@ -2416,6 +2565,7 @@ export class Supervisor {
 
     const process = new Process(iterator, options);
     processHolder.process = process;
+    this.holdAgentServerAccess(process, agentServerAccess);
     this.observeProcessEvents(process);
     activateCallbacks?.();
     await this.consumePendingRewind(process, resumeSessionId, truncation);
@@ -2503,6 +2653,11 @@ export class Supervisor {
       modelSettings,
       activeProvider,
     );
+    const agentServerAccess = this.agentServerAccessForLaunch(
+      Boolean(sessionSandbox) ||
+        modelSettings?.sandboxLevel === "project-write",
+      modelSettings?.executor,
+    );
     const truncation = this.resolveLaunchTruncation(
       resumeSessionId,
       activeProvider.name,
@@ -2534,6 +2689,7 @@ export class Supervisor {
         ? (sessionId) =>
             this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ?? {}
         : undefined,
+      agentServerEnvironment: agentServerEnvironment(agentServerAccess),
       sessionSandbox,
       sessionSandboxOptions,
       shouldEmitLiveDeltas: () =>
@@ -2656,6 +2812,7 @@ export class Supervisor {
 
     const process = new Process(iterator, options);
     processHolder.process = process;
+    this.holdAgentServerAccess(process, agentServerAccess);
     this.observeProcessEvents(process);
     activateCallbacks?.();
     await this.consumePendingRewind(process, resumeSessionId, truncation);
@@ -2750,12 +2907,17 @@ export class Supervisor {
 
   async resumeSession(
     sessionId: string,
-    projectPath: string,
+    requestedProjectPath: string,
     message: UserMessage,
     permissionMode?: PermissionMode,
-    modelSettings?: ModelSettings,
+    requestedModelSettings?: ModelSettings,
     launchOptions?: SessionLaunchOptions,
   ): Promise<Process | QueuedResponse | QueueFullResponse> {
+    const { projectPath, modelSettings } = this.withSettledSandbox(
+      sessionId,
+      requestedProjectPath,
+      requestedModelSettings,
+    );
     this.assertSessionSandboxSettings(modelSettings);
     await this.activationCoordinator.waitForActivation(sessionId);
 
@@ -3073,6 +3235,12 @@ export class Supervisor {
       throw new Error(`${provider.name} does not support transcript fork`);
     }
     const sessionSandbox = await prepareSessionSandbox({
+      instructions: this.newSessionSandboxOptions(
+        provider.name,
+        options.projectPath,
+        undefined,
+        options.sessionId,
+      ).instructions,
       level: options.sandboxLevel,
       networkFirewall: options.sandboxNetworkFirewall,
       provider: provider.name,
@@ -3110,6 +3278,20 @@ export class Supervisor {
       sandboxStateKey: sessionSandbox?.stateKey,
       sessionSandbox,
     };
+  }
+
+  /**
+   * Open the private Claude transcript directory a sandboxed session with
+   * this state key and project uses, for a host-side transcript copy.
+   */
+  openClaudeSandboxTranscriptDirectory(options: {
+    stateKey: string;
+    projectPath: string;
+  }): ReturnType<typeof openClaudeSandboxTranscriptDirectory> {
+    return openClaudeSandboxTranscriptDirectory({
+      ...options,
+      stateRoot: this.sandboxStateRoot,
+    });
   }
 
   async generateSummary(
@@ -3997,10 +4179,12 @@ export class Supervisor {
    * without an event, in which case no timer is armed at all.
    */
   private async runHeartbeatSweep(now: number): Promise<number | null> {
+    if (this.backgroundTasksStopped) return null;
     const log = getLogger();
     let dueAtMs: number | null = null;
 
     for (const process of this.processes.values()) {
+      if (this.backgroundTasksStopped) return null;
       if (this.isAutomationPausedUntilUserTurn(process.sessionId)) {
         continue;
       }
@@ -4044,6 +4228,7 @@ export class Supervisor {
     let dueAtMs: number | null = null;
     const candidates = (await this.getHeartbeatTurnCandidates?.()) ?? [];
     for (const candidate of candidates) {
+      if (this.backgroundTasksStopped) return null;
       dueAtMs = earliestDueAt(
         dueAtMs,
         await this.queueHeartbeatTurnForCandidate(candidate, now, log),
@@ -4078,6 +4263,7 @@ export class Supervisor {
    * churn cannot make heartbeats cost more than the fixed tick they replaced.
    */
   private requestHeartbeatSweep(): void {
+    if (this.backgroundTasksStopped) return;
     if (this.heartbeatScheduler.isArmedWithin(HEARTBEAT_RECHECK_MS)) return;
     if (!this.hasHeartbeatWork()) return;
     this.heartbeatScheduler.requestSweepWithin(HEARTBEAT_RECHECK_MS);
@@ -4089,6 +4275,7 @@ export class Supervisor {
    * if it had settled.
    */
   notifyHeartbeatScheduleChanged(): void {
+    if (this.backgroundTasksStopped) return;
     this.heartbeatCandidateDueAtMs = 0;
     this.heartbeatScheduler.requestSweepWithin(HEARTBEAT_RECHECK_MS);
   }
@@ -4200,6 +4387,7 @@ export class Supervisor {
     process: Process,
     delayMs: number,
   ): void {
+    if (this.backgroundTasksStopped) return;
     const existing = this.patientCheckTimers.get(process.id);
     if (existing) {
       clearTimeout(existing);
@@ -4299,7 +4487,7 @@ export class Supervisor {
     }
 
     if (action.type === "interrupt") {
-      void this.interruptHeartbeatTurnForProcess(process, {
+      const interrupt = this.interruptHeartbeatTurnForProcess(process, {
         now,
         log,
         text,
@@ -4310,6 +4498,21 @@ export class Supervisor {
         forceIdleMs: action.forceIdleMs,
         livenessStatus: liveness.derivedStatus,
       });
+      this.heartbeatInterruptTasks.add(interrupt);
+      void interrupt.then(
+        () => this.heartbeatInterruptTasks.delete(interrupt),
+        (error) => {
+          this.heartbeatInterruptTasks.delete(interrupt);
+          log.error(
+            {
+              event: "heartbeat_interrupt_failed",
+              sessionId: process.sessionId,
+              error,
+            },
+            "Heartbeat interrupt failed",
+          );
+        },
+      );
       return blockedAtMs;
     }
 
@@ -4378,6 +4581,8 @@ export class Supervisor {
         preamble: FORCED_HEARTBEAT_INTERRUPT_PREAMBLE,
       },
     );
+
+    if (this.backgroundTasksStopped) return;
 
     if (interrupted) {
       log.warn(
@@ -4571,7 +4776,7 @@ export class Supervisor {
       void process
         .probeLiveness()
         .then((probe) => {
-          if (!probe) {
+          if (this.backgroundTasksStopped || !probe) {
             return;
           }
           const event =
@@ -5524,7 +5729,31 @@ export class Supervisor {
     }
   }
 
+  /**
+   * An operator API token for a launch that may hold one: local and outside
+   * any YA session sandbox. A limited user's launch is always sandboxed.
+   */
+  private agentServerAccessForLaunch(
+    sandboxed: boolean,
+    executor: string | undefined,
+  ): AgentServerAccess | undefined {
+    if (sandboxed || executor) return undefined;
+    return this.mintAgentServerAccess?.();
+  }
+
+  /** Tie a launch's token to its process, or revoke it if none started. */
+  private holdAgentServerAccess(
+    process: Process | null,
+    access: AgentServerAccess | undefined,
+  ): void {
+    if (!access) return;
+    if (process) this.agentServerAccessByProcess.set(process.id, access);
+    else access.revoke();
+  }
+
   private unregisterProcess(process: Process): void {
+    this.agentServerAccessByProcess.get(process.id)?.revoke();
+    this.agentServerAccessByProcess.delete(process.id);
     this.assertProviderOwnershipSettled(process, "unregister");
     this.observedProcessIds.delete(process.id);
     this.compactThresholdCheckedAssistantVersion.delete(process.id);
@@ -6123,7 +6352,7 @@ export class Supervisor {
 
         request.resolve({ status: "started", processId: process.id });
         try {
-          await request.onStarted?.(process.sessionId);
+          await request.onStarted?.(process.sessionId, process);
         } catch (error) {
           getLogger().warn(
             {

@@ -28,6 +28,10 @@ const EXCLUDED_VARS = new Set([
   // A nested YA session must never adopt its caller's self-inspection grant.
   "AGENT_YA_API_URL",
   "AGENT_YA_API_TOKEN",
+  // Nor a caller's operator API token: a YA server started from an agent
+  // shell would otherwise hand it to every child, sandboxed ones included.
+  // A launch that should have one gets its own through agentServerEnvironment.
+  "AGENT_SERVER_TOKEN",
   // npm/pnpm specific
   "npm_execpath",
   "npm_node_execpath",

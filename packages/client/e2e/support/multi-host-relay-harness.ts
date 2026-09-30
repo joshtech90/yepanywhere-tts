@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { configureRemoteAccess, waitForRelayStatus } from "../fixtures.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
   type YaServerProcess,
   type StartYaServerProcessOptions,
 } from "./ya-server-process.js";
@@ -23,7 +23,7 @@ export interface MultiHostRelayHarness {
   relayUrl: string;
   sessionId: string;
   formatOutput(): string;
-  stop(): void;
+  stop(): Promise<void>;
   waitForWaitingHosts(): Promise<void>;
 }
 
@@ -72,7 +72,14 @@ export async function startMultiHostRelayHarness(
     (result): result is PromiseRejectedResult => result.status === "rejected",
   );
   if (failedStart) {
-    for (const server of startedServers) stopYaServerProcess(server);
+    try {
+      await disposeServers(startedServers);
+    } catch (cleanup) {
+      throw new AggregateError(
+        [failedStart.reason, cleanup],
+        "Multi-host startup and cleanup failed",
+      );
+    }
     throw failedStart.reason;
   }
 
@@ -82,8 +89,8 @@ export async function startMultiHostRelayHarness(
       throw new Error(`Missing profile name for server ${index}`);
     }
     return {
-      displayName: profile[0].toUpperCase() + profile.slice(1),
-      expectedFixtureText: `${profile[0].toUpperCase()}${profile.slice(1)} previous message`,
+      displayName: profile.charAt(0).toUpperCase() + profile.slice(1),
+      expectedFixtureText: `${profile.charAt(0).toUpperCase()}${profile.slice(1)} previous message`,
       password,
       server,
       username: `e2e-${profile}-${runId}`,
@@ -106,7 +113,14 @@ export async function startMultiHostRelayHarness(
       ),
     );
   } catch (error) {
-    for (const host of hosts) stopYaServerProcess(host.server);
+    try {
+      await disposeServers(hosts.map((host) => host.server));
+    } catch (cleanup) {
+      throw new AggregateError(
+        [error, cleanup],
+        "Multi-host configuration and cleanup failed",
+      );
+    }
     throw error;
   }
 
@@ -119,10 +133,10 @@ export async function startMultiHostRelayHarness(
     sessionId,
     formatOutput: () =>
       hosts.map(formatServerOutput).filter(Boolean).join("\n"),
-    stop: () => {
+    stop: async () => {
       if (stopped) return;
+      await disposeServers(hosts.map((host) => host.server));
       stopped = true;
-      for (const host of hosts) stopYaServerProcess(host.server);
     },
     waitForWaitingHosts: () =>
       Promise.all(
@@ -131,4 +145,13 @@ export async function startMultiHostRelayHarness(
         ),
       ).then(() => undefined),
   };
+}
+
+async function disposeServers(servers: YaServerProcess[]): Promise<void> {
+  const results = await Promise.allSettled(servers.map(disposeYaServerProcess));
+  const errors = results.flatMap((result) =>
+    result.status === "rejected" ? [result.reason] : [],
+  );
+  if (errors.length)
+    throw new AggregateError(errors, "Multi-host cleanup failed");
 }

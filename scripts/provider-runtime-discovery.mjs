@@ -51,6 +51,7 @@ const SOURCE_RESOLUTION_PATHS = [
   "packages/server/tsconfig.json",
   "packages/shared/package.json",
   "packages/shared/tsconfig.json",
+  "packages/server/src/projects/project-service-worker.ts",
 ];
 
 function errorMessage(error) {

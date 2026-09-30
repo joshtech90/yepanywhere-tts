@@ -3,6 +3,52 @@ import { EventBus } from "../../src/watcher/EventBus.js";
 import { ProviderSessionWatcherRegistry } from "../../src/watcher/ProviderSessionWatcherRegistry.js";
 
 describe("ProviderSessionWatcherRegistry", () => {
+  it("reports observation readiness without activation or storage probes", () => {
+    const directoryExists = vi.fn(() => true);
+    let baselineState = "scheduled" as "scheduled" | "complete" | "failed";
+    let watching = true;
+    let error: string | null = null;
+    const registry = new ProviderSessionWatcherRegistry({
+      eventBus: new EventBus(),
+      specs: [{ family: "claude", provider: "claude", watchDir: "/claude" }],
+      directoryExists,
+      createWatcher: () => ({
+        start: vi.fn(),
+        stop: vi.fn(),
+        getObservationDiagnostics: () => ({ watching, baselineState, error }),
+      }),
+    });
+    expect(registry.getDiagnostics().families).toEqual([
+      {
+        family: "claude",
+        pending: false,
+        watching: false,
+        baselineState: "idle",
+        error: null,
+      },
+    ]);
+    expect(directoryExists).not.toHaveBeenCalled();
+    registry.activate(["claude"]);
+    expect(registry.getDiagnostics().families[0]).toMatchObject({
+      watching: true,
+      baselineState: "scheduled",
+    });
+    baselineState = "complete";
+    expect(registry.getDiagnostics().families[0]).toMatchObject({
+      watching: true,
+      baselineState: "complete",
+    });
+    watching = false;
+    error = "Observation failed";
+    expect(registry.getDiagnostics().families[0]).toMatchObject({
+      watching: false,
+      error,
+    });
+    baselineState = "failed";
+    expect(registry.getDiagnostics().families[0]?.baselineState).toBe("failed");
+    expect(directoryExists).toHaveBeenCalledTimes(1);
+    registry.stop();
+  });
   it("does not probe storage for ineligible families", () => {
     const directoryExists = vi.fn(() => true);
     const createWatcher = vi.fn(() => ({

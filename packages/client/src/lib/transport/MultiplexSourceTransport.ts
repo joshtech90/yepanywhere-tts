@@ -135,6 +135,8 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
   private slotState: "detached" | "connecting" | "ready" = "detached";
   private activeSubscriptions = 0;
   private lastError: string | undefined;
+  /** Original terminal cause for acquisition/authentication owners. */
+  failure: Error | undefined;
   private disposed = false;
   private removeManagerStateListener: (() => void) | null = null;
   private removeManagerFailureListener: (() => void) | null = null;
@@ -181,12 +183,17 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
         : {}),
     };
     this.removeManagerStateListener = this.manager.on("stateChange", () => {
+      if (this.manager.state === "connected") {
+        this.failure = undefined;
+        this.lastError = undefined;
+      }
       this.mutableStatus.emit();
     });
     this.removeManagerFailureListener = this.manager.on(
       "reconnectFailed",
       (error) => {
         this.lastError = error.message;
+        this.failure = error;
         this.mutableStatus.emit();
       },
     );
@@ -206,6 +213,8 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
       this.detachDeviceHandlers();
     }
 
+    this.failure = undefined;
+    this.lastError = undefined;
     this.connection = connection;
     this.slotState = options.state ?? "ready";
     connection.setConnectionManager?.(this.manager);

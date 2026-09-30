@@ -26,6 +26,7 @@ import {
   enforceOwnerReadWriteFilePermissions,
 } from "../utils/filePermissions.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 /** How long a session can be idle before expiring (7 days) */
 const IDLE_TIMEOUT_MS = 7 * 24 * 60 * 60 * 1000;
@@ -99,6 +100,11 @@ export class RemoteSessionService {
   private filePath: string;
   private persistSessionsToDisk: boolean;
   private saver = createCoalescingSaver(() => this.doSave());
+
+  /** Wait for saves already queued; never starts a write. */
+  async waitForPendingWrites(): Promise<void> {
+    await this.saver.idle();
+  }
   private cleanupTimer: ReturnType<typeof setInterval> | null = null;
   private initialized = false;
   private evictionListener: RemoteSessionEvictionListener | null = null;
@@ -549,8 +555,9 @@ export class RemoteSessionService {
     }
 
     const content = JSON.stringify(this.state, null, 2);
-    await fs.writeFile(this.filePath, content, {
-      encoding: "utf-8",
+    // Atomic: an in-place write interrupted by shutdown leaves an empty file.
+    // A cache of relay logins, so an unreadable one still starts fresh.
+    await writeFileAtomically(this.filePath, content, {
       mode: OWNER_READ_WRITE_FILE_MODE,
     });
     await enforceOwnerReadWriteFilePermissions(

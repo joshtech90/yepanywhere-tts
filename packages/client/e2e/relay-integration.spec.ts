@@ -32,6 +32,8 @@ import {
   waitForRelayStatus,
 } from "./fixtures.js";
 
+import { recordUiCapture } from "./support/ui-capture.js";
+
 // Test credentials
 // Relay username is also used as SRP identity
 const TEST_RELAY_USERNAME = "e2e-relay-test";
@@ -44,8 +46,8 @@ function relayAppPath(path = "projects"): string {
   return `/-/relay/${TEST_RELAY_USERNAME}/${path}`;
 }
 
-function remoteRelayUrl(remoteClientURL: string, path = "projects"): string {
-  return `${remoteClientURL}${relayAppPath(path)}`;
+function remoteRelayUrl(remotePreviewURL: string, path = "projects"): string {
+  return `${remotePreviewURL}${relayAppPath(path)}`;
 }
 
 function deterministicNoise(byteLength: number): Buffer {
@@ -78,10 +80,10 @@ async function goToRelayLogin(page: import("@playwright/test").Page) {
 
 async function loginViaRelay(
   page: import("@playwright/test").Page,
-  remoteClientURL: string,
+  remotePreviewURL: string,
   relayWsURL: string,
 ): Promise<void> {
-  await page.goto(remoteClientURL);
+  await page.goto(remotePreviewURL);
   await goToRelayLogin(page);
   await page.fill('[data-testid="relay-username-input"]', TEST_RELAY_USERNAME);
   await page.fill('[data-testid="srp-password-input"]', TEST_SRP_PASSWORD);
@@ -149,10 +151,10 @@ test.describe("Full Relay Integration", () => {
 
   test("connect via relay, login, and verify app loads", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
-    await page.goto(remoteClientURL);
+    await page.goto(remotePreviewURL);
     await goToRelayLogin(page);
 
     // Fill in relay login form (username is both relay ID and SRP identity)
@@ -191,7 +193,7 @@ test.describe("Full Relay Integration", () => {
 
   test("explicit relay handoff preserves its source without remembered credentials", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     const target = (username: string, relayUrl: string) =>
@@ -205,13 +207,13 @@ test.describe("Full Relay Integration", () => {
       [TEST_RELAY_USERNAME, "wss://different-relay.invalid/ws"],
     ] as const) {
       await page.goto(
-        `${remoteClientURL}${target(TEST_RELAY_USERNAME, relayWsURL)}`,
+        `${remotePreviewURL}${target(TEST_RELAY_USERNAME, relayWsURL)}`,
       );
       await page.fill('[data-testid="srp-password-input"]', TEST_SRP_PASSWORD);
       await page.locator('[data-testid="remember-me-checkbox"]').uncheck();
       await page.click('[data-testid="login-button"]');
       await expect(page).toHaveURL(
-        `${remoteClientURL}${relayAppPath("settings")}`,
+        `${remotePreviewURL}${relayAppPath("settings")}`,
       );
       await expect(page.locator(".sidebar")).toBeVisible();
 
@@ -238,11 +240,11 @@ test.describe("Full Relay Integration", () => {
 
   test("development settings links to the configured relay monitor", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
-    await loginViaRelay(page, remoteClientURL, relayWsURL);
-    await page.goto(remoteRelayUrl(remoteClientURL, "settings/development"));
+    await loginViaRelay(page, remotePreviewURL, relayWsURL);
+    await page.goto(remoteRelayUrl(remotePreviewURL, "settings/development"));
 
     const relayUrl = new URL(relayWsURL);
     relayUrl.protocol = relayUrl.protocol === "wss:" ? "https:" : "http:";
@@ -255,7 +257,7 @@ test.describe("Full Relay Integration", () => {
   test("large assistant content stays viewable directly and uses bounded relay chunks", async ({
     page,
     baseURL,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     test.setTimeout(45_000);
@@ -334,10 +336,10 @@ test.describe("Full Relay Integration", () => {
       ).toBeVisible({ timeout: 20_000 });
 
       observeRelayChunks = true;
-      await loginViaRelay(page, remoteClientURL, relayWsURL);
+      await loginViaRelay(page, remotePreviewURL, relayWsURL);
       await page.goto(
         remoteRelayUrl(
-          remoteClientURL,
+          remotePreviewURL,
           `projects/${projectId}/sessions/${sessionId}`,
         ),
       );
@@ -360,7 +362,7 @@ test.describe("Full Relay Integration", () => {
   test("large user upload crosses relay in bounded upload chunks", async ({
     page,
     baseURL,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     test.setTimeout(45_000);
@@ -410,10 +412,10 @@ test.describe("Full Relay Integration", () => {
           { timeout: 10_000 },
         )
         .toBe(200);
-      await loginViaRelay(page, remoteClientURL, relayWsURL);
+      await loginViaRelay(page, remotePreviewURL, relayWsURL);
       await page.goto(
         remoteRelayUrl(
-          remoteClientURL,
+          remotePreviewURL,
           `projects/${projectId}/sessions/${sessionId}`,
         ),
       );
@@ -445,7 +447,7 @@ test.describe("Full Relay Integration", () => {
   test("large frozen public share uses bounded relay chunks", async ({
     page,
     baseURL,
-    remoteClientURL,
+    remotePreviewURL,
   }) => {
     test.setTimeout(45_000);
     const projectPath = join(e2ePaths.tempDir, "bounded-share-project");
@@ -570,7 +572,7 @@ test.describe("Full Relay Integration", () => {
 
       const viewerUrl = new URL(
         `${shareUrl.pathname}${shareUrl.search}${shareUrl.hash}`,
-        remoteClientURL,
+        remotePreviewURL,
       );
       const chunkSizes: number[] = [];
       page.on("websocket", (socket) => {
@@ -617,13 +619,13 @@ test.describe("Full Relay Integration", () => {
   test("!! Commands sidebar category stays on its relay route", async ({
     page,
     baseURL,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     await setBangHistoryVisibility(baseURL, true);
     try {
       await page.setViewportSize({ width: 375, height: 812 });
-      await page.goto(remoteClientURL);
+      await page.goto(remotePreviewURL);
       await goToRelayLogin(page);
       await page.fill(
         '[data-testid="relay-username-input"]',
@@ -662,11 +664,11 @@ test.describe("Full Relay Integration", () => {
   // This test verifies that sessions persist across page refresh via relay.
   test("session persists after page refresh (auto-resume)", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     // First login via relay
-    await page.goto(remoteClientURL);
+    await page.goto(remotePreviewURL);
     await page.evaluate(() => {
       localStorage.clear();
       sessionStorage.clear();
@@ -765,9 +767,182 @@ test.describe("Full Relay Integration", () => {
     await expect(page.locator(`a[href="${relayAppPath()}"]`)).toBeVisible();
   });
 
-  test("old relay resume session falls back to fresh login", async ({
+  test("recovers an exhausted relay connection on renewed activity without losing input", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
+    relayWsURL,
+  }) => {
+    // Recovery uses an accelerated scheduler. Capture the native frame clock
+    // before installing it so typing still measures actual browser frames.
+    await page.addInitScript(() => {
+      Object.assign(window, {
+        relayTypingNow: performance.now.bind(performance),
+        relayTypingFrame: requestAnimationFrame.bind(window),
+      });
+    });
+    let blocked = false;
+    let failures = 0;
+    const sockets: import("@playwright/test").WebSocketRoute[] = [];
+    const messages: string[] = [];
+    page.on("console", (message) => messages.push(message.text()));
+    await page.routeWebSocket(relayWsURL, (socket) => {
+      if (blocked) {
+        failures++;
+        socket.onMessage(() =>
+          socket.send(
+            JSON.stringify({ type: "client_error", reason: "server_offline" }),
+          ),
+        );
+      } else {
+        sockets.push(socket);
+        socket.connectToServer();
+      }
+    });
+    await loginViaRelay(page, remotePreviewURL, relayWsURL);
+    await page.goto(remoteRelayUrl(remotePreviewURL, "settings"));
+    const search = page.getByRole("searchbox", { name: "Search settings" });
+    await expect(search).toBeVisible();
+    await search.pressSequentially("theme");
+    await expect(search).toHaveValue("theme");
+    const stored = await page.evaluate(() =>
+      localStorage.getItem("yep-anywhere-remote-credentials"),
+    );
+    // Install and pause against one captured timestamp. A fresh Date after
+    // install can already be behind the browser clock on a loaded CI worker.
+    const clockStart = Date.now();
+    await page.clock.install({ time: clockStart });
+    await page.clock.pauseAt(clockStart + 10_000);
+    blocked = true;
+    await Promise.all(
+      sockets.map((socket) =>
+        socket.close({ code: 1012, reason: "Test connection interrupted" }),
+      ),
+    );
+    await expect
+      .poll(() => messages.some((message) => message.includes("attempt 1/10")))
+      .toBe(true);
+    for (let attempt = 1; attempt <= 10; attempt++) {
+      await page.clock.fastForward(31000);
+      await expect.poll(() => failures).toBeGreaterThanOrEqual(attempt);
+      await expect
+        .poll(
+          () =>
+            messages.filter((message) =>
+              message.startsWith(
+                "[ConnectionManager:source-secure] reconnect failed:",
+              ),
+            ).length,
+        )
+        .toBe(attempt);
+    }
+    await expect
+      .poll(() =>
+        messages.some((message) =>
+          message.includes("rapid retry budget exhausted"),
+        ),
+      )
+      .toBe(true);
+    // Exhaustion keeps the mounted page; signals coalesce into one new attempt.
+    await expect(search).toHaveValue("theme");
+    expect(
+      await page.evaluate(() =>
+        localStorage.getItem("yep-anywhere-remote-credentials"),
+      ),
+    ).toBe(stored);
+    // Advance scheduling without making the authenticated proof timestamp
+    // five minutes newer than the real server clock.
+    await page.clock.setFixedTime(new Date());
+    blocked = false;
+    const resumeCount = messages.filter((message) =>
+      message.includes("Session resumed successfully"),
+    ).length;
+    await page.evaluate(() => {
+      window.dispatchEvent(new Event("online"));
+      window.dispatchEvent(new Event("focus"));
+    });
+    await expect
+      .poll(
+        () =>
+          messages.filter((message) =>
+            message.includes("Session resumed successfully"),
+          ).length,
+      )
+      .toBe(resumeCount + 1);
+    const pongCount = messages.filter((message) =>
+      message.includes("pong received"),
+    ).length;
+    await page.evaluate(() =>
+      document.dispatchEvent(new Event("visibilitychange")),
+    );
+    await expect
+      .poll(
+        () =>
+          messages.filter((message) => message.includes("pong received"))
+            .length,
+      )
+      .toBe(pongCount + 1);
+    await expect(search).toHaveValue("theme");
+    await expect(page).toHaveURL(/\/settings$/);
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+    await page.clock.resume();
+    await search.evaluate((element) => {
+      const input = element as HTMLInputElement;
+      const { relayTypingNow: now, relayTypingFrame: frame } =
+        window as unknown as {
+          relayTypingNow: () => number;
+          relayTypingFrame: typeof requestAnimationFrame;
+        };
+      const samples: Array<{
+        ms: number;
+        fakeMs: number | null;
+        present: boolean;
+      }> = [];
+      let started = 0;
+      let fakeStarted = 0;
+      input.addEventListener("keydown", () => {
+        started = now();
+        fakeStarted = performance.now();
+        // Concurrent real socket health traffic while acknowledging typing.
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      input.addEventListener("input", () => {
+        const expected = input.value;
+        const keyStarted = started;
+        const keyFakeStarted = fakeStarted;
+        const sample = { ms: 0, fakeMs: null as number | null, present: false };
+        frame(() => {
+          sample.ms = now() - keyStarted;
+          sample.present = input.value.startsWith(expected);
+          samples.push(sample);
+          input.dataset.typingSamples = JSON.stringify(samples);
+        });
+        requestAnimationFrame(() => {
+          sample.fakeMs = performance.now() - keyFakeStarted;
+          input.dataset.typingSamples = JSON.stringify(samples);
+        });
+      });
+    });
+    await search.pressSequentially(" color", { delay: 20 });
+    await expect(search).toHaveValue("theme color");
+    await expect
+      .poll(
+        async () =>
+          JSON.parse((await search.getAttribute("data-typing-samples")) ?? "[]")
+            .length,
+      )
+      .toBe(6);
+    const samples = JSON.parse(
+      (await search.getAttribute("data-typing-samples")) ?? "[]",
+    ) as Array<{ ms: number; present: boolean }>;
+    expect(
+      samples.every((sample) => sample.present && sample.ms <= 100),
+      JSON.stringify(samples),
+    ).toBe(true);
+  });
+
+  test("old relay resume rejection explains why fresh login is needed", async ({
+    page,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     await page.addInitScript(
@@ -814,11 +989,22 @@ test.describe("Full Relay Integration", () => {
       { relayUrl: relayWsURL, relayUsername: TEST_RELAY_USERNAME },
     );
 
-    await page.goto(`${remoteClientURL}/${TEST_RELAY_USERNAME}/projects`);
+    await page.goto(`${remotePreviewURL}/${TEST_RELAY_USERNAME}/projects`);
 
-    await expect(page.locator('[data-testid="relay-login-form"]')).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(
+      page.getByText("Sign in required", { exact: true }),
+    ).toBeVisible();
+    for (const [name, size] of [
+      ["desktop", { width: 1000, height: 600 }],
+      ["phone", { width: 375, height: 812 }],
+    ] as const) {
+      await page.setViewportSize(size);
+      await recordUiCapture(page, `resume-rejected-${name}`, size);
+    }
+    await page.getByRole("button", { name: "Go to Login" }).click();
+    await expect(
+      page.locator('[data-testid="relay-login-form"]'),
+    ).toBeVisible();
     expect(new URL(page.url()).searchParams.get("returnTo")).toBe(
       relayAppPath(),
     );
@@ -842,7 +1028,7 @@ test.describe("Full Relay Integration", () => {
 
   test("fresh relay login updates stale saved host relay URL", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
     await page.addInitScript((relayUsername: string) => {
@@ -871,7 +1057,7 @@ test.describe("Full Relay Integration", () => {
       u: TEST_RELAY_USERNAME,
       r: relayWsURL,
     });
-    await page.goto(`${remoteClientURL}/login/relay?${params.toString()}`);
+    await page.goto(`${remotePreviewURL}/login/relay?${params.toString()}`);
 
     await page.fill('[data-testid="srp-password-input"]', TEST_SRP_PASSWORD);
     await page.click('[data-testid="login-button"]');
@@ -887,10 +1073,10 @@ test.describe("Full Relay Integration", () => {
 
   test("mock project visible through relay connection", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
-    await page.goto(remoteClientURL);
+    await page.goto(remotePreviewURL);
     await goToRelayLogin(page);
 
     // Fill in relay login form (username is both relay ID and SRP identity)
@@ -919,10 +1105,10 @@ test.describe("Full Relay Integration", () => {
 
   test("wrong password shows error through relay", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
   }) => {
-    await page.goto(remoteClientURL);
+    await page.goto(remotePreviewURL);
     await goToRelayLogin(page);
 
     // Fill in relay login form with wrong password
@@ -952,7 +1138,7 @@ test.describe("Full Relay Integration", () => {
 
   test("server offline error when relay username not registered", async ({
     page,
-    remoteClientURL,
+    remotePreviewURL,
     relayWsURL,
     baseURL,
   }) => {
@@ -962,7 +1148,7 @@ test.describe("Full Relay Integration", () => {
     // Wait a moment for relay to disconnect
     await page.waitForTimeout(500);
 
-    await page.goto(remoteClientURL);
+    await page.goto(remotePreviewURL);
     await goToRelayLogin(page);
 
     // Try to connect to unregistered username

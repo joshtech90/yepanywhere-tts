@@ -30,6 +30,7 @@ export function createGlobalSessionsCollectionQueryDescriptor(options: {
   limit?: number;
   includeArchived?: boolean;
   starred?: boolean;
+  categorized?: boolean;
 }): SessionCollectionQueryDescriptor {
   return {
     scope: "global-sessions",
@@ -38,6 +39,7 @@ export function createGlobalSessionsCollectionQueryDescriptor(options: {
     limit: options.limit,
     includeArchived: options.includeArchived,
     starred: options.starred,
+    ...(options.categorized ? { categorized: true } : {}),
   };
 }
 
@@ -51,6 +53,8 @@ export function createGlobalSessionsQueryKey(
     limit: descriptor.limit ?? null,
     includeArchived: descriptor.includeArchived === true,
     starred: descriptor.starred === true,
+    // Only present when set, so every pre-existing query keeps its key.
+    ...(descriptor.categorized ? { categorized: true } : {}),
   };
   return JSON.stringify(normalized);
 }
@@ -390,6 +394,15 @@ export function selectStarredSessionRecords(
 ): SessionCollectionRecord[] {
   return selectStarredSessionRecordsFromRecords(
     Array.from(state.sessions.entities.values()),
+  );
+}
+
+/** Every loaded, unarchived session filed under a sidebar category. */
+export function selectCategorizedSessionRecords(
+  state: ClientSummaryState,
+): SessionCollectionRecord[] {
+  return Array.from(state.sessions.entities.values()).filter(
+    (record) => Boolean(record.sidebarCategory) && record.isArchived !== true,
   );
 }
 

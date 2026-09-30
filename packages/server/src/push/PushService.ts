@@ -12,6 +12,7 @@ import * as path from "node:path";
 import webPush, { type RequestOptions } from "web-push";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 import { HttpError } from "../middleware/error-handler.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 import {
   DEFAULT_NOTIFICATION_SETTINGS,
   type NotificationSettings,
@@ -363,7 +364,7 @@ export class PushService {
   private async doSave(): Promise<void> {
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      await writeFileAtomically(this.filePath, content);
     } catch (error) {
       console.error("[PushService] Failed to save subscriptions:", error);
       throw error;

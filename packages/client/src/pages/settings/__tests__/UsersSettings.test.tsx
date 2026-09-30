@@ -20,6 +20,7 @@ const {
   mockListUsers,
   mockCreateUser,
   mockDeleteUser,
+  mockUpdateUser,
   mockUpdateSetting,
   mockRefreshPrincipal,
 } = vi.hoisted(() => ({
@@ -39,6 +40,7 @@ const {
   mockListUsers: vi.fn(),
   mockCreateUser: vi.fn(),
   mockDeleteUser: vi.fn(),
+  mockUpdateUser: vi.fn(),
   mockUpdateSetting: vi.fn(),
   mockRefreshPrincipal: vi.fn(),
 }));
@@ -47,7 +49,7 @@ vi.mock("../../../api/client", () => ({
   api: {
     listUsers: mockListUsers,
     createUser: mockCreateUser,
-    updateUser: vi.fn(),
+    updateUser: mockUpdateUser,
     deleteUser: mockDeleteUser,
     switchUser: vi.fn(),
     logoutUser: vi.fn(),
@@ -63,9 +65,20 @@ vi.mock("../../../hooks/useActingPrincipal", () => ({
   }),
 }));
 
+// No version by default: every optional capability reads as unsupported.
+const versionState = vi.hoisted(() => ({
+  version: undefined as { capabilities: string[] } | undefined,
+}));
+vi.mock("../../../hooks/useVersion", () => ({
+  useVersion: () => ({ version: versionState.version }),
+}));
+
 vi.mock("../../../hooks/useProjects", () => ({
   useProjects: () => ({
-    projects: [{ id: "p1", name: "Alpha", path: "/tmp/alpha" }],
+    projects: [
+      { id: "p1", name: "Alpha", path: "/tmp/alpha" },
+      { id: "p2", name: "Beta", path: "/tmp/beta" },
+    ],
   }),
 }));
 
@@ -135,15 +148,20 @@ describe("Settings → Users", () => {
       logoutRedirect: "stay",
     };
     principalState.resolved = true;
+    versionState.version = undefined;
     settingsState.settings = {};
     mockListUsers.mockReset();
     mockCreateUser.mockReset();
     mockDeleteUser.mockReset();
+    mockUpdateUser.mockReset();
     mockUpdateSetting.mockReset();
     mockRefreshPrincipal.mockReset();
     mockListUsers.mockResolvedValue({ users: [], enabled: false });
     mockCreateUser.mockResolvedValue({ user: user() });
     mockDeleteUser.mockResolvedValue({ success: true });
+    mockUpdateUser.mockImplementation(async (username: string, draft) => ({
+      user: user({ username, ...draft }),
+    }));
   });
 
   afterEach(() => {
@@ -151,11 +169,84 @@ describe("Settings → Users", () => {
     vi.restoreAllMocks();
   });
 
+  it("gates the new session and app permissions and preserves their defaults", async () => {
+    versionState.version = {
+      capabilities: [
+        "limited-user-no-project-sessions",
+        "project-app-address-links",
+      ],
+    };
+    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "usersAllowNoProject",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "usersAllowPublicApps",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(false);
+    expect(
+      (
+        screen.getByRole("checkbox", {
+          name: "usersAllowPrivateAppLinks",
+        }) as HTMLInputElement
+      ).checked,
+    ).toBe(true);
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "usersAllowNoProject" }),
+    );
+    await waitFor(() =>
+      expect(mockUpdateUser).toHaveBeenCalledWith(
+        "alice",
+        expect.objectContaining({
+          allowNoProjectSessions: true,
+          allowPublicApps: false,
+          allowPrivateAppLinks: true,
+        }),
+      ),
+    );
+  });
+
+  it("omits unsupported permissions from older-server updates", async () => {
+    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    expect(
+      screen.queryByRole("checkbox", { name: "usersAllowNoProject" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", { name: "usersAllowPublicApps" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", { name: "usersAllowPrivateAppLinks" }),
+    ).toBeNull();
+    fireEvent.change(screen.getByLabelText("Alpha"), {
+      target: { value: "view" },
+    });
+    await waitFor(() => expect(mockUpdateUser).toHaveBeenCalled());
+    const payload = mockUpdateUser.mock.calls[0]![1];
+    for (const field of [
+      "allowNoProjectSessions",
+      "allowPublicApps",
+      "allowPrivateAppLinks",
+    ])
+      expect(payload).not.toHaveProperty(field);
+  });
+
   it("requires confirmation before deleting a user and keeps them on cancel", async () => {
     mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     render(<UsersSettings />);
-    fireEvent.click(await screen.findByRole("button", { name: "usersDelete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    fireEvent.click(screen.getByRole("button", { name: "usersDelete" }));
     expect(confirm).toHaveBeenCalledWith("usersDeleteConfirm");
     expect(mockDeleteUser).not.toHaveBeenCalled();
     expect(screen.getByText("alice")).toBeTruthy();
@@ -166,6 +257,30 @@ describe("Settings → Users", () => {
     await waitFor(() => expect(mockDeleteUser).toHaveBeenCalledTimes(1));
     expect(mockDeleteUser).toHaveBeenCalledWith("alice");
     await waitFor(() => expect(screen.queryByText("alice")).toBeNull());
+  });
+
+  it("lists only granted projects until the rest are expanded", async () => {
+    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+
+    expect(screen.getByLabelText("Alpha")).toBeTruthy();
+    expect(screen.queryByLabelText("Beta")).toBeNull();
+
+    // Revoking a shown grant keeps its row, so the change stays visible.
+    fireEvent.change(screen.getByLabelText("Alpha"), {
+      target: { value: "none" },
+    });
+    expect(screen.getByLabelText("Alpha")).toBeTruthy();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "usersProjectsShowNoAccess" }),
+    );
+    expect(screen.getByLabelText("Beta")).toBeTruthy();
+    fireEvent.click(
+      screen.getByRole("button", { name: "usersProjectsHideNoAccess" }),
+    );
+    expect(screen.queryByLabelText("Beta")).toBeNull();
   });
 
   it("offers the toggle and adding the first user while the feature is off", async () => {
@@ -186,7 +301,7 @@ describe("Settings → Users", () => {
     // The toggle is present and off, and adding a user does not wait for it.
     const toggle = screen.getByRole("checkbox") as HTMLInputElement;
     expect(toggle.checked).toBe(false);
-    fireEvent.click(screen.getByRole("button", { name: "usersAddUser" }));
+    fireEvent.click(screen.getByRole("button", { name: "+ usersAddUser" }));
     expect(
       screen.getByPlaceholderText("usersUsernamePlaceholder"),
     ).toBeTruthy();
@@ -196,35 +311,127 @@ describe("Settings → Users", () => {
     render(<UsersSettings />);
     await waitFor(() => expect(mockListUsers).toHaveBeenCalled());
 
-    fireEvent.click(screen.getByRole("button", { name: "usersAddUser" }));
+    fireEvent.click(screen.getByRole("button", { name: "+ usersAddUser" }));
     fireEvent.change(screen.getByPlaceholderText("usersUsernamePlaceholder"), {
       target: { value: "alice" },
     });
     fireEvent.change(screen.getByPlaceholderText("usersPasswordPlaceholder"), {
       target: { value: "alice-password" },
     });
-    fireEvent.change(screen.getByLabelText("Alpha"), {
-      target: { value: "new-session" },
-    });
-    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    const created = user({ newSessionProjects: [] });
+    mockCreateUser.mockResolvedValue({ user: created });
+    mockListUsers.mockResolvedValue({ users: [created], enabled: true });
     fireEvent.click(screen.getByRole("button", { name: "usersCreateUser" }));
 
     await waitFor(() => {
       expect(mockCreateUser).toHaveBeenCalledWith({
         username: "alice",
         password: "alice-password",
-        newSessionProjects: ["p1"],
-        joinProjects: [],
-        viewProjects: [],
-        joinStaleOffsetMinutes: 0,
-        lock: {},
-        // Always sent, so clearing the field revokes the creation grant.
-        projectRoot: "",
       });
     });
     // Creating the first user turns the feature on server-side.
     expect(mockRefreshPrincipal).toHaveBeenCalled();
-    await waitFor(() => expect(screen.getByText("alice")).toBeTruthy());
+    // The new user opens in the editor, where a new user's projects all
+    // start behind the expander.
+    await screen.findByText("usersEditUserTitle");
+    expect(
+      screen
+        .getByRole("button", { name: "alice" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(screen.queryByLabelText("Alpha")).toBeNull();
+  });
+
+  it("saves a choice at once and typed text on blur, without a Save button", async () => {
+    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    expect(screen.queryByRole("button", { name: "usersSaveUser" })).toBeNull();
+
+    // An unchanged blur sends nothing.
+    const offset = screen.getByRole("spinbutton");
+    fireEvent.blur(offset);
+    expect(mockUpdateUser).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("Alpha"), {
+      target: { value: "view" },
+    });
+    await waitFor(() => expect(mockUpdateUser).toHaveBeenCalledTimes(1));
+    expect(mockUpdateUser.mock.calls[0]?.[1]).toMatchObject({
+      newSessionProjects: [],
+      viewProjects: ["p1"],
+      disabled: false,
+    });
+
+    fireEvent.change(offset, { target: { value: "7" } });
+    expect(mockUpdateUser).toHaveBeenCalledTimes(1);
+    fireEvent.blur(offset);
+    await waitFor(() => expect(mockUpdateUser).toHaveBeenCalledTimes(2));
+    expect(mockUpdateUser.mock.calls[1]?.[1]).toMatchObject({
+      joinStaleOffsetMinutes: 7,
+    });
+    expect(await screen.findByText(/usersAutosaveSaved/)).toBeTruthy();
+    // Still editing the same user.
+    expect(screen.getByText("usersEditUserTitle")).toBeTruthy();
+  });
+
+  it("grants a user's project directory, picked by username, at once", async () => {
+    versionState.version = { capabilities: ["limited-user-path-grants"] };
+    mockListUsers.mockResolvedValue({
+      users: [user(), user({ username: "bobby", projectRoot: "~/bobby" })],
+      enabled: true,
+    });
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    fireEvent.change(
+      screen.getByRole("combobox", { name: "usersDirectoryFromUser" }),
+      { target: { value: "~/bobby" } },
+    );
+    await waitFor(() => expect(mockUpdateUser).toHaveBeenCalledTimes(1));
+    expect(mockUpdateUser.mock.calls[0]?.[1]).toMatchObject({
+      pathGrants: [{ path: "~/bobby", level: "view" }],
+    });
+    // An added row saves nothing until it names a directory.
+    fireEvent.click(screen.getByRole("button", { name: "usersDirectoryAdd" }));
+    fireEvent.blur(
+      screen.getAllByRole("textbox", { name: "usersDirectoryPath" })[1]!,
+    );
+    expect(mockUpdateUser).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends no directory grants to a server that would ignore them", async () => {
+    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    expect(screen.queryByText("usersDirectoriesHeading")).toBeNull();
+    fireEvent.change(screen.getByLabelText("Alpha"), {
+      target: { value: "view" },
+    });
+    await waitFor(() => expect(mockUpdateUser).toHaveBeenCalledTimes(1));
+    expect(mockUpdateUser.mock.calls[0]?.[1]).not.toHaveProperty("pathGrants");
+  });
+
+  it("disables a user without deleting or asking", async () => {
+    mockListUsers.mockResolvedValue({ users: [user()], enabled: true });
+    const confirm = vi.spyOn(window, "confirm");
+    render(<UsersSettings />);
+    fireEvent.click(await screen.findByRole("button", { name: "alice" }));
+    fireEvent.click(
+      screen.getByRole("checkbox", { name: "usersEnabledLabel" }),
+    );
+
+    await waitFor(() => expect(mockUpdateUser).toHaveBeenCalledTimes(1));
+    expect(mockUpdateUser.mock.calls[0]).toEqual([
+      "alice",
+      expect.objectContaining({ disabled: true }),
+    ]);
+    expect(confirm).not.toHaveBeenCalled();
+    expect(mockDeleteUser).not.toHaveBeenCalled();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "alice" }).className).toContain(
+        "userChipDisabled",
+      ),
+    );
   });
 
   it("shows a limited user their own account instead of the directory", async () => {

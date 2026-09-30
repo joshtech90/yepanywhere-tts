@@ -173,7 +173,8 @@ test("exports matching source states, a complete bundle, and a working direct YA
         `${JSON.stringify({ ...inventory, files, screenshots }, null, 2)}\n`,
       );
     } finally {
-      exported.httpServer.closeAllConnections();
+      if ("closeAllConnections" in exported.httpServer)
+        exported.httpServer.closeAllConnections();
       await new Promise<void>((done, reject) =>
         exported.httpServer.close((error) => (error ? reject(error) : done())),
       );

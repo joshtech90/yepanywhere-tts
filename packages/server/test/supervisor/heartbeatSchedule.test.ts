@@ -325,3 +325,34 @@ describe("HeartbeatSweepScheduler under clock and sleep faults", () => {
     expect(scheduler.getMetrics().sweepErrors).toBe(1);
   });
 });
+
+describe("HeartbeatSweepScheduler owner disposal", () => {
+  it("joins an in-flight storage read before disposal completes", async () => {
+    const time = clock();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const scheduler = new HeartbeatSweepScheduler({
+      sweep: async () => {
+        await held;
+        return time.now() + 1000;
+      },
+      now: time.now,
+      arm: time.arm,
+    });
+    scheduler.requestSweepWithin(0);
+    await time.advanceToNext();
+    let disposed = false;
+    const disposal = scheduler.stopAndDrain().then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+    release();
+    await disposal;
+    expect(disposed).toBe(true);
+    expect(time.armedCount()).toBe(0);
+    await scheduler.stopAndDrain();
+  });
+});

@@ -58,6 +58,7 @@ const state = vi.hoisted(() => ({
   updateProjectCodeName: vi.fn(),
   addProject: vi.fn(),
   navigate: vi.fn(),
+  username: null as string | null,
 }));
 
 vi.mock("../../api/client", () => ({
@@ -130,6 +131,14 @@ vi.mock("../../hooks/useProjectQueues", () => ({
 
 vi.mock("../../hooks/useVersion", () => ({
   useVersion: () => ({ version: state.version }),
+}));
+
+vi.mock("../../hooks/useActingPrincipal", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../hooks/useActingPrincipal")>()),
+  useActingPrincipal: () => ({
+    principal: { username: state.username, superuser: state.username === null },
+    resolved: true,
+  }),
 }));
 
 vi.mock("../../lib/connection", () => ({
@@ -209,6 +218,7 @@ describe("ProjectsPage", () => {
     state.updateProjectCodeName.mockResolvedValue({ assignments: [] });
     state.addProject.mockReset();
     state.navigate.mockReset();
+    state.username = null;
   });
 
   function renderProjectsPage() {
@@ -220,6 +230,30 @@ describe("ProjectsPage", () => {
       </I18nProvider>,
     );
   }
+
+  it("explains personal removal only when the connected server guarantees it", () => {
+    state.username = "archer";
+    state.version = { capabilities: ["personal-project-hiding"] };
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const rendered = renderProjectsPage();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Remove from my projects" }),
+    );
+    expect(confirm).toHaveBeenCalledWith(
+      expect.stringContaining("administrator retains"),
+    );
+    rendered.unmount();
+    state.version = { capabilities: [] };
+    renderProjectsPage();
+    expect(
+      screen.queryByRole("button", { name: "Remove from my projects" }),
+    ).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Remove project" }));
+    expect(confirm).toHaveBeenLastCalledWith(
+      expect.stringContaining("YA's project list"),
+    );
+    confirm.mockRestore();
+  });
 
   it("adds a project by path alone and opens a new session in it", async () => {
     state.addProject.mockResolvedValue({

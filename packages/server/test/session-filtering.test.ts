@@ -3,9 +3,13 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { MockClaudeSDK } from "../src/sdk/mock.js";
+import { Hono } from "hono";
+import { ProjectScanner } from "../src/projects/scanner.js";
+import { createProjectsRoutes } from "../src/routes/projects.js";
+import { ClaudeSessionReader } from "../src/sessions/reader.js";
+import { OpenCodeSessionReader } from "../src/sessions/opencode-reader.js";
+import type { ISessionReader } from "../src/sessions/types.js";
 import { encodeProjectId } from "../src/supervisor/types.js";
-import { createApp } from "./setup/create-app.js";
 
 /**
  * Helper to create a message with a UUID (required for DAG processing).
@@ -38,23 +42,63 @@ function createMessage(
  * See topics/session-summary-fidelity.md for the reader contract.
  */
 describe("Session Filtering", () => {
-  let mockSdk: MockClaudeSDK;
+  let app: Hono;
+  let scanner: ProjectScanner;
+  let readers: Map<string, ISessionReader>;
   let testDir: string;
   let projectDir: string;
   let projectId: string;
   const projectPath = "/home/user/testproject";
 
   beforeEach(async () => {
-    mockSdk = new MockClaudeSDK();
     testDir = join(tmpdir(), `claude-test-${randomUUID()}`);
     const encodedPath = projectPath.replaceAll("/", "-");
     projectDir = join(testDir, "localhost", encodedPath);
     projectId = encodeProjectId(projectPath);
 
     await mkdir(projectDir, { recursive: true });
+    // This contract belongs to the real scanner, transcript readers and HTTP
+    // project routes. A full app also starts unrelated databases, provider
+    // discovery and recurring supervisor work for each filtering assertion.
+    scanner = new ProjectScanner({
+      projectsDir: testDir,
+      enableCodex: false,
+      enableGemini: false,
+    });
+    readers = new Map();
+    app = new Hono();
+    app.route(
+      "/api/projects",
+      createProjectsRoutes({
+        scanner,
+        grokSessionsDir: join(testDir, "empty-grok"),
+        piSessionsDir: join(testDir, "empty-pi"),
+        readerFactory: (project) => {
+          const key = `${project.provider}:${project.sessionDir}`;
+          let reader = readers.get(key);
+          if (!reader) {
+            reader =
+              project.provider === "opencode"
+                ? new OpenCodeSessionReader({
+                    projectPath: project.path,
+                    storageDir: join(testDir, "empty-opencode/storage"),
+                    databasePath: join(testDir, "empty-opencode/opencode.db"),
+                    opencodePath: join(testDir, "empty-opencode/bin/opencode"),
+                  })
+                : new ClaudeSessionReader({ sessionDir: project.sessionDir });
+            readers.set(key, reader);
+          }
+          return reader;
+        },
+      }),
+    );
   });
 
   afterEach(async () => {
+    await scanner.dispose();
+    await Promise.all(
+      Array.from(readers.values(), (reader) => reader.close?.()),
+    );
     await rm(testDir, { recursive: true, force: true });
   });
 
@@ -76,7 +120,6 @@ describe("Session Filtering", () => {
         })}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -104,7 +147,6 @@ describe("Session Filtering", () => {
         );
       }
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request("/api/projects");
       const json = await res.json();
 
@@ -135,7 +177,6 @@ describe("Session Filtering", () => {
         "   \n\n  ",
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -178,7 +219,6 @@ describe("Session Filtering", () => {
         })}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -222,7 +262,6 @@ describe("Session Filtering", () => {
         ].join("\n")}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -257,7 +296,6 @@ describe("Session Filtering", () => {
         ].join("\n")}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -274,7 +312,6 @@ describe("Session Filtering", () => {
         `${createMessage("user", longMessage, null, { cwd: projectPath })}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -290,7 +327,6 @@ describe("Session Filtering", () => {
         `${createMessage("assistant", "Hello!", null, { cwd: projectPath })}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -310,7 +346,6 @@ describe("Session Filtering", () => {
         ].join("\n")}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 
@@ -326,7 +361,6 @@ describe("Session Filtering", () => {
         `${createMessage("assistant", "Continuing from where we left off...", null, { cwd: projectPath })}\n`,
       );
 
-      const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
       const res = await app.request(`/api/projects/${projectId}/sessions`);
       const json = await res.json();
 

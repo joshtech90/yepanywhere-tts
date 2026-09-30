@@ -84,8 +84,8 @@ async function openBrowserSpeechComposer(
           };
         });
         const results = {
-          length: mapped.length,
           ...mapped,
+          length: mapped.length,
           item: (index: number) => mapped[index],
         };
         this.onresult?.call(this, { resultIndex, results } as unknown as Event);

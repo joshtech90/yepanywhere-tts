@@ -63,7 +63,7 @@ function findRunningPhysicalAndroidDevice(): string | null {
       if (fields.length < 2 || fields[1] !== "device") continue;
 
       const serial = fields[0];
-      if (!serial.startsWith("emulator-")) {
+      if (serial && !serial.startsWith("emulator-")) {
         return serial;
       }
     }
@@ -316,10 +316,13 @@ test("streams physical Android device video over WebRTC when attached", async ({
   );
 
   const deviceSerial = findRunningPhysicalAndroidDevice();
-  test.skip(
-    !deviceSerial,
-    "No physical Android device detected — attach a device with USB debugging enabled",
-  );
+  if (!deviceSerial) {
+    test.skip(
+      true,
+      "No physical Android device detected — attach a device with USB debugging enabled",
+    );
+    return;
+  }
 
   await connectToPhysicalDeviceStream(page, baseURL, deviceSerial);
 });
@@ -362,10 +365,13 @@ test("keeps physical Android device stream open for long duration (opt-in)", asy
   );
 
   const deviceSerial = findRunningPhysicalAndroidDevice();
-  test.skip(
-    !deviceSerial,
-    "No physical Android device detected — attach a device with USB debugging enabled",
-  );
+  if (!deviceSerial) {
+    test.skip(
+      true,
+      "No physical Android device detected — attach a device with USB debugging enabled",
+    );
+    return;
+  }
 
   await connectToPhysicalDeviceStream(page, baseURL, deviceSerial);
   await assertStreamStaysHealthyForDuration(page, {

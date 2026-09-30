@@ -22,6 +22,7 @@ import {
   getProjectName,
 } from "../projects/paths.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 import {
   normalizeProjectCodeNameMetadata,
   reconcileProjectCodeNames,
@@ -161,11 +162,14 @@ export class ProjectMetadataService {
         await this.save();
       }
     } catch (error) {
-      // File doesn't exist or is invalid - start fresh
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(
-          "[ProjectMetadataService] Failed to load state, starting fresh:",
-          error,
+        // Project ownership here backs limited users' grants and hidden
+        // projects; starting fresh would silently drop both
+        // (topics/security.md). The file is left as it is.
+        throw new Error(
+          `[ProjectMetadataService] ${this.filePath} is unreadable (${error instanceof Error ? error.message : String(error)}). ` +
+            "Refusing to start without its project ownership records. " +
+            "Restore the file, or delete it to deliberately reset them.",
         );
       }
       this.state = {
@@ -536,7 +540,7 @@ export class ProjectMetadataService {
   private async doSave(): Promise<void> {
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await fs.writeFile(this.filePath, content, "utf-8");
+      await writeFileAtomically(this.filePath, content);
     } catch (error) {
       console.error("[ProjectMetadataService] Failed to save state:", error);
       throw error;

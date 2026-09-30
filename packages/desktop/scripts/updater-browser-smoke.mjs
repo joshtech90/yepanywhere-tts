@@ -57,6 +57,7 @@ try {
   });
   const errors = [];
   page.on("pageerror", (error) => errors.push(String(error)));
+  await page.clock.install();
   await page.addInitScript(() => {
     const callbacks = new Map();
     let next = 1;
@@ -64,7 +65,7 @@ try {
       track: "stable",
       version: null,
       waiting: false,
-      deferred: false,
+      deferred: true,
       installs: 0,
       checks: 0,
       error: null,
@@ -81,8 +82,9 @@ try {
       async invoke(command, args) {
         const f = window.fixture;
         if (command === "plugin:event|listen") {
-          f.check = () =>
-            callbacks.get(args.handler)({ event: args.event, payload: null });
+          if (args.event === "check-for-updates")
+            f.check = () =>
+              callbacks.get(args.handler)({ event: args.event, payload: null });
           return next++;
         }
         if (command === "get_server_status") return "running";
@@ -101,7 +103,6 @@ try {
         }
         if (command === "check_update") {
           f.checks++;
-          if (f.error) throw new Error(f.error);
           const result = {
             track: f.track,
             version: f.version,
@@ -114,6 +115,7 @@ try {
             await new Promise((resolve) => {
               f.resolve = resolve;
             });
+          if (f.error) throw new Error(f.error);
           return result;
         }
         if (command === "install_update") {
@@ -128,6 +130,58 @@ try {
   });
   await page.goto(url);
   await page.waitForFunction(() => typeof window.fixture.check === "function");
+  // A tray click during the automatic startup request must expose that check
+  // and its eventual result, without starting another network request.
+  await page.clock.fastForward(5_000);
+  await page.waitForFunction(() => Boolean(window.fixture.resolve));
+  assert.equal(await page.getByRole("dialog").count(), 0);
+  await page.evaluate(() => window.fixture.check());
+  await page.getByText("Checking for updates…").waitFor({ timeout: 2_000 });
+  assert.equal(await page.evaluate(() => window.fixture.checks), 1);
+  await page.evaluate(() => {
+    window.fixture.deferred = false;
+    window.fixture.resolve();
+  });
+  await page
+    .getByText("You are running the latest version on this channel.")
+    .waitFor();
+  await page.screenshot({ path: join(directory, "desktop.png") });
+  await page.setViewportSize({ width: 375, height: 812 });
+  await page.screenshot({ path: join(directory, "phone.png") });
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  // A current app still owes a visible answer hours after startup, even
+  // though an automatic no-update check intentionally stays silent.
+  await page.clock.fastForward(6 * 60 * 60 * 1000);
+  await page.evaluate(() => window.fixture.check());
+  await page
+    .getByText("You are running the latest version on this channel.")
+    .waitFor();
+  assert.equal(await page.evaluate(() => window.fixture.checks), 2);
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.deferred = true;
+    window.fixture.resolve = null;
+  });
+  await page.clock.fastForward(18 * 60 * 60 * 1000);
+  await page.waitForFunction(() => Boolean(window.fixture.resolve));
+  await page.evaluate(() => {
+    window.fixture.check();
+    window.fixture.check();
+  });
+  await page.getByText("Checking for updates…").waitFor();
+  assert.equal(await page.evaluate(() => window.fixture.checks), 3);
+  await page.evaluate(() => {
+    window.fixture.error = "Network unavailable";
+    window.fixture.resolve();
+    window.fixture.deferred = false;
+  });
+  await page
+    .getByText(/Failed to check for updates:.*Network unavailable/)
+    .waitFor();
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  await page.evaluate(() => {
+    window.fixture.error = null;
+  });
   await page.evaluate(() => window.fixture.check());
   await page
     .getByText("You are running the latest version on this channel.")
@@ -135,9 +189,6 @@ try {
   await page.locator("select").selectOption("latest");
   await page.getByText("Version 0.3.201 is available.").waitFor();
   assert.equal(await page.evaluate(() => window.fixture.installs), 0);
-  await page.screenshot({ path: join(directory, "desktop.png") });
-  await page.setViewportSize({ width: 375, height: 812 });
-  await page.screenshot({ path: join(directory, "phone.png") });
   assert.equal(
     await page.evaluate(
       () => document.documentElement.scrollWidth <= innerWidth,
@@ -164,6 +215,27 @@ try {
   });
   await page.waitForTimeout(100);
   assert.equal(await page.getByRole("dialog").count(), 0);
+  // Closing and immediately reopening while the old request is pending must
+  // not revive a discarded candidate or swallow the new manual request.
+  await page.evaluate(() => {
+    window.fixture.deferred = true;
+    window.fixture.resolve = null;
+    window.fixture.check();
+  });
+  await page.waitForFunction(() => Boolean(window.fixture.resolve));
+  await page.getByRole("button", { name: "Close", exact: true }).click();
+  const checksBeforeReopen = await page.evaluate(() => window.fixture.checks);
+  await page.evaluate(() => window.fixture.check());
+  await page.getByText("Checking for updates…").waitFor();
+  await page.evaluate(() => {
+    window.fixture.deferred = false;
+    window.fixture.resolve();
+  });
+  await page.getByText(/Waiting for Stable to catch up/).waitFor();
+  assert.equal(
+    await page.evaluate(() => window.fixture.checks),
+    checksBeforeReopen + 1,
+  );
   await page.evaluate(() => window.fixture.check());
   await page.getByText(/Waiting for Stable to catch up/).waitFor();
   await page.evaluate(() => {
@@ -189,6 +261,8 @@ try {
   await page.locator("select").selectOption("latest");
   await page.getByRole("button", { name: "Update and restart" }).click();
   await page.waitForFunction(() => window.fixture.installs === 1);
+  await page.evaluate(() => window.fixture.check());
+  assert.equal(await page.evaluate(() => window.fixture.installs), 1);
   assert.equal(await page.locator("select").isDisabled(), true);
   assert.equal(
     await page.getByRole("button", { name: "Later" }).isVisible(),

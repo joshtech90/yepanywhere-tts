@@ -293,7 +293,7 @@ improvise a different one:
 | Attach accepted, first connect/auth in flight         | `connecting`   |
 | Manager state `reconnecting`                          | `reconnecting` |
 | Manager state `connected`                             | `ready`        |
-| Manager state `disconnected` (gave up / non-retryable)| `disconnected` |
+| Manager state `disconnected` (stopped / non-retryable)| `disconnected` |
 | Localhost, always                                     | `ready`        |
 
 ## File Download Responses
@@ -353,9 +353,10 @@ happens at the ready flip regardless, and it forfeits request-driven recovery
 ## Health And Recovery Ownership
 
 Each multiplex transport owns a **private `ConnectionManager` instance**. The
-manager class and all of its policy — backoff curve, attempt cap, ping/pong,
-45s stale detection, visibility handling, critical-operation suppression — are
-reused unchanged. What moves is the wiring:
+manager class owns backoff, ping/pong, stale detection, visibility handling,
+and critical-operation suppression. The original ownership migration preserved
+policy; the separately approved recovery repair below changes exhausted-retry
+and resume-failure behavior. The ownership wiring remains:
 
 - The transport feeds its own manager from protocol-level traffic (an inbound
   frame/event hook on `RelayProtocol`), not from consumer handlers. Today
@@ -376,6 +377,56 @@ reused unchanged. What moves is the wiring:
   more than one live runtime exists later, suspended (non-current) sources
   skip the wake ping — the suspension policy in the topology topic plugs in
   here.
+
+## Recovery after a temporary outage
+
+A retained source remains `reconnecting` after its ten-attempt rapid retry
+budget is exhausted. Budget exhaustion is not an authentication verdict and
+must not discard the context's connection or status subscription. While visible,
+the exhausted source probes every 60–78 seconds (jittered); hidden exhausted
+sources have no scheduled reconnect probe. Returning to visibility, focus,
+network-online, or keyboard/pointer/history-navigation activity may request one
+immediate probe. Signals coalesce with an in-flight attempt and are rate-limited
+to one signal-triggered probe per five seconds. A signal is a recovery opportunity,
+not proof of network reachability. Healthy connections retain wake ping/pong;
+ordinary exponential backoff is not reset by every focus or key event.
+
+The source transport remains the recovery owner after authentication. Before
+there is an attached connection, the context or relay route's failed acquisition
+can retry on the same signals or visible slow cadence, never both concurrently.
+Success restores the existing route and live managed subscriptions. Recovery
+must preserve in-memory drafts and acknowledge sequential typing within 100 ms.
+Intentional disconnect, host switching, disposal and terminal verification/auth
+failures stop automatic recovery. Late completions cannot revive stopped or
+superseded attempts.
+
+### Resume credentials and failure evidence
+
+A local handshake timeout, socket failure, relay outage, unknown error, or
+exhausted retry budget must not delete a saved SRP resume credential or claim the
+server rejected it. Both global remembered credentials and per-host storage
+retain the session during acquisition, including unsuccessful relay resumes.
+
+Client-owned typed errors preserve the distinction between a timeout, explicit
+`srp_invalid`/authentication rejection, known unsupported stored protocol,
+server-side error, and proof/protocol verification failure. Relay wrappers retain
+the original cause. Authentication policy never depends on finding words like
+"session", "auth", or "invalid" in an error's display message. A server-side
+`server_error` is retryable and is not credential rejection.
+
+An explicit applicable rejection or proven incompatibility removes the obsolete
+resume credential and shows an explanation before the user chooses login.
+Timeouts show that the server did not respond and the session was retained.
+Proof verification, protocol downgrade and malformed resume responses refuse
+connection, preserve the credential, explain the failure, and stop automatic
+retries. They do not weaken verification or silently fall back to a password
+prompt. Explicit login remains available; entering login is not itself evidence
+that a credential was rejected. Closing an outage notice must not silently
+redirect to login.
+
+These are frontend policy changes over existing messages and proof checks; no
+new server capability or minimum version is required. The existing protocol-2
+grace and authenticated protocol pinning remain unchanged.
 
 ## Managed Streams
 

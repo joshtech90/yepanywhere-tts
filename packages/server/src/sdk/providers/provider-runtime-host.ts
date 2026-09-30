@@ -390,6 +390,7 @@ function forgetRuntimeAfterOwnerLoss(runtimeId: string): void {
 function requestHost<T>(
   op: string,
   payload: Record<string, unknown> = {},
+  options: { timeoutMs?: number; authorize?: () => Promise<void> } = {},
 ): Promise<T> {
   const environment = getEnvironment();
   if (!environment) {
@@ -413,7 +414,7 @@ function requestHost<T>(
         finish(() =>
           reject(new Error(`Provider runtime host ${op} timed out`)),
         ),
-      HOST_REQUEST_TIMEOUT_MS,
+      options.timeoutMs ?? HOST_REQUEST_TIMEOUT_MS,
     );
     socket.on("connect", () => {
       socket.write(
@@ -429,12 +430,37 @@ function requestHost<T>(
     });
     socket.on("data", (chunk) => {
       buffer += chunk;
+      if (op === "projectService" && Buffer.byteLength(buffer) > 1024 * 1024) {
+        finish(() => reject(new Error("Provider host response exceeds 1 MiB")));
+        return;
+      }
       const newline = buffer.indexOf("\n");
       if (newline < 0) return;
       try {
         const response = JSON.parse(
           buffer.slice(0, newline),
-        ) as HostResponse<T>;
+        ) as HostResponse<T> & { type?: string; authorizationId?: string };
+        buffer = buffer.slice(newline + 1);
+        if (response.type === "authorize" && response.id === id) {
+          const authorize =
+            options.authorize ??
+            (() => Promise.reject(new Error("No app execution authority")));
+          void authorize().then(
+            () => {
+              if (!socket.destroyed)
+                socket.write(
+                  `${JSON.stringify({ op: "projectServiceAuthorization", authorizationId: response.authorizationId })}\n`,
+                );
+            },
+            (error: unknown) => {
+              if (!socket.destroyed)
+                socket.write(
+                  `${JSON.stringify({ op: "projectServiceAuthorization", authorizationId: response.authorizationId, error: errorMessage(error) })}\n`,
+                );
+            },
+          );
+          return;
+        }
         if (!response.ok) {
           finish(() => reject(new Error(response.error ?? `${op} failed`)));
           return;
@@ -530,6 +556,17 @@ export async function listHostedProviderRuntimes(): Promise<
 
 export function getProviderHostStatus(): Promise<Record<string, unknown>> {
   return requestHost("status");
+}
+
+export function requestHostedProjectService(
+  service: Record<string, unknown>,
+  authorize?: () => Promise<void>,
+): Promise<unknown> {
+  return requestHost(
+    "projectService",
+    { service },
+    { timeoutMs: 185_000, authorize },
+  );
 }
 
 export function getProviderHostInventory(): Promise<

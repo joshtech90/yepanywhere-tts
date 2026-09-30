@@ -1,3 +1,4 @@
+import { getResumeError } from "./resumeErrors";
 import type {
   DeviceServerMessage,
   GitWorktreeCoverage,
@@ -61,6 +62,8 @@ export class RelayReconnectRequiredError extends Error {
    * Transient errors (timeouts, network issues, server_offline) should be retried.
    */
   isNonRetryable(): boolean {
+    const resume = getResumeError(this);
+    if (resume) return !resume.retryable;
     if (!this.cause) return false;
     const msg = this.cause.message.toLowerCase();
     if (msg.includes("unknown_username")) return true;
@@ -146,6 +149,8 @@ export class SubscriptionError extends Error {
  * Check if an error is non-retryable (retrying won't help).
  */
 export function isNonRetryableError(error: unknown): boolean {
+  const resume = getResumeError(error);
+  if (resume) return !resume.retryable;
   // Relay errors: only non-retryable if the cause is terminal (e.g., unknown username).
   // Transient causes (timeouts, network issues) are retryable via ConnectionManager backoff.
   if (error instanceof RelayReconnectRequiredError) {

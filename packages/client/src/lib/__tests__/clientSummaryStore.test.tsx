@@ -69,6 +69,7 @@ import {
   reportSessionCollectionTitleSnapshot,
   resetClientSummaryStoreForTests,
   setCurrentClientSummarySourceKey,
+  subscribeClientSummary,
   useActiveAgentCount,
   useActiveProjectSessionIds,
   useDraftSessionIds,
@@ -82,6 +83,7 @@ import {
   useSessionCollectionRecord,
   useStarredSessionRecords,
 } from "../clientSummaryStore";
+import { setCurrentClientSummarySourceKey as setSourceIdentity } from "../clientSummarySourceKey";
 import { saveSessionDraft } from "../sessionDraftStorage";
 import { createSessionDetailMemoryCache } from "../sessionDetail/sessionDetailStore";
 import {
@@ -194,6 +196,31 @@ afterEach(() => {
 });
 
 describe("clientSummaryStore", () => {
+  it("moves legacy summary subscriptions when the lightweight source owner switches hosts", () => {
+    const oldSource = createClientSummaryHostSourceKey("old-host");
+    const newSource = createClientSummaryHostSourceKey("new-host");
+    setCurrentClientSummarySourceKey(oldSource);
+    const changed = vi.fn();
+    const release = subscribeClientSummary(changed);
+    try {
+      setSourceIdentity(newSource);
+      expect(changed).toHaveBeenCalledTimes(1);
+      const publish = (source: typeof oldSource) =>
+        reportGlobalSessionsCollectionSnapshot(source, {
+          query: { scope: "global-sessions", limit: 50 },
+          sessions: [globalSession("s")],
+          hasMore: false,
+        });
+      publish(oldSource);
+      expect(changed).toHaveBeenCalledTimes(1);
+      publish(newSource);
+      expect(changed).toHaveBeenCalledTimes(2);
+    } finally {
+      release();
+    }
+    expect(mockActivityBus.listenerCount()).toBe(0);
+  });
+
   it("subscribes to activityBus once while hooks are mounted", () => {
     const first = renderHook(() => useRecentSessionRecords());
     expect(mockActivityBus.onSource).toHaveBeenCalledTimes(9);

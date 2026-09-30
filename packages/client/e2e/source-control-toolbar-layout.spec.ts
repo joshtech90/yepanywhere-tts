@@ -15,7 +15,8 @@ test.use({ serviceWorkers: "block" });
 
 // Global setup creates and registers the committed project before the server
 // assembles its inventory. This idempotent write supplies the dirty projection.
-test.beforeAll(() => {
+test.beforeAll(({ workerServer }) => {
+  void workerServer;
   writeFileSync(filePath, "export const toolbarLayoutFixture = true;\n");
 });
 

@@ -1,3 +1,5 @@
+import { DraftStore } from "./drafts/DraftStore.js";
+import { createDraftRoutes } from "./routes/drafts.js";
 import { ConversationSubscriptions } from "./experimental/conversation-subscriptions.js";
 import { setStandingPermissionModeSource } from "./supervisor/standingPermissionMode.js";
 import { ComputerControlService } from "./computer-control/service.js";
@@ -18,9 +20,17 @@ import {
   validateArtifactConfig,
   type ArtifactConfig,
 } from "./artifacts/config.js";
+import { createArtifactConfigWriter } from "./routes/artifactConfigWriter.js";
 import { createArtifactRoutes } from "./routes/artifacts.js";
+import { createVhostSiteRoutes } from "./routes/vhostSites.js";
 import { createVhostAppRoutes } from "./routes/vhostApps.js";
 import { createVhostAccessRoutes } from "./routes/vhostAccess.js";
+import {
+  createSessionAppRoutes,
+  sessionAppBrokerSocket,
+} from "./routes/sessionApps.js";
+import { createSessionPathScopeResolver } from "./routes/session-path-scope.js";
+import { createSessionLocalFileRoutes } from "./routes/session-local-files.js";
 import {
   VhostAppControl,
   vhostAppControlAvailable,
@@ -60,6 +70,7 @@ import {
   idleReapMsToHours,
   isClaudeProviderName,
   normalizeAutoSessionTitleSettings,
+  withPathGrantProjects,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { compress } from "hono/compress";
@@ -68,6 +79,7 @@ import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
 import type { UserUsageService } from "./auth/UserUsageService.js";
 import type { LimitedUsersService } from "./auth/LimitedUsersService.js";
+import { limitedUserInstructionsForLaunch } from "./auth/limitedUserInstructions.js";
 import { limitedActivityEvent } from "./auth/activityEventAccess.js";
 import { SessionAccessResolver } from "./auth/sessionAccess.js";
 import type { SubscriptionAccessTarget } from "./routes/ws-relay-handlers.js";
@@ -79,6 +91,18 @@ import { createProjectTemplateSourceRoutes } from "./routes/project-template-sou
 import { createProjectTemplateRoutes } from "./routes/project-templates.js";
 import { TemplateSourceService } from "./projects/TemplateSourceService.js";
 import { TemplateCreationService } from "./projects/TemplateCreationService.js";
+import { ProjectAppStore } from "./projects/ProjectAppStore.js";
+import {
+  ProjectServiceManager,
+  readProjectService,
+  projectServiceStaticApp,
+} from "./projects/ProjectServiceManager.js";
+import { ProjectAppDelivery } from "./artifacts/ProjectAppDelivery.js";
+import { clientVhostSite } from "./artifacts/vhosts.js";
+import { HostedProjectServices } from "./projects/HostedProjectServices.js";
+import { projectAppPublicAllowed } from "./projects/projectAppPolicy.js";
+import { createProjectAccessRoutes } from "./routes/project-access.js";
+import { createProjectAppRoutes } from "./routes/project-app.js";
 import { SESSION_COOKIE_NAME } from "./auth/routes.js";
 import { getCookie as getRequestCookie } from "hono/cookie";
 import { levelFor } from "./auth/limitedUserPolicy.js";
@@ -98,8 +122,10 @@ import {
   getClaudeSandboxProjectDir,
   getCodexSandboxSessionsDir,
   getSessionSandboxAvailability,
+  listSandboxPrivateTempRoots,
 } from "./session-sandbox.js";
 import { updateAllowedHosts } from "./middleware/allowed-hosts.js";
+import { AgentServerTokens } from "./auth/AgentServerTokens.js";
 import { createAuthMiddleware } from "./middleware/auth.js";
 import { structuredErrorHandler } from "./middleware/error-handler.js";
 import {
@@ -174,6 +200,7 @@ import { createGitIncomingCommitsRoutes } from "./routes/git-incoming-commits.js
 import { createGitProjectionRoutes } from "./routes/git-projections.js";
 import { createGitStatusRoutes } from "./routes/git-status.js";
 import { createGitWorkingTreeFilesRoutes } from "./routes/git-working-tree-files.js";
+import { createFileOwnerRoutes } from "./routes/file-owner.js";
 import { createProjectFileCompletionRoutes } from "./routes/project-file-completion.js";
 import { createToolCommentaryRoutes } from "./routes/tool-commentary.js";
 import { ProjectFileCompletion } from "./services/projectFileCompletion.js";
@@ -245,7 +272,10 @@ import { createLocalFileRoutes } from "./routes/local-file.js";
 import { createFileEditRoutes } from "./routes/file-edit.js";
 import { ArtifactRebuildService } from "./services/ArtifactRebuildService.js";
 import { createLocalImageRoutes } from "./routes/local-image.js";
-import { createLocalResourcePathPolicy } from "./routes/local-resource-policy.js";
+import {
+  createLocalResourcePathPolicy,
+  isPathInsideDirectory,
+} from "./routes/local-resource-policy.js";
 import { type UploadDeps, createUploadRoutes } from "./routes/upload.js";
 import { createSpeechRoutes } from "./routes/speech.js";
 import { createTtsRoutes } from "./routes/tts.js";
@@ -256,7 +286,10 @@ import {
   DiscoverySqliteService,
   type SqliteMode,
 } from "./storage/discovery-sqlite.js";
-import { createVersionRoutes } from "./routes/version.js";
+import {
+  createVersionRoutes,
+  type VersionRouteOptions,
+} from "./routes/version.js";
 import { createProviderHostRoutes } from "./routes/provider-host.js";
 import { createWorkstreamRoutes } from "./routes/workstreams.js";
 import { WS_INTERNAL_AUTHENTICATED } from "./middleware/internal-auth.js";
@@ -359,6 +392,8 @@ import {
 import { LifecycleWebhookService } from "./webhooks/LifecycleWebhookService.js";
 
 export interface AppOptions {
+  /** Owned update-service lookup for embedded applications and test fixtures. */
+  getLatestVersion?: VersionRouteOptions["getLatestVersion"];
   artifacts?: ArtifactConfig;
   /** Explicit provider override; null suppresses ambient provider discovery. */
   provider?: AgentProvider | null;
@@ -484,6 +519,8 @@ export interface AppOptions {
   browserProfileService?: BrowserProfileService;
   /** Explicit server-stored backup of portable browser UI settings */
   browserSettingsBackupService?: BrowserSettingsBackupService;
+  /** Browser settings the superuser publishes to limited users' clients */
+  limitedUserBrowserDefaultsService?: BrowserSettingsBackupService;
   /** ServerSettingsService for server-wide settings */
   serverSettingsService?: ServerSettingsService;
   /** Persistent server secret used to mint per-session wake credentials. */
@@ -553,7 +590,7 @@ export interface AppResult {
   readerFactory: (project: Project) => ISessionReader;
   /** Close cached session readers and their owned parser workers. */
   disposeSessionReaders: () => Promise<void>;
-  /** Stop session/inactivity push generation before provider shutdown. */
+  /** Stop push generation and supervisor automation before provider shutdown. */
   stopNotifications: () => void;
   /** Shared resolver used by the artifact route and glossary subscriptions. */
   glossaryIndexService: GlossaryIndexService;
@@ -745,6 +782,7 @@ export function createApp(options: AppOptions): AppResult {
   const effectiveDataDir =
     options.dataDir ??
     join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".yep-anywhere");
+  const projectAppStore = new ProjectAppStore(effectiveDataDir);
   const computerControl = options.serverSettingsService
     ? new ComputerControlService(
         options.serverSettingsService,
@@ -757,6 +795,25 @@ export function createApp(options: AppOptions): AppResult {
     onError: (error) =>
       console.warn("[DiscoverySqlite] Storage failed:", error),
   });
+  const draftDatabase = discoverySqlite.getDatabase();
+  let draftStore: DraftStore | undefined;
+  if (draftDatabase) {
+    try {
+      draftStore = new DraftStore(draftDatabase);
+    } catch (error) {
+      console.warn("[DraftSync] Storage unavailable:", error);
+    }
+  }
+  const draftCleanup = draftStore
+    ? setInterval(() => {
+        try {
+          draftStore?.cleanup();
+        } catch (error) {
+          console.warn("[DraftSync] Cleanup failed:", error);
+        }
+      }, 60_000)
+    : undefined;
+  draftCleanup?.unref();
   const projectStoragePolicy =
     options.projectStoragePolicy ??
     new ProjectStoragePolicy({
@@ -772,6 +829,10 @@ export function createApp(options: AppOptions): AppResult {
       maxUploadSizeBytes: options.maxUploadSizeBytes,
       storagePolicy: projectStoragePolicy,
     });
+  if (draftStore)
+    attachmentStagingService.setDraftProtection(
+      (username, id) => draftStore?.protects(username ?? "", id) ?? false,
+    );
   options.projectQueueService?.setAttachmentStagingService(
     attachmentStagingService,
   );
@@ -796,6 +857,23 @@ export function createApp(options: AppOptions): AppResult {
   app.use("/api/*", corsMiddleware);
   app.use("/api/*", requireCustomHeader);
 
+  // Operator API tokens for unsandboxed superuser agent sessions
+  // (topics/agent-session-access.md § Operator API token). Turning the
+  // setting off revokes every token, so turning it on again revives none.
+  const agentServerTokens = new AgentServerTokens(
+    () =>
+      options.serverSettingsService?.getSetting("agentServerAccessEnabled") ===
+      true,
+  );
+  options.serverSettingsService?.onSettingsChanged((settings, previous) => {
+    if (
+      previous.agentServerAccessEnabled &&
+      !settings.agentServerAccessEnabled
+    ) {
+      agentServerTokens.revokeAll();
+    }
+  });
+
   // Auth middleware (if authService is provided)
   // The middleware checks authService.isEnabled() dynamically
   if (options.authService) {
@@ -806,6 +884,7 @@ export function createApp(options: AppOptions): AppResult {
         authDisabled: options.authDisabled,
         desktopAuthToken: options.desktopAuthToken,
         desktopBootstrapService: options.desktopBootstrapService,
+        agentServerTokens,
       }),
     );
   }
@@ -820,11 +899,17 @@ export function createApp(options: AppOptions): AppResult {
   const isLimitedUsersEnabled = (): boolean =>
     limitedUsersService !== undefined &&
     options.serverSettingsService?.getSetting("limitedUsersEnabled") === true;
+  // The projects a directory grant can cover, for surfaces that list a user's
+  // projects. Bound once the scanner exists; per-project checks decode the
+  // project's path from its id and need no list.
+  let knownProjectsForGrants: () => Iterable<{ id: string; path: string }> =
+    () => [];
   // Turning the feature off keeps the records but lets no limited login act.
-  const getActiveLimitedGrants = (username: string) =>
-    isLimitedUsersEnabled()
-      ? (limitedUsersService?.getActiveGrants(username) ?? null)
-      : null;
+  const getActiveLimitedGrants = (username: string) => {
+    if (!isLimitedUsersEnabled()) return null;
+    const grants = limitedUsersService?.getActiveGrants(username) ?? null;
+    return grants && withPathGrantProjects(grants, knownProjectsForGrants());
+  };
   const sessionAccessResolver = new SessionAccessResolver({
     getLiveSession: (sessionId) => {
       const process = supervisor?.getProcessForSession(sessionId);
@@ -833,10 +918,13 @@ export function createApp(options: AppOptions): AppResult {
         projectId: process.projectId,
         provider: process.provider,
         lastActivityMs: process.lastProviderMessageTime?.getTime() ?? null,
-        sandboxed: process.sandboxEnforcement?.effective === "project-write",
+        sandboxed:
+          process.sandboxEnforcement?.effective === "project-write" &&
+          process.sandboxEnforcement.networkFirewall !== false,
       };
     },
     // The one retained catalog All Sessions and Inbox read, built below.
+    getCatalogVersion: () => retainedCollections?.getVersion(),
     readCatalogRows: async () => {
       if (!retainedCollections) {
         throw new Error("Session catalog read before the app was built");
@@ -858,6 +946,8 @@ export function createApp(options: AppOptions): AppResult {
       "/api/*",
       createLimitedUsersMiddleware({
         getActiveGrants: getActiveLimitedGrants,
+        getHiddenProjectIds: (username) =>
+          projectAppStore.hiddenProjectIds(username),
         sessionAccess: sessionAccessResolver,
         getSuperuserIdentity: () =>
           options.remoteAccessService?.getUsername() ?? null,
@@ -871,6 +961,7 @@ export function createApp(options: AppOptions): AppResult {
     app.route(
       "/api/users",
       createUsersRoutes({
+        forgetDrafts: (username) => draftStore?.deleteOwner(username),
         limitedUsers: limitedUsersService,
         authService,
         isEnabled: isLimitedUsersEnabled,
@@ -908,6 +999,25 @@ export function createApp(options: AppOptions): AppResult {
     effectiveDataDir,
     templateSources,
   );
+  // Restore the creator a queued preparation start failed to record, so the
+  // session reaches its user's sidebar group and ownership-based reads.
+  if (options.sessionMetadataService) {
+    const metadata = options.sessionMetadataService;
+    void templateCreations
+      .startedSessionOwners()
+      .then(async (owners) => {
+        for (const { sessionId, ownerUsername } of owners) {
+          if (metadata.getMetadata(sessionId)?.createdByUser) continue;
+          await metadata.recordSessionCreator(sessionId, ownerUsername);
+        }
+      })
+      .catch((error: unknown) => {
+        console.error(
+          "[TemplateCreation] Failed to restore preparation session creators:",
+          error,
+        );
+      });
+  }
   app.route(
     "/api",
     createProjectTemplateSourceRoutes(effectiveDataDir, templateSources),
@@ -917,7 +1027,7 @@ export function createApp(options: AppOptions): AppResult {
     createProjectTemplateRoutes(
       templateSources,
       templateCreations,
-      async (context, path, body) => {
+      async (context, path, body, method = "POST") => {
         const headers = new Headers(context.req.raw.headers);
         headers.set("Content-Type", "application/json");
         headers.delete("Content-Length");
@@ -925,7 +1035,7 @@ export function createApp(options: AppOptions): AppResult {
         headers.delete("Accept-Encoding");
         return app.request(
           new Request(new URL(path, context.req.url), {
-            method: "POST",
+            method,
             headers,
             body: JSON.stringify(body),
           }),
@@ -933,10 +1043,7 @@ export function createApp(options: AppOptions): AppResult {
           context.env,
         );
       },
-      (username) =>
-        isLimitedUsersEnabled()
-          ? (limitedUsersService?.getActiveGrants(username) ?? null)
-          : null,
+      getActiveLimitedGrants,
     ),
   );
   app.route("/api", createPdfjsRoutes(new PdfjsAssetCache(effectiveDataDir)));
@@ -1008,7 +1115,44 @@ export function createApp(options: AppOptions): AppResult {
   const projectScanCachePath = options.dataDir
     ? join(options.dataDir, "indexes", "project-scanner-cache.json")
     : undefined;
+  // Sandboxed Claude sessions write their transcripts under the project's
+  // private provider root (topics/session-sandboxing.md); every reader and
+  // list of a project must include those directories.
+  const claudeSandboxSessionDirs = (): Map<string, string[]> => {
+    const byProject = new Map<string, string[]>();
+    for (const metadata of Object.values(
+      options.sessionMetadataService?.getAllMetadata() ?? {},
+    )) {
+      if (
+        !metadata.provider ||
+        !isClaudeProviderName(metadata.provider) ||
+        metadata.sandboxLevel !== "project-write" ||
+        !metadata.sandboxStateKey ||
+        !metadata.workingProjectId
+      ) {
+        continue;
+      }
+      let projectPath = metadata.sandboxProjectPath;
+      if (!projectPath) {
+        try {
+          projectPath = decodeProjectId(metadata.workingProjectId);
+        } catch {
+          continue;
+        }
+      }
+      const dir = getClaudeSandboxProjectDir({
+        dataDir: effectiveDataDir,
+        stateKey: metadata.sandboxStateKey,
+        projectPath,
+      });
+      const dirs = byProject.get(metadata.workingProjectId) ?? [];
+      if (!dirs.includes(dir)) dirs.push(dir);
+      byProject.set(metadata.workingProjectId, dirs);
+    }
+    return byProject;
+  };
   const scanner = new ProjectScanner({
+    getSandboxSessionDirs: claudeSandboxSessionDirs,
     projectsDir: options.projectsDir,
     codexScanner,
     geminiScanner,
@@ -1019,6 +1163,18 @@ export function createApp(options: AppOptions): AppResult {
     eventBus: options.eventBus,
     cacheTtlMs: options.projectScanCacheTtlMs,
   });
+  knownProjectsForGrants = () => {
+    const known = new Map<string, string>();
+    for (const project of scanner.cachedProjects())
+      known.set(project.id, project.path);
+    // Added projects are known before any scan, including one a limited
+    // user created a moment ago.
+    for (const [id, metadata] of Object.entries(
+      options.projectMetadataService?.getAllProjects() ?? {},
+    ))
+      known.set(id, metadata.path);
+    return [...known].map(([id, path]) => ({ id, path }));
+  };
   const glossaryIndexService = new GlossaryIndexService();
   const localResourcePathPolicy = createLocalResourcePathPolicy({
     allowedPaths: getAllowedFilePaths,
@@ -1029,15 +1185,106 @@ export function createApp(options: AppOptions): AppResult {
     options.serverSettingsService?.getSetting("artifactViewer") ?? {
       port: 4402,
     };
+  const sandboxStateRoot = join(effectiveDataDir, "session-sandboxes");
   artifactServer = new ArtifactServer(
     validateArtifactConfig(artifactConfig),
-    localResourcePathPolicy,
+    // Artifact reads also admit sandboxes' private /tmp scratch, where a
+    // sandboxed session writes what it wants to show; the session-scoped
+    // grant route confines a limited user to their own session's.
+    createLocalResourcePathPolicy({
+      allowedPaths: () => [
+        ...getAllowedFilePaths(),
+        ...listSandboxPrivateTempRoots(sandboxStateRoot),
+      ],
+      scanner,
+      includeProjects: shouldIncludeProjects,
+    }),
     {
       stateDir: join(effectiveDataDir, "artifacts"),
       // An owning grant may never delete YA's own state or the checkout it
       // runs from, however the request was phrased.
       protectedPaths: [effectiveDataDir, process.cwd()],
     },
+  );
+  // Paths as a session names them: a sandboxed session's /tmp is its own.
+  // Shared by the session-scoped file reads below and the artifact grant.
+  const sessionPathScope = createSessionPathScopeResolver({
+    sessionMetadataService: options.sessionMetadataService,
+    sandboxStateRoot,
+    allowedPaths: getAllowedFilePaths,
+    includeProjects: shouldIncludeProjects,
+  });
+  const projectServices = isProviderRuntimeHostAvailable()
+    ? new HostedProjectServices(effectiveDataDir)
+    : new ProjectServiceManager(effectiveDataDir);
+  const projectAppDelivery = new ProjectAppDelivery(
+    artifactServer,
+    projectServices,
+    projectAppStore,
+    async (projectId) => {
+      const project = await scanner.getProject(projectId);
+      if (!project) return null;
+      const declaration = await readProjectService(project.path);
+      if (declaration?.where.kind !== "static") return null;
+      return projectServiceStaticApp(project.path, declaration);
+    },
+    async (reservation) => {
+      const project = await scanner.getProject(reservation.projectId);
+      return (
+        !!project &&
+        projectAppPublicAllowed(
+          project.ownerUsername,
+          reservation,
+          getActiveLimitedGrants,
+        )
+      );
+    },
+  );
+  artifactServer.setProjectAppDelivery(projectAppDelivery);
+  app.route(
+    "/api",
+    createProjectAppRoutes({
+      scanner,
+      store: projectAppStore,
+      services: projectServices,
+      artifacts: artifactServer,
+      sessionAccess: sessionAccessResolver,
+      sessionPathScope,
+      activeGrants: getActiveLimitedGrants,
+      delivery: projectAppDelivery,
+      onVisibilityChanged: (projectId) =>
+        options.eventBus?.emit({
+          type: "projects-changed",
+          projectIds: [projectId],
+          timestamp: new Date().toISOString(),
+        }),
+      openService: (projectId, audience) =>
+        projectAppDelivery.open(projectId, audience),
+    }),
+  );
+  if (limitedUsersService && options.projectMetadataService) {
+    app.route(
+      "/api",
+      createProjectAccessRoutes({
+        scanner,
+        limitedUsers: limitedUsersService,
+        metadata: options.projectMetadataService,
+      }),
+    );
+  }
+  // Settings saves and file vhost claims change one configuration in turn.
+  const artifactConfigWriter = createArtifactConfigWriter({
+    server: artifactServer,
+    settings: options.serverSettingsService,
+    locked: options.artifacts !== undefined,
+  });
+  app.route(
+    "/api",
+    createVhostSiteRoutes({
+      server: artifactServer,
+      scanner,
+      writer: artifactConfigWriter,
+    }),
   );
   app.route(
     "/api",
@@ -1046,6 +1293,32 @@ export function createApp(options: AppOptions): AppResult {
       scanner,
       settings: options.serverSettingsService,
       locked: options.artifacts !== undefined,
+      writer: artifactConfigWriter,
+      onArtifactCreated: async (path, projectId) => {
+        const candidates = projectId
+          ? [await scanner.getProject(projectId)]
+          : await scanner.listProjects();
+        const project = candidates
+          .filter((candidate) => candidate !== null)
+          .filter((candidate) => isPathInsideDirectory(path, candidate.path))
+          .sort((left, right) => right.path.length - left.path.length)[0];
+        if (project) await projectAppStore.associate(project.id, path);
+      },
+    }),
+  );
+  app.route(
+    "/api",
+    createSessionLocalFileRoutes({
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
+      scanner,
+      scope: sessionPathScope,
+      artifactServer,
+      onArtifactCreated: async (sessionId, path) => {
+        const session = await sessionAccessResolver.resolve(sessionId);
+        if (session && (await scanner.getProject(session.projectId)))
+          await projectAppStore.associate(session.projectId, path, sessionId);
+      },
     }),
   );
   app.route(
@@ -1066,6 +1339,19 @@ export function createApp(options: AppOptions): AppResult {
   );
   app.route("/api", createVhostAppRoutes(vhostAppControl));
   app.route("/api", createVhostAccessRoutes(artifactServer));
+  // Sandboxed sessions' loopback servers, through their port brokers. The
+  // supervisor is assigned later; both callbacks run only at request time.
+  artifactServer.setSessionAppUpstream((sessionId) =>
+    sessionAppBrokerSocket(supervisor.getProcessForSession(sessionId)),
+  );
+  app.route(
+    "/api",
+    createSessionAppRoutes({
+      getArtifactServer: () => artifactServer,
+      getProcessForSession: (sessionId) =>
+        supervisor.getProcessForSession(sessionId),
+    }),
+  );
   const toolResultMediaStore = new ToolResultMediaStore({
     dataDir: options.dataDir,
     storagePolicy: projectStoragePolicy,
@@ -1120,29 +1406,42 @@ export function createApp(options: AppOptions): AppResult {
   let vocabularyLearning: VocabularyLearning | undefined;
   let vocabularyKeyterms: VocabularyKeyterms | undefined;
   let unsubscribeVocabulary: (() => void) | undefined;
-  const disposeSessionReaders = async (): Promise<void> => {
-    await templateCreations.close();
-    await computerControl?.close();
-    conversationSubscriptions?.close();
-    focusedSessionWatchManager.dispose();
-    for (const dispose of issueDisposers) dispose();
-    await issueIndexer?.close();
-    await issueConfirmer?.close();
-    unsubscribeVocabulary?.();
-    options.speechBackendRegistry?.setVocabularySource(undefined);
-    await vocabularyKeyterms?.close();
-    await vocabularyLearning?.close();
-    discoverySqlite.close();
-    await retainedCollections?.dispose();
-    await projectQueueScheduler?.dispose();
-    await artifactServer.close();
-    await projectFileCompletion.dispose();
-    await bangCommandService?.dispose();
-    await scanner.dispose();
-    await settleGitAuthorPaletteRefreshes();
-    const entries = Array.from(readerCache.entries());
-    readerCache.clear();
-    await Promise.all(entries.map(([key, reader]) => closeReader(key, reader)));
+  let sessionReadersDisposal: Promise<void> | undefined;
+  const disposeSessionReaders = (): Promise<void> => {
+    // Explicit shutdown and fixture ownership may join the same disposal.
+    // Cache the promise before asynchronous cleanup can close shared services.
+    sessionReadersDisposal ??= (async () => {
+      await supervisor.stopBackgroundTasks();
+      await projectServices.close();
+      await projectAppStore.close();
+      await templateCreations.close();
+      await computerControl?.close();
+      conversationSubscriptions?.close();
+      focusedSessionWatchManager.dispose();
+      for (const dispose of issueDisposers) dispose();
+      await issueIndexer?.close();
+      await issueConfirmer?.close();
+      unsubscribeVocabulary?.();
+      options.speechBackendRegistry?.setVocabularySource(undefined);
+      await vocabularyKeyterms?.close();
+      await vocabularyLearning?.close();
+      if (draftCleanup) clearInterval(draftCleanup);
+      draftStore?.close();
+      discoverySqlite.close();
+      await retainedCollections?.dispose();
+      await projectQueueScheduler?.dispose();
+      await artifactServer.close();
+      await projectFileCompletion.dispose();
+      await bangCommandService?.dispose();
+      await scanner.dispose();
+      await settleGitAuthorPaletteRefreshes();
+      const entries = Array.from(readerCache.entries());
+      readerCache.clear();
+      await Promise.all(
+        entries.map(([key, reader]) => closeReader(key, reader)),
+      );
+    })();
+    return sessionReadersDisposal;
   };
 
   const getOrCreateReader = <T extends ISessionReader>(
@@ -1269,27 +1568,11 @@ export function createApp(options: AppOptions): AppResult {
       case "claude-gateway":
       case "claude-ollama": {
         const mis = options.modelInfoService;
-        const sandboxSessionDirs = [
-          ...new Set(
-            Object.values(
-              options.sessionMetadataService?.getAllMetadata() ?? {},
-            ).flatMap((metadata) =>
-              metadata.provider &&
-              isClaudeProviderName(metadata.provider) &&
-              metadata.sandboxLevel === "project-write" &&
-              metadata.sandboxStateKey &&
-              metadata.workingProjectId === project.id
-                ? [
-                    getClaudeSandboxProjectDir({
-                      dataDir: effectiveDataDir,
-                      stateKey: metadata.sandboxStateKey,
-                      projectPath: metadata.sandboxProjectPath ?? project.path,
-                    }),
-                  ]
-                : [],
-            ),
-          ),
-        ];
+        // A project from the scanner already lists these among its merged
+        // directories; one built elsewhere from an id may not.
+        const sandboxSessionDirs = (
+          claudeSandboxSessionDirs().get(project.id) ?? []
+        ).filter((dir) => !project.mergedSessionDirs?.includes(dir));
         const allAdditionalDirs = [
           ...(project.mergedSessionDirs ?? []),
           ...sandboxSessionDirs,
@@ -1604,6 +1887,9 @@ export function createApp(options: AppOptions): AppResult {
   const stopNotifications = () => {
     pushNotifier?.dispose();
     inactivityPushNotifier?.dispose();
+    // Fence automation before provider shutdown; reader disposal joins work
+    // already admitted before closing its metadata/catalog dependencies.
+    void supervisor.stopBackgroundTasks();
   };
 
   const clearloopService = options.sessionMetadataService
@@ -1649,6 +1935,12 @@ export function createApp(options: AppOptions): AppResult {
 
   supervisor = new Supervisor({
     projectDisplayName,
+    getLimitedUserInstructions: (username) =>
+      limitedUserInstructionsForLaunch(
+        username,
+        limitedUsersService,
+        options.serverSettingsService,
+      ),
     onProcessInventoryChanged: () => {
       // Gateway services that opted into auto-stop need to know when their
       // last session goes away; the live process list is that answer.
@@ -1689,6 +1981,7 @@ export function createApp(options: AppOptions): AppResult {
           Promise.resolve()
       : undefined,
     onSuccessfulProviderSession: options.onSuccessfulProviderSession,
+    mintAgentServerAccess: () => agentServerTokens.mint(),
     getSessionChildEnv: (sessionId, executor) => {
       const wakeBaseUrl = options.getSessionWakeBaseUrl?.(executor);
       const browserDebugConnection =
@@ -1959,6 +2252,15 @@ export function createApp(options: AppOptions): AppResult {
         };
       },
       getLimitedUserGrants: getActiveLimitedGrants,
+      isSessionFreshForLimitedTurn: async (sessionId, grants) => {
+        const facts = await sessionAccessResolver.resolve(sessionId);
+        return (
+          facts !== null &&
+          sessionAccessResolver.isFresh(facts, {
+            offsetMinutes: grants.joinStaleOffsetMinutes,
+          })
+        );
+      },
       onSessionStarted: async ({ item, process }) => {
         if (item.target.type !== "new-session") return;
         const metadata = options.sessionMetadataService;
@@ -2090,13 +2392,18 @@ export function createApp(options: AppOptions): AppResult {
   app.route(
     "/api/version",
     createVersionRoutes({
+      getLatestVersion: options.getLatestVersion,
       getExperimentalConversationAvailable: () =>
         Boolean(conversationSubscriptions),
       getSqliteStatus: () => discoverySqlite.getStatus(),
+      getDraftSyncAvailable: () => Boolean(draftStore),
       getIssueAssociationsAvailable: () => Boolean(issueIndexer),
       vhostAppControlAvailable,
       getArtifactViewerStatus: () => ({
         ...artifactServer.config,
+        vhostSites: (artifactServer.config.vhostSites ?? []).map(
+          clientVhostSite,
+        ),
         available: artifactServer.available,
         locked:
           options.artifacts !== undefined || !options.serverSettingsService,
@@ -2130,7 +2437,10 @@ export function createApp(options: AppOptions): AppResult {
       getClientDefaults: () =>
         options.serverSettingsService?.getSetting("clientDefaults"),
       getSessionSandboxAvailability: async (availabilityOptions) => ({
-        ...(await getSessionSandboxAvailability(availabilityOptions)),
+        ...(await getSessionSandboxAvailability({
+          ...availabilityOptions,
+          stateRoot: join(effectiveDataDir, "session-sandboxes"),
+        })),
         localAuthEnforced: isLocalAuthEnforced(),
       }),
       desktopRuntime: options.desktopRuntime,
@@ -2248,6 +2558,7 @@ export function createApp(options: AppOptions): AppResult {
     "/api/projects",
     createProjectsRoutes({
       scanner,
+      projectAppStore,
       readerFactory,
       supervisor,
       externalTracker,
@@ -2550,6 +2861,16 @@ export function createApp(options: AppOptions): AppResult {
     "/api/experimental/conversation",
     createExperimentalConversationRoutes(conversationSubscriptions),
   );
+  if (draftStore)
+    app.route(
+      "/api/drafts",
+      createDraftRoutes({
+        store: draftStore,
+        staging: attachmentStagingService,
+        scanner,
+        sessions: sessionAccessResolver,
+      }),
+    );
   const issueDatabase = discoverySqlite.getDatabase();
   if (issueDatabase && options.serverSettingsService) {
     const catalog = retainedCollections;
@@ -2819,6 +3140,16 @@ export function createApp(options: AppOptions): AppResult {
       scanner,
       dataDir: effectiveDataDir,
       dirtyFileEditorService: options.dirtyFileEditorService,
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
+    }),
+  );
+  app.route(
+    "/api/projects",
+    createFileOwnerRoutes({
+      scanner,
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
     }),
   );
   app.route("/api/projects", createGitIncomingCommitsRoutes({ scanner }));
@@ -3054,6 +3385,16 @@ export function createApp(options: AppOptions): AppResult {
       "/api/settings/browser-backup",
       createBrowserSettingsBackupRoutes({
         browserSettingsBackupService: options.browserSettingsBackupService,
+      }),
+    );
+  }
+  if (options.limitedUserBrowserDefaultsService) {
+    // Same slot shape as the backup above; limitedUserPolicy lets limited
+    // users read it and refuses their writes.
+    app.route(
+      "/api/settings/limited-user-defaults",
+      createBrowserSettingsBackupRoutes({
+        browserSettingsBackupService: options.limitedUserBrowserDefaultsService,
       }),
     );
   }

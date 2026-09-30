@@ -9,7 +9,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -198,6 +198,43 @@ describe("project path index", () => {
     expect(html).toContain("path=C%3A%5Cwork%5Creport.md");
     expect(html).toContain(`${allowed}</a>`);
     expect(html).not.toContain("path=D%3A%2Fwork%2Fmissing.md");
+    index.release();
+  });
+
+  it("links home-relative paths to the file under the server's home", async () => {
+    const repo = await createRepo();
+    const index = await getProjectPathIndex(repo);
+    const home = homedir();
+    const report = join(home, "promotion/build/review.pdf");
+    const resolveAbsoluteFilePaths = vi.fn(
+      async (paths: readonly string[]) =>
+        new Set(paths.filter((path) => path === report)),
+    );
+    const options = {
+      projectId: "project-1",
+      projectPath: repo,
+      index,
+      resolveAbsoluteFilePaths,
+    };
+
+    const html = await linkifyProjectPaths(
+      "<code>~/promotion/build/review.pdf</code> <span>~/missing/file.md</span>",
+      options,
+    );
+    expect(resolveAbsoluteFilePaths).toHaveBeenCalledWith([
+      report,
+      join(home, "missing/file.md"),
+    ]);
+    expect(html).toContain(`path=${encodeURIComponent(report)}`);
+    expect(html).toContain("~/promotion/build/review.pdf</a>");
+    expect(html).toContain("<span>~/missing/file.md</span>");
+
+    expect(
+      await resolveProjectPathTextLinks(
+        "wrote ~/promotion/build/review.pdf",
+        options,
+      ),
+    ).toEqual([{ text: "~/promotion/build/review.pdf", filePath: report }]);
     index.release();
   });
 

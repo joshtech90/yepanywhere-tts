@@ -6,7 +6,10 @@ import { createSessionsRoutes } from "../../src/routes/sessions.js";
 import type { ServerSettingsService } from "../../src/services/ServerSettingsService.js";
 import type { WorkstreamService } from "../../src/services/WorkstreamService.js";
 import type { Process } from "../../src/supervisor/Process.js";
-import type { Supervisor } from "../../src/supervisor/Supervisor.js";
+import type {
+  SessionLaunchOptions,
+  Supervisor,
+} from "../../src/supervisor/Supervisor.js";
 import type { Project } from "../../src/supervisor/types.js";
 
 const projectId = "proj-workstream" as UrlProjectId;
@@ -84,9 +87,34 @@ function createDeps() {
     setWorkstream: vi.fn(async () => {}),
     recordCreationProvenance: vi.fn(async () => {}),
   } as unknown as SessionMetadataService;
+  // Like the Supervisor, an immediate launch runs its onStarted before
+  // returning the process.
+  const startNow = async (
+    sessionId: string,
+    options: SessionLaunchOptions | undefined,
+  ) => {
+    const process = createProcess(sessionId);
+    await options?.onStarted?.(sessionId, process);
+    return process;
+  };
   const supervisor = {
-    startSession: vi.fn(async () => createProcess("session-started")),
-    createSession: vi.fn(async () => createProcess("session-created")),
+    startSession: vi.fn(
+      async (
+        _path: string,
+        _message: unknown,
+        _mode: unknown,
+        _settings: unknown,
+        options?: SessionLaunchOptions,
+      ) => startNow("session-started", options),
+    ),
+    createSession: vi.fn(
+      async (
+        _path: string,
+        _mode: unknown,
+        _settings: unknown,
+        options?: SessionLaunchOptions,
+      ) => startNow("session-created", options),
+    ),
   } as unknown as Supervisor;
 
   const routes = createSessionsRoutes({
@@ -177,13 +205,7 @@ describe("Session workstream routing", () => {
   });
 
   it("records normalized UI provenance on a started session", async () => {
-    const { routes, supervisor, sessionMetadataService } = createDeps();
-    vi.mocked(supervisor.startSession).mockImplementationOnce(
-      async (_path, _message, _mode, _settings, options) => {
-        await options?.onStarted?.("session-started");
-        return createProcess("session-started");
-      },
-    );
+    const { routes, sessionMetadataService } = createDeps();
 
     const response = await routes.request(`/projects/${projectId}/sessions`, {
       method: "POST",
@@ -236,7 +258,10 @@ describe("Session workstream routing", () => {
       sessionMetadataService.recordCreationProvenance,
     ).not.toHaveBeenCalled();
     const options = vi.mocked(supervisor.createSession).mock.calls[0]?.[3];
-    await options?.onStarted?.("session-created");
+    await options?.onStarted?.(
+      "session-created",
+      createProcess("session-created"),
+    );
     expect(
       sessionMetadataService.recordCreationProvenance,
     ).toHaveBeenCalledWith("session-created", {

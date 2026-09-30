@@ -1,3 +1,7 @@
+import {
+  routeWithDrain,
+  drainManagedRoutes,
+} from "./support/managed-routes.js";
 import { join } from "node:path";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import { recordUiCapture } from "./support/ui-capture.js";
@@ -33,7 +37,9 @@ test.afterEach(async ({ baseURL, request }) => {
     const deletion = await request.delete(
       `${baseURL}${sessionPath}/bang-commands/${object.id}`,
     );
-    expect(deletion.ok()).toBe(true);
+    expect(deletion.ok(), `${deletion.status()} ${await deletion.text()}`).toBe(
+      true,
+    );
   }
 });
 
@@ -50,7 +56,7 @@ test("a !! draft is routed locally and its run is recorded", async ({
   const project = join(e2ePaths.tempDir, "mockproject");
   const id = Buffer.from(project).toString("base64url");
   const sessionPath = `/api/projects/${id}/sessions/mock-session-001`;
-  await page.route(`**${sessionPath}`, async (route) => {
+  await routeWithDrain(page, `**${sessionPath}`, async (route) => {
     const response = await route.fetch();
     const body = await response.json();
     body.messages.push({ id: "msg-transient-result", type: "result" });
@@ -64,89 +70,100 @@ test("a !! draft is routed locally and its run is recorded", async ({
     )
       providerRequests.push(request.url());
   });
-  // Force completion-before-receipt instead of depending on machine timing.
-  await page.route(`**${sessionPath}/bang-commands`, async (route) => {
-    expect(route.request().postDataJSON().placementAfterMessageId).not.toBe(
-      "msg-transient-result",
-    );
-    const response = await route.fetch();
-    await expect(
-      page
-        .getByRole("group", { name: "Local command run" })
-        .filter({ hasText: "echo ya-bang-ok" })
-        .getByText("exit 0", { exact: true }),
-    ).toBeVisible();
-    await route.fulfill({ response });
+  // Force completion-before-receipt without spending its response deadline
+  // on the command execution that this fixture intentionally withholds.
+  let releaseResponse!: () => void;
+  const responseGate = new Promise<void>((resolve) => {
+    releaseResponse = resolve;
   });
-  await page.goto(`${baseURL}/projects/${id}/sessions/mock-session-001`);
-
-  const composer = page.locator("textarea[data-composer-input]").first();
-  await expect(composer).toBeVisible();
-  await composer.pressSequentially("!!echo ya-bang-ok", { delay: 15 });
-
-  // Routing is shown before submission, never inferred.
-  await expect(
-    page.getByText("!! local command", { exact: false }),
-  ).toBeVisible();
-
-  const receipt = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().endsWith(`${sessionPath}/bang-commands`),
+  await routeWithDrain(
+    page,
+    `**${sessionPath}/bang-commands`,
+    async (route) => {
+      expect(route.request().postDataJSON().placementAfterMessageId).not.toBe(
+        "msg-transient-result",
+      );
+      const response = await route.fetch();
+      await responseGate;
+      await route.fulfill({ response });
+    },
   );
-  await composer.press("Enter");
-  const block = page.getByRole("group", { name: "Local command run" }).first();
-  await expect(block.getByText("echo ya-bang-ok")).toBeVisible();
-  await expect(composer).toHaveValue("");
+  try {
+    await page.goto(`${baseURL}/projects/${id}/sessions/mock-session-001`);
 
-  const finished = page
-    .getByRole("group", { name: "Local command run" })
-    .first();
-  await expect(finished.getByText("exit 0")).toBeVisible({ timeout: 15000 });
-  await expect(
-    finished.getByRole("button", { name: "Hide output" }),
-  ).toBeVisible();
-  // The command can finish over the activity stream before its held POST
-  // response settles. Reload only after the receipt clears the recovery draft.
-  await receipt;
-  await expect
-    .poll(() =>
-      page.evaluate(() =>
-        localStorage.getItem("draft-message-mock-session-001"),
-      ),
-    )
-    .toBeNull();
-  await page.unroute(`**${sessionPath}/bang-commands`);
-  await page.reload();
-  await expect(finished.getByText("exit 0")).toBeVisible();
-  await expect(composer).toHaveValue("");
+    const composer = page.locator("textarea[data-composer-input]").first();
+    await expect(composer).toBeVisible();
+    await composer.pressSequentially("!!echo ya-bang-ok", { delay: 15 });
 
-  // Exercise deletion through the block's own action as well as the
-  // afterEach cleanup used when an earlier assertion fails.
-  await finished.getByRole("button", { name: "Delete" }).click();
-  await expect(finished).toHaveCount(0);
+    // Routing is shown before submission, never inferred.
+    await expect(
+      page.getByText("!! local command", { exact: false }),
+    ).toBeVisible();
 
-  await composer.pressSequentially(
-    "!!printf 'bang stderr explanation\\n' >&2; exit 1",
-    { delay: 15 },
-  );
-  await composer.press("Enter");
-  await expect(finished.getByText("exit 1", { exact: true })).toBeVisible();
-  await expect(
-    finished.locator("pre").filter({ hasText: "bang stderr explanation" }),
-  ).toBeVisible();
-  await expect(
-    finished.getByRole("button", { name: "Hide output" }),
-  ).toBeVisible();
-  for (const viewport of [
-    { width: 1200, height: 600 },
-    { width: 375, height: 812 },
-  ]) {
-    await page.setViewportSize(viewport);
-    await finished.scrollIntoViewIfNeeded();
-    await recordUiCapture(page, `bang-error-${viewport.width}`, viewport);
+    await composer.press("Enter");
+    const block = page
+      .getByRole("group", { name: "Local command run" })
+      .first();
+    await expect(block.getByText("echo ya-bang-ok")).toBeVisible();
+    await expect(composer).toHaveValue("");
+
+    const finished = page
+      .getByRole("group", { name: "Local command run" })
+      .first();
+    await expect(finished.getByText("exit 0")).toBeVisible({ timeout: 15000 });
+    await expect(
+      finished.getByRole("button", { name: "Hide output" }),
+    ).toBeVisible();
+    // Observe completion, then start the receipt clock and release fulfillment.
+    const receipt = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`${sessionPath}/bang-commands`),
+    );
+    releaseResponse();
+    await receipt;
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          localStorage.getItem("draft-message-mock-session-001"),
+        ),
+      )
+      .toBeNull();
+    await page.unroute(`**${sessionPath}/bang-commands`);
+    await page.reload();
+    await expect(finished.getByText("exit 0")).toBeVisible();
+    await expect(composer).toHaveValue("");
+
+    // Exercise deletion through the block's own action as well as the
+    // afterEach cleanup used when an earlier assertion fails.
+    await finished.getByRole("button", { name: "Delete" }).click();
+    await expect(finished).toHaveCount(0);
+
+    await composer.pressSequentially(
+      "!!printf 'bang stderr explanation\\n' >&2; exit 1",
+      { delay: 15 },
+    );
+    await composer.press("Enter");
+    await expect(finished.getByText("exit 1", { exact: true })).toBeVisible();
+    await expect(
+      finished.locator("pre").filter({ hasText: "bang stderr explanation" }),
+    ).toBeVisible();
+    await expect(
+      finished.getByRole("button", { name: "Hide output" }),
+    ).toBeVisible();
+    for (const viewport of [
+      { width: 1200, height: 600 },
+      { width: 375, height: 812 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await finished.scrollIntoViewIfNeeded();
+      await recordUiCapture(page, `bang-error-${viewport.width}`, viewport);
+    }
+    expect(providerRequests).toEqual([]);
+    await finished.getByRole("button", { name: "Delete" }).click();
+    await expect(finished).toHaveCount(0);
+  } finally {
+    releaseResponse();
+    await drainManagedRoutes(page);
   }
-  expect(providerRequests).toEqual([]);
-  await finished.getByRole("button", { name: "Delete" }).click();
-  await expect(finished).toHaveCount(0);
 });

@@ -1,4 +1,10 @@
-import { mkdirSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type { Locator, Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
@@ -183,6 +189,189 @@ test("starts a new transcript selection inside previously selected text", async 
   expect(outcome.pointerCancels).toBe(0);
   expect(outcome.selection).not.toBe(text);
   expect(outcome.selection.length).toBeGreaterThan(5);
+});
+
+async function enableAllSelectionActions(page: Page) {
+  await page.addInitScript(() => {
+    for (const action of [
+      "quote",
+      "text-copy",
+      "source-copy",
+      "rich-copy",
+      "new-session",
+    ]) {
+      localStorage.setItem(
+        `yep-anywhere-selection-${action}-action-enabled`,
+        "true",
+      );
+    }
+  });
+}
+
+async function markerPoint(page: Page, marker: string) {
+  return page.locator(".message-list").evaluate((list, text) => {
+    const walker = document.createTreeWalker(list, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      const textNode = node as Text;
+      const index = textNode.data.indexOf(text);
+      if (index < 0) continue;
+      const range = document.createRange();
+      range.setStart(textNode, index);
+      range.setEnd(textNode, index + 1);
+      const rect = range.getBoundingClientRect();
+      return { x: rect.left + 1, y: rect.top + rect.height / 2 };
+    }
+    throw new Error(`Marker not found: ${text}`);
+  }, marker);
+}
+
+async function dragSelectAndCopy(
+  page: Page,
+  startMarker: string,
+  endMarker: string,
+) {
+  const start = await markerPoint(page, startMarker);
+  const end = await markerPoint(page, endMarker);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(end.x, end.y, { steps: 12 });
+  await page.mouse.up();
+  await expect(
+    page.locator('[data-selection-action-cluster="true"]'),
+  ).toBeVisible();
+  // Let deferred measurement, follow-state, and viewport updates settle.
+  await page.waitForTimeout(500);
+  const selected = await page.evaluate(
+    () => document.getSelection()?.toString() ?? "",
+  );
+  await page.evaluate(() => navigator.clipboard.writeText(""));
+  await page.keyboard.press("ControlOrMeta+c");
+  const copied = await page.evaluate(() => navigator.clipboard.readText());
+  return { copied, selected };
+}
+
+test("keeps a dragged transcript selection copyable after its actions appear", async ({
+  context,
+  page,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await enableAllSelectionActions(page);
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await page.goto(`/projects/${projectId}/sessions/source-selection-001`);
+  await expect(
+    page.locator(".message-list").getByText("and quote the exact", {
+      exact: false,
+    }),
+  ).toBeVisible();
+
+  const { copied, selected } = await dragSelectAndCopy(
+    page,
+    "quote the",
+    "range.",
+  );
+  expect(selected).toContain("quote the exact");
+  expect(copied).toContain("quote the exact");
+});
+
+test("keeps a dragged selection in a windowed transcript", async ({
+  context,
+  page,
+}) => {
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await enableAllSelectionActions(page);
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await page.goto(`/projects/${projectId}/sessions/windowed-selection-001`);
+  const lastReply = page
+    .locator(".message-list")
+    .getByText("Windowed reply 29 part 11", { exact: false });
+  await expect(lastReply).toBeVisible();
+  expect(
+    Number(
+      await page
+        .locator(".message-list")
+        .getAttribute("data-transcript-render-weight"),
+    ),
+  ).toBeGreaterThanOrEqual(200);
+
+  const { copied, selected } = await dragSelectAndCopy(
+    page,
+    "Windowed reply 28 part 10",
+    "Windowed reply 29 part 1 ",
+  );
+  expect(selected).toContain("reply 28 part 11");
+  expect(selected).toContain("Windowed selection request 29");
+  expect(copied).toContain("reply 28 part 11");
+});
+
+test("keeps a dragged selection while a windowed transcript grows", async ({
+  context,
+  page,
+}) => {
+  const sessionDir = join(
+    e2ePaths.claudeSessionsDir,
+    hostname(),
+    mockProjectPath.replace(/\//g, "-"),
+  );
+  const liveFile = join(sessionDir, "windowed-selection-live-001.jsonl");
+  writeFileSync(
+    liveFile,
+    `${readFileSync(join(sessionDir, "windowed-selection-001.jsonl"), "utf8")}\n`,
+  );
+  let parentUuid = "windowed-selection-assistant-29-11";
+  let appended = 0;
+  const appendReply = () => {
+    const uuid = `windowed-selection-live-${appended}`;
+    appendFileSync(
+      liveFile,
+      `${JSON.stringify({
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "text",
+              text: `Live reply ${appended} arrives while the user selects older prose.`,
+            },
+          ],
+        },
+        timestamp: new Date().toISOString(),
+        uuid,
+        parentUuid,
+      })}\n`,
+    );
+    parentUuid = uuid;
+    appended += 1;
+  };
+
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  await enableAllSelectionActions(page);
+  await page.setViewportSize({ width: 1200, height: 700 });
+  await page.goto(
+    `/projects/${projectId}/sessions/windowed-selection-live-001`,
+  );
+  await expect(
+    page
+      .locator(".message-list")
+      .getByText("Windowed reply 29 part 11", { exact: false }),
+  ).toBeVisible();
+  appendReply();
+  await expect(
+    page.locator(".message-list").getByText("Live reply 0", { exact: false }),
+  ).toBeVisible();
+
+  const timer = setInterval(appendReply, 200);
+  try {
+    const { copied, selected } = await dragSelectAndCopy(
+      page,
+      "Windowed reply 29 part 3",
+      "Windowed reply 29 part 6",
+    );
+    expect(appended).toBeGreaterThan(3);
+    expect(selected).toContain("reply 29 part 5");
+    expect(copied).toContain("reply 29 part 5");
+  } finally {
+    clearInterval(timer);
+  }
 });
 
 for (const direction of ["forward", "reverse"] as const) {

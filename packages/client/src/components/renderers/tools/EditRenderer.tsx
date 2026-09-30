@@ -44,6 +44,7 @@ import {
   type FixedFontRenderMode,
 } from "../../ui/FixedFontMathToggle";
 import { HiddenContentBadge } from "../../ui/HiddenContentBadge";
+import { InnerHtml } from "../../ui/InnerHtml";
 import {
   captureDiffSelection,
   type DiffSelectionSnapshot,
@@ -316,11 +317,8 @@ function truncateByLines(
 function renderFixedFontMathPanel(html: string, className: string) {
   return (
     <div className={`${className} fixed-font-rendered-panel`}>
-      <div
-        className="fixed-font-rendered__content"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      {/* KaTeX output is trusted HTML from local rendering. */}
+      <InnerHtml className="fixed-font-rendered__content" trustedHtml={html} />
     </div>
   );
 }
@@ -626,13 +624,8 @@ const HighlightedDiff = memo(function HighlightedDiff({
     return `${diffHtml.slice(0, closeSpanPos + 7)}</code></pre>`;
   }, [diffHtml, truncateLines]);
 
-  return (
-    <div
-      className="highlighted-diff"
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: shiki output is safe
-      dangerouslySetInnerHTML={{ __html: htmlToRender }}
-    />
-  );
+  // Shiki output is safe.
+  return <InnerHtml className="highlighted-diff" trustedHtml={htmlToRender} />;
 });
 
 /**

@@ -1,6 +1,7 @@
 import { memo } from "react";
 import { hasAnsiEscapes, renderAnsiToHtml } from "@yep-anywhere/shared";
 import { profileRenderWork } from "../../lib/diagnostics/renderProfiler";
+import { InnerHtml } from "./InnerHtml";
 import { LinkifiedText } from "./LinkifiedText";
 import {
   rewriteSessionAppLinksHtml,
@@ -40,17 +41,6 @@ export const AnsiText = memo(function AnsiText({
     ),
     rewriteHref,
   );
-  return as === "span" ? (
-    <span
-      className={className}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: renderAnsiToHtml escapes all payload text
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  ) : (
-    <code
-      className={className}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: renderAnsiToHtml escapes all payload text
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
-  );
+  // renderAnsiToHtml escapes all payload text.
+  return <InnerHtml as={as} className={className} trustedHtml={html} />;
 });

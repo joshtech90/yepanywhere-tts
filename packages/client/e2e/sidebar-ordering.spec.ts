@@ -9,7 +9,7 @@ import {
 import { createTestViteServer } from "./support/vite-server";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process";
 
 test.use({ serviceWorkers: "block" });
@@ -262,6 +262,6 @@ test("sidebar follows user sends while visits and background work stay put", asy
     expect(errors).toEqual([]);
   } finally {
     await source.close();
-    stopYaServerProcess(backend);
+    await disposeYaServerProcess(backend);
   }
 });

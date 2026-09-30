@@ -34,6 +34,7 @@ import {
   renderFixedFontRichContent,
 } from "../../ui/FixedFontMathToggle";
 import { HiddenContentBadge } from "../../ui/HiddenContentBadge";
+import { InnerHtml } from "../../ui/InnerHtml";
 import type { RenderContext } from "../types";
 import { NestedHarnessLaunchLink } from "./NestedHarnessLaunchLink";
 import {
@@ -488,10 +489,10 @@ function BashCollapsedPreview({
                 }
                 renderRenderedView={(html) => (
                   <pre>
-                    <div
+                    {/* KaTeX output is trusted HTML from local rendering. */}
+                    <InnerHtml
                       className={`fixed-font-rendered__content ${styles.fixedWidthOutput}`}
-                      // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-                      dangerouslySetInnerHTML={{ __html: html }}
+                      trustedHtml={html}
                     />
                   </pre>
                 )}

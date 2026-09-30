@@ -35,6 +35,7 @@ import {
 } from "../../lib/markdownSelectionCopy";
 import { useScrollPreservingToggle } from "../../lib/scrollAnchor";
 import { copySemanticHtmlSelectionToClipboard } from "../../lib/semanticHtmlClipboard";
+import { getSelectionPlainText } from "../../lib/selectionClipboard";
 import { makeDisplayPath } from "../../lib/text";
 import { presentToolOutput } from "../../lib/toolOutputPresentation";
 import { FileViewerModal } from "../FilePathLink";
@@ -1145,8 +1146,13 @@ export function FixedFontMathToggle({
     if (!element || !quoteSourceText.trim()) {
       return;
     }
-    return registerMarkdownCopySource(element, quoteSourceText);
-  }, [quoteSourceText]);
+    return registerMarkdownCopySource(
+      element,
+      quoteSourceText,
+      undefined,
+      showRendered && rendered.changed ? "rendered" : "literal",
+    );
+  }, [quoteSourceText, showRendered, rendered.changed]);
 
   const handleRenderedClick = useCallback(
     (event: React.MouseEvent<HTMLDivElement>) => {
@@ -1177,17 +1183,17 @@ export function FixedFontMathToggle({
   const handleRenderedCopy: ClipboardEventHandler<HTMLDivElement> = useCallback(
     (event) => {
       const sourceRoot = copySourceRef.current;
-      const markdown = sourceRoot
-        ? extractMarkdownSnippetsFromSelection(sourceRoot)
-            .map((snippet) => snippet.markdown)
-            .join("\n\n")
+      const text = sourceRoot
+        ? getSelectionPlainText(
+            extractMarkdownSnippetsFromSelection(sourceRoot),
+          )
         : "";
       const copied = copySemanticHtmlSelectionToClipboard(
         event.nativeEvent,
         event.currentTarget,
       );
-      if (copied && markdown) {
-        event.clipboardData.setData("text/plain", markdown);
+      if (copied && text) {
+        event.clipboardData.setData("text/plain", text);
       }
     },
     [],

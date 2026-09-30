@@ -103,6 +103,12 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
   reader-first migration to canonical `AGENT_*` pairs is tracked in
   `gaps/agent-facing-env-markers.md`. Tests must cover chaining, quoting, and
   initially known resume ids without depending on the developer's own bridge.
+- A [session-sandboxed](session-sandboxing.md#session-environment-bridge)
+  Claude or Codex launch keeps its bridge in host temp, which the sandbox's
+  private `/tmp` hides, so the sandbox mounts that one directory read-only at
+  a fixed private path and the bridge writes that path into `BASH_ENV` and
+  its own file. The captured outer `BASH_ENV` stays unreadable there and is
+  skipped.
 
 ## Hermetic-test contracts
 
@@ -139,6 +145,9 @@ individual YA variables remain in [ya-env-vars.md](ya-env-vars.md).
 - A hosted provider other than Claude/Codex (Grok, Gemini, OpenCode, Pi)
   starts without `BASH_ENV` or without `AGENTCTL_SESSION_ID` in later Bash
   shells after init.
+- A session-sandboxed Bash shell reads an empty `AGENTCTL_SESSION_ID` after
+  publication, misses a later replacement, or can see another launch's
+  bridge.
 - A Bash bridge probe accidentally inherits socket-backed stdin and silently
   exercises `.bashrc` startup instead of the intended `BASH_ENV` path.
 

@@ -4,6 +4,7 @@ import {
   fetchPlainJSON,
   fetchPlainResponse,
 } from "./plainFetch";
+import { isStaleSessionRedirect } from "./refusal";
 import {
   API_REQUEST_DEADLINE_MS,
   isRequestDeadlineError,
@@ -36,6 +37,29 @@ describe("fetchPlainJSON", () => {
     expect(headers.get("x-yep-anywhere")).toBe("true");
     expect(headers.get("x-yep-client-version")).toBe("unknown");
     expect(headers.get("x-desktop-token")).toBe("desktop-secret");
+  });
+
+  it("carries a stale-session refusal's redirect on the thrown error", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          error: "This session has gone cold",
+          reason: "stale-session",
+          staleRedirect: "stale-handoff",
+        }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      ),
+    );
+
+    const error = await fetchPlainJSON("/sessions/s1/messages", undefined, {
+      fetchImpl,
+    }).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({
+      status: 403,
+      message: "This session has gone cold",
+    });
+    expect(isStaleSessionRedirect(error)).toBe(true);
+    expect(isStaleSessionRedirect(new Error("API error: 403"))).toBe(false);
   });
 
   it("signals login-required and preserves setup-required on 401 responses", async () => {

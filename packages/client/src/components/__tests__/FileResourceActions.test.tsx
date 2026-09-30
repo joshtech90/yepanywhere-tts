@@ -14,8 +14,28 @@ import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
 import {
   FilePathContextMenu,
   ResourceContextMenu,
+  useStartNewSessionFromFileAction,
   useStartNewSessionWithPrefillAction,
 } from "../FileResourceActions";
+import { api } from "../../api/client";
+
+const versionState = vi.hoisted(() => ({
+  capabilities: [] as string[],
+}));
+vi.mock("../../hooks/useVersion", () => ({
+  useRetainedVersionInfo: () => ({
+    current: "0.0.0-dev",
+    capabilities: versionState.capabilities,
+  }),
+  useVersion: () => ({
+    version: {
+      current: "0.0.0-dev",
+      capabilities: versionState.capabilities,
+    },
+    loading: false,
+    error: null,
+  }),
+}));
 
 /** Global class names forbidden by this component's CSS Module ownership. */
 const REMOVED_LEGACY_CLASSES = [
@@ -60,6 +80,35 @@ describe("FilePathContextMenu", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+  });
+
+  it("opens an outside path's Source Control browser in a new tab", () => {
+    versionState.capabilities = ["local-source-browse"];
+    const open = vi.fn();
+    vi.stubGlobal("open", open);
+    const { onClose } = renderMenu({
+      localSource: { projectId: "cHJvag", path: "/tmp/demo/a b.ts" },
+    });
+
+    fireEvent.click(
+      screen.getByRole("menuitem", { name: "Open in Source Control" }),
+    );
+
+    expect(open).toHaveBeenCalledWith(
+      "/projects/cHJvag/browse?path=%2Ftmp%2Fdemo%2Fa+b.ts",
+      "_blank",
+      "noopener",
+    );
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("omits Open in Source Control on a server without the capability", () => {
+    versionState.capabilities = [];
+    renderMenu({ localSource: { projectId: "cHJvag", path: "/tmp/a.ts" } });
+
+    expect(
+      screen.queryByRole("menuitem", { name: "Open in Source Control" }),
+    ).toBeNull();
   });
 
   it("portals the overlay and menu directly into the body", () => {
@@ -313,6 +362,8 @@ describe("useStartNewSessionWithPrefillAction", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    versionState.capabilities = [];
     localStorage.clear();
     sessionStorage.clear();
   });
@@ -326,6 +377,54 @@ describe("useStartNewSessionWithPrefillAction", () => {
     startNewTabSession();
 
     expect(tokenKeys()).toHaveLength(1);
+  });
+
+  it("opens a host file's session in the project that owns it", async () => {
+    versionState.capabilities = ["file-owner-project"];
+    const lookup = vi.spyOn(api, "getFileOwner").mockResolvedValue({
+      owner: {
+        projectId: "project-b" as never,
+        projectPath: "/work/b",
+        relativePath: "gaps/example.md",
+      },
+    });
+    const { result } = renderHook(() => useStartNewSessionFromFileAction());
+    await act(async () => {
+      result.current("project-a", "~/b/gaps/example.md");
+    });
+    expect(lookup).toHaveBeenCalledWith("project-a", "~/b/gaps/example.md");
+    expect(new URLSearchParams(window.location.search).get("projectId")).toBe(
+      "project-b",
+    );
+    expect(getNewSessionPrefill(getCurrentClientSummarySourceKey())).toBe(
+      "gaps/example.md",
+    );
+  });
+
+  it("keeps the linking project for unowned files and older servers", async () => {
+    const lookup = vi
+      .spyOn(api, "getFileOwner")
+      .mockResolvedValue({ owner: null });
+    const { result } = renderHook(() => useStartNewSessionFromFileAction());
+    versionState.capabilities = ["file-owner-project"];
+    const withOwner = renderHook(() => useStartNewSessionFromFileAction());
+    await act(async () => {
+      withOwner.result.current("project-a", "/tmp/report.md");
+    });
+    expect(new URLSearchParams(window.location.search).get("projectId")).toBe(
+      "project-a",
+    );
+    expect(getNewSessionPrefill(getCurrentClientSummarySourceKey())).toBe(
+      "/tmp/report.md",
+    );
+    versionState.capabilities = [];
+    lookup.mockClear();
+    const older = renderHook(() => useStartNewSessionFromFileAction());
+    await act(async () => {
+      older.result.current("project-a", "/tmp/other.md");
+      result.current("project-a", "src/local.ts");
+    });
+    expect(lookup).not.toHaveBeenCalled();
   });
 
   it("leaves no token behind when the browser blocks the new tab", () => {

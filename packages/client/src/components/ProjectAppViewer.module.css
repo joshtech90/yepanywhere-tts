@@ -1,0 +1,144 @@
+.viewer {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg-surface);
+}
+.title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.frame {
+  flex: 1;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: white;
+}
+.viewer .livePreviewToggle[aria-pressed="true"] {
+  background: var(--accent-color);
+  color: var(--accent-contrast);
+}
+.details {
+  overflow: auto;
+  padding: 16px;
+  min-height: 0;
+}
+.details code {
+  overflow-wrap: anywhere;
+}
+.details label {
+  display: block;
+  margin-block: 12px;
+}
+.details button {
+  margin: 4px;
+  min-height: 32px;
+  padding: 5px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  cursor: pointer;
+}
+.details input:not([type="checkbox"]) {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  margin-top: 6px;
+}
+.details fieldset {
+  min-width: 0;
+  margin: 16px 0 0;
+  padding: 12px;
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm, 4px);
+}
+.details dt {
+  color: var(--text-secondary);
+  margin-top: 8px;
+}
+.details dd {
+  margin: 4px 0 12px;
+}
+.inlineSettings {
+  min-width: 0;
+}
+.addressLink {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.addressLink > a {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+}
+.details p {
+  overflow-wrap: anywhere;
+}
+.inlineSettings .details {
+  overflow: visible;
+  padding: 0;
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}
+.inlineSettings .details p {
+  margin-block: 8px;
+}
+.inlineSettings .details > p:first-child {
+  margin-top: 0;
+}
+.inlineSettings .details dl {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px;
+  font-size: var(--font-size-sm);
+}
+.inlineSettings .details dt,
+.inlineSettings .details dd {
+  margin: 0;
+}
+.details input:not([type="checkbox"]) {
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+}
+.workspace {
+  display: flex;
+  flex-direction: row;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.composer {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+.appColumn {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.concealed {
+  display: none;
+}

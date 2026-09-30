@@ -1903,6 +1903,30 @@ describe("Codex Normalization", () => {
     });
   });
 
+  it("preserves the error on an aborted Codex turn", () => {
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "event_msg",
+        timestamp: "2024-01-01T00:00:02Z",
+        payload: {
+          type: "turn_aborted",
+          reason: "interrupted",
+          error: {
+            message: "Guardian denied too many actions",
+            codex_error_info: "tooManyDenials",
+          },
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    expect(result.messages[0]).toMatchObject({
+      type: "system",
+      subtype: "turn_aborted",
+      content: "Guardian denied too many actions",
+    });
+  });
+
   it("emits task_complete as a durable turn completion boundary", () => {
     const entries: CodexSessionEntry[] = [
       {

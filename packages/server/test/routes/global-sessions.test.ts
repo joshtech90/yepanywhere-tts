@@ -96,6 +96,8 @@ describe("Global Sessions Routes", () => {
       initialPrompt?: string;
       isArchived?: boolean;
       isStarred?: boolean;
+      sidebarCategory?: string;
+      createdByUser?: string;
       autoResumeDisabled?: boolean;
     }
   >;
@@ -1333,6 +1335,29 @@ describe("Global Sessions Routes", () => {
 
       expect(result.sessions[0].customTitle).toBe("My Custom Title");
       expect(result.sessions[0].isStarred).toBe(true);
+    });
+
+    it("reports sidebar category and creator, and filters to categorized", async () => {
+      const project = createProject("proj1", "project", "/sessions/proj1");
+      vi.mocked(mockScanner.listProjects).mockResolvedValue([project]);
+      sessionsByDir.set("/sessions/proj1", [
+        createSession("filed", "proj1", minutesAgo(5)),
+        createSession("loose", "proj1", minutesAgo(6)),
+      ]);
+      metadataMap.set("filed", {
+        sidebarCategory: "Paper",
+        createdByUser: "archer",
+      });
+
+      const all = await makeRequest();
+      const filed = all.sessions.find((session) => session.id === "filed");
+      expect(filed?.sidebarCategory).toBe("Paper");
+      expect(filed?.createdByUser).toBe("archer");
+
+      const categorized = await makeRequest("?categorized=true");
+      expect(categorized.sessions.map((session) => session.id)).toEqual([
+        "filed",
+      ]);
     });
   });
 

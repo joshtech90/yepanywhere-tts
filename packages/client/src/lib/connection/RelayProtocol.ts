@@ -24,6 +24,7 @@ import type {
   UploadedFile,
   YepMessage,
 } from "@yep-anywhere/shared";
+import { refusalFields } from "../../api/refusal";
 import { API_REQUEST_DEADLINE_MS } from "../../api/requestDeadline";
 import { getOrCreateBrowserProfileId } from "../storageKeys";
 import { generateUUID } from "../uuid";
@@ -116,7 +117,7 @@ function createRelayApiError(
   if (getRelayHeader(response.headers, "X-Setup-Required") === "true") {
     error.setupRequired = true;
   }
-  return error;
+  return Object.assign(error, refusalFields(response.body));
 }
 
 const RELAY_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);

@@ -6,23 +6,19 @@
  * before any module loads. The app either adopts it — NewSessionForm takes
  * its text and caret in the commit that creates the real composer — or, when
  * the route resolves somewhere else first (a login redirect), retires it and
- * keeps what was typed for the composer that mounts after sign-in.
+ * keeps what was typed for the composer that mounts after sign-in. The
+ * overlay itself keeps its text in the same session-storage stash while it is
+ * typed into, so a reload before adoption restores it.
  * See topics/early-typing-handoff.md.
  */
 
 const OVERLAY_ID = "yep-preboot-composer";
-const SHOWN_ATTRIBUTE = "data-preboot-composer";
 const STASH_KEY = "yep-preboot-composer-text";
 
 export interface PrebootComposerText {
   text: string;
   selectionStart: number;
   selectionEnd: number;
-}
-
-/** True when this document opened with the pre-boot composer on screen. */
-export function prebootComposerShown(): boolean {
-  return document.documentElement.hasAttribute(SHOWN_ATTRIBUTE);
 }
 
 /** True when this pathname is the route the pre-boot composer stands in for. */
@@ -60,8 +56,10 @@ function readStash(): string {
  */
 export function takePrebootComposer(): PrebootComposerText | null {
   const live = removeOverlay();
-  if (live) return live;
+  // The overlay keeps its text in the stash while typed into, so a live
+  // overlay already shows it; read it either way so it is adopted once.
   const text = readStash();
+  if (live) return live;
   return text
     ? { text, selectionStart: text.length, selectionEnd: text.length }
     : null;

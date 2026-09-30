@@ -40,6 +40,48 @@ function codeBlock(language: string, source: string): string {
 }
 
 describe("useCodeFenceRenderers", () => {
+  describe("copy control", () => {
+    it("copies the fence content verbatim, labeled or not", async () => {
+      const writeText = vi.fn(async () => {});
+      vi.stubGlobal("navigator", {
+        ...navigator,
+        clipboard: { writeText },
+      });
+      try {
+        render(
+          <Harness
+            html={`${codeBlock(
+              "text",
+              "  indented line\n\nsecond &lt;line&gt;",
+            )}<pre class="shiki"><code>bare fence</code></pre>`}
+          />,
+        );
+        const buttons = screen.getAllByRole("button", { name: "Copy code" });
+        expect(buttons).toHaveLength(2);
+        // The control adds no text to the block it sits in.
+        expect(
+          screen.getByTestId("root").querySelector("pre")?.textContent,
+        ).toBe("  indented line\n\nsecond <line>");
+
+        buttons[0]?.click();
+        await waitFor(() =>
+          expect(writeText).toHaveBeenCalledWith(
+            "  indented line\n\nsecond <line>",
+          ),
+        );
+        await waitFor(() =>
+          expect(buttons[0]?.dataset.yaCodeCopied).toBe("true"),
+        );
+        buttons[1]?.click();
+        await waitFor(() =>
+          expect(writeText).toHaveBeenLastCalledWith("bare fence"),
+        );
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    });
+  });
+
   describe("language label", () => {
     it("labels a block with its language", () => {
       render(<Harness html={codeBlock("typescript", "const a = 1;")} />);

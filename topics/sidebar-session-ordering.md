@@ -34,13 +34,56 @@ and Older use the same user/creation timestamp, so background work cannot move
 a session between them. Active and queued sessions keep their badges and
 duplicate-hiding protection without being pinned above other rows.
 
+## Sections
+
+The session list shows, top to bottom: **Starred**, manual categories,
+**Last 24 Hours**, one section per limited user, and **Older**. Each session
+appears once, in the first section that claims it: Starred, then its manual
+category, then (for the superuser) the limited user who started it, then Last
+24 Hours or Older by the chronology above. A starred session therefore stays
+in Starred even when filed under a category. Empty sections are not shown.
+Rows are never indented under a header, so every section keeps the same left
+edge.
+
+Clicking a section's name opens or closes it. A chevron after the name points
+down while open and right while closed; a closed section shows its row count
+at the right, with `+` when more rows exist than are loaded. Open/closed state
+is browser-local, stored per fixed section and per named section (by
+`category:<name>` or `user:<username>` key); named sections start open.
+
+**Manual categories.** A row's menu offers *Move to category*, which expands
+in place to the existing category names (the current one checked), *New
+category…* (typed inline, confirmed with Enter), and *Remove from category*.
+Choosing the current category again also removes it. A session holds at most
+one category, a name stored in session metadata on the server, so every
+device agrees. Names are normalized by collapsing whitespace and trimming, up
+to 60 characters; an empty name means none. A category exists while a session
+is filed under it: there is no separate rename or delete in v1. Category
+sections sort by name, case-insensitively, and show uppercase like the fixed
+sections. Their rows come from a dedicated `categorized=true` list feed, so a
+filed session keeps its section however old it is.
+
+**Limited-user sections.** For the superuser, sessions a limited user started
+are grouped under that username, below Last 24 Hours, sorted by username. The
+name keeps its own case and carries a small person glyph. A limited user's own
+sidebar has no such section: they see only their own sessions. Grouping
+applies to loaded rows, like Last 24 Hours and Older.
+
+A server without `sidebar-session-categories` (releases through 0.9.3) shows
+neither the menu entry nor either kind of named section, and the client sends
+it neither `sidebarCategory` nor `categorized`.
+
 ## Interaction hold
 
 Entering the sidebar with a pointer, focusing a control inside it, or starting
 a touch captures the displayed session identities, order, and section
-membership. Status, title, unread, draft, and queue decorations remain live.
+membership. An empty initial list has no targets to protect: its first nonempty
+population remains visible and becomes the held layout if interaction is still
+active. Status, title, unread, draft, and queue decorations remain live.
 New arrivals, duplicate regrouping, and user-driven reorderings wait until the
-interaction finishes. Rows no longer present in the loaded data are removed;
+interaction finishes. That includes moving a row to another section: a section
+that appears during the hold stays empty until release, so the moved row shows
+once, in its old place. Rows no longer present in the loaded data are removed;
 the hold never retains a stale navigation destination after removal.
 
 The hold covers the whole sidebar, including the navigation area above the

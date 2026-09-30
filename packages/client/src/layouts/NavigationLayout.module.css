@@ -31,3 +31,9 @@
 .frame :global(.sidebar-floating-restore) {
   position: absolute;
 }
+
+/* A session's app in full view (SessionRightPane) conceals the sidebar until
+   it is minimized; the pane's stacking cannot paint above it. */
+:global(html[data-app-full-view]) .frame :global(.sidebar-desktop) {
+  visibility: hidden;
+}

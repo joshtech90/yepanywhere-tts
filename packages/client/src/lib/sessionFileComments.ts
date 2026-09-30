@@ -1,3 +1,4 @@
+import { draftStorage } from "./draftSyncStorage";
 const SESSION_FILE_COMMENT_DRAFT_PREFIX = "session-file-comments";
 export const SESSION_FILE_COMMENT_MODE_ATTR = "data-session-file-comment-mode";
 const MAX_DRAFTS = 100;
@@ -46,7 +47,7 @@ export function loadSessionFileCommentDrafts(
   key: string,
 ): SessionFileCommentDraft[] {
   try {
-    const parsed: unknown = JSON.parse(localStorage.getItem(key) ?? "null");
+    const parsed: unknown = JSON.parse(draftStorage.getItem(key) ?? "null");
     if (!Array.isArray(parsed)) return [];
     const drafts: SessionFileCommentDraft[] = [];
     for (const value of parsed.slice(0, MAX_DRAFTS)) {
@@ -94,10 +95,10 @@ export function saveSessionFileCommentDrafts(
     .filter((draft) => draft.text.trim())
     .slice(0, MAX_DRAFTS);
   if (nonempty.length === 0) {
-    localStorage.removeItem(key);
+    draftStorage.removeItem(key);
     return;
   }
-  localStorage.setItem(key, JSON.stringify(nonempty));
+  draftStorage.setItem(key, JSON.stringify(nonempty));
 }
 
 export function formatSessionFileComment(

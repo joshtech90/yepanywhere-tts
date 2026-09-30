@@ -1,5 +1,5 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { UI_KEYS } from "../../../lib/storageKeys";
 import {
   FixedFontMathToggle,
@@ -23,7 +23,38 @@ describe("FixedFontMathToggle", () => {
 
   afterEach(() => {
     cleanup();
+    window.getSelection()?.removeAllRanges();
     window.localStorage.removeItem(UI_KEYS.tooltipMode);
+  });
+
+  it("uses visible plain text for ordinary rendered copy", () => {
+    render(
+      <FixedFontMathToggle
+        sourceText="> **Selected** `code`"
+        precomputedRendered={{
+          html: "<blockquote><p><strong>Selected</strong> <code>code</code></p></blockquote>",
+          changed: true,
+        }}
+        sourceView={<pre>{"> **Selected** `code`"}</pre>}
+        renderRenderedView={(html) => (
+          <div
+            // biome-ignore lint/security/noDangerouslySetInnerHtml: test-controlled precomputed HTML
+            dangerouslySetInnerHTML={{ __html: html }}
+          />
+        )}
+      />,
+    );
+    const selected = screen.getByText("Selected").closest("blockquote")!;
+    const range = document.createRange();
+    range.selectNodeContents(selected);
+    window.getSelection()?.addRange(range);
+    const setData = vi.fn();
+    fireEvent.copy(selected, { clipboardData: { setData } });
+    expect(setData).toHaveBeenCalledWith("text/plain", "Selected code");
+    expect(setData).toHaveBeenCalledWith(
+      "text/html",
+      expect.stringContaining("<strong>Selected</strong>"),
+    );
   });
 
   it("uses a precomputed render result for toggle state and display", () => {

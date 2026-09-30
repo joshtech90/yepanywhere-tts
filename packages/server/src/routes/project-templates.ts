@@ -4,6 +4,7 @@ import { z } from "zod";
 import {
   mayCreateTemplate,
   templateGrantFor,
+  truncateSessionTitle,
   type LimitedUserGrants,
 } from "@yep-anywhere/shared";
 import {
@@ -25,6 +26,7 @@ export function createProjectTemplateRoutes(
     context: Context,
     path: string,
     body: unknown,
+    method?: "POST" | "PUT",
   ) => Promise<Response>,
   activeGrants?: (username: string) => LimitedUserGrants | null,
 ) {
@@ -143,8 +145,9 @@ export function createProjectTemplateRoutes(
     const call = async (
       path: string,
       payload: unknown,
+      method: "POST" | "PUT" = "POST",
     ): Promise<Record<string, unknown>> => {
-      const response = await dispatch(c, path, payload);
+      const response = await dispatch(c, path, payload, method);
       const result = (await response.json()) as Record<string, unknown>;
       if (!response.ok)
         throw new Error(
@@ -201,6 +204,11 @@ export function createProjectTemplateRoutes(
               },
             );
           }
+          await call(
+            `/api/sessions/${encodeURIComponent(result.sessionId)}/metadata`,
+            { title: truncateSessionTitle(parsed.data.intent) },
+            "PUT",
+          );
           return result.sessionId;
         },
       });

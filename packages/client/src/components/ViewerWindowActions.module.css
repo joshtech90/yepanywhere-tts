@@ -27,6 +27,12 @@
 .actions > .destructive {
   color: var(--error-color, #e05252);
 }
+.actions > .textAction {
+  width: auto;
+  padding-inline: 10px;
+  white-space: nowrap;
+  font-size: var(--font-size-sm);
+}
 .actions svg {
   display: block;
   flex: none;

@@ -202,19 +202,36 @@ feed the existing floating copy/quote/new-session action cluster. Static HTML
 iframe previews do not offer the control because their opaque sandbox is not a
 selectable trusted-DOM body.
 
-Ordinary copy from a rendered document uses the registered pre-render source
-mapping and writes the best aligned authored span to `text/plain`. For a
-Markdown preview that is Markdown; for a rendered math selection it includes
-the original TeX expression and delimiters when they can be recovered
-unambiguously. It must not be preempted by the preview's rich-text serializer:
-source-preserving `Ctrl/Cmd+C` is the default document-copy contract. The
-independently enabled blue `</>` selection action invokes the same best-effort
-source projection. The purple `Aa` companion serializes the stored selection
-ranges as semantic HTML plus visible plain text for users who want the rendered
-projection. If the browser cannot write multiple clipboard representations,
-the rich action falls back to its visible plain-text representation. These
-buttons are default-off; their visibility never changes the keyboard-copy
-contract.
+Ordinary Copy, including `Ctrl/Cmd+C` and mobile's native Copy command,
+copies visible selected text as `text/plain`. Markdown decoration such as
+blockquote prefixes, emphasis delimiters, inline-code backticks and link
+syntax is omitted. Paragraph breaks, code indentation and literal punctuation
+remain intact. Raw source views copy their displayed source verbatim.
+
+The independently configurable blue copy selection action is **Copy Markdown**.
+It preserves the selected span's enclosing block and inline formatting even
+for a short selection, without adding unselected words. Selecting part of an
+inline-code token retains its backticks; selecting words inside a blockquote
+retains the quote prefix. Source mapping remains best-effort, with visible text
+as the fallback when the authored span cannot be aligned. Highlighted source
+with exact offsets remains exact, and rendered math retains original TeX
+expressions and delimiters when recoverable unambiguously.
+
+Copy Markdown defaults enabled unless explicitly hidden in Appearance settings.
+Its selection button and context-menu row appear only when at least one selected
+rendered span has an authored Markdown representation different from its visible
+text. Unformatted selections, literal user messages and raw source views omit
+this redundant action. Literal displays copy the selected characters exactly,
+even when a partial selection lies inside text containing Markdown punctuation.
+A selection spanning literal and formatted rendered content keeps Markdown copy
+available for the combined selection. Other applicable selection actions remain
+available.
+On mobile transcript selections its copy icon sits above quote reply in the
+existing action stack above the composer. Tapping uses the stored selection,
+including after the native highlight collapses. Ordinary Copy always uses
+visible text regardless of this button's visibility. The purple `Aa` companion
+continues to copy semantic HTML plus visible plain text, falling back to visible
+plain text when the browser cannot write multiple clipboard representations.
 
 The file resource menu's **Copy rendered contents** command is the whole-file
 counterpart to the purple rich-selection action. For Markdown it consumes the
@@ -229,7 +246,7 @@ text, table, and MathML elements and narrowly semantic attributes. URL-bearing
 attributes, forms and controls, event handlers, active embeds, images, scripts,
 styles, and unknown elements cannot enter the clipboard payload; unknown
 containers contribute only their safe descendant text and markup. The handler
-keeps the existing source-aware `text/plain` fallback. It does not rely on
+uses the same visible-text `text/plain` fallback as ordinary Copy. It does not rely on
 Chromium's default computed-style clipboard payload, which can transfer only
 part of a foreground/background pair into editors such as Jira. Table headers
 and inline/block code still declare paired themed colors for correct rendering

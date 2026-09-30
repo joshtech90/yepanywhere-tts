@@ -68,6 +68,24 @@ describe("parseSessionMetadataPatch", () => {
     });
   });
 
+  it("normalizes a sidebar category and treats a blank one as none", () => {
+    expect(
+      parseSessionMetadataPatch({ sidebarCategory: "  PII   program " }),
+    ).toMatchObject({ ok: true, patch: { sidebarCategory: "PII program" } });
+    expect(parseSessionMetadataPatch({ sidebarCategory: "   " })).toMatchObject(
+      { ok: true, patch: { sidebarCategory: null } },
+    );
+    expect(parseSessionMetadataPatch({ sidebarCategory: null })).toMatchObject({
+      ok: true,
+      patch: { sidebarCategory: null },
+    });
+    expect(parseSessionMetadataPatch({ sidebarCategory: 7 })).toEqual({
+      ok: false,
+      status: 400,
+      error: "sidebarCategory must be a string or null",
+    });
+  });
+
   it("rejects invalid heartbeat intervals", () => {
     expect(
       parseSessionMetadataPatch({ heartbeatTurnsAfterMinutes: 1441 }),

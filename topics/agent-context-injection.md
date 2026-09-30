@@ -65,6 +65,10 @@ that a harness automatically injects or preserves its contents.
 enabled `[Client capabilities]` fragments before the free-form
 `[Global instructions]` block. The server passes that result as
 `globalInstructions`; provider adapters decide where it enters model context.
+A [session-sandboxed](session-sandboxing.md#boundary-statement-in-launch-context)
+Claude or Codex launch appends a `[Session sandbox]` boundary statement to
+that context before placement; the Claude prompt-cache keepalive appends the
+same text so its prefix still matches.
 
 Candidate command-advertisement behavior is recorded in the
 [agent command runtime sketch](agent-command-runtime.sketches.md); it is not

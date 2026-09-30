@@ -1,6 +1,6 @@
 # Roadmap
 
-Last updated: 2026-09-26.
+Last updated: 2026-09-30.
 
 This is Yep Anywhere's canonical product-priority overview. Keep initiative
 status, the next action, and major blockers here; keep implementation steps in
@@ -38,9 +38,14 @@ Exact API and mobile release scope remain design work.
 - [Desktop CI](../../.github/workflows/desktop-ci.yml) packages and signs
   desktop releases. [Nightly Desktop](../../.github/workflows/nightly-desktop.yml)
   publishes verified `main` changes to Latest; the first signed nightlies and
-  the unchanged-source skip have passed release validation. The
-  release-creation authorization failures of 2026-09-09 to 2026-09-15 have not
-  recurred: every nightly from 2026-09-16 through 2026-09-26 succeeded.
+  the unchanged-source skip have passed release validation. September 30
+  verification repaired stale filtered-run discovery and prevents selecting
+  source behind an already published Latest. The selector now reads the workflow
+  inventory and filters main pushes locally. Forward-source
+  [nightly 36715214551](https://github.com/kzahel/yepanywhere/actions/runs/36715214551)
+  published `0.3.2701` at verified `2d2f524d5`, with both macOS installers
+  notarized, Windows signing successful and all updater signatures verified.
+  The earlier draft-creation 403 did not recur with the existing permissions.
 - The website's [desktop downloads page](../tactical/134-desktop-download-links.md)
   is live in `site-v1.11.0`. It suggests the visitor's platform and links to
   current Stable macOS and Windows installers through the update server;
@@ -80,8 +85,9 @@ Desktop starts with nightly publication at 02:37 UTC, skipping unchanged
 packaged inputs, plus manual dispatch for recovery and validation. Same-app
 Stable/Latest selection and signed nightly publication are available. Windows
 installed-upgrade acceptance passed, including channel persistence and data
-preservation. Installed macOS upgrade acceptance remains blocked by the test
-VM's suspended-state restore failure, pending approval for recovery; see the
+preservation. The macOS VM resumed normally on 2026-09-28, clearing the earlier
+suspended-state restore blocker. Installed macOS upgrade acceptance remains
+pending; the manual-check regression was reproduced and locally fixed. See the
 [desktop release QA log](../testing/desktop-release-qa-log.md).
 Continuous per-commit desktop delivery remains a later extension of this
 foundation.
@@ -159,10 +165,14 @@ Start from these existing plans and contracts:
 
 The separately authorized [project-template implementation](../tactical/132-project-template-implementation.md)
 now has a native library composer and opt-in settings for ordered GitHub/local
-sources, pinned retrieval and manual updates. Production template creation,
-ready-content admission, limited-user defaults and sandbox scope, App
-reservations, and project-local identity remain pending. The current agents
-library is the YA default; its three templates remain draft until review.
+sources, pinned retrieval and manual updates. Production creation, ready-content
+admission and limited-user template grants with project-confined setup are
+implemented. Personal-workspace scopes, retained App access, reservations and
+project-local identity remain pending. The three default templates are admitted.
+The [project service specification](../../topics/project-service.md) now defines
+main-pane App access, standardized serving/lifecycle declarations, conditional
+vhost association in project Settings and audit-preserving personal removal;
+its mockup does not implement those runtime contracts.
 This work does not displace release delivery above.
 
 The separately authorized [optional Windows Computer Control preview](../tactical/131-optional-windows-computer-control.md)
@@ -179,7 +189,7 @@ documents before defining work.
 | Direction | Existing context / decision still needed |
 | --- | --- |
 | Multi-machine experience across the full web and desktop clients | The simple-client demo above now owns the first grouping experiment; broader adoption follows evidence from that work and [source runtimes](../../topics/client-source-runtime-topology.md). |
-| Authentication and delegated access | [Principals and grants](../../topics/principals-and-grants.md) is a coordination sketch, not an approved protocol or roadmap commitment. It relates the separate [limited-users](../../topics/limited-users.md), optional hosted-issuer, session-guest and peer-delegation proposals so the first implementation does not accidentally define an incompatible feature-local authority model. |
+| Authentication and delegated access | [Limited users](../../topics/limited-users.md) delivers local accounts and project grants. [Principals and grants](../../topics/principals-and-grants.md) coordinates the broader proposed invitation/account and issuer boundaries; it does not approve a universal grant protocol. [Session notes and discussion](../../topics/session-notes-and-discussion.md) and [participatory Live Share](../../topics/relay-origin-and-share-gating.sketches.md#participatory-live-share) propose human-only notes/chat, owner-reviewed suggestions, and later explicit session-input grants. These remain later directions, not a newly ranked implementation queue. |
 | Related work across repositories | [Issues & PRs](../../topics/issue-session-associations.md) now has experimental, default-off automatic ticket/URL discovery from viewed sessions and a configurable recent-session window, durable evidence, search and correction controls. Conservative URL/known-prefix matching, durable Jira project learning, and session-grouped browsing are implemented and locally validated. SQLite migrations and compatibility gating are implemented. Multi-server issue grouping enters the simple-client demo above; workstream/branch inference and tracker synchronization remain deferred. |
 | Parallel work within one repository | Follow the [workstreams proposal](../../topics/workstreams.md), which uses ordinary lane clones; do not revive the old automatic-worktree sketch as an approved design. |
 | Scheduling | Follow [yacron](../../topics/yacron.md) and its [open gap](../../gaps/sketches/yacron-scheduler.md); the first management UI remains a design prerequisite. |
@@ -187,6 +197,7 @@ documents before defining work.
 | Node 22 and built-in SQLite | Follow the approved [runtime cutover plan](../tactical/123-node-22-builtin-sqlite-cutover.md): raise the server runtime floor now, retain older-server hosted frontend support with advisory runtime warnings, and gate new SQLite-backed features by their exact capabilities before considering any separate frontend cutoff. |
 | Source workflow depth and traceability | Build on [Source Control](../../topics/source-control.md), [review handoff](../../topics/source-review-to-session.md), and [commit/session attribution](../../gaps/sketches/committed-change-session-attribution.md). Additional Git or terminal controls need a concrete user workflow. |
 | Provider maturity and other deferred work | Consult the owning provider topics and [deferred backlog](../../topics/deferred-roadmap.md); its local ordering does not override this product priority. |
+| CI browser reliability and cost | The [CI isolation campaign](../tactical/135-e2e-suite-cost-ratchet.md) owns worker profiles, mutable services and joined cleanup. CI exercises two workers per existing shard. The fixed-source pair passed both schedules, with the worker pair's slower job 47.8% shorter and combined jobs 41.2% shorter; each needed one retry. Subsequent worker revisions completed first-attempt E2E repeats. September 30 fixture-home and reload-environment isolation resolved seven reproduced local failures; the full four-worker suite then passed 352 cases without retries. Source CI 36712930735 and follow-up 36715163980 each passed all 353 browser cases without retries, the full unit suite and every native platform leg. Repeated first-attempt CI and a comparable median/p90 window remain the acceptance blocker. The separate initial search-highlight, [live search discovery](../../gaps/browser-suite-artifact-and-search-failures.md), [Windows extraction](../../gaps/windows-archive-extraction-test-timeout.md), and [Codex fake-process waiter](../../gaps/codex-provider-unit-startup-timeouts.md) findings remain open with bounded diagnostics. |
 | macOS backend reload continuity | [Provider-host port](../tactical/128-macos-provider-host.md) has verification evidence for live Claude/Codex reload, approval, durable resume, concurrent sessions and terminal cleanup on Node source checkouts. Subsequent test-running sessions showed active-turn interruptions correlated with provider-owner exit, so macOS now defaults to ordinary in-Hono ownership and requires `YEP_PROVIDER_HOST_ENABLED=true` to opt in while the [interruption gap](../../gaps/macos-provider-host-turn-interruptions.md) is investigated. Linux remains enabled by default. Native CI still covers Linux, Apple Silicon/Intel Mac and Windows fallback. The separate [Claude project-alias history gap](../../gaps/claude-symlink-project-transcript-routing.md) remains open. This developer iteration work does not displace release delivery. |
 
 ## What changed from the old roadmap

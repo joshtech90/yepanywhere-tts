@@ -65,7 +65,13 @@ test("streams ChromeOS video over WebRTC when host is configured", async ({
   );
 
   const host = process.env.CHROMEOS_HOST?.trim();
-  test.skip(!host, "CHROMEOS_HOST not set — run with CHROMEOS_HOST=chromeroot");
+  if (!host) {
+    test.skip(
+      true,
+      "CHROMEOS_HOST not set — run with CHROMEOS_HOST=chromeroot",
+    );
+    return;
+  }
 
   test.skip(!canSSH(host), `Cannot SSH to ${host}`);
   test.skip(

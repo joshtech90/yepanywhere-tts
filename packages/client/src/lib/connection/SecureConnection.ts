@@ -64,6 +64,7 @@ import {
   generateNonce,
 } from "./nacl-wrapper";
 import { SrpClientSession } from "./srp-client";
+import { ResumeError } from "./resumeErrors";
 import {
   type Connection,
   ConnectionReconnectingError,
@@ -372,7 +373,7 @@ export class SecureConnection implements Connection {
 
       if (!this.storedSessionSupportsCurrentResume()) {
         this.connectionState = "failed";
-        reject(new Error(RESUME_INCOMPATIBLE_ERROR));
+        reject(new ResumeError("incompatible", RESUME_INCOMPATIBLE_ERROR));
         this.ws.close();
         return;
       }
@@ -420,7 +421,12 @@ export class SecureConnection implements Connection {
             return;
           }
           this.connectionState = "failed";
-          authRejectHandler(new Error(RESUME_INCOMPATIBLE_ERROR));
+          authRejectHandler(
+            new ResumeError(
+              "timeout",
+              "Session resume timed out without a server response",
+            ),
+          );
           ws.close();
         }, RESUME_PHASE_TIMEOUT_MS);
       };
@@ -667,6 +673,11 @@ export class SecureConnection implements Connection {
     resolve: () => void,
     reject: (err: Error) => void,
   ): Promise<void> {
+    if (
+      this.connectionState !== "srp_resume_init_sent" &&
+      this.connectionState !== "srp_resume_proof_sent"
+    )
+      return;
     try {
       const msg = JSON.parse(data);
 
@@ -676,7 +687,13 @@ export class SecureConnection implements Connection {
           return;
         }
         if (msg.sessionId !== this.storedSession.sessionId) {
-          reject(new Error("Resume challenge session mismatch"));
+          this.connectionState = "failed";
+          reject(
+            new ResumeError(
+              "verification",
+              "Resume challenge session mismatch",
+            ),
+          );
           this.ws?.close();
           return;
         }
@@ -700,13 +717,15 @@ export class SecureConnection implements Connection {
       }
 
       if (isSrpSessionResumed(msg)) {
-        console.log("[SecureConnection] Session resumed successfully");
         if (!this.storedSession) {
           reject(new Error("No stored session for resumption"));
           return;
         }
         if (msg.sessionId !== this.storedSession.sessionId) {
-          reject(new Error("Resume response session mismatch"));
+          this.connectionState = "failed";
+          reject(
+            new ResumeError("verification", "Resume response session mismatch"),
+          );
           this.ws?.close();
           return;
         }
@@ -720,7 +739,12 @@ export class SecureConnection implements Connection {
         ) {
           console.error("[SecureConnection] Resume server proof failed");
           this.connectionState = "failed";
-          reject(new Error("Resume server verification failed"));
+          reject(
+            new ResumeError(
+              "verification",
+              "Resume server verification failed",
+            ),
+          );
           this.ws?.close();
           return;
         }
@@ -740,7 +764,12 @@ export class SecureConnection implements Connection {
           ) {
             console.error("[SecureConnection] Resume server proof failed");
             this.connectionState = "failed";
-            reject(new Error("Resume server verification failed"));
+            reject(
+              new ResumeError(
+                "verification",
+                "Resume server verification failed",
+              ),
+            );
             this.ws?.close();
             return;
           }
@@ -752,10 +781,16 @@ export class SecureConnection implements Connection {
             "[SecureConnection] Resume would downgrade authenticated protocol",
           );
           this.connectionState = "failed";
-          reject(new Error("Resume server verification failed"));
+          reject(
+            new ResumeError(
+              "verification",
+              "Resume server verification failed",
+            ),
+          );
           this.ws?.close();
           return;
         }
+        console.log("[SecureConnection] Session resumed successfully");
         this.sessionKey = deriveTransportKey(baseSessionKey, transportNonce);
         this.sessionId = msg.sessionId;
         this.connectionState = "authenticated";
@@ -785,7 +820,12 @@ export class SecureConnection implements Connection {
             `[SecureConnection] Session resume failed: ${msg.reason} (no password for fallback)`,
           );
           this.connectionState = "failed";
-          reject(new Error(`Session invalid: ${msg.reason}`));
+          reject(
+            new ResumeError(
+              "rejected",
+              `Server rejected session resume: ${msg.reason}`,
+            ),
+          );
           this.ws?.close();
           return;
         }
@@ -804,7 +844,12 @@ export class SecureConnection implements Connection {
           msg.message,
         );
         this.connectionState = "failed";
-        reject(new Error(`Authentication failed: ${msg.message}`));
+        reject(
+          new ResumeError(
+            msg.code === "server_error" ? "server" : "rejected",
+            `Resume rejected (${msg.code}): ${msg.message}`,
+          ),
+        );
         this.ws?.close();
         return;
       }
@@ -812,7 +857,8 @@ export class SecureConnection implements Connection {
       console.warn("[SecureConnection] Unexpected message during resume:", msg);
       this.connectionState = "failed";
       reject(
-        new Error(
+        new ResumeError(
+          "protocol",
           `Unexpected message during resume: ${msg?.type ?? "unknown"}`,
         ),
       );
@@ -820,7 +866,12 @@ export class SecureConnection implements Connection {
     } catch (err) {
       console.error("[SecureConnection] Resume response error:", err);
       this.connectionState = "failed";
-      reject(err instanceof Error ? err : new Error(String(err)));
+      reject(
+        new ResumeError(
+          "protocol",
+          err instanceof Error ? err.message : String(err),
+        ),
+      );
       this.ws?.close();
     }
   }
@@ -965,7 +1016,12 @@ export class SecureConnection implements Connection {
           }
 
           this.connectionState = "failed";
-          authRejectHandler(new Error(RESUME_INCOMPATIBLE_ERROR));
+          authRejectHandler(
+            new ResumeError(
+              "timeout",
+              "Session resume timed out without a server response",
+            ),
+          );
           ws.close();
         }, RESUME_PHASE_TIMEOUT_MS);
       };
@@ -993,7 +1049,9 @@ export class SecureConnection implements Connection {
 
             if (!this.password) {
               this.connectionState = "failed";
-              authRejectHandler(new Error(RESUME_INCOMPATIBLE_ERROR));
+              authRejectHandler(
+                new ResumeError("incompatible", RESUME_INCOMPATIBLE_ERROR),
+              );
               ws.close();
               return;
             }

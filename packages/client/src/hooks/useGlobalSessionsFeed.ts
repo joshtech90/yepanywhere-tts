@@ -83,6 +83,8 @@ export interface UseGlobalSessionsOptions {
   limit?: number;
   includeArchived?: boolean;
   starred?: boolean;
+  /** Only sessions filed under a sidebar category. */
+  categorized?: boolean;
   includeStats?: boolean;
 }
 
@@ -239,6 +241,7 @@ function createGlobalSessionsControllerQueryKey(
     searchQuery: descriptor.searchQuery?.trim() || null,
     includeArchived: descriptor.includeArchived === true,
     starred: descriptor.starred === true,
+    ...(descriptor.categorized ? { categorized: true } : {}),
   });
 }
 
@@ -301,6 +304,7 @@ export function useGlobalSessionsFeed(
     limit,
     includeArchived,
     starred,
+    categorized,
     includeStats = false,
   } = options;
   const remoteConnection = useOptionalRemoteConnection();
@@ -315,8 +319,9 @@ export function useGlobalSessionsFeed(
         searchQuery,
         includeArchived,
         starred,
+        categorized,
       }),
-    [projectId, searchQuery, includeArchived, starred],
+    [projectId, searchQuery, includeArchived, starred, categorized],
   );
   const queryKey = useMemo(
     () => createGlobalSessionsControllerQueryKey(query),
@@ -453,6 +458,7 @@ export function useGlobalSessionsFeed(
                   : limit,
               includeArchived,
               starred,
+              categorized,
               includeStats: false,
             };
             const knownGeneration =
@@ -569,6 +575,7 @@ export function useGlobalSessionsFeed(
       limit,
       includeArchived,
       starred,
+      categorized,
       includeStats,
       requestedRows,
       sourceKey,
@@ -610,6 +617,7 @@ export function useGlobalSessionsFeed(
         after: lastRecord.updatedAt,
         includeArchived,
         starred,
+        categorized,
         includeStats: false,
       });
 
@@ -639,6 +647,7 @@ export function useGlobalSessionsFeed(
     limit,
     includeArchived,
     starred,
+    categorized,
     sourceKey,
     sourceSummary,
   ]);
@@ -711,6 +720,8 @@ export function useGlobalSessionsFeed(
 
       if (projectId && event.session.projectId !== projectId) return;
       if (starred && !event.session.isStarred) return;
+      // A session is created without a category.
+      if (categorized) return;
       if (includeArchived !== true && event.session.isArchived) return;
 
       if (searchQuery) {
@@ -733,6 +744,7 @@ export function useGlobalSessionsFeed(
     [
       projectId,
       starred,
+      categorized,
       includeArchived,
       searchQuery,
       debouncedRefetch,

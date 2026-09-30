@@ -73,19 +73,19 @@ describe("useSidebarPreference", () => {
     expect(expanded.result.current.isExpanded).toBe(true);
   });
 
-  it("starts minimized for one mount and restores the stored mode unsaved", () => {
-    localStorage.setItem(UI_KEYS.sidebarExpanded, "true");
-    const { result } = renderHook(() =>
-      useSidebarPreference(false, "minimized"),
-    );
-    expect(result.current.isMinimized).toBe(true);
-    expect(localStorage.getItem(UI_KEYS.sidebarMinimized)).toBeNull();
-
-    act(() => result.current.restoreCollapsedSidebar());
-
-    expect(result.current.isMinimized).toBe(false);
-    expect(result.current.isExpanded).toBe(true);
-    expect(localStorage.getItem(UI_KEYS.sidebarExpanded)).toBe("true");
-    expect(localStorage.getItem(UI_KEYS.sidebarMinimized)).toBeNull();
+  it.each([
+    ["expanded", "true", "false"],
+    ["collapsed", "false", "false"],
+    ["minimized", "false", "true"],
+  ])("keeps the saved %s mode on remount", (mode, expanded, minimized) => {
+    localStorage.setItem(UI_KEYS.sidebarExpanded, expanded);
+    localStorage.setItem(UI_KEYS.sidebarMinimized, minimized);
+    const first = renderHook(() => useSidebarPreference());
+    first.unmount();
+    const { result } = renderHook(() => useSidebarPreference());
+    expect(result.current.isExpanded).toBe(mode === "expanded");
+    expect(result.current.isMinimized).toBe(mode === "minimized");
+    expect(localStorage.getItem(UI_KEYS.sidebarExpanded)).toBe(expanded);
+    expect(localStorage.getItem(UI_KEYS.sidebarMinimized)).toBe(minimized);
   });
 });

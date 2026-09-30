@@ -73,7 +73,9 @@ The desired invariant is:
   better interaction, but correctness must not depend on every renderer doing
   so;
 - turn image galleries may own horizontal touch scrolling without transferring
-  their overflow to the document;
+  their overflow to the document, and centering a gallery image (opening the
+  gallery, returning from the image viewer) scrolls only the gallery's own
+  rows sideways, never the transcript;
 - horizontal transcript movement must not widen or move the header, follow
   controls, connection bar, composer, or document viewport.
 

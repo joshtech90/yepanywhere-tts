@@ -1,14 +1,13 @@
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test } from "@playwright/test";
 import {
   decodeJsonFrame,
   type RemoteClientMessage,
 } from "@yep-anywhere/shared";
-import { createTestViteServer } from "./support/vite-server";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process";
 import { recordUiCapture } from "./support/ui-capture";
 
@@ -19,20 +18,19 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
 }) => {
   test.setTimeout(180_000);
   const clientPath = dirname(dirname(fileURLToPath(import.meta.url)));
-  const backend = await startYaServerProcess({ label: "session read state" });
-  const source = await createTestViteServer({
-    configFile: join(clientPath, "vite.config.ts"),
-    define: { __VITE_DEV_PORT__: "-1" },
-    server: {
-      port: 0,
-      strictPort: false,
-      host: "127.0.0.1",
-      proxy: { "/api": { target: backend.baseUrl, ws: true } },
-    },
-  });
   const projectId = Buffer.from(clientPath).toString("base64url");
   const sessionId = "read-state-session";
   const updatedAt = new Date(Date.now() - 60_000).toISOString();
+  const backend = await startYaServerProcess({
+    label: "session read state",
+    serveBuiltClient: true,
+    mockClaudeSession: {
+      projectPath: clientPath,
+      sessionId,
+      content: "Completed session",
+      timestamp: updatedAt,
+    },
+  });
   let hasUnread = false;
   const row = () => ({
     id: sessionId,
@@ -84,10 +82,12 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
   await page.route(/\/api\/sessions(?:\?|$)/, (route) =>
     route.fulfill({
       json: {
-        sessions:
-          new URL(route.request().url()).searchParams.get("starred") === "true"
-            ? []
-            : [row()],
+        sessions: ["starred", "categorized"].some(
+          (key) =>
+            new URL(route.request().url()).searchParams.get(key) === "true",
+        )
+          ? []
+          : [row()],
         hasMore: false,
       },
     }),
@@ -146,11 +146,7 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
-    await source.listen();
-    const address = source.httpServer?.address();
-    if (!address || typeof address === "string")
-      throw new Error("Missing Vite port");
-    const origin = `http://127.0.0.1:${address.port}`;
+    const origin = backend.baseUrl;
     for (const viewport of [
       { name: "desktop", width: 1000, height: 600 },
       { name: "phone", width: 375, height: 812 },
@@ -220,7 +216,6 @@ test("read toggles stay synchronized across sidebar, session menu and inbox", as
     expect(errors).toEqual([]);
   } finally {
     await page.goto("about:blank");
-    await source.close();
-    stopYaServerProcess(backend);
+    await disposeYaServerProcess(backend);
   }
 });

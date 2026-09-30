@@ -8,6 +8,79 @@ import {
   SESSION_COOKIE_NAME,
   createAuthRoutes,
 } from "../../src/auth/routes.js";
+import { configureAuthAudit } from "../../src/security/authAuditLog.js";
+
+describe("Auth routes - audit log", () => {
+  let authService: AuthService;
+  let testDir: string;
+
+  beforeEach(async () => {
+    testDir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-audit-test-"));
+    authService = new AuthService({
+      dataDir: testDir,
+      cookieSecret: "test-cookie-secret",
+    });
+    await authService.initialize();
+    configureAuthAudit(testDir);
+  });
+
+  afterEach(async () => {
+    configureAuthAudit(undefined);
+    await authService.flushPendingWrites();
+    await fs.rm(testDir, { recursive: true, force: true });
+  });
+
+  it("records logins and password changes without any password", async () => {
+    const routes = createAuthRoutes({ authService });
+    const post = (route: string, body: unknown, cookie?: string) =>
+      routes.request(route, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "User-Agent": "audit-test",
+          ...(cookie ? { Cookie: cookie } : {}),
+        },
+        body: JSON.stringify(body),
+      });
+
+    await post("/enable", { password: "first-secret-pw" });
+    expect((await post("/login", { password: "wrong-secret-pw" })).status).toBe(
+      401,
+    );
+    const login = await post("/login", { password: "first-secret-pw" });
+    const cookie = login.headers.get("set-cookie")?.split(";")[0];
+    await post(
+      "/change-password",
+      { currentPassword: "first-secret-pw", newPassword: "second-secret-pw" },
+      cookie,
+    );
+
+    const content = await fs.readFile(
+      path.join(testDir, "logs", "auth-events.jsonl"),
+      "utf8",
+    );
+    for (const secret of ["first-secret-pw", "wrong-secret-pw", "second"]) {
+      expect(content).not.toContain(secret);
+    }
+    const entries = content
+      .trimEnd()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      entries.map((entry) => [entry.event, entry.outcome, entry.reason]),
+    ).toEqual([
+      ["auth-enable", "success", undefined],
+      ["login", "failure", "bad-password"],
+      ["login", "success", undefined],
+      ["password-change", "success", undefined],
+    ]);
+    expect(entries[1]).toMatchObject({
+      account: "owner",
+      transport: "direct",
+      userAgent: "audit-test",
+    });
+  });
+});
 
 describe("Auth routes - POST /enable", () => {
   let authService: AuthService;

@@ -1,4 +1,4 @@
-# Production dependency audit reports two ignored advisories
+# Production dependency audit has two documented suppressions
 
 `pnpm audit --prod` currently reports two ignored advisories:
 
@@ -20,3 +20,8 @@ dependency owns the renderer's output boundary.
 
 Found 2026-08-02 while replacing Marked with markdown-it and auditing the
 production renderer dependency graph.
+
+2026-09-30: four newly reported, non-ignored findings blocked the unchanged
+CI campaign lockfile. Compatible patches move `fast-uri` 3.1.7 to 3.1.8 and
+`brace-expansion` 2.1.4 to 2.1.7; the latter needs no override. The production
+audit again exits zero with only the two documented suppressions above.

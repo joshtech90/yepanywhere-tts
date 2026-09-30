@@ -5,7 +5,7 @@ import {
   defaultProjectNameForPath,
   normalizeProjectCodeName,
 } from "@yep-anywhere/shared";
-import { type FormEvent, useId, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useId, useMemo, useState } from "react";
 import { useI18n } from "../i18n";
 import { pathForProjectName, settlePathEntry } from "../lib/newProjectPath";
 import type { Project } from "../types";
@@ -35,6 +35,8 @@ interface AddProjectFormProps {
   error: string | null;
   onSubmit: (request: AddProjectRequest) => void;
   onCancel: () => void;
+  /** Reports whether the user has typed a path, name or code. */
+  onTypedChange?: (typed: boolean) => void;
 }
 
 /** An empty or blank draft means "use the default", not a chosen value. */
@@ -63,6 +65,7 @@ export function AddProjectForm({
   error,
   onSubmit,
   onCancel,
+  onTypedChange,
 }: AddProjectFormProps) {
   const { t } = useI18n();
   const id = useId();
@@ -71,6 +74,8 @@ export function AddProjectForm({
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [codeDraft, setCodeDraft] = useState<string | null>(null);
   const [codeError, setCodeError] = useState<string | null>(null);
+  const typed = !!(pathDraft?.trim() || nameDraft?.trim() || codeDraft?.trim());
+  useEffect(() => onTypedChange?.(typed), [typed, onTypedChange]);
 
   const typedName = chosenDraft(nameDraft);
   const path =

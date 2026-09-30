@@ -1,5 +1,7 @@
 export type {
   ArtifactVhost,
+  ArtifactVhostSite,
+  ArtifactVhostSiteView,
   ArtifactViewerConfig,
   ArtifactViewerStatus,
   ArtifactViewerGrant,
@@ -17,6 +19,7 @@ export type {
 
 export * from "./session-content-search.js";
 export * from "./limited-users.js";
+export * from "./sidebar-categories.js";
 export * from "./project-template-source.js";
 export * from "./model-prices.js";
 export * from "./model-display.js";
@@ -569,6 +572,7 @@ export type {
   GitWorktreeCoverage,
   GitWorktreeDeltaEvent,
   GitWorktreeDirectory,
+  LocalSourceRoot,
   GitWorktreeDirectoryChange,
   GitWorktreeGeneration,
   GitWorktreePathChange,
@@ -673,6 +677,8 @@ export {
   normalizeYaClientBaseUrl,
   normalizeYaClientBaseUrlFromShareViewerUrl,
 } from "./ya-client-url.js";
+
+export type { FileOwnerProject, FileOwnerResponse } from "./file-owner.js";
 
 export {
   type UrlProjectId,
@@ -845,6 +851,9 @@ export {
   NON_HUMAN_USER_TURN_CAPABILITY,
   SESSION_CONTENT_SEARCH_CAPABILITY,
   SESSION_CREATION_PROVENANCE_CAPABILITY,
+  SIDEBAR_SESSION_CATEGORIES_CAPABILITY,
+  SESSION_SCOPED_LOCAL_FILES_CAPABILITY,
+  AGENT_SERVER_ACCESS_CAPABILITY,
   GIT_WORKING_TREE_SECTIONS_CAPABILITY,
   GIT_WORKING_TREE_COMPLETE_SCAN_CAPABILITY,
   GLOSSARY_TOOLTIPS_CAPABILITY,
@@ -1056,6 +1065,7 @@ export type {
   SessionCreationProvenance,
   AppSession,
   SessionEffectiveModelSettings,
+  EffectiveSessionLaunchSettings,
   SessionMetadataPayload,
   SessionMetadataResponse,
   SessionQueuedMessageKind,
@@ -1595,3 +1605,14 @@ export {
 export { asRecord, isRecord } from "./plain-record.js";
 
 export { PDFJS_VERSION } from "./pdfjs.js";
+
+export {
+  projectServiceSchema,
+  type ProjectServiceDeclaration,
+  type ProjectAppInfo,
+  type ProjectAppView,
+  type ProjectAppAddresses,
+  type ProjectAppInventory,
+} from "./project-service.js";
+
+export * from "./drafts.js";

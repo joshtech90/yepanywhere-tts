@@ -3,7 +3,18 @@ import type { UrlProjectId, WorkstreamId } from "@yep-anywhere/shared";
 import { getLogger } from "../logging/logger.js";
 import type { PermissionMode, UserMessage } from "../sdk/types.js";
 import type { EventBus } from "../watcher/EventBus.js";
+import type { Process } from "./Process.js";
 import type { ModelSettings } from "./Supervisor.js";
+
+/**
+ * One-shot hook once a launch, immediate or queued, has its canonical YA id.
+ * It receives the started process so a caller can record what the launch
+ * settled (its sandbox state key, project path) whichever way it started.
+ */
+export type SessionStartedCallback = (
+  sessionId: string,
+  process: Process,
+) => void | Promise<void>;
 
 /** Type of queued request */
 export type QueuedRequestType = "new-session" | "resume-session";
@@ -26,7 +37,7 @@ export interface QueuedRequest {
   modelSettings?: ModelSettings;
   queuedAt: Date;
   /** One-shot association hook after a queued launch receives its YA id. */
-  onStarted?: (sessionId: string) => void | Promise<void>;
+  onStarted?: SessionStartedCallback;
   /** One-shot failure hook when deferred launch work cannot start. */
   onFailed?: (reason: string) => void | Promise<void>;
   /** One-shot hook when a transient provider startup failure should retry. */
@@ -106,7 +117,7 @@ export class WorkerQueue {
     message: UserMessage;
     permissionMode?: PermissionMode;
     modelSettings?: ModelSettings;
-    onStarted?: (sessionId: string) => void | Promise<void>;
+    onStarted?: SessionStartedCallback;
     onFailed?: (reason: string) => void | Promise<void>;
     onRetryableFailure?: (reason: string) => void | Promise<void>;
     retryProviderStartupFailure?: boolean;

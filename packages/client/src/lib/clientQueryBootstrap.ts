@@ -31,7 +31,7 @@
  * not withhold navigation forever; blocking decorative work is the goal, losing
  * the shell is not.
  */
-import type { ClientSummarySourceKey } from "./clientSummaryStore";
+import type { ClientSummarySourceKey } from "./clientSummarySourceKey";
 
 export type ClientQueryBootstrapTier = "route" | "navigation" | "supplementary";
 

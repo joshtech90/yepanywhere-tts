@@ -175,6 +175,10 @@ export interface GlobalSessionItem {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  /** User-named sidebar category; absent when the session has none. */
+  sidebarCategory?: string;
+  /** Limited user who started the session; absent means the superuser. */
+  createdByUser?: string;
   /** True when an explicit manual termination disabled resume. */
   autoResumeDisabled?: boolean;
   /** Interactive Mother session for a YA-owned `/btw` aside. */
@@ -257,6 +261,8 @@ export interface GlobalSessionsRequest {
   limit?: number;
   includeArchived?: boolean;
   starred?: boolean;
+  /** Send only behind `sidebar-session-categories`; older servers ignore it. */
+  categorized?: boolean;
   includeStats?: boolean;
 }
 
@@ -399,6 +405,7 @@ function getGlobalSessionsRequest(
   if (params?.limit) searchParams.set("limit", String(params.limit));
   if (params?.includeArchived) searchParams.set("includeArchived", "true");
   if (params?.starred) searchParams.set("starred", "true");
+  if (params?.categorized) searchParams.set("categorized", "true");
   if (params?.includeStats) searchParams.set("includeStats", "true");
   if (params?.knownGeneration !== undefined) {
     searchParams.set("knownGeneration", String(params.knownGeneration));
@@ -872,6 +879,48 @@ export const api = {
         promptSuggestionMode: options?.promptSuggestionMode,
         helperSideModel: options?.helperSideModel,
         creationProvenance: options?.creationProvenance,
+      }),
+    }),
+
+  /**
+   * Deliver a turn the server refused because its session went cold as the
+   * first turn of a new session seeded with a handoff of the old one
+   * (topics/limited-users.md § Freshness). The server chooses the launch
+   * settings: the user's lock, else the old session's.
+   */
+  staleHandoffSession: (
+    projectId: string,
+    sessionId: string,
+    message: string,
+    options: {
+      mode?: PermissionMode;
+      tempId?: string;
+      clientTimestamp?: number;
+      messageMetadata?: UserMessageMetadata;
+    },
+    attachments?: UploadedFile[],
+  ) =>
+    fetchJSON<{
+      sessionId: string;
+      processId: string;
+      projectId: string;
+      provider?: ProviderName;
+      model?: string;
+      title?: string;
+      permissionMode: PermissionMode;
+      appliedPermissionMode?: PermissionMode;
+      modeVersion: number;
+      recapAfterSeconds?: number;
+      serverTimestamp: number;
+    }>(`/projects/${projectId}/sessions/${sessionId}/stale-handoff`, {
+      method: "POST",
+      body: JSON.stringify({
+        message,
+        mode: options.mode,
+        tempId: options.tempId,
+        clientTimestamp: options.clientTimestamp,
+        messageMetadata: options.messageMetadata,
+        attachments,
       }),
     }),
 
@@ -1459,8 +1508,18 @@ export const api = {
 
   ...pushSettingsApi,
 
-  // File API
-  ...fileApi,
+  // sourceApiFetch -> sourceRuntime imports this facade. Defer method lookup
+  // so entering through fileClient does not read its uninitialized binding.
+  getFileOwner: (...args: Parameters<typeof fileApi.getFileOwner>) =>
+    fileApi.getFileOwner(...args),
+  getFile: (...args: Parameters<typeof fileApi.getFile>) =>
+    fileApi.getFile(...args),
+  getFileMetadata: (...args: Parameters<typeof fileApi.getFileMetadata>) =>
+    fileApi.getFileMetadata(...args),
+  getFileRawUrl: (...args: Parameters<typeof fileApi.getFileRawUrl>) =>
+    fileApi.getFileRawUrl(...args),
+  expandDiffContext: (...args: Parameters<typeof fileApi.expandDiffContext>) =>
+    fileApi.expandDiffContext(...args),
 
   // Git status API
   ...gitApi,
@@ -1828,10 +1887,13 @@ export interface ServerSettings {
   clientLogCollectionRequested?: boolean;
   /** Whether approve/deny decisions are written to the server audit log */
   approvalAuditLogEnabled?: boolean;
+  /** Whether unsandboxed superuser sessions get an in-memory API token */
+  agentServerAccessEnabled?: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled?: boolean;
   /** Whether limited users exist beside the superuser (topics/limited-users.md) */
   limitedUsersEnabled?: boolean;
+  limitedUserInstructions?: import("@yep-anywhere/shared").LimitedUserInstructions;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
   /** Whether experimental live Source Control filesystem monitoring is enabled. */

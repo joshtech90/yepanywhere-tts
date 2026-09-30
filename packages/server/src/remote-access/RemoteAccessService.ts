@@ -18,6 +18,7 @@ import {
   enforceOwnerReadWriteFilePermissions,
 } from "../utils/filePermissions.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 const CURRENT_VERSION = 1;
 
@@ -55,7 +56,13 @@ export class RemoteAccessService {
   private state: RemoteAccessState;
   private dataDir: string;
   private filePath: string;
-  private save = createCoalescingSaver(() => this.doSave()).save;
+  private saver = createCoalescingSaver(() => this.doSave());
+  private save = this.saver.save;
+
+  /** Wait for saves already queued; never starts a write. */
+  async waitForPendingWrites(): Promise<void> {
+    await this.saver.idle();
+  }
 
   constructor(options: RemoteAccessServiceOptions) {
     this.dataDir = options.dataDir;
@@ -91,9 +98,13 @@ export class RemoteAccessService {
       }
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(
-          "[RemoteAccessService] Failed to load state, starting fresh:",
-          error,
+        // Fail closed rather than start with remote access unconfigured,
+        // which would silently discard the relay credential
+        // (topics/security.md; auth.json has the same rule).
+        throw new Error(
+          `[RemoteAccessService] ${this.filePath} is unreadable (${error instanceof Error ? error.message : String(error)}). ` +
+            "Refusing to start without its remote access credential. Restore " +
+            "the file, or delete it to deliberately reset remote access.",
         );
       }
       this.state = { version: CURRENT_VERSION, enabled: false };
@@ -248,8 +259,8 @@ export class RemoteAccessService {
 
   private async doSave(): Promise<void> {
     const content = JSON.stringify(this.state, null, 2);
-    await fs.writeFile(this.filePath, content, {
-      encoding: "utf-8",
+    // Atomic: an in-place write interrupted by shutdown leaves an empty file.
+    await writeFileAtomically(this.filePath, content, {
       mode: OWNER_READ_WRITE_FILE_MODE,
     });
     await enforceOwnerReadWriteFilePermissions(

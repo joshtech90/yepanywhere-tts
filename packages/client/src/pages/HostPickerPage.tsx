@@ -6,6 +6,11 @@
  * - "Add Host" section with relay/login/direct options
  */
 
+import {
+  categorizeResumeError,
+  requiresResumeLogin,
+} from "../lib/connection/remoteErrors";
+import { getResumeError } from "../lib/connection/resumeErrors";
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { YepAnywhereLogo } from "../components/YepAnywhereLogo";
@@ -153,23 +158,13 @@ export function HostPickerPage() {
           err instanceof Error
             ? err.message
             : t("hostPickerErrorConnectionFailed");
-        // If session resumption failed, redirect to login page
-        if (
-          message.includes("Authentication failed") ||
-          message.includes("invalid") ||
-          message.includes("Resume server verification failed") ||
-          message.includes("resume_incompatible") ||
-          message.includes("session resume unsupported")
-        ) {
+        if (requiresResumeLogin(categorizeResumeError(err))) {
           clearHostSession(host.id);
-          if (host.mode === "relay" && host.relayUsername) {
-            navigate(relayLoginPath(host));
-          } else {
-            navigate("/login/direct");
-          }
-        } else {
-          setError(message);
+          setHosts(loadSavedHosts().hosts);
         }
+        // Keep the explanation visible. Only a subsequent explicit choice
+        // opens login; transport/proof failures do not discard the session.
+        setError(getResumeError(err)?.message ?? message);
       } finally {
         setConnectingHostId(null);
       }

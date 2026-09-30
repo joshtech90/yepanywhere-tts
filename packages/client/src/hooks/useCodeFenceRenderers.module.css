@@ -122,3 +122,71 @@
     pointer-events: auto;
   }
 }
+
+/* Copy control: the block's fence content, verbatim. Top-right, with the
+   language label moved beside it. Pointers reveal it on hover or focus, as
+   they do the label; touch has no hover, so it stays visible there. */
+.root pre:has(> [data-ya-code-copy]) {
+  position: relative;
+}
+
+/* Centered on the copy control's row rather than hugging the top edge. */
+.root pre[data-ya-code-language]:has(> [data-ya-code-copy])::after {
+  top: 0.4rem;
+  right: 1.95rem;
+}
+
+.root [data-ya-code-copy] {
+  position: absolute;
+  top: 0.2rem;
+  right: 0.3rem;
+  width: 1.35rem;
+  height: 1.35rem;
+  padding: 0;
+  border: 1px solid var(--border-color);
+  border-radius: 0.3rem;
+  background: color-mix(in srgb, var(--bg-surface) 92%, transparent);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  user-select: none;
+  opacity: 0;
+  transition:
+    opacity 0.15s ease,
+    color 0.15s ease;
+  z-index: 2;
+}
+
+.root pre:hover > [data-ya-code-copy],
+.root pre:focus-within > [data-ya-code-copy],
+.root [data-ya-code-copy][data-ya-code-copied] {
+  opacity: 1;
+}
+
+.root [data-ya-code-copy]:hover {
+  color: var(--text-primary);
+}
+
+.root [data-ya-code-copy][data-ya-code-copied] {
+  color: var(--app-yep-green);
+  border-color: color-mix(
+    in srgb,
+    var(--app-yep-green) 45%,
+    var(--border-color)
+  );
+}
+
+@media (hover: none) {
+  .root [data-ya-code-copy] {
+    width: 1.75rem;
+    height: 1.75rem;
+    opacity: 1;
+  }
+
+  .root pre[data-ya-code-language]:has(> [data-ya-code-copy])::after {
+    top: 0.55rem;
+    right: 2.35rem;
+  }
+}

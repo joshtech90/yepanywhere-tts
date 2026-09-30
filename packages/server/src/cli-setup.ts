@@ -15,6 +15,10 @@ import { WebSocket } from "ws";
 import { AuthService } from "./auth/AuthService.js";
 import { getDataDir } from "./config.js";
 import { RemoteAccessService } from "./remote-access/RemoteAccessService.js";
+import {
+  configureAuthAudit,
+  recordAuthEvent,
+} from "./security/authAuditLog.js";
 import { InstallService } from "./services/InstallService.js";
 
 /** Timeout for relay registration check (ms) */
@@ -46,6 +50,13 @@ export async function setupAuth(options: SetupAuthOptions): Promise<void> {
   await authService.initialize();
 
   await authService.enableAuth(password);
+  // The one path that replaces the owner password without the old one.
+  configureAuthAudit(dataDir);
+  await recordAuthEvent(undefined, {
+    event: "password-reset-cli",
+    outcome: "success",
+    account: "owner",
+  });
   console.log("Local authentication configured successfully.");
   console.log(`Auth file: ${authService.getFilePath()}`);
 }

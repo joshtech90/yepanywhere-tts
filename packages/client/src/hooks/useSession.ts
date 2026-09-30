@@ -868,6 +868,11 @@ export function useSession(
   const [localMode, setLocalMode] = useState<PermissionMode>(
     initialPermissionMode,
   );
+  // Browser restoration is a display fallback, not an explicit resume request.
+  const [permissionModeOverride, setPermissionModeOverride] = useState<{
+    sessionId: string;
+    mode: PermissionMode;
+  } | null>(null);
   const [, setServerMode] = useState<PermissionMode>(initialPermissionMode);
   const [modeVersion, setModeVersion] = useState<number>(initialModeVersion);
   const localModeRef = useRef<PermissionMode>(localMode);
@@ -880,6 +885,7 @@ export function useSession(
       return;
     }
     restoredModeSessionRef.current = sessionId;
+    setPermissionModeOverride(null);
     setLocalMode(sessionPermissionModePick.load(sessionId) ?? "default");
   }, [sessionId]);
   // Track whether we've already processed a stream "connected" event in this mount.
@@ -992,6 +998,11 @@ export function useSession(
         localModeRef.current = mode;
         setLocalMode(mode);
         sessionPermissionModePick.save(sessionId, mode);
+        setPermissionModeOverride((pending) =>
+          pending?.sessionId === sessionId && pending.mode === mode
+            ? null
+            : pending,
+        );
       }
     },
     [sessionId],
@@ -1182,6 +1193,21 @@ export function useSession(
     onLoadError: handleLoadError,
   });
 
+  // Keep the last server-owned choice through the dormant -> owned transition,
+  // before the replacement process's stream publishes its first mode event.
+  const savedPermissionMode = session?.effectiveLaunchSettings?.permissionMode;
+  useEffect(() => {
+    if (
+      status.owner === "self" ||
+      !savedPermissionMode ||
+      permissionModeOverride
+    )
+      return;
+    localModeRef.current = savedPermissionMode;
+    setLocalMode(savedPermissionMode);
+    sessionPermissionModePick.save(sessionId, savedPermissionMode);
+  }, [savedPermissionMode, permissionModeOverride, sessionId, status.owner]);
+
   const messagesRef = useRef<Message[]>(messages);
   const messagesLoadingRef = useRef(loading);
   const compactBoundaryBaselineRef = useRef<CompactBoundarySnapshot | null>(
@@ -1284,6 +1310,7 @@ export function useSession(
   // Update local mode (UI selection) and sync to server if process is active
   const setPermissionMode = useCallback(
     async (mode: PermissionMode) => {
+      setPermissionModeOverride({ sessionId, mode });
       localModeRef.current = mode;
       setLocalMode(mode);
       sessionPermissionModePick.save(sessionId, mode);
@@ -1297,6 +1324,12 @@ export function useSession(
             lastKnownModeVersionRef.current = result.modeVersion;
             setServerMode(result.permissionMode);
             setModeVersion(result.modeVersion);
+            setPermissionModeOverride((pending) =>
+              pending?.sessionId === sessionId &&
+              pending.mode === result.permissionMode
+                ? null
+                : pending,
+            );
           }
           if (result.appliedPermissionMode) {
             setStatus((prev) =>
@@ -2679,6 +2712,10 @@ export function useSession(
     setIsCompacting,
     actualSessionId, // Real session ID from server (may differ from URL during temp→real transition)
     permissionMode: localMode, // UI-selected mode (sent with next message)
+    permissionModeOverride:
+      permissionModeOverride?.sessionId === sessionId
+        ? permissionModeOverride.mode
+        : undefined,
     modeVersion,
     loading,
     sessionLoadProgress,

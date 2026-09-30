@@ -7,6 +7,7 @@ import { validateToolResult } from "../../../lib/validateToolResult";
 import { SchemaWarning } from "../../SchemaWarning";
 import { AnsiText } from "../../ui/AnsiText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
+import { InnerHtml } from "../../ui/InnerHtml";
 import type { BashOutputInput, BashOutputResult } from "./types";
 
 const MAX_LINES_COLLAPSED = 20;
@@ -54,11 +55,8 @@ function StatusIndicator({ status }: { status: string }) {
 function renderFixedFontMathPanel(html: string, className = "code-block") {
   return (
     <div className={`${className} fixed-font-rendered-panel`}>
-      <div
-        className="fixed-font-rendered__content"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      {/* KaTeX output is trusted HTML from local rendering. */}
+      <InnerHtml className="fixed-font-rendered__content" trustedHtml={html} />
     </div>
   );
 }

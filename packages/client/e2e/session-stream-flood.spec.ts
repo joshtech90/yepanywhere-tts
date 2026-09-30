@@ -8,7 +8,7 @@ import {
 import { createTestViteServer } from "./support/vite-server";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process";
 
 test.use({ serviceWorkers: "block" });
@@ -258,6 +258,6 @@ test("a sustained stream flood does not trip React's update-depth limit", async 
     await expect(composer).toBeVisible();
   } finally {
     await source.close();
-    stopYaServerProcess(backend);
+    await disposeYaServerProcess(backend);
   }
 });

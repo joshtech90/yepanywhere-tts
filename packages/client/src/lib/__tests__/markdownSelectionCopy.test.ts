@@ -45,15 +45,15 @@ describe("getMarkdownForVisibleSelection", () => {
     ).toBe("2. Same");
   });
 
-  it("keeps partial selections inside markdown block lines narrow", () => {
+  it("preserves formatting for partial selections without extra words", () => {
     expect(
       getMarkdownForVisibleSelection(
         "- `MCLONE_UI_V2_HIT_DEBUG=1` logs/overlays pointer",
         "MCLONE_UI_V2_HIT_DEBUG=1",
       ),
-    ).toBe("MCLONE_UI_V2_HIT_DEBUG=1");
+    ).toBe("- `MCLONE_UI_V2_HIT_DEBUG=1`");
     expect(getMarkdownForVisibleSelection("## Debug switches", "Debug")).toBe(
-      "Debug",
+      "## Debug",
     );
   });
 
@@ -67,6 +67,27 @@ describe("getMarkdownForVisibleSelection", () => {
     expect(
       getMarkdownForVisibleSelection("## Debug switches", "Debug switches"),
     ).toBe("## Debug switches");
+  });
+
+  it("retains enclosing formatting for short selections", () => {
+    expect(
+      getMarkdownForVisibleSelection("Use `long_command` here", "command"),
+    ).toBe("`command`");
+    expect(
+      getMarkdownForVisibleSelection(
+        "> Continue **the preview** today",
+        "preview",
+      ),
+    ).toBe("> **preview**");
+    expect(
+      getMarkdownForVisibleSelection(
+        "Read [the guide](https://example.com)",
+        "guide",
+      ),
+    ).toBe("[guide](https://example.com)");
+    expect(
+      getMarkdownForVisibleSelection("First.\n\nSecond.", "First.\nSecond."),
+    ).toBe("First.\n\nSecond.");
   });
 
   it("keeps plain partial selections narrow", () => {
@@ -240,7 +261,7 @@ describe("extractMarkdownSnippetsFromSelection", () => {
 
     expect(extractMarkdownSnippetsFromSelection(root)).toMatchObject([
       {
-        markdown: "MCLONE_UI_V2_HIT_DEBUG=1",
+        markdown: "- `MCLONE_UI_V2_HIT_DEBUG=1`",
         selectedText: "MCLONE_UI_V2_HIT_DEBUG=1",
         sourceElement: source,
       },

@@ -1,3 +1,4 @@
+import { DraftSyncBridge } from "../components/DraftSyncBridge";
 import { type ReactNode, useMemo } from "react";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
 import {
@@ -25,7 +26,10 @@ export function CurrentSourceRuntimeProvider({
     [registry, sourceKey],
   );
   return (
-    <SourceRuntimeProvider runtime={runtime}>{children}</SourceRuntimeProvider>
+    <SourceRuntimeProvider runtime={runtime}>
+      <DraftSyncBridge />
+      {children}
+    </SourceRuntimeProvider>
   );
 }
 

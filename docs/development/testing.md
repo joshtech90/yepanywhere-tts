@@ -24,6 +24,11 @@ cd site && npm run build   # Astro check + build (or: pnpm site:build from root)
 
 Fix any errors before considering the task complete.
 
+Root `pnpm typecheck` includes `pnpm e2e:typecheck`, which checks all client
+Playwright specs, configurations and support modules through
+`packages/client/tsconfig.e2e.json`. Keep fixture and startup changes in that
+strict gate; Playwright strips types without checking them.
+
 The general CI unit-test job runs `pnpm test`. Android unit, lint, build, and
 instrumentation coverage belongs to the dedicated Android App workflow so its
 Gradle work does not contend with the JavaScript workspace test processes.
@@ -42,6 +47,25 @@ and relevant process descriptors. In particular, Bash `BASH_ENV` probes use
 ignored stdin rather than inheriting a test runner's socket-backed stdin. See
 [subprocess environment boundaries](../../topics/subprocess-environment.md) for the
 runtime and hermetic-test contract.
+
+Full server-app tests import `test/setup/create-app.ts`, rather than the
+production constructor directly. The wrapper gives each app its own storage
+under the test file's hermetic data root, as well as empty provider histories.
+The production constructor reads its `dataDir` option, not `YEP_DATA_DIR`;
+setting the environment alone does not isolate these fixtures. Pass an
+explicit `dataDir` only when the test needs an owned persisted profile, such
+as a restart or shared-storage scenario. Dispose app services before removing
+their fixture directories. The wrapper drains all registered app services at file teardown before removing
+the file's storage root, including supervisor maintenance and artifact readiness
+writes. Repeated explicit app disposal joins the same cleanup promise.
+Restore fake timers before leaving a test that admits asynchronous maintenance
+work, so teardown can drain its promises rather than wait on a frozen clock.
+The wrapper injects an offline latest-version lookup. Browser server processes
+use a fixture preload that supplies the update endpoint's real 204 no-update
+response while forwarding other HTTP traffic. Version-route contract tests own
+their explicit update responses; general tests never require public update
+service availability. Client unit setup clears local/session storage before
+invalidating preference caches, so earlier cases cannot choose later defaults.
 
 ## Cross-Platform Behavior And Tests
 

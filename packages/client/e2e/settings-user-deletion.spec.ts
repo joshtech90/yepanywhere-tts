@@ -42,6 +42,7 @@ for (const viewport of [
     });
 
     await page.goto(`${baseURL}/settings/users`);
+    await page.getByRole("button", { name: "alice", exact: true }).click();
     const remove = page.getByRole("button", { name: "Delete", exact: true });
     await expect(remove).toBeVisible();
     const canceled = page.waitForEvent("dialog");

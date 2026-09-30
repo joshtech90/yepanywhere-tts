@@ -386,6 +386,38 @@ does not stat every nested child. Persisted paths must remain canonical
 repository-relative paths, bounds and truncation are explicit, and concurrent
 refresh callers share one refresh.
 
+### Browsing a path outside the project
+
+A file-path link or file viewer naming an absolute path outside the selected
+project offers **Open in Source Control** in its context menu when the server
+advertises `local-source-browse`. It opens a new tab at
+`/projects/:projectId/browse?path=<absolute path>` showing the Working Tree
+file browser for that path. The browsed directory is not a project, and the
+view never pretends otherwise:
+
+- **Root.** The enclosing Git checkout when the file-access allow-set covers
+  its top level, else the directory holding the named file (or the named
+  directory). The requested file opens selected. An allowed prefix itself
+  may be browsed.
+- **Snapshot.** One inventory request (`GET
+  /api/projects/:projectId/git/working-tree-files?root=`), with no live lease,
+  watcher, untracked cache, or app-data state. Reloading the tab refreshes it.
+- **Inventory.** In a checkout, tracked plus non-ignored untracked files under
+  the root, classified by Git. Outside Git, a bounded breadth-first walk lists
+  every regular file as one plain list: `.git` and symlinked directories are
+  not entered, and more than 50,000 files or 20,000 directories truncates.
+- **Contents only.** Files open through the ordinary authenticated absolute
+  file read, so the allow-set is enforced again per file. There is no blame,
+  review-comment surface, Changes tab, or project history.
+- **Authority.** `:projectId` must be a project the caller may view; it
+  authorizes the request and is otherwise unused. The path must resolve
+  inside the allow-set (403 otherwise), and only the superuser may name one,
+  as for every host absolute-path read (403 for a limited principal).
+
+Git runs in that directory with its own configuration, exactly as for a
+project checkout. A full Source Control view (history, Changes) for a
+checkout root outside any project remains possible future work.
+
 ### Optional live project worktree ownership
 
 Live monitoring is an experimental server-wide Source Control option with a

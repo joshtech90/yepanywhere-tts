@@ -8,7 +8,10 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { APPROVAL_AUDIT_LOG_CAPABILITY } from "@yep-anywhere/shared";
+import {
+  AGENT_SERVER_ACCESS_CAPABILITY,
+  APPROVAL_AUDIT_LOG_CAPABILITY,
+} from "@yep-anywhere/shared";
 import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -213,6 +216,33 @@ describe("LocalAccessSettings", () => {
         .querySelector("[data-local-access-password-feedback]")
         ?.getAttribute("data-local-access-password-feedback");
     }
+
+    it("offers session API access only once a password is required", async () => {
+      versionState.capabilities = [
+        APPROVAL_AUDIT_LOG_CAPABILITY,
+        AGENT_SERVER_ACCESS_CAPABILITY,
+      ];
+      useDirectAccess(false);
+      const { unmount } = render(<LocalAccessSettings />);
+      expect(
+        screen.queryByRole("checkbox", {
+          name: "localAccessAgentServerAccessTitle",
+        }),
+      ).toBeNull();
+      unmount();
+
+      useDirectAccess(true);
+      render(<LocalAccessSettings />);
+      const toggle = screen.getByRole("checkbox", {
+        name: "localAccessAgentServerAccessTitle",
+      });
+      expect(toggle).toHaveProperty("checked", false);
+      fireEvent.click(toggle);
+      expect(mockUpdateSetting).toHaveBeenCalledWith(
+        "agentServerAccessEnabled",
+        true,
+      );
+    });
 
     it("nests the fields under the toggle with live match feedback", async () => {
       useDirectAccess(false);

@@ -6,6 +6,7 @@ import {
 } from "../../LocalMediaModal";
 import type { ContentBlock, ContentRenderer } from "../types";
 import { useSessionAppLinksHtml } from "../../SessionAppLinks";
+import { InnerHtml } from "../../ui/InnerHtml";
 
 interface TextBlock extends ContentBlock {
   type: "text";
@@ -41,10 +42,8 @@ function TextRendererComponent({ block }: { block: TextBlock }) {
         onClick={handleClick}
         onContextMenu={handleContextMenu}
       >
-        <div
-          // biome-ignore lint/security/noDangerouslySetInnerHtml: server-rendered markdown
-          dangerouslySetInnerHTML={{ __html: renderedHtml }}
-        />
+        {/* Server-rendered markdown. */}
+        <InnerHtml trustedHtml={renderedHtml} />
         {modal && (
           <LocalMediaModal
             path={modal.path}

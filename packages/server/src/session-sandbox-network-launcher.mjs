@@ -56,7 +56,62 @@ function parseConfiguration(raw) {
   ) {
     throw new Error("Session sandbox network configuration has invalid arrays");
   }
+  if (value.portBroker !== undefined) {
+    const broker = value.portBroker;
+    if (
+      !broker ||
+      typeof broker !== "object" ||
+      !["nsenterPath", "nodePath", "script", "directory"].every(
+        (name) =>
+          typeof broker[name] === "string" && broker[name].startsWith("/"),
+      )
+    ) {
+      throw new Error(
+        "Session sandbox network configuration has an invalid port broker",
+      );
+    }
+  }
   return value;
+}
+
+/**
+ * Start the loopback port broker inside the namespace (see
+ * session-sandbox-port-broker.mjs). Its socket is named for this launcher's
+ * pid, which the server knows as the provider process pid. A broker that
+ * fails leaves only app exposure unavailable; the session itself runs on.
+ */
+function startPortBroker(broker, namespacePid) {
+  const socketPath = `${broker.directory}/${process.pid}.sock`;
+  const child = spawn(
+    broker.nsenterPath,
+    [
+      `--target=${namespacePid}`,
+      "--user",
+      "--net",
+      "--preserve-credentials",
+      "--",
+      broker.nodePath,
+      broker.script,
+      socketPath,
+    ],
+    { cwd: "/", env: {}, stdio: ["pipe", "ignore", "pipe"] },
+  );
+  let stderr = "";
+  child.stderr.on("data", (chunk) => {
+    if (stderr.length < 4000) stderr += chunk.toString("utf8");
+  });
+  child.once("error", (error) => {
+    console.error(
+      `[session-sandbox-network] port broker could not start: ${error.message}`,
+    );
+  });
+  child.once("exit", (code, signal) => {
+    if (code === 0) return;
+    console.error(
+      `[session-sandbox-network] port broker exited (${signal ? `signal ${signal}` : `status ${code}`})${stderr.trim() ? `: ${stderr.trim()}` : ""}`,
+    );
+  });
+  return child;
 }
 
 function childExit(child, label) {
@@ -199,6 +254,7 @@ async function main() {
   }
 
   let slirpProcess;
+  let portBroker;
   const forwardSigint = () => namespaceProcess.kill("SIGINT");
   const forwardSigterm = () => namespaceProcess.kill("SIGTERM");
   process.on("SIGINT", forwardSigint);
@@ -238,6 +294,9 @@ async function main() {
     ready.destroy();
     pidStream.destroy();
     gate.end("go\n");
+    if (configuration.portBroker) {
+      portBroker = startPortBroker(configuration.portBroker, namespacePid);
+    }
 
     const outcome = await Promise.race([
       namespaceExited.then((result) => ({ owner: "namespace", result })),
@@ -266,6 +325,8 @@ async function main() {
     slirpProcess?.kill("SIGTERM");
     throw error;
   } finally {
+    // Ending its stdin stops the broker, which removes its own socket.
+    portBroker?.stdin.end();
     process.off("SIGINT", forwardSigint);
     process.off("SIGTERM", forwardSigterm);
   }

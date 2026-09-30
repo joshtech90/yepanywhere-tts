@@ -3,7 +3,7 @@ import type {
   ProjectQueueItemSummary,
   SessionMetadataPayload,
 } from "@yep-anywhere/shared";
-import { useEffect, useMemo, useSyncExternalStore } from "react";
+import { useEffect, useMemo } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import {
@@ -64,6 +64,7 @@ import {
   selectSessionCollectionQueryRecords,
   selectSessionCollectionQueryState,
   selectSessionCollectionRecord,
+  selectCategorizedSessionRecords,
   selectStarredSessionRecords,
 } from "./clientSummaryQueries";
 import type {
@@ -92,45 +93,34 @@ import {
 } from "./sessionDraftStorage";
 import { useSourceRuntimeContextValue } from "./sourceRuntimeReact";
 import type { SourceTransport } from "./transport";
+import {
+  type ClientSummarySourceKey,
+  getCurrentClientSummarySourceKey,
+  subscribeClientSummarySourceKey,
+  useClientSummarySourceKey,
+  resetClientSummarySourceKeyForTests,
+} from "./clientSummarySourceKey";
+export {
+  type ClientSummarySourceKey,
+  asClientSummarySourceKey,
+  createClientSummaryHostSourceKey,
+  createClientSummaryDirectSourceKey,
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+  REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY,
+  getCurrentClientSummarySourceKey,
+  subscribeClientSummarySourceKey,
+  useClientSummarySourceKey,
+  setCurrentClientSummarySourceKey,
+} from "./clientSummarySourceKey";
 
 type StoreListener = () => void;
 type BusUnsubscribe = () => void;
 type ReleaseSubscription = () => void;
 
-export type ClientSummarySourceKey = string & {
-  readonly __brand: "ClientSummarySourceKey";
-};
-
-export function asClientSummarySourceKey(
-  value: string,
-): ClientSummarySourceKey {
-  return value as ClientSummarySourceKey;
-}
-
-export function createClientSummaryHostSourceKey(
-  savedHostId: string,
-): ClientSummarySourceKey {
-  return asClientSummarySourceKey(`host:${savedHostId}`);
-}
-
-export function createClientSummaryDirectSourceKey(
-  normalizedWsUrl: string,
-): ClientSummarySourceKey {
-  return asClientSummarySourceKey(`direct:${normalizedWsUrl}`);
-}
-
-export const LOCAL_CLIENT_SUMMARY_SOURCE_KEY =
-  asClientSummarySourceKey("local");
-
-export const REMOTE_NONE_CLIENT_SUMMARY_SOURCE_KEY =
-  asClientSummarySourceKey("remote:none");
-
 const clientSummaryStoresBySource = new Map<
   ClientSummarySourceKey,
   StoreApi<ClientSummaryState>
 >();
-const currentSourceKeyListeners = new Set<StoreListener>();
-let currentClientSummarySourceKey = LOCAL_CLIENT_SUMMARY_SOURCE_KEY;
 const activityBusSubscriptionsBySource = new Map<
   ClientSummarySourceKey,
   {
@@ -161,42 +151,8 @@ export function getClientSummaryStoreForSource(
   return store;
 }
 
-export function getCurrentClientSummarySourceKey(): ClientSummarySourceKey {
-  return currentClientSummarySourceKey;
-}
-
-export function subscribeClientSummarySourceKey(
-  listener: StoreListener,
-): () => void {
-  currentSourceKeyListeners.add(listener);
-  return () => {
-    currentSourceKeyListeners.delete(listener);
-  };
-}
-
-export function useClientSummarySourceKey(): ClientSummarySourceKey {
-  return useSyncExternalStore(
-    subscribeClientSummarySourceKey,
-    getCurrentClientSummarySourceKey,
-    getCurrentClientSummarySourceKey,
-  );
-}
-
-export function setCurrentClientSummarySourceKey(
-  key: ClientSummarySourceKey,
-): void {
-  if (key === currentClientSummarySourceKey) {
-    return;
-  }
-
-  currentClientSummarySourceKey = key;
-  for (const listener of Array.from(currentSourceKeyListeners)) {
-    listener();
-  }
-}
-
 function getCurrentClientSummaryStore(): StoreApi<ClientSummaryState> {
-  return getClientSummaryStoreForSource(currentClientSummarySourceKey);
+  return getClientSummaryStoreForSource(getCurrentClientSummarySourceKey());
 }
 
 function useCurrentClientSummaryStore(): StoreApi<ClientSummaryState> {
@@ -927,6 +883,11 @@ export function useStarredSessionRecords(): SessionCollectionRecord[] {
   return useMemo(() => selectStarredSessionRecords(state), [state]);
 }
 
+export function useCategorizedSessionRecords(): SessionCollectionRecord[] {
+  const state = useClientSummaryState();
+  return useMemo(() => selectCategorizedSessionRecords(state), [state]);
+}
+
 export function useRecentSessionRecords(
   now?: number,
 ): SessionCollectionRecord[] {
@@ -967,8 +928,7 @@ export function resetClientSummaryStoreForTests(): void {
     store.setState(createEmptyClientSummaryState(), true);
   }
   clientSummaryStoresBySource.clear();
-  currentClientSummarySourceKey = LOCAL_CLIENT_SUMMARY_SOURCE_KEY;
-  currentSourceKeyListeners.clear();
+  resetClientSummarySourceKeyForTests();
   for (const record of activityBusSubscriptionsBySource.values()) {
     for (const unsubscribe of record.unsubscribers) {
       unsubscribe();

@@ -8,158 +8,173 @@ Topic: relay-origin-and-share-gating
 
 ## Participatory Live Share
 
-Status: candidate design, not current guidance.
+Status: **proposal, not implemented.** The 2026-09-30 maintainer discussion
+narrows the initial direction to trusted colleagues discussing one live session,
+then submitting suggestions for owner review, with optional direct prompting
+later. This supersedes the earlier fixed driver/guest composer and v2/v3 delivery
+sequence. It does not change the implemented read-only public-share contract.
 
-A participatory live share is a synchronized multi-seat session surface. Its
-first implementation has one driver and one guest; v3 generalizes the same
-composer and authority model to anonymous N-way participation. It retains the
-current driver's ordinary session UI and adds a guest composer immediately
-above the driver composer on narrow screens. When the viewport is wide enough,
-the two initial composers sit side by side with the driver on the left and
-guest on the right, so the distinct authors and their pending text remain
-visible together. On the driver's view, each guest composer carries just two
-controls: **Steer** and **Queue**. They form a compact vertical column in the
-stacked layout and a horizontal row at the guest pane's bottom-right in the
-side-by-side layout. Every participant receives the same streaming transcript
-state rather than a separate chat transcript or periodically refreshed
-snapshot.
+The [multiplayer competitive analysis](../docs/competitive/multiplayer-ai.md)
+records documented product precedents, permission differences, and evidence
+limits. It does not select a dependency or change this proposal's delivery scope.
 
-The share UI keeps three top-level choices: **Frozen**, **Live**, and
-**Multiplayer**. Multiplayer is shown only when the configured participant
-limit is greater than one. Its creation form exposes the maximum player count
-and one **Send enabled** option rather than multiplying the top-level share
-types. With sending disabled, a guest can edit and submit a proposed turn but
-cannot mutate the provider session directly. The driver may apply the proposal
-with the guest composer's dedicated Steer or Queue control. The ordinary driver
-action may also consume the guest proposal when the driver composer is empty;
-Shift-click on desktop or long-press on mobile explicitly selects the guest
-proposal even when the driver composer contains text. Ordinary activation with
-non-empty driver text continues to act on the driver's text.
+### Direction and scope
 
-When **Send enabled** is selected at share creation, each admitted guest may
-additionally invoke the bounded send, steer, and queue actions directly. This
-authority does not imply approvals, interrupt/restart, session settings, file
-access, source control, attachment upload, share management, or creation of
-other sessions.
+Every participant observes one live provider transcript; the server remains the
+owner of provider execution and sequences accepted input. Participation does not
+require another provider session, machine, or project-wide membership.
 
-**Username prefixes wherever sends bypass the driver.** Joining a
-multiplayer share requires entering a username; the driver never does. Every
-guest send, steer, or queue that reaches the provider without the driver
-applying it is delivered with that username as a visible prefix on the turn
-text, so the agent and every later transcript reader can tell who said it.
-The driver's own sends stay unprefixed: an unprefixed turn is the driver.
-The prefix is provider-neutral turn content, not hidden metadata. Send-
-disabled guests still enter a username on joining, but their proposals need
-no prefix for delivery because the driver applies them; the UI labels
-proposals by that name.
+The proposed progression is:
 
-The synchronized state needs server sequencing rather than peer-to-peer
-browser convention. At minimum it carries the current guest draft, submitted
-proposal identity and revision, whether it has been consumed, and the
-resulting provider-input action. Both clients must converge after reconnect;
-an older proposal or draft update must not overwrite a newer revision, and one
-proposal must not execute twice when driver and guest act concurrently.
+1. **Human discussion.** Add a shared side-chat beside the live transcript.
+   [Session notes and discussion](session-notes-and-discussion.md) owns the
+   human-only content, including independently useful personal scratch notes.
+2. **Reviewed suggestions.** Let participants submit proposed prompts that the
+   owner can edit, dismiss, or approve. They never execute automatically.
+3. **Direct prompting.** Explicitly grant particular participants narrowly
+   scoped provider-input actions in this session.
 
-### Preferred architecture
+Discussion can therefore be the first useful participatory share without guest
+provider-input authority. Personal notes can land independently. These are
+candidate delivery slices, not a ranked roadmap or implementation plan.
 
-Reuse the standard streaming session UI and its send/steer/queue semantics for
-both participants, with the server projecting a capability-limited guest
-principal and the extra composer stack. This keeps transcript rendering,
-session-busy decisions, queued-input behavior, reconnection, and provider
-normalization on their existing paths. A focused extension to the current
-secure Live Share implementation is also acceptable when it shares those
-state/action owners and adds only the synchronized proposal/composer channel;
-it must not fork a second session-state machine.
+### Explicit participant grants
 
-The send-enabled choice is a server-enforced capability recorded on the share,
-not merely a control hidden in the guest UI. A current public-share viewer token
-is only ephemeral tab identity, and the current bearer-link public transport is
-read-only and visible to the relay operator. It cannot silently acquire input
-authority. An implementation must therefore define a revocable interactive
-grant, bind every mutation to its source session and allowed action set, and
-decide whether interactive traffic uses the authenticated encrypted relay path
-or a separately encrypted share channel before send-enabled sharing can ship.
+Use the vocabulary in [principals and grants](principals-and-grants.md): a
+credential authenticates a principal; a target-enforced grant names the session,
+allowed actions, expiry, and revocation. A display name, seat, or per-tab viewer
+id does not grant authority. Model multiple participants and independently
+revocable grants even if the first UI is optimized for an owner and one guest.
 
-### Interaction details to test
+| Action | Proposed scope |
+| --- | --- |
+| View | Read this live transcript and the discussion admitted by the grant |
+| Chat | Post human-only discussion; candidate baseline for admitted participants |
+| Suggest | Submit a prompt for owner review without invoking the provider |
+| Send | Submit a prompt directly when ordinary session state permits it |
+| Queue | Add input to this session's execution queue |
+| Steer | Change the active turn through the existing steer path; separately granted |
 
-- The guest composer remains above the driver composer on narrow screens and
-  moves to the right of it when width permits. The driver's two guest actions
-  form a vertical Steer/Queue column when stacked and a bottom-right row when
-  side by side.
-- Driver Send/Steer/Queue with an empty composer consumes the current guest
-  proposal; Shift-click on desktop or long-press on mobile consumes it
-  deliberately; neither path loses hidden driver text.
-- Keyboard and touch users can also choose the guest composer's visible
-  Steer/Queue controls rather than depending on an alternate press gesture.
-- Guest draft synchronization is distinguishable from submission: typing does
-  not execute, and a submitted proposal remains stable while either person
-  starts another draft.
-- Send-enabled guest input follows the same current-state action rules as the
-  ordinary composer and reports acceptance, queue position, rejection, or
-  supersession to both participants.
-- Revocation immediately removes guest mutation authority while leaving the
-  driver session and provider process intact.
-- Frozen shares remain immutable and cannot be upgraded in place to an
-  interactive grant; the creator chooses an interactive live grant explicitly.
+The first direct-input slice should stay with basic send and session queue.
+Steer is a separate candidate permission, not implied by send or queue. Project
+Queue is a later possibility needing its own resource and dispatch review; a
+session input grant does not authorize scheduling other sessions or projects.
 
-### V2: guest speech recognition
+Guest input never implies changing bypass/permission modes, model or thinking
+levels, answering tool approvals, stop/interrupt/restart, file editing, source
+control, attachment upload, session creation/fork, or share management. Those
+remain owner-only in this proposal. Any later expansion needs an explicit grant
+and boundary review, not inheritance from a generic "write" role.
 
-A second implementation pass gives the guest access to YA speech recognition.
-Recognized text enters the guest composer and follows the same draft,
-submission, send-disabled, and send-enabled rules as typed text.
+Expiry and revocation are enforced on the server for reads, writes, and live
+subscriptions, not just hidden in the UI. Ending one participant's authority
+leaves the owner session and provider process intact. What happens to already
+accepted queued input on revocation remains an explicit lifecycle decision.
 
-For YA-mediated recognition, captured audio is also available to the driver as
-a separately muteable live stream while recognition is active. Audio presence,
-mute state, transcription partials, and final composer text are distinct
-synchronized state: muting playback must not stop recognition or discard the
-text draft, and reconnect must not replay stale audio as live speech. Direct
-browser-to-provider recognition cannot promise the same YA-routed audio stream
-unless capture deliberately forks audio into the collaboration channel.
+### Suggestions await owner review
 
-This is v2 because microphone authority, browser playback policy, echo and
-feedback prevention, latency, reconnect, retention, provider credentials, and
-speech-credit delegation are separate from synchronized text. Current public
-shares intentionally cannot spend server speech credits or receive borrowed
-speech credentials; an interactive share must add explicit guest speech
-authority rather than inherit it from transcript access.
+A pending suggestion is a proposed prompt outside the execution queue. The owner
+can edit or dismiss it, or approve it through their existing Send, Queue, or
+Steer action. Approval consumes an exact suggestion revision once; a stale
+approval cannot silently execute a newer edit, and retries or concurrent clicks
+cannot create a second execution. Submission and approval are distinct from
+proof that the provider durably received the input.
 
-### V3: anonymous N-way participation
+Keep the suggestion author, revisions/edits, applying owner, selected action,
+and resulting input identity distinguishable. For example, "Suggested by Alex;
+edited and queued by Kyle" must not collapse into a single author. A submitted
+suggestion remains stable while its author starts another draft. Chat becomes
+a suggestion only by a deliberate promotion action.
 
-V3 generalizes the initial driver-and-guest surface to a configurable
-participant limit. The limit defaults to one total active composer seat. Any
-value greater than zero streams the driver's in-progress composer content to
-ordinary Live Share viewers, while a value greater than one additionally
-exposes the Multiplayer share type. A multiplayer share selects a maximum from
-two through the configured limit, capped at four in the first release. The
-driver occupies one seat; the first `maximum - 1` visitors to join the link
-claim the remaining composer seats, and later visitors remain read-only until
-a seat is released. Server-generated seat identities sequence drafts,
-actions, reconnects, and revocation. Every joiner enters a username on
-joining, which the username-prefix rule above attaches to send-enabled
-deliveries; the driver has no username and sends unprefixed. Broader display
-identity beyond shares is the
-[named participant seats](../gaps/sketches/named-participant-seats.md)
-sketch.
+Reuse the ordinary session action rules and delivery feedback. Review the open
+[unconfirmed-send gap](../gaps/unconfirmed-send-loss-across-reload.md) and
+[durable turn-identity gap](../gaps/provider-user-turn-durable-identity.md) before
+promising reliable acceptance/delivery or attribution across provider reloads.
+Do not infer exact authorship by matching arbitrary transcript text.
 
-At up to four active composers, a wide viewport may use a 2×2 grid with the
-driver composer fixed at bottom-left. Narrow viewports stack the composers
-vertically while retaining the driver/guest distinction and each guest's two
-Steer/Queue controls. Seat assignment must not make a reconnecting visitor
-overwrite another participant's draft or let two tabs execute through one
-seat.
+### Attribution and provider-visible identity
 
-The protocol should not hard-code four even though the first release does. A
-future limit above four may use a larger responsive grid; whenever the layout
-is not a vertical stack, the driver's composer receives twice the width of a
-guest composer. Transcript state remains singular and synchronized across all
-participants, while drafts, proposals, speech authority, and action results
-remain seat-scoped.
+Record authorship from the authenticated participant and retain display identity
+as presentation metadata. [Named participant seats](../gaps/sketches/named-participant-seats.md)
+owns the broader attribution proposal. Private notes are not published by
+joining, and shared composer drafts are distinct from personal account drafts.
+
+The 2026-09-15 maintainer direction remains: joiners enter a username; the owner
+need not. Guest sends, steers, or queues that bypass owner review carry that
+username as a visible prefix in provider input. Owner sends remain unprefixed.
+Owner-applied suggestions need no guest prefix, but YA retains both suggestion
+authorship and who applied the text. Provider-visible prefixes and trusted YA
+metadata serve different purposes; a prefix is not authentication evidence.
+
+### Presentation candidates
+
+Reuse shared transcript rendering with a capability-limited participant surface
+and an owner-side collaboration panel. Hide permanently unsupported controls;
+disable an allowed control when session state makes it temporarily unavailable.
+No guest permission-escalation request flow is proposed.
+
+Chat, suggestions, and direct agent input need visibly distinct actions. A
+participant has their own composer; an optional "me/them" or participant selector
+can preview another person's explicitly shared draft. A participant strip with
+presence, a desktop side panel, and a mobile pane with unread counts are
+candidates. The former stacked/side-by-side composer layout remains an option,
+not a requirement for the first version. Owner approval must be explicit and
+must never consume a guest suggestion merely because the owner's composer is
+empty or an alternate press gesture is used.
+
+Later multi-composer layouts could use a small grid on wide screens and a stack
+on narrow screens. The previous two-to-four-seat limit and owner-wider grid are
+unselected sizing options, not protocol limits or automatic first-arrival
+admission. Shared transcript state remains singular; drafts, suggestions, and
+action results remain participant-scoped.
+
+### Admission and transport
+
+A temporary invitation bound on redemption to an enrolled client is a candidate
+initial credential flow. One-time redemption, owner approval, reconnect leases,
+key rotation/recovery, and grant inventory need a concrete design. Reuse the
+[security-client audit](security-client-audit.md) concepts where appropriate;
+its continuity key is not already a session guest credential. A browser's
+non-extractable WebCrypto key does not establish OS-vault or hardware assurance.
+
+The current public-share viewer token is only ephemeral tab identity. Public
+bearer-link relay traffic is read-only and visible/modifiable to the relay
+operator; adding a chat or input POST to that surface is not a secure interactive
+grant. Before any writable collaboration ships, select either the authenticated
+end-to-end encrypted relay path or a separately encrypted and authenticated
+share channel. Reuse existing session-state/action owners rather than creating
+a second provider state machine. Frozen and ordinary public live links do not
+silently acquire interactive authority.
+
+[Principals and grants](principals-and-grants.md#session-collaboration-and-future-accounts)
+owns convergence on local or hosted accounts and email invitations. That future
+login choice should not require replacing the collaboration's participant,
+suggestion, or discussion records. No hosted account service is required by
+this initial proposal.
+
+### Later option: guest speech recognition
+
+Guest recognition may eventually put text in the guest composer, following the
+same suggestion and direct-input grants. YA-mediated recognition could also
+provide a separately muteable live audio stream to the owner. Audio playback,
+recognition partials, and final draft text are separate state; muting playback
+must not discard text, and reconnect must not replay stale audio as live speech.
+Direct browser-to-provider recognition does not promise YA-routed playback.
+
+Microphone permission, playback policy, feedback prevention, retention,
+credentials, and speech-credit delegation need a separate review. Current public
+shares cannot spend server speech credits or borrow recognition credentials.
+Speech and synchronized draft previews are later options, not prerequisites for
+notes, chat, or reviewed suggestions.
 
 ### Margin notes: comments for human readers
 
-Maintainer direction, 2026-09-15. A participatory share carries **margin
-notes**: comments anchored to a transcript passage that are visible to human
-viewers but invoke no user turn; nothing is delivered to the provider. Text in
+Maintainer direction, 2026-09-15. [Session notes and discussion](session-notes-and-discussion.md)
+owns the broader human-only space; margin notes add passage anchors and their
+own presentation. They are not prerequisites for basic scratch notes or chat.
+A participatory share carries **margin notes**: comments anchored to a transcript
+passage that are visible to human viewers but invoke no user turn; nothing is
+delivered to the provider. Text in
 a session is often intended for human readers (a plan, a summary, an
 explanation, a question to the team), and the natural place to discuss it is
 beside it, without spending a provider turn or steering the agent. A note
@@ -176,14 +191,14 @@ queue, and username-prefix rules.
   presentation, showing a wider margin column versus collapsing notes back
   to pills, never hiding a note behind a click.
 - **Attribution.** Every note carries its author's seat or username and time;
-  the driver's notes carry the driver. Notes are seat-scoped state in the
-  same synchronized share record as drafts and proposals, so all
-  participants see them converge and reconnect does not duplicate or lose
-  one.
-- **Authority.** Writing a note requires only a seat, never send authority;
-  a read-only visitor beyond the composer seats may still be allowed to
-  annotate if the share permits it. Notes never reach the provider by
-  themselves.
+  the driver's notes carry the driver. Shared notes retain authenticated
+  authorship within their collaboration scope, so permitted participants see
+  them converge and reconnect does not duplicate or lose one. This does not
+  select a common storage schema for notes, drafts, and suggestions.
+- **Authority.** Writing a shared note requires admission and an explicit
+  annotation grant, never provider-input authority. A display seat alone grants
+  nothing. A transcript viewer may annotate only if separately permitted by
+  the collaboration grant. Notes never reach the provider by themselves.
 - **Single-player parity.** The same UI exists in an ordinary session with
   one participant, as private notes to self or to a later reader of the
   session. The share adds synchronization and authorship, not the feature.
@@ -221,13 +236,17 @@ targets. Decide with captures at desktop and phone widths before building.
 
 ### Open decisions
 
-- Whether one session may have only one participatory share state, like the
-  current live projection, or several independently revocable guest grants.
-- How long an anonymous seat remains reserved across disconnect, and whether
-  the driver may evict one visitor to admit another without revoking the link.
-- Whether send-disabled links may use a lighter identity model while still
-  preventing proposal spoofing and cross-tab overwrite.
-- Whether the driver can temporarily pause guest input without revoking the
-  link, and how that paused state appears to both participants.
-- Whether guest proposals persist as session-visible collaboration records or
-  remain ephemeral UI state after they are consumed or rejected.
+- Whether several independently revocable participant grants share one discussion
+  room and suggestion list, and which history a newly admitted person may read.
+- Invitation redemption, participant/device continuity, reconnect reservation,
+  concurrent tabs, eviction, and owner-approved replacement devices.
+- Expiry defaults and inactivity rules; pausing input without ending discussion;
+  whether revocation cancels already accepted queued input.
+- Suggestion retention after dismissal/application, edit ownership, and how much
+  revision history remains visible. Human-only record lifecycle is coordinated
+  with [session notes and discussion](session-notes-and-discussion.md).
+- Provider-specific durable input mapping and retry/delivery receipts.
+- Encrypted interactive transport and hosted-client capability/fallback review.
+- Exact desktop/phone layouts, participant limits, shared-draft opt-in, and
+  whether steer belongs in an early direct-input slice. Project Queue and
+  speech remain later possibilities.

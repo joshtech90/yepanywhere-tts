@@ -1,14 +1,20 @@
 import { renderHook } from "@testing-library/react";
 import type { ReactNode } from "react";
+import { SIDEBAR_SESSION_CATEGORIES_CAPABILITY } from "@yep-anywhere/shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   loadMore: vi.fn(),
   useGlobalSessionsFeed: vi.fn(),
+  version: undefined as { capabilities?: string[] } | undefined,
 }));
 
 vi.mock("../useGlobalSessionsFeed", () => ({
   useGlobalSessionsFeed: mocks.useGlobalSessionsFeed,
+}));
+
+vi.mock("../useVersion", () => ({
+  useVersion: () => ({ version: mocks.version }),
 }));
 
 import {
@@ -22,6 +28,7 @@ function withProvider({ children }: { children: ReactNode }) {
 }
 
 beforeEach(() => {
+  mocks.version = undefined;
   mocks.loadMore.mockReset();
   mocks.useGlobalSessionsFeed.mockReset();
   mocks.useGlobalSessionsFeed.mockReturnValue({
@@ -36,7 +43,7 @@ describe("SidebarSessionFeedsProvider", () => {
   it("retains global and starred sidebar coverage", () => {
     renderHook(() => useSidebarSessionFeeds(), { wrapper: withProvider });
 
-    expect(mocks.useGlobalSessionsFeed).toHaveBeenCalledTimes(2);
+    expect(mocks.useGlobalSessionsFeed).toHaveBeenCalledTimes(3);
     expect(mocks.useGlobalSessionsFeed).toHaveBeenNthCalledWith(1, {
       enabled: true,
       limit: SIDEBAR_SESSION_FEED_LIMIT,
@@ -48,6 +55,31 @@ describe("SidebarSessionFeedsProvider", () => {
       limit: SIDEBAR_SESSION_FEED_LIMIT,
       includeStats: false,
     });
+  });
+
+  it("requests categorized sessions only from a server that stores them", () => {
+    // An older server ignores `categorized` and would return every session.
+    const { result, rerender } = renderHook(() => useSidebarSessionFeeds(), {
+      wrapper: withProvider,
+    });
+    expect(mocks.useGlobalSessionsFeed).toHaveBeenNthCalledWith(3, {
+      enabled: false,
+      categorized: true,
+      limit: SIDEBAR_SESSION_FEED_LIMIT,
+      includeStats: false,
+    });
+    expect(result.current.sidebarCategoriesSupported).toBe(false);
+
+    mocks.version = { capabilities: [SIDEBAR_SESSION_CATEGORIES_CAPABILITY] };
+    mocks.useGlobalSessionsFeed.mockClear();
+    rerender();
+    expect(mocks.useGlobalSessionsFeed).toHaveBeenNthCalledWith(3, {
+      enabled: true,
+      categorized: true,
+      limit: SIDEBAR_SESSION_FEED_LIMIT,
+      includeStats: false,
+    });
+    expect(result.current.sidebarCategoriesSupported).toBe(true);
   });
 
   it("suspends both feed owners while its sidebar surface is hidden", () => {
@@ -79,7 +111,7 @@ describe("SidebarSessionFeedsProvider", () => {
       { wrapper: withProvider },
     );
 
-    expect(mocks.useGlobalSessionsFeed).toHaveBeenCalledTimes(2);
+    expect(mocks.useGlobalSessionsFeed).toHaveBeenCalledTimes(3);
   });
 });
 
@@ -105,7 +137,7 @@ describe("useSidebarSessionFeeds", () => {
       wrapper: withProvider,
     });
 
-    expect(mocks.useGlobalSessionsFeed).toHaveBeenCalledTimes(2);
+    expect(mocks.useGlobalSessionsFeed).toHaveBeenCalledTimes(3);
     expect(result.current.globalQuery).toEqual({ scope: "global-sessions" });
     expect(result.current.starredQuery).toEqual({
       scope: "global-sessions",

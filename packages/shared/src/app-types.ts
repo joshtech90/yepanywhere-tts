@@ -675,10 +675,23 @@ export interface SessionEffectiveModelSettings {
   effort: EffortLevel | null;
 }
 
+/** Complete, last-applied settings that survive provider process replacement. */
+export interface EffectiveSessionLaunchSettings
+  extends SessionEffectiveModelSettings {
+  schemaVersion: 1;
+  /** Monotonic session-local revision. */
+  revision: number;
+  permissionMode: PermissionMode;
+  /** Null intentionally selects the provider default. */
+  serviceTier: string | null;
+}
+
 export interface SessionMetadataPayload
   extends Omit<AppSessionSummary, "ownership"> {
   /** Durable model settings used when no live process snapshot is available. */
   effectiveModelSettings?: SessionEffectiveModelSettings;
+  /** Optional on older servers and sessions without a durable launch snapshot. */
+  effectiveLaunchSettings?: EffectiveSessionLaunchSettings;
   /** Whether this session is opted in to heartbeat turns */
   heartbeatTurnsEnabled?: boolean;
   /** Per-session wake-turn override; absent inherits the server default. */

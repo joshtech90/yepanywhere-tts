@@ -5,6 +5,7 @@ import { formatCommandDuration } from "@yep-anywhere/shared/transcript/shellTool
 import { ProjectPathLinkedText } from "../../ProjectPathLinkedText";
 import { ToolOutputText } from "../../ToolOutputText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
+import { InnerHtml } from "../../ui/InnerHtml";
 import { OutputCopyButton } from "./outputPreview";
 import { NestedHarnessLaunchLink } from "./NestedHarnessLaunchLink";
 import type { RenderContext } from "../types";
@@ -16,10 +17,10 @@ export function renderFixedFontMathPanel(
 ) {
   return (
     <div className={`${className} fixed-font-rendered-panel`}>
-      <div
+      {/* KaTeX output is trusted HTML from local rendering. */}
+      <InnerHtml
         className={`fixed-font-rendered__content ${styles.fixedWidthOutput}`}
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-        dangerouslySetInnerHTML={{ __html: html }}
+        trustedHtml={html}
       />
     </div>
   );

@@ -246,7 +246,7 @@ export async function stageComputerRelease(
     }
     signal.throwIfAborted();
     const packageDirectory = path.join(directory, "payload");
-    await extractComputerPackage(archive, packageDirectory);
+    await extractComputerPackage(archive, packageDirectory, signal);
     signal.throwIfAborted();
     return {
       preview: { packageDirectory, trustedPublisher: release.publisher },

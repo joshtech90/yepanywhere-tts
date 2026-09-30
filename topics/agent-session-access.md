@@ -183,6 +183,53 @@ the confirmed vocabulary; the collision analysis — `Supervisor` class,
 Inbox view, and *steward* being reserved for the `~/agents` on-deck
 queue-tending mode — lives in [`boss-mode.md`](boss-mode.md) § Naming.
 
+## Operator API token
+
+Implemented 2026-09-28 (maintainer direction). With password auth on, an
+agent session has no way into YA's own API: loopback no longer says which
+process is connecting. Meanwhile a sandboxed session can read most of the
+operator's files, so no credential may live in a file. **Sessions can use the
+YA API**, in Settings → Local Access, closes that gap. It defaults off, and
+it appears only once local requests require a password.
+
+- **Who gets one.** While the setting is on, each provider launch that is
+  local (no remote executor) and outside any YA session sandbox receives its
+  own token as `AGENT_SERVER_TOKEN` in the provider process environment. A
+  limited user's launches are always sandboxed and a limited user cannot send
+  turns into an unsandboxed session ([limited users](limited-users.md)
+  § Authorization), so only the superuser's own unsandboxed sessions hold one.
+  Claude and Codex launches receive it; other providers receive none. Codex's
+  default shell-environment policy is recalled (not verified here) to drop
+  variables named like `*TOKEN*` from tool shells, so a Codex agent may not
+  see it without widening that policy.
+- **Where it lives.** The token is in the server's memory (as a SHA-256 digest)
+  and in that one provider process's environment, which its tool shells
+  inherit. It is never written to a file: not the Bash bridge file, logs,
+  settings, or a response. The sandbox runs in its own PID namespace, so it
+  cannot read another process's environment. Child filtering strips an
+  inherited `AGENT_SERVER_TOKEN`, so a YA server started from an agent shell
+  cannot pass its caller's token on.
+- **What it grants.** Sent as `Authorization: Bearer $AGENT_SERVER_TOKEN`
+  (with the `X-Yep-Anywhere: true` header every API request needs), it
+  authenticates as the superuser for the whole `/api/*` surface: an agent
+  holding it can do anything the operator can. `AGENT_SERVER_URL` names the
+  server.
+- **Lifetime.** A token is revoked when its process unregisters. Turning the
+  setting off revokes every token, and turning it back on revives none. A
+  server restart forgets all of them; a retained provider process then holds
+  a dead token until the session launches again.
+- **Residual risk.** An agent can still print its token into a transcript or
+  file that a sandboxed session can read. Scoping to one process and revoking
+  at exit bound that exposure; they do not prevent it.
+
+```bash
+curl -H "Authorization: Bearer $AGENT_SERVER_TOKEN" -H 'X-Yep-Anywhere: true' \
+  "$AGENT_SERVER_URL/api/sessions?limit=5"
+```
+
+Gate: `agent-server-access` (version-implied, 0.9.4). Against an older server
+the client hides the toggle and never sends `agentServerAccessEnabled`.
+
 ## Compatibility and defaults
 
 New routes (the bounded search scan) are additive and capability-gated

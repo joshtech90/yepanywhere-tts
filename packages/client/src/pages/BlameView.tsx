@@ -19,6 +19,7 @@ import {
 import { api } from "../api/client";
 import { CopyButton } from "../components/CopyButton";
 import { FileRevisionLink } from "../components/FileRevisionLink";
+import { InnerHtml } from "../components/ui/InnerHtml";
 import {
   type SourceContextMenuAction,
   useSourceContextMenu,
@@ -551,11 +552,8 @@ function BlameCodeCell({
   };
 
   return highlightedHtml ? (
-    <span
-      {...sharedProps}
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: server-highlighted line
-      dangerouslySetInnerHTML={{ __html: highlightedHtml }}
-    />
+    // Server-highlighted line.
+    <InnerHtml as="span" {...sharedProps} trustedHtml={highlightedHtml} />
   ) : (
     <span {...sharedProps}>{content || " "}</span>
   );

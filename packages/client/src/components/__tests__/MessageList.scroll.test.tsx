@@ -1800,6 +1800,89 @@ describe("MessageList scroll and follow", () => {
     });
   });
 
+  for (const intent of ["held press", "wheel"] as const) {
+    it(`does not let a pending follow frame override a ${intent}`, () => {
+      const frames = new Map<number, FrameRequestCallback>();
+      let nextFrame = 0;
+      vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation(
+        (callback) => {
+          frames.set(++nextFrame, callback);
+          return nextFrame;
+        },
+      );
+      vi.spyOn(globalThis, "cancelAnimationFrame").mockImplementation((id) => {
+        frames.delete(id);
+      });
+      const callbacks: ResizeObserverCallback[] = [];
+      class Observer {
+        constructor(callback: ResizeObserverCallback) {
+          callbacks.push(callback);
+        }
+        observe() {}
+        disconnect() {}
+      }
+      Object.defineProperty(window, "ResizeObserver", {
+        configurable: true,
+        value: Observer,
+      });
+      const { container } = render(
+        <MessageList
+          messages={[
+            userMessage("u", "Request"),
+            assistantMessage("a", "Current response"),
+          ]}
+        />,
+      );
+      let height = 1000;
+      Object.defineProperties(container, {
+        scrollHeight: { configurable: true, get: () => height },
+        clientHeight: { configurable: true, value: 500 },
+        scrollTop: { configurable: true, writable: true, value: 500 },
+      });
+      const resize = () =>
+        act(() => {
+          for (const callback of callbacks) callback([], {} as ResizeObserver);
+        });
+      resize();
+      expect(frames.size).toBeGreaterThan(0);
+      if (intent === "held press") {
+        const down = new MouseEvent("pointerdown", {
+          bubbles: true,
+          button: 0,
+          clientX: 40,
+          clientY: 40,
+        });
+        Object.defineProperty(down, "pointerType", { value: "mouse" });
+        fireEvent(screen.getByText("Current response"), down);
+        // A scroll event already queued by the previous bottom write is not
+        // new reader intent to resume following under a held button.
+        fireEvent.scroll(container);
+      } else {
+        fireEvent.wheel(container, { deltaY: -120 });
+      }
+      act(() => {
+        const pending = Array.from(frames.values());
+        frames.clear();
+        for (const callback of pending) callback(0);
+      });
+      height = 1400;
+      resize();
+      expect(container.scrollTop).toBe(500);
+      if (intent === "held press") {
+        fireEvent(
+          document,
+          new MouseEvent("pointerup", {
+            bubbles: true,
+            button: 0,
+            clientX: 40,
+            clientY: 40,
+          }),
+        );
+        expect(container.scrollTop).toBe(900);
+      }
+    });
+  }
+
   it("lets a user wheel away cancel live follow before resize catch-up", () => {
     let resizeCallback: ResizeObserverCallback | null = null;
     class CapturingResizeObserver {

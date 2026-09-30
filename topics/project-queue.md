@@ -567,6 +567,20 @@ materializes those staged files into the new session's normal attachment
 destination. The design and lifecycle are documented in
 `docs/tactical/028-pre-session-attachment-staging.md`.
 
+Staged references belong to the account that queued the item. Queuing looks
+the drafts up only in the acting account's own draft store — the superuser's,
+or the limited user's isolated one ([limited users](limited-users.md)) — and
+moves them into that store's queue-owned area. A reference staged by any other
+account is refused as invalid (400) and its draft is left untouched; no other
+account's store is searched. The item's recorded user names that store for
+the item's whole life: after a restart, at dispatch, on a failed save's
+rollback, and when an edit, delete or completed dispatch cleans the files up.
+An edit by another account (the superuser editing a limited user's item) may
+keep or remove the item's existing attachments but cannot add new staged
+references, since those would come from the editor's store; such a save is
+refused with a reason, and the editor's draft stays theirs until discarded or
+expired.
+
 When the server advertises `project-queue-attachment-editing`, the projects
 page's in-place editor accepts clipboard file items through the normal staged
 attachment pipeline. Save may retain or remove existing attachments and add

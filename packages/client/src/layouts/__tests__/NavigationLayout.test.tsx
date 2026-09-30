@@ -385,6 +385,35 @@ describe("NavigationLayout", () => {
     }
   });
 
+  it("resizes both tablet panes for composer or iframe focus, but ignores pinch zoom", () => {
+    Object.defineProperty(window, "innerWidth", {
+      configurable: true,
+      value: 1400,
+    });
+    const viewport = installMobileVisualViewport();
+    renderNavigationLayout();
+    const app = document.createElement("iframe");
+    document.body.append(app);
+    try {
+      const frame = document.querySelector(".session-page") as HTMLElement;
+      act(() => screen.getByRole("textbox", { name: "Composer" }).focus());
+      act(() => viewport.setGeometry(480));
+      expect(frame.style.paddingBottom).toContain("320px");
+      act(() => app.focus());
+      act(() => viewport.setGeometry(500));
+      expect(frame.style.paddingBottom).toContain("300px");
+      Object.defineProperty(window.visualViewport, "scale", {
+        configurable: true,
+        value: 2,
+      });
+      act(() => viewport.setGeometry(400));
+      expect(frame.style.paddingBottom).toBe("");
+    } finally {
+      app.remove();
+      viewport.restore();
+    }
+  });
+
   it("does not reserve keyboard space for non-text controls", () => {
     const viewport = installMobileVisualViewport();
     renderNavigationLayout();

@@ -24,9 +24,19 @@ import {
   clampJoinStaleOffsetMinutes,
   limitedUserPasswordError,
   limitedUsernameError,
+  instructionBlocksError,
+  MAX_PATH_GRANTS,
+  type PathGrant,
+  type ProjectAccessLevel,
 } from "@yep-anywhere/shared";
 import { deriveDecoySalt, generateVerifier } from "../crypto/srp-server.js";
+import { expandHomePath } from "../utils/expandHomePath.js";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
+import {
+  encodeProjectId,
+  limitedDetachedProjectPath,
+} from "../projects/paths.js";
 import {
   OWNER_READ_WRITE_FILE_MODE,
   enforceOwnerReadWriteFilePermissions,
@@ -79,8 +89,38 @@ export interface LimitedUserInput {
   joinStaleOffsetMinutes?: number;
   lock?: LimitedUserLock;
   projectRoot?: string;
+  allowNoProjectSessions?: boolean;
+  allowPublicApps?: boolean;
+  allowPrivateAppLinks?: boolean;
   templateCreation?: TemplateCreationGrant;
+  instructionBlocks?: string[];
+  pathGrants?: PathGrant[];
   disabled?: boolean;
+}
+
+const pathGrantsSchema = z
+  .array(
+    z.strictObject({
+      path: z.string().trim().min(1),
+      level: z.enum(["view", "join", "new-session"]),
+    }),
+  )
+  .max(MAX_PATH_GRANTS);
+
+/**
+ * Directory grants, stored resolved: `~` expands and `..` collapses here, so
+ * the prefix test at each request compares canonical spellings. A relative
+ * path names no directory anybody chose and is refused. One entry per
+ * directory, keeping the last level given.
+ */
+function parsePathGrants(value: unknown): PathGrant[] {
+  const grants = new Map<string, PathGrant["level"]>();
+  for (const grant of pathGrantsSchema.parse(value)) {
+    if (!grant.path.startsWith("/") && !grant.path.startsWith("~"))
+      throw new Error(`Directory grant must be absolute: ${grant.path}`);
+    grants.set(path.resolve(expandHomePath(grant.path)), grant.level);
+  }
+  return [...grants].map(([grantPath, level]) => ({ path: grantPath, level }));
 }
 
 /**
@@ -107,6 +147,12 @@ function normalizeProjectList(value: unknown): string[] {
     if (typeof entry === "string" && entry.length > 0) seen.add(entry);
   }
   return [...seen];
+}
+
+function parseInstructionBlocks(value: unknown): string[] {
+  const error = instructionBlocksError(value);
+  if (error) throw new Error(error);
+  return [...(value as string[])];
 }
 
 function normalizeLock(value: unknown): LimitedUserLock {
@@ -136,7 +182,12 @@ export function toLimitedUserSummary(
     joinStaleOffsetMinutes: record.joinStaleOffsetMinutes,
     lock: { ...record.lock },
     templateCreation: structuredClone(templateGrantFor(record)),
+    instructionBlocks: [...(record.instructionBlocks ?? [])],
     ...(record.projectRoot ? { projectRoot: record.projectRoot } : {}),
+    pathGrants: structuredClone(record.pathGrants ?? []),
+    allowNoProjectSessions: record.allowNoProjectSessions === true,
+    allowPublicApps: record.allowPublicApps === true,
+    allowPrivateAppLinks: record.allowPrivateAppLinks !== false,
   };
 }
 
@@ -181,18 +232,33 @@ export class LimitedUsersService {
             record.joinStaleOffsetMinutes ?? 0,
           ),
           lock: normalizeLock(record.lock),
+          instructionBlocks: parseInstructionBlocks(
+            record.instructionBlocks ?? [],
+          ),
           templateCreation:
             record.templateCreation === undefined
               ? templateGrantFor(record)
               : templateGrantSchema.parse(record.templateCreation),
+          pathGrants: parsePathGrants(record.pathGrants ?? []),
+          allowNoProjectSessions: z
+            .boolean()
+            .parse(record.allowNoProjectSessions ?? false),
+          allowPublicApps: z.boolean().parse(record.allowPublicApps ?? false),
+          allowPrivateAppLinks: z
+            .boolean()
+            .parse(record.allowPrivateAppLinks ?? true),
         };
       }
       if (parsed.version < CURRENT_VERSION) await this.save();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-        console.warn(
-          "[LimitedUsersService] Failed to load state, starting fresh:",
-          error,
+        // Fail closed rather than start with no users, which would silently
+        // delete every account and grant (topics/security.md; auth.json has
+        // the same rule). The file is left as it is.
+        throw new Error(
+          `[LimitedUsersService] ${this.filePath} is unreadable (${error instanceof Error ? error.message : String(error)}). ` +
+            "Refusing to start without its limited users. Restore the file, " +
+            "or delete it to deliberately remove them all.",
         );
       }
       this.state = { version: CURRENT_VERSION, users: {} };
@@ -233,14 +299,22 @@ export class LimitedUsersService {
   getActiveGrants(username: string): LimitedUserGrants | null {
     const record = this.get(username);
     if (!record || record.disabled === true) return null;
+    const detachedId = encodeProjectId(limitedDetachedProjectPath(username));
     return {
-      newSessionProjects: [...record.newSessionProjects],
-      joinProjects: [...record.joinProjects],
+      newSessionProjects: [
+        ...record.newSessionProjects,
+        ...(record.allowNoProjectSessions ? [detachedId] : []),
+      ],
+      joinProjects: [...record.joinProjects, detachedId],
       viewProjects: [...record.viewProjects],
       joinStaleOffsetMinutes: record.joinStaleOffsetMinutes,
       lock: { ...record.lock },
       templateCreation: structuredClone(templateGrantFor(record)),
       ...(record.projectRoot ? { projectRoot: record.projectRoot } : {}),
+      pathGrants: structuredClone(record.pathGrants ?? []),
+      allowNoProjectSessions: record.allowNoProjectSessions === true,
+      allowPublicApps: record.allowPublicApps === true,
+      allowPrivateAppLinks: record.allowPrivateAppLinks !== false,
     };
   }
 
@@ -278,6 +352,9 @@ export class LimitedUsersService {
     const passwordError = limitedUserPasswordError(input.password ?? "");
     if (passwordError) throw new Error(passwordError);
     const password = input.password as string;
+    const instructionBlocks = parseInstructionBlocks(
+      input.instructionBlocks ?? [],
+    );
     const templateCreation =
       input.templateCreation === undefined
         ? templateGrantFor({
@@ -297,7 +374,16 @@ export class LimitedUsersService {
         input.joinStaleOffsetMinutes ?? 0,
       ),
       lock: normalizeLock(input.lock),
+      instructionBlocks,
       templateCreation,
+      pathGrants: parsePathGrants(input.pathGrants ?? []),
+      allowNoProjectSessions: z
+        .boolean()
+        .parse(input.allowNoProjectSessions ?? false),
+      allowPublicApps: z.boolean().parse(input.allowPublicApps ?? false),
+      allowPrivateAppLinks: z
+        .boolean()
+        .parse(input.allowPrivateAppLinks ?? true),
       ...(normalizeProjectRoot(input.projectRoot)
         ? { projectRoot: normalizeProjectRoot(input.projectRoot) }
         : {}),
@@ -315,10 +401,26 @@ export class LimitedUsersService {
     const record = this.state.users[username];
     if (!record) throw new Error("User not found");
 
+    const instructionBlocks =
+      input.instructionBlocks === undefined
+        ? undefined
+        : parseInstructionBlocks(input.instructionBlocks);
+
     const templateCreation =
       input.templateCreation === undefined
         ? undefined
         : templateGrantSchema.parse(input.templateCreation);
+    const pathGrants =
+      input.pathGrants === undefined
+        ? undefined
+        : parsePathGrants(input.pathGrants);
+    const appAndSessionGrants = z
+      .object({
+        allowNoProjectSessions: z.boolean().optional(),
+        allowPublicApps: z.boolean().optional(),
+        allowPrivateAppLinks: z.boolean().optional(),
+      })
+      .parse(input);
 
     if (input.password !== undefined) {
       const passwordError = limitedUserPasswordError(input.password);
@@ -345,11 +447,17 @@ export class LimitedUsersService {
     if (input.lock !== undefined) {
       record.lock = normalizeLock(input.lock);
     }
+    if (instructionBlocks !== undefined)
+      record.instructionBlocks = instructionBlocks;
     if (input.projectRoot !== undefined) {
       record.projectRoot = normalizeProjectRoot(input.projectRoot);
     }
     if (templateCreation !== undefined)
       record.templateCreation = templateCreation;
+    if (pathGrants !== undefined) record.pathGrants = pathGrants;
+    for (const [key, value] of Object.entries(appAndSessionGrants)) {
+      if (value !== undefined) Object.assign(record, { [key]: value });
+    }
     if (input.disabled !== undefined) {
       if (input.disabled) {
         record.disabled = true;
@@ -374,6 +482,28 @@ export class LimitedUsersService {
     if (!record) throw new Error("User not found");
     if (record.newSessionProjects.includes(projectId)) return;
     record.newSessionProjects.push(projectId);
+    await this.save();
+  }
+
+  /**
+   * Set one user's per-project level on one project, leaving every other
+   * grant as it was. `none` removes the per-project grant; a directory grant
+   * covering the project still applies.
+   */
+  async setProjectLevel(
+    username: string,
+    projectId: string,
+    level: ProjectAccessLevel,
+  ): Promise<void> {
+    const record = this.state.users[username];
+    if (!record) throw new Error("User not found");
+    const without = (list: string[]) => list.filter((id) => id !== projectId);
+    record.newSessionProjects = without(record.newSessionProjects);
+    record.joinProjects = without(record.joinProjects);
+    record.viewProjects = without(record.viewProjects);
+    if (level === "new-session") record.newSessionProjects.push(projectId);
+    else if (level === "join") record.joinProjects.push(projectId);
+    else if (level === "view") record.viewProjects.push(projectId);
     await this.save();
   }
 
@@ -411,10 +541,15 @@ export class LimitedUsersService {
     await this.saver.flush();
   }
 
+  /** Wait for saves already queued; unlike a flush, never starts a write. */
+  async waitForPendingWrites(): Promise<void> {
+    await this.saver.idle();
+  }
+
   private async doSave(): Promise<void> {
     const content = JSON.stringify(this.state, null, 2);
-    await fs.writeFile(this.filePath, content, {
-      encoding: "utf-8",
+    // Atomic: an in-place write interrupted by shutdown leaves an empty file.
+    await writeFileAtomically(this.filePath, content, {
       mode: OWNER_READ_WRITE_FILE_MODE,
     });
     await enforceOwnerReadWriteFilePermissions(

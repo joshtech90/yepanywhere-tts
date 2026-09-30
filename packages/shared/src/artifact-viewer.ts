@@ -41,6 +41,35 @@ export interface ArtifactVhost {
   public?: boolean;
 }
 
+/**
+ * A vhost that serves one file or directory itself rather than proxying a
+ * loopback port. Its name shares the namespace of port vhosts and reserved
+ * project app addresses; the first claim keeps it.
+ */
+export interface ArtifactVhostSite {
+  name: string;
+  /** Absolute server path of the served file or directory. */
+  path: string;
+  /** No app link required; with a password, visitors must supply it. */
+  public?: boolean;
+  /** Reported by the server: a visitor password is set. */
+  passwordProtected?: boolean;
+  /**
+   * Sent by a client only: a new password sets it, an empty string clears
+   * it, and absent keeps the saved one.
+   */
+  password?: string;
+}
+
+/** A file site as the authenticated owner sees it, with its addresses. */
+export interface ArtifactVhostSiteView extends ArtifactVhostSite {
+  kind: "file" | "directory" | "missing";
+  /** `https://name.<public root>/`, when a public root is configured. */
+  publicUrl?: string;
+  /** `http://name.localhost:<port>/`, when local serving is enabled. */
+  localUrl?: string;
+}
+
 export interface ArtifactViewerConfig {
   port: number;
   localOrigin?: string;
@@ -51,6 +80,8 @@ export interface ArtifactViewerConfig {
   expiryDays?: number;
   /** Presence enables the static vhost table. */
   vhosts?: ArtifactVhost[];
+  /** File and directory vhosts; presence enables their rows. */
+  vhostSites?: ArtifactVhostSite[];
   /** Optional apex such as graehl.org; empty means name.localhost only. */
   vhostPublicRoot?: string;
   /** Rewrite name.localhost links even outside a public relay session. */

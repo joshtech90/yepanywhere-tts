@@ -37,6 +37,7 @@ import {
 } from "../projects/paths.js";
 import { getDerivedProjectCaption } from "../projects/projectCaption.js";
 import type { ProjectScanner } from "../projects/scanner.js";
+import type { ProjectAppStore } from "../projects/ProjectAppStore.js";
 import type { ProjectStoragePolicy } from "../projects/projectStoragePolicy.js";
 import type { CodexSessionReader } from "../sessions/codex-reader.js";
 import type { GeminiSessionReader } from "../sessions/gemini-reader.js";
@@ -72,6 +73,7 @@ export interface ProjectsDeps {
   sessionMetadataService?: SessionMetadataService;
   /** ProjectMetadataService for persisting added projects */
   projectMetadataService?: ProjectMetadataService;
+  projectAppStore?: ProjectAppStore;
   /** Grants a limited user the project they just created. */
   limitedUsersService?: Pick<LimitedUsersService, "grantNewSessionProject">;
   eventBus?: EventBus;
@@ -891,6 +893,28 @@ export function createProjectsRoutes(deps: ProjectsDeps): Hono {
     }
     if (!mayEditSharedProjectMetadata(c, project)) {
       return c.json({ error: NOT_PROJECT_OWNER_ERROR }, 403);
+    }
+
+    const principal = principalFor(c);
+    if (principal.kind === "limited") {
+      if (!deps.projectAppStore)
+        return c.json(
+          { error: "Personal project removal is unavailable" },
+          501,
+        );
+      await deps.projectAppStore.setHidden(
+        project.id,
+        principal.username,
+        true,
+        principal.username,
+      );
+      publishProjectsChanged([project.id]);
+      return c.json({
+        removed: true,
+        projectId: project.id,
+        path: project.path,
+        personal: true,
+      });
     }
 
     await deps.projectMetadataService.hideProject(project.id, project.path);

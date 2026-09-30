@@ -26,6 +26,14 @@ import {
 import { ConnectedAppContent } from "../RemoteApp";
 import { useI18n } from "../i18n";
 
+import { getResumeError } from "../lib/connection/resumeErrors";
+import { useResumeRecovery } from "../hooks/useResumeRecovery";
+import {
+  canRetryResume,
+  categorizeResumeError,
+  requiresResumeLogin,
+} from "../lib/connection/remoteErrors";
+
 type ConnectionState =
   | "checking"
   | "connecting"
@@ -40,37 +48,10 @@ function createAutoResumeError(
   relayUsername: string,
   relayUrl?: string,
 ): AutoResumeError {
-  const message = err instanceof Error ? err.message : String(err);
-  const lowerMessage = message.toLowerCase();
-
-  let reason: AutoResumeError["reason"] = "other";
-  if (lowerMessage.includes("server_offline")) {
-    reason = "server_offline";
-  } else if (lowerMessage.includes("unknown_username")) {
-    reason = "unknown_username";
-  } else if (
-    lowerMessage.includes("resume_incompatible") ||
-    lowerMessage.includes("session resume unsupported")
-  ) {
-    reason = "resume_incompatible";
-  } else if (
-    lowerMessage.includes("timeout") ||
-    lowerMessage.includes("timed out")
-  ) {
-    reason = "relay_timeout";
-  } else if (
-    lowerMessage.includes("failed to connect to relay") ||
-    lowerMessage.includes("relay connection closed") ||
-    lowerMessage.includes("relay connection error")
-  ) {
-    reason = "relay_unreachable";
-  } else if (
-    lowerMessage.includes("authentication failed") ||
-    lowerMessage.includes("auth") ||
-    lowerMessage.includes("session")
-  ) {
-    reason = "auth_failed";
-  }
+  const message =
+    getResumeError(err)?.message ??
+    (err instanceof Error ? err.message : String(err));
+  const reason = categorizeResumeError(err);
 
   return {
     reason,
@@ -92,6 +73,7 @@ export function RelayConnectionGate() {
     connection,
     connectViaRelay,
     isAutoResuming,
+    autoResumeError,
     setCurrentHostId,
     currentHostId,
     currentRelayUsername,
@@ -186,13 +168,8 @@ export function RelayConnectionGate() {
             host.relayUsername ?? targetRelayUsername,
             host.relayUrl,
           );
-          if (
-            autoResumeError.reason === "resume_incompatible" ||
-            autoResumeError.reason === "auth_failed"
-          ) {
+          if (requiresResumeLogin(autoResumeError.reason)) {
             clearHostSession(host.id);
-            setState("no_session");
-            return;
           }
           setError(autoResumeError);
           setState("error");
@@ -278,6 +255,12 @@ export function RelayConnectionGate() {
       return;
     }
 
+    if (autoResumeError && currentRelayUsername === relayUsername) {
+      setError(autoResumeError);
+      setState("error");
+      return;
+    }
+
     // Look up saved host by relay username
     const host = getHostByRelayUsername(relayUsername);
     console.log(
@@ -310,6 +293,7 @@ export function RelayConnectionGate() {
     startRelayConnection(host, relayUsername);
   }, [
     relayUsername,
+    autoResumeError,
     connection,
     isAutoResuming,
     currentHostId,
@@ -329,6 +313,17 @@ export function RelayConnectionGate() {
       setState("no_session");
     }
   };
+
+  useResumeRecovery(
+    state === "error" &&
+      !!error &&
+      canRetryResume(error.reason) &&
+      !connection &&
+      !isAutoResuming &&
+      !autoResumeError &&
+      !isIntentionalDisconnect,
+    retryConnection,
+  );
 
   if (isIntentionalDisconnect) {
     return <Navigate to="/login" replace />;
@@ -380,9 +375,6 @@ export function RelayConnectionGate() {
         relayUsername: relayUsername ?? "",
         message: "Connection failed",
       };
-      if ((error ?? defaultError).reason === "auth_failed") {
-        return <Navigate to={relayLoginTarget} replace />;
-      }
       return (
         <HostOfflineModal
           error={error ?? defaultError}

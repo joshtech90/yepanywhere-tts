@@ -37,7 +37,7 @@ how users enable the feature under
 [vanilla defaults](../../topics/vanilla-defaults.md). Verify wide and narrow
 windows, large text, dense adjacent notes, resize, and streaming. This gap
 does not change the chosen in-transcript answer composer in the
-[async-question gap](../codex-async-question-answer-ui.md).
+[async-question contract](../../topics/provider-output-contract.md#answering-and-discovering-questions).
 
 **First note type chosen (2026-09-15):** human-authored comments on
 transcript passages that are not delivered to the provider, for text
@@ -54,6 +54,14 @@ existing Ctrl+S / Ctrl+R message-list isearch with rail notches previewing
 matching notes, and a visible toggle for pointer and touch users; see the
 share sketch's navigation bullet and
 [isearch has no touch entry](../isearch-has-no-touch-entry.md).
+
+[Session notes and discussion](../../topics/session-notes-and-discussion.md)
+now owns the broader human-only space: unanchored personal scratch notes and
+chronological shared chat. Margin notes remain the passage-anchored form, with
+this sketch owning their positioning and navigation. Basic notes or side-chat
+need not wait for margin-note layout. Private notes do not become shared on
+admission, and writing a shared margin note requires an annotation grant;
+a display seat alone establishes neither identity nor authority.
 
 The remaining interaction decision is the click target: whether a plain
 click on non-link passage text opens a note, a deconflicting modifier or

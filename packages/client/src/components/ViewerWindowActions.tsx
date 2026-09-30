@@ -19,6 +19,9 @@ export function ViewerWindowActions({
   destructiveClose = false,
   closeDisabled = false,
   onReload,
+  copyNotice,
+  copyLink = true,
+  copyLabel,
 }: {
   url: string;
   copyUrl?: string;
@@ -26,6 +29,9 @@ export function ViewerWindowActions({
   onMinimize?: () => void;
   /** Refetch the viewed document from disk; viewers never watch files. */
   onReload?: () => void;
+  copyNotice?: string;
+  copyLink?: boolean;
+  copyLabel?: string;
   closeRef?: Ref<HTMLButtonElement>;
   className?: string;
   minimizeLabel?: string;
@@ -47,7 +53,7 @@ export function ViewerWindowActions({
       ? t("fileViewerCopied")
       : copied === "failed"
         ? t("viewerCopyLinkFailed")
-        : t("viewerLinkHint");
+        : (copyNotice ?? t("viewerLinkHint"));
   const icon = (path: string) => (
     <svg
       width="16"
@@ -88,42 +94,49 @@ export function ViewerWindowActions({
           </svg>
         </button>
       )}
-      <a
-        href={absoluteUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        role="button"
-        aria-label={t("fileLinkMenuCopyViewerLink")}
-        title={linkTitle}
-        onKeyDown={(event) => {
-          if (event.key === " ") {
+      {copyLink && (
+        <a
+          className={copyLabel ? styles.textAction : undefined}
+          href={absoluteUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          role="button"
+          aria-label={t("fileLinkMenuCopyViewerLink")}
+          title={linkTitle}
+          onKeyDown={(event) => {
+            if (event.key === " ") {
+              event.preventDefault();
+              event.currentTarget.click();
+            }
+          }}
+          onClick={(event) => {
+            if (event.shiftKey) {
+              event.preventDefault();
+              window.open(absoluteUrl, "_blank", "noopener,noreferrer");
+              return;
+            }
+            if (event.ctrlKey || event.metaKey || event.altKey) return;
             event.preventDefault();
-            event.currentTarget.click();
-          }
-        }}
-        onClick={(event) => {
-          if (event.shiftKey) {
-            event.preventDefault();
-            window.open(absoluteUrl, "_blank", "noopener,noreferrer");
-            return;
-          }
-          if (event.ctrlKey || event.metaKey || event.altKey) return;
-          event.preventDefault();
-          void writeClipboardText(
-            new URL(copyUrl, window.location.href).href,
-          ).then((success) => {
-            setCopied(success ? "copied" : "failed");
-            clearTimeout(timer.current);
-            timer.current = setTimeout(() => setCopied("idle"), 3000);
-          });
-        }}
-      >
-        {icon(
-          copied === "copied"
-            ? "M3 8l3 3 7-7"
-            : "M6.5 9.5a2.5 2.5 0 0 0 3.54 0l2.46-2.46a2.5 2.5 0 0 0-3.54-3.54L7.9 4.56M9.5 6.5a2.5 2.5 0 0 0-3.54 0L3.5 8.96a2.5 2.5 0 0 0 3.54 3.54l1.06-1.06",
-        )}
-      </a>
+            void writeClipboardText(
+              new URL(copyUrl, window.location.href).href,
+            ).then((success) => {
+              setCopied(success ? "copied" : "failed");
+              clearTimeout(timer.current);
+              timer.current = setTimeout(() => setCopied("idle"), 3000);
+            });
+          }}
+        >
+          {copyLabel
+            ? copied === "copied"
+              ? t("fileViewerCopied")
+              : copyLabel
+            : icon(
+                copied === "copied"
+                  ? "M3 8l3 3 7-7"
+                  : "M6.5 9.5a2.5 2.5 0 0 0 3.54 0l2.46-2.46a2.5 2.5 0 0 0-3.54-3.54L7.9 4.56M9.5 6.5a2.5 2.5 0 0 0-3.54 0L3.5 8.96a2.5 2.5 0 0 0 3.54 3.54l1.06-1.06",
+              )}
+        </a>
+      )}
       {moveOut && (
         <a
           href={absoluteUrl}

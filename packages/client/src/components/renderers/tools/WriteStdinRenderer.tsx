@@ -15,6 +15,7 @@ import { shellPollOutcome, shellResultText } from "./shellPollOutcome";
 import { ActivityDetailModal } from "../../ActivityDetailModal";
 import { AnsiText } from "../../ui/AnsiText";
 import { FixedFontMathToggle } from "../../ui/FixedFontMathToggle";
+import { InnerHtml } from "../../ui/InnerHtml";
 import type { ToolSummaryContext } from "./types";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,11 +216,8 @@ function renderFixedFontMathPanel(
 ): ReactNode {
   return (
     <div className={`${className} fixed-font-rendered-panel`}>
-      <div
-        className="fixed-font-rendered__content"
-        // biome-ignore lint/security/noDangerouslySetInnerHtml: KaTeX output is trusted HTML from local rendering
-        dangerouslySetInnerHTML={{ __html: html }}
-      />
+      {/* KaTeX output is trusted HTML from local rendering. */}
+      <InnerHtml className="fixed-font-rendered__content" trustedHtml={html} />
     </div>
   );
 }

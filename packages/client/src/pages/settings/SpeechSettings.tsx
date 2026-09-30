@@ -19,6 +19,7 @@ import { SpeechSmartTurnControls } from "../../components/SpeechSmartTurnControl
 import { SpeechMessagePrefixControls } from "../../components/SpeechMessagePrefixControls";
 import { WhisperModelControls } from "../../components/WhisperModelControls";
 import { SpeechBackendSetup } from "./SpeechBackendSetup";
+import { useCanAdministerHost } from "../../hooks/useActingPrincipal";
 import { useModelSettings } from "../../hooks/useModelSettings";
 import { useBrowserXaiSttApiKey } from "../../hooks/useBrowserXaiSttApiKey";
 import { useSpeechCaptureSettings } from "../../hooks/useSpeechCaptureSettings";
@@ -103,6 +104,9 @@ export function SpeechSettings() {
   const { relayTransport, relayedServerSpeechAvailable } =
     useSpeechSourceRuntime();
   const { version: versionInfo, loading: versionLoading } = useVersion();
+  // Backend setup and the learned vocabulary are host administration; a
+  // limited user dictates through the backends without seeing either.
+  const canAdministerHost = useCanAdministerHost();
   const recentModels = serverHasCapability(
     versionInfo,
     SERVER_CAPABILITIES.localSpeechModelSelection.name,
@@ -322,42 +326,44 @@ export function SpeechSettings() {
   return (
     <SettingsSection description={t("speechSettingsDescription")}>
       <div className="settings-group">
-        <SettingsItem
-          id="speech-vocabulary"
-          label={t("speechVocabularyTitle")}
-          description={t("speechVocabularyDescription")}
-          keywords={[
-            t("speechVocabularyScan"),
-            t("speechVocabularyReset"),
-            t("speechVocabularyExplore"),
-            t("speechVocabularyBiasing"),
-            "keyterms",
-            "lexicon",
-          ]}
-          layout="custom"
-          baseClassName=""
-        >
-          {serverHasCapability(
-            versionInfo,
-            SERVER_CAPABILITIES.speechVocabulary.name,
-          ) ? (
-            <SpeechVocabularyControls />
-          ) : (
-            <>
-              <h3>{t("speechVocabularyTitle")}</h3>
-              <p>
-                {t(
-                  versionInfo?.sqlite?.state === "disabled"
-                    ? "speechVocabularyStorageDisabled"
-                    : versionInfo?.sqlite?.state === "error" ||
-                        versionInfo?.sqlite?.state === "unsupported"
-                      ? "speechVocabularyStorageUnavailable"
-                      : "speechVocabularyServerUnavailable",
-                )}
-              </p>
-            </>
-          )}
-        </SettingsItem>
+        {canAdministerHost && (
+          <SettingsItem
+            id="speech-vocabulary"
+            label={t("speechVocabularyTitle")}
+            description={t("speechVocabularyDescription")}
+            keywords={[
+              t("speechVocabularyScan"),
+              t("speechVocabularyReset"),
+              t("speechVocabularyExplore"),
+              t("speechVocabularyBiasing"),
+              "keyterms",
+              "lexicon",
+            ]}
+            layout="custom"
+            baseClassName=""
+          >
+            {serverHasCapability(
+              versionInfo,
+              SERVER_CAPABILITIES.speechVocabulary.name,
+            ) ? (
+              <SpeechVocabularyControls />
+            ) : (
+              <>
+                <h3>{t("speechVocabularyTitle")}</h3>
+                <p>
+                  {t(
+                    versionInfo?.sqlite?.state === "disabled"
+                      ? "speechVocabularyStorageDisabled"
+                      : versionInfo?.sqlite?.state === "error" ||
+                          versionInfo?.sqlite?.state === "unsupported"
+                        ? "speechVocabularyStorageUnavailable"
+                        : "speechVocabularyServerUnavailable",
+                  )}
+                </p>
+              </>
+            )}
+          </SettingsItem>
+        )}
         <SettingsItem
           label={t("speechSettingsVoiceInputTitle")}
           description={t("speechSettingsVoiceInputDescription")}
@@ -624,9 +630,10 @@ export function SpeechSettings() {
           <SpeechMessagePrefixControls showDescription={false} />
         </SettingsItem>
 
-        {serverHasCapability(versionInfo, SPEECH_BACKEND_SETUP_CAPABILITY) && (
-          <SpeechBackendSetup />
-        )}
+        {canAdministerHost &&
+          serverHasCapability(versionInfo, SPEECH_BACKEND_SETUP_CAPABILITY) && (
+            <SpeechBackendSetup />
+          )}
       </div>
     </SettingsSection>
   );

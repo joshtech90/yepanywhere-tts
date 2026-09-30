@@ -1,7 +1,11 @@
 import { createServer, type Server } from "node:http";
-import { test } from "./fixtures.js";
+import { expect, test } from "./fixtures.js";
+import {
+  drainManagedRoutes,
+  routeWithDrain,
+} from "./support/managed-routes.js";
 
-test.use({ baseURL: "http://route-lifetime.test" });
+test.use({ baseURL: "http://route-lifetime.test", draftSessionIds: [] });
 
 let server: Server;
 let requestUrl: string;
@@ -29,7 +33,7 @@ test("page fixture finishes an active route after the test body returns", async 
   const routeEntered = new Promise<void>((resolve) => {
     entered = resolve;
   });
-  await page.route(requestUrl, async (route) => {
+  await routeWithDrain(page, requestUrl, async (route) => {
     entered();
     const response = await route.fetch();
     await route.fulfill({
@@ -42,6 +46,39 @@ test("page fixture finishes an active route after the test body returns", async 
   }, requestUrl);
   await routeEntered;
   // Deliberately return with the handler active, as background refreshes do.
+});
+
+test("page fixture drains overlapping response handlers before removing routes", async ({
+  page,
+}) => {
+  let entered = 0;
+  let started!: () => void;
+  const bothStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const responses: string[] = [];
+  await routeWithDrain(page, `${requestUrl}?*`, async (route) => {
+    entered++;
+    if (entered === 2) started();
+    const response = await route.fetch();
+    // The fast handler completes while its sibling still awaits its response.
+    if (route.request().url().endsWith("slow"))
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    await route.fulfill({
+      response,
+      headers: { "access-control-allow-origin": "*" },
+    });
+    responses.push(route.request().url());
+  });
+  await page.evaluate((url) => {
+    void fetch(`${url}?fast`);
+    void fetch(`${url}?slow`);
+  }, requestUrl);
+  await bothStarted;
+  await drainManagedRoutes(page);
+  await page.unrouteAll({ behavior: "wait" });
+  // Swallowing handler exceptions cannot satisfy both completed deliveries.
+  expect(responses).toHaveLength(2);
 });
 
 test("page fixture accepts a page already closed by its owner", async ({

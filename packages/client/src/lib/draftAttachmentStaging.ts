@@ -25,6 +25,19 @@ export async function validateDraftAttachmentRefs(
   transport: DraftAttachmentTransport,
   state: DraftAttachmentState,
 ): Promise<StagedAttachmentRef[]> {
+  const batches = [...new Set(state.refs.map((ref) => ref.batchId))];
+  if (batches.length > 1) {
+    const groups = await Promise.all(
+      batches.map((batchId) =>
+        validateDraftAttachmentRefs(transport, {
+          ...state,
+          batchId,
+          refs: state.refs.filter((ref) => ref.batchId === batchId),
+        }),
+      ),
+    );
+    return groups.flat();
+  }
   const response = await transport.fetch<DraftAttachmentRefsResponse>(
     `/attachments/staging/drafts/${encodeURIComponent(state.batchId)}/validate`,
     {
@@ -55,6 +68,24 @@ export async function materializeDraftAttachmentsForSession(
   sessionId: string,
   state: DraftAttachmentState,
 ): Promise<UploadedFile[]> {
+  const batches = [...new Set(state.refs.map((ref) => ref.batchId))];
+  if (batches.length > 1) {
+    const files: UploadedFile[] = [];
+    for (const batchId of batches)
+      files.push(
+        ...(await materializeDraftAttachmentsForSession(
+          transport,
+          projectId,
+          sessionId,
+          {
+            ...state,
+            batchId,
+            refs: state.refs.filter((ref) => ref.batchId === batchId),
+          },
+        )),
+      );
+    return files;
+  }
   const response = await transport.fetch<MaterializeDraftAttachmentsResponse>(
     `/projects/${projectId}/sessions/${encodeURIComponent(
       sessionId,

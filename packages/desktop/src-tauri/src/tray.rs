@@ -263,7 +263,15 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = crate::windows::show_diagnostics_window(app);
             }
             "check-updates" => {
-                let _ = app.emit("check-for-updates", ());
+                // Hidden WKWebViews can suspend after extended inactivity.
+                // Native code must wake the updater before asking its renderer
+                // to check; a suspended event handler cannot show itself.
+                if let Err(error) = crate::windows::show_main_window(app) {
+                    eprintln!("Failed to show updater window: {error}");
+                }
+                if let Err(error) = app.emit_to("main", "check-for-updates", ()) {
+                    eprintln!("Failed to request update check: {error}");
+                }
             }
             "autostart" => {
                 let was_enabled = app.autolaunch().is_enabled().unwrap_or(false);

@@ -135,11 +135,15 @@ runs, so a developer's own YA holds it with a host built from whatever sources
 that server started with. A test server finds an incompatible host there,
 correctly declines to replace it, and then serves the entire suite in its
 degraded "provider host is not running" mode, whose banner covers the app
-header and swallows clicks on it. Global setup names a directory inside the
-run's temp directory through `YEP_PROVIDER_HOST_RUNTIME_DIR`, per-test servers
-share that same one, and global teardown stops the resulting host: it detached
-into its own process group, so the signals aimed at the server processes never
-reach it and nothing else would ever reclaim that directory.
+header and swallows clicks on it. Global setup and custom test servers use
+run-owned `YEP_PROVIDER_HOST_RUNTIME_DIR` paths. Custom servers own independent
+runtime inventories in short sibling directories so descriptive profile paths
+and replacement worker indices cannot exceed Unix socket limits. Await their
+disposal; the invocation's process registry lets global teardown recover any
+remaining hosts after a worker crash. Hosts detach into their own process
+groups, so a signal aimed at the YA server alone cannot reclaim them. See
+[worker-owned E2E services](e2e-testing.md#worker-owned-services-experimental)
+for the experimental worker scope and readiness boundary.
 
 Export checks build their required mockup bundle from the checked-out source;
 they must work without pre-existing `.artifacts` output. The relay artifact

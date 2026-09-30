@@ -15,6 +15,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
+import { writeFileAtomically } from "../utils/writeFileAtomically.js";
 
 const CURRENT_VERSION = 1;
 const DEFAULT_PORT = 3400;
@@ -305,6 +306,6 @@ export class NetworkBindingService {
 
   private async doSave(): Promise<void> {
     const content = JSON.stringify(this.state, null, 2);
-    await fs.writeFile(this.filePath, content, "utf-8");
+    await writeFileAtomically(this.filePath, content);
   }
 }

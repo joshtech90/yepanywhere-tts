@@ -9,6 +9,7 @@ import {
   useState,
 } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
+import { InnerHtml } from "../components/ui/InnerHtml";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useI18n, type TranslationFn } from "../i18n";
 import {
@@ -136,10 +137,9 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
       {entry.text.map((segment) => (
         <div className={contentStyles.responseSegment} key={segment.id}>
           {segment.augmentHtml && !segment.isStreaming ? (
-            <div
+            <InnerHtml
               className={contentStyles.renderedMarkdown}
-              // biome-ignore lint/security/noDangerouslySetInnerHtml: trusted server-rendered transcript Markdown
-              dangerouslySetInnerHTML={{ __html: segment.augmentHtml }}
+              trustedHtml={segment.augmentHtml}
             />
           ) : (
             <div className={contentStyles.plainText}>{segment.text}</div>

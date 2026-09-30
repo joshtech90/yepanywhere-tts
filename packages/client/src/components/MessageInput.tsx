@@ -1,4 +1,6 @@
+import { DraftSyncNotice } from "./DraftSyncNotice";
 import { NewSessionQueueMark } from "./NewSessionQueueMark";
+import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import {
   type ChosenNewSessionQueueTarget,
   type NewSessionQueueTarget,
@@ -235,6 +237,7 @@ function getComposerViewportHeight(): number {
 }
 
 interface Props {
+  onVoiceControl?: (control: VoiceInputButtonRef | null) => void;
   onSend: (text: string, metadata?: MessageSubmissionMetadata) => void;
   questionAside?: {
     canAsk: boolean;
@@ -430,6 +433,7 @@ function bangCompletionQueryKey(draft: string): string | null {
 }
 
 export function MessageInput({
+  onVoiceControl,
   onSend,
   questionAside,
   onQueue,
@@ -508,6 +512,7 @@ export function MessageInput({
   const [isComposing, setIsComposing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
+  const sharedVoiceRef = useComposerVoiceRef(voiceButtonRef, onVoiceControl);
   const typingStartedAtRef = useRef<string | null>(null);
   const lastEditedAtRef = useRef<string | null>(null);
   const speechTurnIdRef = useRef<string | null>(null);
@@ -3658,6 +3663,7 @@ export function MessageInput({
       data-composer-full-pane={fullPane ? "true" : undefined}
       onKeyDownCapture={handleComposerKeyDown}
     >
+      <DraftSyncNotice draftKey={draftKey} sessionId={sessionId} />
       {!composerIsEmpty && (
         <button
           type="button"
@@ -3752,6 +3758,7 @@ export function MessageInput({
               </div>
             )}
             <textarea
+              data-draft-key={draftKey}
               key={textareaImeGeneration}
               ref={textareaRef}
               data-composer-input
@@ -4092,7 +4099,7 @@ export function MessageInput({
               )}
               {showCollapsedDesktopMicrophone && (
                 <VoiceInputButton
-                  ref={voiceButtonRef}
+                  ref={sharedVoiceRef}
                   onTranscript={handleVoiceTranscript}
                   onInterimTranscript={handleInterimTranscript}
                   onListeningStart={handleListeningStart}
@@ -4117,7 +4124,7 @@ export function MessageInput({
           >
             {showCollapsedMicrophone && (
               <VoiceInputButton
-                ref={voiceButtonRef}
+                ref={sharedVoiceRef}
                 onTranscript={handleVoiceTranscript}
                 onInterimTranscript={handleInterimTranscript}
                 onListeningStart={handleListeningStart}
@@ -4306,7 +4313,7 @@ export function MessageInput({
                   onPointerDown={(event) => event.preventDefault()}
                 >
                   <VoiceInputButton
-                    ref={voiceButtonRef}
+                    ref={sharedVoiceRef}
                     onTranscript={handleVoiceTranscript}
                     onInterimTranscript={handleInterimTranscript}
                     onListeningStart={handleListeningStart}

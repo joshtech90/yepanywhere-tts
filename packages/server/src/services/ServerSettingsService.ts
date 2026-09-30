@@ -38,6 +38,9 @@ import type {
 import {
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
   DEFAULT_CACHE_MISS_BILLING_SETTINGS,
+  defaultLimitedUserInstructions,
+  limitedUserInstructionsError,
+  upgradeUntouchedLimitedUserInstructions,
   DEFAULT_CLAUDE_STEER_BACKGROUND_BASH,
   DEFAULT_CODEX_REASONING_SUMMARY,
   DEFAULT_HEARTBEAT_TURN_TEXT,
@@ -128,6 +131,12 @@ export interface ServerSettings {
   clientLogCollectionRequested: boolean;
   /** Whether approve/deny decisions are written to logs/approval-decisions.jsonl */
   approvalAuditLogEnabled: boolean;
+  /**
+   * Whether unsandboxed superuser agent sessions receive an in-memory API
+   * token (AGENT_SERVER_TOKEN). Default off
+   * (topics/agent-session-access.md § Operator API token).
+   */
+  agentServerAccessEnabled: boolean;
   /** Whether users may create public read-only share links */
   publicSharesEnabled: boolean;
   /**
@@ -135,6 +144,7 @@ export interface ServerSettings {
    * superuser. Default off (topics/limited-users.md § Delivery v1).
    */
   limitedUsersEnabled?: boolean;
+  limitedUserInstructions?: import("@yep-anywhere/shared").LimitedUserInstructions;
   /** Whether experimental workstream surfaces and APIs are enabled */
   workstreamsEnabled?: boolean;
   /** Whether experimental live Source Control filesystem monitoring is enabled. */
@@ -360,8 +370,10 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
   persistRemoteSessionsToDisk: false,
   clientLogCollectionRequested: false,
   approvalAuditLogEnabled: false,
+  agentServerAccessEnabled: false,
   publicSharesEnabled: false,
   limitedUsersEnabled: false,
+  limitedUserInstructions: defaultLimitedUserInstructions(),
   workstreamsEnabled: false,
   liveWorktreeMonitoringEnabled: defaultLiveWorktreeMonitoringEnabled(),
   sourceReviewSubmissionsEnabled: true,
@@ -503,6 +515,14 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
     settings.toolResultMediaPreservation === "preserve"
       ? "preserve"
       : DEFAULT_SERVER_SETTINGS.toolResultMediaPreservation;
+  // An invalid saved policy is left for the launch-time check to refuse.
+  if (
+    settings.limitedUserInstructions &&
+    !limitedUserInstructionsError(settings.limitedUserInstructions)
+  ) {
+    normalized.limitedUserInstructions =
+      upgradeUntouchedLimitedUserInstructions(settings.limitedUserInstructions);
+  }
   normalized.hostProcessObservabilityEnabled =
     typeof settings.hostProcessObservabilityEnabled === "boolean"
       ? settings.hostProcessObservabilityEnabled

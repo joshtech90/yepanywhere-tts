@@ -7,6 +7,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AgentServerTokens } from "../src/auth/AgentServerTokens.js";
 import type { ComputerSession } from "../src/computer-control/contract.js";
 import type { ComputerControlService } from "../src/computer-control/service.js";
 import { MessageQueue } from "../src/sdk/messageQueue.js";
@@ -383,6 +384,47 @@ describe("Supervisor", () => {
       expect(result.error).toBeUndefined();
       expect(runProviderCommand).toHaveBeenCalledWith("goal", "");
       await providerSupervisor.abortProcess(process.id);
+    });
+
+    it("hands an unsandboxed launch its own API token and revokes it at exit", async () => {
+      const tokens = new AgentServerTokens(() => true);
+      const launched: Array<Record<string, string> | undefined> = [];
+      const provider = testProvider(async (options) => {
+        launched.push(options.agentServerEnvironment);
+        const queue = new MessageQueue();
+        let aborted = false;
+        // Consumes input without replying; the test needs only the launch.
+        async function* iterator() {
+          for await (const _message of queue) {
+            if (aborted) return;
+            yield* [];
+          }
+        }
+        return {
+          iterator: iterator(),
+          queue,
+          abort: () => {
+            aborted = true;
+            queue.push({ text: "__abort__" });
+          },
+          initializedSessionId: "retained-session",
+        };
+      });
+      const providerSupervisor = new Supervisor({
+        provider,
+        mintAgentServerAccess: () => tokens.mint(),
+      });
+
+      const process = await providerSupervisor.reactivateSession(
+        "/tmp/test",
+        "retained-session",
+      );
+      const token = launched[0]?.AGENT_SERVER_TOKEN ?? "";
+      expect(token).not.toBe("");
+      expect(tokens.accepts(token)).toBe(true);
+
+      await providerSupervisor.abortProcess(process.id);
+      expect(tokens.accepts(token)).toBe(false);
     });
 
     it("starts a session whose first message is a native command", async () => {

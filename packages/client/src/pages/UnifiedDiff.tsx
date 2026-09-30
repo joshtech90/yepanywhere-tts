@@ -1,5 +1,6 @@
 import type { PatchHunk } from "@yep-anywhere/shared";
 import { Fragment, memo, type ReactNode, useMemo } from "react";
+import { InnerHtml } from "../components/ui/InnerHtml";
 import { parseDiffLineFragments } from "../lib/diffSideBySide";
 import { ReviewCommentSplitLayout } from "./ReviewCommentSplitLayout";
 import styles from "./UnifiedDiff.module.css";
@@ -165,13 +166,11 @@ function UnifiedRows({
       );
     })
     .join("");
+  // Server-highlighted diff rows.
   return (
-    <div
+    <InnerHtml
       className="highlighted-diff"
-      // biome-ignore lint/security/noDangerouslySetInnerHtml: server-highlighted diff rows
-      dangerouslySetInnerHTML={{
-        __html: `<pre class="shiki"><code>${html}</code></pre>`,
-      }}
+      trustedHtml={`<pre class="shiki"><code>${html}</code></pre>`}
     />
   );
 }

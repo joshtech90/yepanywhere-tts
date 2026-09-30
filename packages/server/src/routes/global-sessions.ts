@@ -123,6 +123,10 @@ export interface GlobalSessionItem {
   customTitle?: string;
   isArchived?: boolean;
   isStarred?: boolean;
+  /** User-named sidebar category; absent when the session has none. */
+  sidebarCategory?: string;
+  /** Limited user who started the session; absent means the superuser. */
+  createdByUser?: string;
   /** Iterations a running `/clearloop` still has to do; absent when none runs. */
   clearloop?: SessionClearloopBadge;
   /** True when an explicit manual termination disabled automatic resume. */
@@ -213,6 +217,8 @@ interface CollectionRequest {
   afterCursor?: string;
   includeArchived: boolean;
   starredOnly: boolean;
+  /** Admit only sessions filed under a sidebar category. */
+  categorizedOnly: boolean;
   includeStats: boolean;
   limit: number;
   /** Sorted project ids visible to a limited principal; absent for superuser. */
@@ -275,14 +281,20 @@ function matchesGlobalSessionQuery(
     | "projectId"
     | "isArchived"
     | "isStarred"
+    | "sidebarCategory"
   >,
   query: Pick<
     CollectionRequest,
-    "filterProjectId" | "searchQuery" | "includeArchived" | "starredOnly"
+    | "filterProjectId"
+    | "searchQuery"
+    | "includeArchived"
+    | "starredOnly"
+    | "categorizedOnly"
   >,
 ): boolean {
   if (row.isArchived && !query.includeArchived) return false;
   if (query.starredOnly && !row.isStarred) return false;
+  if (query.categorizedOnly && !row.sidebarCategory) return false;
   if (query.filterProjectId && row.projectId !== query.filterProjectId) {
     return false;
   }
@@ -515,6 +527,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
     const afterCursor = c.req.query("after");
     const includeArchived = c.req.query("includeArchived") === "true";
     const starredOnly = c.req.query("starred") === "true";
+    const categorizedOnly = c.req.query("categorized") === "true";
     const includeStats = c.req.query("includeStats") === "true";
     const limitParam = c.req.query("limit");
     const limit = Math.min(
@@ -547,6 +560,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
             searchQuery,
             includeArchived,
             starredOnly,
+            categorizedOnly,
           }) && isBeforeCursor(row.updatedAt, afterCursor),
       );
       return c.json({
@@ -585,6 +599,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         afterCursor,
         includeArchived,
         starredOnly,
+        categorizedOnly,
         includeStats,
         limit,
         accessibleProjectIds,
@@ -620,6 +635,7 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
         request.afterCursor ?? null,
         request.includeArchived,
         request.starredOnly,
+        request.categorizedOnly,
         request.includeStats,
         request.limit,
         request.accessibleProjectIds ?? null,
@@ -763,6 +779,8 @@ export function createGlobalSessionsRoutes(deps: GlobalSessionsDeps): Hono {
           customTitle,
           isArchived,
           isStarred,
+          sidebarCategory: metadata?.sidebarCategory,
+          createdByUser: metadata?.createdByUser,
           autoResumeDisabled: metadata?.autoResumeDisabled === true,
           parentSessionId,
           parentSessionKind,

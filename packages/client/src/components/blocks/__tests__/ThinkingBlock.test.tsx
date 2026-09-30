@@ -122,7 +122,7 @@ describe("ThinkingBlock", () => {
 
     expect(extractMarkdownSnippetsFromSelection(container)).toMatchObject([
       {
-        markdown: "Checking instructions",
+        markdown: "**Checking instructions**",
         selectedText: "Checking instructions",
       },
     ]);

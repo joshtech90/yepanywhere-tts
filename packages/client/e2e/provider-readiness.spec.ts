@@ -230,59 +230,65 @@ test.describe("New Session provider readiness", () => {
       },
     );
 
-    navigatedAt = Date.now();
-    await page.goto(
-      `${baseURL}/new-session?provider=claude-gateway&detached=1`,
-    );
-    await dismissOnboardingIfVisible(page);
-    await page
-      .getByPlaceholder("Describe what you'd like help with...")
-      .fill("Verify Gateway readiness");
+    try {
+      navigatedAt = Date.now();
+      await page.goto(
+        `${baseURL}/new-session?provider=claude-gateway&detached=1`,
+      );
+      await dismissOnboardingIfVisible(page);
+      await page
+        .getByPlaceholder("Describe what you'd like help with...")
+        .fill("Verify Gateway readiness");
 
-    await expect.poll(() => aggregateRequests).toBe(1);
-    await expect.poll(() => namedRequests).toBe(1);
-    expectNoUsageAheadOfRouteWork();
+      await expect.poll(() => aggregateRequests).toBe(1);
+      await expect.poll(() => namedRequests).toBe(1);
+      expectNoUsageAheadOfRouteWork();
 
-    aggregateGate.open();
-    await expect(page.getByText("Saved Gateway").first()).toBeVisible();
-    await expect(
-      page.getByText("Checking the configured gateway for models…"),
-    ).toBeVisible();
-    await expect(page.locator(".new-session-submit-button")).toBeDisabled();
-    expectNoUsageAheadOfRouteWork();
+      aggregateGate.open();
+      await expect(page.getByText("Saved Gateway").first()).toBeVisible();
+      await expect(
+        page.getByText("Checking the configured gateway for models…"),
+      ).toBeVisible();
+      await expect(page.locator(".new-session-submit-button")).toBeDisabled();
+      expectNoUsageAheadOfRouteWork();
 
-    await page.setViewportSize({ width: 1920, height: 1080 });
-    await capture(page, "gateway-checking-desktop-1920x1080.png");
-    await page.setViewportSize({ width: 375, height: 812 });
-    await capture(page, "gateway-checking-mobile-375x812.png");
+      await page.setViewportSize({ width: 1920, height: 1080 });
+      await capture(page, "gateway-checking-desktop-1920x1080.png");
+      await page.setViewportSize({ width: 375, height: 812 });
+      await capture(page, "gateway-checking-mobile-375x812.png");
 
-    firstNamedGate.open();
-    await expect(
-      page.getByText(
-        "No models are available from the configured gateway. Check that it is running, then retry.",
-      ),
-    ).toBeVisible();
-    await expect(page.getByText("Saved Gateway").first()).toBeVisible();
-    await expect(page.locator(".new-session-submit-button")).toBeDisabled();
-    await expect.poll(() => usageRequests).toBe(1);
+      firstNamedGate.open();
+      await expect(
+        page.getByText(
+          "No models are available from the configured gateway. Check that it is running, then retry.",
+        ),
+      ).toBeVisible();
+      await expect(page.getByText("Saved Gateway").first()).toBeVisible();
+      await expect(page.locator(".new-session-submit-button")).toBeDisabled();
+      await expect.poll(() => usageRequests).toBe(1);
 
-    const aggregateRequestsBeforeRetry = aggregateRequests;
-    await page.getByRole("button", { name: "Retry" }).click();
-    await expect.poll(() => namedRequests).toBe(2);
-    expect(aggregateRequests).toBe(aggregateRequestsBeforeRetry);
-    await expect(page.locator(".new-session-submit-button")).toBeDisabled();
+      const aggregateRequestsBeforeRetry = aggregateRequests;
+      await page.getByRole("button", { name: "Retry" }).click();
+      await expect.poll(() => namedRequests).toBe(2);
+      expect(aggregateRequests).toBe(aggregateRequestsBeforeRetry);
+      await expect(page.locator(".new-session-submit-button")).toBeDisabled();
 
-    retryGate.open();
-    await expect(page.getByText("Current Gateway").first()).toBeVisible();
-    await expect(
-      page.getByText("Checking the configured gateway for models…"),
-    ).toHaveCount(0);
-    await expect(page.locator(".new-session-submit-button")).toBeEnabled();
+      retryGate.open();
+      await expect(page.getByText("Current Gateway").first()).toBeVisible();
+      await expect(
+        page.getByText("Checking the configured gateway for models…"),
+      ).toHaveCount(0);
+      await expect(page.locator(".new-session-submit-button")).toBeEnabled();
 
-    await page.setViewportSize({ width: 1920, height: 1080 });
-    await capture(page, "gateway-ready-desktop-1920x1080.png");
-    await page.setViewportSize({ width: 375, height: 812 });
-    await capture(page, "gateway-ready-mobile-375x812.png");
+      await page.setViewportSize({ width: 1920, height: 1080 });
+      await capture(page, "gateway-ready-desktop-1920x1080.png");
+      await page.setViewportSize({ width: 375, height: 812 });
+      await capture(page, "gateway-ready-mobile-375x812.png");
+    } finally {
+      aggregateGate.open();
+      firstNamedGate.open();
+      retryGate.open();
+    }
   });
 
   test("keeps a fresh empty Gateway catalog blocked", async ({

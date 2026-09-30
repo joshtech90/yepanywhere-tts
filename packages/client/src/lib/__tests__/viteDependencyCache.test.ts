@@ -142,6 +142,12 @@ if (location.pathname === '/page') document.querySelector('button').click();`,
       const send = vi.spyOn(server.hot, "send");
       const entry = await server.transformRequest("/src/main.tsx");
       expect(entry?.code).toContain("__yaImportFresh(() => import(");
+      // A file no page loaded cannot leave one stale, so it is not a change.
+      server.watcher.emit(
+        "change",
+        resolve(root, "e2e/new-session-preboot-composer.spec.ts"),
+      );
+      await server.transformRequest("/src/lib/clientSummaryStore.ts");
       server.watcher.emit(
         "change",
         resolve(root, "src/lib/clientSummaryStore.ts"),
@@ -151,6 +157,9 @@ if (location.pathname === '/page') document.querySelector('button').click();`,
         "http://localhost:4999/api/dev/frontend-changed",
         expect.objectContaining({ method: "POST" }),
       );
+      expect(
+        notify.mock.calls.map(([, init]) => String(init?.body ?? "")),
+      ).toEqual([expect.stringContaining("src/lib/clientSummaryStore.ts")]);
       expect(send).not.toHaveBeenCalled();
     } finally {
       await server?.close();

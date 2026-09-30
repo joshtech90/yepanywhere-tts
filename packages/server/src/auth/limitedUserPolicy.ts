@@ -32,6 +32,7 @@ export type LimitedRouteDecision =
   | { kind: "deny" }
   /** Allowed with no project scope (identity, version, catalogs). */
   | { kind: "allow" }
+  | { kind: "detached-create" }
   /** Allowed when the named project grants at least `required`. */
   | {
       kind: "project";
@@ -42,10 +43,16 @@ export type LimitedRouteDecision =
     }
   /**
    * Allowed when the session's project grants at least `required`. A `join`
-   * requirement additionally needs the session to run sandboxed, and to be
-   * fresh unless the user started it.
+   * requirement additionally needs the session to run sandboxed. A request
+   * that `startsTurn` — makes the provider answer on the session's existing
+   * context — also needs the session to be fresh, whoever started it.
    */
-  | { kind: "session"; sessionId: string; required: RequiredAccess }
+  | {
+      kind: "session";
+      sessionId: string;
+      required: RequiredAccess;
+      startsTurn?: boolean;
+    }
   /** Allowed, and the response is a list the caller must filter. */
   | { kind: "allow-filtered"; filter: FilteredListKind };
 
@@ -147,6 +154,22 @@ const READ_ONLY_STATUS_PATHS: readonly string[] = [
   "/api/dev/safe-restart",
 ];
 
+/**
+ * Dictation through the speech backends the superuser configured: the
+ * streaming socket, batch transcription, a model prewarm, and the short-lived
+ * xAI client secret the direct Grok method streams with. The raw xAI key
+ * route stays refused even where the superuser shares it with their own
+ * browsers, since a limited user could keep it; backend setup (install, GPU,
+ * restart, and a status naming the host's working directory) and the learned
+ * vocabulary, drawn from every session's text, stay the superuser's.
+ */
+const SPEECH_USE_ROUTES: readonly string[] = [
+  "GET /api/speech/ws",
+  "POST /api/speech/transcribe",
+  "POST /api/speech/prewarm",
+  "POST /api/speech/xai-client-secret",
+];
+
 const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
 function hasPrefix(path: string, prefixes: readonly string[]): boolean {
@@ -176,6 +199,13 @@ const JOIN_SESSION_ACTIONS = new Set([
   "queue",
   // Attaching an image or document is part of composing that turn.
   "upload",
+  // Opening a server the session started in its sandbox: it acts on that
+  // session's own process, as a turn does.
+  "sandbox-apps",
+  // An interactive preview of a file the session wrote: a bearer link to
+  // that file's directory, confined by the route to the session's project
+  // and sandbox temp (routes/session-path-scope.ts).
+  "artifacts",
 ]);
 
 /**
@@ -200,13 +230,41 @@ const NEW_SESSION_SESSION_ACTIONS = new Set([
   "metadata",
   // Materializing staged attachments into a session's first turn.
   "attachments",
+  // A turn sent to a cold session, redirected into a new session seeded with
+  // a handoff; the source session launches nothing.
+  "stale-handoff",
 ]);
+
+/**
+ * Actions that make the provider answer on the session's existing context:
+ * a turn, an answer that continues one, or a resume carrying one. On a cold
+ * session each re-reads the whole context without the prompt cache, which is
+ * the cost the freshness cutoff exists to stop. Removing or steering a
+ * deferred message is judged by its method below.
+ */
+const TURN_STARTING_ACTIONS = new Set([
+  "messages",
+  "input",
+  "approve",
+  "approvals",
+  "queue",
+  "resume",
+]);
+
+function startsTurn(action: string, method: string): boolean {
+  if (TURN_STARTING_ACTIONS.has(action)) return true;
+  // POST /deferred/:tempId/steer delivers a deferred message; DELETE drops it.
+  return action === "deferred" && method === "POST";
+}
 
 /** What a session-scoped mutation needs, or null when it is refused. */
 function sessionMutationRequirement(
   action: string,
   method: string,
 ): RequiredAccess | null {
+  // Recomputes the list preview from the transcript a reader may already
+  // read; it launches nothing and stores nothing.
+  if (action === "refresh-preview" && method === "POST") return "view";
   if (JOIN_SESSION_ACTIONS.has(action)) return "join";
   if (NEW_SESSION_SESSION_ACTIONS.has(action)) return "new-session";
   // Dropping a restart-paused queued message launches nothing; resuming or
@@ -215,6 +273,18 @@ function sessionMutationRequirement(
     return "new-session";
   }
   return null;
+}
+
+function sessionMutationDecision(
+  sessionId: string,
+  action: string,
+  method: string,
+): LimitedRouteDecision {
+  const required = sessionMutationRequirement(action, method);
+  if (!required) return { kind: "deny" };
+  return startsTurn(action, method)
+    ? { kind: "session", sessionId, required, startsTurn: true }
+    : { kind: "session", sessionId, required };
 }
 
 export interface LimitedRouteRequest {
@@ -240,6 +310,15 @@ export function decideLimitedRoute(
   const method = request.method.toUpperCase();
   const isRead = READ_METHODS.has(method);
 
+  if (
+    (method === "POST" &&
+      ["/api/drafts/read", "/api/drafts/write", "/api/drafts/clear"].includes(
+        path,
+      )) ||
+    (method === "GET" &&
+      ["/api/drafts/index", "/api/drafts/changes"].includes(path))
+  )
+    return { kind: "allow" };
   if (path === "/health") return { kind: "allow" };
   if (path === "/api/ws") {
     // The websocket upgrade itself. What may be subscribed over it, and what
@@ -289,8 +368,16 @@ export function decideLimitedRoute(
     // administration and falls to the default deny below.
     return isRead ? { kind: "allow" } : { kind: "deny" };
   }
+  if (path === "/api/settings/limited-user-defaults") {
+    // The browser defaults published for limited users are theirs to read;
+    // only the superuser publishes them.
+    return isRead ? { kind: "allow" } : { kind: "deny" };
+  }
   if (hasPrefix(path, PUBLIC_GET_PREFIXES)) {
     return isRead ? { kind: "allow" } : { kind: "deny" };
+  }
+  if (SPEECH_USE_ROUTES.includes(`${method} ${path}`)) {
+    return { kind: "allow" };
   }
 
   const projectScoped = path.match(/^\/api\/projects\/([^/]+)(\/.*)?$/);
@@ -298,6 +385,14 @@ export function decideLimitedRoute(
     const projectId = decodeSegment(projectScoped[1] as string);
     if (projectId === null) return { kind: "deny" };
     const rest = projectScoped[2] ?? "";
+    // Seeing a project is enough to open its app and to start it; stopping
+    // it stays with the default new-session requirement below.
+    if ((rest === "/app/open" || rest === "/app/start") && method === "POST")
+      return { kind: "project", projectId, required: "view" };
+    // Copying reads the project and writes only under the user's own
+    // project directory, which the copy route enforces.
+    if (rest === "/copy" && method === "POST")
+      return { kind: "project", projectId, required: "view" };
     if (rest === "/sessions" || rest === "/sessions/create") {
       // Creating a session in this project. Checked before the session-scoped
       // match below, whose `[^/]+` would otherwise read "create" as an id.
@@ -313,10 +408,7 @@ export function decideLimitedRoute(
       if (isRead) {
         return { kind: "session", sessionId, required: "view" };
       }
-      const required = sessionMutationRequirement(action, method);
-      return required
-        ? { kind: "session", sessionId, required }
-        : { kind: "deny" };
+      return sessionMutationDecision(sessionId, action, method);
     }
     return {
       kind: "project",
@@ -344,9 +436,13 @@ export function decideLimitedRoute(
     return { kind: "allow" };
   }
 
+  if (
+    method === "POST" &&
+    (path === "/api/sessions" || path === "/api/sessions/create")
+  ) {
+    return { kind: "detached-create" };
+  }
   if (path === "/api/sessions") {
-    // GET is the global session list; POST would start a detached session in
-    // the hidden "No Project" workspace, which is the superuser's.
     return isRead
       ? { kind: "allow-filtered", filter: "sessions" }
       : { kind: "deny" };
@@ -358,10 +454,7 @@ export function decideLimitedRoute(
     if (sessionId === null) return { kind: "deny" };
     const action = (sessionScoped[3] ?? "").split("/")[0] ?? "";
     if (isRead) return { kind: "session", sessionId, required: "view" };
-    const required = sessionMutationRequirement(action, method);
-    return required
-      ? { kind: "session", sessionId, required }
-      : { kind: "deny" };
+    return sessionMutationDecision(sessionId, action, method);
   }
   if (path === "/api/inbox" || path.startsWith("/api/inbox/")) {
     return isRead

@@ -13,6 +13,79 @@ Result meanings:
   action that was not available during the run.
 - **NOT RUN** — the check was outside the completed scope; the reason is noted.
 
+## 2026-09-28 — manual update feedback and hidden windows
+
+The common Machine Control CLI resumed the claimed macOS VM normally. The
+previous suspended-state restore blocker did not recur. All application input
+and capture used guest-native routes; no host pointer or keyboard input was
+needed. Stable `0.2.2` was installed from its published Apple Silicon app
+archive and passed strict recursive code-signature verification.
+
+| Check | Signed 0.2.2 | Patched local app |
+| --- | --- | --- |
+| Ordinary manual check reports current Stable | PASS | PASS |
+| Manual check after six real minutes with no visible windows | PASS | PASS |
+| Manual check after application hiding | PASS | PASS |
+| Manual check after minimization | PASS | PASS |
+| Manual check after native window close/reopen | PASS | PASS |
+| Manual check while startup discovery is pending | FAIL: no checking feedback | PASS: checking surface appears |
+| Pending startup request fails after the manual click | FAIL: silent failure | PASS: visible failure with retry |
+
+The native reproduction used a guest-local HTTP CONNECT proxy to hold update
+traffic without intercepting TLS or changing endpoints. Eight seconds after
+launch, the guest AX route invoked the real **Check for Updates** tray item.
+The signed app exposed neither checking text nor a failure after the held
+connection was closed. An ad-hoc signed debug app built from the patched
+worktree exposed both. This validates the interaction correction, not release
+signing, notarization, or download/install acceptance.
+During direct executable launch for fault injection, the debug bundle reported
+an unresolved server resource path and exposed its recovery surface; its native
+updater still ran. A subsequent normal app launch without the proxy also
+reported the current Stable version successfully.
+
+The renderer had discarded every manual request while any check was busy.
+Manual requests now make an existing check visible and expose its result;
+dismissal continues to suppress late results. The focused updater harness
+also covers periodic overlap, repeated clicks without duplicate requests,
+close/reopen during a pending request, current-channel feedback, channel
+switches, Stable catch-up, errors, and explicit installation. Desktop and
+narrow captures were inspected: status text and actions remain readable and
+do not overflow. This surface has no free-text input path.
+
+The maintainer clarified that the original symptom also occurred after hours
+of runtime, so the startup race is not a complete diagnosis of that report.
+An additional signed `0.2.2` run closed the dashboard and waited six real
+minutes. No app windows remained after the dashboard unload delay, but the
+manual tray action still surfaced the up-to-date result. This run did **not**
+reproduce the maintainer's long-idle failure.
+The unresolved report remains tracked in
+[`desktop-manual-update-long-idle`](../../gaps/desktop-manual-update-long-idle.md).
+
+The native tray action now shows the trusted window before emitting its event
+specifically to `main`. This removes its dependency on a hidden renderer
+waking itself; Tauri's pinned WebView documentation describes suspension of
+hidden/minimized views after roughly five minutes. This is defensive native
+window handling, not proof that suspension caused the reported failure. The
+repeatable `packages/desktop/scripts/updater-macos-idle-smoke.py` check covers
+real idle, application hiding, minimization, and native window close/reopen.
+The patched app passed all four with visible current-version feedback and an
+active application; its complete native smoke took 378 seconds. The signed
+baseline's six-minute idle check and its separate window-state checks also
+passed. No test claimed an actual multi-hour or sleep/wake soak.
+
+Lint, formatting, TypeScript checking, desktop script tests, the renderer
+harness, 30 Rust tests, Clippy, and local macOS packaging passed. The renderer
+also verified manual no-update feedback after six simulated hours and manual
+requests during the 24-hour periodic check. After rebasing onto current main,
+lint, formatting, types and the renderer harness passed again; root `pnpm test`
+again encountered the same five
+unrelated server sandbox failures recorded in
+[`macos-sandbox-test-assumptions`](../../gaps/macos-sandbox-test-assumptions.md).
+The existing [tsx loader warning](../../gaps/tsx-loader-deprecation-warning.md)
+also remains. Windows native verification and an installed Stable-to-Latest
+upgrade were not part of this check; macOS upgrade acceptance is still pending,
+but no longer blocked by the old VM restore failure. No release was published.
+
 ## 2026-09-08 — nightly delivery and same-app channels
 
 ### Scope and current evidence

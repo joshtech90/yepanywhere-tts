@@ -7,9 +7,10 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { upsertRelayHost } from "../../lib/hostStorage";
+import { matchesRelayLoginTarget } from "../../lib/remoteRoutePaths";
 import { RelayLoginPage } from "../RelayLoginPage";
 
 /**
@@ -116,6 +117,35 @@ describe("RelayLoginPage", () => {
       srpPassword: "owner-pw",
     });
     expect(identityField().value).toBe("ygraehl");
+  });
+
+  it("retargets a prefilled sign-in link to the corrected server it submits", async () => {
+    // Switch Host opens a saved entry's login with its server name in `u`.
+    // Correcting a typo there must move the redirect target too, or the
+    // login routes never leave this page once connected.
+    let location = { pathname: "", search: "" };
+    function LocationProbe() {
+      location = useLocation();
+      return null;
+    }
+    render(
+      <MemoryRouter
+        initialEntries={[`/login/relay?u=ygrahel&r=${RELAY}&returnTo=%2Fx`]}
+      >
+        <RelayLoginPage />
+        <LocationProbe />
+      </MemoryRouter>,
+    );
+    fireEvent.change(serverField(), { target: { value: "ygraehl" } });
+    fireEvent.change(passwordField(), { target: { value: "owner-pw" } });
+    fireEvent.click(screen.getByTestId("login-button"));
+
+    await waitFor(() => expect(connectViaRelay).toHaveBeenCalledTimes(1));
+    const params = new URLSearchParams(location.search);
+    expect(params.get("u")).toBe("ygraehl");
+    expect(params.get("r")).toBe(RELAY);
+    expect(params.get("returnTo")).toBe("/x");
+    expect(matchesRelayLoginTarget(location, "ygraehl", RELAY)).toBe(true);
   });
 
   it("looks the server name up at submit when the fill was not seen as an edit", async () => {

@@ -1,9 +1,10 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { realpath } from "node:fs/promises";
-import { createServer, type Server } from "node:http";
+import { createServer, type Server, type IncomingMessage } from "node:http";
 import { homedir } from "node:os";
-import { basename, dirname, extname, resolve } from "node:path";
-import { Readable } from "node:stream";
+import { basename, dirname, extname, relative, resolve } from "node:path";
+import type { Duplex } from "node:stream";
+import { AppWebSocketProxy } from "./AppWebSocketProxy.js";
 import { getRequestListener } from "@hono/node-server";
 import { ARTIFACT_SANDBOX, ARTIFACT_TAB_PROTOCOL } from "@yep-anywhere/shared";
 import { FRAME_FIND_AGENT_SCRIPT } from "@yep-anywhere/shared/find/frameFindAgent.generated";
@@ -26,9 +27,18 @@ import {
   registerArtifactOrigins,
   setVhostHostnames,
 } from "../middleware/allowed-hosts.js";
+import { fileBytesResponse } from "./fileResponse.js";
 import { proxyLoopbackVhost } from "./vhost-proxy.js";
-import { matchVhost, vhostHostnames } from "./vhosts.js";
+import { serveVhostSite } from "./VhostSiteServer.js";
+import {
+  configuredVhostNames,
+  matchVhost,
+  SESSION_APP_NAME_PREFIX,
+  vhostHostnames,
+} from "./vhosts.js";
 import { VhostAccess } from "./VhostAccess.js";
+import type { ProjectAppDelivery } from "./ProjectAppDelivery.js";
+import { hostnameFromHostHeader } from "./vhosts.js";
 
 const MAX_GRANTS = 256;
 
@@ -71,6 +81,21 @@ const ARTIFACT_CSP = [
   "base-uri 'self'",
   "form-action 'none'",
 ].join("; ");
+/**
+ * The isolated-origin policy every artifact and file-vhost response carries.
+ * Every feature named in the permissions policy is one browsers actually
+ * recognize: an unknown name is ignored anyway, and Chromium logs it as an
+ * error in the reader's console for every artifact they open. Web Bluetooth
+ * is the name that costs more noise than it denies.
+ */
+const ARTIFACT_RESPONSE_HEADERS: Readonly<Record<string, string>> = {
+  "Content-Security-Policy": ARTIFACT_CSP,
+  "X-Content-Type-Options": "nosniff",
+  "Referrer-Policy": "no-referrer",
+  "Cache-Control": "no-store",
+  "Permissions-Policy":
+    "camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=(), display-capture=()",
+};
 
 interface Grant extends StoredGrant {
   files: Set<string>;
@@ -91,12 +116,37 @@ export interface ArtifactServerOptions {
   homeDirectory?: string;
 }
 
+/** A loopback port of one sandboxed session, offered under a minted name. */
+interface SessionApp {
+  name: string;
+  sessionId: string;
+  port: number;
+}
+
+/**
+ * The broker socket reaching `sessionId`'s current sandbox loopback, or null
+ * when the session has no live firewalled process with a broker.
+ */
+export type SessionAppUpstream = (sessionId: string) => string | null;
+
+const MAX_SESSION_APPS = 256;
+
 export class ArtifactServer {
   readonly vhostAccess: VhostAccess;
   readonly app = new Hono();
   private readonly grants = new Map<string, Grant>();
+  private readonly sessionApps = new Map<string, SessionApp>();
+  /**
+   * Every name ever minted stays excluded from YA's host trust until exit,
+   * as configured app hosts do, even after its session app is gone.
+   */
+  private readonly mintedSessionAppHosts = new Set<string>();
+  private sessionAppUpstream: SessionAppUpstream = () => null;
+  private projectAppDelivery?: ProjectAppDelivery;
+  private readonly projectHosts = new Set<string>();
   private listener: Server | undefined;
   private listening = false;
+  private readonly appSockets = new AppWebSocketProxy();
 
   private readonly store: GrantStore;
   private readonly protectedPaths: readonly (string | undefined)[];
@@ -116,7 +166,9 @@ export class ArtifactServer {
       ...(options.protectedPaths ?? []),
       options.homeDirectory ?? homedir(),
     ];
-    this.vhostAccess = new VhostAccess(options.stateDir);
+    this.vhostAccess = new VhostAccess(options.stateDir, (row) =>
+      this.appSockets.revokeApp(row.name),
+    );
     this.ready = Promise.all([this.restore(), this.vhostAccess.ready]).then(
       () => {},
     );
@@ -132,26 +184,37 @@ export class ArtifactServer {
       await this.ready;
       if (!this.matchesHost(c.req.header("Host") ?? new URL(c.req.url).host))
         return c.text("Unknown artifact host", 421);
-      c.header("Content-Security-Policy", ARTIFACT_CSP);
-      c.header("X-Content-Type-Options", "nosniff");
-      c.header("Referrer-Policy", "no-referrer");
-      c.header("Cache-Control", "no-store");
-      // Every feature named here is one browsers actually recognize: an
-      // unknown name is ignored anyway, and Chromium logs it as an error in
-      // the reader's console for every artifact they open. Web Bluetooth is
-      // the name that costs more noise than it denies.
-      c.header(
-        "Permissions-Policy",
-        "camera=(), microphone=(), geolocation=(), clipboard-read=(), clipboard-write=(), payment=(), usb=(), serial=(), display-capture=()",
-      );
-      if (c.req.method !== "GET" && c.req.method !== "HEAD")
+      for (const [name, value] of Object.entries(ARTIFACT_RESPONSE_HEADERS))
+        c.header(name, value);
+      if (
+        c.req.method !== "GET" &&
+        c.req.method !== "HEAD" &&
+        !c.req.path.startsWith("/p/")
+      )
         return c.text("Read only", 405);
       await next();
+      // Proxy and file responses carry their own Headers; enforce the
+      // isolated-origin policy after dispatch so they cannot replace it.
+      for (const [name, value] of Object.entries(ARTIFACT_RESPONSE_HEADERS))
+        c.res.headers.set(name, value);
+      if (c.req.path.startsWith("/p/"))
+        c.res.headers.set(
+          "Content-Security-Policy",
+          ARTIFACT_CSP.replace(
+            `sandbox ${ARTIFACT_SANDBOX}`,
+            "sandbox allow-scripts",
+          ),
+        );
     });
     this.app.get("/health", (c) => {
       c.header("Access-Control-Allow-Origin", "*");
       return c.json({ artifactViewer: 1 });
     });
+    this.app.all("/p/:token/*", async (c) =>
+      this.projectAppDelivery
+        ? this.projectAppDelivery.dispatchPath(c.req.raw, c.req.param("token"))
+        : c.notFound(),
+    );
     this.app.get("/a/:token/*", async (c) => {
       const grant = this.grants.get(c.req.param("token"));
       if (!grant || grant.expiresAt <= Date.now()) {
@@ -242,46 +305,7 @@ export class ArtifactServer {
         c.header("Content-Length", String(framed.length));
         return c.body(framed, 200);
       }
-      c.header("Content-Type", mime);
-      if (new URL(c.req.url).searchParams.get("download") === "true") {
-        c.header("Content-Disposition", "attachment");
-      }
-      c.header("Accept-Ranges", "bytes");
-      let start = 0;
-      let end = stats.size - 1;
-      const range = c.req.header("Range");
-      if (range) {
-        const match = /^bytes=(\d*)-(\d*)$/.exec(range);
-        if (match && (match[1] || match[2])) {
-          start = match[1]
-            ? Number(match[1])
-            : Math.max(0, stats.size - Number(match[2]));
-          end = match[1] && match[2] ? Math.min(Number(match[2]), end) : end;
-        }
-        if (
-          !match ||
-          (!match[1] && !match[2]) ||
-          start > end ||
-          start >= stats.size ||
-          !Number.isSafeInteger(start) ||
-          !Number.isSafeInteger(end)
-        ) {
-          await handle.close();
-          c.header("Content-Range", `bytes */${stats.size}`);
-          return c.body(null, 416);
-        }
-        c.header("Content-Range", `bytes ${start}-${end}/${stats.size}`);
-      }
-      c.header("Content-Length", String(Math.max(0, end - start + 1)));
-      if (c.req.method === "HEAD" || stats.size === 0) {
-        await handle.close();
-        return c.body(null, range ? 206 : 200);
-      }
-      const stream = handle.createReadStream({ start, end, autoClose: true });
-      return c.body(
-        Readable.toWeb(stream) as ReadableStream,
-        range ? 206 : 200,
-      );
+      return fileBytesResponse(c.req.raw, handle, stats, mime);
     });
   }
 
@@ -360,9 +384,69 @@ export class ArtifactServer {
 
   private registerHosts(config: ArtifactConfig): void {
     registerArtifactOrigins([config.localOrigin, config.publicOrigin]);
-    setVhostHostnames(
-      vhostHostnames(config.vhosts ?? [], config.vhostPublicRoot),
-    );
+    const minted = [...this.mintedSessionAppHosts].map((name) => ({
+      name,
+      port: 1,
+    }));
+    setVhostHostnames([
+      ...this.projectHosts,
+      ...vhostHostnames(
+        [...(config.vhosts ?? []), ...(config.vhostSites ?? []), ...minted],
+        config.vhostPublicRoot,
+      ),
+    ]);
+  }
+
+  /** Where session app upstreams resolve; set once the supervisor exists. */
+  setSessionAppUpstream(resolve: SessionAppUpstream): void {
+    this.sessionAppUpstream = resolve;
+  }
+
+  setProjectAppDelivery(delivery: ProjectAppDelivery): void {
+    this.projectAppDelivery = delivery;
+  }
+
+  registerProjectHosts(hosts: readonly string[]): void {
+    for (const host of hosts) this.projectHosts.add(host.toLowerCase());
+    this.registerHosts(this.config);
+  }
+
+  /**
+   * The minted app name offering `sessionId`'s loopback `port`, reusing the
+   * name already minted for that pair. The name is private: its bearer comes
+   * from `vhostAccess.token`, like any private app row's.
+   */
+  mintSessionApp(sessionId: string, port: number): SessionApp {
+    for (const app of this.sessionApps.values()) {
+      if (app.sessionId === sessionId && app.port === port) return app;
+    }
+    if (this.sessionApps.size >= MAX_SESSION_APPS) {
+      // Oldest first: a Map iterates in insertion order.
+      const oldest = this.sessionApps.keys().next().value;
+      if (oldest !== undefined) this.sessionApps.delete(oldest);
+    }
+    const staticNames = new Set(configuredVhostNames(this.config));
+    let name: string;
+    do {
+      name = `${SESSION_APP_NAME_PREFIX}${randomBytes(8).toString("hex")}`;
+    } while (staticNames.has(name) || this.sessionApps.has(name));
+    const app = { name, sessionId, port };
+    this.sessionApps.set(name, app);
+    this.mintedSessionAppHosts.add(name);
+    this.registerHosts(this.config);
+    return app;
+  }
+
+  /** Whether the local file policy admits `path`, a file or directory. */
+  async allowsPath(
+    path: string,
+  ): Promise<
+    { ok: true } | { ok: false; error: string; status: 400 | 403 | 404 }
+  > {
+    const result = await this.policy.resolveAllowedDirectory(path);
+    return result.ok
+      ? { ok: true }
+      : { ok: false, error: result.error, status: result.status };
   }
 
   matchesHost(host: string): boolean {
@@ -379,12 +463,65 @@ export class ArtifactServer {
     );
   }
 
+  /** A session app named by `host`; operator rows always match first. */
+  private matchesSessionApp(host: string | undefined): SessionApp | undefined {
+    const matched = matchVhost(
+      host,
+      [...this.sessionApps.values()].map(({ name, port }) => ({ name, port })),
+      this.config.vhostPublicRoot,
+    );
+    return matched ? this.sessionApps.get(matched.name) : undefined;
+  }
+
   async dispatchHost(
     request: Request,
     clientAddress?: string,
+    proxy = proxyLoopbackVhost,
   ): Promise<Response | null> {
     const host = request.headers.get("host") ?? new URL(request.url).host;
-    const vhost = this.matchesVhost(host);
+    if (this.projectAppDelivery) {
+      await this.projectAppDelivery.ready;
+      if (this.projectHosts.has(hostnameFromHostHeader(host) ?? ""))
+        return this.projectAppDelivery.dispatchHost(
+          request,
+          clientAddress,
+          proxy,
+        );
+    }
+    const site = matchVhost(
+      host,
+      this.config.vhostSites ?? [],
+      this.config.vhostPublicRoot,
+    );
+    if (site) {
+      await this.ready;
+      const authorized = this.vhostAccess.authorize(
+        request,
+        site,
+        await this.vhostAccess.passwordAdmits(request, site),
+      );
+      const response = authorized
+        ? await serveVhostSite(authorized.request, site, this.policy)
+        : site.public && site.passwordHash
+          ? new Response("Password required", {
+              status: 401,
+              headers: {
+                "WWW-Authenticate": `Basic realm="${site.name}", charset="UTF-8"`,
+              },
+            })
+          : new Response("App link required", { status: 401 });
+      for (const [name, value] of Object.entries(ARTIFACT_RESPONSE_HEADERS))
+        response.headers.set(name, value);
+      if (authorized?.cookie)
+        response.headers.append("Set-Cookie", authorized.cookie);
+      return response;
+    }
+    const sessionApp = this.matchesVhost(host)
+      ? undefined
+      : this.matchesSessionApp(host);
+    const vhost =
+      this.matchesVhost(host) ??
+      (sessionApp && { name: sessionApp.name, port: sessionApp.port });
     if (vhost) {
       await this.ready;
       const authorized = this.vhostAccess.authorize(request, vhost);
@@ -396,10 +533,27 @@ export class ArtifactServer {
             "Referrer-Policy": "no-referrer",
           },
         });
-      const response = await proxyLoopbackVhost(
+      let brokerSocket: string | undefined;
+      if (sessionApp) {
+        const upstream = this.sessionAppUpstream(sessionApp.sessionId);
+        if (!upstream)
+          return new Response(
+            "This session's sandbox is not running, so its app is unavailable",
+            {
+              status: 503,
+              headers: {
+                "Cache-Control": "no-store",
+                "Referrer-Policy": "no-referrer",
+              },
+            },
+          );
+        brokerSocket = upstream;
+      }
+      const response = await proxy(
         authorized.request,
         vhost.port,
         clientAddress,
+        brokerSocket,
       );
       response.headers.set("Cache-Control", "no-store");
       response.headers.set("Referrer-Policy", "no-referrer");
@@ -407,8 +561,24 @@ export class ArtifactServer {
         response.headers.append("Set-Cookie", authorized.cookie);
       return response;
     }
-    if (this.matchesHost(host)) return this.app.fetch(request);
+    if (this.matchesHost(host)) {
+      if (request.headers.has("upgrade")) {
+        const token = /^\/p\/([a-f0-9]{48})\//.exec(
+          new URL(request.url).pathname,
+        )?.[1];
+        return token && this.projectAppDelivery
+          ? this.projectAppDelivery.dispatchPath(request, token, proxy)
+          : new Response("No app WebSocket target", { status: 404 });
+      }
+      return this.app.fetch(request);
+    }
     return null;
+  }
+
+  handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer): void {
+    void this.appSockets.handle(request, socket, head, (incoming, proxy) =>
+      this.dispatchHost(incoming, request.socket.remoteAddress, proxy),
+    );
   }
 
   async configure(config: ArtifactConfig): Promise<void> {
@@ -418,6 +588,8 @@ export class ArtifactServer {
       this.config,
     );
     const previous = this.config;
+    await this.projectAppDelivery?.validateConfig(config);
+    this.appSockets.close();
     const deliveryChanged =
       config.port !== previous.port ||
       config.localOrigin !== previous.localOrigin ||
@@ -464,6 +636,9 @@ export class ArtifactServer {
         }),
       );
       this.listener = listener;
+      listener.on("upgrade", (request, socket, head) =>
+        this.handleUpgrade(request, socket, head),
+      );
       listener.once("error", reject);
       listener.listen(this.config.port, "127.0.0.1", () => {
         listener.removeListener("error", reject);
@@ -474,6 +649,7 @@ export class ArtifactServer {
   }
 
   async close(): Promise<void> {
+    this.appSockets.close();
     // Startup restores and writes state under stateDir; closing before that
     // settles lets a caller remove the directory mid-write. Its failure is
     // already reported by the constructor.
@@ -499,6 +675,7 @@ export class ArtifactServer {
     filePath: string,
     audience: "local" | "public",
     owned?: boolean,
+    declaredRoot?: string,
   ) {
     await this.ready;
     const origin =
@@ -522,8 +699,18 @@ export class ArtifactServer {
     const now = Date.now();
     for (const [token, grant] of this.grants)
       if (grant.expiresAt <= now) this.grants.delete(token);
-    const root = dirname(allowed.file.resolvedPath);
-    const entry = basename(allowed.file.resolvedPath);
+    // Project callers supply the canonical, containment-checked root. Resolving
+    // symlinks again here could accept a replacement pointing outside it.
+    const root = declaredRoot
+      ? resolve(declaredRoot)
+      : dirname(allowed.file.resolvedPath);
+    if (!isPathInsideDirectory(allowed.file.resolvedPath, root))
+      throw new HTTPException(403, {
+        message: "Artifact entry escapes declared root",
+      });
+    const entry = relative(root, allowed.file.resolvedPath)
+      .split("\\")
+      .join("/");
     const lifetimeMs = this.config.expiryDays! * 24 * 60 * 60 * 1000;
     // Ownership is refused rather than honoured for a directory that is
     // plainly not a disposable bundle; the grant is still created, borrowing.
@@ -594,7 +781,7 @@ export class ArtifactServer {
   private issue(grant: Grant, origin: string, reused: boolean) {
     return {
       id: grant.id,
-      url: `${origin}/a/${grant.token}/${encodeURIComponent(grant.entry)}`,
+      url: `${origin}/a/${grant.token}/${grant.entry.split("/").map(encodeURIComponent).join("/")}`,
       expiresAt: grant.expiresAt,
       owned: grant.owned,
       reused,

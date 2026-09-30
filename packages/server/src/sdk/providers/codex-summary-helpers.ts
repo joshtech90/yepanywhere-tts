@@ -96,9 +96,12 @@ export function createCodexForkSummaryThreadResumeParams(
     approvalPolicy: "untrusted",
     sandbox: "read-only",
     config: null,
-    developerInstructions: getCodexForkSummaryDeveloperInstructions(
-      request.purpose,
-    ),
+    developerInstructions: [
+      request.sessionSandbox?.instructions?.text,
+      getCodexForkSummaryDeveloperInstructions(request.purpose),
+    ]
+      .filter(Boolean)
+      .join("\n\n"),
   };
   if (experimentalApiEnabled) {
     params.excludeTurns = true;

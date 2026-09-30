@@ -45,6 +45,8 @@ export interface ModelSettings {
   remoteEnv?: Record<string, string>;
   /** Global instructions to append to system prompt. */
   globalInstructions?: string;
+  /** Trusted acting user for new launches; resumed sessions retain their owner. */
+  instructionUsername?: string;
   /** Permission rules for tool filtering (deny/allow patterns). */
   permissions?: PermissionRules;
   /** How this session should answer away-recap requests. */

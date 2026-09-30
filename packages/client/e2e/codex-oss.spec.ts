@@ -7,12 +7,11 @@
 
 import { execSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { e2ePaths, expect, test } from "./fixtures.js";
 
 // Test project path and IDs
-const mockProjectPath = join(tmpdir(), "claude-e2e-codexoss");
+const mockProjectPath = join(e2ePaths.tempDir, "codexoss-project");
 const projectId = Buffer.from(mockProjectPath).toString("base64url");
 
 // Create test project before tests

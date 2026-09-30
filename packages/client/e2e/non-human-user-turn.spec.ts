@@ -7,7 +7,7 @@ import { e2ePaths, expect, test } from "./fixtures.js";
 import { recordUiCapture } from "./support/ui-capture.js";
 import {
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
 } from "./support/ya-server-process.js";
 
 for (const viewport of [
@@ -194,7 +194,7 @@ for (const viewport of [
         page.getByRole("link", { name: "Open message from another session" }),
       ).toHaveCount(0);
     } finally {
-      await stopYaServerProcess(backend);
+      await disposeYaServerProcess(backend);
     }
   });
 }

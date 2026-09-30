@@ -8,10 +8,11 @@
  * Project Queue dispatch. Routes that would launch without it are refused by
  * the route policy (auth/limitedUserPolicy.ts) rather than left open.
  *
- * - The session runs sandboxed. A new session is forced to `project-write`;
- *   an existing session must already be sandboxed, since its boundary was
- *   settled when it was created and a limited user may not drive an
- *   unsandboxed process.
+ * - The session runs sandboxed, network firewall included. A new session is
+ *   forced to `project-write` with the firewall on, and a request that
+ *   explicitly turns the firewall off is refused; an existing session must
+ *   already run that way, since its boundary was settled when it was created
+ *   and a limited user may not drive an unsandboxed process.
  * - It runs on this host: a remote executor and computer control are outside
  *   any sandbox, so either one is refused.
  * - A locked provider, model, or effort is applied. A request naming a value
@@ -123,8 +124,18 @@ function lockConflictError(
 }
 
 /**
+ * The network firewall is part of the sandbox a limited user may not clear
+ * (topics/session-sandbox-network-boundary.md). An explicit opt-out is refused
+ * rather than overridden, like a lock conflict, so a client that asked for it
+ * learns it did not get it.
+ */
+const FIREWALL_OPT_OUT_ERROR =
+  "This user's sessions always run with the sandbox network firewall on";
+
+/**
  * Apply the launch policy to a new session's request body in place: the
- * session-create routes and a Project Queue new-session target.
+ * session-create routes, a Project Queue new-session target, and a template
+ * creation's preparation session.
  */
 export function limitNewSessionLaunch(
   grants: LimitedUserGrants,
@@ -134,9 +145,13 @@ export function limitNewSessionLaunch(
   if (hostEscape) return { error: hostEscape };
   const conflict = lockConflictError(grants.lock, body);
   if (conflict) return { error: conflict };
+  if (body.sandboxNetworkFirewall === false) {
+    return { error: FIREWALL_OPT_OUT_ERROR };
+  }
 
   // Sandbox is not the user's to clear.
   body.sandboxLevel = "project-write";
+  body.sandboxNetworkFirewall = true;
   const { lock } = grants;
   if (lock.provider) body.provider = lock.provider;
   if (lock.model) body.model = lock.model;
@@ -159,6 +174,13 @@ export function limitExistingSessionLaunch(
     return {
       error:
         "This session runs outside the sandbox, so this user cannot start it; start a new session instead",
+    };
+  }
+  // Absent means on, as at every other launch (Supervisor, the resume route).
+  if (settings.sandboxNetworkFirewall === false) {
+    return {
+      error:
+        "This session runs without the sandbox network firewall, so this user cannot start it; start a new session instead",
     };
   }
   const hostEscape = hostEscapeError(settings);

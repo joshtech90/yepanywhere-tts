@@ -1,3 +1,5 @@
+import { getSyncedDraftSessionIds } from "./syncedDraftPresence";
+import { draftStorage } from "./draftSyncStorage";
 import type { ClientSummarySourceKey } from "./clientSummaryStore";
 import {
   type DraftAttachmentState,
@@ -65,7 +67,7 @@ export function isSessionDraftStorageKey(
 
 function readLegacyDraftIndex(sourceKey: ClientSummarySourceKey): Set<string> {
   try {
-    const raw = localStorage.getItem(createSessionDraftIndexKey(sourceKey));
+    const raw = draftStorage.getItem(createSessionDraftIndexKey(sourceKey));
     if (!raw) {
       return new Set();
     }
@@ -87,8 +89,7 @@ function readDraftPresenceIndex(
     const prefix = `${SOURCE_DRAFT_PRESENCE_KEY_PREFIX}${encodeKeyPart(
       sourceKey,
     )}:`;
-    for (let index = 0; index < localStorage.length; index += 1) {
-      const key = localStorage.key(index);
+    for (const key of draftStorage.keys()) {
       if (!key?.startsWith(prefix)) continue;
       const encodedSessionId = key.slice(prefix.length);
       if (!encodedSessionId) continue;
@@ -110,14 +111,14 @@ function syncDraftPresence(
 ): { changed: boolean; synchronized: boolean } {
   try {
     const key = createSessionDraftPresenceKey(reference);
-    const contains = localStorage.getItem(key) !== null;
+    const contains = draftStorage.getItem(key) !== null;
     if (contains === shouldContain) {
       return { changed: false, synchronized: true };
     }
     if (shouldContain) {
-      localStorage.setItem(key, "1");
+      draftStorage.setItem(key, "1");
     } else {
-      localStorage.removeItem(key);
+      draftStorage.removeItem(key);
     }
     return { changed: true, synchronized: true };
   } catch {
@@ -138,12 +139,12 @@ function persistSessionDraftEnvelope(
 ): void {
   try {
     const key = createSessionDraftStorageKey(reference);
-    const previousValue = localStorage.getItem(key);
+    const previousValue = draftStorage.getItem(key);
     const nextValue = update(previousValue);
     if (nextValue) {
-      localStorage.setItem(key, nextValue);
+      draftStorage.setItem(key, nextValue);
     } else {
-      localStorage.removeItem(key);
+      draftStorage.removeItem(key);
     }
     // Reconcile on every successful envelope write, not only a presence
     // transition. A quota/transient failure on the first marker write is then
@@ -195,8 +196,8 @@ export function markSessionDraftPendingSend(
 export function removeSessionDraft(reference: SessionDraftReference): void {
   try {
     const key = createSessionDraftStorageKey(reference);
-    const previousValue = localStorage.getItem(key);
-    localStorage.removeItem(key);
+    const previousValue = draftStorage.getItem(key);
+    draftStorage.removeItem(key);
     updateSessionDraftIndex(reference, "");
     if (hasDraftContentValue(previousValue)) {
       publishDraftPresenceChange({
@@ -213,7 +214,7 @@ export function removeSessionDraft(reference: SessionDraftReference): void {
 export function scanSessionDraftIds(
   sourceKey = LOCAL_CLIENT_SUMMARY_SOURCE_VALUE as ClientSummarySourceKey,
 ): Set<string> {
-  const result = new Set<string>();
+  const result = new Set<string>(getSyncedDraftSessionIds(sourceKey));
 
   try {
     const legacySessionIds = readLegacyDraftIndex(sourceKey);
@@ -223,7 +224,7 @@ export function scanSessionDraftIds(
     }
     let migratedLegacyIndex = true;
     for (const sessionId of indexedSessionIds) {
-      const value = localStorage.getItem(
+      const value = draftStorage.getItem(
         createSessionDraftStorageKey({ sourceKey, sessionId }),
       );
       if (hasDraftContentValue(value)) {
@@ -242,7 +243,7 @@ export function scanSessionDraftIds(
       }
     }
     if (legacySessionIds.size > 0 && migratedLegacyIndex) {
-      localStorage.removeItem(createSessionDraftIndexKey(sourceKey));
+      draftStorage.removeItem(createSessionDraftIndexKey(sourceKey));
     }
 
     if (sourceKey !== LOCAL_CLIENT_SUMMARY_SOURCE_VALUE) {
@@ -251,15 +252,14 @@ export function scanSessionDraftIds(
 
     // Compatibility: local-only legacy drafts predate the index. Read them only
     // for the local source, and backfill the index for non-empty keys.
-    for (let i = 0; i < localStorage.length; i++) {
-      const key = localStorage.key(i);
+    for (const key of draftStorage.keys()) {
       if (
         !key?.startsWith(SESSION_DRAFT_KEY_PREFIX) ||
         key.startsWith(SOURCE_DRAFT_INDEX_KEY_PREFIX)
       ) {
         continue;
       }
-      const value = localStorage.getItem(key);
+      const value = draftStorage.getItem(key);
       if (hasDraftContentValue(value)) {
         const sessionId = key.slice(SESSION_DRAFT_KEY_PREFIX.length);
         result.add(sessionId);

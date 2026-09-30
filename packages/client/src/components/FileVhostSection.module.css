@@ -1,0 +1,160 @@
+/* The File Viewer share dialog's vhost address: one hostname serving the
+ * file itself, below the bearer-link inventory. */
+
+.section {
+  border-top: 1px solid var(--border-color);
+  display: grid;
+  gap: 8px;
+  padding-top: 12px;
+}
+
+.heading {
+  font-size: 0.83rem;
+}
+
+.description {
+  color: var(--text-secondary);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.error {
+  color: var(--error-color);
+  font-size: 0.8rem;
+  margin: 0;
+}
+
+.form {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.nameField {
+  align-items: center;
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  display: flex;
+  flex: 1 1 100%;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  min-width: 0;
+  padding: 0 8px;
+}
+
+.nameField:focus-within {
+  border-color: var(--accent-color);
+}
+
+.nameField input {
+  background: transparent;
+  border: 0;
+  color: var(--text-primary);
+  flex: 1 1 6rem;
+  font: inherit;
+  min-width: 0;
+  outline: none;
+  padding: 8px 2px;
+}
+
+.scheme,
+.suffix {
+  color: var(--text-muted);
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.suffix {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex-shrink: 1;
+}
+
+.access {
+  align-items: center;
+  display: inline-flex;
+  font-size: 0.8rem;
+  gap: 6px;
+  min-height: 36px;
+}
+
+.access select,
+.access input {
+  background: var(--bg-input);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-primary);
+  font: inherit;
+  min-height: 32px;
+  padding: 4px 6px;
+}
+
+.access input {
+  width: 10rem;
+}
+
+.form button {
+  margin-left: auto;
+}
+
+.sites {
+  display: grid;
+  gap: 6px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.site {
+  align-items: center;
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 8px 10px;
+}
+
+.url {
+  color: var(--accent-color);
+  flex: 1 1 12rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  border: 1px solid var(--border-color);
+  border-radius: 999px;
+  color: var(--text-secondary);
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 2px 7px;
+  text-transform: uppercase;
+}
+
+.public {
+  border-color: color-mix(in srgb, var(--app-yep-green) 55%, transparent);
+  color: var(--app-yep-green);
+}
+
+.actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+@media (max-width: 599px) {
+  .access,
+  .form button,
+  .actions button {
+    min-height: 44px;
+  }
+}

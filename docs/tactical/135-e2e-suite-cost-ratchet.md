@@ -1,6 +1,11 @@
 # Ratchet down client E2E suite cost
 
-Status: reduction underway 2026-09-27. The test-level policy lives in
+Status: isolation and reduction underway 2026-09-30. Worker-owned profiles are
+the local default, and CI uses two workers per existing shard. The latest local
+default-scope four-worker gate passed 348 cases with 11 skips and no retries.
+The fixed-source CI pair passed both schedules with substantial time savings
+and one retry each; repeated first-attempt CI and a comparable median/p90
+window remain outstanding. The test-level policy lives in
 [E2E testing](../../topics/e2e-testing.md); this file tracks the reduction
 sequence and measured evidence. The first reduction slice passed local
 verification and one full CI job. The second slice also passed one full CI
@@ -9,6 +14,22 @@ passed on isolated runners, while a local two-worker run stopped at its failure
 limit.
 Shared-server isolation is now the first reliability priority; further suite
 speed work follows it.
+
+The latest published source, `cead003b4`, passed every CI gate in its manual
+repeat, with 349 E2E first-attempt passes and ten Linux skips across two shards.
+Its initial push run exhausted the restart case's measured overall budget and
+needed two cold-entry retries. The next slice removes unused client/server
+startup, documents the measured restart lifetime, and owns context-only
+subscription usage. Keep repeated first-attempt results and comparable
+median/p90 timing open; one green repeat does not close those acceptance gates.
+
+The subsequent `16f77a5ca` repeat again passed both E2E shards without retries
+(349 Linux passes, ten skips). Its initial push exposed another measured
+popup startup budget; a compatible transitive dependency refresh addresses
+the newly reported audit blocker. The independent
+[Codex fake-process waiter finding](../../gaps/codex-provider-unit-startup-timeouts.md)
+and initial search-highlight gap remain open. Preserve these findings and
+collect bounded failure diagnostics instead of treating later passes as causes.
 
 The blanket local `pnpm test:e2e` rule first appeared in contributor guidance
 on 2025-12-29, when the suite had about seven specs. Focused Playwright wording
@@ -243,3 +264,61 @@ have been diagnosed and repaired, the suite has a stable measurement ledger,
 the high-time specs have been reviewed, and a comparable CI window shows lower
 median and high-percentile job time without a higher retry-pass rate or lost
 boundary coverage.
+
+
+### Worker isolation foundation — 2026-09-29
+
+The opt-in worker scope owns mutable YA/relay profiles and process lifetimes.
+Startup waits for provider observation baselines and a settled retained
+catalog, rather than only an HTTP listener. Recovery records preserve original
+Unix process identities; partial starts, restarts and teardown attempt every
+owned actor and retain evidence on cleanup failure. Browser route callbacks
+drain before page disposal. Seeded composer drafts reset in their actual
+server scope. The entire Playwright harness now joins root strict typechecking.
+
+A full local macOS run passed 345 cases with 12 platform/device skips, two
+workers and no retries in 8.0 minutes. No browser cases were removed. The
+Linux-only live-preview sandbox remains required in CI; its cold readiness
+probe is explicit. Existing one-worker/two-shard CI is the next control before
+changing worker topology. Compare fixed source revisions, startup and test
+steps, retries, slower-shard wall time and combined runner time; do not treat
+the local run as a CI speed estimate.
+
+The broader audit also fixed per-app persisted storage in full server test
+fixtures and moved session-filtering HTTP assertions to owned real scanners
+and readers. Catalog publication now invalidates the authorization projection
+without waiting for its five-second fallback TTL, with fail-closed regressions
+for stale positive mappings and event delivery. These are isolation and
+correctness changes, not removed coverage or longer general timeouts.
+
+### Worker campaign follow-up — 2026-09-30
+
+Worker profiles, relay credentials, server storage and provider-host runtimes now
+have explicit worker ownership and recovery. CI exercises two workers in each
+existing shard. The first fixed-source comparison was faster but failed; after
+the startup repairs, both schedules passed all gates at `6e7d1c799`. Worker scope
+reduced the slower job from 14m47s to 7m43s and combined jobs from 25m26s to
+14m57s. Each schedule still had one retry, so this single pair establishes
+neither steady-state reliability nor a median or p90. See the [ledger](../testing/e2e-ci-cost-ledger.md)
+for exact revisions, retries, and start skew. Unit fixtures also needed isolation:
+default full apps had shared storage, background services outlived file roots,
+and version checks contacted the public update service. These now have owned
+storage, joined disposal and offline fixture checks.
+
+Faster built-client fixtures revealed real startup ownership gaps: lazy route
+requests registered after bootstrap completed, and an empty sidebar layout could
+remain held after rows arrived. Keep those behavioral regressions while reducing
+duplicate dev listeners and compilation. Read-only source fixtures retain Vite;
+parallel scheduling does not enable `fullyParallel` inside mutable spec lifetimes.
+Continue until full first-attempt CI and repeated parallel schedules pass without
+a comparable median or high-percentile wall-time regression.
+
+The follow-up keeps one worker as the local default count while making mutable
+profiles worker-owned for ordinary `--workers=N` commands. Controlled regressions
+cover late-resize search repinning and urgent settings-scope fan-out. Queue layout
+uses its own persisted restart-paused profile, command completion explicitly
+releases its held receipt, and expanded search counts only its own query batches.
+Root checks passed 6,148 server and 6,504 client tests; 18 focused four-worker
+browser repetitions passed without retries. Full default-scope and exact-SHA
+CI verification remain the next checkpoint. Initial search-frame loss and
+cross-tab storage feedback remain separate findings until causally diagnosed.

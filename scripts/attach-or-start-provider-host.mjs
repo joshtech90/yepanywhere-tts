@@ -123,12 +123,24 @@ export async function attachOrStartProviderHost({
 
   discovery = await waitForAvailable(paths, identity);
   if (discovery.state === "available") {
-    return { state: "started", paths, discovery };
+    return {
+      state:
+        discovery.descriptor.owner.pid === host.pid ? "started" : "attached",
+      paths,
+      discovery,
+    };
   }
 
   const concurrent = await waitForAvailable(paths, identity);
   if (concurrent.state === "available") {
-    return { state: "attached", paths, discovery: concurrent };
+    return {
+      // The first discovery window can expire while our own macOS host is
+      // still booting. Its later arrival keeps this launcher's IPC lease.
+      state:
+        concurrent.descriptor.owner.pid === host.pid ? "started" : "attached",
+      paths,
+      discovery: concurrent,
+    };
   }
 
   return {

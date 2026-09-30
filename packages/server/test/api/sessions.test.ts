@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { toUrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createApp } from "../setup/create-app.js";
+import { createApp as createFixtureApp } from "../setup/create-app.js";
 import { MockClaudeSDK, createMockScenario } from "../../src/sdk/mock.js";
 import {
   closeProviderRuntimeHostRegistration,
@@ -58,6 +58,12 @@ function createSettingsServiceForPublicShares(): ServerSettingsService {
 }
 
 describe("Sessions API", () => {
+  const ownedApps = new Set<ReturnType<typeof createFixtureApp>>();
+  const createApp: typeof createFixtureApp = (options) => {
+    const app = createFixtureApp(options);
+    ownedApps.add(app);
+    return app;
+  };
   let mockSdk: MockClaudeSDK;
   let testDir: string;
   let projectId: string;
@@ -79,6 +85,21 @@ describe("Sessions API", () => {
   });
 
   afterEach(async () => {
+    const apps = Array.from(ownedApps);
+    ownedApps.clear();
+    const results = await Promise.allSettled(
+      apps.map(async (app) => {
+        app.stopNotifications();
+        await app.disposeSessionReaders();
+      }),
+    );
+    const failures = results.flatMap((result) =>
+      result.status === "rejected" ? [result.reason] : [],
+    );
+    if (failures.length)
+      throw new AggregateError(failures, "Sessions API fixture cleanup failed");
+    // Per-case provider history has a shorter lifetime than the file's app
+    // registry. Stop its readers/watchers before removing that history.
     await rm(testDir, { recursive: true, force: true });
   });
 

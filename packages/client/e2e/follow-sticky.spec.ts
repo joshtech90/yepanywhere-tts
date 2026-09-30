@@ -1,12 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import type { Page } from "@playwright/test";
+import { test as privateTest, type Page } from "@playwright/test";
 import { SESSION_SCROLL_MEMORY_STORAGE_PREFIX } from "../src/lib/sessionScrollMemoryStorage";
 import { e2ePaths, expect, test } from "./fixtures.js";
 import {
   restartYaServerProcess,
   startYaServerProcess,
-  stopYaServerProcess,
+  disposeYaServerProcess,
   type YaServerProcess,
 } from "./support/ya-server-process.js";
 
@@ -356,111 +356,137 @@ for (const viewport of viewports) {
   });
 }
 
-test("restores the high-water position after a server restart and reload", async ({
-  page,
-}) => {
-  await page.setViewportSize(viewports[0]);
-  await page.addInitScript(() => {
-    localStorage.setItem(
-      "yep-anywhere-session-scroll-behavior",
-      "remember-place",
-    );
-  });
-  const restartProjectPath = join(
-    e2ePaths.tempDir,
-    "restart-scroll-memory-project",
-  );
-  const restartProjectId =
-    Buffer.from(restartProjectPath).toString("base64url");
-  const restartSessionId = "restart-scroll-memory-001";
-  const longContent = Array.from(
-    { length: 180 },
-    (_, index) => `Server restart paragraph ${index + 1}.`,
-  ).join("\n\n");
-  let server: YaServerProcess | null = await startYaServerProcess({
-    label: "scroll memory restart server",
-    mockClaudeSession: {
-      assistantContent: longContent,
-      content: "Server restart scroll fixture",
-      projectPath: restartProjectPath,
-      sessionId: restartSessionId,
-    },
-    env: {
-      CLIENT_DIST_PATH: e2ePaths.clientDist,
-      SERVE_FRONTEND: "true",
-    },
-  });
-
-  try {
-    const sessionUrl = `${server.baseUrl}/projects/${restartProjectId}/sessions/${restartSessionId}`;
-    await page.goto(sessionUrl);
-    await dismissOnboardingIfVisible(page);
-    await expect(
-      page.getByRole("main").getByText("Server restart scroll fixture"),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.evaluate((prefix) => {
-      const keys: string[] = [];
-      for (let index = 0; index < localStorage.length; index += 1) {
-        const key = localStorage.key(index);
-        if (key?.startsWith(prefix)) keys.push(key);
-      }
-      for (const key of keys) localStorage.removeItem(key);
-    }, SESSION_SCROLL_MEMORY_STORAGE_PREFIX);
-    await page.locator(".message-list").evaluate((list) => {
-      const scrollViewport = list.parentElement;
-      if (!scrollViewport) {
-        throw new Error("Message list has no scroll viewport");
-      }
-      scrollViewport.dispatchEvent(
-        new WheelEvent("wheel", { bubbles: true, deltaY: -120 }),
+// This case owns its YA process; it needs no common seeded worker server.
+privateTest(
+  "restores the high-water position after a server restart and reload",
+  async ({ page }) => {
+    // CI 36662540397: 5.3s initial spawn, 4.1s restart and two ~2s app boots
+    // exhausted 15s with only 29ms left to verify a correct restoration.
+    // 30s is twice that observed limit; inner waits and the 2px bound stay fixed.
+    privateTest.setTimeout(30_000);
+    await page.setViewportSize(viewports[0]);
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        "yep-anywhere-session-scroll-behavior",
+        "remember-place",
       );
-      scrollViewport.scrollTop = Math.max(
-        0,
-        scrollViewport.scrollHeight - scrollViewport.clientHeight - 250,
-      );
-      scrollViewport.dispatchEvent(new Event("scroll"));
     });
-    await expect
-      .poll(
-        async () =>
-          (await readSessionScrollMemory(page, restartSessionId))?.following,
-      )
-      .toBe(false);
-    const highWaterSnapshot = await readSessionScrollMemory(
-      page,
-      restartSessionId,
+    const restartProjectPath = join(
+      e2ePaths.tempDir,
+      "restart-scroll-memory-project",
     );
-    expect(highWaterSnapshot).not.toBeNull();
-
-    await page.locator(".message-list").evaluate((list) => {
-      const scrollViewport = list.parentElement;
-      if (!scrollViewport) {
-        throw new Error("Message list has no scroll viewport");
-      }
-      scrollViewport.dispatchEvent(
-        new WheelEvent("wheel", { bubbles: true, deltaY: -400 }),
-      );
-      scrollViewport.scrollTop = Math.max(0, scrollViewport.scrollTop - 400);
-      scrollViewport.dispatchEvent(new Event("scroll"));
+    const restartProjectId =
+      Buffer.from(restartProjectPath).toString("base64url");
+    const restartSessionId = "restart-scroll-memory-001";
+    const longContent = Array.from(
+      { length: 180 },
+      (_, index) => `Server restart paragraph ${index + 1}.`,
+    ).join("\n\n");
+    let server: YaServerProcess | null = await startYaServerProcess({
+      label: "scroll memory restart server",
+      mockClaudeSession: {
+        assistantContent: longContent,
+        content: "Server restart scroll fixture",
+        projectPath: restartProjectPath,
+        sessionId: restartSessionId,
+      },
+      env: {
+        CLIENT_DIST_PATH: e2ePaths.clientDist,
+        SERVE_FRONTEND: "true",
+      },
     });
-    await expect
-      .poll(() => readSessionScrollMemory(page, restartSessionId))
-      .toEqual(highWaterSnapshot);
 
-    server = await restartYaServerProcess(server);
-    await page.reload();
-    await expect(
-      page.getByRole("main").getByText("Server restart scroll fixture"),
-    ).toBeVisible({ timeout: 10_000 });
-    await expect
-      .poll(async () => {
-        const restoredTop = await page
-          .locator(".message-list")
-          .evaluate((list) => list.parentElement?.scrollTop ?? -1);
-        return Math.abs(restoredTop - highWaterSnapshot.scrollTop);
-      })
-      .toBeLessThanOrEqual(2);
-  } finally {
-    stopYaServerProcess(server);
-  }
-});
+    try {
+      const sessionUrl = `${server.baseUrl}/projects/${restartProjectId}/sessions/${restartSessionId}`;
+      await page.goto(sessionUrl);
+      await dismissOnboardingIfVisible(page);
+      await expect(
+        page
+          .getByRole("main")
+          .getByText("Server restart paragraph 180.", { exact: true }),
+      ).toBeVisible({ timeout: 10_000 });
+      await expect
+        .poll(() =>
+          page.locator(".message-list").evaluate((list) => {
+            const port = list.parentElement;
+            return port ? port.scrollHeight - port.clientHeight : 0;
+          }),
+        )
+        .toBeGreaterThan(650);
+      await page.evaluate((prefix) => {
+        const keys: string[] = [];
+        for (let index = 0; index < localStorage.length; index += 1) {
+          const key = localStorage.key(index);
+          if (key?.startsWith(prefix)) keys.push(key);
+        }
+        for (const key of keys) localStorage.removeItem(key);
+      }, SESSION_SCROLL_MEMORY_STORAGE_PREFIX);
+      await page.locator(".message-list").evaluate((list) => {
+        const scrollViewport = list.parentElement;
+        if (!scrollViewport) {
+          throw new Error("Message list has no scroll viewport");
+        }
+        scrollViewport.dispatchEvent(
+          new WheelEvent("wheel", { bubbles: true, deltaY: -120 }),
+        );
+        scrollViewport.scrollTop = Math.max(
+          0,
+          scrollViewport.scrollHeight - scrollViewport.clientHeight - 250,
+        );
+        scrollViewport.dispatchEvent(new Event("scroll"));
+      });
+      await expect
+        .poll(
+          async () =>
+            (await readSessionScrollMemory(page, restartSessionId))?.following,
+        )
+        .toBe(false);
+      const highWaterSnapshot = await readSessionScrollMemory(
+        page,
+        restartSessionId,
+      );
+      expect(highWaterSnapshot).not.toBeNull();
+
+      await page.locator(".message-list").evaluate((list) => {
+        const scrollViewport = list.parentElement;
+        if (!scrollViewport) {
+          throw new Error("Message list has no scroll viewport");
+        }
+        scrollViewport.dispatchEvent(
+          new WheelEvent("wheel", { bubbles: true, deltaY: -400 }),
+        );
+        scrollViewport.scrollTop = Math.max(0, scrollViewport.scrollTop - 400);
+        scrollViewport.dispatchEvent(new Event("scroll"));
+      });
+      await expect
+        .poll(() => readSessionScrollMemory(page, restartSessionId))
+        .toEqual(highWaterSnapshot);
+
+      server = await restartYaServerProcess(server);
+      await page.reload();
+      await expect
+        .poll(async () => {
+          const list = page.locator(".message-list");
+          const history = page
+            .getByRole("main")
+            .getByText("Server restart paragraph 180.", { exact: true });
+          if (!(await list.isVisible()) || (await history.count()) !== 1)
+            return Number.POSITIVE_INFINITY;
+          return list.evaluate((element, savedTop) => {
+            const port = element.parentElement;
+            if (
+              !port ||
+              port.clientHeight <= 0 ||
+              port.scrollHeight - port.clientHeight < savedTop ||
+              port.scrollHeight - port.clientHeight <= 650
+            )
+              return Number.POSITIVE_INFINITY;
+            return Math.abs(port.scrollTop - savedTop);
+          }, highWaterSnapshot.scrollTop);
+        })
+        .toBeLessThanOrEqual(2);
+    } finally {
+      await disposeYaServerProcess(server);
+    }
+  },
+);

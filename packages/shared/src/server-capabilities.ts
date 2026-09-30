@@ -12,6 +12,11 @@ import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 export type ServerCapabilityKind = "permanent" | "transitional";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  draftSync: {
+    name: "draft-sync-v1",
+    index: CAPABILITY_ID_ALLOCATIONS.draftSync.id,
+    introducedIn: "0.9.4",
+  },
   vhostBearerAccess: {
     name: "vhost-bearer-access",
     index: CAPABILITY_ID_ALLOCATIONS.vhostBearerAccess.id,
@@ -204,6 +209,263 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  fileOwnerProject: {
+    id: CAPABILITY_ID_ALLOCATIONS.fileOwnerProject.id,
+    name: "file-owner-project",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Resolves an allowed absolute or ~/ file to the registered project that owns it, following symlinked project roots, so New Session from a file link opens in that project.",
+    clientFallback:
+      "Start the session in the linked-from project with the path as written, as before.",
+    serverContract: {
+      routeModules: ["packages/server/src/routes/file-owner.ts"],
+      routes: ["GET /api/projects/:projectId/file-owner"],
+      requestFields: ["path"],
+      responseFields: ["owner"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers have no owner lookup; the client must not guess ownership from path spelling.",
+    },
+  },
+  vhostFileSites: {
+    id: CAPABILITY_ID_ALLOCATIONS.vhostFileSites.id,
+    name: "vhost-file-sites",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Vhost rows can serve one file or directory at name.localhost and name.<public root>, managed from Settings and the File Viewer share dialog.",
+    clientFallback:
+      "Hide the vhost Serves selector and the share dialog's address section; send no vhostSites field and no vhost-site requests.",
+    serverContract: {
+      routeModules: ["packages/server/src/routes/vhostSites.ts"],
+      routes: [
+        "GET /api/artifacts/vhost-sites",
+        "POST /api/artifacts/vhost-sites",
+        "DELETE /api/artifacts/vhost-sites/:name",
+      ],
+      requestFields: ["vhostSites"],
+      responseFields: ["artifactViewer.vhostSites"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers drop vhostSites on save and have no route to claim or serve a file address.",
+    },
+  },
+  localSourceBrowse: {
+    id: CAPABILITY_ID_ALLOCATIONS.localSourceBrowse.id,
+    name: "local-source-browse",
+    kind: "permanent",
+    area: "gitStatus",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "The working-tree file inventory accepts an allowed absolute path outside the project and browses a snapshot of its checkout or directory.",
+    clientFallback:
+      "Hide Open in Source Control on paths outside the project and send no root request.",
+    serverContract: {
+      routes: ["GET /api/projects/:projectId/git/working-tree-files"],
+      requestFields: ["root"],
+      responseFields: ["root"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers ignore root and would list the session project instead of the requested directory.",
+    },
+  },
+  projectLivePreview: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectLivePreview.id,
+    name: "project-live-preview",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Template-declared sandboxed live preview and authorized app WebSockets.",
+    clientFallback:
+      "Hide Live preview and send no live-preview start requests; retain built app and Reload.",
+    serverContract: {
+      routes: ["POST /api/projects/:projectId/app/start"],
+      responseFields: ["projectApp.livePreview", "projectApp.mode"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older app servers have neither a dev-service mode nor app WebSocket forwarding.",
+    },
+  },
+  projectAppInventory: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectAppInventory.id,
+    name: "project-app-inventory",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Administrator inventory of project apps and retained addresses.",
+    clientFallback:
+      "Keep port forwards and show an update note without inventory requests.",
+    serverContract: {
+      routes: [
+        "GET /api/project-apps",
+        "POST /api/project-apps/address/release",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers lack global app inventory and orphan reservation release.",
+    },
+  },
+  projectService: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectService.id,
+    name: "project-service",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Project App resolution, isolated delivery and sandboxed service lifecycle.",
+    clientFallback: "Hide project App and send no project App requests.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/app",
+        "POST /api/projects/:projectId/app/open",
+        "POST /api/projects/:projectId/app/start",
+        "POST /api/projects/:projectId/app/stop",
+        "POST /api/projects/:projectId/app/restore",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers lack project-owned app services.",
+    },
+  },
+  projectAppReservations: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectAppReservations.id,
+    name: "project-app-reservations",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Retained first-claim project app addresses with separate administrator publication.",
+    clientFallback:
+      "Hide project address settings and send no reservation requests.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/app/address",
+        "POST /api/projects/:projectId/app/address/reserve",
+        "POST /api/projects/:projectId/app/address/serve",
+        "POST /api/projects/:projectId/app/address/release",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers lack persistent project app addresses.",
+    },
+  },
+  personalProjectHiding: {
+    id: CAPABILITY_ID_ALLOCATIONS.personalProjectHiding.id,
+    name: "personal-project-hiding",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Limited-user project removal hides the project only from that user's lists, retaining canonical metadata, files and audit history.",
+    clientFallback:
+      "Keep the existing project removal label and confirmation without promising personal-only removal; send no new request.",
+    serverContract: {
+      routes: ["DELETE /api/projects/:projectId", "GET /api/projects"],
+      responseFields: ["personal"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers hide a limited user's project globally.",
+    },
+  },
+  agentServerAccess: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentServerAccess.id,
+    name: "agent-server-access",
+    kind: "permanent",
+    area: "localAccess",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Optionally give unsandboxed superuser agent sessions an in-memory bearer token (AGENT_SERVER_TOKEN) for this server's API.",
+    clientFallback:
+      "Hide the Local Access toggle and send no agentServerAccessEnabled.",
+    serverContract: {
+      routes: ["GET /api/settings", "PATCH /api/settings"],
+      requestFields: ["agentServerAccessEnabled"],
+      responseFields: ["settings.agentServerAccessEnabled"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers neither store the setting nor accept agent bearer tokens.",
+    },
+  },
+  sessionScopedLocalFiles: {
+    id: CAPABILITY_ID_ALLOCATIONS.sessionScopedLocalFiles.id,
+    name: "session-scoped-local-files",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Read a file, and grant an interactive preview of it, as a session names it: a sandboxed session's /tmp is its private one, and a limited user reaches only that session's project and sandbox temp.",
+    clientFallback:
+      "Open session-named files through the host-wide local-file, local-image and artifact routes, as before.",
+    serverContract: {
+      routes: [
+        "GET /api/sessions/:sessionId/local-file",
+        "GET /api/sessions/:sessionId/local-image",
+        "POST /api/sessions/:sessionId/artifacts",
+      ],
+      routeModules: ["packages/server/src/routes/session-local-files.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers read every path host-wide and refuse limited users those reads.",
+    },
+  },
+  sidebarSessionCategories: {
+    id: CAPABILITY_ID_ALLOCATIONS.sidebarSessionCategories.id,
+    name: "sidebar-session-categories",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Store a user-named sidebar category per session and return it, with the limited user who started each session, in session lists.",
+    clientFallback:
+      "Hide the Move to category menu and per-user sidebar sections; send no sidebarCategory.",
+    serverContract: {
+      routes: ["PUT /api/sessions/:sessionId/metadata", "GET /api/sessions"],
+      requestFields: ["sidebarCategory", "categorized"],
+      responseFields: [
+        "sessions[].sidebarCategory",
+        "sessions[].createdByUser",
+      ],
+      events: ["session-metadata-changed"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers neither store categories nor report session creators in lists.",
+    },
+  },
   sessionCreationProvenance: {
     id: CAPABILITY_ID_ALLOCATIONS.sessionCreationProvenance.id,
     name: "session-creation-provenance",
@@ -365,6 +627,180 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Superuser template creation does not imply limited-user authorization or confinement.",
+    },
+  },
+  limitedUserInstructions: {
+    id: CAPABILITY_ID_ALLOCATIONS.limitedUserInstructions.id,
+    name: "limited-user-instructions",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Shared append/replace instructions and per-user appended blocks for limited-user launches.",
+    clientFallback:
+      "Hide instruction controls and omit limitedUserInstructions and instructionBlocks from requests.",
+    serverContract: {
+      routes: [
+        "GET /api/settings",
+        "PUT /api/settings",
+        "GET /api/users",
+        "POST /api/users",
+        "PATCH /api/users/:username",
+      ],
+      requestFields: ["limitedUserInstructions", "instructionBlocks"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers do not apply limited-user prompt instructions.",
+    },
+  },
+  limitedUserBrowserDefaults: {
+    id: CAPABILITY_ID_ALLOCATIONS.limitedUserBrowserDefaults.id,
+    name: "limited-user-browser-defaults",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Server stores browser settings the superuser publishes for limited users' clients to apply once per revision.",
+    clientFallback:
+      "Hide the Users browser-defaults panel; limited users' clients fetch and apply nothing.",
+    serverContract: {
+      routes: [
+        "GET /api/settings/limited-user-defaults",
+        "PUT /api/settings/limited-user-defaults",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers have no limited-user defaults slot to read or publish.",
+    },
+  },
+  limitedUserPathGrants: {
+    id: CAPABILITY_ID_ALLOCATIONS.limitedUserPathGrants.id,
+    name: "limited-user-path-grants",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Limited users carry directory grants giving an access level to every project at or beneath a path.",
+    clientFallback:
+      "Hide the Users directory-access editor and send no pathGrants field.",
+    serverContract: {
+      routes: ["POST /api/users", "PATCH /api/users/:username"],
+      requestFields: ["pathGrants"],
+      responseFields: ["users[].pathGrants"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers ignore pathGrants, so a directory grant would appear saved and grant nothing.",
+    },
+  },
+  projectAccessSharing: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectAccessSharing.id,
+    name: "project-access-sharing",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "A project's settings let the superuser or the limited user who created it grant other limited users access to that project.",
+    clientFallback:
+      "Hide the project's sharing section; the superuser grants access in Settings → Users.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/access",
+        "PUT /api/projects/:projectId/access",
+      ],
+      routeModules: ["packages/server/src/routes/project-access.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers have no per-project sharing route.",
+    },
+  },
+  projectCopy: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectCopy.id,
+    name: "project-copy",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Anyone who can see a project may copy its working tree into their own project directory as a new project.",
+    clientFallback: "Hide the Copy action on project cards.",
+    serverContract: {
+      routes: ["POST /api/projects/:projectId/copy"],
+      routeModules: ["packages/server/src/routes/project-copy.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers have no copy route.",
+    },
+  },
+  limitedUserNoProjectSessions: {
+    id: CAPABILITY_ID_ALLOCATIONS.limitedUserNoProjectSessions.id,
+    name: "limited-user-no-project-sessions",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Per-user permission to create sandboxed sessions in a private No project workspace.",
+    clientFallback:
+      "Hide the checkbox, omit allowNoProjectSessions, and prevent limited-user detached creation.",
+    serverContract: {
+      routes: [
+        "POST /api/users",
+        "PATCH /api/users/:username",
+        "POST /api/sessions",
+        "POST /api/sessions/create",
+      ],
+      requestFields: ["allowNoProjectSessions"],
+      responseFields: ["allowNoProjectSessions"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Older servers admit detached creation only for the superuser.",
+    },
+  },
+  projectAppAddressLinks: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectAppAddressLinks.id,
+    name: "project-app-address-links",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Authorized transferable address URLs and per-user public-app/private-link permissions.",
+    clientFallback:
+      "Omit the address URL row and the optional user permission fields on older servers.",
+    serverContract: {
+      routes: [
+        "GET /api/projects/:projectId/app/address",
+        "GET /api/projects/:projectId/app",
+        "POST /api/projects/:projectId/app/address/serve",
+        "POST /api/users",
+        "PATCH /api/users/:username",
+      ],
+      requestFields: ["allowPublicApps", "allowPrivateAppLinks"],
+      responseFields: [
+        "reservations[].url",
+        "canRelease",
+        "canCopyLink",
+        "updatedAt",
+        "allowPublicApps",
+        "allowPrivateAppLinks",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers do not expose address links or these user permissions.",
     },
   },
   templatePreparationAttachments: {
@@ -551,6 +987,35 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "The allocation remains reserved when the experimental API is promoted or retired.",
+    },
+  },
+  draftSync: {
+    id: CAPABILITY_ID_ALLOCATIONS.draftSync.id,
+    name: "draft-sync-v1",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.draftSync.id,
+    },
+    description:
+      "Account-owned local-first drafts with conditional saves, clears and protected staged attachments.",
+    clientFallback:
+      "Keep local drafts and existing uploads; send no draft synchronization requests.",
+    serverContract: {
+      routes: [
+        "POST /api/drafts/read",
+        "POST /api/drafts/write",
+        "POST /api/drafts/clear",
+        "GET /api/drafts/index",
+        "GET /api/drafts/changes",
+      ],
+      routeModules: ["packages/server/src/routes/drafts.ts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Requires ready SQLite draft storage.",
     },
   },
   issueSessionAssociations: {
@@ -3107,6 +3572,12 @@ export const NON_HUMAN_USER_TURN_CAPABILITY =
   SERVER_CAPABILITIES.nonHumanUserTurn.name;
 export const SESSION_CONTENT_SEARCH_CAPABILITY =
   SERVER_CAPABILITIES.sessionContentSearch.name;
+export const AGENT_SERVER_ACCESS_CAPABILITY =
+  SERVER_CAPABILITIES.agentServerAccess.name;
+export const SIDEBAR_SESSION_CATEGORIES_CAPABILITY =
+  SERVER_CAPABILITIES.sidebarSessionCategories.name;
+export const SESSION_SCOPED_LOCAL_FILES_CAPABILITY =
+  SERVER_CAPABILITIES.sessionScopedLocalFiles.name;
 export const SESSION_CREATION_PROVENANCE_CAPABILITY =
   SERVER_CAPABILITIES.sessionCreationProvenance.name;
 export const ACLI_COMMENTARY_RENDERING_CAPABILITY =

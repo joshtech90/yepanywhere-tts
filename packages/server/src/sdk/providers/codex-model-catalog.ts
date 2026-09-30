@@ -10,6 +10,7 @@ export const CODEX_CLI_GPT56_REDUCED_CATALOG_MIN_VERSION = "0.144.6";
 export const CODEX_CLI_GPT56_RESTORED_CATALOG_MIN_VERSION = "0.145.0";
 
 const PREFERRED_MODEL_ORDER = [
+  "gpt-6.1-sol",
   "gpt-6-astra",
   "gpt-6-sol",
   "gpt-6-luna",
@@ -372,7 +373,7 @@ export function normalizeCodexModelList(models: AppServerModel[]): ModelInfo[] {
           ? { contextWindow: model.contextWindow }
           : modelId.startsWith("gpt-5.6-")
             ? { contextWindow: CODEX_GPT56_CONTEXT_WINDOW }
-            : modelId.startsWith("gpt-6-")
+            : /^gpt-6(?:\.\d+)?-/u.test(modelId)
               ? { contextWindow: CODEX_GPT6_CONTEXT_WINDOW }
               : {}),
         ...(typeof model.supportsPersonality === "boolean"

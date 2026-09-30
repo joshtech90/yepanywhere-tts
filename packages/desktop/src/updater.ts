@@ -21,6 +21,8 @@ let initialized = false;
 let busy = false;
 let generation = 0;
 let track: Track = "stable";
+let activeCheck: { generation: number; manual: boolean } | null = null;
+let pendingManualCheck = false;
 
 export function initUpdater(): void {
   if (initialized) return;
@@ -34,20 +36,31 @@ export function initUpdater(): void {
 }
 
 async function checkForUpdates(reason: CheckReason): Promise<void> {
-  if (
-    busy ||
-    (reason !== "manual" && document.getElementById("desktop-updater-overlay"))
-  )
+  if (busy) {
+    if (reason === "manual") {
+      if (activeCheck) {
+        if (activeCheck.generation === generation) activeCheck.manual = true;
+        else pendingManualCheck = true;
+        await showDialog("Checking for updates…", null, true);
+      } else {
+        // Installation or channel selection owns the current UI.
+        await activateUpdaterWindow();
+      }
+    }
+    return;
+  }
+  if (reason !== "manual" && document.getElementById("desktop-updater-overlay"))
     return;
   busy = true;
-  const current = ++generation;
+  const current = { generation: ++generation, manual: reason === "manual" };
+  activeCheck = current;
   try {
+    if (current.manual) await showDialog("Checking for updates…", null, true);
     track = await invoke<Track>("get_update_channel");
-    if (reason === "manual")
-      await showDialog("Checking for updates…", null, true);
+    if (current.generation !== generation) return;
     const result = await invoke<CheckResult>("check_update", { reason });
-    if (current !== generation) return;
-    if (result.version || reason === "manual") {
+    if (current.generation !== generation) return;
+    if (result.version || current.manual) {
       await showDialog(
         result.version
           ? `Version ${result.version} is available.`
@@ -58,16 +71,22 @@ async function checkForUpdates(reason: CheckReason): Promise<void> {
       );
     }
   } catch (error) {
-    if (current === generation && reason === "manual") {
+    if (current.generation === generation && current.manual) {
       await showDialog(`Failed to check for updates: ${String(error)}`);
     }
   } finally {
+    activeCheck = null;
     busy = false;
+    if (pendingManualCheck) {
+      pendingManualCheck = false;
+      void checkForUpdates("manual");
+    }
   }
 }
 
 async function closeDialog(): Promise<void> {
   ++generation;
+  pendingManualCheck = false;
   document.getElementById("desktop-updater-overlay")?.remove();
   await invoke("clear_update");
 }
@@ -133,6 +152,10 @@ async function showDialog(
   overlay
     .querySelector('[data-action="install"]')
     ?.addEventListener("click", () => void installUpdate(overlay));
+  await activateUpdaterWindow();
+}
+
+async function activateUpdaterWindow(): Promise<void> {
   try {
     await openUpdaterWindow();
   } catch (error) {

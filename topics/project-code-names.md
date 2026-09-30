@@ -16,6 +16,11 @@ Status: **implemented.**
   browser titles and sidebar rows use full project names with their released
   ellipsis behavior, and Projects hides the code-name editor. This is the
   vanilla presentation for fresh browser profiles.
+- A limited user is the exception: until the browser records an explicit
+  choice, code names default on while acting as a limited user (maintainer
+  direction, 2026-09-28), because their projects otherwise read as long
+  `owner/name` paths. An explicit choice either way wins for every principal
+  using that browser; the superuser's default stays off.
 - Enabling **Short Project Code Names** displays the code on Projects as a
   small outlined chip beside the full name, on the same line. Clicking it opens
   an inline editor; Enter or leaving the field commits, and the adjacent ×

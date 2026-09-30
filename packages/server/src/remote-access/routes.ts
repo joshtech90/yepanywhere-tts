@@ -3,6 +3,7 @@
  */
 
 import { Hono } from "hono";
+import { recordAuthEvent } from "../security/authAuditLog.js";
 import type { RelayClientService } from "../services/RelayClientService.js";
 import type { RemoteAccessService } from "./RemoteAccessService.js";
 import type { RemoteSessionService } from "./RemoteSessionService.js";
@@ -70,8 +71,18 @@ export function createRemoteAccessRoutes(
         }
       }
 
+      await recordAuthEvent(c, {
+        event: "remote-access-configure",
+        outcome: "success",
+        account: newUsername ?? undefined,
+      });
       return c.json({ success: true, username: newUsername });
     } catch (error) {
+      await recordAuthEvent(c, {
+        event: "remote-access-configure",
+        outcome: "failure",
+        reason: "rejected",
+      });
       const message =
         error instanceof Error ? error.message : "Failed to configure";
       return c.json({ error: message }, 400);
@@ -85,8 +96,17 @@ export function createRemoteAccessRoutes(
   app.post("/enable", async (c) => {
     try {
       await remoteAccessService.enable();
+      await recordAuthEvent(c, {
+        event: "remote-access-enable",
+        outcome: "success",
+      });
       return c.json({ success: true });
     } catch (error) {
+      await recordAuthEvent(c, {
+        event: "remote-access-enable",
+        outcome: "failure",
+        reason: "rejected",
+      });
       const message =
         error instanceof Error ? error.message : "Failed to enable";
       return c.json({ error: message }, 400);
@@ -100,6 +120,10 @@ export function createRemoteAccessRoutes(
   app.post("/disable", async (c) => {
     try {
       await remoteAccessService.disable();
+      await recordAuthEvent(c, {
+        event: "remote-access-disable",
+        outcome: "success",
+      });
       return c.json({ success: true });
     } catch (error) {
       const message =
@@ -118,6 +142,11 @@ export function createRemoteAccessRoutes(
       const existingUsername = remoteAccessService.getUsername();
 
       await remoteAccessService.clearCredentials();
+      await recordAuthEvent(c, {
+        event: "remote-access-clear",
+        outcome: "success",
+        account: existingUsername ?? undefined,
+      });
 
       // Invalidate all sessions for the user
       if (remoteSessionService && existingUsername) {
@@ -167,6 +196,12 @@ export function createRemoteAccessRoutes(
         url: body.url,
         username: body.username,
       });
+      await recordAuthEvent(c, {
+        event: "remote-access-relay",
+        outcome: "success",
+        account: body.username,
+        details: { change: "set", url: body.url.slice(0, 200) },
+      });
 
       // Invalidate sessions if username changed (sessions are tied to username identity)
       if (
@@ -204,6 +239,12 @@ export function createRemoteAccessRoutes(
       const existingUsername = remoteAccessService.getUsername();
 
       await remoteAccessService.clearRelayConfig();
+      await recordAuthEvent(c, {
+        event: "remote-access-relay",
+        outcome: "success",
+        account: existingUsername ?? undefined,
+        details: { change: "clear" },
+      });
 
       // Invalidate all sessions for the user (relay identity is being removed)
       if (remoteSessionService && existingUsername) {

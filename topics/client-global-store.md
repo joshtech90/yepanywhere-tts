@@ -298,7 +298,7 @@ coverage retained across routes, `supplementary` for diagnostics, enrichment,
 and usage telemetry. A tier starts only once every earlier tier's registered
 work has settled.
 
-Three properties are load-bearing and easy to lose:
+These properties are load-bearing and easy to lose:
 
 - **Only the first acquisition is gated.** Revalidation — reconnect, visibility
   restore, explicit refetch — never waits, so a stalled bootstrap cannot also
@@ -308,6 +308,12 @@ Three properties are load-bearing and easy to lose:
   commit registers before any tier is evaluated. Advancing eagerly lets a
   navigation hook that mounts first find no route work registered and open the
   gate on itself, which silently restores the unordered shape.
+- **Lazy route modules retain priority until their hooks register.**
+  `RouteModule` owns a route slot while suspended and settles it from a sibling
+  after the selected page commits. Nested route boundaries hand the hold to
+  each other before the ordering microtask; fast shell responses cannot finish
+  bootstrap before a lazy page registers. Decorative Suspense boundaries do not
+  join this hold. Revalidation retains the first-acquisition-only rule.
 - **A blocked tier has a deadline.** Withholding decorative work is the goal;
   losing the shell to a hung route request is not.
 

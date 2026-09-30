@@ -205,6 +205,8 @@ export interface SessionMetadataChangedEvent {
   archived?: boolean;
   /** Updated starred status (if changed) */
   starred?: boolean;
+  /** Updated sidebar category (if changed); null when removed. */
+  sidebarCategory?: string | null;
   /** Updated interactive Mother link for a YA-owned `/btw` aside. */
   parentSessionId?: string | null;
   /** Explicit meaning of parentSessionId. */

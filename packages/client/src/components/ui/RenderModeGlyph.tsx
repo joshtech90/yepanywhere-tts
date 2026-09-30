@@ -12,12 +12,15 @@ export const RENDER_MODE_GLYPH_MARKUP: string =
   'font-family="KaTeX_Main, Times New Roman, serif" font-size="12.5" font-weight="500" ' +
   'fill="currentColor">Σ</text></svg>';
 
+// One object for every render: see useInnerHtml.
+const RENDER_MODE_GLYPH_HTML = { __html: RENDER_MODE_GLYPH_MARKUP };
+
 export function RenderModeGlyph() {
   return (
     <span
       className={styles.host}
       // biome-ignore lint/security/noDangerouslySetInnerHtml: fixed in-repo markup, shared with the plain-DOM code-fence toggle
-      dangerouslySetInnerHTML={{ __html: RENDER_MODE_GLYPH_MARKUP }}
+      dangerouslySetInnerHTML={RENDER_MODE_GLYPH_HTML}
     />
   );
 }

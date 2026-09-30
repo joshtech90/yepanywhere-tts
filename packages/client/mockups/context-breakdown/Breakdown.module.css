@@ -1,0 +1,325 @@
+/* Fixture-local purple for the Conversation series; YA has no neutral
+   fourth categorical token. A real implementation would add one. */
+.page {
+  --mock-conversation: #a78bfa;
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: var(--bg-primary, #1e1e1e);
+  color: var(--text-primary);
+  font-size: var(--font-size-base);
+}
+
+.review {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.review button {
+  padding: 2px var(--space-2);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.review button[aria-pressed="true"] {
+  color: var(--text-primary);
+  border-color: var(--primary-color);
+}
+
+.transcriptStub {
+  flex: 1;
+  padding: var(--space-4);
+  color: var(--text-dimmed);
+}
+
+.composer {
+  margin: 0 auto var(--space-3);
+  width: min(760px, calc(100% - 2 * var(--space-2)));
+  padding: var(--space-2);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+}
+
+.composerInput {
+  padding: var(--space-2);
+  color: var(--text-dimmed);
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toolbarChip {
+  padding: 2px var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+}
+
+.toolbarSpacer {
+  flex: 1;
+}
+
+.anchor {
+  position: relative;
+  display: inline-flex;
+}
+
+/* The shipped popover is 320px; the breakdown needs a little more room for
+   paths. Height is capped so it never leaves the viewport above the pie. */
+.popover {
+  width: min(344px, calc(100vw - 16px));
+  max-height: calc(100vh - 150px);
+  overflow-y: auto;
+  --context-popover-shift: 110px;
+}
+
+@media (max-width: 480px) {
+  .popover {
+    --context-popover-shift: 100px;
+  }
+}
+
+.breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.model {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.summary {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.summary strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.windowMeter {
+  display: flex;
+  justify-content: space-between;
+  height: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  border-radius: 999px;
+}
+
+.windowUsed {
+  min-width: 2px;
+  background: var(--text-muted);
+}
+
+.windowBuffer,
+.hatch {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--text-dimmed) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.compositionCaption {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.composition {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+.composition > span {
+  flex-basis: 0;
+  min-width: 2px;
+}
+
+.categories,
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.categories {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--space-1);
+}
+
+.head {
+  display: grid;
+  grid-template-columns: 10px 8px 1fr auto 32px;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 3px 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  background: none;
+  border: 0;
+}
+
+button.head {
+  cursor: pointer;
+}
+
+button.head:hover {
+  color: var(--text-primary);
+}
+
+.caret[data-expandable] {
+  justify-self: center;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--text-muted);
+  transition: transform 0.1s;
+}
+
+.caret[data-open] {
+  transform: rotate(90deg);
+}
+
+.swatch {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tokens {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.share {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 var(--space-1) 24px;
+  /* Right inset = share column + gap, so item counts align with the
+     category token column. */
+  padding: 0 30px 0 var(--space-2);
+  border-left: 1px solid var(--border-color);
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.itemLabel,
+.itemPath {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.itemPath {
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+.itemDetail {
+  color: var(--text-dimmed);
+}
+
+.itemsNote {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-style: italic;
+}
+
+.reserve {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-left: 16px;
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.hatch {
+  width: 8px;
+  height: 8px;
+  border: 1px solid var(--text-dimmed);
+  border-radius: 2px;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.exact {
+  padding: 2px var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.exact:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.unavailable {
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}

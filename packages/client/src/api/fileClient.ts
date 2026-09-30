@@ -1,4 +1,7 @@
-import type { FileContentResponse } from "@yep-anywhere/shared";
+import type {
+  FileContentResponse,
+  FileOwnerResponse,
+} from "@yep-anywhere/shared";
 import { fetchJSON } from "./sourceApiFetch";
 
 /**
@@ -17,6 +20,15 @@ export function projectRawFileApiPath(
 }
 
 export const fileApi = {
+  /**
+   * The registered project owning an absolute or `~/` file, resolved on the
+   * server; `projectId` only authorizes the request. Needs `file-owner-project`.
+   */
+  getFileOwner: (projectId: string, path: string) =>
+    fetchJSON<FileOwnerResponse>(
+      `/projects/${projectId}/file-owner?${new URLSearchParams({ path }).toString()}`,
+    ),
+
   getFile: (
     projectId: string,
     path: string,

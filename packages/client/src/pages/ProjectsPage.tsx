@@ -7,10 +7,12 @@ import {
   PROJECT_SESSION_DEFAULTS_CAPABILITY,
   type ProjectQueueMessage,
   serverHasCapability,
+  SERVER_CAPABILITIES,
 } from "@yep-anywhere/shared";
 import { useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../api/client";
+import { projectAccessApi } from "../api/projectAccess";
 import { TemplateProjectForm } from "../components/TemplateProjectForm";
 import { useProjectTemplateChoices } from "../hooks/useProjectTemplateChoices";
 import {
@@ -64,6 +66,12 @@ export function ProjectsPage() {
   );
   const { projectCodeNamesEnabled } = useProjectCodeNamePreferences();
   const { principal } = useActingPrincipal();
+  const personalRemoval =
+    principal.username !== null &&
+    serverHasCapability(
+      version,
+      SERVER_CAPABILITIES.personalProjectHiding.name,
+    );
   const newProjectBase = newProjectBaseFor(principal);
   const inboxCountsByProject = useInboxCountsByProject();
   const [showAddForm, setShowAddForm] = useState(false);
@@ -72,8 +80,10 @@ export function ProjectsPage() {
     error: templateError,
     emptyMessageKey,
   } = useProjectTemplateChoices(showAddForm);
-  const [existingDirectory, setExistingDirectory] = useState(false);
+  const [addProjectTyped, setAddProjectTyped] = useState(false);
   const [templateProjectBusy, setTemplateProjectBusy] = useState(false);
+  const limitedTemplateOnly =
+    !!templateChoices?.enabled && principal.username !== null;
   const [addError, setAddError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -187,10 +197,46 @@ export function ProjectsPage() {
     }
   };
 
+  // A limited user copies into their own project directory, so only
+  // projects not already theirs; the superuser copies a limited user's.
+  const supportsProjectCopy = serverHasCapability(
+    version,
+    SERVER_CAPABILITIES.projectCopy.name,
+  );
+  const mayCopy = (project: Project) =>
+    supportsProjectCopy &&
+    (principal.username === null
+      ? !!project.ownerUsername
+      : !!principal.grants?.projectRoot &&
+        project.ownerUsername !== principal.username);
+
+  const handleCopyProject = async (project: Project) => {
+    const name = prompt(t("projectCopyPrompt"), `${project.name}-copy`);
+    if (!name?.trim()) return;
+    setDeleteError(null);
+    try {
+      const { path } = await projectAccessApi.copy(project.id, name.trim());
+      const { project: copy } = await api.addProject(path);
+      await refetch();
+      navigate(
+        `${basePath}/new-session?projectId=${encodeURIComponent(copy.id)}`,
+      );
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : t("projectCopyFailed"),
+      );
+    }
+  };
+
   const handleDeleteProject = async (project: Project) => {
     if (
       !confirm(
-        t("projectsDeleteConfirm", { name: projectDisplayName(project) }),
+        t(
+          personalRemoval
+            ? "projectsRemoveFromMyProjectsConfirm"
+            : "projectsDeleteConfirm",
+          { name: projectDisplayName(project) },
+        ),
       )
     ) {
       return;
@@ -363,30 +409,37 @@ export function ProjectsPage() {
                   templateChoices?.enabled ? formStyles.form : undefined
                 }
               >
-                {templateChoices?.enabled && principal.username === null && (
-                  <div className={formStyles.actions}>
-                    <button
-                      type="button"
-                      aria-pressed={!existingDirectory}
-                      onClick={() => setExistingDirectory(false)}
-                    >
-                      {t("templateFromTemplate")}
-                    </button>
-                    <button
-                      type="button"
-                      aria-pressed={existingDirectory}
-                      disabled={templateProjectBusy}
-                      onClick={() => setExistingDirectory(true)}
-                    >
-                      {t("templateExistingDirectory")}
-                    </button>
-                  </div>
+                {/* The superuser enters a path or name first; the template
+                    chooser below it leaves once anything is typed there.
+                    Limited users can only create from a template. */}
+                {!limitedTemplateOnly && (
+                  <AddProjectForm
+                    projects={projects}
+                    pathBase={newProjectBase}
+                    chooseName={supportsProjectNames}
+                    chooseCodeName={
+                      supportsProjectNames &&
+                      supportsProjectCodeNames &&
+                      projectCodeNamesEnabled
+                    }
+                    adding={adding || templateProjectBusy}
+                    error={addError}
+                    onSubmit={(request) => void handleAddProject(request)}
+                    onCancel={() => {
+                      setShowAddForm(false);
+                      setAddError(null);
+                    }}
+                    onTypedChange={setAddProjectTyped}
+                  />
                 )}
-                {templateError && <p role="alert">{templateError}</p>}
+                {templateError && !addProjectTyped && (
+                  <p role="alert">{templateError}</p>
+                )}
                 {templateChoices?.enabled && (
-                  <div
-                    hidden={existingDirectory && principal.username === null}
-                  >
+                  <div hidden={addProjectTyped && !templateProjectBusy}>
+                    {!limitedTemplateOnly && (
+                      <p className={formStyles.label}>{t("templateOrStart")}</p>
+                    )}
                     <TemplateProjectForm
                       templates={templateChoices.templates}
                       emptyMessage={templateError ?? t(emptyMessageKey)}
@@ -402,31 +455,7 @@ export function ProjectsPage() {
                     />
                   </div>
                 )}
-                <div
-                  hidden={
-                    templateChoices?.enabled &&
-                    (!existingDirectory || principal.username !== null)
-                  }
-                >
-                  <AddProjectForm
-                    projects={projects}
-                    pathBase={newProjectBase}
-                    chooseName={supportsProjectNames}
-                    chooseCodeName={
-                      supportsProjectNames &&
-                      supportsProjectCodeNames &&
-                      projectCodeNamesEnabled
-                    }
-                    adding={adding}
-                    error={addError}
-                    onSubmit={(request) => void handleAddProject(request)}
-                    onCancel={() => {
-                      setShowAddForm(false);
-                      setAddError(null);
-                    }}
-                  />
-                </div>
-                {templateChoices?.enabled && !existingDirectory && (
+                {limitedTemplateOnly && (
                   <div className={formStyles.actions}>
                     <button
                       type="button"
@@ -492,6 +521,10 @@ export function ProjectsPage() {
             <ul className="project-list-cards">
               {sortedProjects.map((project) => (
                 <ProjectCard
+                  appEnabled={serverHasCapability(
+                    version,
+                    SERVER_CAPABILITIES.projectService.name,
+                  )}
                   key={project.id}
                   project={project}
                   needsAttentionCount={
@@ -506,9 +539,19 @@ export function ProjectsPage() {
                   }
                   basePath={basePath}
                   onDeleteProject={handleDeleteProject}
+                  deleteLabel={
+                    personalRemoval
+                      ? t("projectsRemoveFromMyProjects")
+                      : undefined
+                  }
                   onOpenSettings={
                     supportsProjectSessionDefaults
                       ? setSettingsProject
+                      : undefined
+                  }
+                  onCopy={
+                    mayCopy(project)
+                      ? (copied) => void handleCopyProject(copied)
                       : undefined
                   }
                   onUpdateCodeName={
@@ -532,6 +575,7 @@ export function ProjectsPage() {
         <ProjectSessionDefaultsModal
           projectId={settingsProject.id}
           projectName={settingsProject.name}
+          ownerUsername={settingsProject.ownerUsername}
           onClose={() => setSettingsProject(null)}
         />
       )}

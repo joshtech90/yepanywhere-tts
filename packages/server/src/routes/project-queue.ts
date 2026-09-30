@@ -281,7 +281,12 @@ export function createProjectQueueRoutes(deps: ProjectQueueRoutesDeps): Hono {
         resolved.project.id,
         c.req.param("itemId"),
         body,
-        actor ? queuedLaunchPolicyFor(actor) : undefined,
+        actor
+          ? {
+              launchPolicy: queuedLaunchPolicyFor(actor),
+              editor: actor.username,
+            }
+          : {},
       );
       if (!item) {
         return c.json({ error: "Project queue item not found" }, 404);

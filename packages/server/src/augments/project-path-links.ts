@@ -11,6 +11,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { homedir } from "node:os";
 import type { ProjectPathIndex } from "../projects/projectPathIndex.js";
 import {
   renderLocalFileLink,
@@ -36,8 +37,11 @@ import {
  */
 const PATH_TOKEN = /[^\s"'`<>&,:;()[\]{}=|]+/g;
 
-/** One absolute token runs from a whitespace boundary to the next whitespace. */
-const ABSOLUTE_PATH_TOKEN = /(?:^|\s)((?:\/(?!\/)|[A-Za-z]:[\\/])\S+)/g;
+/**
+ * One absolute token runs from a whitespace boundary to the next whitespace.
+ * `~/…` is included and expanded against this server's home directory.
+ */
+const ABSOLUTE_PATH_TOKEN = /(?:^|\s)((?:\/(?!\/)|~\/|[A-Za-z]:[\\/])\S+)/g;
 
 /** Trailing punctuation a writer adds that is not part of the path. */
 const TRAILING_NOISE = /[.!?]+$/;
@@ -52,8 +56,14 @@ function mayCostAbsoluteLookup(token: string): boolean {
   return (
     token.length >= MIN_ABSOLUTE_PATH_LENGTH &&
     ((token.startsWith("/") && !token.startsWith("//")) ||
+      token.startsWith("~/") ||
       /^[A-Za-z]:[\\/]/.test(token))
   );
+}
+
+/** The file an absolute token names: `~/` is this server's home, not the browser's. */
+function absoluteTokenTarget(token: string): string {
+  return token.startsWith("~/") ? join(homedir(), token.slice(2)) : token;
 }
 
 function decodeHtmlText(text: string): string {
@@ -99,8 +109,8 @@ function decodeHtmlText(text: string): string {
 function mayCostLookup(token: string): boolean {
   // Only project-relative paths are ever linked, so a leading separator rules
   // the token out outright — which is also what a URL's `//host/path` becomes
-  // once the tokenizer drops the scheme at its colon.
-  if (token.startsWith("/")) return false;
+  // once the tokenizer drops the scheme at its colon. `~/` is home-relative.
+  if (token.startsWith("/") || token.startsWith("~/")) return false;
   if (token.includes("/") || token.includes("\\") || token.startsWith(".")) {
     return true;
   }
@@ -196,7 +206,8 @@ export interface ProjectPathLinkOptions {
 }
 
 interface ResolvedProjectPathCandidates {
-  absolute: ReadonlySet<string>;
+  /** Visible absolute or `~/` token → the existing file it names. */
+  absolute: ReadonlyMap<string, string>;
   externalRelative: ReadonlyMap<string, string>;
   relative: ReadonlyMap<string, string>;
 }
@@ -313,9 +324,18 @@ async function resolveProjectPathCandidates(
     ),
   );
 
+  const absoluteTargets = new Map(
+    Array.from(new Set(absoluteCandidates))
+      .slice(0, MAX_ABSOLUTE_PATH_PROBES)
+      .map((token) => [token, absoluteTokenTarget(token)] as const),
+  );
   const cappedAbsoluteCandidates = Array.from(
-    new Set(absoluteCandidates),
-  ).slice(0, MAX_ABSOLUTE_PATH_PROBES);
+    new Set(absoluteTargets.values()),
+  );
+  const absoluteHits = (
+    existing: ReadonlySet<string>,
+  ): ReadonlyMap<string, string> =>
+    new Map([...absoluteTargets].filter(([, target]) => existing.has(target)));
   const externalCandidateTargets =
     projectId && (knownAbsoluteFilePaths || resolveAbsoluteFilePaths)
       ? externalRelativeCandidateTargets(
@@ -338,15 +358,13 @@ async function resolveProjectPathCandidates(
         ?.find((path) => index.knownFile(path) === true);
       if (target) relative.set(candidate, target);
     }
-    const absolute = new Set(
-      knownAbsoluteFilePaths?.(directlyProbedPaths) ?? [],
-    );
+    const known = new Set(knownAbsoluteFilePaths?.(directlyProbedPaths) ?? []);
     const externalRelative = new Map<string, string>();
     for (const [candidate, target] of externalCandidateTargets) {
-      if (absolute.has(target)) externalRelative.set(candidate, target);
+      if (known.has(target)) externalRelative.set(candidate, target);
     }
     if (directlyProbedPaths.length > 0) onUnversionedLookup?.();
-    return { absolute, externalRelative, relative };
+    return { absolute: absoluteHits(known), externalRelative, relative };
   }
   let absolute = new Set<string>();
   try {
@@ -397,7 +415,7 @@ async function resolveProjectPathCandidates(
     if (absolute.has(target)) externalRelative.set(candidate, target);
   }
 
-  return { absolute, externalRelative, relative };
+  return { absolute: absoluteHits(absolute), externalRelative, relative };
 }
 
 /** Resolve raw command/result text to a small exact-link annotation. */
@@ -446,9 +464,7 @@ export async function resolveProjectPathTextLinks(
   for (const token of tokens) {
     const filePath =
       token.kind === "absolute"
-        ? resolved.absolute.has(token.text)
-          ? token.text
-          : undefined
+        ? resolved.absolute.get(token.text)
         : (resolved.externalRelative.get(token.text) ??
           resolved.relative.get(token.text));
     if (!filePath || targets.has(token.text)) continue;
@@ -496,7 +512,12 @@ function collectCandidatePaths(
     let match: RegExpExecArray | null = PATH_TOKEN.exec(text);
     while (match !== null) {
       const trimmed = match[0].replace(TRAILING_NOISE, "");
-      if (trimmed && !trimmed.startsWith("/") && trimmed !== selfRelativePath) {
+      if (
+        trimmed &&
+        !trimmed.startsWith("/") &&
+        !trimmed.startsWith("~/") &&
+        trimmed !== selfRelativePath
+      ) {
         candidates.add(trimmed);
       }
       match = PATH_TOKEN.exec(text);
@@ -524,7 +545,7 @@ function collectAbsoluteCandidatePaths(html: string): string[] {
 function linkAbsolutePaths(
   html: string,
   projectId: string,
-  existing: ReadonlySet<string>,
+  existing: ReadonlyMap<string, string>,
 ): string {
   return mapHtmlTextRuns(html, (text) => {
     ABSOLUTE_PATH_TOKEN.lastIndex = 0;
@@ -535,10 +556,11 @@ function linkAbsolutePaths(
       const encodedToken = match[1];
       if (encodedToken) {
         const token = decodeHtmlText(encodedToken);
-        if (existing.has(token)) {
+        const target = existing.get(token);
+        if (target) {
           const start = match.index + match[0].length - encodedToken.length;
           out += text.slice(cursor, start);
-          out += renderProjectFileViewerLink(projectId, token, token);
+          out += renderProjectFileViewerLink(projectId, target, token);
           cursor = start + encodedToken.length;
         }
       }

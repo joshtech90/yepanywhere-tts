@@ -1988,7 +1988,11 @@ function convertCodexEventMsg(
         uuid,
         type: "system",
         subtype: "turn_aborted",
-        content: payload.reason ?? payload.message ?? "Turn aborted",
+        content:
+          payload.error?.message ||
+          payload.reason ||
+          payload.message ||
+          "Turn aborted",
         timestamp: entry.timestamp,
       };
 

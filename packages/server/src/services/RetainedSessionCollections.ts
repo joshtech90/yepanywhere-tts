@@ -87,6 +87,13 @@ export class RetainedSessionCollections {
     };
   }
 
+  /** Cache invalidation follows accepted catalog publications, not raw events. */
+  getVersion(): string | undefined {
+    if (!this.initialized) return undefined;
+    const token = this.catalog.getToken();
+    return `${token.catalogEpoch}:${token.catalogGeneration}`;
+  }
+
   async read() {
     await this.initialize();
     this.controller.signal.throwIfAborted();

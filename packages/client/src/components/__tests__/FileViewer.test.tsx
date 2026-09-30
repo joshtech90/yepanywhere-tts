@@ -613,7 +613,7 @@ describe("FileViewer", () => {
     fireEvent.contextMenu(selectedLine, { clientX: 0, clientY: 0 });
     expect(
       screen.getAllByRole("menuitem").map((item) => item.textContent),
-    ).toEqual(["Copy text", "Copy source", "New session"]);
+    ).toEqual(["Copy text", "New session"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "New session" }));
 
     expect(getNewSessionPrefill(LOCAL_CLIENT_SUMMARY_SOURCE_KEY)).toBe(

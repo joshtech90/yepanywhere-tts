@@ -142,50 +142,27 @@ describe("POST /login throttling", () => {
 });
 
 describe("unreadable auth.json", () => {
+  // AuthService.test.ts covers empty, truncated and unknown-version files;
+  // these are well-formed JSON whose shape would otherwise read as "auth off".
   it.each([
     ["an empty object", "{}"],
-    ["an unknown version", '{"version":99,"enabled":true,"sessions":{}}'],
     ["a non-boolean switch", '{"version":2,"enabled":"no","sessions":{}}'],
-  ])("fails closed for %s", async (_name, content) => {
+    [
+      "an account without a hash",
+      '{"version":2,"enabled":true,"account":{},"sessions":{}}',
+    ],
+  ])("refuses to start for %s and keeps the file", async (_name, content) => {
     const dir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-shape-"));
     const file = path.join(dir, "auth.json");
     await fs.writeFile(file, content);
     const service = new AuthService({ dataDir: dir, cookieSecret: "s" });
-    await service.initialize();
+    await expect(service.initialize()).rejects.toThrow(
+      /Refusing to start with local authentication off/,
+    );
 
-    expect(service.isLoadFailed()).toBe(true);
+    expect(service.isEnabled()).toBe(false);
     await service.flushPendingWrites();
     expect(await fs.readFile(file, "utf8")).toBe(content);
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  it("lets --setup-auth repair the file", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-repair-"));
-    const file = path.join(dir, "auth.json");
-    await fs.writeFile(file, "{}");
-    const service = new AuthService({ dataDir: dir, cookieSecret: "s" });
-    await service.initialize();
-    await service.enableAuth("new-password");
-    await service.flushPendingWrites();
-
-    const reloaded = new AuthService({ dataDir: dir, cookieSecret: "s" });
-    await reloaded.initialize();
-    expect(reloaded.isLoadFailed()).toBe(false);
-    await expect(reloaded.verifyPassword("new-password")).resolves.toBe(true);
-    await fs.rm(dir, { recursive: true, force: true });
-  });
-
-  it("fails closed instead of switching auth off", async () => {
-    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-broken-"));
-    const file = path.join(dir, "auth.json");
-    await fs.writeFile(file, "{ not json");
-    const service = new AuthService({ dataDir: dir, cookieSecret: "s" });
-    await service.initialize();
-
-    expect(service.isLoadFailed()).toBe(true);
-    expect(service.isEnabled()).toBe(true);
-    await service.flushPendingWrites();
-    expect(await fs.readFile(file, "utf8")).toBe("{ not json");
     await fs.rm(dir, { recursive: true, force: true });
   });
 });

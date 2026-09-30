@@ -141,9 +141,86 @@ export type InstallSource =
   | "release-package"
   | "unknown";
 
+/** The checkout a source launch runs, as it stood when the server started. */
+export interface SourceRevision {
+  commit: string;
+  /** Committer date, ISO 8601. */
+  committedAt: string;
+  /**
+   * `packages/` had tracked or untracked changes at launch, so the running
+   * code may differ from the commit. Docs and other paths do not count.
+   */
+  modified: boolean;
+  /**
+   * Newest modification time among those changed files, ISO 8601; absent
+   * when every change is a deletion.
+   */
+  modifiedAt?: string;
+}
+
 export interface CurrentVersionInfo {
   version: string;
   installSource: InstallSource;
+  sourceRevision?: SourceRevision;
+}
+
+/**
+ * Paths named by `git status --porcelain -z`, relative to the repository
+ * root. A rename or copy entry is followed by its source path, which is
+ * skipped: only the current name exists on disk.
+ */
+export function porcelainPaths(output: string): string[] {
+  const fields = output.split("\0");
+  const paths: string[] = [];
+  for (let index = 0; index < fields.length; index++) {
+    const entry = fields[index]!;
+    if (entry.length < 4) continue;
+    paths.push(entry.slice(3));
+    if (/[RC]/.test(entry.slice(0, 2))) index++;
+  }
+  return paths;
+}
+
+async function getSourceRevision(): Promise<SourceRevision | undefined> {
+  try {
+    const { stdout: top } = await execAsync("git rev-parse --show-toplevel", {
+      encoding: "utf-8",
+    });
+    const root = top.trim();
+    const [{ stdout: head }, { stdout: status }] = await Promise.all([
+      execAsync("git log -1 --format=%H%x09%cI", {
+        cwd: root,
+        encoding: "utf-8",
+      }),
+      // Untracked files individually, so a new file's own time counts.
+      execAsync("git status --porcelain -z --untracked-files=all -- packages", {
+        cwd: root,
+        encoding: "utf-8",
+      }),
+    ]);
+    const [commit, committedAt] = head.trim().split("\t");
+    if (!commit || !committedAt) return undefined;
+    const changed = porcelainPaths(status);
+    if (changed.length === 0) return { commit, committedAt, modified: false };
+    // A deleted file has no time; the others say when the tree last moved.
+    const times = await Promise.all(
+      changed.map((file) =>
+        fs.promises.stat(path.join(root, file)).then(
+          (stats) => stats.mtimeMs,
+          () => 0,
+        ),
+      ),
+    );
+    const newest = Math.max(...times);
+    return {
+      commit,
+      committedAt,
+      modified: true,
+      ...(newest ? { modifiedAt: new Date(newest).toISOString() } : {}),
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -196,9 +273,14 @@ async function computeCurrentVersionInfo(): Promise<CurrentVersionInfo> {
 
     // 0.0.1 is the workspace version - we're in dev mode, use git instead
     if (version === "0.0.1") {
+      const [gitVersion, sourceRevision] = await Promise.all([
+        getGitVersion(),
+        getSourceRevision(),
+      ]);
       return {
-        version: (await getGitVersion()) || "dev",
+        version: gitVersion || "dev",
         installSource: "source",
+        ...(sourceRevision ? { sourceRevision } : {}),
       };
     }
 
@@ -253,7 +335,7 @@ function isPathInside(candidate: string, parent: string): boolean {
   );
 }
 
-const UPDATE_SERVER_URL = "https://updates.yepanywhere.com/version";
+export const UPDATE_SERVER_URL = "https://updates.yepanywhere.com/version";
 
 // Cache for update server check (24 hour TTL for routine app traffic)
 let cachedLatestVersion: { version: string; timestamp: number } | null = null;
@@ -331,6 +413,8 @@ export interface VersionInfo {
   updateAvailable: boolean;
   /** Best-effort install source for update guidance. Absent on older servers. */
   installSource?: InstallSource;
+  /** A source launch's commit; absent for packages and older servers. */
+  sourceRevision?: SourceRevision;
   /** Session resume protocol version supported by this server. */
   resumeProtocolVersion: number;
   /** Coarse hosted remote UI/server compatibility level. */
@@ -381,12 +465,32 @@ export const RESUME_PROTOCOL_VERSION = 3;
 export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
+  SERVER_CAPABILITIES.fileOwnerProject.name,
+  SERVER_CAPABILITIES.vhostFileSites.name,
+  SERVER_CAPABILITIES.localSourceBrowse.name,
+  SERVER_CAPABILITIES.personalProjectHiding.name,
+  SERVER_CAPABILITIES.projectService.name,
+  SERVER_CAPABILITIES.projectAppReservations.name,
   SERVER_CAPABILITIES.fileSourceEditing.name,
   SERVER_CAPABILITIES.limitedUsers.name,
   SERVER_CAPABILITIES.projectTemplateSources.name,
   SERVER_CAPABILITIES.projectTemplateCreation.name,
   SERVER_CAPABILITIES.limitedUserProjectTemplates.name,
+  SERVER_CAPABILITIES.limitedUserInstructions.name,
+  SERVER_CAPABILITIES.limitedUserBrowserDefaults.name,
+  SERVER_CAPABILITIES.limitedUserPathGrants.name,
+  SERVER_CAPABILITIES.projectAccessSharing.name,
+  SERVER_CAPABILITIES.projectCopy.name,
+  SERVER_CAPABILITIES.limitedUserNoProjectSessions.name,
+  SERVER_CAPABILITIES.projectAppAddressLinks.name,
+  SERVER_CAPABILITIES.projectAppInventory.name,
+  SERVER_CAPABILITIES.projectLivePreview.name,
   SERVER_CAPABILITIES.templatePreparationAttachments.name,
+  SERVER_CAPABILITIES.sidebarSessionCategories.name,
+  SERVER_CAPABILITIES.agentServerAccess.name,
+  SERVER_CAPABILITIES.sessionScopedLocalFiles.name,
+  SERVER_CAPABILITIES.turnEffortModifiers.name,
+  SERVER_CAPABILITIES.syntheticTerminateCommand.name,
   SERVER_CAPABILITIES.speechBackendSetup.name,
   SERVER_CAPABILITIES.localSpeechModelSelection.name,
   ACLI_COMMENTARY_RENDERING_CAPABILITY,
@@ -473,6 +577,9 @@ export interface DeviceBridgeStatus {
 }
 
 export interface VersionRouteOptions {
+  /** Owned update lookup; the default uses the public update service. */
+  getLatestVersion?: typeof getLatestVersion;
+  getDraftSyncAvailable?: () => boolean;
   vhostAppControlAvailable?: boolean;
   getExperimentalConversationAvailable?: () => boolean;
   /** Read retained startup state; never probe storage in the version route. */
@@ -562,6 +669,8 @@ function getCapabilitiesForDeviceBridgeState(
 
 export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   const capabilities: string[] = [...BASE_CAPABILITIES];
+  if (options?.getDraftSyncAvailable?.())
+    capabilities.push(SERVER_CAPABILITIES.draftSync.name);
   capabilities.push(SERVER_CAPABILITIES.vhostBearerAccess.name);
   if (options?.vhostAppControlAvailable)
     capabilities.push(SERVER_CAPABILITIES.vhostAppControl.name);
@@ -688,9 +797,13 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
     // For dev versions like "v0.1.7-3-g050bfd2", extract base version "v0.1.7"
     // to compare against the update server.
     const baseVersion = current.split("-")[0] || current;
-    const latest = await getLatestVersion(baseVersion, options?.installId, {
-      forceRefresh: fresh,
-    });
+    const latest = await (options?.getLatestVersion ?? getLatestVersion)(
+      baseVersion,
+      options?.installId,
+      {
+        forceRefresh: fresh,
+      },
+    );
     const updateAvailable = latest ? isNewerSemver(baseVersion, latest) : false;
 
     const info: VersionInfo = {
@@ -705,6 +818,9 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
       latest,
       updateAvailable,
       installSource: currentVersionInfo.installSource,
+      ...(currentVersionInfo.sourceRevision
+        ? { sourceRevision: currentVersionInfo.sourceRevision }
+        : {}),
       resumeProtocolVersion: RESUME_PROTOCOL_VERSION,
       remoteCompatibilityLevel: REMOTE_COMPATIBILITY_LEVEL,
       ...(capabilityEncoding

@@ -31,9 +31,14 @@ See also [Community Projects](community-projects.md) for smaller tools shared on
 
 ## Adjacent: Version Control And Multiplayer Threads
 
+**[Multiplayer AI and collaborative live sessions](multiplayer-ai.md)** —
+2026-09-30 product review of HumanLayer, Delta, Coshell, mpai, Slack Code, and
+YC activity; distinguishes shared conversations from shared projects and records
+permission boundaries, open-source status, and relevance to YA's proposals.
+
 | Product | Type | Key Differentiator |
 |---------|------|-------------------|
-| [Zed DeltaDB / Delta](deltadb.md) | Hosted early access, closed source | Operation-level history with every edit linked to its agent message, delta-anchored comments, free mid-run branches, live multi-person threads |
+| [Zed DeltaDB / Delta](deltadb.md) | Public beta; no public Delta source verified | Operation-level history with edits linked to conversation, delta-anchored comments, mid-run branches, live multi-person threads |
 
 Not an agent supervisor, but it overlaps YA on code↔conversation provenance,
 forking, and shared sessions; the review names the YA sketches it motivates.
@@ -105,5 +110,5 @@ See **[Ecosystem](../ecosystem/)** for adjacent projects — agent-to-agent coor
 
 ## Last Updated
 
-2026-09-20 (CosmoRemote added; other competitor snapshots retain their own
-dates)
+2026-09-30 (multiplayer analysis added and Delta public-beta status updated;
+other competitor snapshots retain their own dates)
