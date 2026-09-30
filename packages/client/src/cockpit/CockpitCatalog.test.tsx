@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useState } from "react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { CockpitCatalog } from "./CockpitCatalog";
 import type { CockpitCatalogView } from "./core/catalog";
@@ -57,25 +57,36 @@ function organization(): CockpitOrganizationController {
 function CatalogHarness({
   catalog,
   organizationController = organization(),
+  path = "/cockpit",
 }: {
   catalog: CockpitCatalogView;
   organizationController?: CockpitOrganizationController;
+  path?: string;
 }) {
   const [query, setQuery] = useState("");
+  const catalogElement = (
+    <CockpitCatalog
+      basePath=""
+      catalog={catalog}
+      error={null}
+      hasMore={false}
+      loading={false}
+      onLoadMore={vi.fn(async () => {})}
+      onQueryChange={setQuery}
+      organization={organizationController}
+      query={query}
+    />
+  );
   return (
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[path]}>
       <I18nProvider>
-        <CockpitCatalog
-          basePath=""
-          catalog={catalog}
-          error={null}
-          hasMore={false}
-          loading={false}
-          onLoadMore={vi.fn(async () => {})}
-          onQueryChange={setQuery}
-          organization={organizationController}
-          query={query}
-        />
+        <Routes>
+          <Route path="/cockpit" element={catalogElement} />
+          <Route
+            path="/cockpit/projects/:projectId/sessions/:sessionId"
+            element={catalogElement}
+          />
+        </Routes>
       </I18nProvider>
     </MemoryRouter>
   );
@@ -168,5 +179,24 @@ describe("Cockpit catalog", () => {
     await vi.waitFor(() =>
       expect(controller.archiveSession).toHaveBeenCalledWith("session-0"),
     );
+  });
+
+  it("marks the open session like a hovered row", () => {
+    render(
+      <CatalogHarness
+        catalog={catalogWithSessions(3)}
+        path="/cockpit/projects/atlas/sessions/session-1"
+      />,
+    );
+
+    const open = screen.getByText("Fixture session 1").closest("a");
+    expect(open?.getAttribute("aria-current")).toBe("page");
+    expect(document.querySelectorAll('a[aria-current="page"]')).toHaveLength(1);
+    expect(
+      screen
+        .getByText("Release checklist")
+        .closest("a")
+        ?.getAttribute("aria-current"),
+    ).toBeNull();
   });
 });

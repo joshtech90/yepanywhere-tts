@@ -1219,6 +1219,52 @@ describe("Settings Routes", () => {
       });
     });
 
+    it("stores normalized Cockpit project favourites", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const response = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          cockpitProjectFavorites: [
+            { path: " /work/os ", label: " SZ OS " },
+            { path: "/work/os", label: "Duplicate" },
+            { path: "/work/autos", label: "" },
+          ],
+        }),
+      });
+
+      expect(response.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        cockpitProjectFavorites: [{ path: "/work/os", label: "SZ OS" }],
+      });
+    });
+
+    it("clears Cockpit project favourites with null and refuses non-lists", async () => {
+      const routes = createSettingsRoutes({
+        serverSettingsService: mockServerSettingsService,
+      });
+
+      const cleared = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cockpitProjectFavorites: null }),
+      });
+      expect(cleared.status).toBe(200);
+      expect(mockServerSettingsService.updateSettings).toHaveBeenCalledWith({
+        cockpitProjectFavorites: [],
+      });
+
+      const refused = await routes.request("/", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cockpitProjectFavorites: { path: "/work" } }),
+      });
+      expect(refused.status).toBe(400);
+    });
+
     it("clamps out-of-range autoSessionTitle values", async () => {
       const routes = createSettingsRoutes({
         serverSettingsService: mockServerSettingsService,

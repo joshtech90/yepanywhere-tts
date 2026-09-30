@@ -3,7 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
-import { CockpitProjectsView } from "./CockpitListViews";
+import { CockpitProjectsView, CockpitSessionsView } from "./CockpitListViews";
+import type { CockpitOrganizationController } from "./useCockpitOrganization";
 
 vi.mock("../hooks/useProjects", () => ({
   useProjects: () => ({
@@ -31,6 +32,45 @@ vi.mock("../hooks/useProjects", () => ({
       },
     ],
   }),
+}));
+
+vi.mock("../contexts/SourceRuntimeContext", () => ({
+  useCurrentSourceRuntime: () => ({ sourceKey: "local" }),
+}));
+
+vi.mock("../hooks/useGlobalSessionsFeed", () => ({
+  useGlobalSessionsFeed: () => ({
+    query: "cockpit-test",
+    error: null,
+    loading: false,
+    hasMore: false,
+    loadMore: vi.fn(async () => {}),
+  }),
+}));
+
+vi.mock("../lib/clientSummaryStore", () => ({
+  useClientSummaryState: () => ({
+    providerRuntime: { bySessionId: new Map() },
+  }),
+  useSessionCollectionQueryRecords: () => [
+    {
+      id: "recent",
+      projectId: "atlas",
+      title: "Recent work",
+      provider: "claude",
+      updatedAt: "2026-09-30T12:00:00.000Z",
+      ownership: { owner: "none" },
+    },
+    {
+      id: "starred",
+      projectId: "fern",
+      title: "Starred plan",
+      provider: "claude",
+      isStarred: true,
+      updatedAt: "2026-09-01T12:00:00.000Z",
+      ownership: { owner: "none" },
+    },
+  ],
 }));
 
 afterEach(cleanup);
@@ -76,5 +116,27 @@ describe("Cockpit projects view", () => {
 
     expect(screen.queryByText("Atlas")).toBeNull();
     expect(screen.getByText("Fern")).toBeTruthy();
+  });
+});
+
+describe("Cockpit sessions view", () => {
+  it("leads with favourites, as the sidebar does", () => {
+    render(
+      <MemoryRouter>
+        <I18nProvider>
+          <CockpitSessionsView
+            basePath=""
+            organization={{} as CockpitOrganizationController}
+            projectId={null}
+            shellKind="empty"
+          />
+        </I18nProvider>
+      </MemoryRouter>,
+    );
+
+    const favorites = screen.getByRole("region", { name: "Favorites" });
+    expect(favorites.textContent).toContain("Starred plan");
+    expect(favorites.textContent).not.toContain("Recent work");
+    expect(screen.getByText("Recent work")).toBeTruthy();
   });
 });
