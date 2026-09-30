@@ -112,6 +112,9 @@ export function CockpitNewSession({
     projectId ?? null,
   );
   const [folder, setFolder] = useState("");
+  // A folder picked by favourite or picker before the project list arrived;
+  // it moves to its project once the list knows it. Typing clears it.
+  const [pickedFolder, setPickedFolder] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const favorites = useCockpitProjectFavorites();
   const favoriteMenu = useCockpitProjectFavoriteMenu(favorites);
@@ -173,12 +176,22 @@ export function CockpitNewSession({
   const chooseFolder = (path: string) => {
     const project = projectForFolder(sortedProjects, path);
     if (project) {
+      setPickedFolder(null);
       setProjectChoice(project.id);
     } else {
+      setPickedFolder(path);
       setProjectChoice(OTHER_FOLDER);
       setFolder(path);
     }
   };
+
+  useEffect(() => {
+    if (!pickedFolder) return;
+    const project = projectForFolder(sortedProjects, pickedFolder);
+    if (!project) return;
+    setPickedFolder(null);
+    setProjectChoice(project.id);
+  }, [pickedFolder, sortedProjects]);
 
   const toggleFavorite = () => {
     if (!currentPath || favorites.saving) return;
@@ -304,6 +317,7 @@ export function CockpitNewSession({
                 className={styles.select}
                 id={projectFieldId}
                 onChange={(event) => {
+                  setPickedFolder(null);
                   setProjectChoice(event.target.value);
                   if (event.target.value === OTHER_FOLDER) {
                     requestAnimationFrame(() => folderRef.current?.focus());
@@ -361,7 +375,10 @@ export function CockpitNewSession({
                   autoCorrect="off"
                   className={styles.input}
                   id={folderFieldId}
-                  onChange={(event) => setFolder(event.target.value)}
+                  onChange={(event) => {
+                    setPickedFolder(null);
+                    setFolder(event.target.value);
+                  }}
                   placeholder="~/Projects/…"
                   ref={folderRef}
                   spellCheck={false}

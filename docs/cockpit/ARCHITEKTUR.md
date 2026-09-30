@@ -651,6 +651,58 @@ Cockpit im selben Fenster. Joschas Release-Skript
 (`AI Worker/scripts/yep_nachbau.py`, `gegenstelle_setzen`) schreibt Datei
 und Symbol je Rechner aus `hosts/rollen.json`.
 
+### Offene Sitzung, Handy-Liste und Neue Sitzung (30.09.2026)
+
+**Offene Sitzung markiert.** In der Seitenleiste und in der Handy-Seitenleiste
+traegt die Zeile der geoeffneten Sitzung `aria-current="page"` und dieselbe
+graue Flaeche wie beim Ueberfahren mit der Maus. Die Markierung folgt allein
+der Sitzungs-ID der Route; es gibt keinen zweiten Auswahlzustand.
+
+**Favoriten in „Alle Sitzungen“.** Die Listenseite `?view=sessions` (am Handy
+der Weg ueber „Sitzungen“) zeigt wie die Seitenleiste zuerst die Favoriten
+unter einem Stern, danach die uebrigen Sitzungen nach Zeit. Mit
+Projektfilter gilt dasselbe innerhalb des Projekts. Grundlage bleibt der
+geladene Feed; aeltere Favoriten jenseits der geladenen Seiten erscheinen erst
+nach „Mehr laden“.
+
+**Projekt-Favoriten.** Auf „Neue Sitzung“ stehen zwischen Projektordner und
+KI-Anbieter die Projekt-Favoriten als Knoepfe mit Joschas eigenen Kurznamen
+(etwa „SZ OS“). Ein Klick waehlt den Ordner: ein bekanntes Projekt in der
+Liste, sonst „Anderer Ordner“ mit eingetragenem Pfad, der beim Start wie
+bisher ueber `POST /api/projects` angelegt wird. Der Knopf des aktuellen Ordners
+ist gedrueckt dargestellt. Der Stern neben der Ordnerauswahl merkt den
+aktuellen Ordner als Favorit (Name zunaechst der Projektname) oder entfernt
+ihn. Rechtsklick, Kontextmenue-Taste und langes Druecken oeffnen am Favoriten
+dasselbe Menue wie an Sitzungen, hier mit „Umbenennen“ und „Aus Favoriten
+entfernen“. Ohne Favoriten erklaert ein Hinweis den Stern.
+
+Die Favoriten sind die Servereinstellung `cockpitProjectFavorites`
+(`[{ path, label }]`, hoechstens 24, Namen hoechstens 40 Zeichen, ein Pfad
+nur einmal; `packages/shared/src/cockpit-project-favorites.ts`). Damit sehen
+Mac und Handy desselben Hosts dieselbe Liste; jeder Rechner hat seine eigene.
+Gespeichert wird erst nach Serverbestaetigung; lehnt der Server ab, bleibt die
+Liste unveraendert und ein Hinweis erscheint. Limited Users lesen die
+Einstellung nicht.
+
+**Ordnerwahl.** Das Ordnersymbol neben der Auswahl oeffnet einen modalen
+Ordnerdialog. Er zeigt Ordner des Server-Rechners, nicht des Geraets: Ein
+Finder- oder Browser-Dateidialog kann keinen Serverpfad liefern und zeigte am
+Handy die Dateien des Handys. Grundlage ist die neue, providerneutrale Route
+`GET /api/directories?path=<pfad>[&hidden=1]` (`routes/directory-browse.ts`):
+Sie erweitert `~`, verlangt einen absoluten Pfad und liefert
+`{ path, parent, home, entries: [{ name, path }], truncated }` mit hoechstens
+500 nach Namen (numerisch) sortierten Unterordnern; Punktordner nur mit
+`hidden=1`, Symlinks nur wenn sie auf einen Ordner zeigen. Fehlende Ordner
+geben 404, Dateien 400, fehlende Rechte 403. Die Route schreibt nichts. Limited
+Users erreichen sie nicht, weil deren Routenpolitik standardmaessig ablehnt.
+Der Dialog startet im aktuell gewaehlten Ordner, faellt bei einem nicht mehr
+vorhandenen Ordner auf den Benutzerordner zurueck, bietet Hoch, Benutzerordner
+und einen lokalen Filter und uebernimmt mit „Diesen Ordner nehmen“ den
+angezeigten Ordner. Ein aelterer Server ohne Route zeigt im Dialog eine
+Fehlermeldung; die Ordnerauswahl und das Eintippen bleiben unveraendert
+nutzbar. Menue und Dialog liegen neben dem Formular, damit Enter dort nie die
+Sitzung startet.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten
