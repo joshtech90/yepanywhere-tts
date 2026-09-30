@@ -190,7 +190,10 @@ exiting. A file that exists but cannot be read, or an `auth.json` with an
 unrecognized version or a malformed shape (for example a non-boolean
 `enabled`, which would otherwise read as auth off), stops startup with an
 error naming it; the file is left as it is, and nothing later in that process
-rewrites it. Only a missing file means never configured. The other data-directory
+rewrites it. `--setup-auth <password>` is the repair: it keeps a copy of the
+refused `auth.json` beside it (`auth.json.unreadable-<time>`) and replaces the
+file by atomic rename with auth enabled and the new owner password, so the
+file never goes missing while a service manager keeps restarting the server. Only a missing file means never configured. The other data-directory
 state (relay session cache, browser profiles, network binding, recents, push
 subscriptions, notifications) is also saved atomically but still starts fresh
 when unreadable, since losing any of it costs a sign-in or a preference, not

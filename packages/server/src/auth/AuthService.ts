@@ -77,13 +77,16 @@ function isValidAuthState(value: unknown): value is AuthState {
     const account = state.account as Record<string, unknown> | null;
     if (!account || typeof account.passwordHash !== "string") return false;
   }
-  if (
-    state.version === CURRENT_VERSION &&
-    (!state.sessions ||
-      typeof state.sessions !== "object" ||
-      Array.isArray(state.sessions))
-  ) {
+  // Both versions always wrote a sessions object. Without one, a bare
+  // {"version":1} would migrate to a fresh state with auth off.
+  const sessions = state.sessions;
+  if (!sessions || typeof sessions !== "object" || Array.isArray(sessions)) {
     return false;
+  }
+  for (const session of Object.values(sessions)) {
+    if (!session || typeof session !== "object" || Array.isArray(session)) {
+      return false;
+    }
   }
   return true;
 }
@@ -167,7 +170,9 @@ export class AuthService {
         throw new Error(
           `[AuthService] ${this.filePath} is unreadable (${error instanceof Error ? error.message : String(error)}). ` +
             "Refusing to start with local authentication off. Restore the file, " +
-            "or delete it to deliberately reset local access to its unconfigured default.",
+            "run --setup-auth <password> to replace it with a new owner password " +
+            "(a copy of it is kept), or delete it to deliberately reset local " +
+            "access to its unconfigured default.",
         );
       }
       // No file at all: local access was never configured.
@@ -181,6 +186,27 @@ export class AuthService {
 
     // Clean up expired sessions on startup
     await this.cleanupExpiredSessions();
+  }
+
+  /**
+   * `--setup-auth` repair for a file initialize() refused: keep a copy of it
+   * and continue from an empty state, which enableAuth() then writes by
+   * atomic replacement. auth.json is never absent in between, so a service
+   * restarting meanwhile still refuses instead of starting with auth off.
+   * Returns the path of the copy.
+   */
+  async adoptRefusedStateForRepair(): Promise<string> {
+    if (!this.loadRefused) {
+      throw new Error(
+        "[AuthService] auth.json was not refused; nothing to repair",
+      );
+    }
+    const backupPath = `${this.filePath}.unreadable-${Date.now()}`;
+    await fs.copyFile(this.filePath, backupPath, fs.constants.COPYFILE_EXCL);
+    await fs.chmod(backupPath, OWNER_READ_WRITE_FILE_MODE);
+    this.state = { version: CURRENT_VERSION, sessions: {} };
+    this.loadRefused = false;
+    return backupPath;
   }
 
   /**

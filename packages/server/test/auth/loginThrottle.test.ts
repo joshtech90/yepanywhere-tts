@@ -1,7 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthService } from "../../src/auth/AuthService.js";
 import {
   LoginThrottle,
@@ -9,6 +9,7 @@ import {
   loginThrottleKey,
 } from "../../src/auth/loginThrottle.js";
 import { createAuthRoutes } from "../../src/auth/routes.js";
+import { setupAuth } from "../../src/cli-setup.js";
 
 describe("loginThrottleKey", () => {
   const none = () => undefined;
@@ -147,6 +148,8 @@ describe("unreadable auth.json", () => {
   it.each([
     ["an empty object", "{}"],
     ["a non-boolean switch", '{"version":2,"enabled":"no","sessions":{}}'],
+    ["a bare version 1", '{"version":1}'],
+    ["a session that is not an object", '{"version":2,"sessions":{"x":1}}'],
     [
       "an account without a hash",
       '{"version":2,"enabled":true,"account":{},"sessions":{}}',
@@ -163,6 +166,44 @@ describe("unreadable auth.json", () => {
     expect(service.isEnabled()).toBe(false);
     await service.flushPendingWrites();
     expect(await fs.readFile(file, "utf8")).toBe(content);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+});
+
+describe("--setup-auth on an unreadable auth.json", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("replaces it with a new owner password and keeps a copy", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-repair-"));
+    const file = path.join(dir, "auth.json");
+    await fs.writeFile(file, "{ not json", { mode: 0o600 });
+    vi.stubEnv("YEP_DATA_DIR", dir);
+
+    await setupAuth({ password: "new-password" });
+
+    const reloaded = new AuthService({ dataDir: dir, cookieSecret: "s" });
+    await reloaded.initialize();
+    expect(reloaded.isEnabled()).toBe(true);
+    await expect(reloaded.verifyPassword("new-password")).resolves.toBe(true);
+    const copies = (await fs.readdir(dir)).filter((name) =>
+      name.startsWith("auth.json.unreadable-"),
+    );
+    expect(copies).toHaveLength(1);
+    const copy = path.join(dir, copies[0] ?? "");
+    expect(await fs.readFile(copy, "utf8")).toBe("{ not json");
+    expect((await fs.stat(copy)).mode & 0o777).toBe(0o600);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  it("offers no repair for a file that was not refused", async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), "auth-repair-"));
+    const service = new AuthService({ dataDir: dir, cookieSecret: "s" });
+    await service.initialize();
+    await expect(service.adoptRefusedStateForRepair()).rejects.toThrow(
+      /nothing to repair/,
+    );
     await fs.rm(dir, { recursive: true, force: true });
   });
 });

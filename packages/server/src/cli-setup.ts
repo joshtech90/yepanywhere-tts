@@ -47,7 +47,15 @@ export async function setupAuth(options: SetupAuthOptions): Promise<void> {
 
   const dataDir = getDataDir();
   const authService = new AuthService({ dataDir });
-  await authService.initialize();
+  let repairedFrom: string | undefined;
+  try {
+    await authService.initialize();
+  } catch (error) {
+    // An unreadable auth.json stops the server; this command is its repair.
+    repairedFrom = await authService.adoptRefusedStateForRepair().catch(() => {
+      throw error;
+    });
+  }
 
   await authService.enableAuth(password);
   // The one path that replaces the owner password without the old one.
@@ -57,6 +65,9 @@ export async function setupAuth(options: SetupAuthOptions): Promise<void> {
     outcome: "success",
     account: "owner",
   });
+  if (repairedFrom) {
+    console.log(`Replaced an unreadable auth file; its copy: ${repairedFrom}`);
+  }
   console.log("Local authentication configured successfully.");
   console.log(`Auth file: ${authService.getFilePath()}`);
 }
