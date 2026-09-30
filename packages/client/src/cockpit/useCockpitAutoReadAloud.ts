@@ -73,7 +73,7 @@ export function finalCockpitAnswer(
   entries: readonly CockpitTranscriptEntry[],
 ): CockpitAssistantEntry | null {
   const last = entries[entries.length - 1];
-  if (!last || last.kind !== "assistant" || last.isStreaming) return null;
+  if (last?.kind !== "assistant" || last.isStreaming) return null;
   if (!last.spokenText.trim()) return null;
   // A stopped answer is not the final one.
   if (last.text.some((segment) => segment.abortedMidStream)) return null;

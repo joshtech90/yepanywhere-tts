@@ -275,6 +275,25 @@ gestartet werden; Stop oder der naechste Start loescht diesen Fehlerzustand.
 Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und bleibt dadurch
 kompatibel.
 
+Automatisches Vorlesen ist ein Schalter pro Sitzung im Kurzbefehle-Menue
+(Blitz) der Sitzungskopfzeile, wie der Pro-Chat-Schalter in PocketClaude.
+Er ist standardmaessig aus, wird pro Geraet und Sitzung im `localStorage`
+gemerkt (hoechstens 200 Sitzungen) und folgt einer neuen Sitzung von ihrer
+vorlaeufigen auf die echte Sitzungs-ID. Solange er an ist, traegt der Blitz
+einen Punkt. Er wirkt nur, waehrend die Sitzung im Cockpit geoeffnet ist:
+Endet dort ein Durchgang, also wechselt die Sitzung von arbeitend (hier, in
+einem anderen Programm oder auf Eingabe wartend) zu ruhend, liest der
+gemeinsame Controller die dann letzte Transcript-Zeile vor, sofern sie eine
+fertige, nicht abgebrochene Antwort mit Text ist und nicht schon vor Beginn
+des Durchgangs dastand. Trifft die Antwort bis zu 15 Sekunden nach dem
+Ruhezustand ein, wird sie noch vorgelesen. Zwischentexte waehrend des
+Durchgangs, ein Ende auf einem Werkzeugaufruf, gestoppte Antworten und beim
+Oeffnen bereits vorhandene Antworten werden nie automatisch vorgelesen; ein
+Durchgang, dessen Beginn vor dem ersten Laden des Transcripts lag, ebenfalls
+nicht. Ausschalten stoppt eine laufende Wiedergabe. Verweigert der Browser
+die Wiedergabe ohne vorherige Bedienung der Seite, zeigt der Vorleseknopf der
+Antwort den Fehlerzustand und kann dort erneut gestartet werden.
+
 Abgeschlossene Assistant-Antworten bieten daneben eine Cockpit-eigene
 Kopieraktion fuer den bereits projizierten, unveraenderten Antworttext. Sie
 verwendet die vorhandene Clipboard-Hilfe, besitzt nur lokalen Rueckmeldestatus

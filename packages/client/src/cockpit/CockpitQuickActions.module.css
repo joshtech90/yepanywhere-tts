@@ -3,6 +3,7 @@
 }
 
 .trigger {
+  position: relative;
   display: grid;
   width: 2.45rem;
   height: 2.45rem;
@@ -22,6 +23,22 @@
 
 .trigger[data-state="copied"] {
   color: var(--cockpit-working);
+}
+
+.trigger[data-auto-read="on"] {
+  color: var(--cockpit-accent);
+}
+
+/* Marks that this session reads its answers aloud. */
+.autoReadBadge {
+  position: absolute;
+  top: 0.3rem;
+  right: 0.3rem;
+  width: 0.45rem;
+  height: 0.45rem;
+  border: 1.5px solid var(--cockpit-surface);
+  border-radius: 50%;
+  background: var(--cockpit-accent);
 }
 
 .trigger svg {
@@ -95,6 +112,23 @@
 .item strong {
   font-size: var(--cockpit-text-sm);
   font-weight: var(--cockpit-weight-medium);
+}
+
+.switchLabel {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+
+.switchState {
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-medium);
+}
+
+.item[aria-checked="true"] .switchState {
+  color: var(--cockpit-accent);
 }
 
 .item small {

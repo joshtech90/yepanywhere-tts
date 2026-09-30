@@ -40,6 +40,7 @@ import type { CockpitShellState } from "./core/shellState";
 import { cockpitContextUsage } from "./core/contextUsage";
 import { cockpitLedToneForState } from "./core/statusLed";
 import { selectCockpitTranscriptSnapshot } from "./core/transcriptScheduling";
+import { useCockpitAutoReadAloud } from "./useCockpitAutoReadAloud";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
 
 export interface CockpitSessionDetailProps {
@@ -351,6 +352,13 @@ export function CockpitSessionDetail({
     state === "active" ||
     state === "external" ||
     detail.processState !== "idle";
+  const autoReadAloud = useCockpitAutoReadAloud({
+    actualSessionId,
+    entries: detail.entries,
+    loaded: !detail.loading,
+    sessionId,
+    working: sessionWorking,
+  });
 
   const renderTranscriptEntry = useCallback(
     (entry: CockpitTranscriptEntry) => (
@@ -579,6 +587,7 @@ export function CockpitSessionDetail({
             stop={detail.attention.stop}
           />
           <CockpitQuickActions
+            autoReadAloud={autoReadAloud}
             basePath={basePath}
             classicHref={classicHref}
             busy={

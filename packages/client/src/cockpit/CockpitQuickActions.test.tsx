@@ -44,6 +44,7 @@ const PROJECT_ID = btoa("/tmp/yep-cockpit-test")
 function actionsTree(
   busy: boolean,
   processState: CockpitComposerSessionPort["processState"] = "idle",
+  autoReadAloud?: { enabled: boolean; toggle: () => void },
 ) {
   const port = {
     actualSessionId: "24e22f93-9d63-44d6-b237-6d765a2b8346",
@@ -56,6 +57,7 @@ function actionsTree(
     <MemoryRouter>
       <I18nProvider>
         <CockpitQuickActions
+          autoReadAloud={autoReadAloud}
           basePath=""
           busy={busy}
           entries={[]}
@@ -133,5 +135,41 @@ describe("Cockpit quick actions", () => {
     fireEvent.click(cancel());
     expect(mocks.handoff.reset).toHaveBeenCalledTimes(1);
     expect(screen.queryByText(/waiting for an approval/)).toBeNull();
+  });
+
+  it("switches auto read-aloud for the session from the menu", () => {
+    const toggle = vi.fn();
+    const { rerender } = render(
+      actionsTree(false, "idle", { enabled: false, toggle }),
+    );
+    const trigger = screen.getByRole("button", { name: "Quick actions" });
+    expect(trigger.getAttribute("data-auto-read")).toBeNull();
+    fireEvent.click(trigger);
+
+    const item = screen.getByRole("menuitemcheckbox", {
+      name: /Read answers aloud automatically/,
+    });
+    expect(item.getAttribute("aria-checked")).toBe("false");
+    expect(item.textContent).toContain("For this session only");
+    fireEvent.click(item);
+    expect(toggle).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).toBeNull();
+
+    rerender(actionsTree(false, "idle", { enabled: true, toggle }));
+    expect(trigger.getAttribute("data-auto-read")).toBe("on");
+    fireEvent.click(trigger);
+    expect(
+      screen
+        .getByRole("menuitemcheckbox", {
+          name: /Read answers aloud automatically/,
+        })
+        .getAttribute("aria-checked"),
+    ).toBe("true");
+  });
+
+  it("hides the auto read-aloud entry without a switch", () => {
+    renderActions(false);
+    fireEvent.click(screen.getByRole("button", { name: "Quick actions" }));
+    expect(screen.queryByRole("menuitemcheckbox")).toBeNull();
   });
 });
