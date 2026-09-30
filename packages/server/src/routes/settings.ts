@@ -28,6 +28,7 @@ import {
   isSubagentMaxDepth,
   isProjectQueueReadinessCommand,
   normalizeAutoSessionTitleSettings,
+  normalizeCockpitProjectFavorites,
   isLoopbackGatewayUrl,
   isValidGatewayServiceId,
   type GatewayService,
@@ -520,6 +521,26 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
           );
         } else {
           return c.json({ error: "autoSessionTitle must be an object" }, 400);
+        }
+      }
+
+      if ("cockpitProjectFavorites" in body) {
+        if (
+          body.cockpitProjectFavorites === undefined ||
+          body.cockpitProjectFavorites === null
+        ) {
+          updates.cockpitProjectFavorites = [];
+        } else {
+          const favorites = normalizeCockpitProjectFavorites(
+            body.cockpitProjectFavorites,
+          );
+          if (!favorites) {
+            return c.json(
+              { error: "cockpitProjectFavorites must be an array" },
+              400,
+            );
+          }
+          updates.cockpitProjectFavorites = favorites;
         }
       }
 

@@ -6,6 +6,7 @@ import type {
   AgentActivity,
   AgentContextHints,
   AutoSessionTitleSettings,
+  CockpitProjectFavorite,
   CacheMissBillingRecord,
   CacheMissBillingSettings,
   BrowserSettingsBackupResponse,
@@ -484,6 +485,16 @@ export const api = {
     ),
 
   getProjects: () => fetchJSON<{ projects: Project[] }>("/projects"),
+
+  /** Subfolders of a folder on the server host, for the Cockpit's picker. */
+  browseDirectories: (path?: string) =>
+    fetchJSON<{
+      path: string;
+      parent: string | null;
+      home: string;
+      entries: Array<{ name: string; path: string }>;
+      truncated: boolean;
+    }>(`/directories${path ? `?path=${encodeURIComponent(path)}` : ""}`),
 
   /**
    * Add a project by file path.
@@ -1971,6 +1982,8 @@ export interface ServerSettings {
    * See topics/auto-session-title.md.
    */
   autoSessionTitle?: AutoSessionTitleSettings;
+  /** Favourite project folders of the Cockpit's new-session page. */
+  cockpitProjectFavorites?: CockpitProjectFavorite[];
 }
 
 export type RelayClientStatus =

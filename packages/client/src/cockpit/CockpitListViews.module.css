@@ -103,6 +103,38 @@
   list-style: none;
 }
 
+.favorites {
+  padding-bottom: 0.45rem;
+  border-bottom: 1px solid var(--cockpit-border);
+}
+
+/* Laid out on the rows' own grid, like the sidebar's favourites heading. */
+.sectionTitle {
+  display: grid;
+  min-height: 1.7rem;
+  margin: 0;
+  padding: 0 0.55rem;
+  grid-template-columns: 0.55rem minmax(0, 1fr);
+  align-items: center;
+  column-gap: 0.4rem;
+  border: 1px solid transparent;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.sectionTitle svg {
+  width: 0.72rem;
+  height: 0.72rem;
+  justify-self: center;
+  fill: currentColor;
+  stroke: currentColor;
+  stroke-linejoin: round;
+  stroke-width: 1.4;
+}
+
 .notice,
 .empty {
   margin: 0;

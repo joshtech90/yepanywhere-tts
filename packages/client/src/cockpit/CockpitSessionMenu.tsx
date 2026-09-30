@@ -21,6 +21,21 @@ export interface CockpitSessionMenuProps {
   onArchive: () => Promise<boolean>;
   /** Hiding stops a running turn, so only then does it ask first. */
   confirmArchive?: boolean;
+  /** Without it the menu offers only renaming and the last action. */
+  showPin?: boolean;
+  /**
+   * Wording for another kind of item (a favourite folder): its own name in
+   * the menu label and rename field, and what the last action does.
+   */
+  copy?: CockpitItemMenuCopy;
+}
+
+export interface CockpitItemMenuCopy {
+  ariaLabel: string;
+  renameInput: string;
+  renameError: string;
+  archive: string;
+  archiveError: string;
 }
 
 type MenuView = "menu" | "rename" | "archive";
@@ -36,6 +51,8 @@ export function CockpitSessionMenu({
   onRename,
   onArchive,
   confirmArchive = true,
+  showPin = true,
+  copy,
 }: CockpitSessionMenuProps) {
   const { t } = useI18n();
   const [view, setView] = useState<MenuView>("menu");
@@ -242,10 +259,10 @@ export function CockpitSessionMenu({
       if (success) {
         onClose();
       } else {
-        setRenameError(t("cockpitSessionMenuRenameError"));
+        setRenameError(copy?.renameError ?? t("cockpitSessionMenuRenameError"));
       }
     } catch {
-      setRenameError(t("cockpitSessionMenuRenameError"));
+      setRenameError(copy?.renameError ?? t("cockpitSessionMenuRenameError"));
     } finally {
       setIsRenaming(false);
     }
@@ -262,10 +279,14 @@ export function CockpitSessionMenu({
       if (success) {
         onClose();
       } else {
-        setArchiveError(t("cockpitSessionMenuArchiveError"));
+        setArchiveError(
+          copy?.archiveError ?? t("cockpitSessionMenuArchiveError"),
+        );
       }
     } catch {
-      setArchiveError(t("cockpitSessionMenuArchiveError"));
+      setArchiveError(
+          copy?.archiveError ?? t("cockpitSessionMenuArchiveError"),
+        );
     } finally {
       setIsArchiving(false);
     }
@@ -283,7 +304,10 @@ export function CockpitSessionMenu({
     <div
       ref={menuRef}
       role={view === "menu" ? "menu" : "dialog"}
-      aria-label={t("cockpitSessionMenuAriaLabel", { name: sessionTitle })}
+      aria-label={
+        copy?.ariaLabel ??
+        t("cockpitSessionMenuAriaLabel", { name: sessionTitle })
+      }
       className={styles.popover}
       style={{
         left: `${coords.x}px`,
@@ -293,15 +317,17 @@ export function CockpitSessionMenu({
     >
       {view === "menu" && (
         <div className={styles.menuList}>
-          <button
-            type="button"
-            role="menuitem"
-            className={styles.item}
-            onClick={handleTogglePin}
-            disabled={busy}
-          >
-            {t(pinned ? "cockpitSessionMenuUnpin" : "cockpitSessionMenuPin")}
-          </button>
+          {showPin && (
+            <button
+              type="button"
+              role="menuitem"
+              className={styles.item}
+              onClick={handleTogglePin}
+              disabled={busy}
+            >
+              {t(pinned ? "cockpitSessionMenuUnpin" : "cockpitSessionMenuPin")}
+            </button>
+          )}
           <button
             type="button"
             role="menuitem"
@@ -320,7 +346,7 @@ export function CockpitSessionMenu({
             }
             disabled={busy}
           >
-            {t("cockpitSessionMenuArchive")}
+            {copy?.archive ?? t("cockpitSessionMenuArchive")}
           </button>
         </div>
       )}
@@ -339,7 +365,7 @@ export function CockpitSessionMenu({
               }
             }}
             disabled={busy || isRenaming}
-            aria-label={t("cockpitSessionMenuRenameInput")}
+            aria-label={copy?.renameInput ?? t("cockpitSessionMenuRenameInput")}
           />
           {renameError && (
             <div role="status" className={styles.error}>

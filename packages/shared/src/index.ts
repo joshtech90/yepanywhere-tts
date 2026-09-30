@@ -213,6 +213,14 @@ export {
 } from "./auto-session-title.js";
 
 export {
+  MAX_COCKPIT_PROJECT_FAVORITE_LABEL_LENGTH,
+  MAX_COCKPIT_PROJECT_FAVORITE_PATH_LENGTH,
+  MAX_COCKPIT_PROJECT_FAVORITES,
+  normalizeCockpitProjectFavorites,
+  type CockpitProjectFavorite,
+} from "./cockpit-project-favorites.js";
+
+export {
   DEFAULT_GATEWAY_AUTO_STOP_SECONDS,
   DEFAULT_GATEWAY_SERVICE_CODEX_WIRE_API,
   DEFAULT_GATEWAY_SERVICE_ID,

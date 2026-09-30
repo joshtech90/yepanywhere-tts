@@ -22,7 +22,10 @@
   grid-template-columns: auto minmax(0, 1fr) 2.35rem 4.6rem;
 }
 
-.row:hover {
+/* The open session keeps the hover look, so the list shows where you are
+   (Joscha 30.09.2026). */
+.row:hover,
+.row[aria-current="page"] {
   border-color: var(--cockpit-border);
   background: var(--cockpit-hover);
 }

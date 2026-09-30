@@ -17,6 +17,8 @@ export interface CockpitSessionMenuAnchor {
 }
 
 export interface CockpitSessionRowProps {
+  /** The session open on screen, marked like a hovered row. */
+  active?: boolean;
   href: string;
   projectName?: string;
   session: CockpitCatalogSession;
@@ -53,6 +55,7 @@ export function cockpitSessionStatusLabel(
  * and a long press on touch screens all open the same session menu.
  */
 export const CockpitSessionRow = memo(function CockpitSessionRow({
+  active = false,
   href,
   projectName,
   session,
@@ -80,6 +83,7 @@ export const CockpitSessionRow = memo(function CockpitSessionRow({
       aria-label={`${title}, ${statusLabel}${time ? `, ${time.label}` : ""}${
         projectName ? `, ${projectName}` : ""
       }`}
+      aria-current={active ? "page" : undefined}
       className={styles.row}
       data-with-project={projectName ? "true" : "false"}
       onContextMenu={handleContextMenu}

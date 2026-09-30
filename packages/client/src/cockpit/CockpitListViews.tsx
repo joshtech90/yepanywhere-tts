@@ -13,7 +13,11 @@ import { CockpitSessionRow } from "./CockpitSessionRow";
 import { CockpitStatusLed } from "./CockpitStatusLed";
 import { formatCockpitActivityTime } from "./core/activityTime";
 import { createCockpitCatalog, filterCockpitCatalog } from "./core/catalog";
-import { flattenCockpitCatalog } from "./core/catalogSections";
+import {
+  flattenCockpitCatalog,
+  splitCockpitFavorites,
+  type CockpitFavoriteSession,
+} from "./core/catalogSections";
 import { createCockpitNavigation } from "./core/navigation";
 import type { CockpitShellState } from "./core/shellState";
 import styles from "./CockpitListViews.module.css";
@@ -94,9 +98,25 @@ export function CockpitSessionsView({
       summaryState.providerRuntime.bySessionId,
     ],
   );
-  const rows = useMemo(
-    () => flattenCockpitCatalog(filterCockpitCatalog(catalog, deferredFilter)),
+  // Favourites lead, as in the sidebar; on a phone this list is the way in
+  // (Joscha 30.09.2026).
+  const sections = useMemo(
+    () => splitCockpitFavorites(filterCockpitCatalog(catalog, deferredFilter)),
     [catalog, deferredFilter],
+  );
+  const renderRow = ({ session, projectName }: CockpitFavoriteSession) => (
+    <li key={session.key}>
+      <CockpitSessionRow
+        href={
+          session.projectId
+            ? navigation.session(session.projectId, session.id)
+            : navigation.sessions
+        }
+        onOpenMenu={menu.open}
+        projectName={projectId ? undefined : projectName}
+        session={session}
+      />
+    </li>
   );
   const project = projectId
     ? projectsFeed.projects.find((item) => item.id === projectId)
@@ -141,29 +161,34 @@ export function CockpitSessionsView({
           {t("cockpitCatalogError")}
         </p>
       )}
-      {rows.length === 0 && !sessionsFeed.loading && (
-        <p className={styles.empty}>
-          {deferredFilter
-            ? t("cockpitCatalogNoMatches")
-            : t("cockpitCatalogEmpty")}
-        </p>
+      {sections.favorites.length === 0 &&
+        sections.others.length === 0 &&
+        !sessionsFeed.loading && (
+          <p className={styles.empty}>
+            {deferredFilter
+              ? t("cockpitCatalogNoMatches")
+              : t("cockpitCatalogEmpty")}
+          </p>
+        )}
+      {sections.favorites.length > 0 && (
+        <section
+          aria-labelledby="cockpit-list-favorites"
+          className={styles.favorites}
+        >
+          <h3 className={styles.sectionTitle} id="cockpit-list-favorites">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="m12 3 2.6 5.3 5.9.9-4.3 4.1 1 5.8-5.2-2.8-5.2 2.8 1-5.8-4.3-4.1 5.9-.9L12 3Z" />
+            </svg>
+            <span>{t("cockpitFavoritesTitle")}</span>
+          </h3>
+          <ul className={styles.list}>
+            {sections.favorites.map(renderRow)}
+          </ul>
+        </section>
       )}
-      <ul className={styles.list}>
-        {rows.map(({ session, projectName }) => (
-          <li key={session.key}>
-            <CockpitSessionRow
-              href={
-                session.projectId
-                  ? navigation.session(session.projectId, session.id)
-                  : navigation.sessions
-              }
-              onOpenMenu={menu.open}
-              projectName={projectId ? undefined : projectName}
-              session={session}
-            />
-          </li>
-        ))}
-      </ul>
+      {sections.others.length > 0 && (
+        <ul className={styles.list}>{sections.others.map(renderRow)}</ul>
+      )}
       {(sessionsFeed.hasMore || sessionsFeed.loading) && (
         <div className={styles.more}>
           <button

@@ -208,6 +208,7 @@ import {
   createProjectQueueRoutes,
 } from "./routes/project-queue.js";
 import { createProjectsRoutes } from "./routes/projects.js";
+import { createDirectoryBrowseRoutes } from "./routes/directory-browse.js";
 import { createProjectSessionDefaultsRoutes } from "./routes/project-session-defaults.js";
 import { createProvidersRoutes } from "./routes/providers.js";
 import { createCodexUpdateRoutes } from "./routes/codex-updates.js";
@@ -2951,6 +2952,9 @@ export function createApp(options: AppOptions): AppResult {
       }),
     );
   }
+
+  // Server-host folder listing for the Cockpit's folder picker
+  app.route("/api/directories", createDirectoryBrowseRoutes());
 
   // Recents routes (recently visited sessions)
   if (options.recentsService) {

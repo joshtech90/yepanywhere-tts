@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useParams } from "react-router-dom";
 import { useI18n } from "../i18n";
 import { CockpitSessionRow } from "./CockpitSessionRow";
 import { filterCockpitCatalog, type CockpitCatalogView } from "./core/catalog";
@@ -51,6 +52,7 @@ export function CockpitCatalog({
   const { t } = useI18n();
   const navigation = createCockpitNavigation(basePath);
   const menu = useCockpitSessionMenu(organization);
+  const { sessionId: openSessionId } = useParams<{ sessionId: string }>();
   const visibleCatalog = useMemo(
     () => filterCockpitCatalog(catalog, query),
     [catalog, query],
@@ -120,6 +122,7 @@ export function CockpitCatalog({
               {sections.favorites.map(({ session, projectName }) => (
                 <li key={session.key}>
                   <CockpitSessionRow
+                    active={session.id === openSessionId}
                     href={sessionHref(session.projectId, session.id)}
                     onOpenMenu={menu.open}
                     projectName={projectName || undefined}
@@ -139,6 +142,7 @@ export function CockpitCatalog({
             {sections.others.map(({ session, projectName }) => (
               <li key={session.key}>
                 <CockpitSessionRow
+                  active={session.id === openSessionId}
                   href={sessionHref(session.projectId, session.id)}
                   onOpenMenu={menu.open}
                   projectName={projectName || undefined}

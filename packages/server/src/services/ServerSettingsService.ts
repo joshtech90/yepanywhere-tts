@@ -33,6 +33,7 @@ import type {
   SubagentMaxDepth,
   ToolbarControlPresence,
   AutoSessionTitleSettings,
+  CockpitProjectFavorite,
 } from "@yep-anywhere/shared";
 import {
   DEFAULT_AUTO_SESSION_TITLE_SETTINGS,
@@ -44,6 +45,7 @@ import {
   DEFAULT_CLEARLOOP_INACTIVITY_SECONDS,
   DEFAULT_PROJECT_QUEUE_QUIET_SECONDS,
   normalizeAutoSessionTitleSettings,
+  normalizeCockpitProjectFavorites,
   DEFAULT_SUBAGENT_MAX_DEPTH,
   MAX_HEARTBEAT_TURN_TEXT_LENGTH,
   clampClearloopInactivitySeconds,
@@ -327,6 +329,11 @@ export interface ServerSettings {
    * See topics/auto-session-title.md.
    */
   autoSessionTitle?: AutoSessionTitleSettings;
+  /**
+   * Favourite project folders of the Cockpit's new-session page, with the
+   * short names the user gave them. Empty until the user adds one.
+   */
+  cockpitProjectFavorites?: CockpitProjectFavorite[];
 }
 
 export const CODEX_UPDATE_POLICIES = ["auto", "notify", "off"] as const;
@@ -534,6 +541,9 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
   normalized.autoSessionTitle = normalizeAutoSessionTitleSettings(
     settings.autoSessionTitle,
   );
+  normalized.cockpitProjectFavorites =
+    normalizeCockpitProjectFavorites(settings.cockpitProjectFavorites) ??
+    undefined;
   normalized.speechVoiceBackends =
     parseSpeechVoiceBackends(settings.speechVoiceBackends) ??
     DEFAULT_SERVER_SETTINGS.speechVoiceBackends;
