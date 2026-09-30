@@ -4351,6 +4351,7 @@
   "cockpitGlobalSearchResultCountOne": "1 matching session",
   "cockpitNavShortSessions": "Sessions",
   "cockpitNavShortNew": "New",
+  "cockpitSwitchHost": "Switch to the Cockpit on {host}",
   "cockpitNewSessionEyebrow": "Start a session",
   "cockpitNewSessionOtherFolder": "Other folder…",
   "cockpitNewSessionNoProvider": "No AI provider is installed.",

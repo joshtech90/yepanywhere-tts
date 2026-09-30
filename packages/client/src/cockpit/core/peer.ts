@@ -11,18 +11,21 @@ export interface CockpitPeer {
   label: string;
   /** Absolute address of the other Cockpit. */
   url: string;
-  /** The other machine's app icon, shown on the button. */
-  icon: string;
+  /**
+   * The other machine's app icon, as a copy on this server: the page's
+   * content policy only loads images from its own origin.
+   */
+  icon: string | null;
 }
 
 export const COCKPIT_PEER_PATH = "/cockpit-peer.json";
 
 const MAX_LABEL_LENGTH = 24;
 
-function webUrl(value: unknown, base?: string): URL | null {
+function webUrl(value: unknown): URL | null {
   if (typeof value !== "string" || value.trim() === "") return null;
   try {
-    const url = new URL(value, base);
+    const url = new URL(value);
     return url.protocol === "https:" || url.protocol === "http:" ? url : null;
   } catch {
     return null;
@@ -43,8 +46,9 @@ export function parseCockpitPeer(
   if (!url) return null;
   // A peer pointing back at this very Cockpit would be a button to nowhere.
   if (currentOrigin && url.origin === currentOrigin) return null;
-  // The other machine serves its own icon; a relative path resolves there.
-  const icon = webUrl(record.icon ?? "/icon-192.png", url.href);
-  if (!icon) return null;
-  return { label, url: url.href, icon: icon.href };
+  const icon =
+    typeof record.icon === "string" && /^\/(?![/\\])/.test(record.icon)
+      ? record.icon
+      : null;
+  return { label, url: url.href, icon };
 }

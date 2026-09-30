@@ -88,6 +88,23 @@
   stroke-width: 1.8;
 }
 
+.hostSwitch[data-variant="compact"] {
+  position: relative;
+}
+
+.hostSwitch[data-variant="compact"] .switchMark {
+  position: absolute;
+  right: -0.3rem;
+  bottom: -0.3rem;
+  width: 1rem;
+  height: 1rem;
+  padding: 0.12rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 50%;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+}
+
 .hostSwitch:hover .switchMark {
   color: var(--cockpit-accent);
 }

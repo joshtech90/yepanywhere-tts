@@ -1518,6 +1518,7 @@
   "cockpitGlobalSearchResultCountOne": "1 passende Sitzung",
   "cockpitNavShortSessions": "Sitzungen",
   "cockpitNavShortNew": "Neu",
+  "cockpitSwitchHost": "Zum Cockpit auf {host} wechseln",
   "cockpitNewSessionEyebrow": "Sitzung starten",
   "cockpitNewSessionOtherFolder": "Anderer Ordner …",
   "cockpitNewSessionNoProvider": "Kein KI-Anbieter ist installiert.",

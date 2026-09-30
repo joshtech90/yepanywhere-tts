@@ -325,9 +325,33 @@
   box-shadow: var(--cockpit-elevation-float);
 }
 
+/* New Session and the switch to the other machine, above the search. */
+.sidebarTop {
+  display: flex;
+  margin: 0 0.15rem;
+  gap: 0.45rem;
+}
+
+.sidebarTop .primaryAction {
+  min-width: 0;
+  min-height: 2.35rem;
+  padding: 0 0.85rem;
+  flex: 1;
+  justify-content: center;
+  gap: 0.5rem;
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-strong);
+}
+
+.sidebarTop .primaryAction span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .desktopCatalog {
   min-height: 9rem;
-  margin: 1rem 0.15rem 0;
+  margin: 0.9rem 0.15rem 0;
   flex: 1;
 }
 
@@ -832,9 +856,14 @@
     display: block;
   }
 
-  /* The bottom bar has "Neu" already; the header keeps its two tools. */
+  /* "Neu" sits above the search as well as in the bottom bar (Joscha
+     30.09.2026), compact beside the header tools. */
   .header .primaryAction {
-    display: none;
+    min-height: 2.3rem;
+    padding: 0 0.8rem 0 0.65rem;
+    gap: 0.35rem;
+    font-size: var(--cockpit-text-xs);
+    font-weight: var(--cockpit-weight-strong);
   }
 
   .mobileAppearance summary {

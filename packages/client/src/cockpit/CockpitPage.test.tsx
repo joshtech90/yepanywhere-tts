@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
+import { forgetCockpitPeer } from "./CockpitHostSwitch";
 import { useCockpitDrawerOpener } from "./CockpitMobileDrawer";
 import { CockpitPage, CockpitShell } from "./CockpitPage";
 import { readCockpitReturn } from "./core/navigation";
@@ -95,11 +96,37 @@ vi.mock("./CockpitCodexUpdateNotice", () => ({
   CockpitCodexUpdateNotice: () => null,
 }));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
   pageMocks.runtime.sourceKey = "local";
+  // No deployment names a second Cockpit unless a test says so.
+  forgetCockpitPeer();
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("<!doctype html>", { status: 200 })),
+  );
 });
+
+function stubCockpitPeer() {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            label: "aihub",
+            url: "https://aihub.example.ts.net:3400/cockpit",
+            icon: "/cockpit-peer-icon.png",
+          }),
+          { status: 200 },
+        ),
+    ),
+  );
+}
 
 function DrawerProbe() {
   const openDrawer = useCockpitDrawerOpener();
@@ -295,7 +322,9 @@ describe("Cockpit shell", () => {
       { kind: "empty" },
       "/-/relay/studio/cockpit?view=new&project=p1",
     );
-    const sidebar = screen.getByRole("complementary");
+    const sidebar = within(screen.getByRole("complementary")).getByRole(
+      "navigation",
+    );
 
     expect(
       within(sidebar)
@@ -311,7 +340,9 @@ describe("Cockpit shell", () => {
 
   it("marks no view on the home canvas", () => {
     renderShell();
-    const sidebar = screen.getByRole("complementary");
+    const sidebar = within(screen.getByRole("complementary")).getByRole(
+      "navigation",
+    );
 
     for (const name of ["All Sessions", "Projects", "New Session"]) {
       expect(
@@ -319,6 +350,74 @@ describe("Cockpit shell", () => {
           .getByRole("link", { name })
           .getAttribute("aria-current"),
       ).toBeNull();
+    }
+  });
+
+  it("offers New Session above the sidebar search as well as below", () => {
+    renderShell();
+    const sidebar = screen.getByRole("complementary");
+    const links = within(sidebar).getAllByRole("link", { name: "New Session" });
+    const search = within(sidebar).getByRole("searchbox", { name: "Sessions" });
+
+    expect(links).toHaveLength(2);
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/-/relay/studio/cockpit?view=new",
+      "/-/relay/studio/cockpit?view=new",
+    ]);
+    expect(
+      links[0]?.compareDocumentPosition(search) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("shows no machine switch unless the deployment names another Cockpit", async () => {
+    renderShell();
+    await Promise.resolve();
+
+    expect(
+      screen.queryByRole("link", { name: /Switch to the Cockpit/ }),
+    ).toBeNull();
+  });
+
+  it("switches to the other machine's Cockpit from the sidebar top", async () => {
+    stubCockpitPeer();
+    renderShell();
+
+    const sidebar = screen.getByRole("complementary");
+    const peer = await within(sidebar).findByRole("link", {
+      name: "Switch to the Cockpit on aihub",
+    });
+    expect(peer.getAttribute("href")).toBe(
+      "https://aihub.example.ts.net:3400/cockpit",
+    );
+    expect(peer.textContent).toContain("aihub");
+    expect(peer.querySelector("img")?.getAttribute("src")).toBe(
+      "/cockpit-peer-icon.png",
+    );
+  });
+
+  it("puts the machine switch and New Session into the phone header", async () => {
+    stubCockpitPeer();
+    const restore = mockPhoneLayout();
+    try {
+      renderShell();
+      const header = screen.getByRole("banner");
+
+      expect(
+        await within(header).findByRole("link", {
+          name: "Switch to the Cockpit on aihub",
+        }),
+      ).toBeTruthy();
+      expect(
+        within(header).getByRole("link", { name: "New Session" }),
+      ).toBeTruthy();
+      expect(
+        within(screen.getByRole("complementary")).queryByRole("link", {
+          name: "Switch to the Cockpit on aihub",
+        }),
+      ).toBeNull();
+    } finally {
+      restore();
     }
   });
 

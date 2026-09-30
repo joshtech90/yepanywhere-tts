@@ -66,7 +66,7 @@ export function CockpitHostSwitch({ peer, variant }: CockpitHostSwitchProps) {
       href={peer.url}
       title={label}
     >
-      {iconFailed ? (
+      {iconFailed || !peer.icon ? (
         <span className={styles.fallbackIcon}>
           <SwitchIcon />
         </span>
@@ -80,14 +80,15 @@ export function CockpitHostSwitch({ peer, variant }: CockpitHostSwitchProps) {
         />
       )}
       {variant === "full" && (
-        <>
-          <span aria-hidden="true" className={styles.hostLabel}>
-            {peer.label}
-          </span>
-          <span className={styles.switchMark}>
-            <SwitchIcon />
-          </span>
-        </>
+        <span aria-hidden="true" className={styles.hostLabel}>
+          {peer.label}
+        </span>
+      )}
+      {/* On the bare icon the arrows sit as a badge on its corner. */}
+      {(variant === "full" || peer.icon) && !iconFailed && (
+        <span className={styles.switchMark}>
+          <SwitchIcon />
+        </span>
       )}
     </a>
   );

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseCockpitPeer } from "./peer";
 
 describe("parseCockpitPeer", () => {
-  it("reads a peer and takes its icon from the other machine", () => {
+  it("reads a peer; without an icon the button draws its own", () => {
     expect(
       parseCockpitPeer({
         label: " aihub ",
@@ -11,18 +11,25 @@ describe("parseCockpitPeer", () => {
     ).toEqual({
       label: "aihub",
       url: "https://aihub.example.ts.net:3400/cockpit",
-      icon: "https://aihub.example.ts.net:3400/icon-192.png",
+      icon: null,
     });
   });
 
-  it("resolves a configured icon against the peer address", () => {
-    expect(
+  it("keeps only an icon served by this Cockpit itself", () => {
+    const peer = (icon: string) =>
       parseCockpitPeer({
         label: "Mac",
         url: "https://mac.example.ts.net:3400/cockpit",
-        icon: "/favicon.ico?v=1",
-      })?.icon,
-    ).toBe("https://mac.example.ts.net:3400/favicon.ico?v=1");
+        icon,
+      })?.icon;
+    expect(peer("/cockpit-peer-icon.png?v=1")).toBe(
+      "/cockpit-peer-icon.png?v=1",
+    );
+    // The content policy would block these, leaving a broken image.
+    expect(peer("https://mac.example.ts.net:3400/icon-192.png")).toBeNull();
+    expect(peer("//mac.example.ts.net/icon-192.png")).toBeNull();
+    expect(peer("data:image/png,")).toBeNull();
+    expect(peer("/\\mac.example.ts.net/icon-192.png")).toBeNull();
   });
 
   it("means no peer for missing, malformed or non-web entries", () => {
@@ -35,7 +42,6 @@ describe("parseCockpitPeer", () => {
       { label: "aihub" },
       { label: "aihub", url: "cockpit" },
       { label: "aihub", url: "javascript:alert(1)" },
-      { label: "aihub", url: "https://a.example/", icon: "data:image/png," },
     ]) {
       expect(parseCockpitPeer(raw)).toBeNull();
     }
