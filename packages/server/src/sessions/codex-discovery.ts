@@ -12,6 +12,7 @@ import {
   type CodexRolloutDiscoveryIdentity,
   getCodexRolloutActivityTimeMs,
   getCodexRolloutDiscoveryIdentity,
+  getCodexRolloutId,
 } from "../utils/codexRolloutFiles.js";
 import { isZstdJsonlSupported, readFirstLine } from "../utils/jsonl.js";
 
@@ -150,7 +151,10 @@ export async function readCodexRolloutMetadata(
     if (identity.representation === "zstd") {
       if (metrics) metrics.cacheBackedCompressedReads += 1;
     }
-    if (cached.metadata.isHeadlessExec) return null;
+    if (cached.metadata.isHeadlessExec) {
+      rememberIgnoredCodexRollout(options.filePath);
+      return null;
+    }
     return toDiscoveredSession(cached.metadata, options.filePath, stats);
   }
   if (cached) {
@@ -194,8 +198,26 @@ export async function readCodexRolloutMetadata(
     sourceFingerprint,
   });
 
-  if (metadata.isHeadlessExec) return null;
+  if (metadata.isHeadlessExec) {
+    rememberIgnoredCodexRollout(options.filePath);
+    return null;
+  }
   return toDiscoveredSession(metadata, options.filePath, stats);
+}
+
+// A rollout's session_meta never changes, so once a file is known to be a
+// hidden exec run its later appends can be dropped without rereading it.
+const ignoredCodexRolloutIds = new Set<string>();
+
+function rememberIgnoredCodexRollout(filePath: string): void {
+  const rolloutId = getCodexRolloutId(filePath);
+  if (rolloutId) ignoredCodexRolloutIds.add(rolloutId);
+}
+
+/** True once discovery has seen this rollout and hidden it as an exec run. */
+export function isIgnoredCodexRolloutPath(filePath: string): boolean {
+  const rolloutId = getCodexRolloutId(filePath);
+  return rolloutId !== null && ignoredCodexRolloutIds.has(rolloutId);
 }
 
 function isCachedRecordUsable(
@@ -339,7 +361,8 @@ const LOCAL_CODEX_MODEL_PROVIDERS = new Set(["ollama", "lmstudio", "local"]);
 /**
  * Scripted `codex exec` runs (reviews, batch workers) started outside Yep are
  * not conversations and are kept out of session lists. Yep's own CodexOSS
- * runs override the originator; older ones are recognised by a local provider.
+ * runs override the originator; older ones are recognised by a local provider
+ * or by the `ya_` provider key of a configured gateway service.
  */
 export function isHeadlessCodexExecSessionMeta(meta: {
   originator?: unknown;
@@ -350,7 +373,9 @@ export function isHeadlessCodexExecSessionMeta(meta: {
     typeof meta.model_provider === "string"
       ? meta.model_provider.toLowerCase()
       : "";
-  return !LOCAL_CODEX_MODEL_PROVIDERS.has(provider);
+  return (
+    !LOCAL_CODEX_MODEL_PROVIDERS.has(provider) && !provider.startsWith("ya_")
+  );
 }
 
 export function isSubagentSessionMeta(

@@ -22,6 +22,7 @@ import {
   type SessionCatalogRow,
   sessionCatalogRowKey,
 } from "../catalog-types.js";
+import { isIgnoredCodexRolloutPath } from "../codex-discovery.js";
 import { toSessionListSummary } from "../types.js";
 import {
   readClaudeCatalogRecency,
@@ -198,8 +199,15 @@ async function refreshChangedRows(
       )
       .map((row) => (row.location.kind === "file" ? row.location.path : "")),
   );
-  // A newly observed file needs discovery to establish its project membership.
-  if ([...changedPaths].some((path) => !knownPaths.has(path))) return undefined;
+  // A newly observed file needs discovery to establish its project membership,
+  // unless discovery already hid it as a scripted Codex exec run.
+  if (
+    [...changedPaths].some(
+      (path) => !knownPaths.has(path) && !isIgnoredCodexRolloutPath(path),
+    )
+  ) {
+    return undefined;
+  }
   const rows: SessionCatalogRow[] = [];
   const needsGemini = previousRows.some(
     (row) =>

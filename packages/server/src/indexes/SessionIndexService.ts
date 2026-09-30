@@ -23,6 +23,7 @@ import { getLogger } from "../logging/logger.js";
 import { getProjectIdentityKey } from "../projects/paths.js";
 import {
   type CodexRolloutDiscoveryMetadata,
+  isIgnoredCodexRolloutPath,
   readCodexRolloutMetadata,
 } from "../sessions/codex-discovery.js";
 import type { ISessionReader } from "../sessions/types.js";
@@ -1236,6 +1237,12 @@ export class SessionIndexService implements ISessionIndexService {
   }
 
   private handleCodexFileChange(event: FileChangeEvent): void {
+    if (
+      event.changeType !== "delete" &&
+      isIgnoredCodexRolloutPath(event.path)
+    ) {
+      return;
+    }
     const sessionId = getCodexRolloutSessionId(event.relativePath);
     if (!sessionId) {
       this.markMatchingScopesDirty("codex::");
@@ -1263,6 +1270,7 @@ export class SessionIndexService implements ISessionIndexService {
         );
         return;
       }
+      if (!resolved && isIgnoredCodexRolloutPath(event.path)) return;
     } catch (error) {
       getLogger().debug(
         { err: error, filePath: event.path },

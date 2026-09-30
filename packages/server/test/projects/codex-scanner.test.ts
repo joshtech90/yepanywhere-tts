@@ -6,7 +6,10 @@ import * as zlib from "node:zlib";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getLogger } from "../../src/logging/logger.js";
 import { CodexSessionScanner } from "../../src/projects/codex-scanner.js";
-import { createCodexSessionDiscoveryIndex } from "../../src/sessions/codex-discovery.js";
+import {
+  createCodexSessionDiscoveryIndex,
+  isIgnoredCodexRolloutPath,
+} from "../../src/sessions/codex-discovery.js";
 import { getCodexRolloutDiscoveryIdentity } from "../../src/utils/codexRolloutFiles.js";
 import { isZstdJsonlSupported } from "../../src/utils/jsonl.js";
 
@@ -99,6 +102,7 @@ describe("CodexSessionScanner", () => {
     const interactiveId = randomUUID();
     const execId = randomUUID();
     const ossId = randomUUID();
+    const gatewayId = randomUUID();
     const sessions: Array<[string, Record<string, unknown>]> = [
       [interactiveId, { originator: "codex-tui", source: "cli" }],
       [
@@ -108,6 +112,10 @@ describe("CodexSessionScanner", () => {
       [
         ossId,
         { originator: "codex_exec", source: "exec", model_provider: "ollama" },
+      ],
+      [
+        gatewayId,
+        { originator: "codex_exec", source: "exec", model_provider: "ya_lan" },
       ],
     ];
     for (const [id, extra] of sessions) {
@@ -121,9 +129,17 @@ describe("CodexSessionScanner", () => {
     const listed = await scanner.getSessionsForProject(cwd);
 
     expect(listed.map((s) => s.id).sort()).toEqual(
-      [interactiveId, ossId].sort(),
+      [interactiveId, ossId, gatewayId].sort(),
     );
     await expect(scanner.getSessionProjectPath(execId)).resolves.toBeNull();
+    expect(
+      isIgnoredCodexRolloutPath(join(dateDir, `rollout-${execId}.jsonl`)),
+    ).toBe(true);
+    expect(
+      isIgnoredCodexRolloutPath(
+        join(dateDir, `rollout-${interactiveId}.jsonl`),
+      ),
+    ).toBe(false);
   });
 
   it("resolves a session's project from its native cwd", async () => {
