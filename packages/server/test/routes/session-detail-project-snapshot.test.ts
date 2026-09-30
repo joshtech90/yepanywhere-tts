@@ -43,10 +43,13 @@ function createRoutes(options: {
   staleProject: Project | null;
   freshProject: Project;
   sessionDirWithTranscript: string;
+  workingProjectIdAfterMiss?: string;
 }) {
+  let missed = false;
   const scanner = {
     getProject: vi.fn(async () => options.staleProject),
     getOrCreateProject: vi.fn(async () => options.freshProject),
+    listProjects: vi.fn(async () => []),
   };
   const routes = createSessionsRoutes({
     supervisor: {
@@ -56,17 +59,29 @@ function createRoutes(options: {
     scanner: scanner as unknown as SessionsDeps["scanner"],
     readerFactory: (project: Project) =>
       ({
-        getSession: async () =>
-          project.sessionDir === options.sessionDirWithTranscript
-            ? loadedSession()
-            : null,
+        getSession: async () => {
+          if (project.sessionDir === options.sessionDirWithTranscript) {
+            return loadedSession();
+          }
+          missed = true;
+          return null;
+        },
       }) as unknown as ISessionReader,
+    // The session moved to another project while the stale read ran.
+    sessionMetadataService: {
+      getMetadata: () =>
+        missed && options.workingProjectIdAfterMiss
+          ? { workingProjectId: options.workingProjectIdAfterMiss }
+          : undefined,
+      getProvider: () => undefined,
+      getRecapMessages: () => [],
+    } as unknown as SessionsDeps["sessionMetadataService"],
   });
   return { routes, scanner };
 }
 
 describe("session detail project lookup", () => {
-  it("reuses the resolved project instead of rescanning every provider", async () => {
+  it("serves an open session without rescanning every provider's projects", async () => {
     const { routes, scanner } = createRoutes({
       staleProject: createProject("/sessions/a"),
       freshProject: createProject("/sessions/a"),
@@ -76,29 +91,15 @@ describe("session detail project lookup", () => {
     const response = await routes.request("/projects/proj-1/sessions/sess-1");
 
     expect(response.status).toBe(200);
-    expect(scanner.getProject).toHaveBeenCalledWith("proj-1", {
-      allowStaleSnapshot: true,
-    });
     expect(scanner.getOrCreateProject).not.toHaveBeenCalled();
   });
 
-  it("rescans once when the reused project does not hold the transcript", async () => {
-    const { routes, scanner } = createRoutes({
-      staleProject: createProject("/sessions/old"),
-      freshProject: createProject("/sessions/merged"),
-      sessionDirWithTranscript: "/sessions/merged",
-    });
-
-    const response = await routes.request("/projects/proj-1/sessions/sess-1");
-
-    expect(response.status).toBe(200);
-    expect((await response.json()).session).toMatchObject({ id: "sess-1" });
-    expect(scanner.getOrCreateProject).toHaveBeenCalledTimes(1);
-  });
-
-  it("falls back to a fresh lookup for a project the snapshot lacks", async () => {
-    const { routes, scanner } = createRoutes({
-      staleProject: null,
+  it.each([
+    ["the reused project lacks the transcript", createProject("/sessions/old")],
+    ["the snapshot does not know the project yet", null],
+  ])("still finds the session when %s", async (_case, staleProject) => {
+    const { routes } = createRoutes({
+      staleProject,
       freshProject: createProject("/sessions/new"),
       sessionDirWithTranscript: "/sessions/new",
     });
@@ -106,6 +107,22 @@ describe("session detail project lookup", () => {
     const response = await routes.request("/projects/proj-1/sessions/sess-1");
 
     expect(response.status).toBe(200);
-    expect(scanner.getOrCreateProject).toHaveBeenCalledTimes(1);
+    expect((await response.json()).session).toMatchObject({ id: "sess-1" });
+  });
+
+  it("redirects instead of 404 when the session moved during the lookup", async () => {
+    const { routes } = createRoutes({
+      staleProject: createProject("/sessions/old"),
+      freshProject: createProject("/sessions/new"),
+      sessionDirWithTranscript: "/sessions/none",
+      workingProjectIdAfterMiss: "proj-2",
+    });
+
+    const response = await routes.request("/projects/proj-1/sessions/sess-1");
+
+    expect(response.status).toBe(307);
+    expect(response.headers.get("location")).toContain(
+      "/api/projects/proj-2/sessions/sess-1",
+    );
   });
 });
