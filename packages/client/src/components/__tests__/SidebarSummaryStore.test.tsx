@@ -279,7 +279,10 @@ describe("Sidebar client summary source registry", () => {
     expect(row.getAttribute("data-project-name")).toBe("draft");
   });
 
-  it("keeps rows in place through background output and activity transitions", () => {
+  // Fork contract (useSidebarSessionOrder): the newest signal a session has
+  // places it, provider write time included, so newer output moves a row up;
+  // an activity transition alone does not.
+  it("orders rows by their newest output, not by activity transitions", () => {
     const source = createClientSummaryHostSourceKey("stable-sidebar");
     const first = session("first", "First", {
       createdAt: new Date(RECENT_MS + 1000).toISOString(),
@@ -313,8 +316,8 @@ describe("Sidebar client summary source registry", () => {
     });
     expect(screen.getByText("Updated")).toBeDefined();
     expect(sectionRowIds(container, "sidebar-last-24-hours-list")).toEqual([
-      "first",
       "second",
+      "first",
     ]);
   });
 
