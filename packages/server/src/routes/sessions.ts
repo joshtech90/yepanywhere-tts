@@ -2207,6 +2207,16 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     )}${suffix}${search}`;
   };
 
+  // Reused project snapshots must not stay stale forever: at most every 30 s a
+  // reuse also refreshes the project list in the background.
+  let lastSnapshotRefreshMs = 0;
+  const refreshProjectSnapshotSoon = () => {
+    const now = Date.now();
+    if (now - lastSnapshotRefreshMs < 30_000) return;
+    lastSnapshotRefreshMs = now;
+    void deps.scanner.listProjects?.().catch(() => {});
+  };
+
   const resolveSessionProjectRouting = async (
     requestProjectId: UrlProjectId,
     sessionId: string,
@@ -2241,12 +2251,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     // A writing session invalidates the project snapshot on every append, so
     // a fresh lookup rescans every provider's projects. Callers that can retry
     // a miss reuse the resolved identity instead.
+    const reusedProject = options?.allowStaleSnapshot
+      ? await deps.scanner.getProject?.(requestProjectId, {
+          allowStaleSnapshot: true,
+        })
+      : null;
+    if (reusedProject) refreshProjectSnapshotSoon();
     const workingProject =
-      (options?.allowStaleSnapshot
-        ? await deps.scanner.getProject?.(requestProjectId, {
-            allowStaleSnapshot: true,
-          })
-        : null) ?? (await deps.scanner.getOrCreateProject(requestProjectId));
+      reusedProject ??
+      (await deps.scanner.getOrCreateProject(requestProjectId));
     if (!workingProject) {
       return { error: "Project not found", status: 404 };
     }
@@ -3322,20 +3335,32 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         projectId as UrlProjectId,
         sessionId,
       );
-      if ("workingProject" in fresh) {
-        project = fresh.workingProject;
-        effectiveProjectId = fresh.workingProjectId;
-        transcriptProject = fresh.transcriptProject;
-        transcriptProjectId = fresh.transcriptProjectId;
-        loadedSession = await loadProviderSession(
-          transcriptProject,
-          sessionId,
-          transcriptProjectId,
-          metadataProvider ?? process?.provider,
-          primaryReaderAfterMessageId,
-          loadOptions,
+      if ("redirectProjectId" in fresh) {
+        return c.redirect(
+          buildSessionProjectRedirectPath(
+            fresh.redirectProjectId,
+            sessionId,
+            "",
+            c.req.url,
+          ),
+          307,
         );
       }
+      if ("error" in fresh) {
+        return c.json({ error: fresh.error }, fresh.status);
+      }
+      project = fresh.workingProject;
+      effectiveProjectId = fresh.workingProjectId;
+      transcriptProject = fresh.transcriptProject;
+      transcriptProjectId = fresh.transcriptProjectId;
+      loadedSession = await loadProviderSession(
+        transcriptProject,
+        sessionId,
+        transcriptProjectId,
+        metadataProvider ?? process?.provider,
+        primaryReaderAfterMessageId,
+        loadOptions,
+      );
     }
 
     const readEndMs = performance.now();
