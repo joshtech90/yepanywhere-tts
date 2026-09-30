@@ -407,7 +407,9 @@ export function CockpitShell({
               to={navigation.newSession}
             >
               <NewSessionIcon />
-              <span>{t("sidebarNewSession")}</span>
+              <span className={styles.sidebarTopLabel}>
+                {t("sidebarNewSession")}
+              </span>
             </Link>
             {peer && <CockpitHostSwitch peer={peer} variant="full" />}
           </div>
@@ -633,9 +635,7 @@ export function CockpitShell({
               to={navigation.newSession}
             >
               <NewSessionIcon />
-              <span className={styles.labelLong}>
-                {t("sidebarNewSession")}
-              </span>
+              <span className={styles.labelLong}>{t("sidebarNewSession")}</span>
               <span aria-hidden="true" className={styles.labelShort}>
                 {t("cockpitNavShortNew")}
               </span>

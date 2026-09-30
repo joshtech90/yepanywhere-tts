@@ -343,7 +343,7 @@
   font-weight: var(--cockpit-weight-strong);
 }
 
-.sidebarTop .primaryAction span {
+.sidebarTopLabel {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

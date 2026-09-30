@@ -596,6 +596,26 @@ Symbole unterschreiten bewusst die 44-Pixel-Zielgroesse aus Paket 10. Der leere
 Desktop-Inhalt zeigt ein wechselndes Zitat aus der deutschen Literatur
 (`core/quotes.ts`, nur wortgetreue gemeinfreie Stellen).
 
+### Seitenleisten-Kopf und Rechnerwechsel (30.09.2026)
+
+Ueber der Suche der Seitenleiste stehen „Neue Sitzung“ und, falls die
+Installation ein zweites Cockpit nennt, der Wechsel dorthin. „Neue Sitzung“
+bleibt zusaetzlich in der Navigation unten. Am Handy stehen beide als kurze
+Knoepfe in der Kopfzeile ueber der Liste (Wechsel als Symbol mit
+Pfeil-Abzeichen, „Neu“ in Akzentfarbe); in der offenen Sitzung bleibt die
+Kopfzeile unveraendert.
+
+Das Gegenueber beschreibt `cockpit-peer.json` neben dem gebauten Client
+(`{"label", "url", "icon"}`), die `core/peer.ts` prueft. Fehlt die Datei oder
+ist sie ungueltig (auch die HTML-Rueckfallseite des Servers), gibt es keinen
+Knopf; eine normale Installation sieht also aus wie bisher. `url` muss eine
+absolute http(s)-Adresse auf einem anderen Ursprung sein, `icon` ein Pfad auf
+dem eigenen Server, weil die Content-Security-Policy nur eigene Bilder laedt;
+ohne Symbol zeichnet der Knopf Wechselpfeile. Der Wechsel oeffnet das andere
+Cockpit im selben Fenster. Joschas Release-Skript
+(`AI Worker/scripts/yep_nachbau.py`, `gegenstelle_setzen`) schreibt Datei
+und Symbol je Rechner aus `hosts/rollen.json`.
+
 ## Verworfene Alternativen
 
 ### Bestehende UI direkt umgestalten

@@ -364,9 +364,10 @@ describe("Cockpit shell", () => {
       "/-/relay/studio/cockpit?view=new",
       "/-/relay/studio/cockpit?view=new",
     ]);
+    const [top] = links;
+    if (!top) throw new Error("top new-session link missing");
     expect(
-      links[0]?.compareDocumentPosition(search) &
-        Node.DOCUMENT_POSITION_FOLLOWING,
+      top.compareDocumentPosition(search) & Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
 

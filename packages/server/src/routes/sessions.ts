@@ -2210,6 +2210,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
   const resolveSessionProjectRouting = async (
     requestProjectId: UrlProjectId,
     sessionId: string,
+    options?: { allowStaleSnapshot?: boolean },
   ): Promise<
     | { error: string; status: 404 }
     | {
@@ -2237,8 +2238,15 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return { redirectProjectId };
     }
 
+    // A writing session invalidates the project snapshot on every append, so
+    // a fresh lookup rescans every provider's projects. Callers that can retry
+    // a miss reuse the resolved identity instead.
     const workingProject =
-      await deps.scanner.getOrCreateProject(requestProjectId);
+      (options?.allowStaleSnapshot
+        ? await deps.scanner.getProject?.(requestProjectId, {
+            allowStaleSnapshot: true,
+          })
+        : null) ?? (await deps.scanner.getOrCreateProject(requestProjectId));
     if (!workingProject) {
       return { error: "Project not found", status: 404 };
     }
@@ -3226,6 +3234,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const routing = await resolveSessionProjectRouting(
       projectId as UrlProjectId,
       sessionId,
+      { allowStaleSnapshot: true },
     );
     if ("redirectProjectId" in routing) {
       return c.redirect(
@@ -3241,10 +3250,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     if ("error" in routing) {
       return c.json({ error: routing.error }, routing.status);
     }
-    const project = routing.workingProject;
-    const effectiveProjectId = routing.workingProjectId;
-    const transcriptProject = routing.transcriptProject;
-    const transcriptProjectId = routing.transcriptProjectId;
+    let project = routing.workingProject;
+    let effectiveProjectId = routing.workingProjectId;
+    let transcriptProject = routing.transcriptProject;
+    let transcriptProjectId = routing.transcriptProjectId;
     const projectResolvedMs = performance.now();
 
     // Check if session is actively owned by a process
@@ -3277,36 +3286,57 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         ? undefined
         : providerAfterMessageId;
 
-    const loadedSession = await loadProviderSession(
+    const loadOptions = {
+      // Only include orphaned tool info if:
+      // 1. We previously owned this session (not external)
+      // 2. No active process (tools aren't potentially in progress)
+      // When we own the session, tools without results might be pending approval
+      includeOrphans: wasEverOwned && !process,
+      ...(process?.state.type === "in-turn" ||
+      process?.state.type === "waiting-input"
+        ? { ownedTurnInProgress: true }
+        : {}),
+      ...(!fullHistory &&
+      ((!afterMessageId && effectiveTailCompactions !== undefined) ||
+        primaryReaderAfterMessageId)
+        ? {
+            tailCompactions:
+              effectiveTailCompactions ??
+              DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
+            ...(!afterMessageId && beforeMessageId ? { beforeMessageId } : {}),
+          }
+        : {}),
+    };
+    let loadedSession = await loadProviderSession(
       transcriptProject,
       sessionId,
       transcriptProjectId,
       metadataProvider ?? process?.provider,
       primaryReaderAfterMessageId,
-      {
-        // Only include orphaned tool info if:
-        // 1. We previously owned this session (not external)
-        // 2. No active process (tools aren't potentially in progress)
-        // When we own the session, tools without results might be pending approval
-        includeOrphans: wasEverOwned && !process,
-        ...(process?.state.type === "in-turn" ||
-        process?.state.type === "waiting-input"
-          ? { ownedTurnInProgress: true }
-          : {}),
-        ...(!fullHistory &&
-        ((!afterMessageId && effectiveTailCompactions !== undefined) ||
-          primaryReaderAfterMessageId)
-          ? {
-              tailCompactions:
-                effectiveTailCompactions ??
-                DEFAULT_SESSION_DETAIL_TAIL_COMPACTIONS,
-              ...(!afterMessageId && beforeMessageId
-                ? { beforeMessageId }
-                : {}),
-            }
-          : {}),
-      },
+      loadOptions,
     );
+    // The reused snapshot may predate a newly merged session directory; a
+    // miss repeats the lookup against a fresh scan before reporting it.
+    if (!loadedSession) {
+      const fresh = await resolveSessionProjectRouting(
+        projectId as UrlProjectId,
+        sessionId,
+      );
+      if ("workingProject" in fresh) {
+        project = fresh.workingProject;
+        effectiveProjectId = fresh.workingProjectId;
+        transcriptProject = fresh.transcriptProject;
+        transcriptProjectId = fresh.transcriptProjectId;
+        loadedSession = await loadProviderSession(
+          transcriptProject,
+          sessionId,
+          transcriptProjectId,
+          metadataProvider ?? process?.provider,
+          primaryReaderAfterMessageId,
+          loadOptions,
+        );
+      }
+    }
 
     const readEndMs = performance.now();
 

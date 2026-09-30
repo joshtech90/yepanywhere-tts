@@ -1,7 +1,11 @@
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
 import styles from "./CockpitHostSwitch.module.css";
-import { COCKPIT_PEER_PATH, parseCockpitPeer, type CockpitPeer } from "./core/peer";
+import {
+  COCKPIT_PEER_PATH,
+  parseCockpitPeer,
+  type CockpitPeer,
+} from "./core/peer";
 
 // One request per page load; the file only changes with a new release.
 let peerRequest: Promise<CockpitPeer | null> | null = null;
