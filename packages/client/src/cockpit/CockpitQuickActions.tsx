@@ -20,6 +20,8 @@ import type { CockpitComposerSessionPort } from "./useCockpitComposer";
 import { useCockpitHandoff } from "./useCockpitHandoff";
 
 export interface CockpitQuickActionsProps {
+  /** Per-session auto read-aloud switch; the entry is hidden without it. */
+  autoReadAloud?: { enabled: boolean; toggle: () => void };
   basePath: string;
   /** The session in the existing view; a menu entry on phones only. */
   classicHref?: string;
@@ -45,6 +47,7 @@ function BoltIcon() {
  * it over to a fresh session with a chosen model and thinking level.
  */
 export function CockpitQuickActions({
+  autoReadAloud,
   basePath,
   busy,
   classicHref,
@@ -100,16 +103,22 @@ export function CockpitQuickActions({
         aria-haspopup="menu"
         aria-label={t("cockpitQuickActions")}
         className={styles.trigger}
+        data-auto-read={autoReadAloud?.enabled ? "on" : undefined}
         data-state={copied}
         onClick={() => setMenuOpen((open) => !open)}
         title={
           copied === "copied"
             ? t("cockpitQuickTerminalCopied")
-            : t("cockpitQuickActions")
+            : autoReadAloud?.enabled
+              ? `${t("cockpitQuickActions")} · ${t("cockpitQuickAutoReadOn")}`
+              : t("cockpitQuickActions")
         }
         type="button"
       >
         <BoltIcon />
+        {autoReadAloud?.enabled && (
+          <span aria-hidden="true" className={styles.autoReadBadge} />
+        )}
         <span aria-live="polite" className={styles.srOnly}>
           {copied === "copied"
             ? t("cockpitQuickTerminalCopied")
@@ -160,6 +169,28 @@ export function CockpitQuickActions({
                 : t("cockpitQuickHandoffHint")}
             </small>
           </button>
+          {autoReadAloud && (
+            <button
+              aria-checked={autoReadAloud.enabled}
+              className={styles.item}
+              onClick={() => {
+                autoReadAloud.toggle();
+                setMenuOpen(false);
+              }}
+              role="menuitemcheckbox"
+              type="button"
+            >
+              <strong className={styles.switchLabel}>
+                {t("cockpitQuickAutoRead")}
+                <span className={styles.switchState}>
+                  {autoReadAloud.enabled
+                    ? t("cockpitQuickAutoReadOn")
+                    : t("cockpitQuickAutoReadOff")}
+                </span>
+              </strong>
+              <small>{t("cockpitQuickAutoReadHint")}</small>
+            </button>
+          )}
           {classicHref && (
             <Link
               className={`${styles.item} ${styles.phoneOnly}`}
