@@ -1,9 +1,12 @@
-import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from "react";
 import { playReadAloud, stopReadAloud } from "../lib/readAloud";
-import type {
-  CockpitAssistantEntry,
-  CockpitTranscriptEntry,
-} from "./core/sessionDetail";
+import type { CockpitTranscriptEntry } from "./core/sessionDetail";
 
 /**
  * Auto read-aloud for one Cockpit session, like PocketClaude's per-chat
@@ -68,21 +71,44 @@ export function resetCockpitAutoReadCache(): void {
   remembered = null;
 }
 
+export interface CockpitFinalAnswer {
+  /** Id of the answer's last text block; changes with every new message. */
+  key: string;
+  text: string;
+}
+
 /**
- * The last transcript entry, when it is a finished, complete answer. Status
- * and compaction markers after it do not count as later output.
+ * The final answer of the transcript: the last provider message of the last
+ * entry, when that entry is a finished, complete answer. Earlier messages
+ * grouped into the same entry are commentary and stay unread. Status and
+ * compaction markers after it do not count as later output.
  */
 export function finalCockpitAnswer(
   entries: readonly CockpitTranscriptEntry[],
-): CockpitAssistantEntry | null {
+): CockpitFinalAnswer | null {
   let index = entries.length - 1;
   while (entries[index]?.kind === "boundary") index--;
   const last = entries[index];
   if (last?.kind !== "assistant" || last.isStreaming) return null;
-  if (!last.spokenText.trim()) return null;
   // A stopped answer is not the final one.
   if (last.text.some((segment) => segment.abortedMidStream)) return null;
-  return last;
+  const segment = last.text[last.text.length - 1];
+  if (!segment) return null;
+  const source = last.sourceItems?.find((item) => item.id === segment.id)
+    ?.sourceMessages[0];
+  const sameMessage = source
+    ? new Set(
+        last.sourceItems
+          ?.filter((item) => item.sourceMessages[0] === source)
+          .map((item) => item.id),
+      )
+    : new Set([segment.id]);
+  const text = last.text
+    .filter((part) => sameMessage.has(part.id))
+    .map((part) => part.text)
+    .join("\n\n")
+    .trim();
+  return text ? { key: segment.id, text } : null;
 }
 
 export interface CockpitAutoReadAloudInput {
@@ -90,27 +116,50 @@ export interface CockpitAutoReadAloudInput {
   /** Real provider id once a new session reports it; carries the switch. */
   actualSessionId?: string | null;
   entries: readonly CockpitTranscriptEntry[];
+  /** The latest turn ended in an abort rather than an answer. */
+  aborted?: boolean;
   /** Transcript for this session has loaded at least once. */
   loaded: boolean;
   /** The session works here or elsewhere, or waits for input. */
   working: boolean;
+  /** The work happens in another program, seen only through the transcript. */
+  workingElsewhere?: boolean;
 }
+
+/**
+ * Idle and the transcript arrive separately, so the answer has to hold still
+ * this long before it counts as final.
+ */
+export const COCKPIT_AUTO_READ_SETTLE_MS = 1_500;
+/**
+ * Another program's turn looks idle whenever its latest text is finished,
+ * even between that text and its next tool call; wait longer there.
+ */
+export const COCKPIT_AUTO_READ_EXTERNAL_SETTLE_MS = 8_000;
 
 interface TurnWatch {
   sessionId: string;
   working: boolean;
+  external: boolean;
   /** Key of the final answer when the turn began; undefined = unknown. */
   baseline: string | null | undefined;
   endedAt: number | null;
 }
 
 export function useCockpitAutoReadAloud({
+  aborted = false,
   actualSessionId,
   entries,
   loaded,
   sessionId,
   working,
-}: CockpitAutoReadAloudInput): { enabled: boolean; toggle: () => void } {
+  workingElsewhere = false,
+}: CockpitAutoReadAloudInput): {
+  enabled: boolean;
+  /** Leave the current turn unread, for example after the user stops it. */
+  skipTurn: () => void;
+  toggle: () => void;
+} {
   const list = useSyncExternalStore(subscribe, snapshot, snapshot);
   const ownId = actualSessionId || sessionId;
   const enabled = list.includes(ownId) || list.includes(sessionId);
@@ -136,10 +185,15 @@ export function useCockpitAutoReadAloud({
     setRemembered(ownId, next);
   }, [enabled, ownId, sessionId]);
 
-  const answer = finalCockpitAnswer(entries);
+  const answer = useMemo(() => finalCockpitAnswer(entries), [entries]);
   const answerKey = answer?.key ?? null;
-  const answerText = answer?.spokenText ?? "";
+  const answerText = answer?.text ?? "";
   const watchRef = useRef<TurnWatch | null>(null);
+  const skippedRef = useRef(false);
+
+  const skipTurn = useCallback(() => {
+    skippedRef.current = true;
+  }, []);
 
   useEffect(() => {
     let watch = watchRef.current;
@@ -148,18 +202,23 @@ export function useCockpitAutoReadAloud({
       watch = {
         sessionId,
         working: false,
+        external: false,
         baseline: loaded ? answerKey : undefined,
         endedAt: null,
       };
       watchRef.current = watch;
+      skippedRef.current = false;
     }
     if (working) {
       if (!watch.working) {
         watch.working = true;
+        watch.external = false;
         watch.baseline = loaded ? answerKey : undefined;
+        skippedRef.current = false;
       } else if (watch.baseline === undefined && loaded) {
         watch.baseline = answerKey;
       }
+      if (workingElsewhere) watch.external = true;
       watch.endedAt = null;
       return;
     }
@@ -167,20 +226,42 @@ export function useCockpitAutoReadAloud({
       watch.working = false;
       watch.endedAt = Date.now();
     }
-    if (watch.endedAt === null) return;
-    if (!enabled || !loaded || watch.baseline === undefined) {
-      watch.endedAt = null;
-      return;
-    }
-    if (Date.now() - watch.endedAt > ANSWER_GRACE_MS) {
+    const endedAt = watch.endedAt;
+    if (endedAt === null) return;
+    if (
+      !enabled ||
+      !loaded ||
+      aborted ||
+      skippedRef.current ||
+      watch.baseline === undefined ||
+      Date.now() - endedAt > ANSWER_GRACE_MS
+    ) {
       watch.endedAt = null;
       return;
     }
     if (!answerKey || answerKey === watch.baseline) return;
-    watch.endedAt = null;
-    watch.baseline = answerKey;
-    void playReadAloud(answerText, answerKey);
-  }, [answerKey, answerText, enabled, loaded, sessionId, working]);
+    // Any change before the timer fires re-runs this effect and restarts it.
+    const settleMs = watch.external
+      ? COCKPIT_AUTO_READ_EXTERNAL_SETTLE_MS
+      : COCKPIT_AUTO_READ_SETTLE_MS;
+    const current = watch;
+    const timer = setTimeout(() => {
+      if (current.endedAt !== endedAt || skippedRef.current) return;
+      current.endedAt = null;
+      current.baseline = answerKey;
+      void playReadAloud(answerText, answerKey);
+    }, settleMs);
+    return () => clearTimeout(timer);
+  }, [
+    aborted,
+    answerKey,
+    answerText,
+    enabled,
+    loaded,
+    sessionId,
+    working,
+    workingElsewhere,
+  ]);
 
-  return { enabled, toggle };
+  return { enabled, skipTurn, toggle };
 }

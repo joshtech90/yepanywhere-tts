@@ -353,12 +353,21 @@ export function CockpitSessionDetail({
     state === "external" ||
     detail.processState !== "idle";
   const autoReadAloud = useCockpitAutoReadAloud({
+    aborted: detail.latestTurnAborted,
     actualSessionId,
     entries: detail.entries,
     loaded: !detail.loading,
     sessionId,
     working: sessionWorking,
+    workingElsewhere: detail.workingElsewhere,
   });
+  const { skipTurn: skipAutoReadTurn } = autoReadAloud;
+  const attentionStop = detail.attention.stop;
+  // A turn the user stops has no final answer to read.
+  const stopTurn = useCallback(() => {
+    skipAutoReadTurn();
+    return attentionStop();
+  }, [attentionStop, skipAutoReadTurn]);
 
   const renderTranscriptEntry = useCallback(
     (entry: CockpitTranscriptEntry) => (
@@ -584,7 +593,7 @@ export function CockpitSessionDetail({
                 ? detail.status.processId
                 : "cockpit-stop-idle"
             }`}
-            stop={detail.attention.stop}
+            stop={stopTurn}
           />
           <CockpitQuickActions
             autoReadAloud={autoReadAloud}

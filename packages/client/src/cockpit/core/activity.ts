@@ -13,6 +13,8 @@ export interface CockpitLatestTurn {
   openToolCallAt: number | null;
   /** The latest turn ended in a finished answer, an abort, or an error. */
   settled: boolean;
+  /** The latest turn ended in an abort (Codex `turn_aborted`). */
+  aborted?: boolean;
 }
 
 function itemTimestamp(item: RenderItem): number | null {
@@ -52,6 +54,7 @@ export function inspectCockpitLatestTurn(
   }
 
   let settled = false;
+  let aborted = false;
   for (let index = items.length - 1; index >= start; index -= 1) {
     const item = items[index];
     if (!item) continue;
@@ -65,6 +68,7 @@ export function inspectCockpitLatestTurn(
       continue;
     }
     settled = isSettlingItem(item);
+    aborted = item.type === "system" && item.subtype === "turn_aborted";
     break;
   }
 
@@ -82,7 +86,9 @@ export function inspectCockpitLatestTurn(
     }
   }
 
-  return { openToolCallAt, settled };
+  return aborted
+    ? { aborted, openToolCallAt, settled }
+    : { openToolCallAt, settled };
 }
 
 export interface CockpitForeignActivityInput {

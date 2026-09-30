@@ -283,16 +283,23 @@ vorlaeufigen auf die echte Sitzungs-ID. Solange er an ist, traegt der Blitz
 einen Punkt. Er wirkt nur, waehrend die Sitzung im Cockpit geoeffnet ist:
 Endet dort ein Durchgang, also wechselt die Sitzung von arbeitend (hier, in
 einem anderen Programm oder auf Eingabe wartend) zu ruhend, liest der
-gemeinsame Controller die dann letzte Transcript-Zeile vor, sofern sie eine
-fertige, nicht abgebrochene Antwort mit Text ist und nicht schon vor Beginn
-des Durchgangs dastand. Trifft die Antwort bis zu 15 Sekunden nach dem
-Ruhezustand ein, wird sie noch vorgelesen. Zwischentexte waehrend des
-Durchgangs, ein Ende auf einem Werkzeugaufruf, gestoppte Antworten und beim
-Oeffnen bereits vorhandene Antworten werden nie automatisch vorgelesen; ein
-Durchgang, dessen Beginn vor dem ersten Laden des Transcripts lag, ebenfalls
-nicht. Ausschalten stoppt eine laufende Wiedergabe. Verweigert der Browser
-die Wiedergabe ohne vorherige Bedienung der Seite, zeigt der Vorleseknopf der
-Antwort den Fehlerzustand und kann dort erneut gestartet werden.
+gemeinsame Controller die letzte Provider-Nachricht der dann letzten
+Transcript-Zeile vor, sofern diese eine fertige, nicht abgebrochene Antwort
+mit Text ist und nicht schon vor Beginn des Durchgangs dastand. Fruehere
+Nachrichten, die das Cockpit in dieselbe Antwortzeile gruppiert, bleiben
+ungelesen. Weil Ruhezustand und Transcript getrennt eintreffen, muss die
+Antwort 1,5 Sekunden unveraendert bleiben, bei Arbeit in einem anderen
+Programm 8 Sekunden, denn dessen Durchgang wirkt schon zwischen einem
+fertigen Zwischentext und dem naechsten Werkzeugaufruf ruhend. Kommt die
+Antwort spaeter als 15 Sekunden nach dem Ruhezustand, wird sie nicht mehr
+vorgelesen. Zwischentexte, ein Ende auf einem Werkzeugaufruf, gestoppte oder
+per `turn_aborted` abgebrochene Durchgaenge, ein Durchgang nach dem
+Stop-Knopf des Cockpits und beim Oeffnen bereits vorhandene Antworten werden
+nie automatisch vorgelesen; ein Durchgang, dessen Beginn vor dem ersten Laden
+des Transcripts lag, ebenfalls nicht. Ausschalten stoppt eine laufende
+Wiedergabe. Verweigert der Browser die Wiedergabe ohne vorherige Bedienung
+der Seite, zeigt der Vorleseknopf der Antwort den Fehlerzustand und kann dort
+erneut gestartet werden.
 
 Abgeschlossene Assistant-Antworten bieten daneben eine Cockpit-eigene
 Kopieraktion fuer den bereits projizierten, unveraenderten Antworttext. Sie

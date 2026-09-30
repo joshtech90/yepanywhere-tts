@@ -34,6 +34,8 @@ export interface CockpitSessionDetailData {
   error: Error | null;
   hasOlderMessages: boolean;
   loadOlderMessages: () => Promise<void>;
+  /** The latest turn ended in an abort rather than an answer. */
+  latestTurnAborted: boolean;
   loading: boolean;
   loadingOlder: boolean;
   processState: "idle" | "in-turn" | "waiting-input";
@@ -185,6 +187,7 @@ export function useCockpitSessionDetail(
     error: detail.error,
     hasOlderMessages: detail.pagination?.hasOlderMessages === true,
     loadOlderMessages: detail.loadOlderMessages,
+    latestTurnAborted: latestTurn.aborted === true,
     loading: detail.loading,
     loadingOlder: detail.loadingOlder,
     processState: detail.processState,

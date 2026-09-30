@@ -73,8 +73,7 @@ function detailData(
           {
             id: "text-1",
             text: "### Release summary\n\nEverything is ready.",
-            augmentHtml:
-              "<h3>Release summary</h3><p>Everything is ready.</p>",
+            augmentHtml: "<h3>Release summary</h3><p>Everything is ready.</p>",
             isStreaming: false,
             abortedMidStream: false,
           },
@@ -93,6 +92,7 @@ function detailData(
     ],
     error: null,
     hasOlderMessages: true,
+    latestTurnAborted: false,
     loadOlderMessages: vi.fn(async () => {}),
     loading: false,
     loadingOlder: false,
@@ -124,9 +124,7 @@ function detailData(
 function detailTree() {
   return (
     <MemoryRouter
-      initialEntries={[
-        "/cockpit/projects/project-1/sessions/session-1",
-      ]}
+      initialEntries={["/cockpit/projects/project-1/sessions/session-1"]}
     >
       <I18nProvider>
         <CockpitSessionDetail
@@ -165,12 +163,8 @@ describe("Cockpit session detail", () => {
     expect(
       screen.getByRole("button", { name: "Read response aloud" }),
     ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Copy response" }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole("button", { name: "Copy prompt" }),
-    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy response" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Copy prompt" })).toBeTruthy();
     expect(
       screen
         .getByRole("link", { name: "Open in existing view" })
@@ -188,9 +182,9 @@ describe("Cockpit session detail", () => {
     expect(
       screen.getByRole("img", { name: "Working in another program" }),
     ).toBeTruthy();
-    expect(
-      screen.getByRole("status").textContent,
-    ).toContain("Working in another program…");
+    expect(screen.getByRole("status").textContent).toContain(
+      "Working in another program…",
+    );
   });
 
   it("keeps a following reader at the end when the transcript resizes", () => {
@@ -229,7 +223,9 @@ describe("Cockpit session detail", () => {
 
   it("loads older history through the canonical session action", () => {
     renderDetail();
-    fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load older messages" }),
+    );
     expect(detailMocks.data?.loadOlderMessages).toHaveBeenCalledTimes(1);
   });
 
@@ -272,7 +268,9 @@ describe("Cockpit session detail", () => {
     };
     transcript.scrollTop = 40;
 
-    fireEvent.click(screen.getByRole("button", { name: "Load older messages" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "Load older messages" }),
+    );
 
     const liveTail = {
       kind: "user" as const,
@@ -381,9 +379,7 @@ describe("Cockpit session detail", () => {
       status: { owner: "self", processId: "shared-process" },
     });
     const view = renderDetail();
-    fireEvent.click(
-      screen.getByRole("button", { name: "Stop current turn" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Stop current turn" }));
     expect(await screen.findByText("Stop requested")).toBeTruthy();
 
     detailMocks.sourceKey = "relay:studio";
@@ -532,9 +528,9 @@ describe("Cockpit session detail", () => {
     act(() => {
       flushSync(() => root.render(detailTree()));
       expect(screen.queryByText("Invented storm update")).toBeNull();
-      expect(
-        screen.getByRole("button", { name: "Stop current turn" }),
-      ).toBe(stopButton);
+      expect(screen.getByRole("button", { name: "Stop current turn" })).toBe(
+        stopButton,
+      );
       expect(document.activeElement).toBe(stopButton);
       fireEvent.click(stopButton);
     });
