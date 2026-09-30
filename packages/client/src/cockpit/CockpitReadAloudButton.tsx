@@ -4,7 +4,9 @@ import {
   getReadAloudFailedToken,
   getReadAloudState,
   getReadAloudToken,
+  pauseReadAloud,
   playReadAloud,
+  resumeReadAloud,
   stopReadAloud,
   subscribeReadAloud,
 } from "../lib/readAloud";
@@ -21,11 +23,17 @@ function readAloudSnapshot(): string {
   }`;
 }
 
-function SpeakerIcon({ stop }: { stop: boolean }) {
+type SpeakerIconKind = "speaker" | "stop" | "pause" | "resume";
+
+function SpeakerIcon({ kind }: { kind: SpeakerIconKind }) {
   return (
     <svg viewBox="0 0 24 24" aria-hidden="true">
-      {stop ? (
+      {kind === "stop" ? (
         <rect x="7" y="7" width="10" height="10" rx="1.5" />
+      ) : kind === "pause" ? (
+        <path d="M9 6.5v11M15 6.5v11" />
+      ) : kind === "resume" ? (
+        <path d="M8.5 6.5v11l9-5.5z" />
       ) : (
         <>
           <path d="M5 9.5h3.2L12 6v12l-3.8-3.5H5z" />
@@ -41,32 +49,40 @@ export function CockpitReadAloudButton({
   text,
 }: CockpitReadAloudButtonProps) {
   const { t } = useI18n();
-  useSyncExternalStore(
-    subscribeReadAloud,
-    readAloudSnapshot,
-    () => "idle\0\0",
-  );
-  const active =
-    getReadAloudToken() === id && getReadAloudState() !== "idle";
-  const loading = active && getReadAloudState() === "loading";
+  useSyncExternalStore(subscribeReadAloud, readAloudSnapshot, () => "idle\0\0");
+  const liveState = getReadAloudState();
+  const active = getReadAloudToken() === id && liveState !== "idle";
+  const loading = active && liveState === "loading";
+  const playing = active && liveState === "playing";
+  const paused = active && liveState === "paused";
   const failed = !active && getReadAloudFailedToken() === id;
-  const actionLabel = active
-    ? t("cockpitSessionReadAloudStop")
-    : failed
-      ? t("cockpitSessionReadAloudRetry")
-      : t("cockpitSessionReadAloud");
+  const actionLabel = playing
+    ? t("cockpitSessionReadAloudPause")
+    : paused
+      ? t("cockpitSessionReadAloudResume")
+      : loading
+        ? t("cockpitSessionReadAloudStop")
+        : failed
+          ? t("cockpitSessionReadAloudRetry")
+          : t("cockpitSessionReadAloud");
   const visibleLabel = loading
     ? t("cockpitSessionReadAloudPreparing")
     : failed
       ? t("cockpitSessionReadAloudFailed")
       : actionLabel;
+  // Playing pauses and a pause resumes, like PocketClaude; while audio is
+  // still being prepared the control cancels it.
   const handleClick = useCallback(() => {
-    if (active) {
+    if (playing) {
+      pauseReadAloud();
+    } else if (paused) {
+      resumeReadAloud();
+    } else if (loading) {
       stopReadAloud();
-      return;
+    } else {
+      void playReadAloud(text, id);
     }
-    void playReadAloud(text, id);
-  }, [active, id, text]);
+  }, [id, loading, paused, playing, text]);
 
   return (
     <button
@@ -74,13 +90,25 @@ export function CockpitReadAloudButton({
       aria-pressed={active}
       className={styles.button}
       data-state={
-        loading ? "loading" : active ? "playing" : failed ? "error" : "idle"
+        loading
+          ? "loading"
+          : playing
+            ? "playing"
+            : paused
+              ? "paused"
+              : failed
+                ? "error"
+                : "idle"
       }
       onClick={handleClick}
       title={actionLabel}
       type="button"
     >
-      <SpeakerIcon stop={active} />
+      <SpeakerIcon
+        kind={
+          playing ? "pause" : paused ? "resume" : loading ? "stop" : "speaker"
+        }
+      />
       <span aria-live="polite">{visibleLabel}</span>
     </button>
   );

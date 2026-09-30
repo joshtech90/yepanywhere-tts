@@ -7,7 +7,7 @@ import { api } from "../api/client";
  * /api/tts/plan + /api/tts/synthesize pipeline.
  */
 
-export type ReadAloudState = "idle" | "loading" | "playing";
+export type ReadAloudState = "idle" | "loading" | "playing" | "paused";
 
 let audioEl: HTMLAudioElement | null = null;
 let objectUrl: string | null = null;
@@ -74,6 +74,32 @@ export function stopReadAloud(): void {
   resetReadAloud(null);
 }
 
+/**
+ * Pause the running playback where it is. Chunks keep loading in the
+ * background; `resumeReadAloud` continues from the same position.
+ */
+export function pauseReadAloud(): void {
+  if (state !== "playing" && state !== "loading") return;
+  audioEl?.pause();
+  state = "paused";
+  emit();
+}
+
+/** Continue a paused playback. Resuming inside the tap keeps autoplay happy. */
+export function resumeReadAloud(): void {
+  if (state !== "paused" || !audioEl) return;
+  // Between chunks (nothing loaded yet, or the last chunk ended) the loop
+  // starts the next one itself; replaying an ended chunk would repeat it.
+  const waitingForChunk = !audioEl.src || audioEl.ended;
+  state = waitingForChunk ? "loading" : "playing";
+  emit();
+  if (!waitingForChunk) {
+    audioEl.play().catch(() => {
+      if (state === "playing") pauseReadAloud();
+    });
+  }
+}
+
 function base64ToObjectUrl(audioBase64: string, mimeType?: string): string {
   const bytes = Uint8Array.from(atob(audioBase64), (ch) => ch.charCodeAt(0));
   // Server sends Ogg/Opus (Gemini read-aloud) or MP3 (Google Cloud fallback).
@@ -115,7 +141,8 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       objectUrl = url;
       audio.src = url;
       if (prev && prev !== url) URL.revokeObjectURL(prev);
-      audio.play().catch(fail);
+      // A pause during loading holds the next chunk until resumed.
+      if (state !== "paused") audio.play().catch(fail);
     });
 
   let pending: Promise<{ audioBase64: string; mimeType?: string }> | null =
@@ -141,7 +168,7 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
         pending?.catch(() => {});
         return;
       }
-      if (i === 0) {
+      if (state === "loading") {
         state = "playing";
         emit();
       }

@@ -105,6 +105,8 @@
   "cockpitSessionReadAloud": "Antwort vorlesen",
   "cockpitSessionReadAloudPreparing": "Audio wird vorbereitet",
   "cockpitSessionReadAloudStop": "Vorlesen stoppen",
+  "cockpitSessionReadAloudPause": "Vorlesen pausieren",
+  "cockpitSessionReadAloudResume": "Vorlesen fortsetzen",
   "cockpitSessionLoadOlder": "Ältere Nachrichten laden",
   "cockpitSessionLoadingOlder": "Ältere Nachrichten werden geladen...",
   "cockpitSessionLoading": "Gespräch wird geladen...",

@@ -20,7 +20,7 @@ vi.mock("../api/client", () => ({
 }));
 
 import { I18nProvider } from "../i18n";
-import { stopReadAloud } from "../lib/readAloud";
+import { playReadAloud, stopReadAloud } from "../lib/readAloud";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitReadAloudButton } from "./CockpitReadAloudButton";
 
@@ -82,5 +82,57 @@ describe("Cockpit read-aloud button", () => {
       ).toBeTruthy();
     });
     expect(apiMocks.ttsPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it("pauses a playing response and resumes it from the same control", async () => {
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });
+    apiMocks.ttsSynthesize.mockResolvedValue({
+      audioBase64: "AA==",
+      mimeType: "audio/mpeg",
+    });
+
+    render(
+      <I18nProvider>
+        <CockpitReadAloudButton id="assistant-response-2" text="An answer." />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Read response aloud" }),
+    );
+    const pause = await screen.findByRole("button", { name: "Pause reading" });
+    expect(pause.getAttribute("data-state")).toBe("playing");
+
+    fireEvent.click(pause);
+    const resume = await screen.findByRole("button", {
+      name: "Resume reading",
+    });
+    expect(resume.getAttribute("data-state")).toBe("paused");
+
+    fireEvent.click(resume);
+    expect(
+      (
+        await screen.findByRole("button", { name: "Pause reading" })
+      ).getAttribute("data-state"),
+    ).toBe("playing");
+  });
+
+  it("offers pause for an automatic playback of its own answer", async () => {
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });
+    apiMocks.ttsSynthesize.mockResolvedValue({
+      audioBase64: "AA==",
+      mimeType: "audio/mpeg",
+    });
+
+    render(
+      <I18nProvider>
+        <CockpitReadAloudButton id="assistant-response-3" text="An answer." />
+      </I18nProvider>,
+    );
+    void playReadAloud("An answer.", "assistant-response-3");
+
+    expect(
+      await screen.findByRole("button", { name: "Pause reading" }),
+    ).toBeTruthy();
   });
 });

@@ -16,7 +16,9 @@ import {
   getReadAloudFailedToken,
   getReadAloudState,
   getReadAloudToken,
+  pauseReadAloud,
   playReadAloud,
+  resumeReadAloud,
   stopReadAloud,
 } from "./readAloud";
 
@@ -45,6 +47,7 @@ class MockAudio {
   onended: (() => void) | null = null;
   onerror: (() => void) | null = null;
   src = "";
+  ended = false;
   pause = vi.fn();
   play = vi.fn(async () => {});
 
@@ -98,18 +101,90 @@ describe("read-aloud controller", () => {
     expect(getReadAloudToken()).toBe("cockpit-response-1");
 
     first.resolve({ audioBase64: "AA==", mimeType: "audio/mpeg" });
-    await vi.waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1),
+    );
     expect(getReadAloudState()).toBe("playing");
     MockAudio.instances[0]?.onended?.();
 
     second.resolve({ audioBase64: "AQ==", mimeType: "audio/mpeg" });
-    await vi.waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() =>
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(2),
+    );
     MockAudio.instances[0]?.onended?.();
     await playback;
 
     expect(getReadAloudState()).toBe("idle");
     expect(getReadAloudToken()).toBeNull();
     expect(getReadAloudFailedToken()).toBeNull();
+  });
+
+  it("pauses and resumes in place, and holds a chunk that lands while paused", async () => {
+    const second = deferred<{ audioBase64: string; mimeType?: string }>();
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["First", "Second"] });
+    apiMocks.ttsSynthesize
+      .mockResolvedValueOnce({ audioBase64: "AA==", mimeType: "audio/mpeg" })
+      .mockReturnValueOnce(second.promise);
+
+    const playback = playReadAloud("A long response", "cockpit-response-3");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    const audio = MockAudio.instances[0];
+    if (!audio) throw new Error("no audio element");
+    expect(audio.play).toHaveBeenCalledTimes(1);
+
+    pauseReadAloud();
+    expect(getReadAloudState()).toBe("paused");
+    expect(getReadAloudToken()).toBe("cockpit-response-3");
+    expect(audio.pause).toHaveBeenCalledTimes(1);
+
+    resumeReadAloud();
+    expect(getReadAloudState()).toBe("playing");
+    expect(audio.play).toHaveBeenCalledTimes(2);
+
+    // First chunk ends, pause while the second is still loading.
+    audio.ended = true;
+    audio.onended?.();
+    pauseReadAloud();
+    second.resolve({ audioBase64: "AQ==", mimeType: "audio/mpeg" });
+    await vi.waitFor(() =>
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(2),
+    );
+    expect(getReadAloudState()).toBe("paused");
+    expect(audio.play).toHaveBeenCalledTimes(2);
+
+    audio.ended = false;
+    resumeReadAloud();
+    expect(getReadAloudState()).toBe("playing");
+    expect(audio.play).toHaveBeenCalledTimes(3);
+    audio.onended?.();
+    await playback;
+    expect(getReadAloudState()).toBe("idle");
+  });
+
+  it("does not replay an ended chunk when resumed between chunks", async () => {
+    const second = deferred<{ audioBase64: string; mimeType?: string }>();
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["First", "Second"] });
+    apiMocks.ttsSynthesize
+      .mockResolvedValueOnce({ audioBase64: "AA==", mimeType: "audio/mpeg" })
+      .mockReturnValueOnce(second.promise);
+
+    const playback = playReadAloud("A long response", "cockpit-response-4");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    const audio = MockAudio.instances[0];
+    if (!audio) throw new Error("no audio element");
+    audio.ended = true;
+    audio.onended?.();
+    pauseReadAloud();
+    resumeReadAloud();
+    expect(getReadAloudState()).toBe("loading");
+    expect(audio.play).toHaveBeenCalledTimes(1);
+
+    audio.ended = false;
+    second.resolve({ audioBase64: "AQ==", mimeType: "audio/mpeg" });
+    await vi.waitFor(() => expect(audio.play).toHaveBeenCalledTimes(2));
+    expect(getReadAloudState()).toBe("playing");
+    audio.onended?.();
+    await playback;
   });
 
   it("stops the current app-wide playback and settles its pending controller", async () => {
@@ -120,7 +195,9 @@ describe("read-aloud controller", () => {
     });
 
     const playback = playReadAloud("Stop this response", "cockpit-response-2");
-    await vi.waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() =>
+      expect(URL.createObjectURL).toHaveBeenCalledTimes(1),
+    );
     const audio = MockAudio.instances[0];
     expect(audio).toBeTruthy();
 

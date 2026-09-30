@@ -246,8 +246,12 @@ export const TextBlock = memo(function TextBlock({
   const isThisPlaying =
     getReadAloudToken() === speakIdRef.current &&
     getReadAloudState() !== "idle";
+  // The classic block has no pause control; a paused playback shows as on.
+  const liveState = getReadAloudState();
   const speakState: "idle" | "loading" | "playing" = isThisPlaying
-    ? getReadAloudState()
+    ? liveState === "paused"
+      ? "playing"
+      : liveState
     : "idle";
   void readAloudTick; // re-render trigger
 

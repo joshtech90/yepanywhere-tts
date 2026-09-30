@@ -19,6 +19,7 @@
 
 .button:hover,
 .button[data-state="playing"],
+.button[data-state="paused"],
 .button[data-state="loading"] {
   color: var(--cockpit-accent);
   background: var(--cockpit-accent-soft);

@@ -512,6 +512,8 @@
   "cockpitSessionReadAloud": "Read response aloud",
   "cockpitSessionReadAloudPreparing": "Preparing audio",
   "cockpitSessionReadAloudStop": "Stop reading",
+  "cockpitSessionReadAloudPause": "Pause reading",
+  "cockpitSessionReadAloudResume": "Resume reading",
   "cockpitSessionLoadOlder": "Load older messages",
   "cockpitSessionLoadingOlder": "Loading older messages...",
   "cockpitSessionLoading": "Loading the conversation...",

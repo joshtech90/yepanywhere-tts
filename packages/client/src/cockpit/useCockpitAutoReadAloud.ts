@@ -74,6 +74,8 @@ export function resetCockpitAutoReadCache(): void {
 export interface CockpitFinalAnswer {
   /** Id of the answer's last text block; changes with every new message. */
   key: string;
+  /** Transcript entry holding the answer; its read-aloud control uses it. */
+  entryKey: string;
   text: string;
 }
 
@@ -108,7 +110,7 @@ export function finalCockpitAnswer(
     .map((part) => part.text)
     .join("\n\n")
     .trim();
-  return text ? { key: segment.id, text } : null;
+  return text ? { key: segment.id, entryKey: last.key, text } : null;
 }
 
 export interface CockpitAutoReadAloudInput {
@@ -188,6 +190,7 @@ export function useCockpitAutoReadAloud({
   const answer = useMemo(() => finalCockpitAnswer(entries), [entries]);
   const answerKey = answer?.key ?? null;
   const answerText = answer?.text ?? "";
+  const answerEntryKey = answer?.entryKey ?? "";
   const watchRef = useRef<TurnWatch | null>(null);
   const skippedRef = useRef(false);
 
@@ -249,11 +252,13 @@ export function useCockpitAutoReadAloud({
       if (current.endedAt !== endedAt || skippedRef.current) return;
       current.endedAt = null;
       current.baseline = answerKey;
-      void playReadAloud(answerText, answerKey);
+      // The answer's own read-aloud control shows this playback and pauses it.
+      void playReadAloud(answerText, answerEntryKey);
     }, settleMs);
     return () => clearTimeout(timer);
   }, [
     aborted,
+    answerEntryKey,
     answerKey,
     answerText,
     enabled,

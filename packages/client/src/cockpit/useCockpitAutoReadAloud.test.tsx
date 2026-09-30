@@ -384,6 +384,7 @@ describe("useCockpitAutoReadAloud", () => {
 
     expect(finalCockpitAnswer([user("u1"), grouped])).toEqual({
       key: "m2-2",
+      entryKey: "a2",
       text: "Hier ist das Ergebnis.\n\nUnd ein Nachsatz.",
     });
   });
@@ -422,5 +423,31 @@ describe("useCockpitAutoReadAloud", () => {
     update({ working: false, entries: [...next, answer("a3", "Weiter")] });
     settle();
     expect(mocks.playReadAloud).toHaveBeenCalledWith("Weiter", "a3");
+  });
+
+  it("plays under the answer's entry key so its control can pause it", () => {
+    const { result, update } = setup();
+    act(() => result.current.toggle());
+    const before = [user("u1"), answer("a1", "Alt"), user("u2")];
+
+    update({ working: true, entries: before });
+    update({
+      working: false,
+      entries: [
+        ...before,
+        answer("entry-7", "Antwort", {
+          text: [
+            {
+              id: "message-7-0",
+              text: "Antwort",
+              isStreaming: false,
+              abortedMidStream: false,
+            },
+          ],
+        }),
+      ],
+    });
+    settle();
+    expect(mocks.playReadAloud).toHaveBeenCalledWith("Antwort", "entry-7");
   });
 });
