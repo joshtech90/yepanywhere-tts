@@ -1308,7 +1308,7 @@ export class SessionIndexService implements ISessionIndexService {
 
   private codexMetadataToDirtyScope(
     sessionsDir: string,
-    metadata: CodexRolloutDiscoveryMetadata,
+    metadata: Pick<CodexRolloutDiscoveryMetadata, "id" | "cwd" | "isSubagent">,
   ): { sessionId: string; scopeKey: string; isSubagent: boolean } {
     return {
       sessionId: metadata.id,
