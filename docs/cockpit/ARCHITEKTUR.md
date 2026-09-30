@@ -275,6 +275,15 @@ gestartet werden; Stop oder der naechste Start loescht diesen Fehlerzustand.
 Der vorhandene `TextBlock`-Knopf nutzt denselben Controller und bleibt dadurch
 kompatibel.
 
+Der Cockpit-Vorleseknopf einer Antwort wechselt wie in PocketClaude: Waehrend
+der Vorbereitung bricht er ab, waehrend der Wiedergabe pausiert er, eine
+pausierte Wiedergabe setzt er an derselben Stelle fort. Eine Pause waehrend
+ein Chunk noch laedt, haelt diesen Chunk an; Fortsetzen zwischen zwei Chunks
+spielt den beendeten Chunk nicht erneut. Das automatische Vorlesen spielt unter
+dem Schluessel der Antwortzeile, damit deren Knopf auch diese Wiedergabe
+anzeigt und pausieren kann. Der alte `TextBlock`-Knopf kennt keine Pause und
+zeigt eine pausierte Wiedergabe als laufend; ein Klick stoppt sie.
+
 Automatisches Vorlesen ist ein Schalter pro Sitzung im Kurzbefehle-Menue
 (Blitz) der Sitzungskopfzeile, wie der Pro-Chat-Schalter in PocketClaude.
 Er ist standardmaessig aus, wird pro Geraet und Sitzung im `localStorage`
