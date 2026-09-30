@@ -22,6 +22,7 @@ export interface CodexRolloutDiscoveryMetadata {
   cwd: string;
   timestamp: string;
   isSubagent: boolean;
+  isHeadlessExec: boolean;
 }
 
 export interface CodexDiscoveredSession {
@@ -149,6 +150,7 @@ export async function readCodexRolloutMetadata(
     if (identity.representation === "zstd") {
       if (metrics) metrics.cacheBackedCompressedReads += 1;
     }
+    if (cached.metadata.isHeadlessExec) return null;
     return toDiscoveredSession(cached.metadata, options.filePath, stats);
   }
   if (cached) {
@@ -192,6 +194,7 @@ export async function readCodexRolloutMetadata(
     sourceFingerprint,
   });
 
+  if (metadata.isHeadlessExec) return null;
   return toDiscoveredSession(metadata, options.filePath, stats);
 }
 
@@ -327,7 +330,27 @@ function parseCodexSessionMeta(
         ? meta.timestamp
         : new Date(stats.mtimeMs).toISOString(),
     isSubagent: isSubagentSessionMeta(meta),
+    isHeadlessExec: isHeadlessCodexExecSessionMeta(meta),
   };
+}
+
+const LOCAL_CODEX_MODEL_PROVIDERS = new Set(["ollama", "lmstudio", "local"]);
+
+/**
+ * Scripted `codex exec` runs (reviews, batch workers) started outside Yep are
+ * not conversations and are kept out of session lists. Yep's own CodexOSS
+ * runs override the originator; older ones are recognised by a local provider.
+ */
+export function isHeadlessCodexExecSessionMeta(meta: {
+  originator?: unknown;
+  model_provider?: unknown;
+}): boolean {
+  if (meta.originator !== "codex_exec") return false;
+  const provider =
+    typeof meta.model_provider === "string"
+      ? meta.model_provider.toLowerCase()
+      : "";
+  return !LOCAL_CODEX_MODEL_PROVIDERS.has(provider);
 }
 
 export function isSubagentSessionMeta(
@@ -385,7 +408,8 @@ function isCodexRolloutDiscoveryMetadata(
     typeof value.id === "string" &&
     typeof value.cwd === "string" &&
     typeof value.timestamp === "string" &&
-    typeof value.isSubagent === "boolean"
+    typeof value.isSubagent === "boolean" &&
+    typeof value.isHeadlessExec === "boolean"
   );
 }
 

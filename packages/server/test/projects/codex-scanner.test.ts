@@ -88,6 +88,44 @@ describe("CodexSessionScanner", () => {
     expect(projects[0].sessionCountsByProvider).toEqual({ codex: 1 });
   });
 
+  it("hides scripted codex exec runs but keeps local-provider ones", async () => {
+    const sessionsDir = join(tmpdir(), `codex-scan-${randomUUID()}`);
+    tempDirs.push(sessionsDir);
+
+    const dateDir = join(sessionsDir, "2026", "02", "03");
+    await mkdir(dateDir, { recursive: true });
+
+    const cwd = "/home/user/project-exec";
+    const interactiveId = randomUUID();
+    const execId = randomUUID();
+    const ossId = randomUUID();
+    const sessions: Array<[string, Record<string, unknown>]> = [
+      [interactiveId, { originator: "codex-tui", source: "cli" }],
+      [
+        execId,
+        { originator: "codex_exec", source: "exec", model_provider: "openai" },
+      ],
+      [
+        ossId,
+        { originator: "codex_exec", source: "exec", model_provider: "ollama" },
+      ],
+    ];
+    for (const [id, extra] of sessions) {
+      await writeFile(
+        join(dateDir, `rollout-${id}.jsonl`),
+        `${makeSessionMeta(id, cwd, extra)}\n`,
+      );
+    }
+
+    const scanner = new CodexSessionScanner({ sessionsDir });
+    const listed = await scanner.getSessionsForProject(cwd);
+
+    expect(listed.map((s) => s.id).sort()).toEqual(
+      [interactiveId, ossId].sort(),
+    );
+    await expect(scanner.getSessionProjectPath(execId)).resolves.toBeNull();
+  });
+
   it("resolves a session's project from its native cwd", async () => {
     const sessionsDir = join(tmpdir(), `codex-scan-${randomUUID()}`);
     tempDirs.push(sessionsDir);

@@ -13,6 +13,7 @@ import {
 } from "../projects/paths.js";
 import type { SessionListSummary } from "../sessions/types.js";
 import type { ProjectScanner } from "../projects/scanner.js";
+import { isHeadlessCodexExecSessionMeta } from "../sessions/codex-discovery.js";
 import { getCodexRolloutActivityTimeMs } from "../utils/codexRolloutFiles.js";
 import { readFirstLine } from "../utils/jsonl.js";
 import {
@@ -608,12 +609,19 @@ export class ExternalSessionTracker {
 
       const parsed = JSON.parse(firstLine) as {
         type?: string;
-        payload?: { cwd?: string; timestamp?: string; model?: string };
+        payload?: {
+          cwd?: string;
+          timestamp?: string;
+          model?: string;
+          originator?: string;
+          model_provider?: string;
+        };
       };
       if (
         parsed.type !== "session_meta" ||
         !parsed.payload?.cwd ||
-        !parsed.payload?.timestamp
+        !parsed.payload?.timestamp ||
+        isHeadlessCodexExecSessionMeta(parsed.payload)
       ) {
         return null;
       }

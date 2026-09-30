@@ -852,7 +852,12 @@ export class CodexOSSProvider implements AgentProvider {
         codexProcess = spawn(codexPath, args, {
           cwd: options.cwd,
           stdio: ["pipe", "pipe", "pipe"],
-          env: stripYaControlPlaneCredentials(process.env),
+          // A non-exec originator keeps these runs listed; plain `codex exec`
+          // rollouts are hidden as scripted runs.
+          env: {
+            ...stripYaControlPlaneCredentials(process.env),
+            CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "yep-anywhere",
+          },
           shell: process.platform === "win32",
         });
         pidRef.value = codexProcess.pid;
