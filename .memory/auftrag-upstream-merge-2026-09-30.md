@@ -34,3 +34,11 @@ vollstaendig erhalten bleiben** (dazu Vorlesen/TTS und Auto-Sitzungstitel).
    pruefen. Bei Problemen auf die Sicherung zurueck.
 6. Ergebnis kurz fuer Joscha zusammenfassen (Practical-Stil, Next step,
    Orchestrierungszeile).
+
+## Erledigt 30.09.2026 (Claude Opus 5.5)
+- `fcedfd424` auf `feat/tts-vorlesen` (Merge `1db90279e` + 3 Folge-Commits),
+  Sicherung `vor-upstream-2026-09-30-manuell`. Mac und aihub laufen darauf.
+- Gepruefte Punkte, offene Reste und Merge-Fallen: Memory
+  `project_yepanywhere_tts_update_workflow` (Eintrag 2026-09-30).
+- Offen: Sichtpruefung im eingeloggten Cockpit durch Joscha (der KI-Browser
+  hat kein Yep-Passwort).
