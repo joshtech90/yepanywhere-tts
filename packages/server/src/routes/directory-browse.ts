@@ -7,8 +7,8 @@
  * route policy is default-deny and this path is not listed there.
  */
 import { Hono } from "hono";
-import type { Dirent, Stats } from "node:fs";
-import { readdir, stat } from "node:fs/promises";
+import type { Stats } from "node:fs";
+import { opendir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { expandHomePath } from "../utils/expandHomePath.js";
@@ -27,9 +27,16 @@ export interface DirectoryBrowseResponse {
 }
 
 const MAX_ENTRIES = 500;
+/** Names read from one folder at most, whatever kind they are. */
+const MAX_SCANNED = 5000;
+/** Links whose target is checked at most, in parallel. */
+const MAX_LINKS_CHECKED = 200;
 const MAX_PATH_LENGTH = 4096;
 
-export function createDirectoryBrowseRoutes(): Hono {
+export function createDirectoryBrowseRoutes(
+  limits: { maxScanned?: number } = {},
+): Hono {
+  const maxScanned = limits.maxScanned ?? MAX_SCANNED;
   const routes = new Hono();
 
   routes.get("/", async (c) => {
@@ -68,9 +75,29 @@ export function createDirectoryBrowseRoutes(): Hono {
       return c.json({ error: "Not a directory" }, 400);
     }
 
-    let dirents: Dirent[];
+    // Read at most MAX_SCANNED names, so a folder with a huge number of
+    // entries costs a bounded amount of work; the rest counts as truncated.
+    const directories: DirectoryBrowseEntry[] = [];
+    const links: DirectoryBrowseEntry[] = [];
+    let scanTruncated = false;
     try {
-      dirents = await readdir(resolvedPath, { withFileTypes: true });
+      const dir = await opendir(resolvedPath);
+      let scanned = 0;
+      for await (const dirent of dir) {
+        if (++scanned > maxScanned) {
+          scanTruncated = true;
+          break;
+        }
+        if (!hidden && dirent.name.startsWith(".")) continue;
+        const entry = {
+          name: dirent.name,
+          path: join(resolvedPath, dirent.name),
+        };
+        if (dirent.isDirectory()) directories.push(entry);
+        else if (dirent.isSymbolicLink() && links.length < MAX_LINKS_CHECKED) {
+          links.push(entry);
+        }
+      }
     } catch (error: unknown) {
       const code = (error as { code?: string })?.code;
       if (code === "EACCES" || code === "EPERM") {
@@ -79,26 +106,22 @@ export function createDirectoryBrowseRoutes(): Hono {
       return c.json({ error: "Failed to read directory" }, 500);
     }
 
-    const entries: DirectoryBrowseEntry[] = [];
-    for (const dirent of dirents) {
-      if (!hidden && dirent.name.startsWith(".")) {
-        continue;
-      }
-
-      const entryPath = join(resolvedPath, dirent.name);
-      if (dirent.isDirectory()) {
-        entries.push({ name: dirent.name, path: entryPath });
-      } else if (dirent.isSymbolicLink()) {
+    // A link counts when it leads to a folder; broken links are left out.
+    const linkedDirectories = await Promise.all(
+      links.map(async (entry) => {
         try {
-          const linkStat = await stat(entryPath);
-          if (linkStat.isDirectory()) {
-            entries.push({ name: dirent.name, path: entryPath });
-          }
+          return (await stat(entry.path)).isDirectory() ? entry : null;
         } catch {
-          // Broken or unreadable symlink targets are ignored
+          return null;
         }
-      }
-    }
+      }),
+    );
+    const entries = [
+      ...directories,
+      ...linkedDirectories.filter(
+        (entry): entry is DirectoryBrowseEntry => entry !== null,
+      ),
+    ];
 
     entries.sort((a, b) =>
       a.name.localeCompare(b.name, undefined, {
@@ -107,7 +130,7 @@ export function createDirectoryBrowseRoutes(): Hono {
       }),
     );
 
-    const truncated = entries.length > MAX_ENTRIES;
+    const truncated = scanTruncated || entries.length > MAX_ENTRIES;
     const parentDir = dirname(resolvedPath);
     const parent = parentDir === resolvedPath ? null : parentDir;
 

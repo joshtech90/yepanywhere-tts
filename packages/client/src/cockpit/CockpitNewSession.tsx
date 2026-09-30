@@ -194,15 +194,12 @@ export function CockpitNewSession({
   }, [pickedFolder, sortedProjects]);
 
   const toggleFavorite = () => {
-    if (!currentPath || favorites.saving) return;
-    void favorites.save(
+    if (!currentPath || !favorites.ready || favorites.saving) return;
+    const label = chosenProject?.name || defaultFavoriteLabel(currentPath);
+    void favorites.save((current) =>
       currentFavorite
-        ? removeFavorite(favorites.favorites, currentPath)
-        : addFavorite(
-            favorites.favorites,
-            currentPath,
-            chosenProject?.name || defaultFavoriteLabel(currentPath),
-          ),
+        ? removeFavorite(current, currentPath)
+        : addFavorite(current, currentPath, label),
     );
   };
   const canStart =
@@ -353,7 +350,7 @@ export function CockpitNewSession({
                 aria-pressed={currentFavorite !== undefined}
                 className={styles.iconButton}
                 data-favorite={currentFavorite ? "true" : undefined}
-                disabled={!currentPath || favorites.saving}
+                disabled={!currentPath || !favorites.ready || favorites.saving}
                 onClick={toggleFavorite}
                 title={t(
                   currentFavorite

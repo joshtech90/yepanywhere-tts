@@ -20,6 +20,7 @@ function controller(
 ): CockpitProjectFavoritesController {
   return {
     favorites,
+    ready: true,
     save: vi.fn(async () => true),
     saving: false,
     failed: false,
@@ -100,12 +101,16 @@ describe("Cockpit project favourites", () => {
     const input = screen.getByRole("textbox", { name: "Favorite name" });
     fireEvent.change(input, { target: { value: "Smartzone" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
-    await vi.waitFor(() =>
-      expect(favorites.save).toHaveBeenCalledWith([
-        { ...FAVORITES[0], label: "Smartzone" },
-        FAVORITES[1],
-      ]),
-    );
+    await vi.waitFor(() => expect(favorites.save).toHaveBeenCalledTimes(1));
+    // The change applies to the server's list, including a favourite the
+    // other device added meanwhile.
+    const added = { path: "/Users/j/Projects/New", label: "New" };
+    const rename = vi.mocked(favorites.save).mock.calls[0]?.[0];
+    expect(rename?.([...FAVORITES, added])).toEqual([
+      { ...FAVORITES[0], label: "Smartzone" },
+      FAVORITES[1],
+      added,
+    ]);
 
     fireEvent.contextMenu(screen.getByRole("button", { name: "China Autos" }), {
       clientX: 30,
@@ -114,8 +119,8 @@ describe("Cockpit project favourites", () => {
     fireEvent.click(
       screen.getByRole("menuitem", { name: "Remove from favorites" }),
     );
-    await vi.waitFor(() =>
-      expect(favorites.save).toHaveBeenLastCalledWith([FAVORITES[0]]),
-    );
+    await vi.waitFor(() => expect(favorites.save).toHaveBeenCalledTimes(2));
+    const remove = vi.mocked(favorites.save).mock.calls[1]?.[0];
+    expect(remove?.(FAVORITES)).toEqual([FAVORITES[0]]);
   });
 });

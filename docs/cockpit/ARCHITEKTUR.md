@@ -680,9 +680,13 @@ Die Favoriten sind die Servereinstellung `cockpitProjectFavorites`
 (`[{ path, label }]`, hoechstens 24, Namen hoechstens 40 Zeichen, ein Pfad
 nur einmal; `packages/shared/src/cockpit-project-favorites.ts`). Damit sehen
 Mac und Handy desselben Hosts dieselbe Liste; jeder Rechner hat seine eigene.
-Gespeichert wird erst nach Serverbestaetigung; lehnt der Server ab, bleibt die
-Liste unveraendert und ein Hinweis erscheint. Limited Users lesen die
-Einstellung nicht.
+Jede Aenderung (hinzufuegen, umbenennen, entfernen) wird auf die frisch vom
+Server gelesene Liste angewendet, damit eine inzwischen auf dem anderen Geraet
+gemachte Aenderung erhalten bleibt. Bevor die Einstellungen geladen sind, ist
+der Stern gesperrt, damit eine noch unbekannte Liste nie als leer
+ueberschrieben wird. Gespeichert wird erst nach Serverbestaetigung; lehnt der
+Server ab, bleibt die Liste unveraendert und ein Hinweis erscheint. Limited
+Users lesen die Einstellung nicht.
 
 **Ordnerwahl.** Das Ordnersymbol neben der Auswahl oeffnet einen modalen
 Ordnerdialog. Er zeigt Ordner des Server-Rechners, nicht des Geraets: Ein
@@ -691,13 +695,18 @@ Handy die Dateien des Handys. Grundlage ist die neue, providerneutrale Route
 `GET /api/directories?path=<pfad>[&hidden=1]` (`routes/directory-browse.ts`):
 Sie erweitert `~`, verlangt einen absoluten Pfad und liefert
 `{ path, parent, home, entries: [{ name, path }], truncated }` mit hoechstens
-500 nach Namen (numerisch) sortierten Unterordnern; Punktordner nur mit
+500 nach Namen (numerisch) sortierten Unterordnern. Pro Ordner liest sie
+hoechstens 5000 Eintraege und prueft hoechstens 200 Symlinks; alles darueber
+meldet `truncated`, und der Dialog sagt dann, dass Filter nur den gezeigten
+Teil durchsucht und ein fehlender Ordner unter „Anderer Ordner“ einzutippen
+ist; Punktordner nur mit
 `hidden=1`, Symlinks nur wenn sie auf einen Ordner zeigen. Fehlende Ordner
 geben 404, Dateien 400, fehlende Rechte 403. Die Route schreibt nichts. Limited
 Users erreichen sie nicht, weil deren Routenpolitik standardmaessig ablehnt.
 Der Dialog startet im aktuell gewaehlten Ordner, faellt bei einem nicht mehr
 vorhandenen Ordner auf den Benutzerordner zurueck, bietet Hoch, Benutzerordner
-und einen lokalen Filter und uebernimmt mit „Diesen Ordner nehmen“ den
+und einen lokalen Filter, der beim Wechsel des Ordners geleert wird, aber
+waehrend des Ladens getippte Buchstaben behaelt, und uebernimmt mit „Diesen Ordner nehmen“ den
 angezeigten Ordner. Ein aelterer Server ohne Route zeigt im Dialog eine
 Fehlermeldung; die Ordnerauswahl und das Eintippen bleiben unveraendert
 nutzbar. Menue und Dialog liegen neben dem Formular, damit Enter dort nie die

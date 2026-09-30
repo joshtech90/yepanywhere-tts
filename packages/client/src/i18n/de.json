@@ -1534,7 +1534,7 @@
   "cockpitFolderPickerFilter": "Ordner filtern",
   "cockpitFolderPickerListLabel": "Ordner",
   "cockpitFolderPickerEmpty": "Hier gibt es keine Unterordner.",
-  "cockpitFolderPickerTruncated": "Nur die ersten 500 Ordner werden gezeigt. Mit dem Filter grenzt du die Liste ein.",
+  "cockpitFolderPickerTruncated": "Hier liegen sehr viele Einträge; gezeigt wird nur ein Teil, und der Filter sucht nur darin. Einen fehlenden Ordner trägst du unter „Anderer Ordner …“ direkt ein.",
   "cockpitFolderPickerChoose": "Diesen Ordner nehmen",
   "cockpitFolderPickerDenied": "Dieser Ordner lässt sich nicht öffnen.",
   "cockpitFolderPickerError": "Die Ordner konnten nicht geladen werden.",

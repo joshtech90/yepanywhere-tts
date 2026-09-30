@@ -4367,7 +4367,7 @@
   "cockpitFolderPickerFilter": "Filter folders",
   "cockpitFolderPickerListLabel": "Folders",
   "cockpitFolderPickerEmpty": "No subfolders here.",
-  "cockpitFolderPickerTruncated": "Only the first 500 folders are shown. Use the filter to narrow the list.",
+  "cockpitFolderPickerTruncated": "Only part of this folder is shown, and the filter searches only that part. Type a missing folder in under “Other folder…”.",
   "cockpitFolderPickerChoose": "Use this folder",
   "cockpitFolderPickerDenied": "This folder cannot be opened.",
   "cockpitFolderPickerError": "The folders could not be loaded.",

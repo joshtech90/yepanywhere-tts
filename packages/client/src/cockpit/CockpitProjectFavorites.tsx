@@ -1,11 +1,6 @@
 import type { CockpitProjectFavorite } from "@yep-anywhere/shared";
-import {
-  type MouseEvent,
-  type ReactNode,
-  useCallback,
-  useRef,
-  useState,
-} from "react";
+import { type MouseEvent, type ReactNode, useCallback, useState } from "react";
+import { api } from "../api/client";
 import { useServerSettings } from "../hooks/useServerSettings";
 import { useI18n } from "../i18n";
 import { CockpitSessionMenu } from "./CockpitSessionMenu";
@@ -18,29 +13,43 @@ import {
 import styles from "./CockpitProjectFavorites.module.css";
 import { useCockpitLongPress } from "./useCockpitLongPress";
 
+/** One change to the list, applied to the list as the server has it. */
+export type CockpitProjectFavoritesChange = (
+  current: CockpitProjectFavorite[],
+) => CockpitProjectFavorite[];
+
 export interface CockpitProjectFavoritesController {
   favorites: CockpitProjectFavorite[];
-  /** Stores the next list; false when the server refused or is too old. */
-  save: (next: CockpitProjectFavorite[]) => Promise<boolean>;
+  /** False until the settings arrived; an empty list is not known yet. */
+  ready: boolean;
+  /** Applies a change; false when the server refused or is too old. */
+  save: (change: CockpitProjectFavoritesChange) => Promise<boolean>;
   saving: boolean;
   failed: boolean;
 }
 
 /**
  * The favourite folders live in the server settings, so the Mac and the
- * phone see the same list for the same host.
+ * phone see the same list for the same host. Each change is applied to the
+ * list freshly read from the server, so a change made on the other device
+ * in the meantime is kept rather than overwritten.
  */
 export function useCockpitProjectFavorites(): CockpitProjectFavoritesController {
   const { settings, updateSetting } = useServerSettings();
   const [saving, setSaving] = useState(false);
   const [failed, setFailed] = useState(false);
+  const ready = settings !== null;
   const favorites = settings?.cockpitProjectFavorites ?? [];
   const save = useCallback(
-    async (next: CockpitProjectFavorite[]) => {
+    async (change: CockpitProjectFavoritesChange) => {
       setSaving(true);
       setFailed(false);
       try {
-        await updateSetting("cockpitProjectFavorites", next);
+        const { settings: current } = await api.getServerSettings();
+        await updateSetting(
+          "cockpitProjectFavorites",
+          change(current.cockpitProjectFavorites ?? []),
+        );
         return true;
       } catch {
         setFailed(true);
@@ -51,7 +60,7 @@ export function useCockpitProjectFavorites(): CockpitProjectFavoritesController 
     },
     [updateSetting],
   );
-  return { favorites, save, saving, failed };
+  return { favorites, ready, save, saving, failed };
 }
 
 interface FavoriteChipProps {
@@ -121,9 +130,6 @@ export function useCockpitProjectFavoriteMenu(
       setMenu({ favorite, anchor }),
     [],
   );
-  // The menu acts on the list as it is when the action runs.
-  const favoritesRef = useRef(controller.favorites);
-  favoritesRef.current = controller.favorites;
   const { save, saving } = controller;
   const element = menu ? (
     <CockpitSessionMenu
@@ -141,11 +147,11 @@ export function useCockpitProjectFavoriteMenu(
       }}
       key={menu.favorite.path}
       onArchive={() =>
-        save(removeFavorite(favoritesRef.current, menu.favorite.path))
+        save((current) => removeFavorite(current, menu.favorite.path))
       }
       onClose={close}
       onRename={(label) =>
-        save(renameFavorite(favoritesRef.current, menu.favorite.path, label))
+        save((current) => renameFavorite(current, menu.favorite.path, label))
       }
       onTogglePin={() => {}}
       open

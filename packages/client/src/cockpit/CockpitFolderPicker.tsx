@@ -71,11 +71,12 @@ export function CockpitFolderPicker({
       const request = ++requestRef.current;
       setLoading(true);
       setError(null);
+      // Reset when the walk starts, so letters typed while it loads stay.
+      setFilter("");
       try {
         const next = await api.browseDirectories(path);
         if (request !== requestRef.current) return;
         setListing(next);
-        setFilter("");
         listRef.current?.scrollTo?.({ top: 0 });
       } catch (err) {
         if (request !== requestRef.current) return;
@@ -222,7 +223,7 @@ export function CockpitFolderPicker({
               </button>
             </li>
           ))}
-          {listing?.truncated && !needle && (
+          {listing?.truncated && (
             <li className={styles.message}>
               {t("cockpitFolderPickerTruncated")}
             </li>

@@ -77,4 +77,35 @@ describe("Cockpit folder picker", () => {
     expect(browse).toHaveBeenLastCalledWith(undefined);
     expect(screen.queryByRole("alert")).toBeNull();
   });
+
+  it("keeps letters typed while a folder is still loading", async () => {
+    let release: () => void = () => {};
+    browse.mockImplementation(async (path?: string) => {
+      if (path === "/Users/j/Projects") {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        return listing("/Users/j/Projects", ["China Autos", "Smartzone OS"]);
+      }
+      return listing("/Users/j", ["Documents", "Projects"]);
+    });
+    render(
+      <I18nProvider>
+        <CockpitFolderPicker onClose={vi.fn()} onPick={vi.fn()} />
+      </I18nProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "Projects" }));
+    const filter = screen.getByRole("searchbox", {
+      name: "Filter folders",
+    }) as HTMLInputElement;
+    for (const letter of "smart") {
+      fireEvent.change(filter, { target: { value: filter.value + letter } });
+    }
+    release();
+
+    await screen.findByRole("button", { name: "Smartzone OS" });
+    expect(filter.value).toBe("smart");
+    expect(screen.queryByRole("button", { name: "China Autos" })).toBeNull();
+  });
 });

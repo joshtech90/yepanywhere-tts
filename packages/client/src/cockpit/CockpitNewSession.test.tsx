@@ -7,7 +7,17 @@ import { CockpitNewSession } from "./CockpitNewSession";
 
 const state = vi.hoisted(() => ({
   projects: [] as Array<{ id: string; name: string; path: string }>,
+  loaded: true,
+  serverFavorites: [] as Array<{ path: string; label: string }>,
   updateSetting: vi.fn(async () => {}),
+}));
+
+vi.mock("../api/client", () => ({
+  api: {
+    getServerSettings: vi.fn(async () => ({
+      settings: { cockpitProjectFavorites: state.serverFavorites },
+    })),
+  },
 }));
 
 vi.mock("../hooks/useProjects", () => ({
@@ -24,12 +34,14 @@ vi.mock("../hooks/useModelSettings", () => ({
 
 vi.mock("../hooks/useServerSettings", () => ({
   useServerSettings: () => ({
-    settings: {
-      cockpitProjectFavorites: [
-        { path: "/work/os", label: "SZ OS" },
-        { path: "/work/fresh", label: "Fresh" },
-      ],
-    },
+    settings: state.loaded
+      ? {
+          cockpitProjectFavorites: [
+            { path: "/work/os", label: "SZ OS" },
+            { path: "/work/fresh", label: "Fresh" },
+          ],
+        }
+      : null,
     updateSetting: state.updateSetting,
   }),
 }));
@@ -38,6 +50,12 @@ afterEach(cleanup);
 beforeEach(() => {
   localStorage.setItem(UI_KEYS.locale, "en");
   state.projects = [];
+  state.loaded = true;
+  state.serverFavorites = [
+    { path: "/work/os", label: "SZ OS" },
+    { path: "/work/fresh", label: "Fresh" },
+    { path: "/work/phone", label: "Added on the phone" },
+  ];
   state.updateSetting.mockClear();
 });
 
@@ -52,7 +70,7 @@ function renderPage() {
 }
 
 describe("Cockpit new session favourites", () => {
-  it("picks a favourite's project and saves the star", () => {
+  it("picks a favourite's project and saves the star", async () => {
     state.projects = [
       { id: "os", name: "Smartzone OS", path: "/work/os" },
       { id: "recent", name: "Recent", path: "/work/recent" },
@@ -74,14 +92,30 @@ describe("Cockpit new session favourites", () => {
     fireEvent.click(
       screen.getByRole("button", { name: "Save folder as favorite" }),
     );
-    expect(state.updateSetting).toHaveBeenCalledWith(
-      "cockpitProjectFavorites",
-      [
-        { path: "/work/os", label: "SZ OS" },
-        { path: "/work/fresh", label: "Fresh" },
-        { path: "/work/recent", label: "Recent" },
-      ],
+    await vi.waitFor(() =>
+      expect(state.updateSetting).toHaveBeenCalledWith(
+        "cockpitProjectFavorites",
+        [
+          { path: "/work/os", label: "SZ OS" },
+          { path: "/work/fresh", label: "Fresh" },
+          { path: "/work/phone", label: "Added on the phone" },
+          { path: "/work/recent", label: "Recent" },
+        ],
+      ),
     );
+  });
+
+  it("keeps the star off until the saved favourites are known", () => {
+    state.loaded = false;
+    state.projects = [{ id: "os", name: "Smartzone OS", path: "/work/os" }];
+    renderPage();
+
+    const star = screen.getByRole("button", {
+      name: "Save folder as favorite",
+    }) as HTMLButtonElement;
+    expect(star.disabled).toBe(true);
+    fireEvent.click(star);
+    expect(state.updateSetting).not.toHaveBeenCalled();
   });
 
   it("types an unknown folder in and moves to its project once known", () => {

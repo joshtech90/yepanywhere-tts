@@ -179,4 +179,17 @@ describe("directory-browse routes", () => {
     expect(data.entries.length).toBe(500);
     expect(data.truncated).toBe(true);
   });
+
+  it("stops reading a huge folder after its scan budget", async () => {
+    const app = createDirectoryBrowseRoutes({ maxScanned: 3 });
+    await Promise.all(
+      ["a", "b", "c", "d", "e"].map((name) => mkdir(join(tempDir, name))),
+    );
+
+    const res = await app.request("/?path=" + encodeURIComponent(tempDir));
+    expect(res.status).toBe(200);
+    const data = (await res.json()) as DirectoryBrowseResponse;
+    expect(data.entries).toHaveLength(3);
+    expect(data.truncated).toBe(true);
+  });
 });
