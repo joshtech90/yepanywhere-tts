@@ -5,7 +5,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { api, FetchError } from "../api/client";
+import { api } from "../api/client";
 import { useI18n } from "../i18n";
 import styles from "./CockpitFolderPicker.module.css";
 
@@ -30,6 +30,11 @@ function FolderIcon() {
       <path d="M3.5 7.5h6l1.7 2H20.5v8.7a1.8 1.8 0 0 1-1.8 1.8H5.3a1.8 1.8 0 0 1-1.8-1.8V7.5Z" />
     </svg>
   );
+}
+
+function errorStatus(error: unknown): number | undefined {
+  const status = (error as { status?: unknown } | null)?.status;
+  return typeof status === "number" ? status : undefined;
 }
 
 /** Home prefixes shortened, as in the folder list of the page. */
@@ -74,13 +79,13 @@ export function CockpitFolderPicker({
         listRef.current?.scrollTo?.({ top: 0 });
       } catch (err) {
         if (request !== requestRef.current) return;
-        if (fallbackHome && err instanceof FetchError && err.status === 404) {
+        if (fallbackHome && errorStatus(err) === 404) {
           // A remembered folder that is gone: start at home instead.
           void load(undefined, false);
           return;
         }
         setError(
-          err instanceof FetchError && err.status === 403
+          errorStatus(err) === 403
             ? t("cockpitFolderPickerDenied")
             : t("cockpitFolderPickerError"),
         );
@@ -154,7 +159,9 @@ export function CockpitFolderPicker({
               aria-label={t("cockpitFolderPickerUp")}
               className={styles.toolButton}
               disabled={!listing?.parent || loading}
-              onClick={() => listing?.parent && void load(listing.parent, false)}
+              onClick={() =>
+                listing?.parent && void load(listing.parent, false)
+              }
               title={t("cockpitFolderPickerUp")}
               type="button"
             >

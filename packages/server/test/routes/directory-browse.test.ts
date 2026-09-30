@@ -67,29 +67,31 @@ describe("directory-browse routes", () => {
 
   // Creating symlinks needs extra privileges on Windows.
   it.skipIf(process.platform === "win32")(
-    "includes symlink to dir and ignores broken symlink", async () => {
-    const app = createDirectoryBrowseRoutes();
-    const realDir = join(tempDir, "real-dir");
-    const symlinkDir = join(tempDir, "symlink-dir");
-    const brokenSymlink = join(tempDir, "broken-symlink");
-    const realFile = join(tempDir, "file.txt");
-    const fileSymlink = join(tempDir, "symlink-file");
+    "includes symlink to dir and ignores broken symlink",
+    async () => {
+      const app = createDirectoryBrowseRoutes();
+      const realDir = join(tempDir, "real-dir");
+      const symlinkDir = join(tempDir, "symlink-dir");
+      const brokenSymlink = join(tempDir, "broken-symlink");
+      const realFile = join(tempDir, "file.txt");
+      const fileSymlink = join(tempDir, "symlink-file");
 
-    await mkdir(realDir);
-    await writeFile(realFile, "file content");
-    await symlink(realDir, symlinkDir, "dir");
-    await symlink(join(tempDir, "does-not-exist"), brokenSymlink, "dir");
-    await symlink(realFile, fileSymlink, "file");
+      await mkdir(realDir);
+      await writeFile(realFile, "file content");
+      await symlink(realDir, symlinkDir, "dir");
+      await symlink(join(tempDir, "does-not-exist"), brokenSymlink, "dir");
+      await symlink(realFile, fileSymlink, "file");
 
-    const res = await app.request("/?path=" + encodeURIComponent(tempDir));
-    expect(res.status).toBe(200);
+      const res = await app.request("/?path=" + encodeURIComponent(tempDir));
+      expect(res.status).toBe(200);
 
-    const data = (await res.json()) as DirectoryBrowseResponse;
-    expect(data.entries).toEqual([
-      { name: "real-dir", path: realDir },
-      { name: "symlink-dir", path: symlinkDir },
-    ]);
-  });
+      const data = (await res.json()) as DirectoryBrowseResponse;
+      expect(data.entries).toEqual([
+        { name: "real-dir", path: realDir },
+        { name: "symlink-dir", path: symlinkDir },
+      ]);
+    },
+  );
 
   it("returns 404 for missing directory", async () => {
     const app = createDirectoryBrowseRoutes();
@@ -113,7 +115,9 @@ describe("directory-browse routes", () => {
   it("returns 400 for relative path", async () => {
     const app = createDirectoryBrowseRoutes();
 
-    const res = await app.request("/?path=" + encodeURIComponent("relative/dir"));
+    const res = await app.request(
+      "/?path=" + encodeURIComponent("relative/dir"),
+    );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: "Path must be absolute" });
   });

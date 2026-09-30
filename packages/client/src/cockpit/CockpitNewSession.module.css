@@ -67,6 +67,68 @@
   outline-offset: 2px;
 }
 
+.folderRow {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.folderRow .select {
+  min-width: 0;
+  flex: 1;
+}
+
+.iconButton {
+  display: grid;
+  width: 2.6rem;
+  height: 2.6rem;
+  flex: none;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  cursor: pointer;
+}
+
+.iconButton:hover:not(:disabled) {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-text);
+}
+
+.iconButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.iconButton svg {
+  width: 1.1rem;
+  height: 1.1rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+/* A favourite folder: a filled star in the accent colour. */
+.iconButton[data-favorite="true"] {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.iconButton[data-favorite="true"] svg {
+  fill: currentColor;
+}
+
+.iconButton:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
 .providers {
   display: flex;
   flex-wrap: wrap;
@@ -189,6 +251,11 @@
   .primary,
   .secondary {
     min-height: 2.9rem;
+  }
+
+  .iconButton {
+    width: 2.9rem;
+    height: 2.9rem;
   }
 
   .select,

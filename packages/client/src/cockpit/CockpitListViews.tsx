@@ -181,9 +181,7 @@ export function CockpitSessionsView({
             </svg>
             <span>{t("cockpitFavoritesTitle")}</span>
           </h3>
-          <ul className={styles.list}>
-            {sections.favorites.map(renderRow)}
-          </ul>
+          <ul className={styles.list}>{sections.favorites.map(renderRow)}</ul>
         </section>
       )}
       {sections.others.length > 0 && (
@@ -412,11 +410,9 @@ export function CockpitHiddenView({
                 className={styles.restoreButton}
                 onClick={() => {
                   setFailed(null);
-                  void organization
-                    .unarchiveSession(session.id)
-                    .then((ok) => {
-                      if (!ok) setFailed(session.id);
-                    });
+                  void organization.unarchiveSession(session.id).then((ok) => {
+                    if (!ok) setFailed(session.id);
+                  });
                 }}
                 type="button"
               >

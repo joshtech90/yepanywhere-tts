@@ -7,6 +7,7 @@
  * route policy is default-deny and this path is not listed there.
  */
 import { Hono } from "hono";
+import type { Dirent, Stats } from "node:fs";
 import { readdir, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -49,7 +50,7 @@ export function createDirectoryBrowseRoutes(): Hono {
       return c.json({ error: "Invalid path" }, 400);
     }
 
-    let targetStat;
+    let targetStat: Stats;
     try {
       targetStat = await stat(resolvedPath);
     } catch (error: unknown) {
@@ -67,7 +68,7 @@ export function createDirectoryBrowseRoutes(): Hono {
       return c.json({ error: "Not a directory" }, 400);
     }
 
-    let dirents;
+    let dirents: Dirent[];
     try {
       dirents = await readdir(resolvedPath, { withFileTypes: true });
     } catch (error: unknown) {

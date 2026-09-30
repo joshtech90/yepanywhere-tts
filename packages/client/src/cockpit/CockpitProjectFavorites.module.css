@@ -1,0 +1,76 @@
+.field {
+  display: grid;
+  min-width: 0;
+  gap: 0.42rem;
+}
+
+.label {
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-2xs);
+  font-weight: var(--cockpit-weight-strong);
+  letter-spacing: var(--cockpit-tracking-caps);
+  text-transform: uppercase;
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+/* Same pill as the provider choice below, so both read as one kind of pick. */
+.chip {
+  min-height: 2.35rem;
+  max-width: 100%;
+  padding: 0 1rem;
+  overflow: hidden;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  -webkit-touch-callout: none;
+}
+
+.chip:hover {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-text);
+}
+
+.chip[aria-pressed="true"] {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-accent);
+  background: var(--cockpit-accent-soft);
+}
+
+.chip:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+}
+
+.hint,
+.error {
+  margin: 0;
+  font-size: var(--cockpit-text-xs);
+  line-height: 1.45;
+}
+
+.hint {
+  color: var(--cockpit-faint);
+}
+
+.error {
+  color: var(--cockpit-danger);
+}
+
+@media (max-width: 700px) {
+  .chip {
+    min-height: 2.9rem;
+    user-select: none;
+  }
+}

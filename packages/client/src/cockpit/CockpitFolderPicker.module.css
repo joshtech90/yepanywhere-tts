@@ -1,0 +1,223 @@
+.dialog {
+  width: min(34rem, calc(100vw - 2rem));
+  max-width: none;
+  max-height: min(40rem, calc(100dvh - 2rem));
+  padding: 0;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-lg);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  box-shadow: var(--cockpit-elevation-dialog);
+}
+
+.dialog::backdrop {
+  background: rgb(10 14 22 / 42%);
+}
+
+.panel {
+  display: flex;
+  max-height: inherit;
+  flex-direction: column;
+}
+
+.header {
+  display: grid;
+  padding: 1rem 1rem 0.7rem;
+  gap: 0.6rem;
+  border-bottom: 1px solid var(--cockpit-border);
+}
+
+.header h2 {
+  margin: 0;
+  font-size: var(--cockpit-text-lg);
+  letter-spacing: var(--cockpit-tracking-tight);
+}
+
+.toolbar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.toolButton {
+  display: grid;
+  width: 2.35rem;
+  height: 2.35rem;
+  flex: none;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-muted);
+  background: var(--cockpit-surface);
+  cursor: pointer;
+}
+
+.toolButton:hover:not(:disabled) {
+  color: var(--cockpit-text);
+  background: var(--cockpit-hover);
+}
+
+.toolButton:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.toolButton svg,
+.entry svg {
+  width: 1.05rem;
+  height: 1.05rem;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.path {
+  min-width: 0;
+  margin: 0 0 0 0.3rem;
+  overflow: hidden;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-sm);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.filter {
+  width: 100%;
+  min-height: 2.35rem;
+  padding: 0 0.7rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-text);
+  background: var(--cockpit-bg);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+}
+
+.list {
+  min-height: 12rem;
+  margin: 0;
+  padding: 0.4rem;
+  flex: 1;
+  overflow: auto;
+  list-style: none;
+}
+
+.entry {
+  display: flex;
+  width: 100%;
+  min-height: 2.4rem;
+  padding: 0 0.65rem;
+  align-items: center;
+  gap: 0.6rem;
+  border: 0;
+  border-radius: var(--cockpit-radius-sm);
+  color: var(--cockpit-text);
+  background: transparent;
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+  text-align: left;
+  cursor: pointer;
+}
+
+.entry svg {
+  color: var(--cockpit-accent);
+}
+
+.entry span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.entry:hover:not(:disabled) {
+  background: var(--cockpit-hover);
+}
+
+.entry:disabled {
+  cursor: progress;
+}
+
+.message {
+  padding: 1rem;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-sm);
+  text-align: center;
+}
+
+.actions {
+  display: flex;
+  padding: 0.75rem 1rem;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  border-top: 1px solid var(--cockpit-border);
+}
+
+.primary,
+.secondary {
+  min-height: 2.5rem;
+  padding: 0 1.05rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: var(--cockpit-radius-md);
+  font: inherit;
+  font-size: var(--cockpit-text-sm);
+  font-weight: var(--cockpit-weight-medium);
+  cursor: pointer;
+}
+
+.secondary {
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+}
+
+.primary {
+  border-color: var(--cockpit-accent);
+  color: var(--cockpit-on-accent);
+  background: var(--cockpit-accent);
+}
+
+.primary:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+.toolButton:focus-visible,
+.entry:focus-visible,
+.filter:focus-visible,
+.primary:focus-visible,
+.secondary:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 1px;
+}
+
+@media (max-width: 700px) {
+  .dialog {
+    width: calc(100vw - 1rem);
+    max-height: calc(100dvh - 1rem);
+  }
+
+  .toolButton {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .entry {
+    min-height: 2.9rem;
+    font-size: var(--cockpit-text-md);
+  }
+
+  .filter {
+    min-height: 2.75rem;
+    font-size: var(--cockpit-text-md);
+  }
+
+  .actions > * {
+    flex: 1;
+    min-height: 2.9rem;
+  }
+}

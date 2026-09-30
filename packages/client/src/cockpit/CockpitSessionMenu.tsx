@@ -285,8 +285,8 @@ export function CockpitSessionMenu({
       }
     } catch {
       setArchiveError(
-          copy?.archiveError ?? t("cockpitSessionMenuArchiveError"),
-        );
+        copy?.archiveError ?? t("cockpitSessionMenuArchiveError"),
+      );
     } finally {
       setIsArchiving(false);
     }
