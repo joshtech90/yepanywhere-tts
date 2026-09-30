@@ -1653,7 +1653,9 @@ export class ClaudeProvider implements AgentProvider {
    *
    * `persistSession: false` keeps the helper turn out of every transcript, and
    * `maxTurns: 1` keeps it to a single reply. The `cheapest` helper token maps
-   * to Haiku for Claude.
+   * to Haiku for Claude. It only ever answers with text, so it gets no
+   * built-in tools and no MCP servers: its prompt carries transcript text, and
+   * it runs outside any session sandbox.
    */
   private async runSideSessionHelper(args: {
     userPrompt: string;
@@ -1703,6 +1705,9 @@ export class ClaudeProvider implements AgentProvider {
           env: this.getEnv(helperModel),
           settings: this.getSettings(helperModel),
           ...this.getDisallowedToolOptions(helperModel),
+          tools: [],
+          mcpServers: {},
+          strictMcpConfig: true,
           model: helperModel,
           maxTurns: 1,
           systemPrompt: args.systemPrompt,

@@ -34,6 +34,9 @@ rename would go.
 - **Never pollute the transcript.** Generation runs through the `side-session`
   strategy: a non-persisted, single-turn helper query. No fork is created and
   no stopped session is reactivated, unlike the manual retitle route.
+- **Text only.** The helper gets no built-in tools and no MCP servers. Its
+  prompt carries transcript text and it runs outside any session sandbox, so
+  it must not be able to act on that text.
 - **Never fan out.** One helper query runs at a time
   (`MAX_CONCURRENT_TITLE_JOBS`), and sessions whose last activity is older than
   `AUTO_SESSION_TITLE_MAX_AGE_MS` (24h) are ignored unless `backfillExisting`
