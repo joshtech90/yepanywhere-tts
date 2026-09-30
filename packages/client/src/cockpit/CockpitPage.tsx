@@ -23,6 +23,7 @@ import {
 } from "./CockpitAppearanceControls";
 import { CockpitCatalog } from "./CockpitCatalog";
 import { CockpitCodexUpdateNotice } from "./CockpitCodexUpdateNotice";
+import { CockpitHostSwitch, useCockpitPeer } from "./CockpitHostSwitch";
 import {
   CockpitHiddenView,
   CockpitProjectsView,
@@ -193,6 +194,7 @@ export function CockpitShell({
     [basePath],
   );
   const viewport = useCockpitViewportGeometry();
+  const peer = useCockpitPeer();
   const mobileLayout = useMediaQuery("(max-width: 700px)");
   const location = useLocation();
   // Back in the Cockpit, a way back offered by the settings is spent.
@@ -395,6 +397,22 @@ export function CockpitShell({
         inert={shortcutsOpen}
       >
         {!mobileLayout && (
+          // The two ways out of the list sit above its search (Joscha
+          // 30.09.2026); "New Session" stays in the navigation below too.
+          <div className={styles.sidebarTop}>
+            <Link
+              aria-label={t("sidebarNewSession")}
+              className={styles.primaryAction}
+              onClick={navigateFromSearch}
+              to={navigation.newSession}
+            >
+              <NewSessionIcon />
+              <span>{t("sidebarNewSession")}</span>
+            </Link>
+            {peer && <CockpitHostSwitch peer={peer} variant="full" />}
+          </div>
+        )}
+        {!mobileLayout && (
           <div className={styles.desktopCatalog}>
             <CockpitCatalog
               basePath={basePath}
@@ -584,6 +602,9 @@ export function CockpitShell({
               <span aria-hidden="true" />
               {stateCopy.status}
             </span>
+            {peer && mobileLayout && (
+              <CockpitHostSwitch peer={peer} variant="compact" />
+            )}
             <Link
               aria-label={t("cockpitHiddenNav")}
               className={styles.mobileHiddenLink}
@@ -612,7 +633,12 @@ export function CockpitShell({
               to={navigation.newSession}
             >
               <NewSessionIcon />
-              <span>{t("sidebarNewSession")}</span>
+              <span className={styles.labelLong}>
+                {t("sidebarNewSession")}
+              </span>
+              <span aria-hidden="true" className={styles.labelShort}>
+                {t("cockpitNavShortNew")}
+              </span>
             </Link>
           </div>
         </header>

@@ -1,0 +1,99 @@
+/* The way to the other machine's Cockpit: its own app icon on a quiet
+   surface, so the colour of the icon tells where the button leads. */
+.hostSwitch {
+  display: flex;
+  min-width: 0;
+  min-height: 2.35rem;
+  padding: 0 0.6rem 0 0.45rem;
+  align-items: center;
+  gap: 0.45rem;
+  border: 1px solid var(--cockpit-border-strong);
+  border-radius: var(--cockpit-radius-md);
+  color: var(--cockpit-text);
+  background: var(--cockpit-surface);
+  box-shadow: var(--cockpit-elevation-low);
+  font-size: var(--cockpit-text-xs);
+  font-weight: var(--cockpit-weight-strong);
+  text-decoration: none;
+  transition:
+    color 140ms ease,
+    background 140ms ease,
+    border-color 140ms ease;
+}
+
+.hostSwitch[data-variant="compact"] {
+  width: 2.3rem;
+  height: 2.3rem;
+  min-height: 0;
+  padding: 0;
+  justify-content: center;
+  border-color: var(--cockpit-border);
+  box-shadow: none;
+}
+
+.hostSwitch:hover {
+  border-color: var(--cockpit-accent-ring);
+  background: var(--cockpit-hover);
+}
+
+.hostSwitch:focus-visible {
+  outline: 3px solid var(--cockpit-accent-ring);
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px var(--cockpit-accent);
+}
+
+.peerIcon {
+  display: block;
+  width: 1.3rem;
+  height: 1.3rem;
+  flex: none;
+  border-radius: 0.3rem;
+  object-fit: contain;
+}
+
+.hostLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.switchMark,
+.fallbackIcon {
+  display: grid;
+  flex: none;
+  place-items: center;
+}
+
+.switchMark {
+  width: 0.95rem;
+  height: 0.95rem;
+  color: var(--cockpit-faint);
+}
+
+.fallbackIcon {
+  width: 1.1rem;
+  height: 1.1rem;
+  color: var(--cockpit-muted);
+}
+
+.switchMark svg,
+.fallbackIcon svg {
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+}
+
+.hostSwitch:hover .switchMark {
+  color: var(--cockpit-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hostSwitch {
+    transition: none;
+  }
+}
