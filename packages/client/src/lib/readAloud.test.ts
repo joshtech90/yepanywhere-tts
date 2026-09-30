@@ -187,6 +187,64 @@ describe("read-aloud controller", () => {
     await playback;
   });
 
+  it("keeps the position when a pause aborts a starting play", async () => {
+    let rejectPlay: ((error: unknown) => void) | undefined;
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });
+    apiMocks.ttsSynthesize.mockResolvedValue({
+      audioBase64: "AA==",
+      mimeType: "audio/mpeg",
+    });
+    const playback = playReadAloud("Answer", "cockpit-response-5");
+    MockAudio.instances[0]?.play.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejectPlay = reject;
+        }),
+    );
+    await vi.waitFor(() => expect(rejectPlay).toBeTruthy());
+    pauseReadAloud();
+    rejectPlay?.(new DOMException("interrupted by pause", "AbortError"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getReadAloudState()).toBe("paused");
+    expect(getReadAloudToken()).toBe("cockpit-response-5");
+    expect(getReadAloudFailedToken()).toBeNull();
+    stopReadAloud();
+    await playback;
+  });
+
+  it("ignores a late resume failure of an earlier playback", async () => {
+    const rejects: Array<(error: unknown) => void> = [];
+    apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });
+    apiMocks.ttsSynthesize.mockResolvedValue({
+      audioBase64: "AA==",
+      mimeType: "audio/mpeg",
+    });
+
+    const first = playReadAloud("One", "answer-a");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    const audioA = MockAudio.instances[0];
+    if (!audioA) throw new Error("no audio element");
+    pauseReadAloud();
+    audioA.play.mockImplementationOnce(
+      () =>
+        new Promise<void>((_, reject) => {
+          rejects.push(reject);
+        }),
+    );
+    resumeReadAloud();
+
+    const second = playReadAloud("Two", "answer-b");
+    await vi.waitFor(() => expect(getReadAloudState()).toBe("playing"));
+    rejects[0]?.(new DOMException("old resume aborted", "AbortError"));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(getReadAloudToken()).toBe("answer-b");
+    expect(getReadAloudState()).toBe("playing");
+    stopReadAloud();
+    await Promise.all([first, second]);
+  });
+
   it("stops the current app-wide playback and settles its pending controller", async () => {
     apiMocks.ttsPlan.mockResolvedValue({ chunks: ["Only chunk"] });
     apiMocks.ttsSynthesize.mockResolvedValue({

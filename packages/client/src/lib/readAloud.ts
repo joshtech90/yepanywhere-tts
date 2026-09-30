@@ -94,8 +94,13 @@ export function resumeReadAloud(): void {
   state = waitingForChunk ? "loading" : "playing";
   emit();
   if (!waitingForChunk) {
-    audioEl.play().catch(() => {
-      if (state === "playing") pauseReadAloud();
+    const audio = audioEl;
+    const mySession = sessionId;
+    audio.play().catch(() => {
+      // Only this playback, and only if nothing paused or replaced it since.
+      if (sessionId === mySession && audioEl === audio && state === "playing") {
+        pauseReadAloud();
+      }
     });
   }
 }
@@ -142,7 +147,13 @@ export async function playReadAloud(text: string, id: string): Promise<void> {
       audio.src = url;
       if (prev && prev !== url) URL.revokeObjectURL(prev);
       // A pause during loading holds the next chunk until resumed.
-      if (state !== "paused") audio.play().catch(fail);
+      if (state !== "paused") {
+        audio.play().catch(() => {
+          // A pause tapped before play() settles aborts it; that is no failure.
+          if (state === "paused" && audioEl === audio) return;
+          fail();
+        });
+      }
     });
 
   let pending: Promise<{ audioBase64: string; mimeType?: string }> | null =
