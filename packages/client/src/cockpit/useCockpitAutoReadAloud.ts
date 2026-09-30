@@ -68,11 +68,16 @@ export function resetCockpitAutoReadCache(): void {
   remembered = null;
 }
 
-/** The last transcript entry, when it is a finished, complete answer. */
+/**
+ * The last transcript entry, when it is a finished, complete answer. Status
+ * and compaction markers after it do not count as later output.
+ */
 export function finalCockpitAnswer(
   entries: readonly CockpitTranscriptEntry[],
 ): CockpitAssistantEntry | null {
-  const last = entries[entries.length - 1];
+  let index = entries.length - 1;
+  while (entries[index]?.kind === "boundary") index--;
+  const last = entries[index];
   if (last?.kind !== "assistant" || last.isStreaming) return null;
   if (!last.spokenText.trim()) return null;
   // A stopped answer is not the final one.

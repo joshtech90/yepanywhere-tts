@@ -71,10 +71,12 @@
   white-space: nowrap;
 }
 
+/* Opens to the right: the model controls always follow the trigger, while
+   to its left the sidebar clipped a right-anchored menu. */
 .menu {
   position: absolute;
   top: calc(100% + 0.4rem);
-  right: 0;
+  left: 0;
   z-index: 20;
   display: grid;
   width: min(19rem, calc(100vw - 1.5rem));

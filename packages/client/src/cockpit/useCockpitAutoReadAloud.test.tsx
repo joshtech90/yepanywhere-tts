@@ -85,6 +85,12 @@ describe("finalCockpitAnswer", () => {
     expect(finalCockpitAnswer([answer("a1", "  ")])).toBe(null);
     expect(
       finalCockpitAnswer([
+        answer("a1", "Fertig"),
+        { key: "b1", kind: "boundary", subtype: "status" },
+      ])?.key,
+    ).toBe("a1");
+    expect(
+      finalCockpitAnswer([
         answer("a1", "Abgebrochen", {
           text: [
             {
