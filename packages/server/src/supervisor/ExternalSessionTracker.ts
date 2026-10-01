@@ -12,6 +12,7 @@ import {
   type ProjectDisplayNameResolver,
 } from "../projects/paths.js";
 import type { SessionListSummary } from "../sessions/types.js";
+import type { PeerStatusSource } from "./claudePeerStatus.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { isHeadlessCodexExecSessionMeta } from "../sessions/codex-discovery.js";
 import { getCodexRolloutActivityTimeMs } from "../utils/codexRolloutFiles.js";
@@ -45,6 +46,8 @@ interface ExternalSessionInfo {
   /** Session provider */
   provider: FileChangeEvent["provider"];
   timeoutId: ReturnType<typeof setTimeout>;
+  /** The external process reports a running turn (see claudePeerStatus). */
+  working?: boolean;
 }
 
 /**
@@ -78,6 +81,12 @@ export interface ExternalSessionTrackerOptions {
   abortGraceMs?: number;
   /** Grace period in ms after our own fork writes a transcript (default: 30000) */
   forkGraceMs?: number;
+  /**
+   * Evidence that an external process is still in a turn while its transcript
+   * is silent (a long tool call). While it says busy, external status does not
+   * decay and is reported as `working`.
+   */
+  peerStatus?: PeerStatusSource;
   /** Optional callback to get session summary for new external sessions */
   getSessionSummary?: (
     sessionId: string,
@@ -122,6 +131,7 @@ export class ExternalSessionTracker {
     sessionId: string,
     projectId: UrlProjectId,
   ) => Promise<SessionListSummary | null>;
+  private peerStatus?: PeerStatusSource;
   /** Batches session parsing to prevent OOM from concurrent file reads */
   private sessionParser: BatchProcessor<TrackedSessionSummary | null>;
   /** Tracks sessions that have already emitted session-created */
@@ -150,6 +160,7 @@ export class ExternalSessionTracker {
     this.forkGraceMs = options.forkGraceMs ?? DEFAULT_FORK_GRACE_MS;
     this.getSessionSummary = options.getSessionSummary;
     this.getSessionListSummary = options.getSessionListSummary;
+    this.peerStatus = options.peerStatus;
 
     // Initialize batch processor for session parsing
     // Limits concurrent JSONL parsing to prevent OOM during bulk file operations
@@ -315,6 +326,14 @@ export class ExternalSessionTracker {
    */
   isExternal(sessionId: string): boolean {
     return this.externalSessions.has(sessionId);
+  }
+
+  /**
+   * External and positively known to be in a turn, even if its transcript has
+   * been silent for longer than the decay.
+   */
+  isExternalWorking(sessionId: string): boolean {
+    return this.externalSessions.get(sessionId)?.working === true;
   }
 
   /**
@@ -859,14 +878,43 @@ export class ExternalSessionTracker {
   }
 
   private createDecayTimeout(sessionId: string): ReturnType<typeof setTimeout> {
-    return setTimeout(() => {
-      const info = this.externalSessions.get(sessionId);
-      if (info) {
-        this.externalSessions.delete(sessionId);
-        // Emit ownership change to none
-        void this.emitOwnershipChangeByInfo(sessionId, info, { owner: "none" });
-      }
+    const timeoutId = setTimeout(() => {
+      void this.decay(sessionId, timeoutId);
     }, this.decayMs);
+    return timeoutId;
+  }
+
+  /**
+   * The transcript was silent for the whole decay. A busy external process is
+   * still working (a long tool call writes nothing), so keep it external and
+   * look again after another decay; otherwise it has stopped.
+   */
+  private async decay(
+    sessionId: string,
+    timeoutId: ReturnType<typeof setTimeout>,
+  ): Promise<void> {
+    const before = this.externalSessions.get(sessionId);
+    if (!before || before.timeoutId !== timeoutId) return;
+    const busy =
+      !this.supervisor.getProcessForSession(sessionId) &&
+      ((await this.peerStatus?.isBusy(sessionId).catch(() => false)) ?? false);
+    const info = this.externalSessions.get(sessionId);
+    // A write or removal during the check owns the session's state now.
+    if (!info || info.timeoutId !== timeoutId) return;
+    if (busy) {
+      info.timeoutId = this.createDecayTimeout(sessionId);
+      if (!info.working) {
+        info.working = true;
+        void this.emitOwnershipChangeByInfo(sessionId, info, {
+          owner: "external",
+          working: true,
+        });
+      }
+      return;
+    }
+    this.externalSessions.delete(sessionId);
+    // Emit ownership change to none
+    void this.emitOwnershipChangeByInfo(sessionId, info, { owner: "none" });
   }
 
   private async emitOwnershipChangeByInfo(

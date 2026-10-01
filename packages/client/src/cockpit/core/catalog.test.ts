@@ -129,6 +129,11 @@ describe("Cockpit catalog adapter", () => {
         ownership: { owner: "external" },
         updatedAt: "2026-09-24T09:40:00.000Z",
       }),
+      // A long tool call in another program: silent transcript, busy process.
+      session("silent-terminal", "project-1", {
+        ownership: { owner: "external", working: true },
+        updatedAt: "2026-09-24T09:40:00.000Z",
+      }),
     ];
     const online = createCockpitCatalog({
       sourceKey: "local",
@@ -153,6 +158,7 @@ describe("Cockpit catalog adapter", () => {
       done: "complete",
       terminal: "external",
       "idle-terminal": "complete",
+      "silent-terminal": "external",
     });
 
     const offline = createCockpitCatalog({
@@ -214,9 +220,9 @@ describe("Cockpit catalog adapter", () => {
     expect(filterCockpitCatalog(catalog, "beacon").projects[0]?.name).toBe(
       "Beacon",
     );
-    expect(filterCockpitCatalog(catalog, "opus").projects[0]?.sessions[0]?.id).toBe(
-      "two",
-    );
+    expect(
+      filterCockpitCatalog(catalog, "opus").projects[0]?.sessions[0]?.id,
+    ).toBe("two");
   });
 
   it("filters a saved view to pinned sessions without losing project grouping", () => {
@@ -232,8 +238,9 @@ describe("Cockpit catalog adapter", () => {
     });
 
     expect(
-      filterCockpitCatalog(catalog, "", { pinnedOnly: true }).projects[0]
-        ?.sessions.map((entry) => entry.id),
+      filterCockpitCatalog(catalog, "", {
+        pinnedOnly: true,
+      }).projects[0]?.sessions.map((entry) => entry.id),
     ).toEqual(["favorite"]);
   });
 

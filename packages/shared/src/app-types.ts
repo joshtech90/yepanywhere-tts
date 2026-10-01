@@ -434,7 +434,11 @@ export type SessionOwnership =
        * away-recap POST when recaps are off for the session. */
       recapMode?: RecapMode;
     } // we control it
-  | { owner: "external" }; // another process owns it
+  | {
+      owner: "external";
+      /** The external process reports a running turn while its transcript is silent. */
+      working?: boolean;
+    }; // another process owns it
 
 /**
  * Session sandbox policy from Codex turn_context.

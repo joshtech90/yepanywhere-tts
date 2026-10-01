@@ -22,7 +22,11 @@ export interface SessionRuntimeProcess {
 /** Who controls the session: this server's process, an external program, or nobody. */
 export function sessionOwnershipFromProcess(
   process: SessionRuntimeProcess | undefined,
-  options: { isExternal?: boolean; fallback?: SessionOwnership } = {},
+  options: {
+    isExternal?: boolean;
+    externalWorking?: boolean;
+    fallback?: SessionOwnership;
+  } = {},
 ): SessionOwnership {
   if (process) {
     return {
@@ -35,7 +39,9 @@ export function sessionOwnershipFromProcess(
     };
   }
   if (options.isExternal) {
-    return { owner: "external" };
+    return options.externalWorking
+      ? { owner: "external", working: true }
+      : { owner: "external" };
   }
   return options.fallback ?? { owner: "none" };
 }
@@ -100,13 +106,19 @@ export function sessionRowRuntimeOverlay(
     sessionId: string;
     providerUpdatedAt: string;
     notificationService?: NotificationService;
-    externalTracker?: { isExternal(sessionId: string): boolean };
+    externalTracker?: {
+      isExternal(sessionId: string): boolean;
+      isExternalWorking?(sessionId: string): boolean;
+    };
     fallbackOwnership?: SessionOwnership;
   },
 ): SessionRowRuntimeOverlay {
   return {
     ownership: sessionOwnershipFromProcess(process, {
       isExternal: options.externalTracker?.isExternal(options.sessionId),
+      externalWorking: options.externalTracker?.isExternalWorking?.(
+        options.sessionId,
+      ),
       fallback: options.fallbackOwnership,
     }),
     pendingInputType: pendingInputTypeFromProcess(process),

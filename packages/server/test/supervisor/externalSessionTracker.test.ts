@@ -639,4 +639,61 @@ describe("ExternalSessionTracker", () => {
       await rm(tempDir, { recursive: true, force: true });
     }
   });
+
+  it("keeps a silent external session working while its process reports busy", async () => {
+    const eventBus = new EventBus();
+    const events: BusEvent[] = [];
+    eventBus.subscribe((event) => events.push(event));
+    const projectId = encodeProjectId("/tmp/test");
+    const supervisor = {
+      getProcessForSession: vi.fn(() => undefined),
+    } as unknown as Supervisor;
+    const scanner = {
+      getProjectBySessionDirSuffix: vi.fn(async () => ({ id: projectId })),
+    } as unknown as ProjectScanner;
+    let busy = true;
+    const tracker = new ExternalSessionTracker({
+      eventBus,
+      supervisor,
+      scanner,
+      decayMs: 20,
+      peerStatus: { isBusy: async () => busy },
+    });
+    const ownerships = () =>
+      events.flatMap((event) =>
+        event.type === "session-status-changed" &&
+        event.sessionId === "silent-session"
+          ? [event.ownership]
+          : [],
+      );
+
+    try {
+      eventBus.emit({
+        type: "file-change",
+        provider: "claude",
+        path: "/tmp/projects/-tmp-test/silent-session.jsonl",
+        relativePath: "-tmp-test/silent-session.jsonl",
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+
+      // Several decays pass without a write: still external, now working.
+      await new Promise((resolve) => setTimeout(resolve, 90));
+      expect(tracker.isExternal("silent-session")).toBe(true);
+      expect(tracker.isExternalWorking("silent-session")).toBe(true);
+      expect(ownerships()).toEqual([
+        { owner: "external" },
+        { owner: "external", working: true },
+      ]);
+
+      // The turn ends: the next decay releases it.
+      busy = false;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      expect(tracker.isExternal("silent-session")).toBe(false);
+      expect(ownerships().at(-1)).toEqual({ owner: "none" });
+    } finally {
+      tracker.dispose();
+    }
+  });
 });

@@ -951,7 +951,11 @@ export type SessionOwnership =
       modeVersion?: number;
       recapAfterSeconds?: number;
     }
-  | { owner: "external" };
+  | {
+      owner: "external";
+      /** The external process reports a running turn while its transcript is silent. */
+      working?: boolean;
+    };
 
 /**
  * Metadata about a file in a project.
