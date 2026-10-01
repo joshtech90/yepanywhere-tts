@@ -23,7 +23,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
 swiftc -O -swift-version 5 -target arm64-apple-macos13.3 \
-  -o "$APP/Contents/MacOS/YepCockpit" "$HIER/Sources/main.swift"
+  -o "$APP/Contents/MacOS/YepCockpit" "$HIER/Sources/main.swift" "$HIER/Sources/Meldungen.swift"
 
 sed "s/__VERSION__/$(date +%Y%m%d%H%M)/" "$HIER/Info.plist" > "$APP/Contents/Info.plist"
 

@@ -32,18 +32,6 @@ func rechnerLaden() -> [Rechner] {
 
 // MARK: - Abfrage der laufenden Auftraege
 
-struct Prozess: Decodable {
-    let sessionId: String
-    let projectId: String
-    let projectName: String?
-    let sessionTitle: String?
-    let state: String
-}
-
-struct ProzessListe: Decodable {
-    let processes: [Prozess]
-}
-
 final class Waechter {
     let rechner: Rechner
     let speicher: WKHTTPCookieStore
@@ -51,9 +39,12 @@ final class Waechter {
     let zaehlerGeaendert: () -> Void
 
     private(set) var arbeitend = 0
-    private var letzterStand: [String: String]?
+    private var letzterStand: [String: Prozess]?
     private var timer: Timer?
     private var laeuft = false
+    // Eigene Sitzung ohne Cookie-Speicher und ohne Weiterleitungen: die
+    // Cookies stehen von Hand im Kopf und duerfen nie an ein anderes Ziel.
+    private let sitzung: URLSession
 
     init(rechner: Rechner, speicher: WKHTTPCookieStore,
          melden: @escaping (Rechner, Prozess, String) -> Void,
@@ -62,6 +53,11 @@ final class Waechter {
         self.speicher = speicher
         self.melden = melden
         self.zaehlerGeaendert = zaehlerGeaendert
+        let konfiguration = URLSessionConfiguration.ephemeral
+        konfiguration.httpCookieStorage = nil
+        konfiguration.httpShouldSetCookies = false
+        konfiguration.urlCache = nil
+        sitzung = URLSession(configuration: konfiguration, delegate: KeineWeiterleitung(), delegateQueue: nil)
     }
 
     func start() {
@@ -75,12 +71,14 @@ final class Waechter {
     private func abfragen() {
         guard !laeuft else { return }
         laeuft = true
+        // WKHTTPCookieStore ruft auf dem Hauptthread zurueck.
         speicher.getAllCookies { [weak self] cookies in
             guard let self else { return }
-            // Nur die Cookies dieses Rechners mitschicken, nie fremde.
+            // Nur Host-Cookies genau dieses Rechners mitschicken, nie fremde.
             let eigene = cookies.filter { cookie in
                 let domain = cookie.domain.hasPrefix(".") ? String(cookie.domain.dropFirst()) : cookie.domain
-                return domain == self.rechner.host
+                let gueltig = cookie.expiresDate.map { $0 > Date() } ?? true
+                return domain == self.rechner.host && gueltig
             }
             guard !eigene.isEmpty else {
                 self.ergebnis(nil)
@@ -93,7 +91,7 @@ final class Waechter {
                 anfrage.setValue(wert, forHTTPHeaderField: feld)
             }
             anfrage.setValue("true", forHTTPHeaderField: "X-Yep-Anywhere")
-            URLSession.shared.dataTask(with: anfrage) { daten, antwort, _ in
+            self.sitzung.dataTask(with: anfrage) { daten, antwort, _ in
                 let ok = (antwort as? HTTPURLResponse)?.statusCode == 200
                 let liste = ok ? daten.flatMap { try? JSONDecoder().decode(ProzessListe.self, from: $0) } : nil
                 DispatchQueue.main.async { self.ergebnis(liste?.processes) }
@@ -110,20 +108,23 @@ final class Waechter {
             if arbeitend != 0 { arbeitend = 0; zaehlerGeaendert() }
             return
         }
-        let jetzt = Dictionary(prozesse.map { ($0.sessionId, $0.state) }, uniquingKeysWith: { _, b in b })
         if let vorher = letzterStand {
-            for prozess in prozesse {
-                let alt = vorher[prozess.sessionId]
-                if alt == "in-turn" && prozess.state == "idle" {
-                    melden(rechner, prozess, "fertig")
-                } else if prozess.state == "waiting-input" && alt != nil && alt != "waiting-input" {
-                    melden(rechner, prozess, "wartet")
-                }
+            for (prozess, art) in meldungen(vorher: vorher, jetzt: prozesse) {
+                melden(rechner, prozess, art)
             }
         }
-        letzterStand = jetzt
+        letzterStand = Dictionary(prozesse.map { ($0.sessionId, $0) }, uniquingKeysWith: { _, b in b })
         let neu = prozesse.filter { $0.state == "in-turn" }.count
         if neu != arbeitend { arbeitend = neu; zaehlerGeaendert() }
+    }
+}
+
+final class KeineWeiterleitung: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
     }
 }
 
@@ -409,7 +410,8 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
                  initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType,
                  decisionHandler: @escaping (WKPermissionDecision) -> Void) {
         let eigen = rechner.contains { $0.basis.host == origin.host && ($0.basis.port ?? 443) == origin.port }
-        decisionHandler(eigen && origin.protocol == "https" ? .grant : .deny)
+        // Nur Mikrofon: die App deklariert keine Kamera-Nutzung.
+        decisionHandler(eigen && origin.protocol == "https" && type == .microphone ? .grant : .deny)
     }
 }
 
@@ -483,10 +485,13 @@ final class AppSteuerung: NSObject, NSApplicationDelegate, UNUserNotificationCen
                                 didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         let info = response.notification.request.content.userInfo
-        if let name = info["rechner"] as? String, let pfad = info["pfad"] as? String {
-            fenster.oeffnen(rechnerName: name, pfad: pfad)
+        // Dieser Rueckruf kommt nicht garantiert auf dem Hauptthread.
+        DispatchQueue.main.async { [weak self] in
+            if let name = info["rechner"] as? String, let pfad = info["pfad"] as? String {
+                self?.fenster.oeffnen(rechnerName: name, pfad: pfad)
+            }
+            completionHandler()
         }
-        completionHandler()
     }
 
     // MARK: Menue
