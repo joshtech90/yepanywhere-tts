@@ -142,8 +142,7 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
         umschalter = NSSegmentedControl(labels: rechner.map(\.name), trackingMode: .selectOne,
                                         target: nil, action: nil)
         let fenster = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 860),
-                               styleMask: [.titled, .closable, .miniaturizable, .resizable,
-                                           .fullSizeContentView],
+                               styleMask: [.titled, .closable, .miniaturizable, .resizable],
                                backing: .buffered, defer: false)
         fenster.title = "Yep Cockpit"
         fenster.titleVisibility = .hidden
@@ -274,6 +273,18 @@ final class CockpitFenster: NSWindowController, NSWindowDelegate, WKNavigationDe
                 NSWorkspace.shared.open(url)
             }
             return decisionHandler(.cancel)
+        }
+        // Der Rechnerwechsel im Cockpit selbst springt auf den passenden Reiter,
+        // statt das andere Cockpit in diesem Reiter zu laden.
+        if aktion.targetFrame?.isMainFrame == true,
+           let ziel = rechner.firstIndex(where: { $0.basis.host == url.host && $0.basis.port == url.port }),
+           let quelle = ansichten.firstIndex(of: webView), ziel != quelle {
+            decisionHandler(.cancel)
+            zeigen(ziel)
+            if url.path != "/cockpit" && url.path != "/" {
+                ansichten[ziel].load(URLRequest(url: url))
+            }
+            return
         }
         decisionHandler(.allow)
     }
