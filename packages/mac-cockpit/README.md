@@ -25,8 +25,14 @@ Eine eingebettete WebView kann kein Web Push empfangen. Die App fragt deshalb
 alle 6 s `GET /api/processes` auf jedem Rechner ab, mit den Anmelde-Cookies
 genau dieses Rechners aus der WebView, und meldet:
 
-- `in-turn` → `idle`: „Fertig: <Sitzungstitel>“
-- Wechsel nach `waiting-input`: „Wartet auf dich: <Sitzungstitel>“
+- Wechsel von `in-turn` oder `waiting-input` nach `idle`, oder ein neuer
+  `idleSince` (ein ganzer Durchgang lief zwischen zwei Abfragen): „Fertig“
+- Wechsel nach `waiting-input`: „Wartet auf dich“
+
+Die Regeln stehen in `Sources/Meldungen.swift`, geprüft von `./test.sh`.
+Bekannte Grenze: Ein von Hand gestoppter Durchgang meldet ebenfalls „Fertig“,
+außer das Fenster zeigt diese Sitzung gerade (der Server gibt den Grund in
+`/api/processes` nicht heraus).
 
 Die erste Abfrage nach dem Start oder nach einer Unterbrechung setzt nur den
 Vergleichsstand. Keine Mitteilung, wenn das Fenster genau diese Sitzung
@@ -34,7 +40,9 @@ gerade im Vordergrund zeigt. Ein Klick öffnet die Sitzung im richtigen Reiter.
 Der Dock-Zähler zeigt die Zahl der gerade arbeitenden Sitzungen beider Rechner.
 
 Ohne Anmeldung in der App (aihub fragt einmal nach dem Passwort) bleibt die
-Abfrage dieses Rechners still.
+Abfrage dieses Rechners still. Die Abfrage nutzt eine eigene Sitzung ohne
+Cookie-Speicher und folgt keinen Weiterleitungen, damit die von Hand gesetzten
+Cookies nie ein anderes Ziel erreichen.
 
 Prüfhilfe ohne Bildschirmfreigabe:
 `open --env YEP_SCHNAPPSCHUSS=/tmp/yep -a "Yep Cockpit"` legt nach dem Laden
