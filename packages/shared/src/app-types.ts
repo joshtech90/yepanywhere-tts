@@ -1186,7 +1186,10 @@ export function isAppMessage(value: unknown): value is AppMessage {
 
 function isSessionOwnership(value: unknown): value is SessionOwnership {
   if (!isUnknownRecord(value)) return false;
-  if (value.owner === "none" || value.owner === "external") return true;
+  if (value.owner === "none") return true;
+  if (value.owner === "external") {
+    return value.working === undefined || typeof value.working === "boolean";
+  }
   return (
     value.owner === "self" &&
     typeof value.processId === "string" &&

@@ -899,16 +899,27 @@ export class ExternalSessionTracker {
       !this.supervisor.getProcessForSession(sessionId) &&
       ((await this.peerStatus?.isBusy(sessionId).catch(() => false)) ?? false);
     const info = this.externalSessions.get(sessionId);
-    // A write or removal during the check owns the session's state now.
+    // A write, removal, or dispose during the check owns the state now.
     if (!info || info.timeoutId !== timeoutId) return;
+    if (this.supervisor.getProcessForSession(sessionId)) {
+      // We took the session over meanwhile; the supervisor publishes "self",
+      // so drop the stale tracking without announcing "none" over it.
+      this.externalSessions.delete(sessionId);
+      return;
+    }
     if (busy) {
       info.timeoutId = this.createDecayTimeout(sessionId);
       if (!info.working) {
         info.working = true;
-        void this.emitOwnershipChangeByInfo(sessionId, info, {
-          owner: "external",
-          working: true,
-        });
+        void this.emitOwnershipChangeByInfo(
+          sessionId,
+          info,
+          { owner: "external", working: true },
+          () =>
+            this.externalSessions.get(sessionId) === info &&
+            info.working === true &&
+            !this.supervisor.getProcessForSession(sessionId),
+        );
       }
       return;
     }
@@ -921,8 +932,11 @@ export class ExternalSessionTracker {
     sessionId: string,
     info: ExternalSessionInfo,
     ownership: SessionOwnership,
+    /** Checked right before publishing, after any await: still true? */
+    stillCurrent: () => boolean = () => true,
   ): Promise<void> {
     if (info.projectId) {
+      if (!stillCurrent()) return;
       const event: SessionStatusEvent = {
         type: "session-status-changed",
         sessionId,
@@ -947,6 +961,7 @@ export class ExternalSessionTracker {
       return;
     }
 
+    if (!stillCurrent()) return;
     const event: SessionStatusEvent = {
       type: "session-status-changed",
       sessionId,

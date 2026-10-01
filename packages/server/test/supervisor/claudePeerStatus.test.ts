@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { ClaudePeerStatus } from "../../src/supervisor/claudePeerStatus.js";
 
+const START = "Thu Oct  1 06:40:59 2026";
+
 describe("ClaudePeerStatus", () => {
   let dir: string | undefined;
   afterEach(async () => {
@@ -21,30 +23,51 @@ describe("ClaudePeerStatus", () => {
     return dir;
   }
 
-  it("reports busy only for a live process of that session", async () => {
+  const peer = (pid: number, sessionId: string, status: string) => ({
+    pid,
+    sessionId,
+    status,
+    procStart: START,
+    pidDomain: process.platform,
+  });
+
+  it("reports busy only for a live, identical process of that session", async () => {
     const status = new ClaudePeerStatus(
       await peers({
-        "101.json": { pid: 101, sessionId: "busy", status: "busy" },
-        "102.json": { pid: 102, sessionId: "idle", status: "idle" },
-        "103.json": { pid: 103, sessionId: "dead", status: "busy" },
-        "104.json": "{ half written",
+        "101.json": peer(101, "busy", "busy"),
+        "102.json": peer(102, "idle", "idle"),
+        "103.json": peer(103, "dead", "busy"),
+        "104.json": peer(104, "reused", "busy"),
+        "105.json": { ...peer(105, "no-start", "busy"), procStart: undefined },
+        "106.json": peer(999, "wrong-name", "busy"),
+        "107.json": "{ half written",
         "notes.txt": "ignored",
       }),
-      { isAlive: (pid) => pid !== 103 },
+      {
+        isAlive: (pid) => pid !== 103,
+        // 104 is alive, but a different process now holds that pid.
+        startOf: async (pid) =>
+          pid === 104 ? "Thu Oct  1 09:00:00 2026" : `${START}  `,
+      },
     );
     expect(await status.isBusy("busy")).toBe(true);
     expect(await status.isBusy("idle")).toBe(false);
     expect(await status.isBusy("dead")).toBe(false);
+    expect(await status.isBusy("reused")).toBe(false);
+    expect(await status.isBusy("no-start")).toBe(false);
+    expect(await status.isBusy("wrong-name")).toBe(false);
     expect(await status.isBusy("unknown")).toBe(false);
   });
 
-  it("prefers a busy process when two share a session", async () => {
+  it("counts any live busy process when several share a session", async () => {
     const status = new ClaudePeerStatus(
       await peers({
-        "201.json": { pid: 201, sessionId: "shared", status: "idle" },
-        "202.json": { pid: 202, sessionId: "shared", status: "busy" },
+        "201.json": peer(201, "shared", "busy"),
+        "202.json": peer(202, "shared", "busy"),
+        "203.json": peer(203, "shared", "idle"),
       }),
-      { isAlive: () => true },
+      // 201 is a stale busy file; 202 is the live writer.
+      { isAlive: (pid) => pid !== 201, startOf: async () => START },
     );
     expect(await status.isBusy("shared")).toBe(true);
   });

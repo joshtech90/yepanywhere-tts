@@ -75,7 +75,7 @@ import {
 import { Hono } from "hono";
 import { compress } from "hono/compress";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import type { AuthService } from "./auth/AuthService.js";
 import { createAuthRoutes } from "./auth/routes.js";
 import type { UserUsageService } from "./auth/UserUsageService.js";
@@ -2108,19 +2108,16 @@ export function createApp(options: AppOptions): AppResult {
         projectDisplayName,
         decayMs: 30000, // 30 seconds
         // Keeps a silent external Claude turn (long tool call) visible.
-        peerStatus: new ClaudePeerStatus(
-          join(
-            dirname(
-              options.projectsDir ??
-                process.env.CLAUDE_SESSIONS_DIR ??
-                join(
-                  process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
-                  "projects",
-                ),
+        // Claude keeps its per-process status files next to its config, not
+        // next to transcripts; a test transcript override reads none.
+        peerStatus: options.projectsDir
+          ? undefined
+          : new ClaudePeerStatus(
+              join(
+                process.env.CLAUDE_CONFIG_DIR ?? join(homedir(), ".claude"),
+                "sessions",
+              ),
             ),
-            "sessions",
-          ),
-        ),
         // Callback to get session summary for new external sessions
         // projectId is now UrlProjectId (base64url) - ExternalSessionTracker converts it
         getSessionSummary,

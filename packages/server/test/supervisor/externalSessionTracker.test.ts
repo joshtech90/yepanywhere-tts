@@ -696,4 +696,61 @@ describe("ExternalSessionTracker", () => {
       tracker.dispose();
     }
   });
+
+  it("does not report working over a session we took over during the check", async () => {
+    const eventBus = new EventBus();
+    const events: BusEvent[] = [];
+    eventBus.subscribe((event) => events.push(event));
+    const projectId = encodeProjectId("/tmp/test");
+    let owned = false;
+    const supervisor = {
+      getProcessForSession: vi.fn(() =>
+        owned ? { projectId, state: { type: "in-turn" } } : undefined,
+      ),
+    } as unknown as Supervisor;
+    const scanner = {
+      getProjectBySessionDirSuffix: vi.fn(async () => ({ id: projectId })),
+    } as unknown as ProjectScanner;
+    let answer: (busy: boolean) => void = () => {};
+    const tracker = new ExternalSessionTracker({
+      eventBus,
+      supervisor,
+      scanner,
+      decayMs: 20,
+      peerStatus: {
+        isBusy: () =>
+          new Promise<boolean>((resolve) => {
+            answer = resolve;
+          }),
+      },
+    });
+
+    try {
+      eventBus.emit({
+        type: "file-change",
+        provider: "claude",
+        path: "/tmp/projects/-tmp-test/taken-session.jsonl",
+        relativePath: "-tmp-test/taken-session.jsonl",
+        changeType: "modify",
+        fileType: "session",
+        timestamp: new Date().toISOString(),
+      });
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      // The decay is waiting for peer status; YA takes the session over.
+      owned = true;
+      answer(true);
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      expect(tracker.isExternal("taken-session")).toBe(false);
+      const ownerships = events.flatMap((event) =>
+        event.type === "session-status-changed" &&
+        event.sessionId === "taken-session"
+          ? [event.ownership]
+          : [],
+      );
+      expect(ownerships).toEqual([{ owner: "external" }]);
+    } finally {
+      tracker.dispose();
+    }
+  });
 });

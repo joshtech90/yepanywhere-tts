@@ -585,7 +585,14 @@ Befehls schreibt das andere Programm nichts, die Eigentuemerschaft faellt auf
 `none` zurueck. `core/activity.ts` ueberbrueckt diese Stille nur fuer die
 geoeffnete Sitzung: ein unbeantworteter Werkzeugaufruf der letzten, nicht
 abgeschlossenen Runde, der juenger als 30 Minuten ist, gilt weiter als Arbeit.
-Die Liste hat keinen Verlauf und zeigt in dieser Phase ehrlich „Nichts laeuft“.
+Fuer die Liste (ohne Verlauf) fragt der Server seit 01.10.2026 beim Ablauf der
+30 Sekunden Claudes Prozess-Statusdateien
+(`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`, `status: "busy"`) ab
+(`server/src/supervisor/claudePeerStatus.ts`). Meldet ein lebender Prozess mit
+passender Startzeit „busy“, bleibt die Sitzung extern und traegt
+`ownership.working: true`; `core/catalog.ts` zeigt sie dann unabhaengig von der
+Zwei-Minuten-Frische gruen. Codex-Laeufe anderer Programme haben keine solche
+Datei und zeigen in der Stille weiter „Nichts laeuft“.
 
 Der Server markiert beim Lesen jeden Werkzeugaufruf ohne Ergebnis als
 verwaist, auch den gerade laufenden. Das Cockpit projiziert die aktuelle Runde
