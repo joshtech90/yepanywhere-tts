@@ -45,7 +45,10 @@ export interface CreateCockpitCatalogInput {
   sourceKey: string;
   projects: readonly ProjectCollectionRecord[];
   sessions: readonly SessionCollectionRecord[];
-  providerRuntimeBySessionId: ReadonlyMap<string, ProviderRuntimeStatusRecord>;
+  providerRuntimeBySessionId: ReadonlyMap<
+    string,
+    ProviderRuntimeStatusRecord
+  >;
   connection: "online" | "offline" | "error";
   orderedSessionIds?: readonly string[];
   /** Clock for judging how fresh external activity is. */
@@ -95,14 +98,17 @@ function deriveSessionStatus(
   now: number,
 ): CockpitSessionStatus {
   if (connection === "offline") return "offline";
-  if (connection === "error" || providerRuntime?.status.kind === "terminal") {
+  if (
+    connection === "error" ||
+    providerRuntime?.status.kind === "terminal"
+  ) {
     return "error";
   }
   if (session.pendingInputType === "tool-approval") return "approval";
   if (
     session.pendingInputType === "user-question" ||
     session.activity === "waiting-input" ||
-    session.asyncQuestions?.questions.length
+    Boolean(session.asyncQuestions?.questions.length)
   ) {
     return "question";
   }
