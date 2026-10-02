@@ -396,6 +396,17 @@ beliebiges Clipboard-HTML wird nicht als Anhang interpretiert. Upload,
 Bildverkleinerung, Fortschritt, Abbruch und Wiederholung bleiben Besitzer der
 vorhandenen Composer-Pipeline.
 
+Abgeschickte Nachrichten, die der Provider noch nicht uebernommen hat, bleiben
+am Ende des Verlaufs sichtbar (Joscha 02.10.2026): Pending-Echos als
+„Wird gesendet …“, Eintraege der Deferred Queue als „In der Warteschlange“ mit
+ihrer Position, nach einem Neustart pausierte Eintraege als angehalten. Sie
+stehen blass und gestrichelt unter der Arbeitszeile, in derselben Reihenfolge
+wie in der bisherigen Ansicht (`buildComposerTailItems`). Sobald der Server die
+Nachricht zustellt, verschwindet der blasse Eintrag mit dem Queue-Abgleich von
+`useSession`, und das Echo erscheint als normale Nutzernachricht. Das Cockpit
+haelt dafuer keine eigene Queue-Kopie; Abbrechen, Bearbeiten und Steer
+einzelner Queue-Eintraege bleiben vorerst in der bisherigen Ansicht.
+
 ### Aufmerksamkeits-Grenze aus Paket 8
 
 `useSession` bleibt Eigentuemer der jeweils aktuellen `pendingInputRequest`.
