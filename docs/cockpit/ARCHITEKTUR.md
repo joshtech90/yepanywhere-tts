@@ -399,9 +399,13 @@ vorhandenen Composer-Pipeline.
 Abgeschickte Nachrichten, die der Provider noch nicht uebernommen hat, bleiben
 am Ende des Verlaufs sichtbar (Joscha 02.10.2026): Pending-Echos als
 „Wird gesendet …“, Eintraege der Deferred Queue als „In der Warteschlange“ mit
-ihrer Position, nach einem Neustart pausierte Eintraege als angehalten. Sie
-stehen blass und gestrichelt unter der Arbeitszeile, in derselben Reihenfolge
-wie in der bisherigen Ansicht (`buildComposerTailItems`). Sobald der Server die
+ihrer Position in der eigenen Spur, geduldige Eintraege als „Wartet auf eine
+ruhige Pause“ mit eigener Zaehlung, YA-Befehle ohne Position als „Laeuft nach
+der aktuellen Runde“ (`/clearloop` mit Fortschritt) und nach einem Neustart
+pausierte Eintraege als angehalten. Nur gezaehlte Anhaenge erscheinen als
+Anzahl. Die Eintraege stehen blass und gestrichelt unter der Arbeitszeile, in
+Reihenfolge und Spurregeln der bisherigen Ansicht
+(`buildComposerTailDisplayRows`). Sobald der Server die
 Nachricht zustellt, verschwindet der blasse Eintrag mit dem Queue-Abgleich von
 `useSession`, und das Echo erscheint als normale Nutzernachricht. Das Cockpit
 haelt dafuer keine eigene Queue-Kopie; Abbrechen, Bearbeiten und Steer
