@@ -327,4 +327,62 @@ describe("Cockpit session detail projection", () => {
       "local\0session\0session-1\0outgoing\0temp-q1",
     );
   });
+
+  it("keeps queue lanes, commands, and counted attachments apart", () => {
+    const timestamp = "2026-10-02T09:00:00.000Z";
+    const entries = createCockpitOutgoingEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      pendingMessages: [],
+      deferredMessages: [
+        {
+          tempId: "done",
+          content: "/done",
+          timestamp,
+          kind: "ya-command",
+          yaCommand: "done",
+        },
+        {
+          tempId: "patient",
+          content: "Wait for quiet.",
+          timestamp,
+          metadata: { deliveryIntent: "patient" },
+        },
+        {
+          tempId: "regular",
+          content: "Next regular.",
+          timestamp,
+          metadata: { deliveryIntent: "deferred" },
+        },
+        {
+          tempId: "loop",
+          content: "Repeat this task.",
+          timestamp,
+          kind: "ya-command",
+          yaCommand: "clearloop",
+          clearloop: { completed: 1, total: 3 },
+        },
+        { tempId: "image", content: "", timestamp, attachmentCount: 2 },
+      ],
+    });
+
+    expect(
+      entries.map(({ status, position, loop, attachmentCount }) => ({
+        status,
+        position,
+        loop,
+        attachmentCount,
+      })),
+    ).toEqual([
+      { status: "command", position: undefined, loop: undefined },
+      { status: "patient", position: 1, loop: undefined },
+      { status: "queued", position: 1, loop: undefined },
+      {
+        status: "command",
+        position: undefined,
+        loop: { completed: 1, total: 3 },
+      },
+      { status: "queued", position: 2, loop: undefined, attachmentCount: 2 },
+    ]);
+  });
 });

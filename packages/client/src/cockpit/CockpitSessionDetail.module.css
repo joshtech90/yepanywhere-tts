@@ -441,6 +441,12 @@
   font-style: italic;
 }
 
+.outgoingAttachmentCount {
+  margin: 0.4rem 0 0;
+  color: var(--cockpit-muted);
+  font-size: var(--cockpit-text-xs);
+}
+
 .boundary {
   display: grid;
   width: min(100%, 47rem);

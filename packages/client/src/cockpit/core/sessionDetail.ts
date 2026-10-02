@@ -3,8 +3,10 @@ import type { ContentBlock } from "@yep-anywhere/shared/transcript/message";
 import { formatFileSize } from "../../lib/formatFileSize";
 import { parseUserPrompt } from "../../lib/parseUserPrompt";
 import {
-  buildComposerTailItems,
-  isRecoveredDeferredMessage,
+  buildComposerTailDisplayRows,
+  type ComposerTailDisplayRow,
+  type RenderDeferredMessage,
+  type RenderPendingMessage,
 } from "../../lib/sessionDetail/composerTail";
 import {
   createCockpitToolDisplay,
@@ -75,54 +77,91 @@ export type CockpitTranscriptEntry =
  */
 export interface CockpitOutgoingEntry {
   key: string;
-  status: "sending" | "queued" | "paused";
-  /** 1-based place in the session queue; only queued entries carry it. */
+  /**
+   * `queued` waits for the next turn; `patient` waits until the session is
+   * quiet and lets regular queued prompts pass; `command` is a YA command
+   * that runs after the current turn instead of going to the provider.
+   */
+  status: "sending" | "queued" | "patient" | "command" | "paused";
+  /** 1-based place within its own queue lane (regular or patient). */
   position?: number;
+  /** Progress of a running `/clearloop` command. */
+  loop?: { completed: number; total: number };
   text: string;
   timestamp?: string;
   attachments: CockpitUserAttachment[];
+  /** Files the queue summary only counts, without names or sizes. */
+  attachmentCount?: number;
 }
 
-export interface CockpitOutgoingInput {
-  tempId?: string;
+export interface CockpitOutgoingInput extends RenderDeferredMessage {
   content: string;
-  timestamp: string;
   clientOrder?: number;
-  status?: string;
   attachments?: readonly { originalName: string; size: number }[];
+  clearloop?: { completed: number; total: number };
 }
 
+function outgoingStatus(
+  row: Exclude<
+    ComposerTailDisplayRow<RenderPendingMessage, CockpitOutgoingInput>,
+    { kind: "project-queue" }
+  >,
+): Pick<CockpitOutgoingEntry, "status" | "position"> {
+  if (row.kind === "pending") return { status: "sending" };
+  if (row.isRecovered) return { status: "paused" };
+  if (row.isYaCommand) return { status: "command" };
+  if (row.isPatient) {
+    return {
+      status: "patient",
+      position: (row.lanePosition?.patientIndex ?? 0) + 1,
+    };
+  }
+  return {
+    status: "queued",
+    position: (row.lanePosition?.regularIndex ?? 0) + 1,
+  };
+}
+
+/**
+ * Projects useSession's pending echoes and server queue mirror with the same
+ * order and lane rules as the classic composer tail; the Cockpit keeps no
+ * queue copy of its own.
+ */
 export function createCockpitOutgoingEntries(input: {
   sourceKey: string;
   sessionId: string;
   pendingMessages: readonly (CockpitOutgoingInput & { tempId: string })[];
   deferredMessages: readonly CockpitOutgoingInput[];
 }): CockpitOutgoingEntry[] {
-  let queuePosition = 0;
-  return buildComposerTailItems({
+  return buildComposerTailDisplayRows({
     pendingMessages: input.pendingMessages,
     deferredMessages: input.deferredMessages,
-  }).flatMap<CockpitOutgoingEntry>((item) => {
-    if (item.kind === "project-queue") return [];
-    const message = item.message;
-    const paused =
-      item.kind === "deferred" && isRecoveredDeferredMessage(message);
-    const status =
-      item.kind === "pending" ? "sending" : paused ? "paused" : "queued";
+    // Message ages are not shown here, so the age inputs stay inert.
+    latestVisibleTimestampMs: null,
+    nowMs: 0,
+    staleThresholdMs: Number.POSITIVE_INFINITY,
+  }).flatMap<CockpitOutgoingEntry>((row) => {
+    if (row.kind === "project-queue") return [];
+    const message = row.message;
     const text = message.content.trim();
     const attachments = (message.attachments ?? []).map((file) => ({
       name: file.originalName,
       size: formatFileSize(file.size),
     }));
-    if (!text && attachments.length === 0) return [];
+    const countedOnly =
+      attachments.length === 0 && message.attachmentCount
+        ? message.attachmentCount
+        : 0;
+    if (!text && attachments.length === 0 && countedOnly === 0) return [];
     return [
       {
-        key: `${input.sourceKey}\0session\0${input.sessionId}\0outgoing\0${item.key}`,
-        status,
-        ...(status === "queued" ? { position: ++queuePosition } : {}),
+        key: `${input.sourceKey}\0session\0${input.sessionId}\0outgoing\0${row.key}`,
+        ...outgoingStatus(row),
+        ...(message.clearloop ? { loop: message.clearloop } : {}),
         text,
         ...(message.timestamp ? { timestamp: message.timestamp } : {}),
         attachments,
+        ...(countedOnly > 0 ? { attachmentCount: countedOnly } : {}),
       },
     ];
   });

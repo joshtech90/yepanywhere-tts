@@ -157,11 +157,27 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
 }
 
 function outgoingStatusLabel(entry: CockpitOutgoingEntry, t: TranslationFn) {
-  if (entry.status === "sending") return t("cockpitSessionOutgoingSending");
-  if (entry.status === "paused") return t("cockpitSessionOutgoingPaused");
-  return entry.position && entry.position > 1
-    ? t("cockpitSessionOutgoingQueuedAt", { position: entry.position })
-    : t("cockpitSessionOutgoingQueued");
+  switch (entry.status) {
+    case "sending":
+      return t("cockpitSessionOutgoingSending");
+    case "paused":
+      return t("cockpitSessionOutgoingPaused");
+    case "command":
+      return entry.loop
+        ? t("cockpitSessionOutgoingLoop", {
+            completed: entry.loop.completed,
+            total: entry.loop.total,
+          })
+        : t("cockpitSessionOutgoingCommand");
+    case "patient":
+      return entry.position && entry.position > 1
+        ? t("cockpitSessionOutgoingPatientAt", { position: entry.position })
+        : t("cockpitSessionOutgoingPatient");
+    case "queued":
+      return entry.position && entry.position > 1
+        ? t("cockpitSessionOutgoingQueuedAt", { position: entry.position })
+        : t("cockpitSessionOutgoingQueued");
+  }
 }
 
 /**
@@ -203,6 +219,13 @@ function OutgoingEntry({
             </li>
           ))}
         </ul>
+      )}
+      {entry.attachmentCount !== undefined && (
+        <p className={styles.outgoingAttachmentCount}>
+          {t("cockpitSessionOutgoingAttachmentCount", {
+            count: entry.attachmentCount,
+          })}
+        </p>
       )}
     </article>
   );

@@ -207,6 +207,14 @@ describe("Cockpit session detail", () => {
           text: "And tag the release.",
           attachments: [{ name: "notes.txt", size: "2.0 KB" }],
         },
+        {
+          key: "local-outgoing-3",
+          status: "command",
+          loop: { completed: 1, total: 3 },
+          text: "Repeat this task.",
+          attachments: [],
+          attachmentCount: 2,
+        },
       ],
     });
     const { container } = renderDetail();
@@ -219,7 +227,10 @@ describe("Cockpit session detail", () => {
     expect(rows.map((row) => row.dataset.outgoingStatus)).toEqual([
       "queued",
       "queued",
+      "command",
     ]);
+    expect(rows[2]?.textContent).toContain("Repeating, 1 of 3 done");
+    expect(rows[2]?.textContent).toContain("Attachments: 2");
     expect(rows[0]?.textContent).toContain("Then update the changelog.");
     expect(rows[0]?.textContent).toContain("Queued, next");
     expect(rows[1]?.textContent).toContain("Queued, #2");
