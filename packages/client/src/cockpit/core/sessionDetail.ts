@@ -1,6 +1,11 @@
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import type { ContentBlock } from "@yep-anywhere/shared/transcript/message";
+import { formatFileSize } from "../../lib/formatFileSize";
 import { parseUserPrompt } from "../../lib/parseUserPrompt";
+import {
+  buildComposerTailItems,
+  isRecoveredDeferredMessage,
+} from "../../lib/sessionDetail/composerTail";
 import {
   createCockpitToolDisplay,
   type CockpitToolDisplay,
@@ -62,6 +67,66 @@ export type CockpitTranscriptEntry =
   | CockpitAssistantEntry
   | CockpitBoundaryEntry
   | CockpitToolEntry;
+
+/**
+ * A prompt the user already sent that the provider has not taken yet: either
+ * still on its way to the server or waiting in the session's queue. It shows
+ * faded at the end of the transcript until its own echo replaces it.
+ */
+export interface CockpitOutgoingEntry {
+  key: string;
+  status: "sending" | "queued" | "paused";
+  /** 1-based place in the session queue; only queued entries carry it. */
+  position?: number;
+  text: string;
+  timestamp?: string;
+  attachments: CockpitUserAttachment[];
+}
+
+export interface CockpitOutgoingInput {
+  tempId?: string;
+  content: string;
+  timestamp: string;
+  clientOrder?: number;
+  status?: string;
+  attachments?: readonly { originalName: string; size: number }[];
+}
+
+export function createCockpitOutgoingEntries(input: {
+  sourceKey: string;
+  sessionId: string;
+  pendingMessages: readonly (CockpitOutgoingInput & { tempId: string })[];
+  deferredMessages: readonly CockpitOutgoingInput[];
+}): CockpitOutgoingEntry[] {
+  let queuePosition = 0;
+  return buildComposerTailItems({
+    pendingMessages: input.pendingMessages,
+    deferredMessages: input.deferredMessages,
+  }).flatMap<CockpitOutgoingEntry>((item) => {
+    if (item.kind === "project-queue") return [];
+    const message = item.message;
+    const paused =
+      item.kind === "deferred" && isRecoveredDeferredMessage(message);
+    const status =
+      item.kind === "pending" ? "sending" : paused ? "paused" : "queued";
+    const text = message.content.trim();
+    const attachments = (message.attachments ?? []).map((file) => ({
+      name: file.originalName,
+      size: formatFileSize(file.size),
+    }));
+    if (!text && attachments.length === 0) return [];
+    return [
+      {
+        key: `${input.sourceKey}\0session\0${input.sessionId}\0outgoing\0${item.key}`,
+        status,
+        ...(status === "queued" ? { position: ++queuePosition } : {}),
+        text,
+        ...(message.timestamp ? { timestamp: message.timestamp } : {}),
+        attachments,
+      },
+    ];
+  });
+}
 
 export type CockpitSessionState =
   | "active"
@@ -158,7 +223,10 @@ export function createCockpitTranscriptEntries(input: {
         sourceItems: assistantItems,
         text,
         thinking,
-        spokenText: text.map((segment) => segment.text).join("\n\n").trim(),
+        spokenText: text
+          .map((segment) => segment.text)
+          .join("\n\n")
+          .trim(),
         isStreaming:
           text.some((segment) => segment.isStreaming) ||
           thinking.some((segment) => segment.status === "streaming"),

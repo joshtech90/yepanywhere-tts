@@ -1,6 +1,7 @@
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
 import { describe, expect, it } from "vitest";
 import {
+  createCockpitOutgoingEntries,
   createCockpitTranscriptEntries,
   deriveCockpitSessionState,
 } from "./sessionDetail";
@@ -10,9 +11,7 @@ const initialItems: RenderItem[] = [
     type: "user_prompt",
     id: "user-1",
     content: "Summarize the launch notes.",
-    sourceMessages: [
-      { uuid: "user-1", timestamp: "2026-09-24T09:00:00.000Z" },
-    ],
+    sourceMessages: [{ uuid: "user-1", timestamp: "2026-09-24T09:00:00.000Z" }],
   },
   {
     type: "thinking",
@@ -252,5 +251,80 @@ describe("Cockpit session detail projection", () => {
         workingElsewhere: true,
       }),
     ).toBe("offline");
+  });
+
+  it("lists sent prompts that are not taken yet in delivery order", () => {
+    const entries = createCockpitOutgoingEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      pendingMessages: [
+        {
+          tempId: "temp-send",
+          content: "Run the tests.",
+          timestamp: "2026-10-02T09:00:05.000Z",
+        },
+      ],
+      deferredMessages: [
+        {
+          tempId: "temp-q1",
+          content: "Then update the changelog.",
+          timestamp: "2026-10-02T09:00:01.000Z",
+        },
+        {
+          tempId: "temp-q2",
+          content: "  ",
+          timestamp: "2026-10-02T09:00:02.000Z",
+          attachments: [{ originalName: "notes.txt", size: 2048 }],
+        },
+        {
+          tempId: "recovered-1",
+          content: "Left over from before the restart.",
+          timestamp: "2026-10-02T08:00:00.000Z",
+          status: "paused-after-restart",
+        },
+        {
+          tempId: "temp-empty",
+          content: "",
+          timestamp: "2026-10-02T09:00:03.000Z",
+        },
+      ],
+    });
+
+    expect(
+      entries.map(({ status, position, text, attachments }) => ({
+        status,
+        position,
+        text,
+        attachments,
+      })),
+    ).toEqual([
+      {
+        status: "sending",
+        position: undefined,
+        text: "Run the tests.",
+        attachments: [],
+      },
+      {
+        status: "queued",
+        position: 1,
+        text: "Then update the changelog.",
+        attachments: [],
+      },
+      {
+        status: "queued",
+        position: 2,
+        text: "",
+        attachments: [{ name: "notes.txt", size: "2\u202fkb" }],
+      },
+      {
+        status: "paused",
+        position: undefined,
+        text: "Left over from before the restart.",
+        attachments: [],
+      },
+    ]);
+    expect(entries[1]?.key).toBe(
+      "local\0session\0session-1\0outgoing\0temp-q1",
+    );
   });
 });

@@ -428,6 +428,19 @@
   line-height: 1.55;
 }
 
+/* Sent but not yet taken: the same bubble, faded until its turn comes. */
+.outgoingEntry {
+  border-style: dashed;
+  opacity: 0.62;
+}
+
+.outgoingStatus {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-style: italic;
+}
+
 .boundary {
   display: grid;
   width: min(100%, 47rem);

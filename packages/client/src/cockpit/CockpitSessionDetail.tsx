@@ -34,6 +34,7 @@ import { countEntriesBeforeCockpitScrollAnchor } from "./core/scrollAnchor";
 import {
   deriveCockpitSessionState,
   type CockpitAssistantEntry,
+  type CockpitOutgoingEntry,
   type CockpitSessionState,
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
@@ -152,6 +153,58 @@ function AssistantContent({ entry }: { entry: CockpitAssistantEntry }) {
         </div>
       ))}
     </>
+  );
+}
+
+function outgoingStatusLabel(entry: CockpitOutgoingEntry, t: TranslationFn) {
+  if (entry.status === "sending") return t("cockpitSessionOutgoingSending");
+  if (entry.status === "paused") return t("cockpitSessionOutgoingPaused");
+  return entry.position && entry.position > 1
+    ? t("cockpitSessionOutgoingQueuedAt", { position: entry.position })
+    : t("cockpitSessionOutgoingQueued");
+}
+
+/**
+ * A sent prompt the provider has not taken yet stays where it will land, faded
+ * and labelled, instead of vanishing until its turn comes (Joscha 02.10.2026).
+ */
+function OutgoingEntry({
+  entry,
+  locale,
+}: {
+  entry: CockpitOutgoingEntry;
+  locale: string;
+}) {
+  const { t } = useI18n();
+  const time = entryTime(entry.timestamp, locale);
+  return (
+    <article
+      className={`${styles.userEntry} ${styles.outgoingEntry}`}
+      data-entry-kind="outgoing"
+      data-outgoing-status={entry.status}
+    >
+      <header className={styles.entryHeader}>
+        <strong>{t("cockpitSessionUser")}</strong>
+        <span className={styles.outgoingStatus}>
+          {outgoingStatusLabel(entry, t)}
+          {time && <time dateTime={entry.timestamp}>{time}</time>}
+        </span>
+      </header>
+      {entry.text && <div className={styles.userText}>{entry.text}</div>}
+      {entry.attachments.length > 0 && (
+        <ul
+          aria-label={t("cockpitSessionAttachments")}
+          className={styles.userAttachments}
+        >
+          {entry.attachments.map((file, index) => (
+            <li key={`${file.name}\0${index}`}>
+              <span>{file.name}</span>
+              <small>{file.size}</small>
+            </li>
+          ))}
+        </ul>
+      )}
+    </article>
   );
 }
 
@@ -446,20 +499,26 @@ export function CockpitSessionDetail({
   }, [projectId, runtime.sourceKey, sessionId, transcriptEntries]);
 
   const showWorking = state === "active" || state === "external";
+  const outgoingCount = detail.outgoing.length;
   const workingElsewhere = state === "external";
   useEffect(() => {
     if (!onWorkingElsewhereChange) return;
     onWorkingElsewhereChange(sessionId, workingElsewhere);
     return () => onWorkingElsewhereChange(sessionId, false);
   }, [onWorkingElsewhereChange, sessionId, workingElsewhere]);
-  // The working line is not a transcript entry, so the follow effect above
-  // does not see it appear; keep a reader at the end looking at it.
+  // The working line and queued prompts are not transcript entries, so the
+  // follow effect above does not see them appear; keep a reader at the end
+  // looking at them.
   useLayoutEffect(() => {
     const container = scrollRef.current;
-    if (showWorking && container && followingRef.current) {
+    if (
+      (showWorking || outgoingCount > 0) &&
+      container &&
+      followingRef.current
+    ) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [showWorking]);
+  }, [outgoingCount, showWorking]);
 
   // The phone shell measures its visible height after the first paint, so
   // the transcript can shrink after it was scrolled to the end; a reader who
@@ -680,18 +739,23 @@ export function CockpitSessionDetail({
       >
         <CockpitTranscriptWindow
           afterRows={
-            showWorking ? (
-              <p className={styles.workingRow} role="status">
-                <span aria-hidden="true" className={styles.workingDots}>
-                  <i />
-                  <i />
-                  <i />
-                </span>
-                {state === "external"
-                  ? t("cockpitSessionWorkingElsewhere")
-                  : t("cockpitSessionWorking")}
-              </p>
-            ) : null
+            <>
+              {showWorking && (
+                <p className={styles.workingRow} role="status">
+                  <span aria-hidden="true" className={styles.workingDots}>
+                    <i />
+                    <i />
+                    <i />
+                  </span>
+                  {state === "external"
+                    ? t("cockpitSessionWorkingElsewhere")
+                    : t("cockpitSessionWorking")}
+                </p>
+              )}
+              {detail.outgoing.map((entry) => (
+                <OutgoingEntry entry={entry} key={entry.key} locale={locale} />
+              ))}
+            </>
           }
           beforeRows={
             <>

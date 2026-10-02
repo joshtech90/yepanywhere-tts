@@ -96,6 +96,7 @@ function detailData(
     loadOlderMessages: vi.fn(async () => {}),
     loading: false,
     loadingOlder: false,
+    outgoing: [],
     processState: "idle",
     reloadSession: vi.fn(),
     restoredFromSnapshot: true,
@@ -185,6 +186,50 @@ describe("Cockpit session detail", () => {
     expect(screen.getByRole("status").textContent).toContain(
       "Working in another program…",
     );
+  });
+
+  it("keeps queued prompts visible and faded after the working line", () => {
+    detailMocks.data = detailData({
+      processState: "in-turn",
+      outgoing: [
+        {
+          key: "local-outgoing-1",
+          status: "queued",
+          position: 1,
+          text: "Then update the changelog.",
+          timestamp: "2026-09-24T09:00:02.000Z",
+          attachments: [],
+        },
+        {
+          key: "local-outgoing-2",
+          status: "queued",
+          position: 2,
+          text: "And tag the release.",
+          attachments: [{ name: "notes.txt", size: "2.0 KB" }],
+        },
+      ],
+    });
+    const { container } = renderDetail();
+
+    const rows = [
+      ...container.querySelectorAll<HTMLElement>(
+        '[data-entry-kind="outgoing"]',
+      ),
+    ];
+    expect(rows.map((row) => row.dataset.outgoingStatus)).toEqual([
+      "queued",
+      "queued",
+    ]);
+    expect(rows[0]?.textContent).toContain("Then update the changelog.");
+    expect(rows[0]?.textContent).toContain("Queued, next");
+    expect(rows[1]?.textContent).toContain("Queued, #2");
+    expect(rows[1]?.textContent).toContain("notes.txt");
+    const working = screen.getByRole("status");
+    expect(working.textContent).toContain("Working…");
+    expect(
+      working.compareDocumentPosition(rows[0] as Node) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   it("keeps a following reader at the end when the transcript resizes", () => {

@@ -23,7 +23,9 @@ import {
   isCockpitSessionWorkingElsewhere,
 } from "./core/activity";
 import {
+  createCockpitOutgoingEntries,
   createCockpitTranscriptEntries,
+  type CockpitOutgoingEntry,
   type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 
@@ -38,6 +40,8 @@ export interface CockpitSessionDetailData {
   latestTurnAborted: boolean;
   loading: boolean;
   loadingOlder: boolean;
+  /** Sent prompts the provider has not taken yet, in delivery order. */
+  outgoing: CockpitOutgoingEntry[];
   processState: "idle" | "in-turn" | "waiting-input";
   reloadSession: () => void;
   restoredFromSnapshot: boolean;
@@ -118,6 +122,21 @@ export function useCockpitSessionDetail(
       }),
     [renderItems, runtime.sourceKey, sessionId],
   );
+  const outgoing = useMemo(
+    () =>
+      createCockpitOutgoingEntries({
+        sourceKey: runtime.sourceKey,
+        sessionId,
+        pendingMessages: detail.pendingMessages,
+        deferredMessages: detail.deferredMessages,
+      }),
+    [
+      detail.deferredMessages,
+      detail.pendingMessages,
+      runtime.sourceKey,
+      sessionId,
+    ],
+  );
   const owner = detail.status.owner;
   const latestTurn = useMemo(() => {
     const turn = inspectCockpitLatestTurn(renderItems);
@@ -190,6 +209,7 @@ export function useCockpitSessionDetail(
     latestTurnAborted: latestTurn.aborted === true,
     loading: detail.loading,
     loadingOlder: detail.loadingOlder,
+    outgoing,
     processState: detail.processState,
     reloadSession: detail.reloadSession,
     restoredFromSnapshot: detail.restoredFromSnapshot,
