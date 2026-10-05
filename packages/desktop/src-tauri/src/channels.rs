@@ -1,7 +1,7 @@
 // Adapted from desktop-release-kit: contract/desktop-update-channels-v1.md.
 use serde::{Deserialize, Serialize};
 use std::{path::Path, sync::Mutex, time::Duration};
-use tauri::{ipc::Channel, State};
+use tauri::State;
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const ROOT: &str = "https://updates.yepanywhere.com/desktop";
@@ -30,7 +30,7 @@ pub struct Updates {
     pub track: Track,
     generation: u64,
     candidate: Option<Update>,
-    installing: bool,
+    pub installing: bool,
 }
 
 impl Updates {
@@ -59,13 +59,6 @@ fn persist_track(directory: &Path, track: Track) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-#[allow(clippy::needless_pass_by_value)]
-pub fn get_update_channel(state: State<'_, Mutex<Updates>>) -> Result<Track, String> {
-    Ok(state.lock().map_err(|e| e.to_string())?.track)
-}
-
-#[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn set_update_channel(state: State<'_, Mutex<Updates>>, track: Track) -> Result<(), String> {
     let mut updates = state.lock().map_err(|e| e.to_string())?;
@@ -80,7 +73,6 @@ pub fn set_update_channel(state: State<'_, Mutex<Updates>>, track: Track) -> Res
     Ok(())
 }
 
-#[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub fn clear_update(state: State<'_, Mutex<Updates>>) -> Result<(), String> {
     let mut updates = state.lock().map_err(|e| e.to_string())?;
@@ -95,10 +87,9 @@ pub fn clear_update(state: State<'_, Mutex<Updates>>) -> Result<(), String> {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckResult {
-    track: Track,
-    version: Option<String>,
-    notes: Option<String>,
-    waiting_for_stable: bool,
+    pub track: Track,
+    pub version: Option<String>,
+    pub waiting_for_stable: bool,
 }
 
 #[derive(Deserialize)]
@@ -168,7 +159,6 @@ async fn discover(root: &str, track: Track, current_version: &str) -> Result<(bo
     Ok((true, track == Track::Stable && current > remote))
 }
 
-#[tauri::command]
 pub async fn check_update(
     app: tauri::AppHandle,
     state: State<'_, Mutex<Updates>>,
@@ -227,7 +217,6 @@ pub async fn check_update(
     let result = CheckResult {
         track,
         version: update.as_ref().map(|u| u.version.clone()),
-        notes: update.as_ref().and_then(|u| u.body.clone()),
         waiting_for_stable,
     };
     updates.candidate = update;
@@ -237,15 +226,15 @@ pub async fn check_update(
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Progress {
-    downloaded_bytes: u64,
-    total_bytes: Option<u64>,
-    installing: bool,
+    pub downloaded_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub installing: bool,
 }
 
-#[tauri::command]
 pub async fn install_update(
+    app: tauri::AppHandle,
     state: State<'_, Mutex<Updates>>,
-    progress: Channel<Progress>,
+    progress: impl Fn(Progress) + Send + Sync,
 ) -> Result<(), String> {
     use tauri::utils::{config::BundleType, platform::bundle_type};
     if !matches!(
@@ -268,31 +257,36 @@ pub async fn install_update(
         update
     };
     let mut downloaded_bytes = 0;
-    let result = update
-        .download_and_install(
-            |bytes, total_bytes| {
-                downloaded_bytes += bytes as u64;
-                let _ = progress.send(Progress {
-                    downloaded_bytes,
-                    total_bytes,
-                    installing: false,
-                });
-            },
-            || {
-                let _ = progress.send(Progress {
-                    downloaded_bytes: 0,
-                    total_bytes: None,
-                    installing: true,
-                });
-            },
-        )
-        .await;
+    let result = async {
+        let bytes = update
+            .download(
+                |bytes, total_bytes| {
+                    downloaded_bytes += bytes as u64;
+                    progress(Progress {
+                        downloaded_bytes,
+                        total_bytes,
+                        installing: false,
+                    });
+                },
+                || {},
+            )
+            .await
+            .map_err(|e| e.to_string())?;
+        progress(Progress {
+            downloaded_bytes: 0,
+            total_bytes: None,
+            installing: true,
+        });
+        crate::server::stop_server(app.clone()).await?;
+        update.install(bytes).map_err(|e| e.to_string())
+    }
+    .await;
     // Keep successful installation locked until relaunch. A failed install may
     // be retried or explicitly resolved by selecting a different channel.
     if result.is_err() {
         state.lock().map_err(|e| e.to_string())?.installing = false;
     }
-    result.map_err(|e| e.to_string())
+    result
 }
 
 #[cfg(test)]

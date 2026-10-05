@@ -1,6 +1,4 @@
-import type { FileHandle } from "node:fs/promises";
 import * as path from "node:path";
-import { Readable } from "node:stream";
 import { type Context, Hono } from "hono";
 import type { ProjectScanner } from "../projects/scanner.js";
 import {
@@ -9,8 +7,7 @@ import {
 } from "./local-resource-policy.js";
 import {
   createMutableFileCacheMetadata,
-  createNotModifiedResponse,
-  isMutableFileNotModified,
+  createMutableFileResponse,
   mutableFileCacheHeaders,
   type MutableFileOpener,
   openMutableFileSnapshot,
@@ -82,7 +79,6 @@ export function createLocalImageHandler(deps: LocalImageDeps) {
       if (!snapshot) {
         return c.json({ error: "Path is not a file" }, 400);
       }
-      let fileHandle: FileHandle | undefined = snapshot.handle;
       const { stats } = snapshot;
       const cacheMetadata = createMutableFileCacheMetadata(stats);
 
@@ -94,21 +90,12 @@ export function createLocalImageHandler(deps: LocalImageDeps) {
         contentType,
         filePath: resolvedPath,
       });
-      try {
-        if (isMutableFileNotModified(c.req.raw.headers, cacheMetadata)) {
-          return createNotModifiedResponse(headers);
-        }
-        const stream = fileHandle.createReadStream({
-          autoClose: true,
-          start: 0,
-        });
-        const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
-        const response = new Response(body, { headers });
-        fileHandle = undefined;
-        return response;
-      } finally {
-        await fileHandle?.close();
-      }
+      return await createMutableFileResponse(
+        c.req.raw.headers,
+        snapshot,
+        cacheMetadata,
+        headers,
+      );
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return c.json({ error: "File not found" }, 404);

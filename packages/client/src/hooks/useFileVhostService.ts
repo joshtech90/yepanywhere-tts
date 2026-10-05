@@ -1,6 +1,7 @@
 import {
   SERVER_CAPABILITIES,
   serverHasCapability,
+  projectAccessLevel,
   type ArtifactVhostSiteView,
 } from "@yep-anywhere/shared";
 import { useMemo } from "react";
@@ -11,9 +12,8 @@ import { useRetainedVersionInfo } from "./useVersion";
 
 /**
  * File vhost requests for the current source, or null where they cannot be
- * offered: a server without `vhost-file-sites`, a principal that is not the
- * superuser (the routes are administrator settings), or no hostname to serve
- * at because neither a public root nor local app serving is configured.
+ * offered. Limited users additionally need replacement support, publication
+ * permission and a new-session grant for this project.
  */
 export function useFileVhostService(
   /** Resolves project-relative paths, as the File Viewer names files. */
@@ -28,13 +28,26 @@ export function useFileVhostService(
   const supported =
     serverHasCapability(version, SERVER_CAPABILITIES.vhostFileSites.name) &&
     resolved &&
-    principal.username === null &&
+    (principal.username === null ||
+      (serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.vhostFileSiteReplacement.name,
+      ) &&
+        principal.grants?.allowPublicApps === true &&
+        !!projectId &&
+        projectAccessLevel(principal.grants, projectId) === "new-session")) &&
     !status?.locked;
   return useMemo(
     () =>
       supported && hostSuffix
         ? {
             hostSuffix,
+            canReplace: serverHasCapability(
+              version,
+              SERVER_CAPABILITIES.vhostFileSiteReplacement.name,
+            ),
+            canUsePrivateLinks:
+              principal.grants?.allowPrivateAppLinks !== false,
             list: async (path) =>
               (
                 await transport.fetch<{ sites: ArtifactVhostSiteView[] }>(
@@ -60,6 +73,13 @@ export function useFileVhostService(
             },
           }
         : null,
-    [supported, hostSuffix, transport, projectId],
+    [
+      supported,
+      hostSuffix,
+      transport,
+      projectId,
+      version,
+      principal.grants?.allowPrivateAppLinks,
+    ],
   );
 }

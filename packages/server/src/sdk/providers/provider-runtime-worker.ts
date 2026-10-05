@@ -16,6 +16,7 @@ import {
   providerSessionErrorMessage,
 } from "./provider-session-owner.js";
 import type { ProviderName, StartSessionOptions } from "./types.js";
+import { withInstructionRestoration } from "./instruction-restoration.js";
 
 interface WorkerLaunchRequest {
   providerName: ProviderName;
@@ -161,7 +162,10 @@ async function main(): Promise<void> {
           onProviderRetentionChange: hooks.onProviderRetentionChange,
         });
         return {
-          session,
+          session: withInstructionRestoration(session, {
+            ...providerOptions,
+            sessionSandbox,
+          }),
           agentctlSessionEnvBridge,
           sandbox: sessionSandbox
             ? {

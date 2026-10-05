@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type {
-  CodexCyberAccessProgram,
-  CodexPlanToolMode,
-  CodexReasoningSummary,
-  SubagentMaxDepth,
+import {
+  type CodexCyberAccessProgram,
+  type CodexPlanToolMode,
+  type CodexReasoningSummary,
+  codexCyberAccessProgramWireValue,
+  type SubagentMaxDepth,
 } from "@yep-anywhere/shared";
 import {
   claudeProvider,
@@ -33,16 +34,35 @@ function getCodexThreadConfig(): Record<string, unknown> {
   ).buildThreadConfigOverrides({});
 }
 
+/** Build a user turn's params as the session loop does, with no denials. */
 function getCodexTurnStartParams(): Record<string, unknown> {
-  return (
-    codexProvider as unknown as {
-      createTurnStartParams(
-        threadId: string,
-        input: unknown[],
-        options: object,
-      ): Record<string, unknown>;
-    }
-  ).createTurnStartParams("thread-1", [], {});
+  const provider = codexProvider as unknown as {
+    getConfiguredCyberAccessProgram(): CodexCyberAccessProgram;
+    createTurnStartParams(
+      threadId: string,
+      input: unknown[],
+      options: object,
+      turnPolicy: null,
+      workspaceWriteSandboxPolicy: null,
+      modelOverride: null,
+      effortOverride: undefined,
+      clientUserMessageId: undefined,
+      cyberAccessProgram: string | null,
+    ): Record<string, unknown>;
+  };
+  return provider.createTurnStartParams(
+    "thread-1",
+    [],
+    {},
+    null,
+    null,
+    null,
+    undefined,
+    undefined,
+    codexCyberAccessProgramWireValue(
+      provider.getConfiguredCyberAccessProgram(),
+    ),
+  );
 }
 
 describe("provider runtime settings", () => {

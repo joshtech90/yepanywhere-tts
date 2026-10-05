@@ -24,7 +24,7 @@ function settleBy<T>(
 ): Promise<T | typeof DEADLINE> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const deadline = new Promise<typeof DEADLINE>((resolve) => {
-    timer = setTimeout(() => resolve(DEADLINE), delayMs);
+    timer = setTimeout(() => resolve(DEADLINE), Math.max(0, delayMs));
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }

@@ -48,6 +48,16 @@ export interface ForkOrdinalClaim {
 }
 
 export interface SessionMetadata {
+  routerBinding?: {
+    poolId?: string;
+    policy?: "manual" | "round-robin" | "most-remaining";
+    reason?: string;
+    observedAt?: string;
+    id: string;
+    routerId: string;
+    accountId: string;
+    provider: "claude" | "codex";
+  };
   /** Client-declared UI that first created this YA-owned session. */
   creationProvenance?: SessionCreationProvenance;
   /**
@@ -1122,6 +1132,7 @@ export class SessionMetadataService {
   async updateMetadata(
     sessionId: string,
     updates: {
+      routerBinding?: SessionMetadata["routerBinding"];
       title?: string;
       archived?: boolean;
       starred?: boolean;
@@ -1146,6 +1157,7 @@ export class SessionMetadataService {
   ): Promise<void> {
     this.updateSessionMetadata(sessionId, (metadata) => {
       const result = { ...metadata };
+      if (updates.routerBinding) result.routerBinding = updates.routerBinding;
 
       // Handle title
       if (updates.title !== undefined) {
@@ -1339,6 +1351,7 @@ export class SessionMetadataService {
       cleaned.effectiveLaunchSettings = updated.effectiveLaunchSettings;
     }
     if (updated.provider) cleaned.provider = updated.provider;
+    if (updated.routerBinding) cleaned.routerBinding = updated.routerBinding;
     if (updated.executor) cleaned.executor = updated.executor;
     if (updated.initialPrompt) cleaned.initialPrompt = updated.initialPrompt;
     if (updated.heartbeatTurnsEnabled) {

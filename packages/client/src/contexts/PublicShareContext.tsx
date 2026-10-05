@@ -40,6 +40,16 @@ function decodeURIComponentSafe(value: string): string | null {
   }
 }
 
+/**
+ * The share path a written path names for this viewer's grant: a live file
+ * share also reaches linked files outside its project, by absolute path.
+ */
+function shareFilePath(filePath: string, context: PublicShareContextValue) {
+  return normalizePublicShareFilePath(filePath, context.projectId, {
+    outsideProject: context.standaloneFile === true,
+  });
+}
+
 export function buildPublicShareFileHref(
   context: PublicShareContextValue,
   options: {
@@ -51,10 +61,7 @@ export function buildPublicShareFileHref(
     viewMode?: PublicShareFileViewMode;
   },
 ): string | null {
-  const normalized = normalizePublicShareFilePath(
-    options.filePath,
-    context.projectId,
-  );
+  const normalized = shareFilePath(options.filePath, context);
   if (!normalized) {
     return null;
   }
@@ -135,10 +142,7 @@ export function getPublicShareFileReferenceFromLocalAppHref(
     if (!filePath) {
       return null;
     }
-    const normalized = normalizePublicShareFilePath(
-      filePath,
-      context.projectId,
-    );
+    const normalized = shareFilePath(filePath, context);
     return normalized
       ? {
           path: normalized.path,
@@ -167,10 +171,7 @@ export function getPublicShareFileReferenceFromLocalAppHref(
     if (!filePath) {
       return null;
     }
-    const normalized = normalizePublicShareFilePath(
-      filePath,
-      context.projectId,
-    );
+    const normalized = shareFilePath(filePath, context);
     return normalized ? { path: normalized.path } : null;
   }
 
@@ -182,10 +183,7 @@ export function getPublicShareFileReferenceFromLocalAppHref(
     if (!filePath) {
       return null;
     }
-    const normalized = normalizePublicShareFilePath(
-      filePath,
-      context.projectId,
-    );
+    const normalized = shareFilePath(filePath, context);
     return normalized
       ? {
           path: normalized.path,
@@ -279,10 +277,7 @@ export function rewritePublicShareLocalAppLinks(
     if (!filePath) {
       continue;
     }
-    const normalized = normalizePublicShareFilePath(
-      filePath,
-      context.projectId,
-    );
+    const normalized = shareFilePath(filePath, context);
     if (normalized) {
       preview.setAttribute("data-public-share-src-path", normalized.path);
     }

@@ -154,3 +154,66 @@ describe("desktop bootstrap routes", () => {
     );
   });
 });
+
+describe("native update handoff", () => {
+  it("admits only same-origin loopback requests with the desktop owner cookie", async () => {
+    let calls = 0;
+    const service = new DesktopBootstrapService({
+      masterSecret: MASTER_SECRET,
+      onCheckUpdates: () => {
+        calls += 1;
+      },
+    });
+    const session = service.consumeCode(service.mintCode().code)!;
+    const routes = createDesktopBootstrapRoutes(service);
+    const headers = {
+      Origin: "http://127.0.0.1",
+      "X-Yep-Anywhere": "true",
+      Cookie: `${DESKTOP_SESSION_COOKIE_NAME}=${session}`,
+    };
+    const accepted = await routes.request(
+      "http://127.0.0.1/check-updates",
+      { method: "POST", headers },
+      socketBindings(),
+    );
+    expect(accepted.status).toBe(200);
+    expect(accepted.headers.get("cache-control")).toBe("no-store");
+    expect(calls).toBe(1);
+    for (const [overrides, bindings] of [
+      [{ Origin: "http://attacker.invalid" }, socketBindings()],
+      [{ Origin: "" }, socketBindings()],
+      [{ "X-Yep-Anywhere": "" }, socketBindings()],
+      [{ Cookie: "" }, socketBindings()],
+      [{ Cookie: `${DESKTOP_SESSION_COOKIE_NAME}=wrong` }, socketBindings()],
+      [{}, socketBindings("192.0.2.8")],
+      [{}, socketBindings("127.0.0.1", "192.0.2.9")],
+    ] as const) {
+      const refused = await routes.request(
+        "http://127.0.0.1/check-updates",
+        { method: "POST", headers: { ...headers, ...overrides } },
+        bindings,
+      );
+      expect(refused.status).toBe(404);
+    }
+    expect(calls).toBe(1);
+  });
+  it("does not expose native actions when an old shell did not opt in", async () => {
+    const service = new DesktopBootstrapService({
+      masterSecret: MASTER_SECRET,
+    });
+    const session = service.consumeCode(service.mintCode().code)!;
+    const response = await createDesktopBootstrapRoutes(service).request(
+      "http://127.0.0.1/check-updates",
+      {
+        method: "POST",
+        headers: {
+          Origin: "http://127.0.0.1",
+          "X-Yep-Anywhere": "true",
+          Cookie: `${DESKTOP_SESSION_COOKIE_NAME}=${session}`,
+        },
+      },
+      socketBindings(),
+    );
+    expect(response.status).toBe(404);
+  });
+});

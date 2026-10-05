@@ -122,6 +122,7 @@ export function useHeldSidebarLists<
   const sourceKey = useClientSummarySourceKey();
   const pointer = useRef(false);
   const focused = useRef(false);
+  const focusContainer = useRef<HTMLElement | null>(null);
   const touch = useRef(false);
   const [held, setHeld] = useState<{
     sourceKey: string;
@@ -161,6 +162,19 @@ export function useHeldSidebarLists<
   const release = () => {
     if (!pointer.current && !focused.current && !touch.current) setHeld(null);
   };
+  // Removing the focused row (a Project Queue item that just started) moves
+  // focus to the body without a blur event, which would hold the layout until
+  // reload. Confirm focus is still inside whenever new rows arrive.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: New rows are the moment a stale focus hold would hide something; the check reads refs and the DOM.
+  useLayoutEffect(() => {
+    if (
+      focused.current &&
+      !focusContainer.current?.contains(document.activeElement)
+    ) {
+      focused.current = false;
+      release();
+    }
+  }, [lists]);
   const handlers: HTMLAttributes<HTMLElement> = {
     onPointerEnter: (event) => {
       if (event.pointerType === "touch") return;
@@ -185,8 +199,9 @@ export function useHeldSidebarLists<
       touch.current = false;
       release();
     },
-    onFocusCapture: () => {
+    onFocusCapture: (event) => {
       focused.current = true;
+      focusContainer.current = event.currentTarget;
       hold();
     },
     onBlurCapture: (event) => {

@@ -12,13 +12,13 @@ import {
   type PublicSessionShareSessionStatusResponse,
   type PublicSessionShareViewerActionResponse,
   type RevokePublicSessionSharesResponse,
+  type LinkedSite,
   type UrlProjectId,
-  findHtmlRootAssetReferences,
   isUrlProjectId,
   normalizeRelayUrl,
   parseLineColumn,
 } from "@yep-anywhere/shared";
-import { dirname, extname, posix, win32 } from "node:path";
+import { basename, dirname, extname, posix, win32 } from "node:path";
 import type { Context } from "hono";
 import { Hono } from "hono";
 import {
@@ -36,12 +36,19 @@ import {
 } from "../services/PublicShareService.js";
 import { augmentProjectPathLinksInMessage } from "../augments/finalized-message-augmenter.js";
 import { augmentTextBlocks } from "../augments/markdown-augments.js";
+import { renderLocalFileLinkOpen } from "../augments/safe-markdown.js";
 import { augmentEditToolUses } from "../sessions/persisted-augments.js";
 import type { Message } from "../supervisor/types.js";
+import {
+  cachedLinkedSite,
+  MAX_LINKED_DOCUMENT_BYTES,
+  readLinkedDocument,
+} from "../utils/linkedSiteCache.js";
 import {
   openProjectRelativeFile,
   readFileHandleBounded,
 } from "../utils/projectFileAccess.js";
+import type { createLocalResourcePathPolicy } from "./local-resource-policy.js";
 import {
   legacyPublicShareResponseStream,
   serializeLegacyJsonValue,
@@ -107,6 +114,14 @@ export interface PublicSharePublicRoutesDeps {
   ) => Promise<Response>;
   /** YA data directory; used to authorize app-data attachment paths. */
   dataDir?: string;
+  /**
+   * The local file policy, for what a live file share's links reach outside
+   * its project. Without it, a file share serves only in-project targets.
+   */
+  localFilePolicy?: Pick<
+    ReturnType<typeof createLocalResourcePathPolicy>,
+    "resolveAllowedFilePath"
+  >;
 }
 
 export interface PublicShareRoutesDeps extends PublicSharePublicRoutesDeps {
@@ -801,68 +816,70 @@ async function publicShareSessionMentionsRenderAsset(
   return false;
 }
 
-async function publicFileShareMentionsRenderAsset(
+/**
+ * Everything a live file share's root links to (`walkLinkedSite`), which is
+ * exactly what the share authorizes. A target inside the share's project is
+ * opened as the share opens project files; one outside it must also pass the
+ * local file policy, and without that policy nothing outside is served.
+ */
+async function linkedFileShareSite(
   deps: PublicSharePublicRoutesDeps,
   fileShare: NonNullable<
     ReturnType<PublicShareService["getFileRecordBySecret"]>
   >,
-  relativePath: string,
   projectRoot: string,
-): Promise<boolean> {
-  const htmlRoot = /\.(?:html?|xhtml)$/i.test(fileShare.path);
-  if (
-    !deps.fetchProjectFile ||
-    !hasPublicShareExtension(
-      fileShare.path,
-      PUBLIC_SHARE_RENDER_SOURCE_EXTENSIONS,
-    ) ||
-    // An HTML root's assets, scripts and stylesheets included, are decided
-    // by the element that loads each one, below.
-    (!htmlRoot &&
-      !hasPublicShareExtension(
-        relativePath,
-        PUBLIC_SHARE_MEDIA_ASSET_EXTENSIONS,
-      ))
-  ) {
-    return false;
-  }
-
-  try {
-    const response = await deps.fetchProjectFile(
-      fileShare.projectId,
-      fileShare.path,
-      { raw: false },
-    );
-    if (!response.ok) return false;
-    const source = (await response.json()) as FileContentResponse;
-    if (
-      typeof source.content !== "string" ||
-      source.contentTruncated ||
-      source.metadata.size > MAX_PUBLIC_SHARE_TRANSITIVE_SOURCE_BYTES ||
-      Buffer.byteLength(source.content, "utf8") >
-        MAX_PUBLIC_SHARE_TRANSITIVE_SOURCE_BYTES
-    ) {
-      return false;
-    }
-    if (htmlRoot) {
-      // The play page inlines exactly these, so it never asks for a file
-      // this refuses, and a linked document is never among them.
-      return findHtmlRootAssetReferences(source.content, fileShare.path).some(
-        (reference) => reference.path === relativePath,
+): Promise<LinkedSite> {
+  const flavor = getSharePathFlavor(projectRoot);
+  const root = resolveSharePath(projectRoot, "", flavor);
+  return await cachedLinkedSite(
+    "public-file-share",
+    resolveSharePath(root, fileShare.path, flavor).replaceAll("\\", "/"),
+    async (path, document) => {
+      if (!isPathInsideDirectory(path, root)) {
+        const allowed =
+          await deps.localFilePolicy?.resolveAllowedFilePath(path);
+        if (!allowed?.ok) return null;
+        return document
+          ? await readLinkedDocument(
+              allowed.file.resolvedPath,
+              allowed.file.stats.size,
+            )
+          : {};
+      }
+      const opened = await openProjectRelativeFile(
+        root,
+        relativeSharePath(root, resolveSharePath(path, "", flavor), flavor),
       );
-    }
-    return extractLocalRenderReferences(source.content).some(
-      (reference) =>
-        normalizeRenderReferencePath(
-          reference,
-          fileShare.path,
-          projectRoot,
-          fileShare.projectId,
-        ) === relativePath,
-    );
-  } catch {
-    return false;
-  }
+      if (!opened) return null;
+      try {
+        if (!opened.stats.isFile()) return null;
+        if (!document || opened.stats.size > MAX_LINKED_DOCUMENT_BYTES)
+          return {};
+        const content = await readFileHandleBounded(
+          opened.handle,
+          MAX_LINKED_DOCUMENT_BYTES,
+        );
+        return content ? { content: content.toString("utf8") } : {};
+      } finally {
+        await opened.handle.close();
+      }
+    },
+  );
+}
+
+/**
+ * The absolute path a file share request names outside the share's project,
+ * normalized as its walk names paths; null when it is not absolute.
+ */
+function outsideProjectSharePath(
+  rawPath: string,
+  projectRoot: string,
+): string | null {
+  const { path: parsedPath } = parseLineColumn(rawPath);
+  const flavor = getSharePathFlavor(projectRoot);
+  return isAbsoluteSharePath(parsedPath, flavor)
+    ? resolveSharePath(parsedPath, "", flavor).replaceAll("\\", "/")
+    : null;
 }
 
 function buildDirectPublicSharePresentation(
@@ -1010,20 +1027,33 @@ async function servePublicShareProjectFile(
     projectRoot,
     record ? deps.dataDir : undefined,
   );
-  if (!relativePath) {
+  // A live file share also serves what its root links to outside its
+  // project, named by absolute path.
+  const outsidePath =
+    !relativePath && fileShare
+      ? outsideProjectSharePath(rawPath, projectRoot)
+      : null;
+  const sharePath = relativePath ?? outsidePath;
+  if (!sharePath) {
     return c.json({ error: "Invalid file path" }, 400);
   }
 
   let authorized: boolean;
   if (fileShare) {
+    const flavor = getSharePathFlavor(projectRoot);
+    const target =
+      outsidePath ??
+      resolveSharePath(projectRoot, sharePath, flavor).replaceAll("\\", "/");
     authorized =
-      relativePath === fileShare.path ||
-      (await publicFileShareMentionsRenderAsset(
-        deps,
-        fileShare,
-        relativePath,
-        projectRoot,
-      ));
+      (await linkedFileShareSite(deps, fileShare, projectRoot)).files.some(
+        (file) => file.path === target,
+      ) &&
+      // A reused walk predates any policy change; the read must not.
+      (!outsidePath ||
+        (await deps.localFilePolicy?.resolveAllowedFilePath(outsidePath))
+          ?.ok === true);
+  } else if (!relativePath) {
+    return notFound(c);
   } else {
     if (!record) return notFound(c);
     const sessionRecord = record;
@@ -1086,22 +1116,29 @@ async function servePublicShareProjectFile(
     fileOptions.viewMode = "range";
   }
 
-  const attachmentPath = deps.dataDir
-    ? canonicalizeManagedAttachmentPath(relativePath, deps.dataDir)
-    : null;
+  const attachmentPath =
+    deps.dataDir && relativePath
+      ? canonicalizeManagedAttachmentPath(relativePath, deps.dataDir)
+      : null;
   const frozenProjectRoot =
     !record || attachmentPath
       ? undefined
       : await deps.publicShareService.getFrozenProjectRoot(record, viewerId);
-  const response = await deps.fetchProjectFile(projectId, relativePath, {
-    ...fileOptions,
-    ...(frozenProjectRoot ? { projectRoot: frozenProjectRoot } : {}),
-  });
+  // An outside target is read as the one file of its own folder.
+  const readRoot = outsidePath ? dirname(outsidePath) : frozenProjectRoot;
+  const response = await deps.fetchProjectFile(
+    projectId,
+    outsidePath ? basename(outsidePath) : sharePath,
+    {
+      ...fileOptions,
+      ...(readRoot ? { projectRoot: readRoot } : {}),
+    },
+  );
 
   if (options.raw) {
     const headers = createUntrustedFileResponseHeaders({
       baseHeaders: response.headers,
-      filePath: relativePath,
+      filePath: sharePath,
     });
     headers.set("Cache-Control", "no-store");
     return new Response(response.body, {
@@ -1116,9 +1153,57 @@ async function servePublicShareProjectFile(
   }
 
   const body = (await response.json()) as FileContentResponse;
-  body.rawUrl = publicShareFileRawUrl(secret, relativePath, viewerId);
+  body.rawUrl = publicShareFileRawUrl(secret, sharePath, viewerId);
+  if (outsidePath && body.renderedMarkdownHtml) {
+    body.renderedMarkdownHtml = restateStandInProjectLinks(
+      body.renderedMarkdownHtml,
+      dirname(outsidePath),
+    );
+  }
   c.header("Cache-Control", "no-store");
   return c.json(body);
+}
+
+/**
+ * An outside target is read with its own folder standing in as the project,
+ * so the project-file links rendered in it name paths relative to that
+ * folder, under the share's project id. Restate each as the local-file link
+ * the renderer gives a file outside any project, by absolute path, which a
+ * live file share's viewer resolves against its own grant. Private inline-code
+ * links stay as they are; the viewer shows those as plain code.
+ */
+function restateStandInProjectLinks(html: string, folder: string): string {
+  return html.replace(
+    /<a [^>]*data-ya-resource="project-file"[^>]*>/g,
+    (tag) => {
+      if (tag.includes('data-ya-private-project-file-link="true"')) return tag;
+      const attribute = (name: string) => {
+        const value = new RegExp(`\\s${name}="([^"]*)"`).exec(tag)?.[1];
+        return value === undefined ? undefined : unescapeHtmlAttribute(value);
+      };
+      const relativePath = attribute("data-ya-path");
+      if (!relativePath) return tag;
+      const lineNumber = Number(attribute("data-ya-line")) || undefined;
+      const columnNumber = Number(attribute("data-ya-column")) || undefined;
+      return renderLocalFileLinkOpen(
+        {
+          filePath: posix.join(folder, relativePath),
+          ...(lineNumber ? { lineNumber } : {}),
+          ...(columnNumber ? { columnNumber } : {}),
+        },
+        { renderMarkdown: /\.(?:md|markdown|qmd)$/i.test(relativePath) },
+      );
+    },
+  );
+}
+
+function unescapeHtmlAttribute(value: string): string {
+  return value
+    .replaceAll("&quot;", '"')
+    .replaceAll("&#039;", "'")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">")
+    .replaceAll("&amp;", "&");
 }
 
 function streamMaterializedPublicShareResponse(

@@ -43,6 +43,7 @@ export const BROWSER_SETTINGS_BACKUP_KEYS = [
   UI_KEYS.sidebarDuplicateHidingEnabled,
   UI_KEYS.funPhrases,
   UI_KEYS.streamingEnabled,
+  UI_KEYS.liveToolOutputEnabled,
   UI_KEYS.speechKeepMicWarm,
   UI_KEYS.speechReducePlayback,
   UI_KEYS.speechUnspokenPunctuation,

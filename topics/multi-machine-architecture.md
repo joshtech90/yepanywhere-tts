@@ -12,6 +12,16 @@ wire contract. The specialist topics linked below retain their decisions,
 approval gates and support limits. The [roadmap](../docs/roadmap/README.md)
 continues to prioritize app publication and continuous delivery.
 
+On 2026-10-03 the maintainer selected **persistent, target-owned YA sessions
+over the public relay** for their installed hardware. Explicit directional
+relationships let agents coordinate work without making every saved host or
+shared account mutually trusted. The
+[first-slice plan](../docs/tactical/144-relay-peer-session-coordination.md)
+narrows [cross-host delegation](cross-host-delegation.md) to local/remote worker
+creation and supervision. Its detailed implementation remains proposed;
+hosted issuance, managed SSH provisioning, and conversation migration are not
+prerequisites. The broader alternatives below remain relevant to other needs.
+
 ## The question we are trying to settle
 
 A user should be able to use the right computer, operating system, checkout,
@@ -184,7 +194,7 @@ limits of their linked notes. A feature not described here is not proven absent.
 | Project / family | Approach relevant here | Useful comparison / evidence |
 | --- | --- | --- |
 | [bb](../docs/competitive/bb.md) | Central SQLite server, enrolled execution daemons, provider bridges; plugins for providers, environments and workflows | Separates host/workspace/thread; concrete headless worker shape; central catalog remains authoritative. Source review 2026-09-13 |
-| [T3 Code](../docs/competitive/t3code.md) | Environment servers, client environment catalog, direct/Tailscale/Connect and desktop-managed SSH; scoped pairing | Managed SSH can launch a remote service rather than merely tunnel a CLI; authorization and encrypted content are separate. Source review 2026-09-04 |
+| [T3 Code](../docs/competitive/t3code-remote-sessions.md) | Target-owned environment servers, credentials and workspaces; client catalog; direct/Tailscale/Connect and desktop-managed SSH | Independent services outlive clients; launcher-owned SSH servers have separate cleanup behavior. Fresh source review 2026-10-03 distinguishes reconnect from provider recovery. |
 | [Paseo](../docs/competitive/paseo.md) | Daemon plus web/mobile/desktop/CLI; multiple host profiles and E2E relay | A client can know several daemons without implying daemon-to-daemon delegation. Source notes 2026-03-16 |
 | [HAPI](../docs/competitive/hapi.md) | CLI wrappers communicate with a hub; hub serves web clients and routes machine RPC | Wrapper/hub split differs from provider ownership on an autonomous peer. Older note has an explicitly unverified repository URL; re-audit before deriving lifecycle guarantees |
 | [Happy](../docs/competitive/happy.md) | Local CLI and mobile/web client with encrypted relay | Remote supervision can preserve content privacy without moving execution. Historical review 2026-02-03 |
@@ -416,9 +426,11 @@ Before selecting the hybrid or a simpler model, resolve these observable cases:
 | The same conversation must move | Explicit provider bundle transfer and single-writer handoff; reuse the super-session gates rather than relabel a new thread |
 
 The minimum persuasive experiment should demonstrate a useful user workflow
-through disconnection and recovery, not only a successful remote start. Compare
-that evidence with the already accepted managed-SSH spike before adding new
-machinery. Choosing and authorizing such an experiment is future work.
+through disconnection and recovery, not only a successful remote start. The
+[relay peer plan](../docs/tactical/144-relay-peer-session-coordination.md)
+now proposes that bounded experiment for installed hardware. The accepted
+managed-SSH spike remains separate evidence for controller-owned execution;
+it does not need further expansion before peer work.
 
 ## Suggested reading paths
 
@@ -444,9 +456,13 @@ machinery. Choosing and authorizing such an experiment is future work.
 
 Machine Control references below are pinned to the inspected public-source
 commit `44afda2b8be70c267d7ad9986286fb32c188973c` (2026-09-12).
-The bb analysis pins `cf51227e1135309a3c9c0baf5630be1ca7ba2714` (2026-09-13),
-and T3's analysis pins its own 2026-09-04 source snapshot. This discussion does
-not claim a new live runtime or cross-machine test run.
+The bb analysis pins `cf51227e1135309a3c9c0baf5630be1ca7ba2714` (2026-09-13).
+T3's broad comparison retains its 2026-09-04 snapshot; the focused
+[remote-environment review](../docs/competitive/t3code-remote-sessions.md) pins
+freshly fetched `fed41fa88bb27cb4325cb208d571393850bc63c2` (2026-10-03) and
+details target-owned workspaces/credentials, SSH cleanup and restart recovery.
+It informs these alternatives without selecting a YA runtime. This discussion
+does not claim a new live runtime or cross-machine test run.
 
 Update this map when an ownership decision is accepted, a spike gains live
 support, or external evidence materially changes. Keep exact protocols and

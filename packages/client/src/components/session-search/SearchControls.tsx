@@ -43,6 +43,8 @@ export function SearchHeader({
   sessionCount,
   scanning,
   acquiring,
+  intersection,
+  onIntersection,
 }: {
   query: string;
   onQuery(value: string): void;
@@ -59,6 +61,8 @@ export function SearchHeader({
   sessionCount: number;
   scanning: boolean;
   acquiring: boolean;
+  intersection?: boolean;
+  onIntersection?(value: boolean): void;
 }) {
   const { t } = useI18n();
   const input = useRef<HTMLInputElement>(null);
@@ -225,6 +229,19 @@ export function SearchHeader({
             )}
           </label>
         ))}
+        {onIntersection && (
+          <label
+            className={styles.intersection}
+            title={t("sessionSearchIntersectionHelp")}
+          >
+            <input
+              type="checkbox"
+              checked={intersection}
+              onChange={(event) => onIntersection(event.target.checked)}
+            />
+            {t("sessionSearchIntersection")}
+          </label>
+        )}
       </div>
       <div className={styles.needleRow}>
         <input
@@ -277,6 +294,7 @@ function RangeField({
   label: string;
   placeholder: string;
 }) {
+  const { t } = useI18n();
   const [reservation, setReservation] = useState(3);
   return (
     <span className={styles.ageField}>
@@ -285,6 +303,7 @@ function RangeField({
       </span>
       <input
         aria-label={label}
+        title={t("sessionSearchAgeHelp")}
         placeholder={placeholder}
         value={value}
         maxLength={20}
@@ -327,11 +346,12 @@ export function SearchFilters({
     <div className={styles.filterRow}>
       <div className={styles.range}>
         <div className={styles.basis}>
-          {(["turns", "activity", "created"] as const).map((value) => (
+          {(["activity", "turns", "created"] as const).map((value) => (
             <button
               key={value}
               type="button"
               aria-pressed={basis === value}
+              title={t(`sessionSearchTimeHelp_${value}`)}
               onClick={() => onBasis(value)}
             >
               {t(`sessionSearchTime_${value}`)}
@@ -352,6 +372,31 @@ export function SearchFilters({
             value={old}
             onChange={onOld}
           />
+        </div>
+        <div className={styles.quickAge}>
+          {[1, 7, 30].map((days) => (
+            <button
+              key={days}
+              type="button"
+              title={t("sessionSearchRecentHelp", { days })}
+              onClick={() => {
+                onBasis("activity");
+                onYoung("");
+                onOld(`${days}d`);
+              }}
+            >
+              {days}d
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={() => {
+              onYoung("");
+              onOld("");
+            }}
+          >
+            {t("sessionSearchAnyAge")}
+          </button>
         </div>
       </div>
       <div className={styles.filters}>

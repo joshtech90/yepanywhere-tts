@@ -381,6 +381,10 @@ export function RemoteAccessSettings() {
   });
 
   const handleSwitchHost = () => {
+    if (remoteConnection?.switchHost) {
+      remoteConnection.switchHost();
+      return;
+    }
     remoteConnection?.disconnect();
     markSwitchHostReload();
     window.location.replace(

@@ -127,8 +127,7 @@ describe("API security boundary", () => {
         ([, { method }]) => !["GET", "HEAD", "OPTIONS"].includes(method),
       ),
     );
-    expect(writes.has("PUT /api/computer-control/settings")).toBe(true);
-    expect(writes.has("POST /api/computer-control/install")).toBe(true);
+    expect(writes.has("POST /api/computer-control")).toBe(true);
     const open = await answeredOtherwise(instance, writes, 403, {
       "Content-Type": "text/plain",
     });

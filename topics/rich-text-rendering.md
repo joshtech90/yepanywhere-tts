@@ -175,6 +175,28 @@ combined into a formula that exists on neither side.
 Thinking summaries and fenced or inline code remain literal under their
 separate source-preservation contracts; they are not KaTeX-enabled surfaces.
 
+## Paper math compatibility
+
+Research-paper extracts use TeX that KaTeX alone rejects. Every KaTeX
+renderer takes its macro table from `paperKatexMacros()` and rewrites the
+source with `normalizeTexForKatex()` (both in `@yep-anywhere/shared`):
+
+- **Macros** map `\textsc`, `\mbox`, `\mathbbm`, `\mathds`, `\O`,
+  `\textsubscript` and `\nicefrac` onto commands KaTeX has. The content is
+  kept; presentation KaTeX cannot draw, such as small caps, is dropped.
+- **Colour models:** xcolor's `\color[model]{spec}` (and `\textcolor`,
+  `\colorbox`) becomes the one-argument hex form, for the `rgb`, `RGB`,
+  `HTML`, `gray` and `cmyk` models.
+- **Scope:** author-defined macros from a paper's preamble stay unrendered.
+- **`\gdef`:** the Markdown math plugin copies the macro table for each
+  document, so a definition persists within one document and never reaches
+  another.
+
+Presentation MathML passes the Markdown sanitizer, so extracts can keep the
+paper's MathML inside raw HTML tables, where TeX delimiters are not rendered.
+It is limited to layout elements with layout attributes. `annotation` holds
+only text; `annotation-xml` is escaped because it can carry arbitrary markup.
+
 ## File Content Viewer Contract
 
 When a renderer shows file contents outside an inline transcript block, it

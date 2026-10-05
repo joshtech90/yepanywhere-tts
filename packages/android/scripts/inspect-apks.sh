@@ -46,13 +46,13 @@ if grep -Eqi '^assets/.*\.(html|js|css|map)$' <<<"$hosted_entries"; then
 fi
 
 for entries in "$bundled_entries" "$hosted_entries"; do
-  if grep -Eqi '(^|/)(tauri|wry|cargo|rust)([^/]*)(/|$)' <<<"$entries"; then
-    fail "APK contains a Tauri or Rust artifact"
+  if grep -Eqi '(^|/)(tauri|wry|cargo)([^/]*)(/|$)' <<<"$entries"; then
+    fail "APK contains a Tauri or build-tool artifact"
   fi
 
   unexpected_native="$(
     grep -E '^lib/.*\.so$' <<<"$entries" |
-      grep -Ev '^lib/(arm64-v8a|armeabi-v7a|x86|x86_64)/(libandroidx\.graphics\.path|libdatastore_shared_counter|libjnidispatch|libsodium)\.so$' ||
+      grep -Ev '^lib/(arm64-v8a|armeabi-v7a|x86|x86_64)/(libandroidx\.graphics\.path|libdatastore_shared_counter|libjnidispatch|libya_mobile_core)\.so$' ||
       true
   )"
   [[ -z "$unexpected_native" ]] ||
@@ -61,8 +61,8 @@ for entries in "$bundled_entries" "$hosted_entries"; do
   for abi in arm64-v8a armeabi-v7a x86 x86_64; do
     grep -qx "lib/${abi}/libjnidispatch.so" <<<"$entries" ||
       fail "APK is missing JNA for ${abi}"
-    grep -qx "lib/${abi}/libsodium.so" <<<"$entries" ||
-      fail "APK is missing libsodium for ${abi}"
+    grep -qx "lib/${abi}/libya_mobile_core.so" <<<"$entries" ||
+      fail "APK is missing the shared Rust core for ${abi}"
   done
 done
 
@@ -70,6 +70,8 @@ for apk in "$bundled_apk" "$hosted_apk"; do
   application_id="$($apkanalyzer manifest application-id "$apk")"
   [[ "$application_id" == "com.yepanywhere.mobile" ]] ||
     fail "unexpected application id in $apk: $application_id"
+
+  node "${android_dir}/scripts/inspect-native-libs.mjs" "$apk"
 
   manifest="$($apkanalyzer manifest print "$apk")"
   grep -q 'android:name="android.permission.POST_NOTIFICATIONS"' <<<"$manifest" ||

@@ -1,40 +1,43 @@
 name: Desktop CI
 
 on:
+  # Shared web/server and lockfile changes are covered by nightly runs.
   push:
     branches: [main]
     tags:
       - 'desktop-v*'
     paths:
       - 'packages/desktop/**'
-      - 'packages/shared/**'
-      - 'packages/server/**'
-      - 'packages/client/**'
-      - 'packages/browser-agent/**'
-      - 'scripts/**'
+      - 'packages/server/package.json'
+      - 'packages/shared/package.json'
+      - 'packages/client/package.json'
+      - 'packages/browser-agent/package.json'
+      - 'scripts/build-bundle.ts'
+      - 'scripts/run-with-safe-home.js'
+      - 'scripts/run-with-safe-home.mjs'
       - 'patches/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
-      - 'update-server/**'
       - '.github/workflows/nightly-desktop.yml'
       - '.github/workflows/desktop-ci.yml'
+      - '!packages/desktop/**/*.md'
   pull_request:
     branches: [main]
     paths:
       - 'packages/desktop/**'
-      - 'packages/shared/**'
-      - 'packages/server/**'
-      - 'packages/client/**'
-      - 'packages/browser-agent/**'
-      - 'scripts/**'
+      - 'packages/server/package.json'
+      - 'packages/shared/package.json'
+      - 'packages/client/package.json'
+      - 'packages/browser-agent/package.json'
+      - 'scripts/build-bundle.ts'
+      - 'scripts/run-with-safe-home.js'
+      - 'scripts/run-with-safe-home.mjs'
       - 'patches/**'
-      - 'package.json'
-      - 'pnpm-lock.yaml'
       - 'pnpm-workspace.yaml'
-      - 'update-server/**'
       - '.github/workflows/nightly-desktop.yml'
       - '.github/workflows/desktop-ci.yml'
+      - '!packages/desktop/**/*.md'
+
+  workflow_dispatch:
 
   workflow_call:
     inputs:

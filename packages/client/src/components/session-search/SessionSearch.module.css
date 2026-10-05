@@ -6,8 +6,52 @@
   align-items: center;
   gap: 8px 14px;
 }
+.intersection {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.quickAge {
+  display: flex;
+  gap: 4px;
+}
+.quickAge button {
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  background: var(--bg-secondary);
+  color: var(--text-secondary);
+  min-height: 28px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+.withDetail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 40%);
+  grid-template-rows: auto minmax(0, 1fr);
+  max-width: none;
+}
+.detailHost {
+  grid-area: 1 / 2 / 3 / 3;
+  min-height: 0;
+  min-width: 0;
+  border-left: 1px solid var(--border-color);
+}
+@media (max-width: 1099px) {
+  .withDetail {
+    display: flex;
+  }
+  .detailHost {
+    position: fixed;
+    inset: 0 0 0 20px;
+    z-index: 100;
+    box-shadow: -8px 0 24px #0005;
+  }
+}
 .fields {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
 }

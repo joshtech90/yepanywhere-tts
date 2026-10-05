@@ -117,6 +117,7 @@ import {
   WorkstreamService,
 } from "./services/index.js";
 import { providerInstallationCoordinator } from "./services/ProviderInstallationCoordinator.js";
+import { NativePushService } from "./push/NativePushService.js";
 import { configureInboundWebSocketMessageLimit } from "./websocketLimits.js";
 import {
   type SpeechRegistryInitOptions,
@@ -207,6 +208,7 @@ let projectWorktreeSubscriptionsForShutdown: ProjectWorktreeSubscriptionManager 
   null;
 let hostAwakeForShutdown: HostAwakeService | null = null;
 let securityClientForShutdown: SecurityClientService | null = null;
+let nativePushForShutdown: NativePushService | null = null;
 let providerSessionWatchersForShutdown: ProviderSessionWatcherRegistry | null =
   null;
 let attachmentStagingCleanupTimer: ReturnType<typeof setInterval> | null = null;
@@ -276,6 +278,7 @@ async function gracefulShutdown(signal: string): Promise<void> {
 
   if (securityClientForShutdown) {
     try {
+      nativePushForShutdown?.shutdown();
       await securityClientForShutdown.shutdown();
       console.log("[Shutdown] Security-client audit state flushed");
     } catch (error) {
@@ -671,6 +674,9 @@ const securityClientService = new SecurityClientService({
   connectedBrowsers: connectedBrowsersService,
   pushService,
 });
+const nativePushService = new NativePushService(securityClientService);
+nativePushForShutdown = nativePushService;
+pushService.setNativePushService(nativePushService);
 const serverSettingsService = new ServerSettingsService({
   dataDir: config.dataDir,
 });
@@ -1158,6 +1164,7 @@ async function startServer() {
     remoteAccessService,
     remoteSessionService,
     securityClientService,
+    nativePushService,
     relayClientService,
     relayConfigCallbackHolder,
     // Note: frontendProxy not passed - will be added below
@@ -1421,6 +1428,7 @@ async function startServer() {
       const compatibility = await getServerCompatibilityInfo({
         browserSettingsBackupAvailable: true,
         securityClientAuditAvailable: true,
+        nativePush: nativePushService.version(),
         getDeviceBridgeState: () => {
           if (!deviceBridgeService) return "unavailable";
           return deviceBridgeService.hasBinary() ? "available" : "downloadable";

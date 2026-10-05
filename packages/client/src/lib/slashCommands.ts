@@ -25,6 +25,9 @@ export const CLIENT_SLASH_COMMANDS = [
   "clearloop",
 ] as const;
 
+/** Spellings of YA's `/v` file-view command (topics/view-command.md). */
+export const FILE_VIEW_COMMAND_NAMES: readonly string[] = ["v", "view"];
+
 export type ComposerSlashCommand =
   | { kind: TurnEffort; argument: string }
   | { kind: "run"; argument: string }
@@ -259,13 +262,20 @@ const COMMAND_DISPLAY: Record<string, { label: string; shortcut: string }> = {
   clear: { label: "clear after turn N", shortcut: "/clear" },
   fork: { label: "fork after turn N", shortcut: "/fork" },
   clearloop: { label: "clearloop [N] M: prompt", shortcut: "/clearloop" },
+  view: { label: "view file", shortcut: "/v" },
+};
+
+const CLIENT_COMMAND_DESCRIPTIONS: Record<string, string> = {
+  run: "Direct local shell: !!cmd",
+  view: "Open a project file from parts of its path",
 };
 
 export function createClientSlashCommand(name: string): SlashCommand {
   const normalized = normalizeSlashCommandForMatch(name);
   return {
     name: normalized,
-    description: normalized === "run" ? "Direct local shell: !!cmd" : "",
+    description: CLIENT_COMMAND_DESCRIPTIONS[normalized] ?? "",
+    ...(normalized === "view" ? { argumentHint: "<path parts…>[:line]" } : {}),
     invocation: { kind: "emulated", prefix: "/" },
   };
 }
@@ -351,6 +361,11 @@ export function parseComposerSlashCommand(
   }
   if (command === "compact") {
     return { kind: "custom", command, argument };
+  }
+  // The owner hands `/v` back to the provider where YA's command is
+  // unavailable or a provider command claims the name.
+  if (FILE_VIEW_COMMAND_NAMES.includes(command)) {
+    return { kind: "custom", command: "view", argument };
   }
   // Same-session rewind commands (topics/session-rewind.md). `/clear`
   // deliberately shadows the provider's native command on rewind-capable

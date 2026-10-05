@@ -39,6 +39,8 @@ export interface SourceContextMenuOpenOptions {
 export interface SourceContextMenuLabels {
   dismiss: string;
   menu: string;
+  heading?: string;
+  touchTargets?: boolean;
 }
 
 interface OpenSourceContextMenu {
@@ -469,7 +471,10 @@ function SourceContextMenu({
     returnFocus?.focus();
   };
 
-  const estimatedHeight = actions.length * 34 + 16;
+  const estimatedHeight =
+    actions.length * (labels?.touchTargets ? 46 : 34) +
+    16 +
+    (labels?.heading ? 32 : 0);
   return createPortal(
     <>
       <button
@@ -488,7 +493,7 @@ function SourceContextMenu({
       />
       <div
         ref={menuRef}
-        className={styles.menu}
+        className={`${styles.menu}${labels?.touchTargets ? ` ${styles.touchTargets}` : ""}`}
         role="menu"
         aria-label={labels?.menu ?? t("sourceActionMenu")}
         style={{
@@ -496,6 +501,9 @@ function SourceContextMenu({
           top: Math.max(8, Math.min(y, window.innerHeight - estimatedHeight)),
         }}
       >
+        {labels?.heading && (
+          <div className={styles.heading}>{labels.heading}</div>
+        )}
         {actions.map((action, index) => (
           <button
             key={index}

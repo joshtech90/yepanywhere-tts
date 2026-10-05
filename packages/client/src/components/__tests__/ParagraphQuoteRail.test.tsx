@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { useRef } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
@@ -66,7 +66,13 @@ class QueueingIntersectionObserverMock {
   }
 }
 
-function Harness() {
+function Harness({
+  html,
+  paragraphQuoteCirclesEnabled = true,
+}: {
+  html?: string;
+  paragraphQuoteCirclesEnabled?: boolean;
+}) {
   const contentRef = useRef<HTMLDivElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
   return (
@@ -76,14 +82,23 @@ function Harness() {
         contentRef={contentRef}
         layoutKey="test"
         onQuoteBlock={() => {}}
-        paragraphQuoteCirclesEnabled={true}
+        paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
         sourceRef={contentRef}
         surfaceRef={surfaceRef}
       />
-      <div ref={contentRef} className="text-block-content">
-        <p>first paragraph</p>
-        <p>second paragraph</p>
-      </div>
+      {html === undefined ? (
+        <div ref={contentRef} className="text-block-content">
+          <p>first paragraph</p>
+          <p>second paragraph</p>
+        </div>
+      ) : (
+        <div
+          ref={contentRef}
+          className="text-block-content"
+          // biome-ignore lint/security/noDangerouslySetInnerHtml: fixed test markup models Mermaid's generated SVG and retained source.
+          dangerouslySetInnerHTML={{ __html: html }}
+        />
+      )}
     </div>
   );
 }
@@ -140,5 +155,67 @@ describe("ParagraphQuoteRail", () => {
     // Returning re-arms block observation rather than staying parked.
     observer.deliverFrame((target) => target === surface);
     expect(observer.observed.length).toBe(3);
+  });
+
+  const source =
+    '<pre><code class="language-mermaid">graph TD\nA --> B</code></pre>';
+  const diagram = `<div data-ya-code-block data-ya-code-view="rendered">
+    <div data-ya-code-rendered><svg><foreignObject><div xmlns="http://www.w3.org/1999/xhtml"><p>Node A</p><p>Node B</p></div></foreignObject></svg></div>
+    ${source}
+  </div>`;
+
+  function renderHtml(html: string, paragraphQuoteCirclesEnabled = true) {
+    vi.stubGlobal("IntersectionObserver", undefined);
+    return render(
+      <I18nProvider>
+        <Harness
+          html={html}
+          paragraphQuoteCirclesEnabled={paragraphQuoteCirclesEnabled}
+        />
+      </I18nProvider>,
+    );
+  }
+
+  it.each([true, false])(
+    "omits the rail for a diagram alone with paragraph mode %s",
+    (paragraphMode) => {
+      renderHtml(diagram, paragraphMode);
+      expect(screen.queryByRole("button")).toBeNull();
+    },
+  );
+
+  it("excludes diagram labels and retained source while keeping surrounding prose", async () => {
+    renderHtml(
+      `<p>Before</p>${diagram}<p>After</p><pre><code class="language-typescript">const value = 1;</code></pre>`,
+    );
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".text-block-quote-paragraph"),
+      ).toHaveLength(3);
+    });
+    expect(document.querySelector(".text-block-quote-fallback")).toBeNull();
+  });
+
+  it("excludes unrendered Mermaid source, including mixed-case language markers", () => {
+    renderHtml(source.replace("language-mermaid", "language-Mermaid"));
+    expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  it("keeps a delayed diagram excluded through source toggling and content replacement", async () => {
+    renderHtml(source);
+    const content = document.querySelector(".text-block-content");
+    if (!content) throw new Error("Missing content");
+    content.innerHTML = diagram;
+    await waitFor(() => expect(screen.queryByRole("button")).toBeNull());
+    const block = content.querySelector<HTMLElement>("[data-ya-code-block]");
+    if (!block) throw new Error("Missing diagram");
+    block.dataset.yaCodeView = "source";
+    expect(screen.queryByRole("button")).toBeNull();
+    content.innerHTML = "<p>Now ordinary prose</p>";
+    await waitFor(() => {
+      expect(
+        document.querySelectorAll(".text-block-quote-paragraph"),
+      ).toHaveLength(1);
+    });
   });
 });

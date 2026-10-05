@@ -106,6 +106,32 @@ describe("coalesceStreamingSnapshots", () => {
     expect(published).toHaveLength(2);
   });
 
+  it("flushes held output when reading crosses the publication deadline", async () => {
+    const timer = vi.spyOn(globalThis, "setTimeout");
+    let reads = 0;
+    const source: AsyncIterator<SDKMessage> = {
+      next: () => {
+        reads += 1;
+        if (reads <= 2)
+          return Promise.resolve({
+            done: false,
+            value: snapshot("a", reads === 1 ? "x" : "xy"),
+          });
+        // A synchronous provider read can consume the remaining interval.
+        vi.setSystemTime(Date.now() + 101);
+        return new Promise(() => {});
+      },
+    };
+    const coalesced = coalesceStreamingSnapshots(source, 100);
+    expect(contentOf((await coalesced.next()).value)).toBe("~a:x");
+    const held = coalesced.next();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(contentOf((await held).value)).toBe("~a:xy");
+    expect(timer.mock.calls.every(([, delay]) => (delay ?? 0) >= 0)).toBe(true);
+    await coalesced.return?.();
+    timer.mockRestore();
+  });
+
   it("replaces a held snapshot with the message's commit", async () => {
     const stream = providerStream();
     const { published } = drain(stream.iterator);

@@ -4,7 +4,8 @@ import {
   type ProviderName,
   type ProviderSubscriptionUsage,
 } from "@yep-anywhere/shared";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useRef, useState } from "react";
+import { RoutedSessionContext } from "../contexts/RoutedSessionContext";
 import { api } from "../api/client";
 import {
   acquireClientQueryBootstrapSlot,
@@ -101,7 +102,8 @@ export function useProviderSubscriptionUsage(
     version,
     PROVIDER_SUBSCRIPTION_USAGE_CAPABILITY,
   );
-  const normalizedProvider = provider ?? null;
+  const routed = useContext(RoutedSessionContext);
+  const normalizedProvider = routed ? null : (provider ?? null);
   const [state, setState] = useState<UsageState>({
     sourceKey,
     provider: normalizedProvider,

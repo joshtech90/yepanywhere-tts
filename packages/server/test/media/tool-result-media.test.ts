@@ -870,6 +870,7 @@ describe("tool-result media storage", () => {
     const authService = {
       hasAccount: () => true,
       isEnabled: () => true,
+      isLocalhostOpen: () => false,
       validateSession: async (sessionId: string) => sessionId === "authorized",
     } as AuthService;
     const app = new Hono();

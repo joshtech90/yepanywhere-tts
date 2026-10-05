@@ -53,6 +53,8 @@ const state = vi.hoisted(() => ({
     remoteCompatibilityLevel?: number;
   },
   isRemoteClient: false,
+  loading: false,
+  error: null as Error | null,
   mockUseProjectQueues: vi.fn(),
   refetch: vi.fn(),
   updateProjectCodeName: vi.fn(),
@@ -94,8 +96,8 @@ vi.mock("../../contexts/SourceRuntimeContext", () => ({
 vi.mock("../../hooks/useProjects", () => ({
   useProjects: () => ({
     projects: state.projects,
-    loading: false,
-    error: null,
+    loading: state.loading,
+    error: state.error,
     refetch: state.refetch,
   }),
 }));
@@ -212,6 +214,8 @@ describe("ProjectsPage", () => {
     state.inboxCountsByProject = new Map();
     state.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
     state.isRemoteClient = false;
+    state.loading = false;
+    state.error = null;
     state.mockUseProjectQueues.mockReset();
     state.refetch.mockReset();
     state.updateProjectCodeName.mockReset();
@@ -230,6 +234,21 @@ describe("ProjectsPage", () => {
       </I18nProvider>,
     );
   }
+
+  it("retains the page header and cached projects through failed reads", () => {
+    state.error = new Error("Connection unavailable");
+    renderProjectsPage();
+    expect(screen.getByText("Projects", { selector: "header" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: /Alpha/ })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(state.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("mounts the page header during cold loading", () => {
+    state.loading = true;
+    renderProjectsPage();
+    expect(screen.getByText("Projects", { selector: "header" })).toBeTruthy();
+  });
 
   it("explains personal removal only when the connected server guarantees it", () => {
     state.username = "archer";

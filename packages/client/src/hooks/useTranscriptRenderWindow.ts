@@ -70,6 +70,8 @@ export interface TranscriptRenderWindow<TRow> {
   registerRowEnd: (key: string, element: HTMLSpanElement | null) => void;
   registerRowStart: (key: string, element: HTMLSpanElement | null) => void;
   revealRenderId: (id: string) => boolean;
+  /** Drop a scroll anchor captured before a programmatic jump. */
+  discardPendingAnchor: () => void;
   rows: readonly TRow[];
   totalWeight: number;
 }
@@ -364,6 +366,10 @@ export function useTranscriptRenderWindow<TRow extends KeyedTranscriptRow>({
     [spacerBeforeByKey],
   );
 
+  const discardPendingAnchor = useCallback(() => {
+    pendingAnchorRef.current = null;
+  }, []);
+
   const revealRenderId = useCallback(
     (id: string): boolean => {
       if (!model.targetIndexes.has(id)) return false;
@@ -485,6 +491,7 @@ export function useTranscriptRenderWindow<TRow extends KeyedTranscriptRow>({
     registerRowEnd,
     registerRowStart,
     revealRenderId,
+    discardPendingAnchor,
     rows: visibleRows,
     totalWeight: model.totalWeight,
   };

@@ -47,8 +47,19 @@ jobs:
           test/computer-control-provider.test.ts test/computer-control-job.test.ts
           test/computer-control-guardian.test.ts
           test/computer-control-native.test.ts
+          test/scripts/e2e-process-lifecycle.test.ts
+          test/scripts/e2e-process-lifecycle-windows.test.mjs
+          test/scripts/wait-for-port-file.test.mjs
       - run: pnpm --filter @yep-anywhere/client exec playwright install chromium
       - run: pnpm --filter @yep-anywhere/client exec playwright test --config playwright.computer-control.config.ts
+      - name: Preserve computer-control browser evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: computer-control-${{ matrix.os }}-${{ github.run_attempt }}
+          if-no-files-found: ignore
+          include-hidden-files: true
+          path: .artifacts/computer-control-results/**
   persistence-native:
     strategy:
       fail-fast: false
@@ -65,9 +76,13 @@ jobs:
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @yep-anywhere/shared build
-      - name: Native settings, review persistence and storage transitions
+      - run: node --test scripts/run-with-safe-home.test.mjs
+      - name: Native credentials, settings, review persistence and storage transitions
         run: >-
           pnpm --filter @yep-anywhere/server test
+          test/auth/AuthService.test.ts
+          test/auth/credential-state-fail-closed.test.ts
+          test/utils/writeFileAtomically.test.ts
           test/utils/syncDirectory.test.ts
           test/services/ServerSettingsService.test.ts
           test/routes/settings.test.ts
@@ -340,7 +355,10 @@ jobs:
   # from the Home Screen start URL (site/src/content/docs/home-screen.md).
   ipad-webkit:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Run 36908114440 exhausted 15m downloading 125 MB of Ubuntu WebKit
+    # dependencies before tests began. Allow 3x that observed setup limit;
+    # Playwright's per-test and input-latency assertions remain unchanged.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

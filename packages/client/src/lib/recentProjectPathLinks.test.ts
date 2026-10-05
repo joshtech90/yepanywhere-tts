@@ -15,6 +15,7 @@ import { annotateProjectPathLinksHtml } from "./projectPathLinks";
 import {
   applyRecentProjectPathLinks,
   recentProjectFileMentions,
+  recentProjectFileMentionSources,
 } from "./recentProjectPathLinks";
 import { canReuseRenderItem } from "./stableRenderItems";
 import { compileWebTranscriptProjection } from "./webTranscriptProjection";
@@ -74,6 +75,12 @@ describe("applyRecentProjectPathLinks", () => {
       "b/settings.json",
       "src/recent.ts",
       "a/settings.json",
+    ]);
+    // Each path remembers the item that mentioned it last, for go-to-turn.
+    expect(recentProjectFileMentionSources(items)).toEqual([
+      { path: "b/settings.json", itemId: "d" },
+      { path: "src/recent.ts", itemId: "c" },
+      { path: "a/settings.json", itemId: "a" },
     ]);
   });
   it("keeps basename relinking off unless explicitly enabled", () => {

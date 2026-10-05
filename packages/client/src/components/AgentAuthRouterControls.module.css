@@ -1,0 +1,62 @@
+.panel {
+  display: grid;
+  gap: 0.6rem;
+  padding: 0.85rem;
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  min-width: 0;
+}
+.panel p {
+  margin: 0;
+  font-size: 0.85rem;
+}
+.panel label {
+  display: grid;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+}
+.panel input,
+.panel select {
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.6rem;
+  color: inherit;
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: 5px;
+}
+.panel button {
+  min-height: 38px;
+  padding: 0.4rem 0.7rem;
+  color: inherit;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-input);
+  border-radius: 5px;
+  cursor: pointer;
+}
+.panel button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.status {
+  display: grid;
+  gap: 0.4rem;
+  padding: 0.7rem;
+  border-radius: 5px;
+  background: var(--bg-secondary);
+  overflow-wrap: anywhere;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.account {
+  display: grid;
+  gap: 0.4rem;
+  overflow-wrap: anywhere;
+  font-size: 0.85rem;
+  border-top: 1px solid var(--border-color);
+  padding-top: 0.7rem;
+}

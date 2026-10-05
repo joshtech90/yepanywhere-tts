@@ -32,9 +32,9 @@
 }
 .tiles {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(155px, 1fr));
   gap: 8px;
-  max-height: 300px;
+  max-height: min(220px, 28vh);
   overflow: auto;
   margin-top: 8px;
 }
@@ -56,4 +56,76 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-top: 5px;
+}
+.heading .close {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  font-size: 28px;
+  line-height: 1;
+  color: var(--text-error, #ef7777);
+}
+.recents .disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  margin: 8px 0;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  padding: 0;
+  min-height: 36px;
+}
+.actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.actions button {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-align: left;
+  min-height: 64px;
+  padding: 12px;
+}
+.actions .memo {
+  border-color: var(--text-error, #ef7777);
+}
+.tiles .metadata {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px;
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+.preview {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  background: var(--bg-primary);
+  box-shadow: 0 8px 32px #0008;
+  outline: 2px solid var(--border-input);
+}
+.preview img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+@media (max-width: 550px) {
+  .actions {
+    flex-direction: column;
+  }
+  .tiles {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .disclosure small {
+    max-width: 140px;
+  }
 }

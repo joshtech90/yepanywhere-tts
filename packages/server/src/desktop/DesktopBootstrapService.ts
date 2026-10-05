@@ -17,6 +17,8 @@ function timingSafeEqual(a: string, b: string): boolean {
 
 export interface DesktopBootstrapServiceOptions {
   masterSecret: string;
+  /** Opens the native updater only; never downloads or installs. */
+  onCheckUpdates?: () => void;
   codeTtlMs?: number;
   maxActiveCodes?: number;
   sessionTtlMs?: number;
@@ -31,6 +33,7 @@ export interface DesktopBootstrapServiceOptions {
  * process and are never persisted.
  */
 export class DesktopBootstrapService {
+  readonly onCheckUpdates?: () => void;
   private readonly masterSecret: string;
   private readonly codeTtlMs: number;
   private readonly maxActiveCodes: number;
@@ -48,6 +51,7 @@ export class DesktopBootstrapService {
       throw new Error("Desktop bootstrap master secret is too short");
     }
     this.masterSecret = options.masterSecret;
+    this.onCheckUpdates = options.onCheckUpdates;
     this.codeTtlMs = options.codeTtlMs ?? DEFAULT_CODE_TTL_MS;
     this.maxActiveCodes = options.maxActiveCodes ?? DEFAULT_MAX_ACTIVE_CODES;
     this.sessionTtlMs = options.sessionTtlMs ?? DEFAULT_SESSION_TTL_MS;

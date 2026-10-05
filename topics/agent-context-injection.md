@@ -208,8 +208,104 @@ earlier `RESEARCH.md` read remains exact.
 
 Current agent policy therefore requires routed sources to be reread at the next
 governed action boundary after compaction/resume unless the harness verifiably
-reconstructs the exact current packet. YA does not maintain an active
-governed-supplement manifest or protected copy of arbitrary routed files.
+reconstructs the exact current packet. The optional restoration below tracks
+observed file reads within an explicit boundary. It does not infer which policy
+topics govern the current task or protect arbitrary routed files.
+
+## Optional instruction restoration
+
+**Settings → Providers → Restore instructions after compaction** enables this
+independently for each provider; every provider defaults off. Set an absolute
+or home-relative prefix, a relative `.md` pattern (`*` matches within a directory,
+`**` across directories), and a delay of 0–10 completed subsequent turns
+(default 2). Preview lists canonical matching sources without arming them.
+The optional `instructionRestoration` settings field is also the client feature
+gate: older servers do not show these controls.
+
+Only local, unsandboxed sessions are supported. All matching uses symlink-resolved
+paths inside the configured prefix, including each source named by a packet.
+Aliases share an identity; escaped paths are rejected. Enabling the setting
+does not grant filesystem access, scan files into model context, or insert
+`AGENTS.on-compact.md`.
+
+### Read evidence and approximate completeness
+
+The provider-owned `InstructionRestoration` ledger observes normalized explicit
+Read/read_file calls and command arguments, including normalized Codex code-mode
+batches. Requests identify candidate paths; successful returned text establishes
+read evidence. On resume, YA supplies persisted session-reader data before the
+live stream, rather than relying on the worker's short replay buffer. Other
+controllers can supply the same `instructionReadHistory` launch option. Hosted
+launches transfer it in acknowledged worker-RPC batches, with live observation
+held until hydration finishes; transcripts never enter the host's 1 MiB launch
+request. Reattaching a retained worker preserves its existing ledger.
+
+At least **80% of nonempty source lines** delivered in the current compaction
+epoch is accepted as a sufficient reread. This is a coverage heuristic for the
+user's “80% likely full read” allowance, not a calibrated probability. A delivered
+head or tail of 100 of 125 lines qualifies. Matching range unions count at the
+same file hash; repeated source lines require corresponding output occurrences.
+Line-number prefixes and logged command-result JSON are decoded before matching.
+Verification can therefore use persisted command output when available, without
+asking the agent to repeat the command merely because it used `head` or `tail`.
+
+Partial matching reads arm a source for restoration even below that threshold.
+Filenames alone, command success alone, coverage headers, failed reads, streaming
+fragments, and subagent-only reads do not establish delivery. Unknown command
+syntax is not parsed as shell execution; commands without a recoverable literal
+Markdown path cannot establish an association. Missing output remains uncertain.
+Truncation only earns credit for the visible matching lines.
+
+### Packets and lifecycle
+
+The source compiler marks essential spans between standalone
+`<!-- reread:begin -->` / `<!-- reread:end -->` lines. Direct companions named
+`<topic>.mandatory-reread.md` contain that source's essential content. Recursive
+companions additionally inline reachable marked sources. Restoration validates
+the current full-source and essential-text SHA-256 manifests and inline bodies;
+it never trusts coverage headers alone. A recursive read satisfies each included
+source independently according to its delivered essential lines.
+
+Each observed compaction rearms previously opened sources. Zero delay restores
+at the first completed-turn boundary; N allows N subsequent completed turns.
+Compaction and restoration turns do not consume the allowance. Duplicate event
+identities count once. The wrapper serializes history, live evidence, and delivery
+decisions. File changes invalidate coverage. Missing/stale packets produce a
+diagnostic and are not replaced with unrestricted full-file reads.
+
+The provider worker owns the ledger and delivery, independently of Hono or the
+browser; the in-process provider path uses the same wrapper. Supervisor supplies
+settings, history, and pause state. Disable/path changes clear stale work; pauses
+remove still-queued restoration. Ordinary queued user work takes priority.
+There is no background idle poll. Enabling on an already live worker begins
+observing future reads; a resumed provider reconstructs historical evidence.
+
+### Provider force-read primitive
+
+`AgentSession.configureInstructionRestoration({settings, paused})` and
+`forceReadInstructions(sourcePaths)` are available through the provider owner's
+controller RPC when its `instructionRestoration` capability is advertised.
+The latter validates direct companions and returns `native-history` or
+`user-turn`. This controller primitive is usable by other host clients without
+the YA web interface; it is not a new unauthenticated control-socket operation.
+
+Native `appendConversationContext` is preferred. Explicit lack of support falls
+back to a queued synthetic turn marked `instruction-restoration`, hidden from
+ordinary user-turn projections. A thrown/uncertain native insertion is never
+retried through that fallback. Acceptance proves transport delivery, not model
+consumption. The inserted message says the packet is already in context and
+does not need another read in this epoch.
+
+Reads are bounded to 1 MiB per file, 128 armed sources, and 256 KiB per insertion.
+Preview stops after 2,000 directory entries or 100 matches. Automatic delivery
+makes at most one attempt per epoch; diagnostics require fixing the packet or
+configuration before a later epoch or an explicit force-read request.
+
+Tests in `packages/server/test/instruction-restoration.test.ts` exercise the
+real provider wrapper, supervisor path, controller RPC, history recovery,
+approximate/range/recursive reads, cancellation, and settings persistence.
+The client settings and browser tests cover older-server gating, typing during
+concurrent updates, and desktop/phone layouts.
 
 ## Cache-compatible context
 

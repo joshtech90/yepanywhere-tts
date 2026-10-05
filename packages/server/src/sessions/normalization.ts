@@ -43,6 +43,10 @@ import {
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
 } from "../codex/normalization.js";
+import {
+  CODEX_CONTENT_FILTER_BLOCK_SUBTYPE,
+  codexContentFilterGuidance,
+} from "../codex/contentFilterBlock.js";
 import { formatCodexSubagentActivity } from "../codex/subagentActivity.js";
 import { attachToolResultMediaCandidates } from "../media/inlineImageData.js";
 import { normalizeGeminiTool } from "../sdk/providers/gemini-tools.js";
@@ -1191,7 +1195,16 @@ function convertCodexResponseItem(
   switch (payload.type) {
     case "message":
       if (payload.role === "developer") {
-        return null;
+        const guidance = codexContentFilterGuidance(payload);
+        return guidance === null
+          ? null
+          : {
+              uuid,
+              type: "system",
+              subtype: CODEX_CONTENT_FILTER_BLOCK_SUBTYPE,
+              content: guidance,
+              timestamp: entry.timestamp,
+            };
       }
       if (
         userResponseKind === "hidden-provider-context" ||

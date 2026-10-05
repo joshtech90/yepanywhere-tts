@@ -87,7 +87,7 @@ class YaPairedServerStore internal constructor(
         }
     }
 
-    suspend fun updateCredential(
+    override suspend fun updateCredential(
         profileId: String,
         resumeCredential: YaStoredResumeCredential,
     ) {
@@ -102,6 +102,7 @@ class YaPairedServerStore internal constructor(
             val profile = YaPairedServerCodec.decodeProfiles(preferences[PROFILES_KEY])
                 .firstOrNull { it.id == profileId }
                 ?: error("Cannot store a credential for an unknown profile")
+            check(profile.securityClient?.revoked != true) { "Cannot store a credential for a revoked profile" }
             require(profile.username == resumeCredential.credential.username)
             preferences[credentialKey(profileId)] = encrypted
         }
@@ -227,6 +228,7 @@ class YaPairedServerStore internal constructor(
             val profiles = YaPairedServerCodec.decodeProfiles(preferences[PROFILES_KEY])
             val profile = profiles.firstOrNull { it.id == profileId }
                 ?: error("Cannot update an unknown profile")
+            check(profile.securityClient?.revoked != true) { "Cannot store a credential for a revoked profile" }
             require(profile.username == resumeCredential.credential.username)
             require(profile.routes.any { it.id == routeId })
             val updated = profile.copy(

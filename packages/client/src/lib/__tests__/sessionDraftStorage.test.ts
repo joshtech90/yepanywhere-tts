@@ -12,6 +12,7 @@ import {
   saveSessionDraft,
   scanSessionDraftIds,
 } from "../sessionDraftStorage";
+import { setSyncedDraftSessionIds } from "../syncedDraftPresence";
 import { subscribeDraftPresenceChanges } from "../draftPresenceEvents";
 
 function readStoredText(key: string): string | null {
@@ -22,6 +23,7 @@ function readStoredText(key: string): string | null {
 
 afterEach(() => {
   localStorage.clear();
+  setSyncedDraftSessionIds("host:macbook", new Set());
   vi.restoreAllMocks();
 });
 
@@ -107,6 +109,28 @@ describe("sessionDraftStorage", () => {
       sessionDraft: reference,
     });
     unsubscribe();
+  });
+
+  it("does not remove known remote presence when the local body is cleared", () => {
+    const sourceKey = asClientSummarySourceKey("host:macbook");
+    const reference = { sourceKey, sessionId: "session-a" };
+    saveSessionDraft(reference, "local text");
+    setSyncedDraftSessionIds(sourceKey, new Set([reference.sessionId]));
+    const listener = vi.fn();
+    const unsubscribe = subscribeDraftPresenceChanges(listener);
+    try {
+      removeSessionDraft(reference);
+      expect(
+        localStorage.getItem(createSessionDraftStorageKey(reference)),
+      ).toBeNull();
+      expect(
+        localStorage.getItem("draft-presence-message:host%3Amacbook:session-a"),
+      ).toBeNull();
+      expect([...scanSessionDraftIds(sourceKey)]).toEqual(["session-a"]);
+      expect(listener).not.toHaveBeenCalled();
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("repairs a failed presence-index transition on the next edit", () => {

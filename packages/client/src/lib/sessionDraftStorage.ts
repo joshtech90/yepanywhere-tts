@@ -133,6 +133,29 @@ export function updateSessionDraftIndex(
   return syncDraftPresence(reference, hasDraftContentValue(value)).changed;
 }
 
+/** Keep same-tab consumers aligned with the local body and remote metadata. */
+export function reconcileSessionDraftPresence(
+  reference: SessionDraftReference,
+  previousValue: string | null | undefined,
+  nextValue: string | null | undefined,
+): void {
+  // Repair markers even when both bodies have the same presence.
+  updateSessionDraftIndex(reference, nextValue);
+  const remoteHasContent = getSyncedDraftSessionIds(reference.sourceKey).has(
+    reference.sessionId,
+  );
+  const previousHasContent =
+    remoteHasContent || hasDraftContentValue(previousValue);
+  const nextHasContent = remoteHasContent || hasDraftContentValue(nextValue);
+  if (previousHasContent !== nextHasContent) {
+    publishDraftPresenceChange({
+      storageKey: createSessionDraftStorageKey(reference),
+      hasContent: nextHasContent,
+      sessionDraft: reference,
+    });
+  }
+}
+
 function persistSessionDraftEnvelope(
   reference: SessionDraftReference,
   update: (previousValue: string | null) => string | null,
@@ -146,19 +169,7 @@ function persistSessionDraftEnvelope(
     } else {
       draftStorage.removeItem(key);
     }
-    // Reconcile on every successful envelope write, not only a presence
-    // transition. A quota/transient failure on the first marker write is then
-    // repaired by the next edit.
-    updateSessionDraftIndex(reference, nextValue);
-    const previousHasContent = hasDraftContentValue(previousValue);
-    const nextHasContent = hasDraftContentValue(nextValue);
-    if (previousHasContent !== nextHasContent) {
-      publishDraftPresenceChange({
-        storageKey: key,
-        hasContent: nextHasContent,
-        sessionDraft: reference,
-      });
-    }
+    reconcileSessionDraftPresence(reference, previousValue, nextValue);
   } catch {
     // localStorage might be full or unavailable.
   }
@@ -198,14 +209,7 @@ export function removeSessionDraft(reference: SessionDraftReference): void {
     const key = createSessionDraftStorageKey(reference);
     const previousValue = draftStorage.getItem(key);
     draftStorage.removeItem(key);
-    updateSessionDraftIndex(reference, "");
-    if (hasDraftContentValue(previousValue)) {
-      publishDraftPresenceChange({
-        storageKey: key,
-        hasContent: false,
-        sessionDraft: reference,
-      });
-    }
+    reconcileSessionDraftPresence(reference, previousValue, null);
   } catch {
     // localStorage might be unavailable.
   }

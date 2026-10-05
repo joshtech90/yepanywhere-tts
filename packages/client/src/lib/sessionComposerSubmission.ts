@@ -15,6 +15,9 @@ import {
   toPersistedStagedAttachmentRef,
 } from "./sessionComposerAttachments";
 import type { SourceTransport, UploadOptions } from "./transport";
+import { getPersistedAttachmentUploadUrl } from "./attachmentUploadUrl";
+import { toSourceTransportApiPath } from "./sourceTransportPaths";
+import { generateUUID } from "./uuid";
 
 export interface PreparedComposerSubmission {
   outgoingText: string;
@@ -161,10 +164,49 @@ export function splitComposerAttachmentsForSubmission(
   if (!draftState) {
     return { uploadedFiles, draftState: null };
   }
-  if (draftState.refs.some((ref) => ref.batchId !== draftState.batchId)) {
-    throw new Error("Draft attachments are split across staging batches");
-  }
   return { uploadedFiles, draftState };
+}
+
+/** Copy source-session uploads into account staging before choosing a new session destination. */
+export async function stageComposerAttachmentsForNewSession({
+  attachments,
+  sourceTransport,
+  sourceProjectId,
+}: {
+  attachments: readonly ComposerAttachment[];
+  sourceTransport: Pick<
+    SourceTransport,
+    "fetchBlob" | "uploadStagedAttachment"
+  >;
+  sourceProjectId: string;
+}): Promise<ComposerStagedAttachment[]> {
+  const batchId =
+    attachments.find(isComposerStagedAttachment)?.batchId ?? generateUUID();
+  const staged: ComposerStagedAttachment[] = [];
+  for (const attachment of attachments) {
+    if (isComposerStagedAttachment(attachment)) {
+      staged.push(attachment);
+      continue;
+    }
+    const url = getPersistedAttachmentUploadUrl(
+      attachment.path,
+      sourceProjectId,
+    );
+    if (!url)
+      throw new Error(
+        `Cannot locate attachment for new session: ${attachment.originalName}`,
+      );
+    const blob = await sourceTransport.fetchBlob(toSourceTransportApiPath(url));
+    const file = new File([blob], attachment.originalName, {
+      type: attachment.mimeType,
+    });
+    const ref = await sourceTransport.uploadStagedAttachment(file, {
+      batchId,
+      ...imageDimensionOptions(attachment.width, attachment.height),
+    });
+    staged.push({ ...ref, previewUrl: attachment.previewUrl });
+  }
+  return staged;
 }
 
 export async function materializeComposerAttachmentsForSubmission({
@@ -193,6 +235,17 @@ export async function materializeComposerAttachmentsForSubmission({
   return [...uploadedFiles, ...materializedFiles];
 }
 
+/** Keeps successful uploads available when a submission must stop for a failed file. */
+export class ComposerAttachmentUploadError extends Error {
+  constructor(
+    readonly attachments: ComposerAttachment[],
+    message: string,
+  ) {
+    super(message);
+    this.name = "ComposerAttachmentUploadError";
+  }
+}
+
 export async function collectComposerAttachmentsForSubmission({
   currentAttachments,
   pendingUploads,
@@ -200,6 +253,7 @@ export async function collectComposerAttachmentsForSubmission({
   pendingMessageId,
   updatePendingMessage,
   uploadingStatus,
+  uploadFailureMessage = "An attachment failed to upload. Attach it again before sending.",
 }: {
   currentAttachments: readonly ComposerAttachment[];
   pendingUploads: readonly Promise<ComposerAttachment | null>[];
@@ -215,6 +269,7 @@ export async function collectComposerAttachmentsForSubmission({
     updates: { status?: string | undefined },
   ) => void;
   uploadingStatus?: string;
+  uploadFailureMessage?: string;
 }): Promise<ComposerAttachment[]> {
   const collectedAttachments = [...currentAttachments];
   const showUploadStatus =
@@ -230,6 +285,12 @@ export async function collectComposerAttachmentsForSubmission({
       const results = await Promise.all(pendingUploads);
       for (const result of results) {
         if (result) collectedAttachments.push(result);
+      }
+      if (results.some((result) => result === null)) {
+        throw new ComposerAttachmentUploadError(
+          collectedAttachments,
+          uploadFailureMessage,
+        );
       }
 
       const sentIds = new Set(

@@ -28,3 +28,12 @@
 .titleWithBadge > :not(:global(.session-title-text)) {
   flex-shrink: 0;
 }
+
+.routerAccount {
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+}

@@ -75,6 +75,8 @@ export interface GitFileRevision {
   commit: GitFileRevisionCommit | null;
   /** True only when live file content differs from the committed blob. */
   dirty: boolean;
+  /** Omitted by older servers; null when no committed GitHub file is available. */
+  githubLink?: { url: string; pushed: boolean } | null;
 }
 
 /**

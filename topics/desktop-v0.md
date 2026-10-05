@@ -288,13 +288,28 @@ restore the current updater surface, including during installation. Dismissing
 a pending check suppresses its late result; a subsequent manual request still
 receives feedback and a fresh check once the dismissed request finishes.
 
-The native tray action shows the trusted updater window before delivering the
-manual-check event. Hidden or minimized webviews may suspend during extended
-inactivity; waking the window must not depend on JavaScript in that suspended
-view. Manual checks after extended idle still report that the app is current
-when no update exists. The startup check runs after five seconds, and periodic
-checks are scheduled every 24 hours while the renderer is active; these are
-best-effort discovery, not a reason to suppress explicit user feedback.
+The tray action and macOS application-menu **Check for Updates…** share a
+Rust-owned updater controller. Its macOS window uses AppKit controls; Windows
+uses a Common Controls v6 Task Dialog. There is no updater webview or changelog.
+The controller owns single-flight checks, dismissal, progress and installation.
+Hidden, unloaded or suspended webviews cannot discard a manual request. The
+startup check runs after five seconds, and periodic checks run every 24 hours
+while the process is alive; these are best-effort discovery, not a reason to
+suppress explicit user feedback.
+
+Local desktop Settings requests this same window with a fixed
+`POST /desktop-bootstrap/check-updates` action. The server requires an actual
+loopback socket, its owner desktop session cookie, a same-origin `Origin`, and
+`X-Yep-Anywhere: true`. The action travels back through the private child stdout
+pipe; it accepts no endpoint, channel or install arguments. The native startup
+frame and immutable dashboard metadata advertise support through optional
+`nativeUpdates` and `nativeUpdateCheck` booleans. Older shells receive explicit
+menu-bar/tray guidance; remote dashboards receive no native capability.
+
+The bundled server reads its YA version from `desktop-runtime-manifest.json`,
+reports `release-package`, and does not query the standalone update feed.
+Missing or invalid manifests report `unknown` without probing an ambient Git
+checkout. Ordinary server version and update checks retain their own behavior.
 
 The v0 recovery path is a manual reinstall of a signed release. Automatic
 downgrade and unattended background update installation are not claimed.
@@ -332,6 +347,13 @@ compatibility is not guaranteed. Reinstall does not imply deleting provider
 sessions or desktop data.
 
 ### Nightly publication
+
+Routine web/server changes receive full desktop packaging through the nightly
+release rather than every pull request or main push. Desktop/platform code,
+packaging inputs and dependency manifests retain immediate builds; release
+tags and manual builds remain available. See
+[Native app CI cadence](../docs/development/testing.md#native-app-ci-cadence)
+for the trigger and release-verification policy.
 
 Nightly Desktop runs at 02:37 UTC, subject to GitHub scheduling delays. A manual
 run is available; its explicit force option permits rebuilding unchanged

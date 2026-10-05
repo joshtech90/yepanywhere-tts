@@ -14,6 +14,7 @@ Everything in the AI coding agent supervisor/wrapper space, in one table. For de
 
 | Name | One-liner | GitHub | License | Who | Stars |
 |------|-----------|--------|---------|-----|-------|
+| **Warp** | Native terminal/workbench with third-party CLI supervision, browser/mobile Remote Control, attention mailbox, forks, review, hosted/self-hosted runs and adjacent Factories ([deep dive](warp.md)) | [warpdotdev/warp](https://github.com/warpdotdev/warp) | AGPL-3.0 client; MIT UI crates/worker/plugin; hosted services separate | Warp | 65,341 (2026-10-02) |
 | **T3 Code** | Web/Electron/native-mobile workbench for six agents with offline mobile, event-sourced orchestration, multi-environment remote access, terminal, worktrees, and four-host source-control workflows ([deep dive](t3code.md)) | [pingdotgg/t3code](https://github.com/pingdotgg/t3code) | MIT | T3 Tools Inc. | 21,689 |
 | **bb** | Extensible web/Electron agent workbench with Claude/Codex/Pi/ACP, daemon-owned multi-host execution, managed worktrees, scheduling, durable workflows, and an early-access mobile WebView shell ([deep dive](bb.md)) | [get-bb/bb](https://github.com/get-bb/bb) | MIT | get-bb | 3,594 (2026-09-13) |
 | **AionUi** | Electron desktop app + WebUI/Telegram/Lark/DingTalk for 17 ACP agents with cron scheduling | [iOfficeAI/AionUi](https://github.com/iOfficeAI/AionUi) | Apache 2.0 | iOfficeAI | 16,800 |
@@ -101,4 +102,4 @@ Already listed above: emdash, claudecodeui.
 
 ## Last Updated
 
-2026-09-20 (CosmoRemote added; other entries and counts were not refreshed)
+2026-10-02 (Warp added; other entries and counts were not refreshed)

@@ -5,20 +5,21 @@ import {
   THUMBNAIL_MAX_ASPECT_RATIO,
   planThumbnail,
 } from "@yep-anywhere/shared";
-import {
-  deleteEntry,
-  getEntry,
-  openDatabase,
-  putEntryWithKey,
-} from "./diagnostics/idb";
+import { getEntry, openDatabase, putEntryWithKey } from "./diagnostics/idb";
 
 const DB_NAME = "yep-anywhere-attachment-previews";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const STORE_NAME = "images";
+/**
+ * Blobs live apart from the records that describe them: Chromium writes a new
+ * file for every Blob in a put, so a record touched on each access must not
+ * carry one.
+ */
+const BLOB_STORE_NAME = "blobs";
 const MAX_CACHE_BYTES = 128 * 1024 * 1024;
 const THUMBNAIL_CACHE_VARIANT = `thumb:v3:${THUMBNAIL_HEIGHT_PX}:${THUMBNAIL_MAX_ASPECT_RATIO}:${THUMBNAIL_MIME_TYPE}`;
 
-interface CachedAttachmentPreview {
+interface CachedAttachmentMetadata {
   attachmentId: string;
   path: string;
   originalName: string;
@@ -27,12 +28,17 @@ interface CachedAttachmentPreview {
   thumbnailVariant: string;
   thumbnailWidth: number;
   thumbnailHeight: number;
-  thumbnailBlob?: Blob;
-  fullBlob: Blob;
   totalBytes: number;
   createdAt: number;
   lastAccessedAt: number;
 }
+
+interface CachedAttachmentBlobs {
+  thumbnailBlob?: Blob;
+  fullBlob: Blob;
+}
+
+type CachedAttachmentPreview = CachedAttachmentMetadata & CachedAttachmentBlobs;
 
 /**
  * Stored under an attachment's persisted path so a chip that knows only that
@@ -45,7 +51,7 @@ interface CachedAttachmentAlias {
   lastAccessedAt: number;
 }
 
-type CachedAttachmentRecord = CachedAttachmentPreview | CachedAttachmentAlias;
+type CachedAttachmentRecord = CachedAttachmentMetadata | CachedAttachmentAlias;
 
 function isAlias(
   record: CachedAttachmentRecord | null,
@@ -65,6 +71,34 @@ function isImageMimeType(mimeType: string): boolean {
   return mimeType.startsWith("image/");
 }
 
+function splitPreview(preview: CachedAttachmentPreview): {
+  metadata: CachedAttachmentMetadata;
+  blobs: CachedAttachmentBlobs;
+} {
+  const { fullBlob, thumbnailBlob, ...metadata } = preview;
+  return { metadata, blobs: { fullBlob, thumbnailBlob } };
+}
+
+/** Moves blobs that version 2 kept inline into their own store, once. */
+function migrateInlineBlobs(tx: IDBTransaction): void {
+  const records = tx.objectStore(STORE_NAME);
+  const blobs = tx.objectStore(BLOB_STORE_NAME);
+  const request = records.openCursor();
+  request.onsuccess = () => {
+    const cursor = request.result;
+    if (!cursor) return;
+    const value = cursor.value as
+      | CachedAttachmentAlias
+      | Partial<CachedAttachmentPreview>;
+    if ("fullBlob" in value && value.fullBlob) {
+      const split = splitPreview(value as CachedAttachmentPreview);
+      blobs.put(split.blobs, cursor.primaryKey);
+      cursor.update(split.metadata);
+    }
+    cursor.continue();
+  };
+}
+
 function getDatabase(): Promise<IDBDatabase> {
   if (!dbPromise) {
     dbPromise = openDatabase(DB_NAME, DB_VERSION, (db, tx) => {
@@ -77,9 +111,42 @@ function getDatabase(): Promise<IDBDatabase> {
           store.createIndex("byLastAccessedAt", "lastAccessedAt");
         }
       }
+      if (!db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+        db.createObjectStore(BLOB_STORE_NAME);
+        migrateInlineBlobs(tx);
+      }
     });
   }
   return dbPromise;
+}
+
+function completion(tx: IDBTransaction): Promise<void> {
+  return new Promise((resolve, reject) => {
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error ?? new Error("Transaction aborted"));
+  });
+}
+
+/** Stores a preview's record and blobs together under one key. */
+async function writePreview(
+  db: IDBDatabase,
+  key: string,
+  preview: CachedAttachmentPreview,
+): Promise<void> {
+  const { metadata, blobs } = splitPreview(preview);
+  const tx = db.transaction([STORE_NAME, BLOB_STORE_NAME], "readwrite");
+  tx.objectStore(STORE_NAME).put(metadata, key);
+  tx.objectStore(BLOB_STORE_NAME).put(blobs, key);
+  await completion(tx);
+}
+
+/** Deletes whatever a key holds in both stores. */
+async function deleteStored(db: IDBDatabase, key: string): Promise<void> {
+  const tx = db.transaction([STORE_NAME, BLOB_STORE_NAME], "readwrite");
+  tx.objectStore(STORE_NAME).delete(key);
+  tx.objectStore(BLOB_STORE_NAME).delete(key);
+  await completion(tx);
 }
 
 async function createThumbnailBlob(
@@ -138,9 +205,9 @@ async function calculateCacheSize(db: IDBDatabase): Promise<number> {
   const store = tx.objectStore(STORE_NAME);
   const request = store.getAll();
   const entries =
-    (await new Promise<CachedAttachmentPreview[]>((resolve, reject) => {
+    (await new Promise<CachedAttachmentRecord[]>((resolve, reject) => {
       request.onsuccess = () =>
-        resolve(request.result as CachedAttachmentPreview[]);
+        resolve(request.result as CachedAttachmentRecord[]);
       request.onerror = () => reject(request.error);
     })) ?? [];
   return entries.reduce((sum, entry) => sum + (entry.totalBytes ?? 0), 0);
@@ -152,8 +219,9 @@ async function evictOldestEntries(
 ): Promise<void> {
   if (bytesToFree <= 0) return;
 
-  const tx = db.transaction(STORE_NAME, "readwrite");
+  const tx = db.transaction([STORE_NAME, BLOB_STORE_NAME], "readwrite");
   const store = tx.objectStore(STORE_NAME);
+  const blobStore = tx.objectStore(BLOB_STORE_NAME);
   const index = store.index("byLastAccessedAt");
   let freed = 0;
 
@@ -174,6 +242,7 @@ async function evictOldestEntries(
       }
 
       freed += value.totalBytes ?? 0;
+      blobStore.delete(cursor.primaryKey);
       cursor.delete();
       if (value.path && value.path !== value.attachmentId) {
         const aliasRequest = store.get(value.path);
@@ -197,11 +266,7 @@ async function evictOldestEntries(
     };
   });
 
-  await new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error ?? new Error("Transaction aborted"));
-  });
+  await completion(tx);
 }
 
 /**
@@ -218,15 +283,31 @@ async function readPreview(
 } | null> {
   const record = await getEntry<CachedAttachmentRecord>(db, STORE_NAME, key);
   if (!record) return null;
-  if (!isAlias(record)) return { key, preview: record, viaAlias: false };
-  const target = await getEntry<CachedAttachmentRecord>(
+  let storageKey = key;
+  let metadata: CachedAttachmentMetadata;
+  if (isAlias(record)) {
+    const target = await getEntry<CachedAttachmentRecord>(
+      db,
+      STORE_NAME,
+      record.aliasFor,
+    );
+    if (!target || isAlias(target)) return null;
+    storageKey = record.aliasFor;
+    metadata = target;
+  } else {
+    metadata = record;
+  }
+  const blobs = await getEntry<CachedAttachmentBlobs>(
     db,
-    STORE_NAME,
-    record.aliasFor,
+    BLOB_STORE_NAME,
+    storageKey,
   );
-  return target && !isAlias(target)
-    ? { key: record.aliasFor, preview: target, viaAlias: true }
-    : null;
+  if (!blobs) return null;
+  return {
+    key: storageKey,
+    preview: { ...metadata, ...blobs },
+    viaAlias: storageKey !== key,
+  };
 }
 
 /** The attachment id a stored path points at, when it is a pointer. */
@@ -294,12 +375,7 @@ export async function storeUploadedAttachmentPreview(
       lastAccessedAt: Date.now(),
     };
     rememberMemoryPreview(cachedPreview);
-    await putEntryWithKey<CachedAttachmentPreview>(
-      db,
-      STORE_NAME,
-      uploadedFile.id,
-      cachedPreview,
-    );
+    await writePreview(db, uploadedFile.id, cachedPreview);
     if (uploadedFile.path !== uploadedFile.id) {
       await putEntryWithKey<CachedAttachmentAlias>(
         db,
@@ -316,6 +392,26 @@ export async function storeUploadedAttachmentPreview(
   } finally {
     forgetMemoryPreview(pendingPreview);
   }
+}
+
+/**
+ * Moves a preview stored before previews were keyed by attachment id to its
+ * attachment id, leaving its path pointing at the new home.
+ */
+async function moveToAttachmentId(
+  db: IDBDatabase,
+  legacyKey: string,
+  preview: CachedAttachmentPreview,
+): Promise<void> {
+  const { metadata, blobs } = splitPreview(preview);
+  const tx = db.transaction([STORE_NAME, BLOB_STORE_NAME], "readwrite");
+  const records = tx.objectStore(STORE_NAME);
+  const blobStore = tx.objectStore(BLOB_STORE_NAME);
+  records.put(metadata, preview.attachmentId);
+  blobStore.put(blobs, preview.attachmentId);
+  records.put(aliasTo(preview.attachmentId), legacyKey);
+  blobStore.delete(legacyKey);
+  await completion(tx);
 }
 
 export async function loadCachedAttachmentPreview(
@@ -341,21 +437,8 @@ export async function loadCachedAttachmentPreview(
   let storageKey = stored.key;
   let entry = stored.preview;
   if (!stored.viaAlias && storageKey !== attachmentId) {
-    // A preview stored before previews were keyed by attachment id. Move it
-    // and leave its path pointing at the new home.
     entry = { ...entry, attachmentId };
-    await putEntryWithKey<CachedAttachmentPreview>(
-      db,
-      STORE_NAME,
-      attachmentId,
-      entry,
-    );
-    await putEntryWithKey<CachedAttachmentAlias>(
-      db,
-      STORE_NAME,
-      storageKey,
-      aliasTo(attachmentId),
-    ).catch(() => {});
+    await moveToAttachmentId(db, storageKey, entry);
     storageKey = attachmentId;
   }
 
@@ -369,12 +452,7 @@ export async function loadCachedAttachmentPreview(
         thumbnailBlob: refreshedThumbnail.blob,
         thumbnailVariant: THUMBNAIL_CACHE_VARIANT,
       };
-      await putEntryWithKey<CachedAttachmentPreview>(
-        db,
-        STORE_NAME,
-        storageKey,
-        entry,
-      );
+      await writePreview(db, storageKey, entry);
     }
   }
 
@@ -382,11 +460,12 @@ export async function loadCachedAttachmentPreview(
     ...entry,
     lastAccessedAt: Date.now(),
   };
-  await putEntryWithKey<CachedAttachmentPreview>(
+  // Touch only the blob-free record; rewriting the blobs would copy them.
+  await putEntryWithKey<CachedAttachmentMetadata>(
     db,
     STORE_NAME,
     storageKey,
-    updated,
+    splitPreview(updated).metadata,
   );
   return updated;
 }
@@ -404,8 +483,8 @@ export async function deleteCachedAttachmentPreview(
   const db = await getDatabase();
   // A path may hold the preview itself or a pointer to it; both go.
   const aliased = await readAlias(db, path);
-  if (aliased) await deleteEntry(db, STORE_NAME, aliased);
-  await deleteEntry(db, STORE_NAME, path);
+  if (aliased) await deleteStored(db, aliased);
+  await deleteStored(db, path);
 }
 
 export function isCacheableAttachmentMimeType(mimeType: string): boolean {

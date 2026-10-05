@@ -1,5 +1,5 @@
-import { basename } from "node:path";
-import { stat } from "node:fs/promises";
+import { basename, join } from "node:path";
+import { realpath, stat, unlink } from "node:fs/promises";
 import {
   isUrlProjectId,
   type LimitedUserGrants,
@@ -28,7 +28,10 @@ import {
 import type { ProjectScanner } from "../projects/scanner.js";
 import type { Principal } from "../auth/principal.js";
 import type { Project } from "../supervisor/types.js";
-import { createLocalResourcePathPolicy } from "./local-resource-policy.js";
+import {
+  createLocalResourcePathPolicy,
+  isPathInsideDirectory,
+} from "./local-resource-policy.js";
 import type { SessionPathScopeResolver } from "./session-path-scope.js";
 
 const openRequest = z.strictObject({
@@ -179,6 +182,44 @@ export function createProjectAppRoutes(deps: {
         message: "Administrator access required",
       });
   };
+  routes.delete("/projects/:projectId/app", async (c) => {
+    administrator(c);
+    const project = await authorize(c, "new-session");
+    let declaration: string | undefined;
+    try {
+      const root = await realpath(project.path);
+      const parent = await realpath(join(root, ".project-template"));
+      if (!isPathInsideDirectory(parent, root))
+        throw new HTTPException(403, {
+          message: "App declaration escapes project",
+        });
+      declaration = join(parent, "app.json");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    // Remove the declaration before the queued stop: later starts cannot
+    // reload it, and any start already in flight is drained by that stop.
+    if (declaration) {
+      try {
+        await unlink(declaration);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    await deps.services.stop(project.id, async () => {
+      administrator(c);
+    });
+    await deps.store.releaseAll(project.id, async (rows) => {
+      administrator(c);
+      for (const row of rows)
+        await deps.artifacts.vhostAccess.rotate({
+          name: row.name,
+          projectId: project.id,
+        });
+    });
+    await deps.delivery?.refreshHosts();
+    return c.json({ deleted: true });
+  });
   routes.get("/project-apps", async (c) => {
     administrator(c);
     const reservations = await deps.store.allReservations();
@@ -202,7 +243,11 @@ export function createProjectAppRoutes(deps: {
       inventory.projects.push(
         ...batch.filter(
           (row) =>
-            row.info.state !== "none" || reservedProjects.has(row.projectId),
+            (row.info.state !== "none" &&
+              (row.info.state !== "missing" ||
+                !!row.info.declaration ||
+                !!row.info.activeDeclaration)) ||
+            reservedProjects.has(row.projectId),
         ),
       );
     }

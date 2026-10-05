@@ -15,7 +15,10 @@
 import {
   DEFAULT_RELAY_URL,
   findHtmlRootAssetReferences,
+  fromUrlProjectId,
+  isUrlProjectId,
   normalizeRelayUrl,
+  resolveLinkedReference,
 } from "@yep-anywhere/shared";
 
 const MAX_INLINED_BYTES = 48 * 1024 * 1024;
@@ -102,15 +105,84 @@ export function publicSharePlayUrlFromFileShareUrl(
   })}`;
 }
 
+/** The message a play frame posts when a reader follows a link out of it. */
+export const PLAY_LINK_MESSAGE = "ya-play-link";
+
 /**
- * A srcdoc document resolves URLs against the embedding play page, so a
- * `#section` link would navigate the frame to `play.html` without its share
- * grant instead of scrolling. Pages also create such links at runtime, which
- * a static rewrite would miss, so fragment-only links are resolved at click
- * time on the frame's own `about:srcdoc` location. It listens on the window,
- * after every page handler, and yields to one that already took the click.
+ * Links in the play frame, resolved at click time because pages also create
+ * links at runtime, which a static rewrite would miss. A srcdoc document
+ * resolves URLs against the embedding play page, so a `#section` link would
+ * navigate the frame to `play.html` without its share grant instead of
+ * scrolling; it is resolved on the frame's own `about:srcdoc` location. Any
+ * other relative link names a file beside the shared one, which the share
+ * serves when the root links to it. The frame never holds the grant, so it
+ * posts the link to the play page, which opens that file through the share.
+ * It listens on the window, after every page handler, and yields to one that
+ * already took the click.
  */
-export const KEEP_FRAGMENT_LINKS_IN_FRAME_SCRIPT = `window.addEventListener("click",function(e){if(e.defaultPrevented||!(e.target instanceof Element))return;var a=e.target.closest("a[href],area[href]");if(!a)return;var h=a.getAttribute("href").trim();if(h.charAt(0)!=="#")return;e.preventDefault();location.hash=h;});`;
+export const PLAY_FRAME_LINKS_SCRIPT = `window.addEventListener("click",function(e){if(e.defaultPrevented||!(e.target instanceof Element))return;var a=e.target.closest("a[href],area[href]");if(!a)return;var h=a.getAttribute("href").trim();if(!h)return;if(h.charAt(0)==="#"){e.preventDefault();location.hash=h;return;}if(h.slice(0,2)==="//"||/^[a-z][a-z0-9+.-]*:/i.test(h))return;e.preventDefault();parent.postMessage({protocol:${JSON.stringify(PLAY_LINK_MESSAGE)},href:h},"*");});`;
+
+/**
+ * The share path a play document's relative link names, as the share's link
+ * walk names what it authorizes: project-relative inside the share's project,
+ * absolute outside it. Null for a link that names no file.
+ */
+export function playLinkSharePath(
+  projectId: string,
+  documentPath: string,
+  href: string,
+): string | null {
+  const root = projectRootPath(projectId);
+  const document = absolutePublicSharePath(projectId, documentPath);
+  if (!root || !document) return null;
+  const target = resolveLinkedReference(
+    document,
+    document.slice(0, document.lastIndexOf("/") + 1),
+    href,
+  );
+  if (!target) return null;
+  return target.startsWith(`${root}/`) ? target.slice(root.length + 1) : target;
+}
+
+/**
+ * A share path — project-relative, or absolute outside the project — as an
+ * absolute `/`-separated path. Null for an unusable project id.
+ */
+export function absolutePublicSharePath(
+  projectId: string,
+  sharePath: string,
+): string | null {
+  if (/^(?:[A-Za-z]:)?\//.test(sharePath)) return sharePath;
+  const root = projectRootPath(projectId);
+  return root ? `${root}/${sharePath}` : null;
+}
+
+function projectRootPath(projectId: string): string | null {
+  return isUrlProjectId(projectId)
+    ? fromUrlProjectId(projectId).replaceAll("\\", "/").replace(/\/+$/, "")
+    : null;
+}
+
+/**
+ * The public file share link for another file of the same share: the share
+ * viewer page, beneath the hosted client's base, as the server mints it.
+ */
+export function buildPublicShareFileUrl(
+  basePath: string,
+  target: PublicSharePlayTarget,
+): string {
+  const params = new URLSearchParams({
+    h: target.relayUsername,
+    projectId: target.projectId,
+    path: target.path,
+    standalone: "1",
+  });
+  if (target.relayUrl) {
+    const relayUrl = normalizeRelayUrl(target.relayUrl);
+    if (relayUrl !== DEFAULT_RELAY_URL) params.set("r", relayUrl);
+  }
+  return `${basePath}/share/${encodeURIComponent(target.secret)}/file?${params}#v=2&target=file`;
+}
 
 function toDataUrl(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -121,10 +193,14 @@ function toDataUrl(blob: Blob): Promise<string> {
   });
 }
 
+/**
+ * The shared HTML with what its elements load inlined. Each asset path takes
+ * `rootPath`'s form, project-relative or absolute (`resolveHtmlRootAssetPath`).
+ */
 export async function buildPlayableHtml(
   html: string,
   rootPath: string,
-  fetchAsset: (projectRelativePath: string) => Promise<Blob>,
+  fetchAsset: (assetPath: string) => Promise<Blob>,
 ): Promise<string> {
   const references = findHtmlRootAssetReferences(html, rootPath);
   let inlined = 0;
@@ -157,8 +233,8 @@ export async function buildPlayableHtml(
 
   const doc = new DOMParser().parseFromString(spliced, "text/html");
   for (const base of doc.querySelectorAll("base")) base.remove();
-  const keepFragments = doc.createElement("script");
-  keepFragments.textContent = KEEP_FRAGMENT_LINKS_IN_FRAME_SCRIPT;
-  doc.head.prepend(keepFragments);
+  const links = doc.createElement("script");
+  links.textContent = PLAY_FRAME_LINKS_SCRIPT;
+  doc.head.prepend(links);
   return `<!doctype html>${doc.documentElement.outerHTML}`;
 }

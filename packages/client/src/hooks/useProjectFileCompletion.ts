@@ -248,10 +248,17 @@ export function useProjectFileCompletion(options: {
     return value;
   }
 
+  const needle = query?.toLowerCase() ?? "";
   return {
     visible,
     entries,
     selected: selected?.path,
+    select: (entry: ProjectFileCompletionEntry) => setSelection(entry.path),
+    /** Where the query matched, by the server's case-insensitive substring test. */
+    spans: (entry: ProjectFileCompletionEntry): [number, number][] => {
+      const start = needle ? entry.path.toLowerCase().indexOf(needle) : -1;
+      return start < 0 ? [] : [[start, start + needle.length]];
+    },
     accept,
     onKeyDown,
     normalizeInput,

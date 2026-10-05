@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { EffectiveSessionLaunchSettings } from "../../src/metadata/index.js";
-import { inheritSuccessorLaunchSettings } from "../../src/routes/session-launch-inheritance.js";
+import { inheritSuccessorLaunchSettings } from "../../src/supervisor/sessionLaunchInheritance.js";
 
 const source: EffectiveSessionLaunchSettings = {
   schemaVersion: 1,

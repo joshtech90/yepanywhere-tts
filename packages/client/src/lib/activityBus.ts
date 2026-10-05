@@ -522,7 +522,9 @@ class ActivityBus {
       unsubscribeVisibilityRestored: null,
       retainCount: 0,
       connected: false,
-      hasConnected: false,
+      // A cold source can mount pages before its first socket is available.
+      // Its first open must revalidate reads that failed during acquisition.
+      hasConnected: transport.status.getSnapshot().state !== "ready",
     };
     if (!this.streamsSuspended) {
       this.attachStream(record);

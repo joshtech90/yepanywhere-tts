@@ -107,6 +107,29 @@ describe("git file revision routes", () => {
     expect((await request("file.txt")).body.dirty).toBe(false);
   });
 
+  it("returns a pushed file permalink even with unrelated local commits and dirty content", async () => {
+    await git("remote", "add", "origin", "git@github.com:me/repo.git");
+    await git("update-ref", "refs/remotes/origin/main", fileCommit);
+    await writeFile(join(dir, "file.txt"), "local edits\n");
+    const { body, status } = await request("file.txt");
+    expect(status).toBe(200);
+    expect(body.githubLink).toEqual({
+      url: `https://github.com/me/repo/blob/${fileCommit}/file.txt`,
+      pushed: true,
+    });
+    expect(body.dirty).toBe(true);
+    await git("add", "file.txt");
+    await git("commit", "-m", "unpushed file revision");
+    expect((await request("file.txt")).body.githubLink?.pushed).toBe(false);
+  });
+
+  it("omits a GitHub link for files with no committed revision or no GitHub remote", async () => {
+    expect((await request("file.txt")).body.githubLink).toBeNull();
+    await git("remote", "add", "origin", "https://github.com/me/repo.git");
+    await writeFile(join(dir, "new.txt"), "new\n");
+    expect((await request("new.txt")).body.githubLink).toBeNull();
+  });
+
   it("treats a missing working file as dirty", async () => {
     await unlink(join(dir, "file.txt"));
     const { body, status } = await request("file.txt");

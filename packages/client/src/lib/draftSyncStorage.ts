@@ -1,4 +1,5 @@
 import { publishDraftPresenceChange } from "./draftPresenceEvents";
+import { reconcileSessionDraftPresence } from "./sessionDraftStorage";
 import {
   getSyncedDraftSessionIds,
   setSyncedDraftSessionIds,
@@ -466,6 +467,8 @@ export class DraftSyncClient {
   private started = false;
   private identified = false;
   private refreshing?: Promise<void>;
+  private refreshSince?: number;
+  private refreshedAt = 0;
   private sequence = -1;
   private abort = new AbortController();
   private retry?: ReturnType<typeof setTimeout>;
@@ -830,6 +833,7 @@ export class DraftSyncClient {
       submitted.revision = result.snapshot.revision;
   }
   private apply(e: Entry, p: DraftPayload): void {
+    const previousRaw = e.saved.raw;
     e.saved.raw = encode(e.address, p, e.saved.raw);
     const key = physical(e.key, e.address);
     try {
@@ -840,7 +844,19 @@ export class DraftSyncClient {
       e.error = "local";
       status();
     }
+    this.reconcilePresence(e, previousRaw);
     notify(e.key);
+  }
+  private reconcilePresence(e: Entry, previousRaw: string | null): void {
+    if (e.address.slot.kind !== "session" || !e.address.slot.sessionId) return;
+    reconcileSessionDraftPresence(
+      {
+        sourceKey: this.source as ClientSummarySourceKey,
+        sessionId: e.address.slot.sessionId,
+      },
+      previousRaw,
+      e.saved.raw,
+    );
   }
   /** Retry storing this tab's current value after a failed browser write. */
   private retryLocal(e: Entry): void {
@@ -1125,14 +1141,21 @@ export class DraftSyncClient {
       this.schedule(e, 0);
     }
   }
-  refresh(): Promise<void> {
-    if (!this.refreshing)
-      this.refreshing = this.refreshNow().finally(() => {
-        this.refreshing = undefined;
-      });
+  refresh(since?: number): Promise<void> {
+    if (this.refreshing) {
+      // A foreground/full refresh must not settle with a partial index.
+      if (since === undefined && this.refreshSince !== undefined)
+        return this.refreshing.then(() => this.refresh());
+      return this.refreshing;
+    }
+    this.refreshSince = since;
+    this.refreshing = this.refreshNow(since).finally(() => {
+      this.refreshing = undefined;
+      this.refreshSince = undefined;
+    });
     return this.refreshing;
   }
-  private async refreshNow(): Promise<void> {
+  private async refreshNow(since?: number): Promise<void> {
     if (
       this.stopped ||
       document.visibilityState === "hidden" ||
@@ -1141,7 +1164,11 @@ export class DraftSyncClient {
       return;
     try {
       let after = "";
-      const sessionIds = new Set<string>();
+      let sequence = this.sequence;
+      const sessionIds =
+        since === undefined
+          ? new Set<string>()
+          : new Set(getSyncedDraftSessionIds(this.source));
       const revisions = new Map<string, string>();
       do {
         const result = await this.transport.fetch<{
@@ -1149,23 +1176,29 @@ export class DraftSyncClient {
           next: string | null;
           owner: string;
           sequence: number;
-        }>(`/drafts/index?after=${encodeURIComponent(after)}`, {
-          signal: this.abort.signal,
-        });
+        }>(
+          `/drafts/index?after=${encodeURIComponent(after)}${since === undefined ? "" : `&since=${since}`}`,
+          {
+            signal: this.abort.signal,
+          },
+        );
         if (this.stopped) return;
         if (result.owner !== this.owner) {
           this.stop();
           return;
         }
+        // A replaced/reset account has no history covering the old cursor.
+        if (since !== undefined && result.sequence < since)
+          return this.refreshNow();
         this.identified = true;
-        this.sequence = result.sequence;
+        // Later pages may include changes absent from pages already read.
+        // Acknowledge only the first page's cursor, after the whole scan succeeds.
+        if (!after) sequence = result.sequence;
         for (const item of result.entries) {
-          if (
-            item.slot.kind === "session" &&
-            item.slot.sessionId &&
-            !item.empty
-          )
-            sessionIds.add(item.slot.sessionId);
+          if (item.slot.kind === "session" && item.slot.sessionId) {
+            if (item.empty) sessionIds.delete(item.slot.sessionId);
+            else sessionIds.add(item.slot.sessionId);
+          }
           const key = draftLocalKey(this.source, item.slot);
           revisions.set(key, item.revision);
           const e =
@@ -1176,6 +1209,8 @@ export class DraftSyncClient {
         }
         after = result.next ?? "";
       } while (after && !this.stopped);
+      this.sequence = sequence;
+      this.refreshedAt = Date.now();
       const previous = getSyncedDraftSessionIds(this.source);
       setSyncedDraftSessionIds(this.source, sessionIds);
       for (const sessionId of new Set([...previous, ...sessionIds])) {
@@ -1205,7 +1240,8 @@ export class DraftSyncClient {
           (e.saved.discard ||
             e.saved.pending ||
             e.remote ||
-            e.saved.base?.revision !== (revisions.get(e.key) ?? null) ||
+            ((since === undefined || revisions.has(e.key)) &&
+              e.saved.base?.revision !== (revisions.get(e.key) ?? null)) ||
             !draftPayloadEqual(
               payload(e.address, e.saved.raw),
               e.saved.base?.payload ?? EMPTY_DRAFT,
@@ -1228,7 +1264,15 @@ export class DraftSyncClient {
           `/drafts/changes?after=${this.sequence}`,
           { signal: this.abort.signal },
         );
-        if (next.sequence !== this.sequence) await this.refresh();
+        if (next.sequence !== this.sequence) {
+          // Old/offline cursors may predate retained clears. Rebuild instead;
+          // normal foreground/reconnect refreshes already use the full index.
+          const since =
+            this.sequence >= 0 && Date.now() - this.refreshedAt < 86_400_000
+              ? this.sequence
+              : undefined;
+          await this.refresh(since);
+        }
       }
     } catch {
       /* Offline is ordinary; no console loop. */
@@ -1248,16 +1292,19 @@ export class DraftSyncClient {
    * it, never merge it. Merging against this tab's older base and writing the
    * result back re-entered every sibling's handler, appending the whole draft
    * again on each keystroke until storage filled and the browser stalled.
-   * Adoption never writes, so no tab can echo another's change.
+   * Adoption never writes draft bodies or sync metadata, so no tab can echo
+   * another's change. Session presence markers can be repaired separately.
    */
   private storage = (event: StorageEvent) => {
     if (!event.key) return;
     for (const e of this.entries.values()) {
       if (physical(e.key, e.address) === event.key) {
         if (e.saved.raw === event.newValue) return;
+        const previousRaw = e.saved.raw;
         e.saved.raw = event.newValue;
         // The sibling's stored value supersedes a write this tab failed to store.
         if (e.error === "local") e.error = undefined;
+        this.reconcilePresence(e, previousRaw);
         notify(e.key);
         this.schedule(e, 3000);
         status();
@@ -1270,10 +1317,12 @@ export class DraftSyncClient {
         try {
           const saved = JSON.parse(event.newValue) as Saved;
           if (saved.discardId && saved.discardId !== e.saved.discardId) {
+            const previousRaw = e.saved.raw;
             e.saved = saved;
             e.remote = undefined;
             e.needsRecovery = false;
             e.error = undefined;
+            this.reconcilePresence(e, previousRaw);
             notify(e.key);
             this.schedule(e, 0);
             status();

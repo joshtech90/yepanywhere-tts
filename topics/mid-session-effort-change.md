@@ -79,15 +79,18 @@ after the fact. This topic surfaces it before.
   metadata reconciliation establishes that the session is idle. Dismissing
   the dialog is Cancel.
 - **Fork launch settings.** The fork route accepts an optional `thinking`
-  option and, when present, records it as the fork's effective launch
-  settings with the inherited model and the source's permission mode and
+  option and records every fork's inherited settings as its effective launch
+  settings; when present, that option overrides thinking/effort while retaining
+  the inherited model and the source's permission mode and
   service tier, by the same source-plus-overrides inheritance a restart or
   handoff uses (`inheritSuccessorLaunchSettings`); `thinking` accepts the
   same wire options as any other launch (`isThinkingOption`), and anything
   else is refused before a fork is created. The fork's composer therefore
   sends that effort on its first
   turn instead of the browser's per-model default, and server-side turns use
-  it too. A fork without `thinking` keeps today's behavior.
+  it too. A fork without `thinking` inherits the source's settled thinking and
+  effort, alongside its permissions, model and service tier; see
+  [provider fork support](provider-fork-support.md#launch-settings-inheritance).
 - **Setting.** `longContextEffortWarning` is a server-persisted setting
   ([settings-ui-placement](settings-ui-placement.md) mechanism 3) with
   per-provider checkboxes and `thresholdTokens`. Default: Claude and Codex

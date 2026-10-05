@@ -9,7 +9,7 @@ import type { GlobalSessionItem, PaginationInfo } from "../../api/client";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useI18n } from "../../i18n";
 import { getSessionDisplayTitle } from "../../utils";
-import { Modal } from "../ui/Modal";
+import { SearchDetail } from "./SearchDetail";
 import { renderHighlightedText } from "../SearchPreview";
 import previewStyles from "../UserTurnNavigator.module.css";
 import { limitTurnMatches, type SearchMatch } from "./model";
@@ -458,6 +458,9 @@ export function MatchPreview({
           >
             {t("sessionSearchZoom")}
           </button>
+          <Link role="menuitem" to={href}>
+            {t("sessionSearchOpenTurn")}
+          </Link>
         </div>
       )}
     </div>
@@ -470,11 +473,13 @@ export function SearchZoomPreview({
   query,
   basePath,
   onClose,
+  paneTarget,
 }: {
   target: SearchPreviewTarget;
   query: string;
   basePath: string;
   onClose(): void;
+  paneTarget?: HTMLElement | null;
 }) {
   const { t } = useI18n();
   const { context, error } = useTurnContext(target, true, 0);
@@ -505,16 +510,19 @@ export function SearchZoomPreview({
     }
   }, [text, query]);
   return (
-    <Modal
+    <SearchDetail
+      paneTarget={paneTarget}
       title={getSessionDisplayTitle(session)}
       onClose={onClose}
       closeOnBackGesture
       contentRef={scroller}
-    >
-      <div className={styles.zoom}>
+      actions={
         <Link to={matchHref(target, basePath)}>
           {t("sessionSearchOpenTurn")}
         </Link>
+      }
+    >
+      <div className={styles.zoom}>
         {error ? (
           <p role="alert">{error}</p>
         ) : (
@@ -534,6 +542,6 @@ export function SearchZoomPreview({
           </>
         )}
       </div>
-    </Modal>
+    </SearchDetail>
   );
 }

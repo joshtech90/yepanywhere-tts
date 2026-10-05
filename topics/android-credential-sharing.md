@@ -7,30 +7,31 @@ Topic: android-credential-sharing
 
 ## Status
 
-The two-way Digital Asset Links declarations are implemented and live-verified
-for the current Android debug build. Android App Links verify successfully, but
-Google Password Manager does not automatically offer the
-`yepanywhere.com` credentials in the sideloaded build. It offers only the
-generic Passwords search action. Seamless Google Password Manager sharing
-therefore remains blocked on a public Play release. Native Compose onboarding
-now declares standard Autofill username/current-password content types so that
-the configured password manager can at least present its inline action and
-manual credential picker in development builds.
+The two-way Digital Asset Links declarations include the Google Play app-signing
+certificate for `com.yepanywhere.mobile` as of 2026-10-04, alongside the retained
+maintainer development certificate. The Play fingerprint comes from the app's
+**App signing → Digital Asset Links JSON** panel, not the upload certificate.
+The existing Play internal-test build already references this website statement,
+so publishing the updated statement does not require another APK release.
 
-## Known Gap: Sideloaded Debug Builds
+The October 4 report came from a **Play internal-test installation**. Previously
+the website listed only the development signer, which cannot associate a
+Google-signed installation. This is distinct from the earlier sideloaded-build
+observation below. A physical Play-installed credential suggestion remains the
+acceptance check; association validation alone does not prove that Google
+Password Manager presents a matching dataset.
 
-Google Password Manager does not automatically associate a sideloaded YA debug
-APK with passwords saved for `yepanywhere.com`, even when the debug certificate
-is present in the valid Digital Asset Links statements. The visible result is a
-generic Passwords action that requires the user to search for the website
-manually.
+## Known Gap: Credential Suggestion Acceptance
 
-This is an expected debug-distribution limitation, not evidence that the
-production association is malformed. The production acceptance check is a
-public Play install, signed by the certificate published in
-`assetlinks.json`, automatically offering an existing `yepanywhere.com`
-credential on the relay login form. Do not claim production support until that
-check passes on a physical device.
+The earlier sideloaded debug APK offered only the generic Passwords action,
+requiring a manual website search even with valid development Digital Asset
+Links. Native Compose fields already declare standard Autofill content types.
+
+Google's current [setup guide](https://developers.google.com/identity/credential-sharing/set-up)
+requires publishing the app through Play and matching the installed signing
+certificate. It does not establish that a public production rollout is required
+instead of internal testing. Verify the existing internal track before asserting
+any further distribution restriction.
 
 ## Observable Contract
 
@@ -73,15 +74,14 @@ developer's debug key is not associated.
 
 The certificate fingerprint is public identity material; its private signing
 key is not published. Nevertheless, a debug signing key is not a production
-trust anchor. Before a public Android release, add the official distribution
-certificate and remove the debug fingerprint unless there is a deliberate need
-to retain maintainer-build association.
+trust anchor. The Play app-signing certificate is now included. The development fingerprint
+is deliberately retained for the existing dedicated-device workflow; it does
+not establish association for other developers' debug keys. The upload key is
+not included because it does not sign Play-installed APKs.
 
-Google Password Manager documents public Play publication as a prerequisite for
-cross-app credential sharing. The debug association is therefore useful for
-validating the Digital Asset Links chain and testing password managers that
-honor manual associations, but it is not a guarantee that Google Password
-Manager will offer the website password in a sideloaded build.
+The development association validates the Digital Asset Links chain and supports
+password managers that honor it. It does not establish credential suggestion
+acceptance for either sideloaded or Play-distributed builds.
 
 ## Verification
 
@@ -135,7 +135,7 @@ This proves the published website/app statements, package certificate match,
 Android App Link verification, and valid Autofill field exposure. The
 sideloaded Google Password Manager result is negative for seamless credential
 sharing: the user must search manually. Do not claim automatic
-`yepanywhere.com` suggestions until a public Play build passes the visible
+`yepanywhere.com` suggestions until a Play-installed build passes the visible
 device test.
 
 The first-class Android-shell replacement was checked on a Pixel 7a running
@@ -151,11 +151,10 @@ fields expose the supported Compose content types. The visible Google Password
 Manager result remains a user-owned physical-device check so saved credential
 labels or values never enter automated output.
 
-## Production Follow-Up
+## Play Distribution Follow-Up
 
-- Decide the supported signing/distribution path and publish its certificate
-  fingerprint.
-- Publish the app through the required public Play channel before treating
-  Google Password Manager sharing as supported behavior.
-- Re-test credential suggestions with a release-signed build and record the
-  password-manager/device matrix.
+- Publish and validate the website statement against the Google-managed app
+  signing certificate; keep the upload certificate out of the association.
+- Re-test automatic suggestions in both native pairing and reauthentication
+  using the existing Play internal track and record the device/provider result.
+- Revisit the retained development signer before general public distribution.

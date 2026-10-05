@@ -10,6 +10,7 @@ import {
   createElement,
   Fragment,
   memo,
+  type RefObject,
   startTransition,
   useCallback,
   useDeferredValue,
@@ -823,6 +824,12 @@ interface Props {
   onTransferBtwAsideTurn?: (text: string) => void;
   /** Append quoted assistant output to the composer. */
   onQuoteSelection?: (quotedText: string) => string | null;
+  /**
+   * Receives the transcript's quote-a-block handler, so a file viewer opened
+   * from outside the transcript (the `/v` command) quotes the way one opened
+   * from a transcript link does.
+   */
+  quoteTextBlockRef?: RefObject<((anchor: CommentAnchor) => void) | null>;
   /** Open a same-project new-session composer seeded from selected output. */
   onStartNewSessionFromSelection?: (prefill: string) => void;
   /** Stable draft-change stream for quote tint reconciliation. */
@@ -1515,6 +1522,7 @@ export const MessageList = memo(function MessageList({
   onToggleBtwAsideExpanded,
   onTransferBtwAsideTurn,
   onQuoteSelection,
+  quoteTextBlockRef,
   onStartNewSessionFromSelection,
   composerDraftSignal,
   composerEditAvailabilityStore,
@@ -2623,6 +2631,14 @@ export const MessageList = memo(function MessageList({
     quoteClearSignal,
     isInteractiveTarget: isInteractiveScrollTarget,
   });
+  useEffect(() => {
+    if (!quoteTextBlockRef) return;
+    quoteTextBlockRef.current = handleQuoteTextBlock;
+    return () => {
+      if (quoteTextBlockRef.current === handleQuoteTextBlock)
+        quoteTextBlockRef.current = null;
+    };
+  }, [handleQuoteTextBlock, quoteTextBlockRef]);
   const latestVisibleTimestampMs = useMemo(
     () =>
       getLatestVisibleTimestampMs({
@@ -3132,6 +3148,17 @@ export const MessageList = memo(function MessageList({
   const noopToggleThinkingExpanded = useCallback(() => {}, []);
 
   const pendingHeightChangeRestoreRef = useRef<(() => void) | null>(null);
+  const heightChangeRestoreFramesRef = useRef(new Set<{ id: number }>());
+  useLayoutEffect(
+    () => () => {
+      pendingHeightChangeRestoreRef.current = null;
+      for (const frame of heightChangeRestoreFramesRef.current) {
+        cancelAnimationFrame(frame.id);
+      }
+      heightChangeRestoreFramesRef.current.clear();
+    },
+    [],
+  );
   useLayoutEffect(() => {
     const restore = pendingHeightChangeRestoreRef.current;
     pendingHeightChangeRestoreRef.current = null;
@@ -3172,8 +3199,8 @@ export const MessageList = memo(function MessageList({
 
       const restore = () => {
         const nextMessageList = containerRef.current;
-        const nextScrollContainer =
-          nextMessageList?.parentElement ?? scrollContainer;
+        const nextScrollContainer = nextMessageList?.parentElement;
+        if (!nextMessageList || !nextScrollContainer) return;
         isProgrammaticScrollRef.current = true;
 
         if (wasAtBottom) {
@@ -3217,7 +3244,18 @@ export const MessageList = memo(function MessageList({
       } else {
         // Mode/window changes also rebuild the retained transcript window;
         // let that projection settle before restoring its visible anchor.
-        requestAnimationFrame(() => requestAnimationFrame(restore));
+        // Both projection-settling frames belong to this mounted view. A late
+        // restore used to write detached DOM and start a fresh follow timer
+        // after the observer's unmount cleanup had already cancelled it.
+        const scheduleRestoreFrame = (callback: () => void) => {
+          const frame = { id: 0 };
+          heightChangeRestoreFramesRef.current.add(frame);
+          frame.id = requestAnimationFrame(() => {
+            heightChangeRestoreFramesRef.current.delete(frame);
+            callback();
+          });
+        };
+        scheduleRestoreFrame(() => scheduleRestoreFrame(restore));
       }
       mutate();
     },
@@ -3558,6 +3596,9 @@ export const MessageList = memo(function MessageList({
         return true;
       };
 
+      // An anchor captured before this jump would restore the old position on
+      // the window's next commit, undoing the jump.
+      transcriptRenderWindow.discardPendingAnchor();
       if (scrollMountedRow(showMotionCue)) {
         onResolved?.(true);
         return;
@@ -3598,6 +3639,7 @@ export const MessageList = memo(function MessageList({
     },
     [
       showNavMotionCue,
+      transcriptRenderWindow.discardPendingAnchor,
       transcriptRenderWindow.getRenderIdTop,
       transcriptRenderWindow.revealRenderId,
     ],

@@ -13,10 +13,13 @@ export interface FileVhostService {
     path: string;
     public: boolean;
     password?: string;
+    replace?: boolean;
   }): Promise<ArtifactVhostSiteView>;
   stop(name: string): Promise<void>;
   /** Shown after the name field: the public root, or `localhost`. */
   hostSuffix: string;
+  canReplace?: boolean;
+  canUsePrivateLinks?: boolean;
 }
 
 /** A DNS label suggested from the file name; the server still validates. */
@@ -52,6 +55,7 @@ export function FileVhostSection({
     "public",
   );
   const [password, setPassword] = useState("");
+  const [replace, setReplace] = useState(false);
   const [working, setWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -82,9 +86,13 @@ export function FileVhostSection({
         path: filePath,
         public: access !== "link",
         ...(access === "password" ? { password } : {}),
+        ...(replace ? { replace: true } : {}),
       });
       setPassword("");
-      setSites((current) => [...(current ?? []), site]);
+      setSites((current) => [
+        ...(current ?? []).filter((row) => row.name !== site.name),
+        site,
+      ]);
       const url = site.publicUrl ?? site.localUrl;
       if (url && (await writeClipboardText(url)))
         setNotice(t("fileVhostCopied"));
@@ -178,7 +186,8 @@ export function FileVhostSection({
             );
           })}
         </ul>
-      ) : (
+      ) : null}
+      {sites !== null && (sites.length === 0 || service.canReplace) && (
         <form
           className={styles.form}
           onSubmit={(event) => {
@@ -211,7 +220,9 @@ export function FileVhostSection({
             >
               <option value="public">{t("fileVhostAccessPublic")}</option>
               <option value="password">{t("fileVhostAccessPassword")}</option>
-              <option value="link">{t("fileVhostAccessLink")}</option>
+              {service.canUsePrivateLinks !== false && (
+                <option value="link">{t("fileVhostAccessLink")}</option>
+              )}
             </select>
           </label>
           {access === "password" && (
@@ -224,6 +235,17 @@ export function FileVhostSection({
                 autoComplete="new-password"
                 disabled={working}
               />
+            </label>
+          )}
+          {service.canReplace && (
+            <label className={styles.replace}>
+              <input
+                type="checkbox"
+                checked={replace}
+                onChange={(event) => setReplace(event.target.checked)}
+                disabled={working}
+              />
+              {t("fileVhostReplace")}
             </label>
           )}
           <button

@@ -5,12 +5,14 @@ import {
   appendComposerTransferDraft,
   appendSlashCommandDraft,
   collectComposerAttachmentsForSubmission,
+  ComposerAttachmentUploadError,
   createComposerDraftAttachmentState,
   getComposerTransferReplacement,
   hasComposerDraftContent,
   insertComposerTransferText,
   materializeComposerAttachmentsForSubmission,
   splitComposerAttachmentsForSubmission,
+  stageComposerAttachmentsForNewSession,
   uploadComposerAttachmentFile,
 } from "../sessionComposerSubmission";
 import type { ComposerAttachment } from "../sessionComposerAttachments";
@@ -38,6 +40,67 @@ const uploadedFile: UploadedFile = {
 };
 
 describe("session composer submission helpers", () => {
+  it("copies original session bytes into staging before delivery to another project", async () => {
+    const name = "11111111-1111-1111-1111-111111111111_notes.txt";
+    const source = {
+      ...uploadedFile,
+      name,
+      path: `/data/projects/key/attachments/source-session/${name}`,
+    };
+    const fetchBlob = vi.fn().mockResolvedValue(new Blob(["original bytes"]));
+    const uploadStagedAttachment = vi.fn().mockResolvedValue({
+      ...stagedRef,
+      id: "copy",
+      originalName: "notes.txt",
+    });
+    const destination = {
+      ...uploadedFile,
+      path: "/data/projects/destination/attachments/new-session/copied.txt",
+    };
+    const fetch = vi.fn().mockResolvedValue({ files: [destination] });
+    const attachments = await stageComposerAttachmentsForNewSession({
+      attachments: [source, stagedRef],
+      sourceTransport: { fetchBlob, uploadStagedAttachment },
+      sourceProjectId: "source-project",
+    });
+    expect(fetchBlob).toHaveBeenCalledWith(
+      `/projects/source-project/sessions/source-session/upload/${name}`,
+    );
+    const file = uploadStagedAttachment.mock.calls[0]?.[0] as File;
+    expect(file.name).toBe("notes.txt");
+    expect(
+      await new Promise<string>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as string);
+        reader.readAsText(file);
+      }),
+    ).toBe("original bytes");
+    expect(uploadStagedAttachment).toHaveBeenCalledWith(file, {
+      batchId: "batch-a",
+    });
+    expect(attachments[1]).toBe(stagedRef);
+    expect(
+      await materializeComposerAttachmentsForSubmission({
+        attachments,
+        sourceTransport: { fetch },
+        projectId: "destination",
+        sessionId: "new-session",
+      }),
+    ).toEqual([destination]);
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      "/projects/destination/sessions/new-session/attachments/staging/materialize",
+    );
+    fetchBlob.mockRejectedValueOnce(new Error("Source unavailable"));
+    await expect(
+      stageComposerAttachmentsForNewSession({
+        attachments: [source],
+        sourceTransport: { fetchBlob, uploadStagedAttachment },
+        sourceProjectId: "source-project",
+      }),
+    ).rejects.toThrow("Source unavailable");
+    expect(uploadStagedAttachment).toHaveBeenCalledTimes(1);
+  });
+
   it("counts completed and pending attachments as draft content", () => {
     expect(hasComposerDraftContent("", 0)).toBe(false);
     expect(hasComposerDraftContent("  ", 0)).toBe(false);
@@ -95,7 +158,7 @@ describe("session composer submission helpers", () => {
     expect(unmountedSetDraft).toHaveBeenCalledWith("typed\n\nprompt");
   });
 
-  it("creates draft attachment state and rejects split staging batches", () => {
+  it("preserves each attachment's batch when a draft combines uploads", () => {
     const withPreview = { ...stagedRef, previewUrl: "blob:draft" };
 
     expect(
@@ -108,12 +171,18 @@ describe("session composer submission helpers", () => {
     expect(
       createComposerDraftAttachmentState([uploadedFile], "now"),
     ).toBeNull();
-    expect(() =>
+    expect(
       splitComposerAttachmentsForSubmission([
         stagedRef,
         { ...stagedRef, id: "staged-b", batchId: "batch-b" },
       ]),
-    ).toThrow("Draft attachments are split across staging batches");
+    ).toMatchObject({
+      uploadedFiles: [],
+      draftState: {
+        batchId: "batch-a",
+        refs: [stagedRef, { ...stagedRef, id: "staged-b", batchId: "batch-b" }],
+      },
+    });
   });
 
   it("collects pending uploads and clears composer attachments around submission", async () => {
@@ -149,6 +218,17 @@ describe("session composer submission helpers", () => {
     expect(updatePendingMessage).toHaveBeenLastCalledWith("temp-a", {
       status: undefined,
     });
+  });
+
+  it("refuses partial delivery when a pending upload fails, retaining successful attachments for recovery", async () => {
+    const pending = { ...stagedRef, id: "successful-pending" };
+    const failure = await collectComposerAttachmentsForSubmission({
+      currentAttachments: [uploadedFile],
+      pendingUploads: [Promise.resolve(pending), Promise.resolve(null)],
+      setComposerAttachments: vi.fn(),
+    }).catch((error) => error);
+    expect(failure).toBeInstanceOf(ComposerAttachmentUploadError);
+    expect(failure.attachments).toEqual([uploadedFile, pending]);
   });
 
   it("materializes staged refs after preserving already uploaded files", async () => {

@@ -13,6 +13,16 @@ exposure model are clear enough to guide experiments. Peer identity, pairing,
 grant fields, project mapping, exact wire schemas, and the worker-session
 presentation remain intentionally open.
 
+Direction selected 2026-10-03: prioritize persistent, target-owned YA sessions
+over the public relay for already installed hardware. Managed SSH remains a
+separate option for disposable or uninstalled targets, not a prerequisite.
+The [bounded first-slice plan](../docs/tactical/144-relay-peer-session-coordination.md)
+proposes one local/peer agent coordination service, explicit directional
+pairing, existing target workspaces, and durable worker reconnect. Hosted
+identity issuance and same-conversation migration are separate follow-ups;
+pairing need not wait for a universal grants system. This selects a direction,
+not a released protocol or a change to the roadmap's release priority.
+
 Related:
 [working across machines](multi-machine-architecture.md),
 [client source runtime topology](client-source-runtime-topology.md),
@@ -415,8 +425,9 @@ surface. It is not peer membership or delegation authorization.
 **Managed remote executors.** A controller-owned YA session may place its
 provider and exact project workspace on an injected subordinate runner reached
 through manually configured SSH. The controller prepares and retrieves Git
-state; the target is execution substrate, not an independent YA peer. This is
-the baseline before structured target lifecycle or delegation.
+state; the target is execution substrate, not an independent YA peer. Its
+accepted baseline is useful for disposable targets. Further managed-runner
+work is not a prerequisite for persistent peer delegation.
 
 **Managed runner execution targets.** Machine Control may later add discovery,
 readiness, claims, VM lifecycle, and other runner carriers to that baseline.

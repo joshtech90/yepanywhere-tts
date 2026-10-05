@@ -532,7 +532,9 @@ test("Apps settings explains wildcard hosting without a domain default", async (
   await expect(
     page.getByRole("button", { name: "Add vhost", exact: true }),
   ).toBeDisabled();
-  await page.getByRole("button", { name: "Back to list", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Minimize details", exact: true })
+    .click();
   await expect(page.getByRole("table", { name: "HTTP vhosts" })).toBeVisible();
 });
 
@@ -662,7 +664,10 @@ test("Apps saves on defocus without losing typing during a pending save", async 
     page.getByRole("button", { name: /Save.*settings/ }),
   ).toHaveCount(0);
   const table = page.getByRole("table", { name: "HTTP vhosts" });
-  const back = page.getByRole("button", { name: "Back to list", exact: true });
+  const back = page.getByRole("button", {
+    name: "Minimize details",
+    exact: true,
+  });
   for (const size of [
     { width: 1200, height: 600 },
     { width: 1000, height: 600 },
@@ -775,7 +780,7 @@ test("Apps project inventory uses one options pane", async ({
       page.getByRole("heading", { name: "Project 1", exact: true }),
     ).toBeVisible();
     const back = page.getByRole("button", {
-      name: "Back to list",
+      name: "Minimize details",
       exact: true,
     });
     await back.click();

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { SessionMetadataService } from "../../src/metadata/SessionMetadataService.js";
 import { encodeProjectId } from "../../src/projects/paths.js";
 import {
   createSessionsRoutes,
@@ -136,7 +137,21 @@ describe("fork discovery before immediate navigation", () => {
             : { sessionId, filePath };
         },
       );
+      const metadata = new SessionMetadataService({
+        dataDir: join(dir, "metadata"),
+      });
+      await metadata.initialize();
+      const settings = {
+        permissionMode: "bypassPermissions" as const,
+        requestedModel: "source-model",
+        serviceTier: "priority",
+        thinking: { type: "adaptive" as const },
+        effort: "high" as const,
+      };
+      await metadata.recordEffectiveLaunchSettings(sourceId, settings);
+      const sourceMetadata = metadata.getMetadata(sourceId);
       const supervisor = new Supervisor({
+        sessionMetadataService: metadata,
         provider: {
           name: providerName,
           forkSession,
@@ -145,6 +160,7 @@ describe("fork discovery before immediate navigation", () => {
       const resume = vi.spyOn(supervisor, "resumeSession");
       const routes = createSessionsRoutes({
         supervisor,
+        sessionMetadataService: metadata,
         scanner: {
           getOrCreateProject: async () => project,
         } as unknown as SessionsDeps["scanner"],
@@ -180,12 +196,22 @@ describe("fork discovery before immediate navigation", () => {
         `/projects/${project.id}/sessions/${fork.sessionId}`,
       );
       expect(opened.status).toBe(200);
-      const body = (await opened.json()) as { messages: unknown[] };
+      const body = (await opened.json()) as {
+        messages: unknown[];
+        session: { effectiveLaunchSettings?: unknown };
+      };
       expect(JSON.stringify(body.messages)).toContain("Retained prompt");
-      const metadata = await routes.request(
+      expect(body.session.effectiveLaunchSettings).toMatchObject(settings);
+      expect(metadata.getEffectiveLaunchSettings(sourceId)).toEqual(
+        sourceMetadata?.effectiveLaunchSettings,
+      );
+      expect(forkSession).toHaveBeenCalledWith(
+        expect.objectContaining({ launchSettings: settings }),
+      );
+      const metadataResponse = await routes.request(
         `/projects/${project.id}/sessions/${fork.sessionId}/metadata`,
       );
-      expect(metadata.status).toBe(200);
+      expect(metadataResponse.status).toBe(200);
       // A warm reader and a reader created after the fork both find it without
       // any watcher, timeout, cache invalidation, or second provider request.
       for (const reader of [primary, secondary, makeReader()]) {

@@ -89,7 +89,10 @@ the hold never retains a stale navigation destination after removal.
 The hold covers the whole sidebar, including the navigation area above the
 session list, so approaching a row does not require hitting its exact bounds.
 Pointer exit releases its interest; focus leaving the sidebar releases keyboard
-interest. Touch keeps its target through the click, releasing after that click
+interest. That includes the focused control itself leaving the DOM, as a
+clicked Pending Sessions row does when its queued session starts: browsers send
+no blur then, so the hold confirms focus is still inside when new rows arrive.
+Touch keeps its target through the click, releasing after that click
 or cancellation. Reordering resumes only when no interaction remains. Closing
 or collapsing the sidebar, or switching connected sources, clears the hold.
 

@@ -1,5 +1,6 @@
 import type { Stats } from "node:fs";
 import { open, type FileHandle } from "node:fs/promises";
+import { Readable } from "node:stream";
 
 export const MUTABLE_FILE_CACHE_CONTROL = "private, no-cache";
 
@@ -101,4 +102,94 @@ export function createNotModifiedResponse(headers: Headers): Response {
   const responseHeaders = new Headers(headers);
   responseHeaders.delete("Content-Length");
   return new Response(null, { headers: responseHeaders, status: 304 });
+}
+
+type ByteRangeSelection =
+  | { kind: "whole" }
+  | { kind: "range"; start: number; end: number }
+  | { kind: "unsatisfiable" };
+
+/**
+ * Select the bytes a GET asks for. Only one `bytes=` range is honored;
+ * multiple ranges, malformed values, and an `If-Range` that does not match
+ * the current `Last-Modified` fall back to the whole file, which RFC 9110
+ * permits. A weak entity tag never satisfies `If-Range`.
+ */
+function selectByteRange(
+  requestHeaders: Headers,
+  size: number,
+  metadata: MutableFileCacheMetadata,
+): ByteRangeSelection {
+  const header = requestHeaders.get("Range");
+  if (header === null) return { kind: "whole" };
+  const ifRange = requestHeaders.get("If-Range");
+  if (ifRange !== null && ifRange.trim() !== metadata.lastModified) {
+    return { kind: "whole" };
+  }
+  const match = /^\s*bytes\s*=\s*(\d*)\s*-\s*(\d*)\s*$/i.exec(header);
+  if (!match) return { kind: "whole" };
+  const [, first = "", last = ""] = match;
+  if (first === "" && last === "") return { kind: "whole" };
+  if (first === "") {
+    const suffix = Number(last);
+    if (suffix === 0 || size === 0) return { kind: "unsatisfiable" };
+    return { kind: "range", start: Math.max(0, size - suffix), end: size - 1 };
+  }
+  const start = Number(first);
+  if (start >= size) return { kind: "unsatisfiable" };
+  const end = last === "" ? size - 1 : Math.min(Number(last), size - 1);
+  if (end < start) return { kind: "whole" };
+  return { kind: "range", start, end };
+}
+
+/**
+ * Answer a GET from an open file snapshot, taking ownership of its handle:
+ * `304` when the client's copy is current, `206` for one satisfiable byte
+ * range (so media elements can seek without fetching the whole file), `416`
+ * for an unsatisfiable one, otherwise the whole file. `headers` carries the
+ * full-file representation headers, including `Content-Length`.
+ */
+export async function createMutableFileResponse(
+  requestHeaders: Headers,
+  snapshot: MutableFileSnapshot,
+  metadata: MutableFileCacheMetadata,
+  headers: Headers,
+): Promise<Response> {
+  let handle: FileHandle | undefined = snapshot.handle;
+  try {
+    if (isMutableFileNotModified(requestHeaders, metadata)) {
+      return createNotModifiedResponse(headers);
+    }
+    const size = snapshot.stats.size;
+    const responseHeaders = new Headers(headers);
+    responseHeaders.set("Accept-Ranges", "bytes");
+    const selection = selectByteRange(requestHeaders, size, metadata);
+    if (selection.kind === "unsatisfiable") {
+      responseHeaders.set("Content-Range", `bytes */${size}`);
+      responseHeaders.set("Content-Length", "0");
+      return new Response(null, { headers: responseHeaders, status: 416 });
+    }
+    const range =
+      selection.kind === "range"
+        ? { start: selection.start, end: selection.end }
+        : { start: 0 };
+    if (selection.kind === "range") {
+      responseHeaders.set(
+        "Content-Range",
+        `bytes ${selection.start}-${selection.end}/${size}`,
+      );
+      responseHeaders.set(
+        "Content-Length",
+        String(selection.end - selection.start + 1),
+      );
+    }
+    const stream = handle.createReadStream({ autoClose: true, ...range });
+    handle = undefined;
+    return new Response(Readable.toWeb(stream) as ReadableStream<Uint8Array>, {
+      headers: responseHeaders,
+      status: selection.kind === "range" ? 206 : 200,
+    });
+  } finally {
+    await handle?.close();
+  }
 }

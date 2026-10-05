@@ -570,6 +570,8 @@ function ImageFileResult({
   );
 }
 
+const PDF_TAB_OBJECT_URL_LIFETIME_MS = 60_000;
+
 /**
  * Open base64 PDF data in a new browser tab
  */
@@ -582,6 +584,9 @@ function openPdfInNewTab(base64Data: string) {
   const blob = new Blob([byteArray], { type: "application/pdf" });
   const url = URL.createObjectURL(blob);
   window.open(url, "_blank");
+  // The new tab resolves the URL asynchronously, so revoking at once could
+  // leave it nothing to load; a loaded document keeps its own reference.
+  setTimeout(() => URL.revokeObjectURL(url), PDF_TAB_OBJECT_URL_LIFETIME_MS);
 }
 
 /**

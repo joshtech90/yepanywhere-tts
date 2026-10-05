@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" xmlns:tools="http://schemas.android.com/tools">
+    <!-- Preserve the explicit debug-only probe switch; Release retains the
+         upstream verifier's HTTPS-only base and bounded CA revocation hosts. -->
+    <application tools:remove="android:networkSecurityConfig" />
+</manifest>

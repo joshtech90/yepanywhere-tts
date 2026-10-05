@@ -1,5 +1,13 @@
 # Provider Subscription Usage
 
+The manual [Agent Auth Router integration](agent-auth-router.md) exposes granted
+account quota snapshots under **Settings → Providers** through its private
+control socket. These explicit refreshes are separate from direct-login usage
+and do not change the existing model-scoped utilization calculation. Routed
+session controls suppress native-login quota observations. Native
+Codex `/usage` and `/status` are refused on routed sessions so they cannot report
+another account's native-home state.
+
 > Provider subscription usage is YA's normalized, read-only view of provider
 > account rate-limit windows, combining provider-wide and model-scoped quotas
 > without treating session token accounting as subscription capacity.

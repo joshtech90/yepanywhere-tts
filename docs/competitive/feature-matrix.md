@@ -7,6 +7,9 @@ use them as a current gap list.
 
 ## Newer source reviews
 
+- [Warp — 2026-10-02](warp.md#feature-comparison-with-yep-anywhere): local CLI
+  Remote Control, attention and forks, native transcript handling, cloud and
+  self-hosted execution, Factories, sharing authority and hosted data boundaries.
 - [CosmoRemote — 2026-09-20](cosmoremote.md#feature-comparison-with-yep-anywhere):
   native mobile distribution, multi-Mac fleet, remote simulator testing,
   security/approval boundaries, and partial-source licensing review.

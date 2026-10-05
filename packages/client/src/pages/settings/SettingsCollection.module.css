@@ -42,7 +42,7 @@
   padding-left: 0;
 }
 .list th:first-child {
-  width: 50%;
+  width: var(--settings-first-column-width, 50%);
 }
 .list button[aria-expanded] {
   display: block;
@@ -70,11 +70,13 @@
 }
 .heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
 }
 .heading h4 {
-  flex: 1;
+  flex: 1 1 10rem;
+  min-width: 0;
   margin: 0;
   overflow-wrap: anywhere;
 }

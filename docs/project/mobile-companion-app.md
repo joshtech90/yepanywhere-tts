@@ -8,21 +8,24 @@ host, App Link, and minimal FCM registration/receive probe exist. The
 Gradle/Kotlin replacement has landed and Tauri Mobile has been removed; its
 validation evidence and CI contract are recorded in
 [`080-first-class-android-shell.md`](../tactical/080-first-class-android-shell.md).
-Native pairing, concurrent multi-host summaries, settings, and relay-mux/fallback
+Native pairing, host management, concurrent native connections and relay-mux/fallback
 behavior have since landed and passed Pixel validation in
 [`084-android-native-multi-host-runtime.md`](../tactical/084-android-native-multi-host-runtime.md).
 Broker installation registration also exists; server-specific push enrollment,
-notification presentation, and native Conversation detail remain later slices.
+and notification presentation remain later slices.
 
-The native foreground direction selected on 2026-08-02 remains Compose with
-Conversation-view session detail and SwiftUI on iOS. On 2026-09-12 the development
-sequence changed: first prove a [Simple Client API](../../topics/simple-client-api.md)
-with a minimal multi-server web demo at an unlisted Latest URL, experimenting
-with machine/project/issue grouping. Kotlin and Swift decoding and small native
-consumers follow immediately so web, Android, and iOS shape the same contract.
-The existing full web client remains a permanent full-fidelity alternative.
-The exact schema and compatibility review remain open in the
-[three-client plan](../tactical/130-simple-client-api-and-three-client-demo.md).
+The foreground direction selected on 2026-09-30 is the full bundled web UI,
+with native login, saved-server selection, secure SRP/session storage, transport,
+reconnect and notifications. Existing native pairing and connection code is
+reused. The duplicate Compose dashboard and Conversation renderer are retired
+by the authenticated WebView migration. The experimental Simple
+Client API and native projection demos remain reusable work, but are not mobile
+release prerequisites. Android implementation is tracked in
+[the WebView app plan](../tactical/083-android-bundled-web-native-transport.md);
+iOS follows this shell boundary in a later scoped effort.
+
+The initial mobile release supports server-owner login. Native limited-user
+login is explicitly deferred by the maintainer on 2026-10-01.
 
 The Android notification path is specified separately in
 [`topics/android-fcm-push.md`](../../topics/android-fcm-push.md).
@@ -60,7 +63,8 @@ push infrastructure.
    username/password flow.
 4. Enable native notifications for that authenticated server.
 5. Grant notification permission.
-6. Receive native mobile notifications and see a minimal activity dashboard.
+6. Use the full web UI on the authenticated native connection and receive
+   native mobile notifications once server push enrollment is implemented.
 
 An optional QR may carry route hints and the SRP username so the user does not
 type URLs, while Android still asks for the SRP password. A future passwordless
@@ -79,12 +83,10 @@ distribution certificate added before release.
 
 ## Bundled And Hosted Web UI
 
-The complete web interface is a permanent Android presentation alongside the
-focused Compose experience. The ordinary production build packages
-release-approved client assets inside the signed APK and serves them through
-Android's app-assets HTTPS origin. Users may prefer this interface, and native
-surfaces may open it for rich tools, settings, or other functionality they do
-not reproduce.
+The complete web interface is Android's main foreground presentation. Ordinary
+production builds package release-approved client assets inside the signed APK
+and serve them through Android's app-assets HTTPS origin. Native host selection
+and login hand it a source-scoped authenticated transport lease.
 
 A separate testing build may load a fixed YA-hosted client instead of packaging
 the assets. Hosted `latest` is a transitional distribution/testing mechanism,
@@ -103,8 +105,7 @@ JavaScript can be tested immediately. A separate release-channel build may use
 each successful main-branch push should reach installed test builds without a
 new APK. Selecting that mutable channel for an early public release is a
 deliberate release decision, not a consequence of building in debug or release
-mode. A later stable hosted release uses `yepanywhere.com`, bundled assets, or
-the native UI.
+mode. A later stable hosted release uses `yepanywhere.com` or bundled assets.
 
 Benefits:
 
@@ -116,8 +117,8 @@ Benefits:
 - The APK does not duplicate the web client assets.
 - Native FCM receipt and notification display remain independent of the
   WebView. The app does not need to create a WebView while its UI is closed.
-- The full web UI remains a supported user preference and full-fidelity path
-  while native summary and inbox surfaces are developed incrementally.
+- The same full web UI is shared with the bundled channel, keeping the
+  foreground independent of native presentation development.
 
 The bandwidth cost is bounded but real. When this option was recorded, the
 current core JavaScript and CSS entry assets were approximately 0.83 MiB
@@ -135,7 +136,7 @@ Constraints:
 - The official app must not accept an arbitrary remote UI URL by default. A
   source or development build may expose an explicit build-time override.
 - Hosted content must not inherit general Android native privileges. The
-  planned web/native channel is exact-origin, main-frame-only, versioned, and
+  implemented web/native channel is exact-origin, main-frame-only, versioned, and
   limited to explicit high-level operations; ordinary browsers receive no
   native host.
 - An HTTPS page cannot connect directly to an insecure `ws://` YA endpoint
@@ -149,19 +150,18 @@ Constraints:
   fallbacks documented in
   [`topics/remote-hosted-compatibility.md`](../../topics/remote-hosted-compatibility.md).
 - The published app must deliver meaningful companion functionality rather
-  than relying on a generic website wrapper. Native notifications, server
-  status, inbox/deep-link handling, and the planned native summary surface are
-  part of that product value.
+  than relying on a generic website wrapper. Native authentication, secure storage, transport, server selection,
+  notifications and deep-link handling provide that product value.
 
-A conservative rollout keeps the low-memory native notification path, lets the
-user choose the focused Compose or complete bundled-web presentation, and uses
+A conservative rollout keeps the low-memory native notification path, uses the
+full bundled web interface in the foreground, and uses
 hosted `latest` only in an explicitly selected testing channel. Before any
 hosted channel is adopted beyond testing, verify on a physical device that
 website credentials are offered, repeat launches reuse cached assets, no
 unintended native IPC is exposed, and background FCM delivery does not start a
 WebView.
 
-The first-class shell and WebView host are planned in
+The first-class shell and WebView host are implemented in
 [`080-first-class-android-shell.md`](../tactical/080-first-class-android-shell.md).
 The subsequent notification lifecycle and foreground-activity staging remain
 in
@@ -169,80 +169,33 @@ in
 
 ## Product Shape
 
-The app is a lightweight native companion, not a replacement YA client.
+The app is a native shell around the existing full web client.
 
-Core surfaces:
+- Native: saved hosts, login, reauthentication, host selection/removal, protected
+  credentials, connection ownership, notification permissions and delivery.
+- WebView: projects, session lists/detail, composer, rich tools, settings and
+  the existing mobile interactions.
 
-- Authenticated server profiles and notification status.
-- Native notifications for pending input, task completion, halted sessions, and
-  similar user-visible events.
-- A minimal inbox/activity dashboard.
-- Aggregation across multiple paired YA servers.
-- Native add, select, reauthenticate, and remove flows for paired servers;
-  selecting a visible server does not disconnect other servers still needed
-  for aggregation or notifications.
-- Native Conversation-view session detail for routine monitoring, followed by
-  basic text response once the read-only projection and transport are proven.
-- An explicit complete-web presentation for users who prefer it, and for rich
-  activity, tool inspection, settings, and surfaces outside native coverage.
-- Optional foreground-service mode on Android for users who explicitly want a
-  persistent activity subscriber.
-
-The app should feel like a companion device, not like a second place where the
-entire YA interface must be learned.
-
-Compose is the primary mobile surface. The complete bundled client is a
-permanent escape hatch for settings, uncommon rich renderers, and other
-capabilities not yet native; avoiding a duplicate login is required usability,
-but it should not pull native product priorities toward optimizing every
-WebView-only workflow.
-
-The bundled client's host catalog comes from native paired profiles. Switching
-host selects a source-scoped native transport lease rather than returning to
-the web login screen or maintaining a second browser-only list of servers.
+Native host management does not acquire hidden summary/activity subscriptions.
+The WebView receives a document-scoped source handle and source operations; it
+never receives saved passwords or SRP keys. Its Switch Host action opens native
+management, and selecting a host creates a web document bound to that profile.
 
 ## Non-Goals
 
-- Do not reimplement the full YA web UI in native mobile screens.
-- Do not require a WebView for the main product value.
-- Do not route all YA traffic through the phone by default.
-- Do not require users to create Firebase, APNs, or other push infrastructure.
-- Do not make Android foreground service behavior mandatory or always on.
-- Do not make localhost or local-network bridging part of the core data path
-  unless a concrete benefit justifies the added auth and proxy surface.
+- Reimplementing transcripts, session dashboards or the composer in native UI.
+- Requiring the experimental Simple Client API to publish the mobile app.
+- Requiring a WebView for notification receipt while the UI is closed.
+- Making Android foreground service behavior mandatory or always on.
+- Moving the relay or server authentication trust boundary into JavaScript.
 
 ## Native And Full-Web Session Direction
 
-Android should provide a focused native session-detail experience without
-removing the complete full-screen web presentation. Android renders the native
-surface with Compose; an early iOS consumer renders the same semantic projection
-with SwiftUI. Platform renderers share projection schemas, generated data types,
-stable identities, fixtures, pagination and fallback meanings. They do not
-share layout widgets or aim for pixel identity.
-
-Conversation view makes the native scope useful without requiring a port of
-every rich tool renderer. Its baseline retains user prompts,
-agent-authored text, status and boundary rows, important failures, media, and
-one compact activity summary per assistant turn. Expanding routine activity may
-initially use bounded generic tool rows. A deliberate **Open full activity**
-action enters the packaged web client when the user needs rich diffs, file
-viewers, provider-specific tools, or settings.
-
-The first native renderer slices should be read-only and consume the same typed
-fixtures as the new web demo, then connect to the live API before that demo grows
-into a larger client. This supersedes waiting for an Android-first foreground
-implementation before beginning iOS. Basic text response follows after
-foreground connection and reconciliation behavior are established. An approval
-that requires command, diff, or other rich context must open the full web
-presentation until the native renderer can show enough information for an
-informed decision; the compact native surface must not offer
-an under-explained approval action.
-
-The server-compiled projection is the preferred efficient path. Native clients
-should not independently reimplement provider normalization in Kotlin and
-Swift. The exact bounded envelope, projection schema, capability gate,
-older-server fallback, and connection-core ownership remain a separate
-compatibility-reviewed implementation decision.
+The native Conversation experiment is no longer an active foreground product.
+Its connection and projection helpers remain reusable, while the existing web
+client supplies complete session behavior. iOS should adopt the same narrow
+shell boundary, with its own platform transport and secure storage; a second
+SwiftUI session renderer is not a release requirement.
 
 ## Hosted Push Model
 
@@ -303,26 +256,17 @@ remains the initial authorization. The complete model and current
 resume-session limits are in
 [`topics/mobile-server-pairing.md`](../../topics/mobile-server-pairing.md).
 
-## Multi-Server Inbox
+## Multi-Server Navigation
 
-The dashboard should be modeled as an aggregated version of the YA inbox.
+Native management lists saved servers and their connection/authentication state.
+Opening a server enters its complete bundled web UI. Switching hosts releases
+the old web consumer and returns to native selection. The web runtime, drafts,
+requests and subscriptions are scoped to that profile's source key.
 
-Each paired server contributes a small activity feed:
-
-- Sessions needing input.
-- Recently completed tasks.
-- Halted or failed sessions.
-- Recent active agents.
-- Connection and freshness state.
-
-The app should preserve server boundaries in the UI. Aggregation is for scanning
-and triage, not for hiding which machine owns a session. Opening a routine item
-enters that server's native Conversation-view detail. Full activity and
-unsupported detail remain available through the corresponding packaged web
-route.
-
-This aligns with the existing multi-host direction in
-`docs/project/multi-host-plan.md`.
+The connection core supports concurrent native consumers for several hosts,
+without making selection a transport singleton. A later aggregated native
+notification/inbox surface may use that core, but it is not required for this
+foreground release and must not recreate an always-running dashboard scanner.
 
 ## Android-First Capabilities
 
@@ -334,8 +278,8 @@ idea:
 - A Kotlin connection core for Compose and foreground-service use without a
   WebView or JavaScript runtime.
 - Optional bounded local-network discovery for direct-route candidates.
-- A Compose dashboard and Conversation-view session surface without relying on
-  browser service-worker delivery.
+- A complete bundled web foreground using native authentication and transport,
+  plus native login/host management without browser-owned session credentials.
 
 Foreground service mode should be default-off and clearly user controlled. It is
 useful for "keep activity live" behavior, but it carries battery and notification
@@ -355,10 +299,10 @@ The core companion concept is compatible with a future iOS app:
 
 - Native push notifications.
 - Pairing and server status.
-- Aggregated inbox/dashboard.
-- SwiftUI Conversation-view session detail.
-- A complete full-web alternative for user preference and rich or unsupported
-  detail.
+- Native secure SRP/session storage and transport.
+- Native login and host selection, with the complete web UI in a WKWebView.
+- Source operations scoped to a trusted bundled document; no new transcript or
+  composer design is required.
 
 The Android foreground-service activity subscriber is not portable to iOS in the
 same form. A future iOS implementation would likely rely on APNs-backed push,
@@ -421,10 +365,8 @@ Revocation must be first-class:
 
 ## Open Questions
 
-- What is the smallest inbox snapshot API that supports useful aggregation
-  without pulling in the full web app session model?
-- What is the minimum versioned Conversation-view projection that preserves
-  failures, media, coverage, generic tool detail, and safe fallback behavior?
+- What native notification/inbox aggregation is useful after the full-web
+  foreground ships?
 - What exact capability-gated protocol advertises authenticated public server
   identity and creates/revokes durable paired-device records?
 - Do representative measurements ever justify offering an independently

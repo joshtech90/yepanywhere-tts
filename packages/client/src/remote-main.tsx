@@ -41,6 +41,7 @@ import {
   getInitialRemoteRouteModuleKeys,
   type RemoteRouteModuleKey,
 } from "./lib/remoteRoutePreload";
+import { installModifierChordTracking } from "./lib/modifierChords";
 import { loadSessionCoreModules } from "./lib/sessionRouteModules";
 import "./styles/index.css";
 
@@ -336,6 +337,7 @@ void Promise.allSettled(
   initialRouteModuleKeys.map((key) => initialRemoteModuleLoaders[key]()),
 );
 
+installModifierChordTracking();
 // Apply saved preferences before React renders to avoid flash
 initializeTheme();
 initializeFontSize();

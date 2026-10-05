@@ -155,7 +155,7 @@ describe("Claude sandboxed launch", { timeout: 20_000 }, () => {
   async function launchSystemPrompt(
     options: Pick<
       Parameters<ClaudeProvider["startSession"]>[0],
-      "cwd" | "globalInstructions" | "sessionSandbox"
+      "cwd" | "globalInstructions" | "sessionSandbox" | "routerLaunch"
     >,
   ): Promise<unknown> {
     let systemPrompt: unknown;
@@ -207,6 +207,35 @@ describe("Claude sandboxed launch", { timeout: 20_000 }, () => {
     expect(
       query.mock.lastCall?.[0].options.settings?.disableClaudeAiConnectors,
     ).toBeUndefined();
+  });
+
+  it("pins routed auth in both flag settings and child environment without changing native homes", async () => {
+    vi.stubEnv("ANTHROPIC_AUTH_TOKEN", "ambient-wrong-token");
+    vi.stubEnv("CLAUDE_CONFIG_DIR", scratch);
+    const route = {
+      bindingId: "binding",
+      accountId: "account",
+      baseUrl: "http://127.0.0.1:8417/claude",
+      token: "synthetic-router-token",
+    };
+    await launchSystemPrompt({ cwd: scratch, routerLaunch: route });
+    const options = query.mock.lastCall?.[0].options;
+    expect(options.env).toMatchObject({
+      ANTHROPIC_BASE_URL: route.baseUrl,
+      ANTHROPIC_AUTH_TOKEN: route.token,
+      ANTHROPIC_API_KEY: "",
+      CLAUDE_CODE_OAUTH_TOKEN: "",
+      CLAUDE_CONFIG_DIR: scratch,
+    });
+    expect(options.settings).toMatchObject({
+      apiKeyHelper: "",
+      disableClaudeAiConnectors: true,
+      env: {
+        ANTHROPIC_AUTH_TOKEN: route.token,
+        ANTHROPIC_BASE_URL: route.baseUrl,
+      },
+    });
+    expect(process.env.ANTHROPIC_AUTH_TOKEN).toBe("ambient-wrong-token");
   });
 
   t.each([true, false])(

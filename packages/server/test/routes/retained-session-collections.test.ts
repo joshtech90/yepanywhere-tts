@@ -33,9 +33,14 @@ import {
 import type { Project } from "../../src/supervisor/types.js";
 import type { ISessionIndexService } from "../../src/indexes/types.js";
 import {
-  readClaudeCatalogRecency,
-  readClaudeCatalogTitle,
+  readClaudeCatalogHead,
+  readClaudeCatalogTail,
 } from "../../src/sessions/claude-summary.js";
+
+const readClaudeCatalogTitle = async (file: string) =>
+  (await readClaudeCatalogHead(file)).title;
+const readClaudeCatalogRecency = async (file: string) =>
+  (await readClaudeCatalogTail(file)).updatedAt;
 
 let dataDir: string;
 let collections: RetainedSessionCollections | undefined;
@@ -417,6 +422,66 @@ it("bounds Claude recency discovery to the latest conversation row", async () =>
   expect(await readClaudeCatalogRecency(file)).toBeUndefined();
 });
 
+it("reads a Claude session's creation time and last human turn without a summary", async () => {
+  dataDir = await mkdtemp(join(tmpdir(), "retained-claude-times-"));
+  const file = join(dataDir, "session.jsonl");
+  const entries = [
+    { type: "summary", summary: "no timestamp" },
+    {
+      type: "user",
+      timestamp: "2026-09-08T00:00:00.000Z",
+      message: { content: "Build the thing" },
+    },
+    {
+      type: "assistant",
+      timestamp: "2026-09-08T00:01:00.000Z",
+      message: { content: [{ type: "tool_use", id: "t", name: "Read" }] },
+    },
+    // A tool result is a user row, not a turn a person wrote.
+    {
+      type: "user",
+      timestamp: "2026-09-08T00:02:00.000Z",
+      message: {
+        content: [{ type: "tool_result", tool_use_id: "t", content: "ok" }],
+      },
+    },
+    {
+      type: "user",
+      timestamp: "2026-09-08T00:03:00.000Z",
+      message: { content: "And test it" },
+    },
+    {
+      type: "assistant",
+      timestamp: "2026-09-08T00:04:00.000Z",
+      message: { content: [{ type: "text", text: "Done" }] },
+    },
+  ];
+  await writeFile(
+    file,
+    `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+  );
+  expect(await readClaudeCatalogHead(file)).toEqual({
+    title: "Build the thing",
+    createdAt: "2026-09-08T00:00:00.000Z",
+  });
+  expect(await readClaudeCatalogTail(file)).toEqual({
+    updatedAt: "2026-09-08T00:04:00.000Z",
+    lastHumanTurnAt: "2026-09-08T00:03:00.000Z",
+  });
+
+  // An opening prompt still being answered is itself the last human turn.
+  await writeFile(
+    file,
+    `${entries
+      .slice(0, 3)
+      .map((entry) => JSON.stringify(entry))
+      .join("\n")}\n`,
+  );
+  expect((await readClaudeCatalogTail(file)).lastHumanTurnAt).toBe(
+    "2026-09-08T00:00:00.000Z",
+  );
+});
+
 it("keeps a reaped Claude session at its content time, not its shutdown mtime", async () => {
   dataDir = await mkdtemp(join(tmpdir(), "retained-claude-reap-"));
   const projectPath = join(dataDir, "project");
@@ -486,10 +551,20 @@ it("keeps a reaped Claude session at its content time, not its shutdown mtime", 
       ),
   });
   await collections.refresh();
-  expect(
-    (await collections.read()).rows.find((row) => row.sessionId === sessionId)
-      ?.updatedAt,
-  ).toBe(contentAt);
+  const row = (await collections.read()).rows.find(
+    (candidate) => candidate.sessionId === sessionId,
+  );
+  expect(row?.updatedAt).toBe(contentAt);
+  // With no cached summary the row still carries the times the sidebar files
+  // it by; a live session being worked in rarely has a summary.
+  expect(row?.createdAt).toBe("2026-09-07T23:59:00.000Z");
+  expect(row?.lastHumanTurnAt).toBe("2026-09-07T23:59:00.000Z");
+  const { sessions } = await readRetainedSessionItems(
+    collections,
+    {} as Parameters<typeof readRetainedSessionItems>[1],
+  );
+  expect(sessions[0]?.lastHumanTurnAt).toBe("2026-09-07T23:59:00.000Z");
+  expect(sessions[0]?.createdAt).toBe("2026-09-07T23:59:00.000Z");
 
   // What an idle reap writes: the file moves without the conversation moving.
   await appendFile(

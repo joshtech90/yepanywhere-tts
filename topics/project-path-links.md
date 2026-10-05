@@ -58,7 +58,10 @@ rather than granting a share a path or file-existence capability.
 ## The index
 
 Composer `@` completion has a separate, explicitly requested inventory; see
-[Composer path completion](#composer-path-completion). Its ignore-filtered
+[Composer path completion](#composer-path-completion). The `/v` command
+([view-command](view-command.md)) searches that same inventory, which records
+whether Git tracks each path, and opens its result through the same viewer
+registration a file link uses. Its ignore-filtered
 corpus does not change exact file-link membership or start a linkifier crawl.
 
 `packages/server/src/projects/projectPathIndex.ts` holds one demand-driven
@@ -564,8 +567,10 @@ enabled projects acquire no inventory on composer mount and retain no periodic
 scan or watcher.
 
 Matching is case-insensitive substring matching over project-relative paths,
-including parent directories. The menu distinguishes `dir` and `file`, shows
-the basename and parent, and ranks eligible candidates by most recent mention
+including parent directories. The menu floats above the composer in the same
+sheet the [`/v` command](view-command.md) uses, distinguishes `dir` and
+`file`, shows the basename and parent with the matched substring marked, and
+ranks eligible candidates by most recent mention
 first, then deterministic path order. Recency uses confirmed links and causal
 basename aliases from the loaded transcript, independently of the basename-link
 appearance preference. It preserves distinct paths with the same basename;

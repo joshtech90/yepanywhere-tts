@@ -15,7 +15,9 @@ One piece of the client surface now ships: the context indicator's left-click
 popover lists the *last turn's* reported classes (context total, cache read,
 cache write, output) from the `ContextUsage` the session summary already
 carries, in `packages/client/src/components/ContextUsagePopover.tsx`. That is
-a single-turn readout, not a ledger, and it applies no price weighting.
+a single-turn readout, not a ledger, and it applies no price weighting. Above
+it, the [context breakdown](context-breakdown.md) shows what currently fills
+the window by category; that is a composition, not usage over time.
 
 Related topics: [provider subscription usage](provider-subscription-usage.md)
 (the account-quota view this sits beside),

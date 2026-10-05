@@ -11,6 +11,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { api } from "../../api/client";
 import { I18nProvider } from "../../i18n";
 import { PublicFileShareModal } from "../PublicFileShareModal";
+import type { FileVhostService } from "../FileVhostSection";
+
+const access = vi.hoisted(() => ({
+  canUseBearerGrants: true,
+  vhostService: null as FileVhostService | null,
+}));
+
+vi.mock("../../hooks/useActingPrincipal", () => ({
+  useCanUseBearerGrants: () => access.canUseBearerGrants,
+}));
+vi.mock("../../hooks/useFileVhostService", () => ({
+  useFileVhostService: () => access.vhostService,
+}));
 
 const publicUrl =
   "https://ya.example/share/file-secret/file?h=relay&path=docs%2Fguide.md";
@@ -19,6 +32,8 @@ describe("PublicFileShareModal", () => {
   const writeText = vi.fn();
 
   beforeEach(() => {
+    access.canUseBearerGrants = true;
+    access.vhostService = null;
     vi.spyOn(api, "getPublicFileShares").mockResolvedValue({ items: [] });
     vi.spyOn(api, "createPublicFileShare").mockResolvedValue({
       url: publicUrl,
@@ -108,6 +123,39 @@ describe("PublicFileShareModal", () => {
         "https://ya.example/play.html?h=relay&projectId=cHJvamVjdA&path=site%2Findex.html#share=file-secret",
       );
     });
+  });
+
+  it("offers limited users file addresses without requesting bearer shares", async () => {
+    access.canUseBearerGrants = false;
+    const list = vi.fn().mockResolvedValue([]);
+    access.vhostService = {
+      hostSuffix: "example.org",
+      canReplace: true,
+      canUsePrivateLinks: false,
+      list,
+      serve: vi.fn(),
+      stop: vi.fn(),
+    };
+    render(
+      <I18nProvider>
+        <PublicFileShareModal
+          projectId="cHJvamVjdA"
+          filePath="docs/guide.md"
+          onClose={vi.fn()}
+        />
+      </I18nProvider>,
+    );
+    await screen.findByRole("checkbox", {
+      name: "Replace an existing mapping with this name",
+    });
+    expect(list).toHaveBeenCalledWith("docs/guide.md");
+    expect(api.getPublicFileShares).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("button", { name: "Create and copy live link" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Require the link" }),
+    ).toBeNull();
   });
 
   it("confirms before revoking a link", async () => {

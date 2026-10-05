@@ -78,6 +78,27 @@ Maintainer has authorized the exact exception.
 
 ## Known Exceptions
 
+The **context breakdown** ([context-breakdown](context-breakdown.md)) shows by
+default in the existing context-usage popover, authorized by graehl on
+2026-10-01 after accepting its mockup. It mirrors Claude Code's `/context`,
+appears only when the user opens that popover, and adds no visible chrome; it
+renders nothing for sessions whose provider cannot report one.
+
+The **last file chevron** ([parked-file-viewer](parked-file-viewer.md#last-file-after-close))
+is default-visible in spare session right margins, authorized by graehl on
+2026-09-30 after accepting its mockup. It remembers only the last file-view
+route per session ID in browser storage, survives Close and reload, and opens
+the ordinary viewer only when clicked. It hides on narrow layouts and while
+the existing viewer is open or minimized.
+
+The **`/v` / `/view` view command** ([view-command](view-command.md)) ships
+always-on wherever the server supports it, authorized by graehl on
+2026-09-30. It acts only when the user types it, opens the file viewer a link
+click already opens, and sends nothing to the provider. Its only default-
+visible trace is its row in the slash-command menu. A provider command or
+skill named `v` or `view` keeps that name, and `/v` then reaches the provider
+unchanged.
+
 **Copy Markdown** defaults visible in the existing selection actions, authorized
 by graehl on 2026-09-29 to keep Markdown copy accessible on mobile while native
 Copy and `Ctrl/Cmd+C` copy visible text. Its blue copy icon sits above quote

@@ -14,11 +14,7 @@ import {
   getDefaultRelayUrl,
   resolveLoginRelayUrl,
 } from "../lib/defaultRelayUrl";
-import {
-  findRelayHostForIdentity,
-  getHostByRelayUsername,
-  upsertRelayHost,
-} from "../lib/hostStorage";
+import { getHostByRelayUsername, upsertRelayHost } from "../lib/hostStorage";
 
 /**
  * Parse credentials from URL hash for auto-login via QR code.
@@ -78,26 +74,9 @@ export function RelayLoginPage() {
     () => searchParams.get("as") ?? "",
   );
   const [srpPassword, setSrpPassword] = useState("");
-  const [showAdvanced, setShowAdvanced] = useState(!!initialRelayUrl);
-  // The server name this page filled in from an identity, so a later identity
-  // change may replace it without overwriting one the user typed.
-  const filledServerName = useRef<string | null>(null);
-
-  // The browser's password manager saves and restores the identity ("Log in
-  // as") with the password; this browser's saved hosts supply the server name.
-  const handleIdentityChange = (value: string) => {
-    setLimitedUsername(value);
-    const identity = value.trim().toLowerCase();
-    if (!identity) return;
-    if (relayUsername.trim() && relayUsername !== filledServerName.current) {
-      return;
-    }
-    const serverName = findRelayHostForIdentity(identity)?.relayUsername;
-    if (serverName) {
-      setRelayUsername(serverName);
-      filledServerName.current = serverName;
-    }
-  };
+  const [showAdvanced, setShowAdvanced] = useState(
+    !!initialRelayUrl || !!searchParams.get("as"),
+  );
   const [customRelayUrl, setCustomRelayUrl] = useState(initialRelayUrl);
   const [rememberMe, setRememberMe] = useState(true);
 
@@ -208,15 +187,14 @@ export function RelayLoginPage() {
     // Read the fields themselves: a password manager's fill can reach the
     // inputs before this component sees it as an edit.
     const form = new FormData(e.currentTarget as HTMLFormElement);
-    const identityValue = String(form.get("username") ?? limitedUsername);
+    const identityValue = String(form.get("limited-user") ?? limitedUsername);
     const passwordValue = String(form.get("password") ?? srpPassword);
     const identity = identityValue.trim().toLowerCase();
-    const serverNameValue =
-      String(form.get("relay-server-name") ?? relayUsername).trim() ||
-      (identity
-        ? (findRelayHostForIdentity(identity)?.relayUsername ?? "")
-        : "");
+    const serverNameValue = String(
+      form.get("username") ?? relayUsername,
+    ).trim();
     if (serverNameValue !== relayUsername) setRelayUsername(serverNameValue);
+    if (identityValue !== limitedUsername) setLimitedUsername(identityValue);
     if (passwordValue !== srpPassword) setSrpPassword(passwordValue);
 
     // Validate inputs
@@ -231,9 +209,6 @@ export function RelayLoginPage() {
     }
 
     const username = serverNameValue.toLowerCase();
-    // The owner's identity is the server name itself. Showing it in "Log in
-    // as" makes the password manager save the owner's password under it.
-    if (!identity) setLimitedUsername(username);
     let relayUrl: string;
     try {
       relayUrl = resolveLoginRelayUrl(
@@ -315,49 +290,24 @@ export function RelayLoginPage() {
           className="login-form"
           data-testid="relay-login-form"
         >
-          {/* The server name routes to a machine; it is not an account, so
-              it is kept out of the password manager's username slot. */}
+          {/* Keep the computer name as the saved login's username, including
+              when Advanced exposes the optional limited-user override. */}
           <div className="login-field">
             <label htmlFor="relayUsername">{t("relayLoginServerName")}</label>
             <input
               id="relayUsername"
-              name="relay-server-name"
+              name="username"
               type="text"
               value={relayUsername}
-              onChange={(e) => {
-                setRelayUsername(e.target.value);
-                filledServerName.current = null;
-              }}
+              onChange={(e) => setRelayUsername(e.target.value)}
               placeholder={t("relayLoginUsernamePlaceholder")}
               disabled={isConnecting}
-              autoComplete="off"
+              autoComplete="username"
               autoCapitalize="none"
               spellCheck={false}
               data-testid="relay-username-input"
             />
             <p className="login-field-hint">{t("relayLoginServerNameHint")}</p>
-          </div>
-
-          <div className="login-field">
-            <label htmlFor="limitedUsername">
-              {t("relayLoginLimitedUsername")}
-            </label>
-            <input
-              id="limitedUsername"
-              name="username"
-              type="text"
-              value={limitedUsername}
-              onChange={(e) => handleIdentityChange(e.target.value)}
-              placeholder={t("relayLoginLimitedUsernamePlaceholder")}
-              disabled={isConnecting}
-              autoComplete="username"
-              autoCapitalize="none"
-              spellCheck={false}
-              data-testid="relay-limited-username-input"
-            />
-            <p className="login-field-hint">
-              {t("relayLoginLimitedUsernameHint")}
-            </p>
           </div>
 
           <div className="login-field">
@@ -398,6 +348,30 @@ export function RelayLoginPage() {
               ? t("relayLoginHideAdvanced")
               : t("relayLoginShowAdvanced")}
           </button>
+
+          {showAdvanced && (
+            <div className="login-field">
+              <label htmlFor="limitedUsername">
+                {t("relayLoginLimitedUsername")}
+              </label>
+              <input
+                id="limitedUsername"
+                name="limited-user"
+                type="text"
+                value={limitedUsername}
+                onChange={(e) => setLimitedUsername(e.target.value)}
+                placeholder={t("relayLoginLimitedUsernamePlaceholder")}
+                disabled={isConnecting}
+                autoComplete="off"
+                autoCapitalize="none"
+                spellCheck={false}
+                data-testid="relay-limited-username-input"
+              />
+              <p className="login-field-hint">
+                {t("relayLoginLimitedUsernameHint")}
+              </p>
+            </div>
+          )}
 
           {showAdvanced && (
             <div className="login-field">

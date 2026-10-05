@@ -335,7 +335,8 @@ arbiter for demand traffic; callers only opt *optional* work out.
   `ClientLogCollector` already follows this pattern against the singleton
   manager and generalizes to per-source status.
 - **UI affordances** (offline banners, composer state, connection bar): read
-  `transport.status`. The global diagnostic bar is exceptional-state-only:
+  `transport.status`. The global connection bar is exceptional-state-only and does not require
+  developer mode:
   ready renders no full-width success rule, while reconnecting and disconnected
   remain visible. Users see offline-ness; the plumbing does not reject work it
   could complete in under a second.

@@ -325,6 +325,35 @@ function RewoundGroupHeader({
   );
 }
 
+/**
+ * A provider response blocked by its content filter, with the recovery
+ * guidance the provider gave the agent before retrying. The guidance is the
+ * only record of what happened, so it is always shown.
+ */
+function ContentFilterBlockNotice({ guidance }: { guidance: string }) {
+  const { t } = useI18n();
+  return (
+    <div
+      className={`system-message system-message-warning ${styles.contentFilterBlock}`}
+    >
+      <div className={styles.contentFilterBlockTitle}>
+        <span className="system-message-icon" aria-hidden="true">
+          !
+        </span>
+        <span>{t("contentFilterBlockTitle")}</span>
+      </div>
+      {guidance && (
+        <p className={styles.contentFilterBlockGuidance}>
+          <span className={styles.contentFilterBlockLabel}>
+            {t("contentFilterBlockGuidanceLabel")}
+          </span>{" "}
+          {guidance}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function CollapsibleSystemMessage({
   item,
   icon,
@@ -1390,6 +1419,7 @@ export const RenderItemComponent = memo(function RenderItemComponent({
         return (
           <AsyncQuestionMessage
             renderId={item.id}
+            projectPathLinks={item.projectPathLinks}
             fallback={
               <TextBlock
                 text={item.text}
@@ -1531,6 +1561,9 @@ export const RenderItemComponent = memo(function RenderItemComponent({
               </span>
             </div>
           );
+        }
+        if (item.subtype === "content_filter_block") {
+          return <ContentFilterBlockNotice guidance={item.content} />;
         }
 
         // Different styling for compacting vs completed compaction

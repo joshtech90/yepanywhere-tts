@@ -35,6 +35,42 @@ Gradle work does not contend with the JavaScript workspace test processes.
 Android JVM unit-test tasks have a five-minute task timeout and emit per-test
 lifecycle output so a stalled worker fails with attributable evidence.
 
+On a dedicated, authorized Android device, `pnpm --filter @yep-anywhere/android
+test:live` installs the minified Debug probe and exercises owned direct and local
+relay fixtures. Set `YA_NATIVE_PUBLIC_RELAY_LIVE=1` for the separate public TLS
+relay check: it registers a uniquely named disposable server, starts native
+pairing from Android's Main dispatcher, then verifies the bundled WebView,
+streaming, upload and sequential typing. The runner removes its port forwards
+and server afterward. Set `ANDROID_SERIAL` when more than one device is attached.
+The WebView probe also checks native tabs, internal/external links, warm launcher
+resume, draft/scroll identity, rotation and cold route restoration. Add
+`YA_NATIVE_NETWORK_LIFECYCLE=1` on an authorized phone to disable both Wi-Fi and
+mobile data during warm resume; the probe restores each radio's original state
+in teardown. Its tab records and selected profile are restored after the run.
+These instrumentation probes preserve extra shared test APIs; separately verify
+the actual Release login form before uploading a store bundle. A background
+instrumentation caller or plaintext fixture cannot prove UI-initiated TLS login.
+The typing probe taps the WebView editor through Android accessibility and
+requires window focus, an active input connection and stable viewport before
+injecting sequential hardware keys. Input-readiness failure must fail setup,
+including on emulators; it must never continue into a partial typing sample.
+Live fixture hosts have unique display names so a previous interrupted run
+cannot redirect a later host-picker tap to a stopped server. On UI failure,
+the probe captures the screen, accessibility hierarchy and window/power state
+before teardown. The live runner retains these under
+`packages/android/app/build/reports/native-live/` for the existing CI artifact
+upload. These captures use the owned fixtures; inspect any local device
+captures before sharing them. Hosted run `37219989321` established that a
+Pixel Launcher ANR dialog was hiding an otherwise connected YA page from
+accessibility. CI compiles its initial APKs before starting the emulator to
+avoid competing with launcher startup. The UI probes can close that exact
+system-owned Pixel Launcher dialog once per test, on emulators only, and retain
+its evidence. They never dismiss YA ANRs or relax input-readiness/latency gates.
+Link probes resolve the accessible name from either WebView text or content
+description, then perform real taps/long presses. Hosted run `37223303403`
+exposed the external anchor only as a content description; the external VIEW
+intent, unchanged document identity and tab count remain required assertions.
+
 Captured provider regressions run offline in the normal server suite:
 `pnpm --dir packages/server exec vitest run test/captured-provider.test.ts`.
 The [corpus README](../../packages/server/test/fixtures/captured/README.md)
@@ -66,6 +102,39 @@ response while forwarding other HTTP traffic. Version-route contract tests own
 their explicit update responses; general tests never require public update
 service availability. Client unit setup clears local/session storage before
 invalidating preference caches, so earlier cases cannot choose later defaults.
+
+## Native App CI Cadence
+
+Main CI and Server Runtime And SQLite still run on every pull request and
+`main` push. Native application workflows use matching path filters for both
+events: platform code, tests, resources, manifests and build scripts trigger
+their platform immediately. Shared Rust mobile-core changes trigger both
+mobile apps. Native web-host adapter, crypto and binary-framing changes also
+retain immediate Android/iOS coverage.
+
+Ordinary web UI, server, shared-code and root lockfile changes do not trigger
+native application builds by themselves. Android runs the full build and
+WebView instrumentation workflow daily at 04:17 UTC; iOS runs its full Rust,
+simulator and unsigned-device workflow at 04:47 UTC. Both scheduled runs check
+the current default-branch source, including bundled web changes. Push and
+scheduled Android runs verify without publishing. An explicit manual main
+run with `publish_internal=true` can publish its verified bundled AAB after
+[delivery setup](../distribution/mobile/README.md#android-ci-internal-delivery).
+Superseded Android verification runs on the same ref are cancelled; explicit
+release runs use a separate group and finish even if new pushes arrive.
+iOS still does not publish store releases. GitHub may delay scheduled starts.
+
+Desktop retains its existing 02:37 UTC Nightly Desktop release, which selects
+verified main source and skips unchanged packaged inputs. Its per-change
+workflow covers the desktop package, packaging inputs and scripts, dependency
+manifests for bundled packages, patches and workflow changes. Desktop release
+tags and reusable release calls retain full packaging regardless of paths.
+
+All three native workflows support manual dispatch for targeted acceptance or
+release preparation. Native package Markdown-only changes do not start builds.
+The workflow path lists are authoritative; before a release, obtain passing
+platform acceptance for the source being released even when its changes only
+received scheduled coverage.
 
 ## Cross-Platform Behavior And Tests
 

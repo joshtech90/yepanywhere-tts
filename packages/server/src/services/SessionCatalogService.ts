@@ -1186,6 +1186,8 @@ function normalizeRow(
   requireTimestamp(row.updatedAt, "row updatedAt");
   if (row.createdAt !== undefined)
     requireTimestamp(row.createdAt, "row createdAt");
+  if (row.lastHumanTurnAt !== undefined)
+    requireTimestamp(row.lastHumanTurnAt, "row lastHumanTurnAt");
   if (row.title !== undefined && row.title !== null) {
     requireBoundedString(
       row.title,
@@ -1238,6 +1240,9 @@ function cloneRow(row: SessionCatalogRow): SessionCatalogRow {
     projectIdentityKey: row.projectIdentityKey,
     updatedAt: row.updatedAt,
     ...(row.createdAt !== undefined ? { createdAt: row.createdAt } : {}),
+    ...(row.lastHumanTurnAt !== undefined
+      ? { lastHumanTurnAt: row.lastHumanTurnAt }
+      : {}),
     ...(row.title !== undefined ? { title: row.title } : {}),
     ...(row.provider !== undefined ? { provider: row.provider } : {}),
     ...(row.projectName !== undefined ? { projectName: row.projectName } : {}),

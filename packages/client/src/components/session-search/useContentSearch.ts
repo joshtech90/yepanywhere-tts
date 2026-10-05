@@ -13,6 +13,7 @@ import type {
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import type { GlobalSessionItem } from "../../api/client";
 import { inTimeRange, type SearchField } from "./model";
+import { useSearchConcurrency } from "../../hooks/useSearchConcurrency";
 import {
   ContentSearchPool,
   ContentSearchScan,
@@ -37,6 +38,8 @@ export function useContentSearch(
 ) {
   const runtime = useCurrentSourceRuntime();
   const [pool] = useState(() => new ContentSearchPool());
+  const { searchConcurrency } = useSearchConcurrency();
+  useEffect(() => pool.setLimit(searchConcurrency), [pool, searchConcurrency]);
   const assistant = fields.includes("assistant");
   const user = fields.includes("user");
   const roles = useMemo(

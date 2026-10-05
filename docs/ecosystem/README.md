@@ -26,6 +26,14 @@ Tools that spawn and manage multiple CLI coding agents (Claude Code, Codex, Gemi
 | [AgentYard CLI](https://github.com/joshuaswarren/agentyard-cli) | New | Workflow orchestration with isolated git worktrees + tmux sessions |
 | [Claude Octopus](https://github.com/nyldn/claude-octopus) | ~500+ | Parallel workstreams, routes to Claude/Codex/Gemini |
 
+## Hosted Software Factories
+
+[Warp orchestration and Factories](../competitive/warp.md#orchestration-and-factories)
+coordinate cross-harness runs and early-access software-production workflows.
+Customer execution workers retain the Warp control plane. Warp Terminal's
+Remote Control is also a direct [supervisor competitor](../competitive/warp.md),
+so the source review covers both relationships.
+
 ## Visual Workflow / DAG Platforms
 
 General-purpose workflow platforms with AI agent capabilities. None natively support CLI agents (subscription-plan-based), but could be extended.
@@ -58,4 +66,4 @@ General-purpose workflow platforms with AI agent capabilities. None natively sup
 
 ## Last Updated
 
-2026-08-30
+2026-10-02 (Warp cross-reference added; other snapshots were not refreshed)

@@ -27,6 +27,19 @@ Fresh visits select the non-archived filter, narrowing both title results and
 Ctrl+R/Ctrl+S turn acquisition. Explicit URL status filters remain authoritative;
 an empty `status=` preserves a deliberately cleared filter across navigation.
 
+CSV AND is checked on fresh visits. Comma-separated needles intersect within
+one matching turn, title, or opening prompt; different turns cannot satisfy
+different needles. Quoted commas and doubled quotes are literal characters.
+Blank terms are ignored while editing. Unchecking searches the complete input
+literally. Acquisition and highlights use the first needle; remaining needles
+filter retained whole text in interruptible slices, without new disk reads or
+discarding the first-term cache. Editing/removing a later needle reuses that
+stream; changing the first follows ordinary refinement/rescan rules. Title and
+opening-prompt candidates are checked independently against all needles.
+Missing full text, including after a cache cap or on older servers, is explicit
+incomplete intersection coverage; an excerpt cannot establish a nonmatch.
+Browser Back restores the checkbox with the other search controls.
+
 The Projects filter lists every project the server currently lists, sorted by
 name, under an explicit first row, All projects, that clears the project
 filter; it is highlighted while no project is selected, so returning to every
@@ -111,7 +124,8 @@ checkboxes occupy their own row.
 ## Time and result limits
 
 A single Turns / Last activity / Created selector chooses what an age range
-constrains. The minimum and maximum fields accept d, h and m, with days implied
+constrains. Last activity is the fresh-visit default. The minimum and maximum
+fields accept d, h and m, with days implied
 when the unit is omitted. Bounds are inclusive. Blank means 0d / infinity;
 the upper field also accepts the infinity symbol. Negative, malformed and
 reversed bounds produce a visible error rather than silently changing meaning.
@@ -123,6 +137,9 @@ Turns uses original message timestamps. Last activity and Created constrain
 sessions. A renamed title has no turn timestamp; the original prompt uses the
 session creation timestamp. Multiple simultaneous ranges remain a possible
 future extension, not an assertion that their combinations are invalid.
+Each basis and age input has a tooltip explaining that distinction and the
+units. The 1d / 7d / 30d shortcuts select Last activity and sessions active
+within that age; Any age clears both bounds without changing the basis.
 
 Turns/session is empty by default, meaning every matching preview. A positive
 integer limits displayed previews independently for User and Ass.; one shows
@@ -274,7 +291,8 @@ tasks after the keyboard echo, reusing each title's canvas context rather than
 blocking the input paint with layout effects.
 
 Full-text tooltips load detail on demand. Clicking or tapping a turn match
-opens Zoom preview directly; the match menu offers the same action:
+opens Zoom preview directly; the match menu offers Zoom and direct navigation
+to the turn in its session. Zoom shows:
 full matching turn, a separator, and a bounded next assistant preview for a
 user match or preceding user preview for an assistant match. Neighbor context
 need not satisfy the search filters. Detail loading is abortable; unavailable
@@ -290,6 +308,15 @@ activate the containing session hover card. The concise selection help sits
 inline with filters only if it fits without another row; otherwise it follows
 results immediately before the diagnostic log. Only diagnostic session titles
 and filenames are links; byte offsets and error explanations are plain text.
+
+Open turn in session lives in the detail header, outside the scrolling content,
+so positioning a deep match cannot hide navigation. With Appearance's Session
+right pane enabled, Zoom and the session-only match view use a right column on
+wide screens (1100px+) and a right-edge drawer on narrower screens. They reuse
+modal header/content chrome; wide results remain available alongside detail,
+and the expanded desktop sidebar temporarily collapses. Closing nested Zoom
+restores the match view. With the setting off, both retain their covering modal.
+The all-matches arrow leaves the session menu's column clear.
 
 ### Session match interstitial
 
@@ -385,10 +412,14 @@ example, inspection of a reported 1,642,439-byte Codex `item_completed` record
 found duplicated command output, not User/Ass. text. Improving that distinction
 requires bounded record classification/extraction, not an unbounded parse.
 
-The page shares four concurrent batch slots across both generations, rotating
+The page shares a configurable number of concurrent batch slots across both
+generations (Performance → Concurrent session file reads, browser-local 1–64,
+default 4). Lowering the limit drains existing reads before admitting more;
+raising it admits queued work without restarting the scan. Initial admission
+orders eligible sessions by descending last modification/activity time, rotating
 eligible sessions after each batch so a long transcript cannot starve later
-matches. The server admits at most four concurrent
-requests; identical in-flight native reads join one computation. There is no
+matches. The server admits at most 64 concurrent requests; identical
+in-flight native reads join one computation. There is no
 persistent search job or transcript cache between requests. Legacy or manual
 requests for unsupported providers return an explicit unavailable result rather
 than a complete empty transcript result. The server decides that from the
@@ -399,6 +430,18 @@ with. Resolving the reader needs the session's project, so an unresolvable
 project answers 404 as it does for any other request on that session.
 A stopped client produces no further batches; a shared in-flight batch is
 bounded by its record/byte limits and timeout.
+
+Older servers retain their own lower admission cap and busy/retry response.
+The slider uses the existing request protocol and adds no required field,
+endpoint or capability. Title-only mode still makes no file reads.
+
+The default remains four after a local diagnostic comparison on 2026-09-30:
+128 Claude JSONL files, 32,768 records, 67.3 MiB, three alternating-order passes
+through the real bounded native reader on a 16-core Xeon 8559C, Node 24.14.0,
+with the live YA/relay present. Four reads completed in 197–210 ms with first
+batch latency 3.0–3.3 ms; 64 completed in 222–229 ms with first batch latency
+51–57 ms. Warm-cache local storage is not a universal storage/relay optimum;
+the slider permits tuning while keeping the measured responsive default.
 
 A hidden document or page-hide event suspends content acquisition and aborts
 the client's outstanding requests. Matches, coverage and cursors remain in
@@ -446,7 +489,7 @@ The ownership identity and protocol gate remain to be designed before changing
 the wire contract; no TTL, request field or new capability is promised here.
 
 **Current difference:** the page permits two client scan generations sharing
-four batch slots; the stateless server limits concurrent requests to four and
+the configured batch slots (default four); the stateless server limits concurrent requests to 64 and
 shares identical in-flight reads, but has no viewer/needle ownership guard.
 Independent windows have independent client pools. Client cancellation stops
 successor pulls; an accepted shared read may finish within its timeout. Thus

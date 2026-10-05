@@ -695,6 +695,14 @@ describe("GlobalSessionsPage", () => {
     ];
     renderPage("/sessions?q=opening");
     expect(screen.getByTestId("session-renamed")).toBeDefined();
+    expect(
+      screen
+        .getByRole("button", { name: "Last activity" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /^Turns$/ }));
+    });
     await act(async () => {
       fireEvent.change(screen.getByRole("textbox", { name: /^Maximum age/ }), {
         target: { value: "1" },

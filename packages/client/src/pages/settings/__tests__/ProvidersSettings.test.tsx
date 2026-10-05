@@ -145,6 +145,35 @@ describe("ProvidersSettings additional models", () => {
     mockReloadProviders.mockResolvedValue(undefined);
   });
 
+  it("gates instruction restoration on the settings field and saves independent provider choices", async () => {
+    const view = render(<ProvidersSettings />);
+    expect(screen.queryByText("instructionRestorationTitle")).toBeNull();
+    hookState.settings.instructionRestoration = {
+      providers: {},
+      pathPrefix: "",
+      pattern: "*.md",
+      delayTurns: 2,
+    };
+    view.rerender(<ProvidersSettings />);
+    const control = document.querySelector(
+      '[data-settings-item="providers-instruction-restoration"]',
+    ) as HTMLElement;
+    fireEvent.change(
+      within(control).getByLabelText("instructionRestorationPrefix"),
+      { target: { value: "~/agents/topics/" } },
+    );
+    fireEvent.click(within(control).getByLabelText("Claude"));
+    fireEvent.click(within(control).getByText("instructionRestorationSave"));
+    await waitFor(() =>
+      expect(mockUpdateSetting).toHaveBeenCalledWith("instructionRestoration", {
+        providers: { claude: true },
+        pathPrefix: "~/agents/topics/",
+        pattern: "*.md",
+        delayTurns: 2,
+      }),
+    );
+  });
+
   it("presents desktop app, runtime, and authentication as separate signals", () => {
     hookState.providers = [
       {

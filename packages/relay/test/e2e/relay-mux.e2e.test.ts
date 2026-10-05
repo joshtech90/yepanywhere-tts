@@ -465,8 +465,17 @@ describe("Relay client mux E2E", () => {
   it("drains relay-to-client frames round-robin by circuit", async () => {
     const alphaName = `mux-fair-a-${randomUUID().slice(0, 8)}`;
     const betaName = `mux-fair-b-${randomUUID().slice(0, 8)}`;
-    const alpha = await register(alphaName);
-    const beta = await register(betaName);
+    const beforeAlpha = new Set(relay.wss.clients);
+    await register(alphaName);
+    const alpha = [...relay.wss.clients].find(
+      (socket) => !beforeAlpha.has(socket),
+    );
+    const beforeBeta = new Set(relay.wss.clients);
+    await register(betaName);
+    const beta = [...relay.wss.clients].find(
+      (socket) => !beforeBeta.has(socket),
+    );
+    if (!alpha || !beta) throw new Error("Missing owned relay server peers");
     const mux = await openMux();
     await openCircuit(mux, 1, alphaName);
     await openCircuit(mux, 2, betaName);
@@ -480,9 +489,13 @@ describe("Relay client mux E2E", () => {
         if (payloads.length === 3) resolve(payloads);
       });
     });
-    alpha.send("a1");
-    alpha.send("a2");
-    beta.send("b1");
+    // Fairness applies to circuits that are queued together, not to the
+    // relative arrival of frames on independent TCP connections. Enter the
+    // production forwarding seam synchronously so all three frames are queued
+    // before its scheduled drain; outgoing mux frames still cross the socket.
+    relay.connectionManager.forward(alpha, Buffer.from("a1"), false);
+    relay.connectionManager.forward(alpha, Buffer.from("a2"), false);
+    relay.connectionManager.forward(beta, Buffer.from("b1"), false);
 
     await expect(received).resolves.toEqual(["1:a1", "2:b1", "1:a2"]);
   });

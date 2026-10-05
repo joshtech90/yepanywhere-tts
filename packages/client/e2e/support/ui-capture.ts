@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync, mkdirSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
@@ -46,7 +47,12 @@ export async function recordUiCapture(
   mkdirSync(directory, { recursive: true });
   const path = join(directory, `${name}.png`);
   await page.screenshot({ animations: "disabled", path });
-  const entry: RecordedCapture = { name, ...size, path };
+  const entry: RecordedCapture = {
+    name,
+    width: size.width,
+    height: size.height,
+    path,
+  };
   appendFileSync(join(directory, MANIFEST), `${JSON.stringify(entry)}\n`);
 }
 
@@ -75,7 +81,7 @@ export async function presentUiCaptures(): Promise<void> {
   emitCapturePreview(
     await writeCapturePreview({
       input: `Playwright UI captures (${directory})`,
-      out: join(directory, `preview-${stamp}`),
+      out: join(directory, `preview-${stamp}-${randomUUID()}`),
       screenshots: [...byName.values()],
     }),
   );

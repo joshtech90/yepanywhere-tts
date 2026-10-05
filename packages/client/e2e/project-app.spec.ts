@@ -12,7 +12,7 @@ import { ProjectMetadataService } from "../../server/src/metadata/ProjectMetadat
 import { SessionMetadataService } from "../../server/src/metadata/SessionMetadataService";
 import { LimitedUsersService } from "../../server/src/auth/LimitedUsersService";
 import { initFileAccess } from "../../server/src/middleware/file-access";
-import { recordUiCapture, presentUiCaptures } from "./support/ui-capture";
+import { recordUiCapture } from "./support/ui-capture";
 
 const clientRoot = resolve(import.meta.dirname, "..");
 const requireServer = createRequire(join(clientRoot, "../server/package.json"));
@@ -109,7 +109,6 @@ test.beforeAll(async () => {
   ]);
 });
 test.afterAll(async () => {
-  await presentUiCaptures();
   if (instance) {
     for (const process of instance.supervisor.getAllProcesses())
       await instance.supervisor.abortProcess(process.id);
@@ -333,6 +332,10 @@ test("project App fills the pane and retains canvas and composer across phone sw
     await page.goto(`${base}/projects/${projectId}/app`);
     const app = page.getByRole("region", { name: "Project App" });
     const frame = app.locator("iframe");
+    // CI36867518685's trace still transformed the lazy route's dependencies
+    // when the old 5s frame assertion expired. Route readiness is separate
+    // from iframe layout/retention; 20s is 4x that observed startup limit.
+    await expect(app).toBeVisible({ timeout: 20_000 });
     await expect(frame).toBeVisible();
     const canvas = page.frameLocator('iframe[title="index.html"]');
     await canvas.getByRole("button", { name: "0 ideas" }).click();

@@ -14,6 +14,7 @@ export const AUTOMATION_BROWSER_PROFILE_ID = "automation";
 // ============================================================================
 
 export const UI_KEYS = {
+  attachmentAction: "yep-anywhere-attachment-action",
   locale: "yep-anywhere-locale",
   theme: "yep-anywhere-theme",
   fontSize: "yep-anywhere-font-size",
@@ -42,6 +43,7 @@ export const UI_KEYS = {
   projectAppComposing: "yep-anywhere-project-app-composing-enabled",
   sessionRightPane: "yep-anywhere-session-right-pane-enabled",
   sessionRightPaneWidth: "yep-anywhere-session-right-pane-width",
+  searchConcurrency: "yep-anywhere-search-concurrency",
   pdfjsRenderer: "yep-anywhere-pdfjs-renderer-enabled",
   transcriptMarginNavigation: "yep-anywhere-transcript-margin-navigation",
   composerPromptRail: "yep-anywhere-composer-prompt-rail",
@@ -55,6 +57,7 @@ export const UI_KEYS = {
     "yep-anywhere-sidebar-duplicate-hiding-enabled",
   funPhrases: "yep-anywhere-fun-phrases-enabled",
   streamingEnabled: "yep-anywhere-streaming-enabled",
+  liveToolOutputEnabled: "yep-anywhere-live-tool-output-enabled",
   speechKeepMicWarm: "yep-anywhere-speech-keep-mic-warm",
   speechReducePlayback: "yep-anywhere-speech-reduce-playback",
   speechUnspokenPunctuation: "yep-anywhere-speech-unspoken-punctuation",

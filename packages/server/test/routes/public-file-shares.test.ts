@@ -1,12 +1,17 @@
 import type { FileContentResponse } from "@yep-anywhere/shared";
-import { toUrlProjectId } from "@yep-anywhere/shared";
+import { fromUrlProjectId, toUrlProjectId } from "@yep-anywhere/shared";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { renderSafeMarkdown } from "../../src/augments/safe-markdown.js";
 import { createPublicFileShareRoutes } from "../../src/routes/public-file-shares.js";
 import { createPublicSharePublicRoutes } from "../../src/routes/public-shares.js";
 import { PublicShareService } from "../../src/services/PublicShareService.js";
+
+// Live file shares require Linux descriptor-bound project reads.
+// Other hosts fail closed, covered by projectFileAccess.test.ts.
+const itLinux = it.skipIf(process.platform !== "linux");
 
 describe("public file shares", () => {
   let testDir: string;
@@ -22,29 +27,52 @@ describe("public file shares", () => {
     projectId = toUrlProjectId(projectRoot);
     service = new PublicShareService({ dataDir: testDir });
     await service.initialize();
-    files = new Map([
-      [
-        "docs/guide.md",
-        "# Guide\n\n![Diagram](diagram.svg)\n\n[Details](details.md)\n",
-      ],
-      ["docs/diagram.svg", '<svg><circle r="4" /></svg>'],
-      ["docs/next.svg", '<svg><rect width="4" height="4" /></svg>'],
-      ["docs/details.md", "private linked document"],
-      ["docs/unlinked.svg", "<svg />"],
-    ]);
+    files = new Map();
+    await put(
+      "docs/guide.md",
+      "# Guide\n\n![Diagram](diagram.svg)\n\n[Details](details.md)\n",
+    );
+    await put("docs/diagram.svg", '<svg><circle r="4" /></svg>');
+    await put("docs/next.svg", '<svg><rect width="4" height="4" /></svg>');
+    await put("docs/details.md", "linked document");
+    await put("docs/unlinked.svg", "<svg />");
   });
 
   afterEach(async () => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
+  /** A project file, written where a share's link walk reads it. */
+  async function put(
+    relativePath: string,
+    content: string,
+    root = projectRoot,
+  ) {
+    const target = path.join(root, relativePath);
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.writeFile(target, content);
+    if (root === projectRoot) files.set(relativePath, content);
+  }
+
   const fetchProjectFile = async (
-    _requestedProjectId: string,
+    requestedProjectId: string,
     requestedPath: string,
-    options: { raw?: boolean },
+    options: { raw?: boolean; projectRoot?: string },
   ): Promise<Response> => {
-    const content = files.get(requestedPath);
+    const content = options.projectRoot
+      ? await fs
+          .readFile(path.join(options.projectRoot, requestedPath), "utf8")
+          .catch(() => undefined)
+      : requestedProjectId === projectId
+        ? files.get(requestedPath)
+        : await fs
+            .readFile(
+              path.join(fromUrlProjectId(requestedProjectId), requestedPath),
+              "utf8",
+            )
+            .catch(() => undefined);
     if (content === undefined) {
       return new Response(JSON.stringify({ error: "File not found" }), {
         status: 404,
@@ -73,6 +101,15 @@ describe("public file shares", () => {
         requestedPath,
       )}`,
     };
+    if (requestedPath.endsWith(".md")) {
+      // Rendered as the files route renders it, with the read's root as the
+      // project its links are relative to.
+      const root = options.projectRoot ?? fromUrlProjectId(requestedProjectId);
+      response.renderedMarkdownHtml = renderSafeMarkdown(content, {
+        localFileBasePath: path.dirname(path.join(root, requestedPath)),
+        projectFileLinks: { projectId: requestedProjectId, projectPath: root },
+      });
+    }
     return new Response(JSON.stringify(response), {
       headers: { "Content-Type": "application/json" },
     });
@@ -200,33 +237,45 @@ describe("public file shares", () => {
     );
   });
 
-  it("authorizes exactly the assets an HTML root's elements load for play", async () => {
-    files.set(
+  itLinux("authorizes only an HTML root's linked files", async () => {
+    await put(
       "site/index.html",
-      '<link rel="stylesheet" href="site.css"><link rel="preload" as="font" href="paper.woff2"><script src="app.js"></script><script src="/assets/entry.js"></script><img src="logo.png"><a href="src/server.js">source</a>',
+      '<link rel="stylesheet" href="site.css"><link rel="preload" as="font" href="paper.woff2"><script src="app.js"></script><script src="/assets/entry.js"></script><img src="logo.png"><a href="src/server.js">source</a><a href="../../outside/notes.md">notes</a>',
     );
-    files.set("site/site.css", "body{font-family:Paper}");
-    files.set("site/app.js", "console.log(1)");
-    files.set("site/assets/entry.js", "console.log(3)");
-    files.set("site/other.js", "console.log(2)");
-    files.set("site/src/server.js", "export const secret = 1;");
-    files.set("site/paper.woff2", "font");
-    files.set("docs/notes.css", "p{}");
+    await put("site/site.css", "body{font-family:Paper}");
+    await put("site/app.js", "console.log(1)");
+    await put("site/assets/entry.js", "console.log(3)");
+    await put("site/other.js", "console.log(2)");
+    await put("site/src/server.js", "export const shown = 1;");
+    await put("site/paper.woff2", "font");
+    const outside = path.join(testDir, "outside");
+    await put("notes.md", "# Notes\n\n[more](more.md)\n", outside);
+    await put("more.md", "more", outside);
     const { secret } = await service.createFileShare({
       projectId,
       path: "site/index.html",
       title: "Site",
       buildPublicUrl: (value) => `https://ya.example/share/${value}/file`,
     });
-    const app = createPublicSharePublicRoutes({
-      publicShareService: service,
-      loadSession: vi.fn(async () => null),
-      getPublicSharesEnabled: () => true,
-      fetchProjectFile,
-    });
-    const status = async (path: string) =>
+    const routes = (outsideAllowed: boolean) =>
+      createPublicSharePublicRoutes({
+        publicShareService: service,
+        loadSession: vi.fn(async () => null),
+        getPublicSharesEnabled: () => true,
+        fetchProjectFile,
+        localFilePolicy: {
+          resolveAllowedFilePath: async (filePath: string) => {
+            const stats = await fs.stat(filePath).catch(() => null);
+            return outsideAllowed && stats?.isFile()
+              ? { ok: true, file: { resolvedPath: filePath, stats } }
+              : { ok: false, error: "Refused", status: 403 };
+          },
+        },
+      });
+    const app = routes(true);
+    const status = async (path: string, share = app) =>
       (
-        await app.request(
+        await share.request(
           `/${secret}/files/raw?path=${encodeURIComponent(path)}`,
         )
       ).status;
@@ -234,25 +283,35 @@ describe("public file shares", () => {
     expect(await status("site/app.js")).toBe(200);
     // A leading slash names the root's directory, as the play page resolves it.
     expect(await status("site/assets/entry.js")).toBe(200);
+    // A linked document is served, and so is anything else the root names.
+    expect(await status("site/src/server.js")).toBe(200);
+    expect(await status("site/paper.woff2")).toBe(200);
     expect(await status("site/other.js")).toBe(404);
-    // A linked document, and a file no element loads, stay private.
-    expect(await status("site/src/server.js")).toBe(404);
-    expect(await status("site/paper.woff2")).toBe(404);
-    // A Markdown root does not gain script or stylesheet authority.
-    const markdown = await service.createFileShare({
-      projectId,
-      path: "docs/guide.md",
-      title: "Guide",
-      buildPublicUrl: (value) => `https://ya.example/share/${value}/file`,
-    });
-    files.set("docs/guide.md", "# Guide\n\n[css](notes.css)\n");
-    expect(
-      (await app.request(`/${markdown.secret}/files/raw?path=docs%2Fnotes.css`))
-        .status,
-    ).toBe(404);
+    // A link out of the project is a grant too, followed onward, when the
+    // local file policy admits its target.
+    const notes = path.join(outside, "notes.md");
+    const response = await app.request(
+      `/${secret}/files/raw?path=${encodeURIComponent(notes)}`,
+    );
+    expect(await response.text()).toContain("# Notes");
+    expect(await status(path.join(outside, "more.md"))).toBe(200);
+    // Read with its own folder standing in as the project, an outside
+    // document's links come back as absolute local-file links, which the
+    // viewer resolves against the share, never against the share's project.
+    const view = (await (
+      await app.request(`/${secret}/files?path=${encodeURIComponent(notes)}`)
+    ).json()) as FileContentResponse;
+    expect(view.renderedMarkdownHtml).toContain(
+      `href="/api/local-file?path=${encodeURIComponent(path.join(outside, "more.md"))}&amp;render=1"`,
+    );
+    expect(view.renderedMarkdownHtml).toContain(
+      'data-ya-resource="local-file"',
+    );
+    expect(view.renderedMarkdownHtml).not.toContain("/projects/");
+    expect(await status(notes, routes(false))).toBe(404);
   });
 
-  it("serves the current root and only directly referenced render assets", async () => {
+  itLinux("serves the current root and what it links to", async () => {
     const { secret } = await service.createFileShare({
       projectId,
       path: "docs/guide.md",
@@ -285,9 +344,12 @@ describe("public file shares", () => {
     ).toBe(404);
     expect(
       (await app.request(`/${secret}/files?path=docs%2Fdetails.md`)).status,
-    ).toBe(404);
+    ).toBe(200);
 
-    files.set("docs/guide.md", "# Guide\n\n![Next](next.svg)\n");
+    // An edit is noticed once the walk's short reuse window has passed.
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    await put("docs/guide.md", "# Guide\n\n![Next](next.svg)\n");
+    vi.setSystemTime(Date.now() + 3000);
     expect(
       (await app.request(`/${secret}/files/raw?path=docs%2Fdiagram.svg`))
         .status,

@@ -67,6 +67,9 @@ as the runtime skills directory.
   cannot safely consume the current composer state, such as title with an
   attachment or either Mother-only operation in an aside-routed composer, fails
   visibly and remains recoverable rather than becoming provider text.
+- `/v` and `/view` are an immediate YA operation that opens a project file in
+  the session viewer; [view-command](view-command.md) owns their resolution,
+  completion, and yield to a provider command or skill of either name.
 - Emulated commands should preserve the user's argument text verbatim except
   for the declared template substitution. Parsing inside the command belongs to
   the skill/provider behavior, not to the generic rewrite layer.

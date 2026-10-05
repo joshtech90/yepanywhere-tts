@@ -287,21 +287,28 @@ export class DraftStore {
   list(
     owner: string,
     after: string,
+    since?: number,
   ): Array<{
     slot: DraftSlot;
     revision: string;
     sequence: number;
     empty: boolean;
   }> {
-    return this.sql(
-      "SELECT slot_json,revision,sequence,empty FROM drafts WHERE owner=? AND slot>? ORDER BY slot LIMIT 100",
-    )
+    const statement =
+      since === undefined
+        ? this.sql(
+            "SELECT slot_json,revision,sequence,empty FROM drafts WHERE owner=? AND slot>? ORDER BY slot LIMIT 100",
+          )
+        : this.sql(
+            "SELECT slot_json,revision,sequence,empty FROM drafts INDEXED BY drafts_changes WHERE owner=? AND sequence>? AND slot>? ORDER BY slot LIMIT 100",
+          );
+    return statement
       .all<{
         slot_json: string;
         revision: string;
         sequence: number;
         empty: number;
-      }>(owner, after)
+      }>(...(since === undefined ? [owner, after] : [owner, since, after]))
       .map((r) => ({
         slot: JSON.parse(r.slot_json),
         revision: r.revision,

@@ -45,6 +45,18 @@ sketch records shared vocabulary for them without selecting a protocol. Hiding
 controls, selecting a project working directory, or assigning a
 narrower-sounding permission mode would not establish that boundary.
 
+## Mobile SRP Implementation Decision
+
+The maintainer accepted pinned RustCrypto `srp 0.7.0-rc.3` for the shared
+mobile Rust core on 2026-10-01. This changes client implementation, with the
+existing owner principal, SRP credentials, server protocol and authority
+unchanged. The accepted limits and production verification requirements are
+owned by
+[mobile connection ownership](mobile-server-pairing.md#existing-server-compatibility).
+Neither passing compatibility vectors nor an AI engineering review establishes
+a formal cryptographic audit or whole-protocol constant-time behavior. A
+possible future OPAQUE migration remains separate protocol work.
+
 ## Limited Users
 
 Limited users are default-off (`limitedUsersEnabled`) named principals that
@@ -91,7 +103,7 @@ The following are refused outright:
 
 - host administration and settings writes, plus the secrets and host inventory
   in the settings document;
-- devices, public shares, app links and artifacts;
+- devices, public shares, operator app links and host-wide artifact grants;
 - absolute-path file reads, file editing and bang commands;
 - Issues & PRs; and
 - remote-access and connection inventory.
@@ -101,6 +113,14 @@ Its tunneled requests receive the same decisions as direct requests. A
 subscription is judged by every id its channel reads. The activity channel,
 filtered by event type and denying by default, passes an event only when it
 names a project the user may read. Hiding a control in the client is cosmetic.
+
+The explicit file-address exception under `/api/artifacts/vhost-sites` requires
+Allow public apps and Start sessions access to the selected project. Its handlers
+authorize the supplied project themselves, persist the authenticated creator,
+refuse replacement or release of another creator's mapping, and confine all
+served paths to that project's canonical root. Incoming requests recheck the
+creator's current grants. Other artifact and public-file-share routes remain
+refused. See [file vhosts](active-content-security.md#file-vhosts).
 
 **Execution.** Every provider process a limited user starts or resumes runs
 in the project-write sandbox on this host, under the user's
@@ -198,6 +218,26 @@ state (relay session cache, browser profiles, network binding, recents, push
 subscriptions, notifications) is also saved atomically but still starts fresh
 when unreadable, since losing any of it costs a sign-in or a preference, not
 an authorization decision.
+
+Authentication startup failures name the file and distinguish empty,
+zero-filled, invalid/truncated JSON, and unsupported format/version data.
+They never include file contents or JSON parser excerpts. Recovery instructions
+require preserving a backup first, then explicitly restoring a known-good file
+or moving the damaged file aside and restarting to reset local access. A reset
+invalidates previous local logins and requires reconfiguring local authentication;
+startup never automatically resets or rolls back authentication.
+
+Saves of local authentication, limited users, remote-access credentials, relay
+resume credentials, and project ownership sync and close the staged file before
+atomic replacement, then sync the parent directory where supported. A failure
+before replacement leaves the previous file intact and removes staging. A
+directory-sync failure after replacement is reported even though the new file
+is already visible. File-sync failures are always fatal to that save. Windows
+tolerates only the known unsupported directory-sync errors; it still flushes
+file data, but does not claim the directory durability available on Linux/macOS.
+Atomic replacement retries transient Windows sharing/permission errors with
+at most 175 ms of total backoff; a permanent error still rejects the save and
+preserves the previous file. Other-platform errors are propagated immediately.
 Observed 2026-09-28: a restart interrupted an in-place save, the server
 treated the empty file as a fresh install, and with no password left, a
 browser holding the owner's desktop session was the owner again even while a

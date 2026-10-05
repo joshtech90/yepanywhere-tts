@@ -91,6 +91,7 @@ Model sub-family abbreviations (appended after provider abbrev):
 | gpt-6-astra  | `As`  | `Cd As`                   |
 | gpt-6-sol    | `So`  | `Cd So`                   |
 | gpt-6-luna   | `Lu`  | `Cd Lu`                   |
+| gpt-6.1-sol  | `So 6.1` | `Cd So 6.1`           |
 | gpt-5.6-sol  | `☀`   | `Cd ☀`                    |
 | gpt-5.6-terra| `♁`   | `Cd ♁`                    |
 | gpt-5.6-luna | `☾`   | `Cd ☾`                    |
@@ -114,6 +115,14 @@ the GPT-5.6 Sol/Terra/Luna family is the current example. Sol's `☀` is
 deliberately a sun-with-rays glyph that remains legible at status-badge size.
 The GPT-6 family uses two-letter names instead (`As`, `So`, `Lu`) so GPT-6
 Sol and Luna stay distinct from their GPT-5.6 namesakes.
+Named Astra, Sol, and Luna models from GPT-6 onward match across numeric
+versions, including future minor and major versions. The original GPT-6
+labels remain `As`, `So`, and `Lu`; newer versions retain their number
+(`Cd So 6.1`, `Cd As 6.1`, `Cd Lu 6.2`). Qualifiers remain visible, such as
+`Cd So 6.1-preview`, and unknown family names retain the raw-name fallback.
+This also applies to Codex aliases, Codex OSS, and routed model labels. The
+full model name stays in the tooltip, accessible label, and model panel;
+effort labels such as `High` remain readable alongside the compact name.
 Daybreak uses `Db` rather than another sun glyph, and colors that model token
 blue independently of the Codex-green provider text, dot, and outline.
 

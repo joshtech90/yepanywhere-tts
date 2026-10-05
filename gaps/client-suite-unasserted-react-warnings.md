@@ -25,3 +25,14 @@ to silence passing fixtures. The touched native-module test's separate Vite
 dynamic-import warning is repaired with explicit entry paths.
 
 Found 2026-09-30 while verifying the CI reliability repairs remotely.
+
+Reconfirmed in [CI 36970258142](https://github.com/kzahel/yepanywhere/actions/runs/36970258142)
+on 2026-10-02: `MessageList.scroll.test.tsx` emits "An update to
+ParagraphQuoteRail inside a test was not wrapped in act(...)" in the held-press
+and wheel pending-follow cases, remembered-anchor growth, and parked scroll
+before tail reveal. This is separate from the repaired thinking-toggle frame
+leak: the quote rail's asynchronous publication needs its own joined fixture
+boundary. Changing those producers or globally wrapping/suppressing their
+callbacks is outside the bounded scroll-restoration lifetime repair and could
+hide the intent/scroll ordering those cases assert. Audit each publication and
+join it explicitly; retain the scroll and held-selection assertions.

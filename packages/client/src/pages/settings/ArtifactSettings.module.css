@@ -114,11 +114,37 @@
   color: var(--text-secondary);
   font-size: 11px;
 }
+.domainName,
+.domainSuffix {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.domainName {
+  display: inline;
+}
+.table button[aria-expanded] {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .target {
   display: block;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.table {
+  --settings-first-column-width: 50%;
+}
+.table th:nth-child(2) {
+  width: 26%;
+}
+.linkedFiles {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: help;
 }
 .access {
   grid-column: 1 / -1;

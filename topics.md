@@ -416,3 +416,27 @@
   measured CI cost and reliability checks.
 - session-notes-and-discussion - Human-only session scratch notes and shared
   discussion, with explicit audiences and deliberate promotion to agent input.
+- mobile-webview-app - Bundled full web UI with native login, saved hosts,
+  credential ownership, transport leases, and native host switching.
+- view-command - `/v` opens a project file from remembered path parts,
+  tracked first; custom completion surface sketched.
+- linked-site-walk - File vhosts and live public file shares serve what a
+  root page links to, at the URLs a browser asks for.
+- ios-native-core-proof - Provisional shared Rust mobile core, gated on crypto and native binding/build evidence.
+
+- shared-mobile-transport - Android Rust adoption and shared multi-host relay ownership.
+- ci-browser-mobile-acceptance-2026-10-02 - Browser regressions and immutable signed native source, with hosted acceptance evidence.
+- warp-competitive-analysis - Warp source review and verification of
+  company-reported adoption figures.
+
+- native-sudo - Explicit local Mac administrator authentication through a verified bundled helper.
+
+- machine-control-desktop-consumer - Authenticated installed Python CLI discovery and local agent advertisement; gated legacy retirement.
+
+- [agent-auth-router-integration](topics/agent-auth-router.md) - Local pairing and pinned native sessions.
+
+- machine-control-desktop-delegation - Native Mac caller and live session provenance for resumable MC admission.
+
+- [relay-streamed-responses](topics/media-rendering-and-routing.md#relay-transfer-size) - Raw, flow-controlled relay file bodies; downloads to disk via the service worker; viewer media next.
+
+- android-internal-delivery - Verified AAB delivery to Play internal testing.

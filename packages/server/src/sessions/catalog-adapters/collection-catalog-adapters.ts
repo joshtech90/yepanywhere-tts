@@ -25,8 +25,8 @@ import {
 import { isIgnoredCodexRolloutPath } from "../codex-discovery.js";
 import { toSessionListSummary } from "../types.js";
 import {
-  readClaudeCatalogRecency,
-  readClaudeCatalogTitle,
+  readClaudeCatalogHead,
+  readClaudeCatalogTail,
 } from "../claude-summary.js";
 import { GrokSessionCatalogAdapter } from "./grok-catalog-adapter.js";
 import { PiSessionCatalogAdapter } from "./pi-catalog-adapter.js";
@@ -40,9 +40,11 @@ import {
 /**
  * Version of the facts `readFileRow` stores. Bump it whenever a stored fact is
  * added or changed. Rows without it predate the untruncated title and the
- * summary's creation time, so they are read once more.
+ * summary's creation time; format 1 rows lack the last human turn and, for a
+ * Claude session without a cached summary, its creation time. Both are read
+ * once more.
  */
-const FILE_ROW_FORMAT = 1;
+const FILE_ROW_FORMAT = 2;
 
 export interface CollectionCatalogDeps extends SessionProviderResolutionDeps {
   scanner: ProjectScanner;
@@ -94,7 +96,7 @@ async function readFileRow(
     // A session first catalogued while it is being written has no earlier row
     // to carry one forward from, so ask the index once more for the one fact
     // an appended-to prefix still states exactly: when the session began.
-    const createdAt =
+    const initialCreatedAt =
       cached?.createdAt ??
       old?.createdAt ??
       (
@@ -117,20 +119,31 @@ async function readFileRow(
     // The untruncated text, because All Sessions matches these rows in the
     // browser: a display-length title would make a needle past its cut
     // unfindable with no way for the reader to tell searching from missing.
-    const title =
-      summary?.fullTitle ??
-      summary?.title ??
-      (family === "claude"
-        ? await readClaudeCatalogTitle(file.filePath)
-        : undefined);
+    const summaryTitle = summary?.fullTitle ?? summary?.title;
+    // A live Claude session is appended to constantly and so rarely has a
+    // cached summary. Its row still needs the times the sidebar files it by:
+    // without them a session being worked in reads as never touched.
+    const head =
+      family === "claude" &&
+      (summaryTitle === undefined ||
+        summaryTitle === null ||
+        !summary?.createdAt)
+        ? await readClaudeCatalogHead(file.filePath)
+        : undefined;
+    const title = summaryTitle ?? head?.title;
+    const createdAt = summary?.createdAt ?? initialCreatedAt ?? head?.createdAt;
+    const tail =
+      !summary && family === "claude"
+        ? await readClaudeCatalogTail(file.filePath)
+        : undefined;
+    // A summary is exact, so its missing human turn means there was none.
+    const lastHumanTurnAt = summary
+      ? summary.lastHumanTurnAt
+      : tail?.lastHumanTurnAt;
     // Storage time is not content time. Claude appends non-conversation rows
     // at shutdown, so an mtime-derived row makes a read session unread and
     // falsely recent; Codex has its own content-aware activity time.
-    const contentUpdatedAt =
-      summary?.updatedAt ??
-      (family === "claude"
-        ? await readClaudeCatalogRecency(file.filePath)
-        : undefined);
+    const contentUpdatedAt = summary?.updatedAt ?? tail?.updatedAt;
     const storageUpdatedAt = () =>
       new Date(
         family === "codex"
@@ -164,9 +177,8 @@ async function readFileRow(
       projectName: project.name,
       provider: summary?.provider ?? source.provider,
       updatedAt: contentUpdatedAt ?? storageUpdatedAt(),
-      ...((createdAt ?? summary?.createdAt)
-        ? { createdAt: createdAt ?? summary?.createdAt }
-        : {}),
+      ...(createdAt ? { createdAt } : {}),
+      ...(lastHumanTurnAt ? { lastHumanTurnAt } : {}),
       ...(title !== undefined
         ? { title: title?.slice(0, SESSION_CATALOG_TITLE_MAX_LENGTH) }
         : {}),

@@ -14,7 +14,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   GIT_DIRTY_FILE_EDITOR_CAPABILITY,
   GIT_INCOMING_COMMITS_CAPABILITY,
@@ -1340,6 +1340,18 @@ describe("GitStatusPage filesystem-only projects", () => {
 });
 
 describe("GitStatusPage released-server compatibility", () => {
+  const originalClipboard = Object.getOwnPropertyDescriptor(
+    navigator,
+    "clipboard",
+  );
+  afterEach(() => {
+    if (originalClipboard) {
+      Object.defineProperty(navigator, "clipboard", originalClipboard);
+    } else {
+      Reflect.deleteProperty(navigator, "clipboard");
+    }
+  });
+
   it.each(CORE_GIT_COMPATIBILITY_RELEASES)(
     "keeps basic Source Control for $version ($releasedAt)",
     async () => {
@@ -1456,6 +1468,94 @@ describe("GitStatusPage released-server compatibility", () => {
     expect((await screen.findByRole("status")).textContent).toContain(
       "gitStatusPullAlreadyUpToDate",
     );
+  });
+
+  it.each([
+    ["gitStatusCheckRemote", mocks.checkGitRemote],
+    ["gitStatusPull", mocks.pullGit],
+    ["gitStatusPush", mocks.pushGit],
+  ])(
+    "explains HTTPS failures for %s with safe copyable details",
+    async (button, operation) => {
+      mocks.useVersion.mockReturnValue({
+        version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+        loading: false,
+        error: null,
+      });
+      operation.mockResolvedValue({
+        status: "failed",
+        checkedRemoteAt: null,
+        detail:
+          "fatal: could not read Username for 'https://user:secret@github.com': terminal prompts disabled",
+      });
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText },
+      });
+      renderPage();
+      fireEvent.click(await screen.findByRole("button", { name: button }));
+      const warning = await screen.findByRole("alert");
+      expect(warning.textContent).toContain("gitStatusErrorHttpsAuth");
+      expect(warning.textContent).toContain("gitStatusErrorHttpsAuthHint");
+      expect(warning.textContent).not.toContain("secret");
+      fireEvent.click(screen.getByText("gitStatusErrorDetails"));
+      fireEvent.click(
+        screen.getByRole("button", { name: "gitStatusCopyErrorDetails" }),
+      );
+      await waitFor(() =>
+        expect(writeText).toHaveBeenCalledWith(
+          "fatal: could not read Username for 'https://[redacted]@github.com': terminal prompts disabled",
+        ),
+      );
+      operation.mockReturnValue(new Promise(() => {}));
+      fireEvent.click(
+        screen.getByRole("button", { name: new RegExp(`^${button}`) }),
+      );
+      await waitFor(() => expect(operation).toHaveBeenCalledTimes(2));
+      expect(screen.queryByText("gitStatusErrorDetails")).toBeNull();
+    },
+  );
+
+  it("retains older-server feedback when detail is absent", async () => {
+    mocks.useVersion.mockReturnValue({
+      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      loading: false,
+      error: null,
+    });
+    mocks.pushGit.mockResolvedValue({
+      status: "failed",
+      checkedRemoteAt: null,
+    });
+    renderPage();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "gitStatusPush" }),
+    );
+    expect((await screen.findByRole("alert")).textContent).toBe(
+      "gitStatusPushFailed",
+    );
+    expect(screen.queryByText("gitStatusErrorDetails")).toBeNull();
+  });
+
+  it("exposes unrecognized Git output without an authentication diagnosis", async () => {
+    mocks.useVersion.mockReturnValue({
+      version: { capabilities: [...RELEASED_BASIC_GIT_CAPABILITIES] },
+      loading: false,
+      error: null,
+    });
+    mocks.pullGit.mockResolvedValue({
+      status: "failed",
+      checkedRemoteAt: null,
+      detail: "remote: hook declined",
+    });
+    renderPage();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "gitStatusPull" }),
+    );
+    const warning = await screen.findByRole("alert");
+    expect(warning.textContent).toContain("gitStatusPullFailed");
+    expect(warning.textContent).toContain("remote: hook declined");
+    expect(warning.textContent).not.toContain("gitStatusErrorHttpsAuth");
   });
 
   it("shows a persistent full-text divergence warning", async () => {

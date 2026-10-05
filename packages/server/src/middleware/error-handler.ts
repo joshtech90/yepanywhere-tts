@@ -1,6 +1,7 @@
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { RouterUnavailable } from "../services/AgentAuthRouter.js";
 
 /**
  * An error that names its own HTTP response status. Throw it from a service
@@ -31,6 +32,13 @@ function redactRequestPath(path: string): string {
 }
 
 export function structuredErrorHandler(error: Error, c: Context): Response {
+  // A router refusal is recoverable session feedback, not a YA login failure
+  // or an unexpected server fault. Messages are generated locally, never
+  // copied from provider responses or socket/filesystem errors; at most they
+  // quote a short plain-text 4xx reason from the verified router socket.
+  if (error instanceof RouterUnavailable) {
+    return c.json({ error: error.message }, 409);
+  }
   if (error instanceof HTTPException) {
     return error.getResponse();
   }

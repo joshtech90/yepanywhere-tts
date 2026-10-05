@@ -72,6 +72,28 @@ interface TranscribeResponse {
   transcriptionId?: string;
 }
 
+/** Transcribe a complete recording without interpreting dictation commands. */
+export async function transcribeSpeechAudio(
+  audio: Blob,
+  backendId: string,
+  options: SpeechProviderOptions = {},
+): Promise<TranscribeResponse> {
+  const { textBeforeCursor, ...context } =
+    options.getTranscriptionContext?.() ?? {};
+  return fetchJSON<TranscribeResponse>("/speech/transcribe", {
+    method: "POST",
+    body: JSON.stringify({
+      backendId,
+      mimeType: audio.type,
+      model: browserSelectedSpeechModel(backendId, options),
+      audioBase64: await blobToBase64(audio),
+      context,
+      prompt:
+        backendId === "ya-whisper" ? textBeforeCursor?.slice(-8000) : undefined,
+    }),
+  });
+}
+
 interface PrewarmResponse {
   ok: boolean;
 }
@@ -596,6 +618,8 @@ export class YaServerProvider implements SpeechProvider {
   }
 
   private getActiveMicStream(): Promise<MediaStream> {
+    if (this.options.acquireAudioStream)
+      return this.options.acquireAudioStream();
     const lease = this.shouldKeepMicWarm()
       ? acquireSharedSpeechMicActiveLease()
       : null;
@@ -1634,25 +1658,14 @@ export class YaServerProvider implements SpeechProvider {
     const audio = new Blob(recording.chunks, { type: recording.mimeType });
     recording.chunks = [];
     releaseSpeechStream(recording.stream);
-    const { textBeforeCursor, ...context } = recording.context ?? {};
 
     let settlementStatus: SpeechTranscriptionSettlementStatus = "cancelled";
     try {
       const response =
         audio.size > 0
-          ? await fetchJSON<TranscribeResponse>("/speech/transcribe", {
-              method: "POST",
-              body: JSON.stringify({
-                backendId: this.backendId,
-                mimeType: recording.mimeType,
-                model: browserSelectedSpeechModel(this.backendId, this.options),
-                audioBase64: await blobToBase64(audio),
-                context,
-                prompt:
-                  this.backendId === "ya-whisper"
-                    ? textBeforeCursor?.slice(-8000)
-                    : undefined,
-              }),
+          ? await transcribeSpeechAudio(audio, this.backendId, {
+              ...this.options,
+              getTranscriptionContext: () => recording.context,
             })
           : { text: "" };
       if (this.disposed) return;

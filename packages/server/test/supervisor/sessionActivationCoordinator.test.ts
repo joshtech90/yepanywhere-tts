@@ -29,6 +29,45 @@ function coordinator(
 }
 
 describe("SessionActivationCoordinator", () => {
+  it("snapshots after queued changes and uses applied effort rather than an unsent selection", async () => {
+    const gate = deferred<void>();
+    const process = {
+      id: "process-1",
+      sessionId: "source",
+      isTerminated: false,
+      permissionMode: "bypassPermissions",
+      requestedModel: "default",
+      resolvedModel: "resolved-source",
+      model: "default",
+      thinking: { type: "adaptive" },
+      appliedEffort: "high",
+      effort: "max",
+      serviceTier: "priority",
+    } as unknown as Process;
+    const state = coordinator({ getProcessForSession: () => process });
+    const change = state.enqueueConfiguration("source", async () => {
+      await gate.promise;
+      Object.assign(process, {
+        permissionMode: "default",
+        appliedEffort: "low",
+      });
+    });
+    const snapshot = state.snapshotLaunchSettings(
+      "project" as never,
+      "source",
+      "claude",
+    );
+    gate.resolve();
+    await change;
+    expect(await snapshot).toEqual({
+      permissionMode: "default",
+      requestedModel: "resolved-source",
+      thinking: { type: "adaptive" },
+      effort: "low",
+      serviceTier: "priority",
+    });
+  });
+
   it("exposes one settled activation result to concurrent waiters", async () => {
     const activationGate = deferred<Process>();
     const state = coordinator();

@@ -7,14 +7,16 @@ test.use({ serviceWorkers: "block" });
 // The browser boundary verifies that the visible stopped-session selection is
 // the one submitted, and that real typing survives concurrent history refresh.
 // State/precedence variants belong to the hook and request-mapping unit tests.
-test("restores dormant settings, preserves explicit edits, and degrades on older servers", async ({
+test("clones saved settings, preserves explicit edits, and degrades on older servers", async ({
   page,
   baseURL,
 }) => {
   const projectId = Buffer.from(join(e2ePaths.tempDir, "mockproject")).toString(
     "base64url",
   );
-  const sessionId = "mock-session-001";
+  const sourceId = "mock-session-001";
+  const sessionId = "clone-settings-child";
+  let currentSessionId = sourceId;
   const timestamp = new Date().toISOString();
   let hasSnapshot = true;
   const savedSettings = {
@@ -37,13 +39,13 @@ test("restores dormant settings, preserves explicit edits, and degrades on older
   }));
   await page.route(
     new RegExp(
-      `/api/projects/[^/]+/sessions/${sessionId}(?:/metadata)?(?:\\?|$)`,
+      `/api/projects/[^/]+/sessions/(?:${sourceId}|${sessionId})(?:/metadata)?(?:\\?|$)`,
     ),
     (route) =>
       route.fulfill({
         json: {
           session: {
-            id: sessionId,
+            id: currentSessionId,
             projectId,
             provider: "claude",
             model: "sonnet",
@@ -64,8 +66,9 @@ test("restores dormant settings, preserves explicit edits, and degrades on older
         },
       }),
   );
-  await page.route(`**/api/sessions/${sessionId}/process`, (route) =>
-    route.fulfill({ json: { process: null } }),
+  await page.route(
+    /\/api\/sessions\/(?:mock-session-001|clone-settings-child)\/process$/,
+    (route) => route.fulfill({ json: { process: null } }),
   );
   let notifyChange: (() => void) | undefined;
   await page.routeWebSocket("**/api/ws", (socket) => {
@@ -87,7 +90,7 @@ test("restores dormant settings, preserves explicit edits, and degrades on older
               eventType: "session-watch-change",
               eventId: String(++sequence),
               data: {
-                sessionId,
+                sessionId: currentSessionId,
                 projectId,
                 changeVersion: sequence,
                 timestamp: new Date().toISOString(),
@@ -97,6 +100,23 @@ test("restores dormant settings, preserves explicit edits, and degrades on older
       } else upstream.send(wire);
     });
   });
+  const forks: Array<Record<string, unknown>> = [];
+  await page.route(
+    `**/api/projects/${projectId}/sessions/${sourceId}/fork`,
+    (route) => {
+      forks.push(route.request().postDataJSON());
+      currentSessionId = sessionId;
+      return route.fulfill({
+        json: {
+          sessionId,
+          provider: "claude",
+          projectId,
+          forkedFrom: sourceId,
+          forkKind: "clone-latest-complete",
+        },
+      });
+    },
+  );
   const submissions: Array<Record<string, unknown>> = [];
   await page.route(
     `**/api/projects/${projectId}/sessions/${sessionId}/resume`,
@@ -113,7 +133,7 @@ test("restores dormant settings, preserves explicit edits, and degrades on older
     },
   );
   await page.setViewportSize({ width: 1000, height: 600 });
-  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sourceId}`);
   const input = page.locator("[data-composer-input]").first();
   const thinking = page.getByRole("button", { name: /^Thinking:/ }).first();
   await expect(thinking).toHaveAccessibleName(/high/i);
@@ -121,6 +141,24 @@ test("restores dormant settings, preserves explicit edits, and degrades on older
   await expect(
     page.getByText("Prior session message 899.", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Bypass", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "Session options", exact: true })
+    .last()
+    .click();
+  await page.getByRole("button", { name: "Clone", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/sessions/${sessionId}$`));
+  expect(forks).toEqual([
+    expect.objectContaining({ forkKind: "clone-latest-complete" }),
+  ]);
+  expect(forks[0]).not.toHaveProperty("thinking");
+  await expect(input).toHaveValue("");
+  await expect(
+    page.getByText("Prior session message 899.", { exact: true }),
+  ).toBeVisible();
+  await expect(thinking).toHaveAccessibleName(/high/i);
   await expect(
     page.getByRole("button", { name: "Bypass", exact: true }),
   ).toBeVisible();

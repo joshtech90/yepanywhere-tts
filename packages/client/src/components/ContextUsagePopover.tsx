@@ -4,8 +4,10 @@ import {
   type ProviderSubscriptionUsage,
   type ProviderSubscriptionUsageWindow,
 } from "@yep-anywhere/shared";
+import type { ContextBreakdownState } from "../hooks/useContextBreakdown";
 import { useI18n } from "../i18n";
 import type { ContextUsage } from "../types";
+import { ContextBreakdownSection } from "./ContextBreakdownSection";
 import styles from "./ContextUsagePopover.module.css";
 
 function formatDuration(minutes: number | undefined): string {
@@ -87,11 +89,13 @@ function ContextTokenRows({ usage }: { usage: ContextUsage }) {
  * cache reuse is visible per turn) and, for providers that report one, the
  * subscription quota windows. Either half may be absent: Claude sessions
  * always have token counts, while quota windows exist only for providers
- * whose account API reports them.
+ * whose account API reports them. Above both, a live session whose provider
+ * can report it shows what fills the context window, by category.
  */
 export function ContextUsagePopover({
   usage,
   contextUsage,
+  breakdown,
   modelId,
   refreshing,
   onRefresh,
@@ -99,6 +103,7 @@ export function ContextUsagePopover({
 }: {
   usage?: ProviderSubscriptionUsage;
   contextUsage?: ContextUsage;
+  breakdown?: ContextBreakdownState | null;
   modelId?: string;
   refreshing: boolean;
   onRefresh: () => void;
@@ -124,6 +129,7 @@ export function ContextUsagePopover({
       }
       aria-busy={refreshing}
     >
+      {breakdown && <ContextBreakdownSection state={breakdown} />}
       {usage && (
         <div className="subscription-usage-header">
           <div>

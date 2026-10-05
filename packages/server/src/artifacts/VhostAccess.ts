@@ -86,7 +86,7 @@ export class VhostAccess {
     return createHmac("sha256", this.secret)
       .update(
         JSON.stringify(
-          "projectId" in row
+          "projectId" in row && !("path" in row)
             ? [
                 "project-app-access-v1",
                 row.name,

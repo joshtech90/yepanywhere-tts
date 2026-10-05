@@ -9,10 +9,17 @@ import org.json.JSONObject
 interface YaMessageTransport {
     val credential: YaResumeCredential
     val resumed: Boolean
+    val routeId: String? get() = null
+    fun cancelRequest(id: String) {}
+    suspend fun directRequest(method: String, path: String, body: JSONObject?): YaApiResponse? = null
     val securityBinding: YaSrpTransportBinding?
         get() = null
 
     fun send(message: JSONObject)
+    suspend fun sendUploadChunk(uploadId: String, offset: Long, chunk: ByteArray) {
+        error("Binary uploads are unavailable on this transport")
+    }
+    suspend fun cancelUpload(uploadId: String) { send(JSONObject().put("type", "upload_end").put("uploadId", uploadId)) }
     suspend fun receive(): JSONObject
     suspend fun awaitClosed()
     suspend fun closeAndAwait()
@@ -60,6 +67,8 @@ interface YaProfileConnector {
         profile: YaPairedServerProfile,
         credential: YaResumeCredential,
     ): YaRoutedTransport
+
+    suspend fun loginProfile(profile: YaPairedServerProfile, route: YaServerRoute, password: String): YaMessageTransport = login(route, profile.username, password)
 
     suspend fun login(
         route: YaServerRoute,

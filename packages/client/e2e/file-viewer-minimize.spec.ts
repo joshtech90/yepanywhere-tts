@@ -1,4 +1,10 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { e2ePaths, expect, test } from "./fixtures.js";
@@ -38,6 +44,94 @@ async function capture(page: Page, name: string) {
     path: join(artifactDir, `${name}.png`),
   });
 }
+
+test("recalls the last file after Close and reload only where the margin fits", async ({
+  page,
+  baseURL,
+}) => {
+  test.setTimeout(30000);
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
+  await dismissOnboardingIfVisible(page);
+  await page.locator('a[data-ya-private-project-file-link="true"]').click();
+  const viewer = page.locator(".file-viewer");
+  await expect(viewer).toBeVisible();
+  await viewer.getByRole("button", { name: "Close", exact: true }).click();
+  const reopen = page.getByRole("button", { name: /Restore file viewer:/ });
+  await expect(reopen).toBeVisible();
+  const sessionUrl = page.url();
+  await page.reload();
+  await expect(viewer).toBeHidden();
+  await expect(reopen).toBeVisible();
+  await page.mouse.move(1, 1);
+  await recordUiCapture(page, "last-file-desktop-1600");
+  await reopen.hover();
+  await expect(page.getByRole("tooltip")).toContainText(externalReadmePath);
+  await recordUiCapture(page, "last-file-hover-1600");
+  await reopen.click();
+  await expect(viewer.getByText("Test Project", { exact: true })).toBeVisible();
+  expect(page.url()).toBe(sessionUrl);
+  await viewer
+    .getByRole("button", { name: "Minimize file viewer", exact: true })
+    .click();
+  await expect(reopen).toHaveCount(1); // Existing toolbar restore, without a second margin action.
+  await page.getByRole("button", { name: /Close file viewer:/ }).click();
+  await expect(reopen).toBeVisible();
+  await page.mouse.move(1, 1);
+  await page.setViewportSize({ width: 1200, height: 600 });
+  await expect(reopen).toBeHidden();
+  await recordUiCapture(page, "last-file-desktop-1200");
+  // Below the desktop-sidebar breakpoint, its released width leaves a margin.
+  await page.setViewportSize({ width: 1000, height: 600 });
+  await expect(reopen).toBeVisible();
+  await recordUiCapture(page, "last-file-desktop-1000");
+  await page.setViewportSize({ width: 375, height: 812 });
+  await expect(reopen).toBeHidden();
+  await recordUiCapture(page, "last-file-phone-375");
+  await page.setViewportSize({ width: 1600, height: 900 });
+  await expect(reopen).toBeVisible();
+  const composer = page.locator("[data-composer-input]");
+  const transcriptFile = join(
+    e2ePaths.claudeSessionsDir,
+    hostname(),
+    mockProjectPath.replace(/\//g, "-"),
+    `${sessionId}.jsonl`,
+  );
+  const originalTranscript = readFileSync(transcriptFile, "utf8");
+  const assistantRow = (index: number) =>
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        role: "assistant",
+        content: `Concurrent transcript update ${index}`,
+      },
+      timestamp: new Date().toISOString(),
+      uuid: `recall-update-${index}`,
+      parentUuid:
+        index === 0 ? "viewer-assistant-1" : `recall-update-${index - 1}`,
+    });
+  try {
+    appendFileSync(
+      transcriptFile,
+      `\n${Array.from({ length: 100 }, (_, index) => assistantRow(index)).join("\n")}\n`,
+    );
+    let typed = "";
+    let update = 100;
+    for (const character of "last file recalled") {
+      appendFileSync(transcriptFile, `${assistantRow(update++)}\n`);
+      typed += character;
+      await composer.press(character === " " ? "Space" : character);
+      await expect(composer).toHaveValue(typed, { timeout: 100 });
+    }
+    await expect(
+      page.getByText(`Concurrent transcript update ${update - 1}`, {
+        exact: true,
+      }),
+    ).toBeVisible();
+  } finally {
+    writeFileSync(transcriptFile, originalTranscript);
+  }
+});
 
 test("keeps the viewer open while transcript rich text settles", async ({
   page,

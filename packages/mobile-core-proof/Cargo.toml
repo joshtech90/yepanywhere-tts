@@ -1,0 +1,35 @@
+[package]
+name = "ya-mobile-core-proof"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97"
+license = "MIT"
+publish = false
+
+# Deliberately isolated from the production desktop/mobile applications.
+[workspace]
+
+[lib]
+crate-type = ["rlib", "staticlib", "cdylib"]
+
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"
+required-features = ["bindgen"]
+
+[features]
+bindgen = ["uniffi/cli"]
+
+[dependencies]
+base64 = "=0.22.1"
+hex = "=0.4.3"
+libsodium-sys-stable = "=1.24.0"
+num-bigint = "=0.4.6"
+serde_json = "=1.0.145"
+sha2 = "=0.10.9"
+srp = "=0.6.0"
+srp-next = { package = "srp", version = "=0.7.0-rc.3", default-features = false }
+sha2-next = { package = "sha2", version = "=0.11.0" }
+thiserror = "=2.0.17"
+uniffi = "=0.32.2"
+zeroize = "=1.8.2"

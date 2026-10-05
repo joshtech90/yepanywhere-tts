@@ -96,6 +96,9 @@ export async function readRetainedSessionItems(
         : {}),
       updatedAt,
       ...(row.createdAt ? { createdAt: row.createdAt } : {}),
+      // The sidebar files a session by the later of this and its creation
+      // time, as it does from the full walk.
+      ...(row.lastHumanTurnAt ? { lastHumanTurnAt: row.lastHumanTurnAt } : {}),
       provider,
       projectId,
       projectName:

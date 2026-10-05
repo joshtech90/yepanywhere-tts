@@ -62,6 +62,12 @@ proxy. Placement is one decision for every session-owned viewer
 no knowledge of where it is shown. Standalone file pages, public shares, and
 the separate media lightbox retain their presentations.
 
+All Sessions search also honors the Appearance setting: retained-match lists
+and turn context occupy a search-owned right column on desktop or a drawer on
+narrow screens. They share modal chrome and keep navigation to the matched
+turn available; they do not populate the session pane's viewer tabs. See
+[all-session content search](all-session-content-search.md).
+
 ## Layout
 
 The wide/narrow cutoff is the same 1100px used for desktop chrome and
@@ -200,7 +206,9 @@ clients without a configured public root expose no unreachable loopback link.
 Initial loaded output makes its latest discovered app available through the
 App action without automatically opening it: historical URLs may point to
 processes that have already exited. Reloading therefore does not resurrect a
-closed or expired app pane.
+closed or expired app pane. Initial tool URLs are remembered even when their
+vhost, bearer access or sandbox mapping resolves later; metadata arrival alone
+is not a fresh tool announcement.
 Tool-result rows also display clickable app links, reconstructed from the
 original output on replay without changing the provider transcript. Ordinary
 click opens that app in the pane when enabled; with the setting off or a

@@ -1,10 +1,18 @@
 import { getEntry, openDatabase, putEntryWithKey } from "./diagnostics/idb";
 
+export interface ComposerUploadOrigin {
+  projectId?: string;
+  projectName?: string;
+  sessionId?: string;
+  sessionTitle?: string;
+}
+
 export interface RecentComposerUpload {
   id: string;
   name: string;
   file: Blob;
   at: number;
+  origin?: ComposerUploadOrigin;
 }
 export interface ComposerHistory {
   prompts: { text: string; at: number }[];
@@ -13,6 +21,20 @@ export interface ComposerHistory {
 const empty = (): ComposerHistory => ({ prompts: [], uploads: [] });
 let database: Promise<IDBDatabase> | undefined;
 const mutations = new Map<string, Promise<void>>();
+const listeners = new Map<string, Set<() => void>>();
+
+export function subscribeComposerHistory(
+  scope: string,
+  listener: () => void,
+): () => void {
+  const subscribers = listeners.get(scope) ?? new Set<() => void>();
+  subscribers.add(listener);
+  listeners.set(scope, subscribers);
+  return () => {
+    subscribers.delete(listener);
+    if (!subscribers.size) listeners.delete(scope);
+  };
+}
 function db() {
   database ??= openDatabase("ya-composer-history", 1, (value) => {
     value.createObjectStore("accounts");
@@ -37,6 +59,7 @@ function update(
       (await getEntry<ComposerHistory>(database, "accounts", scope)) ?? empty();
     change(history);
     await putEntryWithKey(database, "accounts", scope, history);
+    for (const listener of listeners.get(scope) ?? []) listener();
   });
   mutations.set(scope, next);
   void next
@@ -61,6 +84,7 @@ export function rememberComposerPrompt(
 export async function rememberComposerUpload(
   scope: string,
   file: File,
+  origin?: ComposerUploadOrigin,
 ): Promise<void> {
   const maxBytes = 100 * 1024 * 1024;
   if (file.size > maxBytes) return;
@@ -73,7 +97,7 @@ export async function rememberComposerUpload(
   ).join("");
   await update(scope, (history) => {
     const entries = [
-      { id, name: file.name, file, at: Date.now() },
+      { id, name: file.name, file, at: Date.now(), origin },
       ...history.uploads.filter((item) => item.id !== id),
     ];
     let bytes = 0;

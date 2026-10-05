@@ -3277,6 +3277,29 @@ describe("useSessionMessages cache", () => {
     );
   });
 
+  it("retries a failed cold reveal on recovery and opens its stream gate", async () => {
+    const onLoadComplete = vi.fn();
+    const onLoadError = vi.fn();
+    apiMocks.getSession.mockRejectedValueOnce(new Error("offline"));
+    const { result } = renderHook(() =>
+      useSessionMessages({
+        projectId: "proj-1",
+        sessionId: "sess-1",
+        onLoadComplete,
+        onLoadError,
+      }),
+    );
+    await waitFor(() => expect(onLoadError).toHaveBeenCalledOnce());
+    expect(result.current.loading).toBe(false);
+    apiMocks.getSession.mockResolvedValue(sessionResponse("recovered"));
+    await act(async () => result.current.fetchNewMessages());
+    await waitFor(() => expect(onLoadComplete).toHaveBeenCalledOnce());
+    expect(result.current.messages.map((message) => message.uuid)).toEqual([
+      "recovered",
+    ]);
+    expect(result.current.loading).toBe(false);
+  });
+
   it("does not advance the transcript watermark for an empty delta", async () => {
     const onTranscriptReconciled = vi.fn();
     apiMocks.getSession.mockResolvedValueOnce(sessionResponse("msg-1"));

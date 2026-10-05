@@ -12,6 +12,7 @@ const RUNTIME_MANIFEST_NAME: &str = "desktop-runtime-manifest.json";
 #[serde(rename_all = "camelCase")]
 pub struct DesktopRuntimeMetadata {
     desktop_version: String,
+    native_update_check: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     bundled_ya_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -39,6 +40,7 @@ fn metadata_from_manifest(
         .and_then(|contents| serde_json::from_str::<DesktopRuntimeManifest>(contents).ok());
     DesktopRuntimeMetadata {
         desktop_version: desktop_version.into(),
+        native_update_check: cfg!(any(target_os = "macos", windows)),
         bundled_ya_version: manifest
             .as_ref()
             .and_then(|candidate| meaningful(candidate.yep_version.clone())),
@@ -110,6 +112,7 @@ mod tests {
         assert_eq!(
             metadata,
             DesktopRuntimeMetadata {
+                native_update_check: cfg!(any(target_os = "macos", windows)),
                 desktop_version: "0.1.1".to_string(),
                 bundled_ya_version: Some("v0.7.0-204-g02856e2c".to_string()),
                 commit: Some("02856e2cbe0edae579309ddb747ca8164a0682d3".to_string()),
@@ -122,6 +125,7 @@ mod tests {
         assert_eq!(
             metadata_from_manifest("0.1.1", Some("{")),
             DesktopRuntimeMetadata {
+                native_update_check: cfg!(any(target_os = "macos", windows)),
                 desktop_version: "0.1.1".to_string(),
                 bundled_ya_version: None,
                 commit: None,
@@ -132,6 +136,7 @@ mod tests {
     #[test]
     fn dashboard_metadata_is_read_only_and_loopback_scoped() {
         let script = initialization_script(&DesktopRuntimeMetadata {
+            native_update_check: cfg!(any(target_os = "macos", windows)),
             desktop_version: "0.1.1".to_string(),
             bundled_ya_version: Some("v0.7.0-204-g02856e2c".to_string()),
             commit: Some("02856e2c".to_string()),

@@ -1,6 +1,6 @@
 import type { HttpBindings } from "@hono/node-server";
 import { type Context, Hono } from "hono";
-import { setCookie } from "hono/cookie";
+import { getCookie, setCookie } from "hono/cookie";
 import {
   DESKTOP_SESSION_COOKIE_NAME,
   type DesktopBootstrapService,
@@ -72,6 +72,23 @@ export function createDesktopBootstrapRoutes(
   service: DesktopBootstrapService,
 ): Hono<{ Bindings: HttpBindings }> {
   const routes = new Hono<{ Bindings: HttpBindings }>();
+
+  routes.post("/check-updates", (c) => {
+    // A desktop session is the existing local owner principal. Password/SRP,
+    // forwarded relay requests and ambient loopback access grant no native UI.
+    if (
+      !service.onCheckUpdates ||
+      !isLoopbackDesktopRequest(c) ||
+      c.req.header("X-Yep-Anywhere") !== "true" ||
+      c.req.header("Origin") !== new URL(c.req.url).origin ||
+      !service.validateSession(getCookie(c, DESKTOP_SESSION_COOKIE_NAME))
+    ) {
+      return c.json({ error: "Not found" }, 404);
+    }
+    service.onCheckUpdates();
+    c.header("Cache-Control", "no-store");
+    return c.json({ accepted: true });
+  });
 
   routes.post("/mint", (c) => {
     if (!isLoopbackDesktopRequest(c)) {

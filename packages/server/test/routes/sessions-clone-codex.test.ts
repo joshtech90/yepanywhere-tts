@@ -283,6 +283,7 @@ describe("Codex clone route", () => {
       readerFactory: vi.fn(() => reader),
       codexReaderFactory: vi.fn(() => reader),
       sessionMetadataService: {
+        getMetadata: vi.fn(() => undefined),
         updateMetadata,
       } as unknown as SessionsDeps["sessionMetadataService"],
     });

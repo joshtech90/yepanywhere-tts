@@ -1,0 +1,25 @@
+Name: Yep Anywhere
+Apple subtitle: Your coding agents, anywhere
+Google Play short description: Supervise coding agents on your own computer from your phone.
+Apple category: Developer Tools
+Google Play category (proposed): Tools
+Apple keywords: coding,agents,developer,remote,terminal,projects,approvals
+Marketing URL: https://yepanywhere.com
+Support URL: https://github.com/kzahel/yepanywhere/issues
+Copyright: 2026 Kyle Graehl
+
+Full description:
+
+Supervise your coding agents from your phone. Yep Anywhere connects to your own Yep Anywhere server so you can follow active sessions, send messages, respond to approval requests, and switch between saved hosts.
+
+Keep work running on your computer while you check progress on the go. The mobile app provides native sign-in, protected saved credentials, and optional push notifications for session events. Supported relay connections use end-to-end encryption.
+
+Requires a Yep Anywhere server running on a computer you control, with remote access configured. Coding agents run on that computer using your existing provider setup; the mobile app does not run agents locally or include an AI subscription.
+
+Yep Anywhere is open source. Learn more and find setup instructions at https://yepanywhere.com.
+
+Beta testing focus:
+
+Pair with your own Yep Anywhere server, resume saved hosts, and switch hosts. Check conversations and approvals, send messages while output streams, and verify drafts survive backgrounding and relaunch. Enable notifications per host, then check delivery, notification taps, and disable behavior.
+
+Known beta limits: limited-user login is deferred. iOS embedded previews and Blob downloads still need native adapters. Production APNs setup and live iPhone notification-tap acceptance remain open.

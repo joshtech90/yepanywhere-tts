@@ -12,6 +12,7 @@
     "inspect:apks": "./scripts/inspect-apks.sh",
     "test": "./gradlew test",
     "test:connected": "./gradlew connectedBundledDebugAndroidTest",
-    "lint": "./gradlew lint"
+    "lint": "./gradlew lint",
+    "test:live": "pnpm exec tsx --conditions source scripts/live-transport.ts"
   }
 }

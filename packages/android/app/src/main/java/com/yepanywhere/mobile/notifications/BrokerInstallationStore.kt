@@ -12,6 +12,7 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 import org.json.JSONObject
+import com.yepanywhere.mobile.BuildConfig
 
 data class BrokerInstallationRecord(
     val installationId: String,
@@ -30,6 +31,7 @@ class BrokerInstallationStore internal constructor(
     context: Context,
     private val preferenceName: String = PREFERENCE_NAME,
     private val keyAlias: String = KEY_ALIAS,
+    private val brokerOrigin: String = java.net.URI(BuildConfig.PUSH_BROKER_URL).normalize().toString().trimEnd('/'),
 ) : BrokerInstallationStorage {
     private val preferences = context.applicationContext.getSharedPreferences(
         preferenceName,
@@ -51,7 +53,7 @@ class BrokerInstallationStore internal constructor(
                     Base64.decode(envelope.getString("iv"), Base64.NO_WRAP),
                 ),
             )
-            cipher.updateAAD(AUTHENTICATED_CONTEXT.toByteArray(Charsets.UTF_8))
+            cipher.updateAAD("$AUTHENTICATED_CONTEXT:$brokerOrigin".toByteArray(Charsets.UTF_8))
             val plaintext = cipher.doFinal(
                 Base64.decode(envelope.getString("ciphertext"), Base64.NO_WRAP),
             )
@@ -67,7 +69,7 @@ class BrokerInstallationStore internal constructor(
         validateRecord(record)
         val cipher = Cipher.getInstance(CIPHER_TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        cipher.updateAAD(AUTHENTICATED_CONTEXT.toByteArray(Charsets.UTF_8))
+        cipher.updateAAD("$AUTHENTICATED_CONTEXT:$brokerOrigin".toByteArray(Charsets.UTF_8))
         val plaintext = JSONObject()
             .put("installationId", record.installationId)
             .put("installationSecret", record.installationSecret)
@@ -175,7 +177,7 @@ class BrokerInstallationStore internal constructor(
         private const val PREFERENCE_NAME = "ya_push_installation_v1"
         private const val KEY_ALIAS = "ya_push_installation_key_v1"
         private const val RECORD_KEY = "encrypted_installation"
-        private const val RECORD_VERSION = 1
+        private const val RECORD_VERSION = 2
         private const val AUTHENTICATED_CONTEXT = "yep-anywhere-push-installation-v1"
         private val INSTALLATION_ID_PATTERN = Regex("^[A-Za-z0-9_-]{22}$")
         private val INSTALLATION_SECRET_PATTERN = Regex("^[A-Za-z0-9_-]{43}$")

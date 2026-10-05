@@ -3,6 +3,10 @@ import {
   CONVERSATION_CHANNEL,
 } from "@yep-anywhere/shared/experimental/conversation-protocol";
 import type { ConversationQuery } from "@yep-anywhere/shared/experimental/simple-client.generated";
+import {
+  RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS,
+  RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+} from "@yep-anywhere/shared";
 import type {
   ClientPing,
   DeviceServerMessage,
@@ -10,6 +14,8 @@ import type {
   RelayEvent,
   RelayRequest,
   RelayResponse,
+  RelayResponseStreamEnd,
+  RelayResponseStreamStart,
   RelaySpeechEvent,
   RelayStagedUploadStart,
   RelaySubscribe,
@@ -51,6 +57,27 @@ export interface RelayTransport {
   ): void | Promise<void>;
   ensureConnected(): Promise<void>;
   isConnected(): boolean;
+  /** Release an abandoned native request; ordinary relay has no cancel frame. */
+  cancelRequest?(id: string): void;
+  /**
+   * Whether this transport delivers streamed response chunks to
+   * `handleResponseChunk`. Only then does a request ask to be streamed.
+   */
+  readonly supportsStreamedResponses?: boolean;
+}
+
+/**
+ * Streamed body bytes consumed before the client reports them. Less than the
+ * send window, so the server is never left waiting on bytes already read.
+ */
+const RESPONSE_STREAM_ACK_STEP_BYTES = RELAY_RESPONSE_STREAM_WINDOW_BYTES / 4;
+
+/** A streamed response body being delivered to its reader. */
+interface ResponseStreamState {
+  controller: ReadableStreamDefaultController<Uint8Array>;
+  receivedBytes: number;
+  ackedBytes: number;
+  idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export type EmulatorMessageHandler = (msg: DeviceServerMessage) => void;
@@ -118,6 +145,27 @@ function createRelayApiError(
     error.setupRequired = true;
   }
   return Object.assign(error, refusalFields(response.body));
+}
+
+/** A Response rebuilt from a relay response's single-message body. */
+function toFetchResponse(response: RelayResponse): Response {
+  const headers = new Headers(response.headers);
+  let body: BodyInit | null = null;
+  if (![204, 205, 304].includes(response.status)) {
+    const mediaType =
+      headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ?? "";
+    const value = response.body as { _binary?: boolean; data?: string };
+    if (mediaType === "application/json" || mediaType.endsWith("+json")) {
+      // Match the server's JSON classification before considering a binary
+      // envelope: those field names may also occur in an ordinary JSON file.
+      body = JSON.stringify(response.body);
+    } else if (value?._binary === true && typeof value.data === "string") {
+      body = Uint8Array.from(atob(value.data), (char) => char.charCodeAt(0));
+    } else if (typeof response.body === "string") body = response.body;
+    else if (response.body != null)
+      throw new Error("Unexpected relay response body");
+  }
+  return new Response(body, { status: response.status, headers });
 }
 
 const RELAY_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
@@ -250,6 +298,13 @@ export class RelayProtocol {
    * abandoned batch.
    */
   private abandonedRequests = new Set<string>();
+  /** Streamed requests awaiting their start, by request id. */
+  private pendingStreamStarts = new Map<
+    string,
+    (start: RelayResponseStreamStart) => void
+  >();
+  /** Streamed response bodies being delivered, by request id. */
+  private responseStreams = new Map<string, ResponseStreamState>();
   /** Registered handlers for emulator signaling messages */
   private emulatorHandlers = new Set<EmulatorMessageHandler>();
   /** Registered handlers for relayed speech stream messages */
@@ -397,6 +452,12 @@ export class RelayProtocol {
     switch (msg.type) {
       case "response":
         this.handleResponse(msg);
+        break;
+      case "response_stream_start":
+        this.handleResponseStreamStart(msg);
+        break;
+      case "response_stream_end":
+        this.handleResponseStreamEnd(msg);
         break;
       case "event":
         this.handleEvent(msg);
@@ -586,6 +647,133 @@ export class RelayProtocol {
     }
   }
 
+  private handleResponseStreamStart(start: RelayResponseStreamStart): void {
+    const onStart = this.pendingStreamStarts.get(start.id);
+    if (onStart) {
+      onStart(start);
+      return;
+    }
+    // Its caller gave up before the body began; stop the server sending it.
+    this.abandonedRequests.delete(start.id);
+    this.sendResponseStreamCancel(start.id);
+  }
+
+  /** Delivers raw bytes of a streamed body, as the owning transport decodes them. */
+  handleResponseChunk(requestId: string, bytes: Uint8Array): void {
+    const stream = this.responseStreams.get(requestId);
+    // A body cancelled here can still have chunks in flight.
+    if (!stream) return;
+    stream.receivedBytes += bytes.byteLength;
+    stream.controller.enqueue(bytes);
+    this.armResponseStreamIdle(requestId, stream);
+    this.acknowledgeResponseStream(requestId, stream);
+  }
+
+  private handleResponseStreamEnd(end: RelayResponseStreamEnd): void {
+    const stream = this.responseStreams.get(end.id);
+    if (!stream) return;
+    this.releaseResponseStream(end.id, stream);
+    if (end.error) {
+      stream.controller.error(new Error(end.error));
+    } else {
+      stream.controller.close();
+    }
+  }
+
+  /**
+   * The body reader for a streamed response. Bytes the reader has consumed
+   * are reported to the server, which sends no further ahead than its window,
+   * so a slow reader slows the transfer instead of growing a buffer.
+   */
+  private openResponseStream(id: string): ReadableStream<Uint8Array> {
+    let stream: ResponseStreamState | undefined;
+    return new ReadableStream<Uint8Array>(
+      {
+        start: (controller) => {
+          stream = {
+            controller,
+            receivedBytes: 0,
+            ackedBytes: 0,
+            idleTimer: null,
+          };
+          this.responseStreams.set(id, stream);
+          this.armResponseStreamIdle(id, stream);
+        },
+        pull: () => {
+          if (stream && this.responseStreams.get(id) === stream) {
+            this.armResponseStreamIdle(id, stream);
+            this.acknowledgeResponseStream(id, stream);
+          }
+        },
+        cancel: () => {
+          if (!stream || this.responseStreams.get(id) !== stream) return;
+          this.releaseResponseStream(id, stream);
+          this.sendResponseStreamCancel(id);
+        },
+      },
+      {
+        highWaterMark: RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+        size: (chunk) => chunk.byteLength,
+      },
+    );
+  }
+
+  private acknowledgeResponseStream(
+    id: string,
+    stream: ResponseStreamState,
+  ): void {
+    const queuedBytes =
+      RELAY_RESPONSE_STREAM_WINDOW_BYTES - (stream.controller.desiredSize ?? 0);
+    const consumedBytes = stream.receivedBytes - Math.max(0, queuedBytes);
+    if (consumedBytes - stream.ackedBytes < RESPONSE_STREAM_ACK_STEP_BYTES) {
+      return;
+    }
+    stream.ackedBytes = consumedBytes;
+    try {
+      this.transport.sendMessage({
+        type: "response_stream_ack",
+        id,
+        bytes: consumedBytes,
+      });
+    } catch {
+      // The connection is closing; its teardown fails the stream.
+    }
+  }
+
+  /** Fails a stream that makes no progress, as the server would. */
+  private armResponseStreamIdle(id: string, stream: ResponseStreamState): void {
+    if (stream.idleTimer) clearTimeout(stream.idleTimer);
+    stream.idleTimer = setTimeout(() => {
+      if (this.responseStreams.get(id) !== stream) return;
+      this.releaseResponseStream(id, stream);
+      this.sendResponseStreamCancel(id);
+      stream.controller.error(new Error("Request timeout"));
+    }, RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS);
+  }
+
+  private releaseResponseStream(id: string, stream: ResponseStreamState): void {
+    if (stream.idleTimer) clearTimeout(stream.idleTimer);
+    stream.idleTimer = null;
+    this.responseStreams.delete(id);
+  }
+
+  private sendResponseStreamCancel(id: string): void {
+    if (!this.transport.isConnected()) return;
+    try {
+      this.transport.sendMessage({ type: "response_stream_cancel", id });
+    } catch {
+      // Connection teardown releases the server's stream.
+    }
+  }
+
+  private failResponseStreams(error: Error): void {
+    for (const [id, stream] of Array.from(this.responseStreams)) {
+      this.releaseResponseStream(id, stream);
+      stream.controller.error(error);
+    }
+    this.pendingStreamStarts.clear();
+  }
+
   /**
    * Re-issue a read that the transport rejected because it was replacing its
    * own socket. The request never reached the server, and every read opens by
@@ -639,25 +827,122 @@ export class RelayProtocol {
 
   /** Reconstruct a Response from the relay's existing body representation. */
   async fetchResponse(path: string, init?: RequestInit): Promise<Response> {
-    const response = await this.fetchThroughReconnect(path, init);
-    const headers = new Headers(response.headers);
-    let body: BodyInit | null = null;
-    if (![204, 205, 304].includes(response.status)) {
-      const mediaType =
-        headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase() ??
-        "";
-      const value = response.body as { _binary?: boolean; data?: string };
-      if (mediaType === "application/json" || mediaType.endsWith("+json")) {
-        // Match the server's JSON classification before considering a binary
-        // envelope: those field names may also occur in an ordinary JSON file.
-        body = JSON.stringify(response.body);
-      } else if (value?._binary === true && typeof value.data === "string") {
-        body = Uint8Array.from(atob(value.data), (char) => char.charCodeAt(0));
-      } else if (typeof response.body === "string") body = response.body;
-      else if (response.body != null)
-        throw new Error("Unexpected relay response body");
+    return toFetchResponse(await this.fetchThroughReconnect(path, init));
+  }
+
+  /**
+   * GET a file or binary body as a Response whose body arrives as a stream,
+   * so neither end holds the whole file and no single-message size limit
+   * applies. A transport without streamed responses, or a server that
+   * answers with one message, yields the same Response with its body already
+   * in hand. Rejects for an error status, like `fetchBlob`.
+   */
+  async fetchStream(
+    path: string,
+    init?: { signal?: AbortSignal },
+  ): Promise<Response> {
+    if (!this.transport.supportsStreamedResponses) {
+      return this.fetchResponse(path, init);
     }
-    return new Response(body, { status: response.status, headers });
+    return this.retryReadThroughReconnect(
+      () => this.fetchStreamOnce(path, init?.signal),
+      init?.signal,
+    );
+  }
+
+  private async fetchStreamOnce(
+    path: string,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    await this.transport.ensureConnected();
+
+    const id = generateId();
+    const request: RelayRequest = {
+      type: "request",
+      id,
+      method: "GET",
+      path: path.startsWith("/api") ? path : `/api${path}`,
+      headers: { "X-Yep-Anywhere": "true" },
+      stream: true,
+    };
+    const startTime = Date.now();
+
+    return new Promise<Response>((resolve, reject) => {
+      if (signal?.aborted) {
+        reject(relayAbortError(signal));
+        return;
+      }
+      let onAbort: (() => void) | undefined;
+      const settle = () => {
+        clearTimeout(timeout);
+        this.pendingRequests.delete(id);
+        this.pendingStreamStarts.delete(id);
+        if (onAbort) signal?.removeEventListener("abort", onAbort);
+      };
+      const timeout = setTimeout(() => {
+        settle();
+        reject(new Error("Request timeout"));
+      }, API_REQUEST_DEADLINE_MS);
+
+      // A server that predates streaming, or an error status, answers with
+      // one ordinary response.
+      this.pendingRequests.set(id, {
+        resolve: (response: RelayResponse) => {
+          settle();
+          if (response.status >= 400) {
+            reject(createRelayApiError(response));
+            return;
+          }
+          try {
+            resolve(toFetchResponse(response));
+          } catch (error) {
+            reject(error instanceof Error ? error : new Error(String(error)));
+          }
+        },
+        reject: (error) => {
+          settle();
+          reject(error);
+        },
+        timeout,
+        startTime,
+        method: "GET",
+        path: request.path,
+      });
+      this.pendingStreamStarts.set(id, (start) => {
+        settle();
+        const headers = new Headers(start.headers);
+        if (start.length !== undefined) {
+          headers.set("content-length", String(start.length));
+        }
+        resolve(
+          new Response(this.openResponseStream(id), {
+            status: start.status,
+            headers,
+          }),
+        );
+      });
+
+      if (signal) {
+        onAbort = () => {
+          settle();
+          // A start that still arrives is answered with a cancel.
+          this.abandonedRequests.add(id);
+          setTimeout(
+            () => this.abandonedRequests.delete(id),
+            API_REQUEST_DEADLINE_MS,
+          );
+          reject(relayAbortError(signal));
+        };
+        signal.addEventListener("abort", onAbort, { once: true });
+      }
+
+      try {
+        this.transport.sendMessage(request);
+      } catch (err) {
+        settle();
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
   }
 
   private async fetchWithRedirects(
@@ -752,6 +1037,7 @@ export class RelayProtocol {
           );
         }
         this.pendingRequests.delete(id);
+        this.transport.cancelRequest?.(id);
         reject(new Error("Request timeout"));
       }, API_REQUEST_DEADLINE_MS);
 
@@ -808,6 +1094,7 @@ export class RelayProtocol {
         onAbort = () => {
           clearTimeout(timeout);
           this.pendingRequests.delete(id);
+          this.transport.cancelRequest?.(id);
           // Expect the reply anyway, and stop expecting it once the client
           // would have given up waiting regardless.
           this.abandonedRequests.add(id);
@@ -835,6 +1122,15 @@ export class RelayProtocol {
    * retries once through a transport reconnect like the JSON reads above.
    */
   async fetchBlob(path: string): Promise<Blob> {
+    if (this.transport.supportsStreamedResponses) {
+      // Raw chunks skip the base64 message and its size limit; the bytes are
+      // still collected, since the caller asked for a Blob.
+      const response = await this.fetchStream(path);
+      const blob = await response.blob();
+      return blob.type
+        ? blob
+        : blob.slice(0, blob.size, "application/octet-stream");
+    }
     return this.retryReadThroughReconnect(() => this.fetchBlobOnce(path));
   }
 
@@ -943,6 +1239,7 @@ export class RelayProtocol {
       sessionId,
       lastEventId,
       wantsLiveDeltas: options?.wantsLiveDeltas,
+      wantsLiveToolOutput: options?.wantsLiveToolOutput,
     }));
   }
 
@@ -1233,6 +1530,8 @@ export class RelayProtocol {
       pending.reject(error);
       this.pendingUploads.delete(id);
     }
+
+    this.failResponseStreams(error);
   }
 
   /**
@@ -1282,6 +1581,7 @@ export class RelayProtocol {
       pending.reject(closeError);
     }
     this.pendingUploads.clear();
+    this.failResponseStreams(closeError);
     // No reply can arrive on a closed connection, so nothing is left to excuse.
     this.abandonedRequests.clear();
   }

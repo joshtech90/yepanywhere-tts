@@ -359,7 +359,9 @@ typed local `/done` without a toolbar button; the ordinary narrowing tiers
 enable the command and show the circle-check button. `/done` follows its
 composer: an aside-routed composer closes that aside, while the Mother composer
 keeps this synthetic session behavior even when a side pane is open. With the
-setting Off, Mother passes `/done` through to the provider.
+setting Off, Mother passes `/done` through to the provider. Choosing `/done`
+from the slash-command menu routes exactly as submitting it does; with no
+focused aside it marks the session done rather than reporting a missing aside.
 
 `/archive` has its own permanent `synthetic-archive-command` capability and
 route because older done-capable servers cannot atomically archive with the

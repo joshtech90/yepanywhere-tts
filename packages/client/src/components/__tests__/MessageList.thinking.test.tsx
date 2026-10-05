@@ -19,6 +19,49 @@ import { MessageList } from "../MessageList";
 installMessageListTestEnvironment();
 
 describe("MessageList thinking rows", () => {
+  it.each([0, 16])(
+    "cancels thinking-toggle scroll restoration when unmounted after %i ms",
+    (elapsed) => {
+      vi.useFakeTimers({
+        toFake: [
+          "setTimeout",
+          "clearTimeout",
+          "requestAnimationFrame",
+          "cancelAnimationFrame",
+        ],
+      });
+      const view = render(
+        <MessageList
+          provider="codex"
+          messages={[codexThinkingMessage("thinking-1", "Stored thought")]}
+        />,
+      );
+      act(() => vi.advanceTimersByTime(100));
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Hide thinking transcript rows (display only; the agent keeps working)",
+        }),
+      );
+      expect(
+        view.container.querySelectorAll("details.thinking-block"),
+      ).toHaveLength(0);
+      act(() => vi.advanceTimersByTime(elapsed));
+      view.unmount();
+
+      // A late restore must neither write detached DOM nor schedule a follow-up
+      // state update after the view (and possibly its document) has gone away.
+      const writeScroll = vi.fn();
+      Object.defineProperty(view.container, "scrollTop", {
+        configurable: true,
+        get: () => 0,
+        set: writeScroll,
+      });
+      act(() => vi.advanceTimersByTime(100));
+      expect(writeScroll).not.toHaveBeenCalled();
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
   it("renders Codex reasoning summaries as collapsed thinking blocks", () => {
     const { container } = render(
       <MessageList

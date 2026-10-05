@@ -197,6 +197,8 @@ export interface StreamHandlers {
 export interface SessionSubscriptionOptions {
   /** Whether this subscriber wants live provider deltas (default: true). */
   wantsLiveDeltas?: boolean;
+  /** Whether this subscriber wants running tool calls' live output (default: true). */
+  wantsLiveToolOutput?: boolean;
 }
 
 export interface ConnectionSpeechSocket {
@@ -261,6 +263,15 @@ export interface Connection {
    * @throws Error on HTTP errors
    */
   fetchBlob(path: string): Promise<Blob>;
+
+  /**
+   * GET a file body as a Response whose body streams in as it arrives, for a
+   * connection that can deliver it in pieces. Rejects for an error status.
+   */
+  fetchStream?(
+    path: string,
+    init?: { signal?: AbortSignal },
+  ): Promise<Response>;
 
   /**
    * Subscribe to session events via WebSocket.

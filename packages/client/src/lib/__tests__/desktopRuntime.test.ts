@@ -23,6 +23,19 @@ describe("desktop runtime metadata", () => {
     });
   });
 
+  it("only admits an explicit native updater marker", () => {
+    window.__YEP_DESKTOP_RUNTIME__ = {
+      desktopVersion: "0.2.2",
+      nativeUpdateCheck: "true",
+    };
+    expect(getDesktopRuntimeMetadata()?.nativeUpdateCheck).toBeUndefined();
+    window.__YEP_DESKTOP_RUNTIME__ = {
+      desktopVersion: "0.2.2",
+      nativeUpdateCheck: true,
+    };
+    expect(getDesktopRuntimeMetadata()?.nativeUpdateCheck).toBe(true);
+  });
+
   it("does not identify an ordinary browser as a desktop runtime", () => {
     expect(getDesktopRuntimeMetadata()).toBeNull();
     window.__YEP_DESKTOP_RUNTIME__ = { bundledYaVersion: "v0.7.0" };

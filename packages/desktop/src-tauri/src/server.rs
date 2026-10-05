@@ -337,6 +337,10 @@ fn spawn_stdout_reader<R>(
                             let _ = sender.send(result);
                         }
                     }
+                    if line == r#"YEP_DESKTOP_ACTION {"action":"check-updates"}"# {
+                        crate::updater::check(&app, "manual");
+                        continue;
+                    }
                     record_server_output(&app, "stdout", format!("{line}\n"));
                 }
                 Ok(None) => {
@@ -571,7 +575,11 @@ fn create_server_command(
     Ok(command)
 }
 
-async fn send_startup_frame(child: &mut Child, secret: &str) -> Result<(), String> {
+async fn send_startup_frame(
+    child: &mut Child,
+    secret: &str,
+    delegation: Option<&str>,
+) -> Result<(), String> {
     let mut stdin = child
         .stdin
         .take()
@@ -579,6 +587,8 @@ async fn send_startup_frame(child: &mut Child, secret: &str) -> Result<(), Strin
     let frame = serde_json::json!({
         "protocol": DESKTOP_BOOTSTRAP_PROTOCOL_VERSION,
         "masterSecret": secret,
+        "nativeUpdates": cfg!(any(target_os = "macos", windows)),
+        "machineControlSocket": delegation,
     });
     stdin
         .write_all(format!("{frame}\n").as_bytes())
@@ -748,11 +758,33 @@ async fn start_server_inner(app: AppHandle) -> Result<(), String> {
     );
 
     let mut command = create_server_command(&app, requested_port, &data_dir)?;
+    #[cfg(target_os = "macos")]
+    let handoff = if crate::machine_control::eligible() {
+        crate::machine_control::Handoff::prepare().ok()
+    } else {
+        None
+    };
+    #[cfg(target_os = "macos")]
+    let delegation = handoff.as_ref().map(|value| value.pathname.clone());
+    #[cfg(not(target_os = "macos"))]
+    let delegation: Option<String> = None;
     let mut child = command
         .spawn()
         .map_err(|error| format!("Failed to start bundled server: {error}"))?;
     let process_job = assign_process_job(&child)?;
-    if let Err(error) = send_startup_frame(&mut child, &bootstrap_secret).await {
+    #[cfg(target_os = "macos")]
+    if let Some(handoff) = handoff {
+        if handoff
+            .start(child.id().ok_or("Bundled server PID unavailable")?)
+            .is_err()
+        {
+            let _ = stop_child(child, Some(process_job), None).await;
+            return Err("Could not establish private machine-control handoff".into());
+        }
+    }
+    if let Err(error) =
+        send_startup_frame(&mut child, &bootstrap_secret, delegation.as_deref()).await
+    {
         let _ = stop_child(child, Some(process_job), None).await;
         return Err(error);
     }

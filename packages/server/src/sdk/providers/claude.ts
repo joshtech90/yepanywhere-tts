@@ -1,3 +1,5 @@
+import { routerModelSupportsThinking } from "@yep-anywhere/shared";
+import { claudeRouterEnvironment } from "./router-transport.js";
 import { startAgentSelfSession } from "./agent-self.js";
 import {
   type ChildProcess,
@@ -54,6 +56,7 @@ import {
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import { ClaudeTurnEffort } from "./claude-turn-effort.js";
+import { normalizeClaudeContextUsage } from "./claude-context-breakdown.js";
 import {
   getClaudeAdditionalModelOptions,
   getClaudeModelCatalogCacheKey,
@@ -67,6 +70,10 @@ import {
 } from "./claude-goal.js";
 import { ClaudeProviderRetentionTracker } from "./claude-retention.js";
 import { ClaudeSteerBackgroundController } from "./claude-steer-background.js";
+import {
+  claudeToolOutputTmpRoots,
+  withClaudeToolOutputPreviews,
+} from "./claude-tool-output-preview.js";
 import {
   checkRemotePath,
   createRemoteSpawn,
@@ -2067,6 +2074,11 @@ export class ClaudeProvider implements AgentProvider {
       ...agentServerEnvironmentFor(options),
       ...autoCompactOverrideEnv,
     };
+    if (options.routerLaunch)
+      Object.assign(
+        baseClaudeEnv,
+        claudeRouterEnvironment(options.routerLaunch),
+      );
     const claudeEnv = agentctlSessionEnvBridge
       ? agentctlSessionEnvBridge.extendEnv(baseClaudeEnv)
       : baseClaudeEnv;
@@ -2223,7 +2235,8 @@ export class ClaudeProvider implements AgentProvider {
           {
             event: "claude_child_spawn_start",
             command: spawnOpts.command,
-            args: sandboxed ? undefined : spawnOpts.args,
+            args:
+              sandboxed || options.routerLaunch ? undefined : spawnOpts.args,
             cwd: spawnOpts.cwd,
             shell: process.platform === "win32",
             resolvedExecutable: pathToClaudeCodeExecutable,
@@ -2285,7 +2298,9 @@ export class ClaudeProvider implements AgentProvider {
               {
                 event: "claude_child_stderr",
                 pid: proc.pid,
-                stderr: trimmed.slice(0, 2000),
+                stderr: options.routerLaunch
+                  ? "[routed provider stderr omitted]"
+                  : trimmed.slice(0, 2000),
               },
               "Claude child stderr",
             );
@@ -2303,7 +2318,11 @@ export class ClaudeProvider implements AgentProvider {
               command: spawnOpts.command,
               cwd: spawnOpts.cwd,
               resolvedExecutable: pathToClaudeCodeExecutable,
-              stderrTail: stderr ? stderr.slice(-4000) : undefined,
+              stderrTail: options.routerLaunch
+                ? undefined
+                : stderr
+                  ? stderr.slice(-4000)
+                  : undefined,
             },
             "Claude child process exited",
           );
@@ -2333,7 +2352,9 @@ export class ClaudeProvider implements AgentProvider {
     const turnEffort = new ClaudeTurnEffort(
       () => sdkQuery,
       async () => {
-        const models = await this.getAvailableModels();
+        const models = options.routerLaunch
+          ? (options.routerLaunch.models ?? [])
+          : await this.getAvailableModels();
         const model = models.find(
           (candidate) => candidate.id === (selectedModel ?? "default"),
         );
@@ -2384,6 +2405,16 @@ export class ClaudeProvider implements AgentProvider {
           // Filter env to exclude npm_*, yep-anywhere specific, and other irrelevant vars
           env: claudeEnv,
           ...this.getSessionToolOptions(options.model, sessionSandbox),
+          ...(options.routerLaunch
+            ? {
+                settings: {
+                  ...this.getSettings(options.model),
+                  apiKeyHelper: "",
+                  disableClaudeAiConnectors: true,
+                  env: claudeRouterEnvironment(options.routerLaunch),
+                },
+              }
+            : {}),
           hooks: {
             Stop: [
               {
@@ -2460,9 +2491,16 @@ export class ClaudeProvider implements AgentProvider {
         steerBackgroundController.observe(message);
       },
     });
+    // A remote executor's task output files live on the remote host.
+    const previewedIterator = options.executor
+      ? wrappedIterator
+      : withClaudeToolOutputPreviews(wrappedIterator, {
+          cwd: effectiveCwd,
+          tmpRoots: claudeToolOutputTmpRoots(claudeEnv),
+        });
     const iterator = agentctlSessionEnvBridge
-      ? withCleanup(wrappedIterator, () => agentctlSessionEnvBridge.cleanup())
-      : wrappedIterator;
+      ? withCleanup(previewedIterator, () => agentctlSessionEnvBridge.cleanup())
+      : previewedIterator;
     const isCapturedProcessAlive =
       USE_SPAWN_WRAPPER && !options.executor
         ? () =>
@@ -2539,7 +2577,17 @@ export class ClaudeProvider implements AgentProvider {
       },
       setMaxThinkingTokens: (tokens: number | null) =>
         turnEffort.setThinking(tokens),
-      setEffort: (effort?: EffortLevel) => turnEffort.setEffort(effort),
+      setEffort: (effort?: EffortLevel) => {
+        if (
+          options.routerLaunch?.models &&
+          !routerModelSupportsThinking(
+            options.routerLaunch.models.find((m) => m.id === selectedModel),
+            effort ? `on:${effort}` : "auto",
+          )
+        )
+          throw new Error("Thinking level unavailable for the pinned account");
+        return turnEffort.setEffort(effort);
+      },
       setSessionOptions: (requested) =>
         Promise.resolve(
           evaluateClaudeSessionOptionsUpdate(
@@ -2552,10 +2600,17 @@ export class ClaudeProvider implements AgentProvider {
         return true;
       },
       supportedModels: async (): Promise<ModelInfo[]> => {
+        if (options.routerLaunch) return options.routerLaunch.models ?? [];
         const models = await sdkQuery.supportedModels();
         return this.normalizeSupportedModels(models);
       },
       supportedCommands: buildCommandInventory,
+      // 'full' counts each category with the token-count API (~0.3 s); the
+      // 'summary' estimate measured 15% high with a near-zero Messages row.
+      getContextBreakdown: async () =>
+        normalizeClaudeContextUsage(
+          await sdkQuery.getContextUsage({ detail: "full" }),
+        ),
       runProviderCommand: async (
         command,
         argument,
@@ -2592,6 +2647,11 @@ export class ClaudeProvider implements AgentProvider {
         return operation;
       },
       setModel: async (model?: string) => {
+        if (
+          options.routerLaunch?.models &&
+          !options.routerLaunch.models.some((m) => m.id === model)
+        )
+          throw new Error("Model unavailable for the pinned account");
         await sdkQuery.setModel(normalizeClaudeLaunchModel(model));
         selectedModel = model;
       },

@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
-import { getSourceRuntimeRegistry } from "../lib/sourceRuntime";
 import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
 
 interface RemoteImageResult {
@@ -176,24 +175,4 @@ export function useFetchedImage(
   }
 
   return { url: blobUrl, blob, loading, error };
-}
-
-/**
- * Preload an image via relay and return its blob URL.
- * Useful for programmatic image loading outside of React components.
- *
- * @param apiPath - The API path for the image
- * @returns Promise resolving to blob URL, or the original path if not in remote mode
- */
-export async function preloadRemoteImage(
-  apiPath: string,
-): Promise<string | null> {
-  const transport =
-    getSourceRuntimeRegistry().getCurrentSourceRuntime().transport;
-  if (transport.capabilities.sameOriginUrls) {
-    return apiPath;
-  }
-
-  const blob = await transport.fetchBlob(toSourceTransportApiPath(apiPath));
-  return URL.createObjectURL(blob);
 }

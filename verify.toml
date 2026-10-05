@@ -1,0 +1,59 @@
+# The repository's standard checks, by name. Each `run` is an ordinary
+# command; run it directly, or run them all with the `verify` runner
+# (https://github.com/graehl/agents, scripts/verify), which runs the quick
+# tier by default and adds `tier = "deep"` checks with --deep.
+#
+# `warn` matches lines that break the zero-warning rule
+# (docs/development/code-quality.md § Zero-Warning Commits). The check still
+# passes, and the matching lines are reported.
+
+[[check]]
+name = "lint"
+run = "pnpm lint"
+warn = 'Found \d+ warnings?'
+
+[[check]]
+name = "format:check"
+run = "pnpm format:check"
+
+# Reports standing ungated console calls as debt by design; no warn pattern.
+[[check]]
+name = "console:scan"
+run = "pnpm console:scan"
+
+[[check]]
+name = "typecheck"
+run = "pnpm typecheck"
+
+[[check]]
+name = "test"
+run = "pnpm test"
+timeout = "20m"
+# \b leaves out Node's ExperimentalWarning for its built-in SQLite, which the
+# relay and push-broker use by choice.
+warn = 'not wrapped in act\(|Cannot update a component|\bWarning: '
+
+[[check]]
+name = "capabilities:audit"
+run = "pnpm capabilities:audit"
+tier = "deep"
+
+[[check]]
+name = "site:build"
+run = "pnpm site:build"
+tier = "deep"
+
+# Browser suites start isolated servers; run them one at a time.
+[[check]]
+name = "test:e2e"
+run = "pnpm test:e2e"
+tier = "deep"
+exclusive = true
+timeout = "30m"
+
+[[check]]
+name = "relay-e2e"
+run = "pnpm --filter @yep-anywhere/client exec playwright test e2e/relay-integration.spec.ts"
+tier = "deep"
+exclusive = true
+timeout = "15m"

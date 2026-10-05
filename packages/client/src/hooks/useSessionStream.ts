@@ -19,6 +19,10 @@ import {
   type ManagedStreamEvent,
   SERVER_PUSH_INACTIVITY_TIMEOUT_MS,
 } from "../lib/transport";
+import {
+  getLiveToolOutputEnabled,
+  subscribeLiveToolOutputEnabled,
+} from "./useLiveToolOutputEnabled";
 import { useResubscribeOnFrontendSourceChange } from "./useResubscribeOnFrontendSourceChange";
 import {
   getStreamingEnabled,
@@ -63,6 +67,11 @@ export function useSessionStream(
     getStreamingEnabled,
     () => true,
   );
+  const wantsLiveToolOutput = useSyncExternalStore(
+    subscribeLiveToolOutputEnabled,
+    getLiveToolOutputEnabled,
+    () => true,
+  );
   const streamRef = useRef<ManagedStream | null>(null);
   const lastEventIdRef = useRef<string | null>(null);
   const optionsRef = useRef(options);
@@ -104,12 +113,13 @@ export function useSessionStream(
             sessionId,
             lastEventId: lastEventId ?? lastEventIdRef.current ?? null,
             wantsLiveDeltas,
+            wantsLiveToolOutput,
           });
           return transport.subscribeSession(
             sessionId,
             handlers,
             lastEventId ?? lastEventIdRef.current ?? undefined,
-            { wantsLiveDeltas },
+            { wantsLiveDeltas, wantsLiveToolOutput },
           );
         },
         captureEventId: (event) =>
@@ -189,7 +199,13 @@ export function useSessionStream(
       }
       stream.close();
     };
-  }, [runtime.sourceKey, runtime.transport, sessionId, wantsLiveDeltas]);
+  }, [
+    runtime.sourceKey,
+    runtime.transport,
+    sessionId,
+    wantsLiveDeltas,
+    wantsLiveToolOutput,
+  ]);
 
   return { connected, reconnect, resubscribing };
 }

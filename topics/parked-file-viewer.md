@@ -81,6 +81,30 @@ The capability is authenticated-session UI. Live and frozen public shares do
 not expose parking controls, consistent with their lack of an authenticated
 session composer and their narrower file authority.
 
+## Last file after Close
+
+Authenticated sessions remember the last project file-view route in browser
+local storage, keyed by session ID, with no expiry. The route retains the file
+path, line/range and view mode; it stores no content or mounted viewer state.
+Opening another file, including a nested file, replaces that route. Close and
+page reload retain it, and neither automatically opens a viewer.
+
+When no managed viewer is open or parked, a dim right chevron recalls that file
+through the existing session viewer. Its hover or keyboard-focus hint contains
+only the project-relative path (the absolute path for a file outside the
+project). The 32×48 hit target sits in the transcript's right margin; it appears
+only when the measured reading column leaves at least 54px there. Sidebar,
+right-pane and content-width changes recalculate that fit. Narrow screens show
+no additional control. Minimized viewers keep their existing toolbar control.
+
+The chevron is default-visible when it fits, explicitly accepted by graehl on
+2026-09-30. It is generally useful after Close, independently of server restarts.
+
+**Remember the route** (vs. persisting a mounted viewer or server-side history):
+the user requested lightweight per-session recall after using ×. Reopening
+fetches the current file and keeps the existing session in place; parking
+continues to preserve the live viewer's exact reading state.
+
 ## First trial: persistent composer controller
 
 The first presentation to evaluate is one controller in the bottom composer

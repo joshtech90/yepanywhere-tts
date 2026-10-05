@@ -3,7 +3,7 @@ import type { SessionContentDiagnostic } from "@yep-anywhere/shared";
 import type { GlobalSessionItem } from "../../api/client";
 import { useI18n } from "../../i18n";
 import { getSessionDisplayTitle } from "../../utils";
-import { Modal } from "../ui/Modal";
+import { SearchDetail } from "./SearchDetail";
 import { limitTurnMatches, type SearchMatch } from "./model";
 import {
   MatchPreview,
@@ -24,6 +24,7 @@ export function SearchSessionMatches({
   basePath,
   onZoom,
   onClose,
+  paneTarget,
 }: {
   session: GlobalSessionItem;
   matches: SearchMatch[];
@@ -35,6 +36,7 @@ export function SearchSessionMatches({
   basePath: string;
   onZoom(target: SearchPreviewTarget): void;
   onClose(): void;
+  paneTarget?: HTMLElement | null;
 }) {
   const { t } = useI18n();
   const turns = limitTurnMatches(matches, Infinity);
@@ -61,7 +63,8 @@ export function SearchSessionMatches({
     return () => observer.disconnect();
   }, [query, count, turns.length]);
   return (
-    <Modal
+    <SearchDetail
+      paneTarget={paneTarget}
       title={getSessionDisplayTitle(session)}
       onClose={onClose}
       closeOnBackGesture
@@ -114,6 +117,6 @@ export function SearchSessionMatches({
           basePath={basePath}
         />
       </div>
-    </Modal>
+    </SearchDetail>
   );
 }

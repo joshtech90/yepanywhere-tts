@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "source": "tssrp6a@3.0.0 + tweetnacl@1.0.3",
+  "srp": {
+    "groupBits": 2048,
+    "hash": "SHA-512",
+    "N": "ac6bdb41324a9a9bf166de5e1389582faf72b6651987ee07fc3192943db56050a37329cbb4a099ed8193e0757767a13dd52312ab4b03310dcd7f48a9da04fd50e8083969edb767b0cf6095179a163ab3661a05fbd5faaae82918a9962f0b93b855f97993ec975eeaa80d740adbf4ff747359d041d5c33ea71d281e446b14773bca97b43a23fb801676bd207a436c6481f1d2b9078717461a5b9d32e688f87748544523b524b0d57d5ea77a2775d2ecfa032cfbdbf52fb3786160279004e57ae6af874e7303ce53299ccc041c7bc308d82a5698f3a8d0c38271ae35f8e9dbfbb694b5c803d89f7ae435de236d525f54759b65e372fcd68ef20fa7111f9e4aff73",
+    "g": "2",
+    "username": "android-native-interop",
+    "password": "pässword 🔐",
+    "salt": "1",
+    "clientPrivate": "1",
+    "serverPrivate": "2",
+    "x": "e8771376bfe60fbceb5e6514c16a55dd5b521c38df2a2ed32fbfb91c6cbf8ad061ae39df338469b1ee35bd27eba8da53c3019204a8d20042e9eb62709af2f4f6",
+    "verifier": "544441e5547b5a65d1c8059a13dbf967ba9c9b7fe2155a71a19d55f3c548ff30efc8bf2c530a618b09a955d04fb45f5eda9c281613483907a979f7cbf41c886c07a4e989e7eea542f36634b3dc76110770c7b94a7c6a6af4c246f20e2a3c64d6772c3e3b803a6bcf4fbc1af7c4115f330561aae3c1fd0ab02e3190492bfa55420d242d9270f540de99eac4c13105b431c960e2a42cc3a74857bb881beeeb74c0415f9d42fdece668027d35df5fcabf00a712abf5b8dbf58dbadedeaa726a85bfc75d108470f06f525d0be18bf477724645189d7da6009018076e7b815f56c2f2b95cab17c61b8957e6dab087ba5da592a3807f8e650acfd8a8a0d06047337d9a",
+    "k": "ee881e03028fe8958639bec52094eb6127081e7ea8e7d0f2618ac8a2a8df48d66f44ec14659a56822279817d1fa484b5a13f1495c1d77c112ed424971721a43c",
+    "u": "613e8e8ce88378e6a756ed7e8d8bb04681d34df3223d52939e4e24eb53ce67e2d3dcba3cc5e7f42745103daca57299bd7a1a7b39fc2b5988ae991d927d1a1ee7",
+    "A": "2",
+    "B": "31947cea6487633b88b4cdbe33fe8e450ba0aa29a6083260d16e260fe7610a61b0146e967e6fbab9d6afa854ee1145f22c6bf4c3b537fda1958f42a17c0a0cd50ae87585228c093590f90a8b21dc32527771993247b928eb095b046271210c24897582cdf168e98e832d092032a6a26b79d4ff94a65cd1c93bdfbba36ee9377a2fd5d7f620756d8ea6603ed15026a587907ba8d35eebd20dd1ff5671fc9c1e6a279db18c68de1107d8da6f809215aa1006a2fcac6b8cb7d0d6553a68c0d3f81442f063a45a18e2576a61cb6c631cfb4d101a8005bb1ead77003699b3a58053de0d84b66f9bc880a40a79f3516d441e2d5a12cac06205aedddfb2907ffc22e8f2",
+    "S": "12a1421eff7c7f9fcd9ee0cdc4ab2e25e68fba57e24313436a52de6f0a2d183582b8021ff12fbdb296cc413afbf3b67de81c1299424a901eb09c38722f3c95bb3d3b801012e02a98780829b08c038bdae682821387b6c7317e818a33eb3370a07ab8c02b7404ee24ca7a02f059ae1a37e71c44329abf2c46c10cc8c307f4990c6771c348fe2b628df52fbc668fc14ede233edddc8699bdddac190662e96ab0c98702c3385c9102e68adae82c5f09bbbdc69c88cb36e6eb33f882cd3f88d4df81dfd27c6ec404dccbad5c8bc6ddf9587eeac71f2869cb27b4453ff40dce7029360505c0a087b3c578a9f95c1e1e6a29cfb513aa18e8c5c8d73337cc588b2ab73c",
+    "M1": "70bb94b62c8463ed87663a0e2bbd6f6e4eea1d1e482b9fb6d6fb08aa3c86a6b894960c92d13ddcb48ffae50c3f39c580d8258da509468f126b3a5cef002b32cd",
+    "M2": "72ec0f6c35418869c21476e6abf142928cbc4a439887e9e972a5c379f9942a67216014919765ae0501db478cc359740fde4a42cc7b55fb9550a5dccf7800f95d",
+    "rawSessionKeyHex": "12a1421eff7c7f9fcd9ee0cdc4ab2e25e68fba57e24313436a52de6f0a2d183582b8021ff12fbdb296cc413afbf3b67de81c1299424a901eb09c38722f3c95bb3d3b801012e02a98780829b08c038bdae682821387b6c7317e818a33eb3370a07ab8c02b7404ee24ca7a02f059ae1a37e71c44329abf2c46c10cc8c307f4990c6771c348fe2b628df52fbc668fc14ede233edddc8699bdddac190662e96ab0c98702c3385c9102e68adae82c5f09bbbdc69c88cb36e6eb33f882cd3f88d4df81dfd27c6ec404dccbad5c8bc6ddf9587eeac71f2869cb27b4453ff40dce7029360505c0a087b3c578a9f95c1e1e6a29cfb513aa18e8c5c8d73337cc588b2ab73c",
+    "baseKeyHex": "5fe0134a8af0419e5982d5b7c8f286004aa305fa39997cb1db597cab7d6117b1"
+  },
+  "fullSession": {
+    "sessionId": "android-native-interop-session",
+    "transportNonce": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX",
+    "transportKeyHex": "8b87bc2b9a42607ba07ced804ceba97e214a87963e01fdfdb8ee9066b6418270",
+    "serverInfoPlaintext": "{\"type\":\"srp_verify_server_info\",\"sessionId\":\"android-native-interop-session\",\"transportNonce\":\"QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX\",\"resumeProtocolVersion\":3}",
+    "serverInfoProof": {
+      "nonce": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3",
+      "ciphertext": "WDE+nDtDOa1ImP8W1mqOdlzDq92e/JhkEi9mrbGuDXpy4+oO02vgFI3dSayT6BYEOOAZgqMePUBrnaha2NLrDLRf6DIhjl74bvqa4gkLqJwiRaGKiV4+w3Ebmt6r9FIqOtr8cCl0zDMMAkBGVnoTc7378YgebcdCvhhTN0g61+jotQBbsG94sO41PVQXKsZ+bRbR0iJ3lzo6JDpszNotlv91zUJnltQQIoplLw=="
+    }
+  },
+  "binaryEnvelope": {
+    "format": 1,
+    "plaintext": "{\"seq\":0,\"msg\":{\"type\":\"ping\",\"id\":\"android-native-interop-ping\"}}",
+    "nonce": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaX",
+    "envelopeBase64": "AYCBgoOEhYaHiImKi4yNjo+QkZKTlJWWlwJNFQfdQnnuedhRwEWHwsNcym8hgUkALcwCyvlPyqbLlS5J4Fn62O551GwdplH8VSn1zpCzZ+wTh5ltBTtLeeDg4rkxKp3W/CnVgm7iqqGrswdu"
+  },
+  "resume": {
+    "clientNonce": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3",
+    "serverNonce": "wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX",
+    "proofPlaintext": "{\"timestamp\":1800000000000,\"challenge\":\"wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX\",\"sessionId\":\"android-native-interop-session\"}",
+    "proof": {
+      "nonce": "4OHi4+Tl5ufo6err7O3u7/Dx8vP09fb3",
+      "ciphertext": "b4L1WUh2V2YXiRTT5HrGQCfF4C10ApMnBawY287XqIGoMvZ4ZXaayK6XhzWFD3wVSc2NFJuyyVNaD3IZv47+4TuohGyMjj7IyLmVf05O7dJJdab+tFzZ8zxfscw8Br7IT4pIqwGIyGa4KPuB8pHhSZdVG57aFEeLgi/2d/4eWke5QTIFpe6K"
+    },
+    "serverProofPlaintext": "{\"type\":\"srp_resume_server_proof\",\"sessionId\":\"android-native-interop-session\",\"serverNonce\":\"wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX\",\"clientNonce\":\"oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3\",\"resumeProtocolVersion\":3}",
+    "serverProof": {
+      "nonce": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYn",
+      "ciphertext": "hQrJoJwM4M7opNQtvGBy37bjkvWMDU02sAsxxwgiqQY5+mEuaCIcxgjKmbRPYnSZv75MYo1ovHvjSvT0IGNYmUrewpiAHl2mnqILdFEDznEOlUwXfMX191m0prTTE21I6/ZMw7nM9FX3dc0/jrdk2GsGY/k56VOuuxwKo+/jGJo+raRNVLigoYXh57Z19GOg8mR/YLq2rZYxKISTZfmU1MNXFMgP7ImlGqrITmQShPDd+XLEovUhx6aCSaBECoL9VuwEvn1jjd4TtqcJpyGtx7FxS59H7zpy9kpN"
+    },
+    "transportKeyHex": "50507760d5118f470e5cfc7abb46d75552df90019d96bb8e53597d17358172a6"
+  }
+}

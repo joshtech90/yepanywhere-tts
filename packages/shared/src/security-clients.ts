@@ -446,8 +446,8 @@ export interface NativePushVersionInfo {
 
 export const PutNativePushSubscriptionRequestSchema = z
   .object({
-    subscriptionId: boundedText(256),
-    sendSecret: boundedText(512),
+    subscriptionId: z.string().regex(/^[A-Za-z0-9_-]{22}$/),
+    sendSecret: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
     privacyMode: z.literal("generic"),
   })
   .strict();

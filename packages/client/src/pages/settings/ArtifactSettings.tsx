@@ -1,9 +1,11 @@
 import type {
   ArtifactVhost,
+  ArtifactVhostLinkedFiles,
   ArtifactVhostSite,
+  ArtifactVhostSiteView,
   ArtifactViewerStatus,
 } from "@yep-anywhere/shared";
-import { useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import { CommittedRangeNumberInput } from "../../components/ui/CommittedRangeNumberInput";
 import { useCurrentSourceRuntime } from "../../contexts/SourceRuntimeContext";
 import { useVersion } from "../../hooks/useVersion";
@@ -15,6 +17,8 @@ import { sessionVhostApp } from "../../lib/sessionVhostApps";
 import { writeClipboardText } from "../../lib/clipboard";
 import { ProjectAppInventorySection } from "./ProjectAppInventorySection";
 import { SettingsCollection } from "./SettingsCollection";
+import { ElidedPath } from "../../components/ui/ElidedPath";
+import { SettingsSortHeader, useSettingsTableSort } from "./SettingsTableSort";
 
 /**
  * One row of the vhost table. Port and file rows are saved to separate lists,
@@ -74,6 +78,59 @@ export function vhostSiteUrl(
   return url.href;
 }
 
+/** Linked paths a row's tooltip lists before summarizing the rest. */
+const LINKED_FILE_TOOLTIP_LINES = 20;
+
+/**
+ * What each saved file row serves through its links, by row name. Refetched
+ * whenever the saved rows change; absent until the server answers, and on a
+ * server without file rows (`savedSites` undefined).
+ */
+function useLinkedFiles(
+  savedSites: ArtifactVhostSite[] | undefined,
+): Record<string, ArtifactVhostLinkedFiles> {
+  const { transport } = useCurrentSourceRuntime();
+  const [linked, setLinked] = useState<
+    Record<string, ArtifactVhostLinkedFiles>
+  >({});
+  useEffect(() => {
+    if (!savedSites?.length) return;
+    let cancelled = false;
+    transport
+      .fetch<{ sites: ArtifactVhostSiteView[] }>("/artifacts/vhost-sites")
+      .then(
+        ({ sites }) => {
+          if (cancelled) return;
+          setLinked(
+            Object.fromEntries(
+              sites.flatMap((site) =>
+                site.linkedFiles ? [[site.name, site.linkedFiles]] : [],
+              ),
+            ),
+          );
+        },
+        // The count is an annotation; rows work without it.
+        () => {},
+      );
+    return () => {
+      cancelled = true;
+    };
+  }, [savedSites, transport]);
+  return linked;
+}
+
+function linkedFilesTooltip(
+  linked: ArtifactVhostLinkedFiles,
+  t: ReturnType<typeof useI18n>["t"],
+): string {
+  const shown = linked.paths.slice(0, LINKED_FILE_TOOLTIP_LINES);
+  const more = linked.count - shown.length;
+  return [
+    ...shown,
+    ...(more > 0 ? [t("artifactVhostLinkedFilesMore", { count: more })] : []),
+  ].join("\n");
+}
+
 export function ArtifactSettings() {
   const { sourceKey } = useCurrentSourceRuntime();
   const { version, refetch } = useVersion();
@@ -115,10 +172,25 @@ function ArtifactSettingsForm({
   const nextRowId = useRef(vhosts.length);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = vhosts.find((row) => row.id === selectedId);
+  const tableSort = useSettingsTableSort<"domain" | "serves" | "access">();
+  const accessLabel = (row: VhostDraft) =>
+    t(
+      row.public
+        ? row.kind === "files" && (row.passwordProtected || row.password)
+          ? "settingsCollectionPassword"
+          : "settingsCollectionPublic"
+        : "settingsCollectionPrivate",
+    );
+  const displayedVhosts = tableSort.sortedRows(vhosts, (row, column) => {
+    if (column === "domain") return row.name;
+    if (column === "access") return accessLabel(row);
+    return row.kind === "files" ? row.path : row.port;
+  });
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
   const vhostsSupported = status.vhosts !== undefined;
   const sitesSupported = status.vhostSites !== undefined;
+  const linkedFiles = useLinkedFiles(status.vhostSites);
   const pending = useRef(Promise.resolve());
   const saveRevision = useRef(0);
   const lastPayload = useRef<string | undefined>(undefined);
@@ -663,18 +735,33 @@ function ArtifactSettingsForm({
                   ),
               )}
             >
-              <table aria-label={t("artifactVhostTableTitle")}>
+              <table
+                className={styles.table}
+                aria-label={t("artifactVhostTableTitle")}
+              >
                 <thead>
                   <tr>
-                    <th scope="col">{t("settingsCollectionDomain")}</th>
-                    <th scope="col">{t("artifactVhostServes")}</th>
+                    <SettingsSortHeader
+                      column="domain"
+                      label={t("settingsCollectionDomain")}
+                      {...tableSort}
+                    />
+                    <SettingsSortHeader
+                      column="serves"
+                      label={t("artifactVhostServes")}
+                      {...tableSort}
+                    />
                     {access.supported && (
-                      <th scope="col">{t("settingsCollectionAccess")}</th>
+                      <SettingsSortHeader
+                        column="access"
+                        label={t("settingsCollectionAccess")}
+                        {...tableSort}
+                      />
                     )}
                   </tr>
                 </thead>
                 <tbody>
-                  {vhosts.map((row) => (
+                  {displayedVhosts.map((row) => (
                     <tr key={row.id}>
                       <td>
                         <button
@@ -687,7 +774,12 @@ function ArtifactSettingsForm({
                           <span aria-hidden="true">
                             {selectedId === row.id ? "▾" : "▸"}{" "}
                           </span>
-                          {row.name || t("artifactVhostAdd")}
+                          <span
+                            className={styles.domainName}
+                            title={row.name || undefined}
+                          >
+                            {row.name || t("artifactVhostAdd")}
+                          </span>
                           {row.name && (
                             <small className={styles.domainSuffix}>
                               .{vhostPublicRoot || "localhost"}
@@ -696,29 +788,35 @@ function ArtifactSettingsForm({
                         </button>
                       </td>
                       <td>
-                        <span
-                          className={styles.target}
-                          title={
-                            row.kind === "files" ? row.path : String(row.port)
-                          }
-                        >
-                          {row.kind === "files"
-                            ? row.path || t("artifactVhostServesFiles")
-                            : `:${row.port}`}
-                        </span>
-                      </td>
-                      {access.supported && (
-                        <td>
-                          {t(
-                            row.public
-                              ? row.kind === "files" &&
-                                (row.passwordProtected || row.password)
-                                ? "settingsCollectionPassword"
-                                : "settingsCollectionPublic"
-                              : "settingsCollectionPrivate",
+                        {row.kind === "files" && row.path ? (
+                          <ElidedPath path={row.path} />
+                        ) : (
+                          <span className={styles.target}>
+                            {row.kind === "files"
+                              ? t("artifactVhostServesFiles")
+                              : `:${row.port}`}
+                          </span>
+                        )}
+                        {row.kind === "files" &&
+                          savedRow(status, row) &&
+                          linkedFiles[row.name] && (
+                            <small
+                              className={styles.linkedFiles}
+                              title={linkedFilesTooltip(
+                                linkedFiles[row.name]!,
+                                t,
+                              )}
+                            >
+                              {t(
+                                linkedFiles[row.name]!.truncated
+                                  ? "artifactVhostLinkedFilesTruncated"
+                                  : "artifactVhostLinkedFiles",
+                                { count: linkedFiles[row.name]!.count },
+                              )}
+                            </small>
                           )}
-                        </td>
-                      )}
+                      </td>
+                      {access.supported && <td>{accessLabel(row)}</td>}
                     </tr>
                   ))}
                 </tbody>

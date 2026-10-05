@@ -17,7 +17,10 @@ import { LOCAL_CLIENT_SUMMARY_SOURCE_KEY } from "../../lib/clientSummaryStore";
 import { getNewSessionPrefill } from "../../lib/newSessionPrefill";
 import { useFileViewerController } from "../../lib/fileViewerController";
 import { sessionRightPaneSetting } from "../../lib/sessionViewerPlacement";
+import type { YaSourceRuntime } from "../../lib/sourceRuntime";
+import { SourceRuntimeProvider } from "../../lib/sourceRuntimeReact";
 import { UI_KEYS } from "../../lib/storageKeys";
+import { FakeSourceTransport } from "../../lib/transport";
 import type { FileViewerSource } from "../FileViewer";
 import { FilePathLink, FileViewerModal } from "../FilePathLink";
 import { SessionViewerProvider } from "../SessionManagedViewer";
@@ -42,6 +45,30 @@ function FileViewerControllerProbe() {
         {`Close ${location}`}
       </button>
     </>
+  );
+}
+
+/** A source whose `/api` URLs the browser cannot address, as over relay. */
+function RelayedRuntime({
+  children,
+  fetchBlob,
+}: {
+  children: ReactNode;
+  fetchBlob: (path: string) => Promise<Blob>;
+}) {
+  const runtime: YaSourceRuntime = {
+    sourceKey: LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+    transport: new FakeSourceTransport({
+      kind: "secure",
+      capabilities: { sameOriginUrls: false },
+      fetchBlob,
+    }),
+    api: {} as YaSourceRuntime["api"],
+    summary: {} as YaSourceRuntime["summary"],
+    sessionDetails: {} as YaSourceRuntime["sessionDetails"],
+  };
+  return (
+    <SourceRuntimeProvider runtime={runtime}>{children}</SourceRuntimeProvider>
   );
 }
 
@@ -702,25 +729,15 @@ describe("FilePathLink", () => {
     expect(window.location.search).toBe("?projectId=project-id");
   });
 
-  it("downloads directly from the file-link context menu", async () => {
-    const fetchFile = vi.fn(
-      async (_input: RequestInfo | URL) =>
-        new Response("guide bytes", {
-          headers: { "Content-Type": "text/plain" },
-        }),
-    );
+  it("hands a direct file-link download to the browser without fetching", async () => {
+    const fetchFile = vi.fn();
     vi.stubGlobal("fetch", fetchFile);
-    Object.defineProperty(URL, "createObjectURL", {
-      configurable: true,
-      value: vi.fn(() => "blob:guide-download"),
+    const clicked: HTMLAnchorElement[] = [];
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
+      this: HTMLAnchorElement,
+    ) {
+      clicked.push(this);
     });
-    Object.defineProperty(URL, "revokeObjectURL", {
-      configurable: true,
-      value: vi.fn(),
-    });
-    const click = vi
-      .spyOn(HTMLAnchorElement.prototype, "click")
-      .mockImplementation(() => {});
 
     render(
       <I18nProvider>
@@ -735,38 +752,78 @@ describe("FilePathLink", () => {
     fireEvent.contextMenu(screen.getByRole("link", { name: "guide.md" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Download" }));
 
-    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
-    expect(String(fetchFile.mock.calls[0]?.[0])).toContain(
+    expect(clicked).toHaveLength(1);
+    expect(clicked[0]?.getAttribute("href")).toBe(
       "/api/projects/project-id/files/raw?path=docs%2Fguide.md&download=true",
     );
+    expect(clicked[0]?.download).toBe("guide.md");
+    expect(fetchFile).not.toHaveBeenCalled();
   });
 
-  it("reports a file-link download that cannot be fetched", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async () => new Response("File not found", { status: 404 })),
+  it("fetches a file-link download through a relayed transport", async () => {
+    const fetchBlob = vi.fn(
+      async () => new Blob(["guide bytes"], { type: "text/plain" }),
     );
+    Object.defineProperty(URL, "createObjectURL", {
+      configurable: true,
+      value: vi.fn(() => "blob:guide-download"),
+    });
+    Object.defineProperty(URL, "revokeObjectURL", {
+      configurable: true,
+      value: vi.fn(),
+    });
     const click = vi
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => {});
 
     render(
-      <I18nProvider>
-        <ToastProvider>
+      <RelayedRuntime fetchBlob={fetchBlob}>
+        <I18nProvider>
           <FilePathLink
             projectId="project-id"
-            filePath="docs/gone.md"
-            displayText="gone.md"
+            filePath="docs/guide.md"
+            displayText="guide.md"
           />
-        </ToastProvider>
-      </I18nProvider>,
+        </I18nProvider>
+      </RelayedRuntime>,
+    );
+
+    fireEvent.contextMenu(screen.getByRole("link", { name: "guide.md" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Download" }));
+
+    await waitFor(() => expect(click).toHaveBeenCalledTimes(1));
+    expect(fetchBlob).toHaveBeenCalledWith(
+      "/projects/project-id/files/raw?path=docs%2Fguide.md&download=true",
+    );
+  });
+
+  it("reports a relayed file-link download that cannot be fetched", async () => {
+    const fetchBlob = vi.fn(async () => {
+      throw new Error("File not found");
+    });
+    const click = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+
+    render(
+      <RelayedRuntime fetchBlob={fetchBlob}>
+        <I18nProvider>
+          <ToastProvider>
+            <FilePathLink
+              projectId="project-id"
+              filePath="docs/gone.md"
+              displayText="gone.md"
+            />
+          </ToastProvider>
+        </I18nProvider>
+      </RelayedRuntime>,
     );
 
     fireEvent.contextMenu(screen.getByRole("link", { name: "gone.md" }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Download" }));
 
     expect(
-      await screen.findByText(/^Could not download gone\.md: /),
+      await screen.findByText("Could not download gone.md: File not found"),
     ).toBeTruthy();
     expect(click).not.toHaveBeenCalled();
   });

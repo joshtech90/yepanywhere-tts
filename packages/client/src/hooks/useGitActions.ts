@@ -12,6 +12,7 @@ import {
   type RouteRetentionKeyInput,
 } from "../lib/routeRetention";
 import type { TranslationFn } from "../i18n";
+import { describeGitFailure, redactGitError } from "../lib/gitActionError";
 
 /**
  * Remote git actions for the source-control surface (check-remote / pull /
@@ -132,7 +133,9 @@ export function useGitActions({
       if (result.status === "checked") await onRefreshStatus();
     } catch (err) {
       setRemoteCheckError(
-        err instanceof Error ? err.message : t("gitStatusRemoteCheckFailed"),
+        err instanceof Error
+          ? redactGitError(err.message)
+          : t("gitStatusRemoteCheckFailed"),
       );
     } finally {
       setIsCheckingRemote(false);
@@ -159,7 +162,9 @@ export function useGitActions({
       }
     } catch (err) {
       setPullError(
-        err instanceof Error ? err.message : t("gitStatusPullFailed"),
+        err instanceof Error
+          ? redactGitError(err.message)
+          : t("gitStatusPullFailed"),
       );
     } finally {
       setIsPulling(false);
@@ -197,7 +202,9 @@ export function useGitActions({
       }
     } catch (err) {
       setPushError(
-        err instanceof Error ? err.message : t("gitStatusPushFailed"),
+        err instanceof Error
+          ? redactGitError(err.message)
+          : t("gitStatusPushFailed"),
       );
     } finally {
       setIsPushing(false);
@@ -243,6 +250,17 @@ export function useGitActions({
       : pushFeedback
         ? pushFeedbackTone
         : null;
+  const failedResult =
+    remoteCheckResult?.status === "failed"
+      ? remoteCheckResult
+      : pullResult?.status === "failed"
+        ? pullResult
+        : pushResult?.status === "failed" || pushResult?.status === "rejected"
+          ? pushResult
+          : null;
+  const actionFailure = failedResult
+    ? describeGitFailure(failedResult.detail, t)
+    : null;
 
   return {
     supportsRemoteCheck,
@@ -270,6 +288,7 @@ export function useGitActions({
     pushFeedbackTone,
     actionFeedback,
     actionFeedbackTone,
+    actionFailure,
     divergedActionStatus,
     integrationOptions,
     isLoadingIntegrationOptions,
@@ -331,7 +350,10 @@ function getRemoteCheckMessage(
     case "not-a-git-repo":
       return t("gitStatusRemoteCheckNotRepo");
     case "failed":
-      return t("gitStatusRemoteCheckFailed");
+      return (
+        getFailureMessage(result.detail, t("gitStatusCheckRemote"), t) ??
+        t("gitStatusRemoteCheckFailed")
+      );
     default:
       return "";
   }
@@ -341,6 +363,11 @@ function getPullMessage(
   result: GitPullResult | null,
   t: TranslationFn,
 ): string {
+  const failureMessage = getFailureMessage(
+    result?.detail,
+    t("gitStatusPull"),
+    t,
+  );
   switch (result?.status) {
     case "pulled":
       if (isCommitCount(result.commitsAdvanced)) {
@@ -360,6 +387,7 @@ function getPullMessage(
     case "not-a-git-repo":
       return t("gitStatusPullNotRepo");
     case "failed":
+      if (failureMessage) return failureMessage;
       if (isDivergedStatus(result.gitStatus)) {
         return t("gitStatusPullDiverged", {
           ahead: result.gitStatus.ahead,
@@ -396,6 +424,15 @@ function getPushMessage(
     case "no-upstream":
       return t("gitStatusPushNoUpstream");
     case "rejected":
+      {
+        const failureMessage = getFailureMessage(
+          result.detail,
+          t("gitStatusPush"),
+          t,
+        );
+        if (failureMessage && !isDivergedStatus(result.gitStatus))
+          return failureMessage;
+      }
       if (isDivergedStatus(result.gitStatus)) {
         return t("gitStatusPushDiverged", {
           ahead: result.gitStatus.ahead,
@@ -406,10 +443,24 @@ function getPushMessage(
     case "not-a-git-repo":
       return t("gitStatusPushNotRepo");
     case "failed":
-      return t("gitStatusPushFailed");
+      return (
+        getFailureMessage(result.detail, t("gitStatusPush"), t) ??
+        t("gitStatusPushFailed")
+      );
     default:
       return "";
   }
+}
+
+function getFailureMessage(
+  detail: string | undefined,
+  action: string,
+  t: TranslationFn,
+): string | null {
+  const { reason } = describeGitFailure(detail, t);
+  return reason
+    ? t("gitStatusActionFailedWithReason", { action, reason })
+    : null;
 }
 
 function isCommitCount(value: unknown): value is number {

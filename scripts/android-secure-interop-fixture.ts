@@ -1,5 +1,6 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import {
   SRPClientSession,
   SRPParameters,
@@ -64,20 +65,33 @@ function encryptFixed(
   };
 }
 
-async function createFixture() {
+export async function createFixture(
+  options: {
+    password?: string;
+    salt?: bigint;
+    clientPrivate?: bigint;
+    serverPrivate?: bigint;
+  } = {},
+) {
   const parameters = new SRPParameters();
   const referenceRoutines = new SRPRoutines(parameters);
   const username = "android-native-interop";
-  const password = "correct horse battery staple";
-  const salt = BigInt(
-    "0x00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f",
-  );
-  const clientPrivate = BigInt(
-    "0x1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
-  );
-  const serverPrivate = BigInt(
-    "0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
-  );
+  const password = options.password ?? "correct horse battery staple";
+  const salt =
+    options.salt ??
+    BigInt(
+      "0x00112233445566778899aabbccddeeff102132435465768798a9bacbdcedfe0f",
+    );
+  const clientPrivate =
+    options.clientPrivate ??
+    BigInt(
+      "0x1f1e1d1c1b1a191817161514131211100f0e0d0c0b0a09080706050403020100",
+    );
+  const serverPrivate =
+    options.serverPrivate ??
+    BigInt(
+      "0x202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    );
 
   const x = await referenceRoutines.computeX(username, salt, password);
   const verifier = referenceRoutines.computeVerifier(x);
@@ -237,4 +251,9 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  await main();
+}

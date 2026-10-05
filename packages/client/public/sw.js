@@ -18,7 +18,7 @@
 // Version constant for controlled updates
 // Increment this when making intentional SW changes
 // Browsers reinstall SW only when file content changes
-const SW_VERSION = "1.0.10";
+const SW_VERSION = "1.0.11";
 void SW_VERSION;
 const FRONTEND_RELOAD_QUERY_PARAM = "__ya_reload";
 const INCOMING_SHARE_QUERY_PARAM = "__ya_share";
@@ -330,6 +330,87 @@ async function handleShareTargetRequest(request) {
 }
 
 /**
+ * Streamed downloads (`src/lib/streamedDownload.ts`): a page registers a body
+ * it is receiving, then opens this worker's one-time URL for it. The response
+ * pulls each piece from the page as the browser writes the last, so the file
+ * goes to disk without the page holding it.
+ */
+const STREAMED_DOWNLOAD_PATH = "__ya-download";
+/** How long a registered download waits for the browser to request it. */
+const STREAMED_DOWNLOAD_CLAIM_MS = 60_000;
+const pendingStreamedDownloads = new Map();
+
+function registerStreamedDownload(data, port) {
+  if (!port || typeof data.id !== "string") return;
+  const timer = setTimeout(() => {
+    if (pendingStreamedDownloads.delete(data.id)) {
+      port.postMessage({ type: "expired" });
+      port.close();
+    }
+  }, STREAMED_DOWNLOAD_CLAIM_MS);
+  pendingStreamedDownloads.set(data.id, {
+    fileName: typeof data.fileName === "string" ? data.fileName : "download",
+    contentType:
+      typeof data.contentType === "string"
+        ? data.contentType
+        : "application/octet-stream",
+    length:
+      typeof data.length === "string" && /^\d+$/.test(data.length)
+        ? data.length
+        : null,
+    port,
+    timer,
+  });
+  port.postMessage({ type: "registered" });
+}
+
+function serveStreamedDownload(id) {
+  const download = pendingStreamedDownloads.get(id);
+  if (!download) {
+    return new Response("This download has expired", { status: 404 });
+  }
+  pendingStreamedDownloads.delete(id);
+  clearTimeout(download.timer);
+  const { port } = download;
+  let onReply = null;
+  port.onmessage = (event) => {
+    const reply = onReply;
+    onReply = null;
+    reply?.(event.data);
+  };
+  const body = new ReadableStream({
+    pull(controller) {
+      return new Promise((resolve) => {
+        onReply = (message) => {
+          if (message?.type === "chunk") {
+            controller.enqueue(message.bytes);
+          } else if (message?.type === "done") {
+            controller.close();
+            port.close();
+          } else {
+            controller.error(new Error(message?.message || "Download failed"));
+            port.close();
+          }
+          resolve();
+        };
+        port.postMessage({ type: "pull" });
+      });
+    },
+    cancel() {
+      port.postMessage({ type: "cancel" });
+      port.close();
+    },
+  });
+  const headers = new Headers({
+    "Content-Type": download.contentType,
+    "Content-Disposition": `attachment; filename*=UTF-8''${encodeURIComponent(download.fileName)}`,
+    "X-Content-Type-Options": "nosniff",
+  });
+  if (download.length) headers.set("Content-Length", download.length);
+  return new Response(body, { headers });
+}
+
+/**
  * Network-first fetch for navigation requests (HTML pages).
  *
  * Prevents stale HTML from being served on mobile browsers / GitHub Pages
@@ -353,6 +434,19 @@ self.addEventListener("fetch", (event) => {
     (url.pathname === shareTargetPath || url.pathname === `${shareTargetPath}/`)
   ) {
     event.respondWith(handleShareTargetRequest(event.request));
+    return;
+  }
+
+  const streamedDownloadPrefix = `${scopePath}/${STREAMED_DOWNLOAD_PATH}/`;
+  if (
+    event.request.method === "GET" &&
+    url.origin === scopeUrl.origin &&
+    url.pathname.startsWith(streamedDownloadPrefix)
+  ) {
+    const id = url.pathname
+      .slice(streamedDownloadPrefix.length)
+      .split("/", 1)[0];
+    event.respondWith(serveStreamedDownload(id));
     return;
   }
 
@@ -394,6 +488,13 @@ self.addEventListener("activate", (event) => {
  * Handle messages from main thread
  */
 self.addEventListener("message", async (event) => {
+  if (event.data?.type === "streamed-download") {
+    registerStreamedDownload(event.data, event.ports[0]);
+    return;
+  }
+  // "streamed-download-keepalive" needs no handling: receiving a message is
+  // what keeps the worker alive while a download is still being written.
+
   if (event.data?.type === "setting-update") {
     const { key, value } = event.data;
     if (key in settings) {

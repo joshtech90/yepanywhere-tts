@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="500" viewBox="0 0 1024 500">
+  <title>Yep Anywhere — Your coding agents, anywhere</title>
+  <defs>
+    <linearGradient id="iconGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e" />
+      <stop offset="100%" stop-color="#16a34a" />
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="500" fill="#111b17" />
+  <g transform="translate(74 104) scale(2.7)">
+    <rect width="108" height="108" rx="22" fill="url(#iconGrad)" />
+    <path d="M 33.2 42 L 47.6 59.6 L 74.8 32.4" fill="none" stroke="#fff" stroke-width="9.6" stroke-linecap="round" stroke-linejoin="round" />
+    <path d="M 47.6 59.6 L 47.6 80.4" fill="none" stroke="#fff" stroke-width="9.6" stroke-linecap="round" />
+  </g>
+  <g font-family="Arial, Helvetica, sans-serif">
+    <text x="418" y="207" font-size="58" font-weight="700" fill="#fff">Yep Anywhere</text>
+    <text x="418" y="271" font-size="32" fill="#b9e6c9">Your coding agents, anywhere.</text>
+    <text x="418" y="329" font-size="24" fill="#c5cec9">Connect to your own server.</text>
+  </g>
+</svg>

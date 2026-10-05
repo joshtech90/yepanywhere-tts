@@ -151,9 +151,15 @@ for (const key of ["PageUp", "Home"] as const) {
     await expect(oldestRequest).toHaveCount(0);
 
     await transcript.focus();
-    await transcript.evaluate((element) => {
-      element.scrollTop = 0;
-    });
+    // CI 36985655035 raced a bare scrollTop write against initial follow
+    // restoration. Establish reader intent through the actual scroll gesture,
+    // then acknowledge the boundary before testing the keyboard demand.
+    await transcript.hover();
+    await page.mouse.wheel(0, -10_000);
+    await expect
+      .poll(() => transcript.evaluate((element) => element.scrollTop))
+      .toBe(0);
+    await expect(oldestRequest).toHaveCount(0);
     await page.keyboard.press(key);
 
     await expect(oldestRequest).toBeAttached();

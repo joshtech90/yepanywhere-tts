@@ -26,6 +26,12 @@ export interface PublicShareFileGrant {
 /** A grant plus the project its relative paths resolve against. */
 export interface PublicShareProjectFileGrant extends PublicShareFileGrant {
   projectId: string | null;
+  /**
+   * A live file share (its links carry `standalone=1`). Its grant also covers
+   * what the root links to outside the project, named by absolute path; a
+   * session share's never does.
+   */
+  standaloneFile?: boolean;
 }
 
 /** Everything needed to fetch a share file over the relay. */
@@ -72,13 +78,34 @@ function isLikelyManagedAttachmentPath(filePath: string): boolean {
   );
 }
 
+/** An absolute path with `.` and `..` resolved; null above the root. */
+function normalizeAbsolutePath(filePath: string): string | null {
+  const prefix = /^(?:[a-zA-Z]:)?\//.exec(filePath)?.[0];
+  if (!prefix) return null;
+  const parts: string[] = [];
+  for (const part of filePath.slice(prefix.length).split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(part);
+  }
+  return parts.length > 0 ? `${prefix}${parts.join("/")}` : null;
+}
+
 /**
- * The share-relative path a written file path names, or null when it leaves
- * the shared project. A `:line` suffix is split off into `lineNumber`.
+ * The share path a written file path names: project-relative inside the
+ * shared project, else null. With `outsideProject` — a live file share's
+ * grant — an absolute path outside the project is kept as that absolute path,
+ * as the share's link walk names it. A `:line` suffix is split off into
+ * `lineNumber`.
  */
 export function normalizePublicShareFilePath(
   filePath: string,
   projectId: string | null,
+  options: { outsideProject?: boolean } = {},
 ): { lineNumber?: number; path: string } | null {
   const parsed = parseLineColumn(filePath);
   const parsedPath = normalizePathSeparators(parsed.path);
@@ -97,7 +124,12 @@ export function normalizePublicShareFilePath(
       : null;
   }
   if (parsedPath.startsWith("/") || /^[a-zA-Z]:\//.test(parsedPath)) {
-    return null;
+    const absolutePath = options.outsideProject
+      ? normalizeAbsolutePath(parsedPath)
+      : null;
+    return absolutePath
+      ? { lineNumber: parsed.line, path: absolutePath }
+      : null;
   }
 
   const relativePath = normalizeRelativePath(parsedPath);
@@ -127,7 +159,9 @@ export function buildPublicShareRawFileApiPath(
   grant: PublicShareProjectFileGrant,
   filePath: string,
 ): string | null {
-  const normalized = normalizePublicShareFilePath(filePath, grant.projectId);
+  const normalized = normalizePublicShareFilePath(filePath, grant.projectId, {
+    outsideProject: grant.standaloneFile === true,
+  });
   return normalized
     ? buildPublicShareFileRoutePath(grant, "raw", normalized.path)
     : null;
@@ -143,7 +177,9 @@ export async function fetchPublicShareRawFileBlob(
   fileData: FileContentResponse | null,
   filePath: string,
 ): Promise<Blob> {
-  const normalized = normalizePublicShareFilePath(filePath, grant.projectId);
+  const normalized = normalizePublicShareFilePath(filePath, grant.projectId, {
+    outsideProject: grant.standaloneFile === true,
+  });
   const embedded = fileData
     ? ((normalized
         ? getEmbeddedFileMediaBlob(fileData, normalized.path)

@@ -1,5 +1,5 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
-import type { PointerEvent } from "react";
+import type { FocusEvent, PointerEvent } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { useHeldSidebarLists } from "../useSidebarSessionOrder";
 
@@ -50,5 +50,60 @@ describe("sidebar interaction before initial rows", () => {
     rerender({ rows: [{ id: "a" }] });
     rerender({ rows: [{ id: "b" }, { id: "a" }] });
     expect(result.current.lists.recent.map(({ id }) => id)).toEqual(["b", "a"]);
+  });
+});
+
+describe("sidebar focus hold", () => {
+  it("releases when the focused row is removed without a blur", () => {
+    const sidebar = document.createElement("aside");
+    const pendingRow = document.createElement("a");
+    pendingRow.href = "#queued";
+    sidebar.append(pendingRow);
+    document.body.append(sidebar);
+    try {
+      const { result, rerender } = renderHook(
+        ({ rows }) => useHeldSidebarLists({ recent: rows }, true),
+        { initialProps: { rows: [{ id: "a" }] } },
+      );
+      pendingRow.focus();
+      act(() =>
+        result.current.handlers.onFocusCapture?.({
+          currentTarget: sidebar,
+        } as FocusEvent<HTMLElement>),
+      );
+      // The queued item starts: its row leaves the DOM, focus falls to body.
+      pendingRow.remove();
+      rerender({ rows: [{ id: "started" }, { id: "a" }] });
+      expect(result.current.lists.recent.map(({ id }) => id)).toEqual([
+        "started",
+        "a",
+      ]);
+    } finally {
+      sidebar.remove();
+    }
+  });
+
+  it("keeps holding while focus stays inside", () => {
+    const sidebar = document.createElement("aside");
+    const row = document.createElement("a");
+    row.href = "#a";
+    sidebar.append(row);
+    document.body.append(sidebar);
+    try {
+      const { result, rerender } = renderHook(
+        ({ rows }) => useHeldSidebarLists({ recent: rows }, true),
+        { initialProps: { rows: [{ id: "a" }] } },
+      );
+      row.focus();
+      act(() =>
+        result.current.handlers.onFocusCapture?.({
+          currentTarget: sidebar,
+        } as FocusEvent<HTMLElement>),
+      );
+      rerender({ rows: [{ id: "new" }, { id: "a" }] });
+      expect(result.current.lists.recent.map(({ id }) => id)).toEqual(["a"]);
+    } finally {
+      sidebar.remove();
+    }
   });
 });

@@ -1,7 +1,8 @@
 import { appendFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
-import { serve } from "@hono/node-server";
+import { serve, type HttpBindings } from "@hono/node-server";
+import { Hono } from "hono";
 import { createNodeWebSocket } from "@hono/node-ws";
 import { createApp } from "../src/app.js";
 import { AuthService } from "../src/auth/AuthService.js";
@@ -10,6 +11,8 @@ import { RemoteSessionService } from "../src/remote-access/RemoteSessionService.
 import { RemoteAccessService } from "../src/remote-access/index.js";
 import { RelayClientService } from "../src/services/RelayClientService.js";
 import { SecurityClientService } from "../src/services/SecurityClientService.js";
+import { NativePushService } from "../src/push/NativePushService.js";
+import { PushService } from "../src/push/PushService.js";
 import {
   createAcceptRelayConnection,
   createWsRelayRoutes,
@@ -17,7 +20,12 @@ import {
 import { MockClaudeSDK } from "../src/sdk/mock.js";
 import { UploadManager } from "../src/uploads/manager.js";
 import { InstallService } from "../src/services/InstallService.js";
-import { EventBus } from "../src/watcher/index.js";
+import { EventBus, FileWatcher } from "../src/watcher/index.js";
+import { AttachmentStagingService } from "../src/uploads/AttachmentStagingService.js";
+import { ServerSettingsService } from "../src/services/ServerSettingsService.js";
+import { ProjectQueueService } from "../src/services/ProjectQueueService.js";
+import { RecentsService } from "../src/recents/RecentsService.js";
+import { ProjectGlossarySubscriptionManager } from "../src/projects/projectGlossarySubscriptionManager.js";
 
 const username = process.env.YA_NATIVE_PROBE_USERNAME;
 const password = process.env.YA_NATIVE_PROBE_PASSWORD;
@@ -59,7 +67,7 @@ await mkdir(grokSessionsDir, { recursive: true });
 await mkdir(piSessionsDir, { recursive: true });
 await mkdir(dataDir, { recursive: true });
 
-// Optional native-provider history for the Compose conversation AVD proof.
+// Optional provider history for native-core and bundled-web integration proofs.
 const conversationProbe = process.env.YA_NATIVE_PROBE_CONVERSATION === "true";
 const sessionId = "android-preview-session";
 const projectPath = join(root, "preview-project");
@@ -102,6 +110,11 @@ if (conversationProbe) {
 }
 
 const eventBus = new EventBus();
+const watcher = conversationProbe
+  ? new FileWatcher({ watchDir: projectsDir, provider: "claude", eventBus })
+  : null;
+watcher?.start();
+await watcher?.waitForInitialBaseline();
 const authService = new AuthService({
   dataDir,
   cookieSecret: "android-native-probe-cookie-secret",
@@ -126,13 +139,37 @@ const securityClientService = new SecurityClientService({
   remoteSessionService,
 });
 await securityClientService.initialize();
+const nativePushService = new NativePushService(securityClientService);
+const pushService = new PushService({ dataDir });
+await pushService.initialize();
+pushService.setNativePushService(nativePushService);
+const attachmentStagingService = new AttachmentStagingService({
+  dataDir,
+  maxUploadSizeBytes: 100 * 1024 * 1024,
+});
+const serverSettingsService = new ServerSettingsService({ dataDir });
+const projectQueueService = new ProjectQueueService({
+  dataDir,
+  eventBus,
+  attachmentStagingService,
+});
+const recentsService = new RecentsService({ dataDir });
+await Promise.all([
+  attachmentStagingService.initialize(),
+  serverSettingsService.initialize(),
+  projectQueueService.initialize(),
+  recentsService.initialize(),
+]);
 
 const {
-  app,
+  app: yaApp,
   supervisor,
   conversationSubscriptions,
   disposeSessionReaders,
   stopNotifications,
+  focusedSessionWatchManager,
+  scanner,
+  glossaryIndexService,
 } = createApp({
   dataDir,
   getCatalogFamilies: () => install.getCatalogFamilies(),
@@ -146,11 +183,71 @@ const {
   authService,
   authDisabled: true,
   securityClientService,
+  nativePushService,
+  pushService,
+  remoteAccessService,
+  remoteSessionService,
+  attachmentStagingService,
+  serverSettingsService,
+  projectQueueService,
+  recentsService,
 });
+const projectGlossarySubscriptionManager =
+  new ProjectGlossarySubscriptionManager({ scanner, glossaryIndexService });
+// Pad a real API response without burdening transcript rendering or adding a
+// production endpoint. This crosses the encrypted circuit and the WebView.
+const app = new Hono<{ Bindings: HttpBindings }>();
+app.get("/api/version", async (c) => {
+  const response = await yaApp.fetch(c.req.raw, c.env);
+  if (!conversationProbe || !response.ok) return response;
+  const body = await response.json();
+  const headers = new Headers(response.headers);
+  headers.delete("content-length");
+  return new Response(
+    JSON.stringify({ ...body, __nativeProbePadding: "x".repeat(1024 * 1024) }),
+    { status: response.status, headers },
+  );
+});
+app.route("/", yaApp);
 const { upgradeWebSocket, wss } = createNodeWebSocket({ app });
 const uploadManager = new UploadManager({ uploadsDir: join(root, "uploads") });
+// A bounded test-controlled pause makes switching during a real resume
+// deterministic. Only the disposable probe exposes this handshake gate.
+let holdResume = false;
+let heldResumes = 0;
+const resumeWaiters = new Set<() => void>();
+function releaseResumes() {
+  holdResume = false;
+  for (const release of resumeWaiters) release();
+  resumeWaiters.clear();
+}
 const wsHandler = createWsRelayRoutes({
-  upgradeWebSocket,
+  upgradeWebSocket: (createEvents) =>
+    upgradeWebSocket((context) => {
+      const events = createEvents(context);
+      return {
+        ...events,
+        onMessage: async (event, ws) => {
+          if (
+            holdResume &&
+            typeof event.data === "string" &&
+            JSON.parse(event.data).type === "srp_resume_init"
+          ) {
+            heldResumes += 1;
+            await new Promise<void>((resolveResume) => {
+              const timer = setTimeout(release, 15_000);
+              function release() {
+                clearTimeout(timer);
+                resumeWaiters.delete(release);
+                resolveResume();
+              }
+              resumeWaiters.add(release);
+            });
+          }
+          return events.onMessage?.(event, ws);
+        },
+      };
+    }),
   app,
   baseUrl: `http://127.0.0.1:${requestedPort}`,
   supervisor,
@@ -160,21 +257,55 @@ const wsHandler = createWsRelayRoutes({
   remoteSessionService,
   securityClientService,
   conversationSubscriptions,
+  focusedSessionWatchManager,
+  projectGlossarySubscriptionManager,
+  attachmentStagingService,
+  serverSettingsService,
 });
 app.get("/api/ws", wsHandler);
 if (conversationProbe) {
   // Only this disposable loopback diagnostic server mounts fixture controls.
+  app.post("/__probe/push", async (c) => {
+    const result = await pushService.sendToAll({
+      type: "session-halted",
+      timestamp: new Date().toISOString(),
+      sessionId,
+      projectId: Buffer.from(projectPath).toString("base64url"),
+      projectName: "Private native push fixture",
+      reason: "completed",
+      duration: 1,
+    });
+    return c.json({
+      sent: result.filter((row) => row.success).length,
+      failed: result.filter((row) => !row.success).length,
+      sessionId,
+    });
+  });
   app.post("/__probe/append", async (c) => {
     const message = `Live preview response ${rowCount + 2}`;
     await appendFile(nativePath, row("Live preview request") + row(message));
     return c.json({ ok: true, message });
   });
+  app.post("/__probe/resume-hold", (c) => {
+    if (c.req.query("enabled") === "true") {
+      holdResume = true;
+      heldResumes = 0;
+    } else releaseResumes();
+    return c.json({ heldResumes });
+  });
+  app.get("/__probe/resume-hold", (c) => c.json({ heldResumes }));
   app.post("/__probe/disconnect", (c) => {
     for (const socket of wss.clients) socket.close(1012, "Probe reconnect");
     return c.json({ ok: true });
   });
 }
 
+let resolveRelayReady: () => void = () => {};
+const relayReady = relayUrl
+  ? new Promise<void>((resolve) => {
+      resolveRelayReady = resolve;
+    })
+  : Promise.resolve();
 const relayClientService = relayUrl ? new RelayClientService() : null;
 if (relayClientService) {
   const acceptRelayConnection = createAcceptRelayConnection({
@@ -187,12 +318,19 @@ if (relayClientService) {
     remoteSessionService,
     securityClientService,
     conversationSubscriptions,
+    focusedSessionWatchManager,
+    projectGlossarySubscriptionManager,
+    attachmentStagingService,
+    serverSettingsService,
   });
   relayClientService.start({
     relayUrl,
     username,
     installId: "android-native-probe-install",
     onRelayConnection: acceptRelayConnection,
+    onStatusChange: (status) => {
+      if (status === "waiting") resolveRelayReady();
+    },
   });
 }
 
@@ -204,10 +342,7 @@ await new Promise<void>((resolveReady) => {
       hostname: "127.0.0.1",
       port: requestedPort,
     },
-    ({ port }) => {
-      console.log(
-        `YA_NATIVE_PROBE_READY ${JSON.stringify({ port, username, data: "temporary" })}`,
-      );
+    () => {
       resolveReady();
     },
   );
@@ -219,13 +354,24 @@ attachUnifiedUpgradeHandler(server!, {
   wss,
 });
 
+// The fixture runner already bounds startup. A listening HTTP port alone does
+// not mean a public-relay phone can pair with this freshly registered host.
+await relayReady;
+console.log(
+  `YA_NATIVE_PROBE_READY ${JSON.stringify({ port: requestedPort, username, data: "temporary" })}`,
+);
+
 await new Promise<void>((resolveStop) => {
   process.once("SIGINT", resolveStop);
   process.once("SIGTERM", resolveStop);
 });
 
+releaseResumes();
 stopNotifications();
+watcher?.stop();
+projectGlossarySubscriptionManager.dispose();
 await disposeSessionReaders();
+nativePushService.shutdown();
 await securityClientService.shutdown();
 remoteSessionService.shutdown();
 relayClientService?.stop();

@@ -858,6 +858,23 @@ describe("Files API", () => {
   });
 
   describe("GET /api/projects/:projectId/files/raw", () => {
+    it("serves a requested byte range so media can seek", async () => {
+      const { app } = createApp({
+        sdk: mockSdk,
+        projectsDir: join(testDir, "sessions"),
+      });
+
+      const res = await app.request(
+        `/api/projects/${projectId}/files/raw?path=README.md`,
+        { headers: { Range: "bytes=2-5" } },
+      );
+
+      expect(res.status).toBe(206);
+      expect(res.headers.get("Content-Range")).toBe("bytes 2-5/31");
+      expect(res.headers.get("Accept-Ranges")).toBe("bytes");
+      await expect(res.text()).resolves.toBe("Test");
+    });
+
     it("returns raw text file with correct content-type", async () => {
       const { app } = createApp({
         sdk: mockSdk,
@@ -1218,6 +1235,10 @@ describe("Files API", () => {
         expect(json.highlightedTruncated).toBe(true);
         expect(json.highlightedHtml).not.toContain("End of paper");
       },
+      // CI 36977714764 exceeded 5 s while writing, serving and parsing the
+      // complete 200 MiB document. Allow 4x that observed limit for this I/O
+      // fixture; exact content and bounded-highlighting assertions stay intact.
+      20_000,
     );
 
     it("omits HTML content above the 200 MiB document limit", async () => {

@@ -1,3 +1,4 @@
+import { AgentAuthRouterSettings } from "../../components/AgentAuthRouterControls";
 import {
   Fragment,
   useCallback,
@@ -8,6 +9,7 @@ import {
   useState,
 } from "react";
 import {
+  SERVER_CAPABILITIES,
   CLAUDE_ADDITIONAL_MODELS_CAPABILITY,
   CLAUDE_GATEWAY_AUTOSTART_CAPABILITY,
   CLAUDE_GATEWAY_CAPABILITY,
@@ -65,6 +67,7 @@ import {
   YaCompactContextEarlyControl,
 } from "./compactSettingsControls";
 import { SettingsItem } from "./SettingsItem";
+import { InstructionRestorationControl } from "./InstructionRestorationControl";
 import styles from "./ProvidersSettings.module.css";
 import { useSettingsPaneTitle } from "./SettingsPaneTitleContext";
 import { HideInSettingsSearch } from "./SettingsSearchContext";
@@ -1797,6 +1800,10 @@ export function ProvidersSettings() {
 
   return (
     <SettingsSection description={t("providersSectionDescription")}>
+      {serverHasCapability(
+        version,
+        SERVER_CAPABILITIES.agentAuthRouter.name,
+      ) && <AgentAuthRouterSettings />}
       {SHOW_HELPER_TARGETS_SETTINGS && (
         <div className="settings-group">
           <HelperTargetsSettings
@@ -1909,6 +1916,13 @@ export function ProvidersSettings() {
             value={settings.postCompactReplay}
             providers={providerDisplayList}
             updateSetting={updateSetting}
+          />
+        )}
+        {settings?.instructionRestoration !== undefined && (
+          <InstructionRestorationControl
+            value={settings.instructionRestoration}
+            providers={providerDisplayList}
+            save={(value) => updateSetting("instructionRestoration", value)}
           />
         )}
         {settings?.longContextEffortWarning !== undefined && (

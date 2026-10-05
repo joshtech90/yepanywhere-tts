@@ -27,10 +27,17 @@ it("keeps concurrent prompt saves, deduplicates, bounds history and isolates acc
 it("keeps reusable upload bytes within one account and deduplicates identical bytes", async () => {
   const scope = crypto.randomUUID();
   const file = new File(["a private note"], "note.txt", { type: "text/plain" });
-  await rememberComposerUpload(scope, file);
-  await rememberComposerUpload(scope, file);
+  await rememberComposerUpload(scope, file, { projectName: "old project" });
+  const origin = {
+    projectId: "p",
+    projectName: "Current project",
+    sessionId: "s",
+    sessionTitle: "Current session",
+  };
+  await rememberComposerUpload(scope, file, origin);
   const history = await readComposerHistory(scope);
   expect(history.uploads).toHaveLength(1);
+  expect(history.uploads[0]?.origin).toEqual(origin);
   expect(await history.uploads[0]?.file.text()).toBe("a private note");
   expect((await readComposerHistory(`${scope}:other`)).uploads).toEqual([]);
 });

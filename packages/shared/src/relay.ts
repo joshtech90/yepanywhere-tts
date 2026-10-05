@@ -46,6 +46,66 @@ export interface RelayRequest {
   headers?: Record<string, string>;
   /** Optional request body (JSON-serializable) */
   body?: unknown;
+  /**
+   * Asks for a successful file or binary-media body as a stream: a
+   * `response_stream_start`, raw `RESPONSE_CHUNK` frames, and a
+   * `response_stream_end`. Only meaningful on an encrypted connection. A server
+   * may still answer with one `response`, and servers that predate streaming
+   * ignore the field, so the client must accept either.
+   */
+  stream?: boolean;
+}
+
+/** Bytes of body carried by one streamed response chunk, at most. */
+export const RELAY_RESPONSE_STREAM_CHUNK_BYTES = 128 * 1024;
+
+/**
+ * Streamed body bytes the server may send beyond the client's last
+ * acknowledgement. It stays below the relay's per-circuit queue, which closes
+ * a circuit whose queue overflows.
+ */
+export const RELAY_RESPONSE_STREAM_WINDOW_BYTES = 1024 * 1024;
+
+/**
+ * Longest a streamed response may make no progress: the client waiting for
+ * the next chunk, or the server waiting for the client to consume. It matches
+ * the client's single-request deadline, which a stream replaces.
+ */
+export const RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS = 120_000;
+
+/** Server -> Client: status and headers of a streamed response. */
+export interface RelayResponseStreamStart {
+  type: "response_stream_start";
+  /** Matches request.id */
+  id: string;
+  status: number;
+  headers?: Record<string, string>;
+  /** Body length when the server knows it in advance. */
+  length?: number;
+}
+
+/** Server -> Client: the streamed body is complete, or failed part way. */
+export interface RelayResponseStreamEnd {
+  type: "response_stream_end";
+  id: string;
+  /** Present when the body stopped early; the bytes received are incomplete. */
+  error?: string;
+}
+
+/**
+ * Client -> Server: total body bytes the client has consumed, which opens the
+ * server's send window that far.
+ */
+export interface RelayResponseStreamAck {
+  type: "response_stream_ack";
+  id: string;
+  bytes: number;
+}
+
+/** Client -> Server: stop sending a streamed body the client no longer wants. */
+export interface RelayResponseStreamCancel {
+  type: "response_stream_cancel";
+  id: string;
 }
 
 /** Server -> Client: HTTP-like response */
@@ -95,6 +155,11 @@ export interface RelaySubscribe {
   lastEventId?: string;
   /** Whether this subscriber wants live provider deltas (default: true) */
   wantsLiveDeltas?: boolean;
+  /**
+   * Whether this subscriber wants running tool calls' live output (default:
+   * true). Older servers ignore it; clients drop that output themselves too.
+   */
+  wantsLiveToolOutput?: boolean;
   /** Browser profile identifier for connection tracking (stored in localStorage, shared across tabs) */
   browserProfileId?: string;
   /** Origin metadata for connection tracking */
@@ -312,6 +377,8 @@ export type RemoteClientMessage =
   | RelaySpeechControl
   | ClientCapabilities
   | ClientPing
+  | RelayResponseStreamAck
+  | RelayResponseStreamCancel
   // Device bridge signaling
   | DeviceStreamStart
   | DeviceStreamStop
@@ -321,6 +388,8 @@ export type RemoteClientMessage =
 /** All messages from yepanywhere server -> phone/browser */
 export type YepMessage =
   | RelayResponse
+  | RelayResponseStreamStart
+  | RelayResponseStreamEnd
   | RelayEvent
   | RelayUploadProgress
   | RelayUploadComplete

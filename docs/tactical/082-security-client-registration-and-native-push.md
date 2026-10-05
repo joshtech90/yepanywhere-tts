@@ -4,8 +4,10 @@ Status: the server security-client baseline and Android continuity-key path are
 implemented, and the physical-device checkpoint passed on 2026-08-02. This
 tracker supersedes the mobile-only paired-device endpoint sketch with one
 cross-platform security-client API. Capable-web registration, the dashboard,
-new-client alerts, and native push remain pending; the work tracker below is
-the authoritative split between completed and remaining slices.
+and new-client alerts remain pending. Native push server/Android delivery is
+implemented; iOS sandbox delivery passes with live tap acceptance still open in
+[the mobile delivery plan](141-native-push-delivery.md). The work tracker below
+separates completed and remaining slices.
 
 Topic: security-client-audit
 Topic: mobile-server-pairing
@@ -47,19 +49,19 @@ response member and newer clients never send it to an older server.
 | --- | --- | --- |
 | Record the unified security-client contract | complete | Topic contract fixes routes, gates, proof transcript, descriptor/history, legacy projection, revocation, push child, and future assurance |
 | Keep default in-memory resume credentials off disk | complete | Every mutation avoids `remote-sessions.json` while persistence is disabled and owner-only persistence remains available when enabled |
-| Register capabilities and version metadata | partial | `security-client-audit-v1` owns the exact mounted routes and passes capability/version tests; native-push advertisement remains in its later slice |
+| Register capabilities and version metadata | complete | `security-client-audit-v1` and optional `native-push-subscriptions-v1` own their exact mounted routes and pass capability/version tests |
 | Persist clients, tombstones, and the security ledger | complete | Owner-only strict state, bounded histories/anchors/failures, restart, malformed-state, and no-secret API tests pass |
 | Inject authenticated transport facts | complete | Only established SRP gets private proof context; nonce, method, direct/relay kind, real peer, session, and connection handle survive for the socket lifetime |
 | Verify P-256 continuity proofs | complete | Node SPKI/DER verification plus P1363, mutation, replay, wrong-route/key, stale-transport, and key-bound retry tests pass; TypeScript and Kotlin share slash-bearing canonical vectors, and the Pixel proved a non-exportable Keystore signature |
 | Project legacy web clients | complete | Browser profiles, connected tabs, remote sessions, and Web Push merge without invented proof; legacy revocation tombstones the profile and closes tabs |
 | Audit failed authentication and session eviction | complete | Failed SRP/proof evidence is coalesced and quota-bounded; associated session eviction names the client |
-| Revoke the complete client relationship | partial | Atomic tombstones precede session/socket and legacy Web Push cascades with distinct unknown/revoked check-ins; native push is not implemented yet |
-| Deliver generic native push | pending | Exact broker endpoint/credential binding, notification-policy mapping, test delivery, 404 invalidation, bounded transient failure, and secret redaction pass |
+| Revoke the complete client relationship | complete | Atomic tombstones precede session/socket and legacy Web Push cascades; native push child ownership is removed before later sends, with live iOS two-host revocation isolation |
+| Deliver generic native push | complete | Exact broker endpoint/credential binding, notification-policy mapping, test delivery, 404 invalidation, bounded transient failure, and secret redaction pass; real Android and sandbox iOS events reach devices |
 | Register and check in from Android | complete | Pre-release v2 storage reset, per-server Keystore key, pairing-time register, resume check-in, fingerprint pin, capability fallback, unknown re-registration, and revoked terminal state pass JVM tests and the attached-Pixel probe |
 | Register and check in from capable SRP web | pending | Exact capability gate, non-extractable IndexedDB WebCrypto key, quiet legacy/cookie fallback, and no plaintext fingerprint expansion pass |
 | Present the security dashboard | pending | Recognizable cards, distinct reported/owner labels, phone-comparable fingerprint, proof labels, global/per-client history, sessions/push, and revoke UI pass desktop/phone review |
 | Alert on a genuinely new client | pending | Default-off `securityEvent` setting sends once to pre-existing enrolled destinations across supported adapters; retry and first-destination cases stay quiet |
-| Enroll and present Android native push | pending | Explicit permission/enrollment, broker/server compensation, foreground/background display, safe tap routing, unknown mapping, and disable/forget pass |
+| Enroll and present Android native push | complete | Explicit permission/enrollment, broker/server compensation, foreground/background and headless display, safe tap routing, unknown mapping, two-host isolation, and disable/forget pass |
 | Prove the complete physical-device path | pending | Disposable YA profile and attached Pixel demonstrate SRP, register, resume/check-in, dashboard audit, broker test FCM, tap, and revocation |
 
 ## Implementation Order

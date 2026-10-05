@@ -1,10 +1,14 @@
+import { AgentAuthRouter } from "./services/AgentAuthRouter.js";
+import { createAgentAuthRouterRoutes } from "./routes/agent-auth-router.js";
 import { DraftStore } from "./drafts/DraftStore.js";
 import { createDraftRoutes } from "./routes/drafts.js";
 import { ConversationSubscriptions } from "./experimental/conversation-subscriptions.js";
 import { setStandingPermissionModeSource } from "./supervisor/standingPermissionMode.js";
-import { ComputerControlService } from "./computer-control/service.js";
-import { createComputerControlRoutes } from "./routes/computer-control.js";
-import { createComputerControlReleaseRoutes } from "./routes/computer-control-releases.js";
+import { retireLegacyComputerControl } from "./machine-control/legacy-retirement.js";
+import {
+  createMachineControlRoutes,
+  supportsInstalledMachineControl,
+} from "./routes/machine-control.js";
 import { createConversationSource } from "./experimental/conversation-source.js";
 import { createExperimentalConversationRoutes } from "./routes/experimental-conversation.js";
 import { IssueStore } from "./services/issues/IssueStore.js";
@@ -203,6 +207,7 @@ import { createGitStatusRoutes } from "./routes/git-status.js";
 import { createGitWorkingTreeFilesRoutes } from "./routes/git-working-tree-files.js";
 import { createFileOwnerRoutes } from "./routes/file-owner.js";
 import { createProjectFileCompletionRoutes } from "./routes/project-file-completion.js";
+import { createProjectFileViewSearchRoutes } from "./routes/project-file-view-search.js";
 import { createToolCommentaryRoutes } from "./routes/tool-commentary.js";
 import { ProjectFileCompletion } from "./services/projectFileCompletion.js";
 import { createConversationContextRoutes } from "./routes/conversation-context.js";
@@ -258,6 +263,7 @@ import { createSessionArchiveRoutes } from "./routes/session-archive.js";
 import { createSessionDoneRoutes } from "./routes/session-done.js";
 import { createSessionIndexRoutes } from "./routes/session-index.js";
 import { createSessionTerminateRoutes } from "./routes/session-terminate.js";
+import { createContextBreakdownRoutes } from "./routes/context-breakdown.js";
 import { createSessionsRoutes } from "./routes/sessions.js";
 import { createSessionWakeRoutes } from "./routes/session-wake.js";
 import { createSettingsRoutes } from "./routes/settings.js";
@@ -283,6 +289,8 @@ import { createTtsRoutes } from "./routes/tts.js";
 import type { TtsService } from "./services/TtsService.js";
 import type { SpeechBackendInstallService } from "./services/voice/speechBackendInstall.js";
 import { createSecurityClientRoutes } from "./routes/security-clients.js";
+import { createNativePushRoutes } from "./routes/native-push.js";
+import type { NativePushService } from "./push/NativePushService.js";
 import {
   DiscoverySqliteService,
   type SqliteMode,
@@ -480,6 +488,7 @@ export interface AppOptions {
   remoteSessionService?: RemoteSessionService;
   /** Signed continuity-key registry and security audit service. */
   securityClientService?: SecurityClientService;
+  nativePushService?: NativePushService;
   /** RelayClientService for relay connection status (optional) */
   relayClientService?: RelayClientService;
   /**
@@ -785,12 +794,23 @@ export function createApp(options: AppOptions): AppResult {
     options.dataDir ??
     join(process.env.HOME ?? process.env.USERPROFILE ?? ".", ".yep-anywhere");
   const projectAppStore = new ProjectAppStore(effectiveDataDir);
-  const computerControl = options.serverSettingsService
-    ? new ComputerControlService(
+  const legacyRetirement = options.serverSettingsService
+    ? retireLegacyComputerControl(
         options.serverSettingsService,
         effectiveDataDir,
       )
-    : undefined;
+        .then((result) => {
+          if (result.state === "pending")
+            console.warn(
+              "[Machine Control] Old YA component cleanup needs attention; it remains disabled. Restart YA to retry. Independent MC desktop access is unchanged.",
+            );
+        })
+        .catch(() => {
+          console.warn(
+            "[Machine Control] Could not persist old component retirement; legacy launches remain unavailable. Restart YA to retry.",
+          );
+        })
+    : Promise.resolve();
   const discoverySqlite = new DiscoverySqliteService({
     dataDir: effectiveDataDir,
     mode: options.sqliteMode ?? "auto",
@@ -992,10 +1012,8 @@ export function createApp(options: AppOptions): AppResult {
   // Mount /api routers only after the security and auth middleware above:
   // Hono runs only the middleware registered before a route, so an earlier
   // mount answers without them (test/auth/api-auth-boundary.test.ts).
-  if (computerControl) {
-    app.route("/api", createComputerControlRoutes(computerControl));
-    app.route("/api", createComputerControlReleaseRoutes(computerControl));
-  }
+  if (supportsInstalledMachineControl())
+    app.route("/api", createMachineControlRoutes());
   const templateSources = new TemplateSourceService(effectiveDataDir);
   const templateCreations = new TemplateCreationService(
     effectiveDataDir,
@@ -1085,6 +1103,14 @@ export function createApp(options: AppOptions): AppResult {
 
   if (options.securityClientService) {
     app.route("/", createSecurityClientRoutes(options.securityClientService));
+    if (options.nativePushService)
+      app.route(
+        "/",
+        createNativePushRoutes(
+          options.securityClientService,
+          options.nativePushService,
+        ),
+      );
   }
 
   // Create dependencies
@@ -1275,6 +1301,17 @@ export function createApp(options: AppOptions): AppResult {
     );
   }
   // Settings saves and file vhost claims change one configuration in turn.
+  artifactServer.setFileSiteAdmission((site) => {
+    if (!site.ownerUsername) return true;
+    const grants = getActiveLimitedGrants(site.ownerUsername);
+    return (
+      !!grants &&
+      grants.allowPublicApps === true &&
+      !!site.projectId &&
+      grants.newSessionProjects.includes(site.projectId) &&
+      (site.public === true || grants.allowPrivateAppLinks !== false)
+    );
+  });
   const artifactConfigWriter = createArtifactConfigWriter({
     server: artifactServer,
     settings: options.serverSettingsService,
@@ -1286,6 +1323,7 @@ export function createApp(options: AppOptions): AppResult {
       server: artifactServer,
       scanner,
       writer: artifactConfigWriter,
+      activeGrants: getActiveLimitedGrants,
     }),
   );
   app.route(
@@ -1417,7 +1455,7 @@ export function createApp(options: AppOptions): AppResult {
       await projectServices.close();
       await projectAppStore.close();
       await templateCreations.close();
-      await computerControl?.close();
+      await legacyRetirement;
       conversationSubscriptions?.close();
       focusedSessionWatchManager.dispose();
       for (const dispose of issueDisposers) dispose();
@@ -1935,7 +1973,14 @@ export function createApp(options: AppOptions): AppResult {
         projectMetadataForNames.getProjectDisplayName(projectPath)
     : getProjectName;
 
+  const agentAuthRouter = new AgentAuthRouter(
+    effectiveDataDir,
+    options.sessionMetadataService,
+  );
+  app.route("/api", createAgentAuthRouterRoutes(agentAuthRouter));
+
   supervisor = new Supervisor({
+    agentAuthRouter,
     projectDisplayName,
     getLimitedUserInstructions: (username) =>
       limitedUserInstructionsForLaunch(
@@ -2083,12 +2128,39 @@ export function createApp(options: AppOptions): AppResult {
     },
     getPostCompactReplaySettings: () =>
       options.serverSettingsService?.getSetting("postCompactReplay"),
+    getInstructionRestorationSettings: () =>
+      options.serverSettingsService?.getSetting("instructionRestoration"),
+    readInstructionHistory: async (sessionId, projectId, provider) => {
+      const project = await scanner.getProject(projectId);
+      if (!project)
+        throw new Error("Instruction history project is unavailable");
+      const reader = readerFactory({ ...project, provider });
+      const loaded = await reader.getSession(sessionId, projectId);
+      if (!loaded)
+        throw new Error(
+          "Instruction history is unavailable for resumed session",
+        );
+      return normalizeSession(loaded).messages.map((message) => ({
+        type: message.type,
+        uuid: message.uuid,
+        subtype:
+          typeof message.subtype === "string" ? message.subtype : undefined,
+        content: message.message?.content ?? message.content,
+        parent_tool_use_id:
+          typeof message.parent_tool_use_id === "string"
+            ? message.parent_tool_use_id
+            : undefined,
+      }));
+    },
     getCacheMissBillingSettings: () =>
       options.serverSettingsService?.getSetting("cacheMissBilling"),
     getClaudeSteerBackgroundBashSettings: () =>
       options.serverSettingsService?.getSetting("claudeSteerBackgroundBash"),
   });
-  supervisor.computerControl = computerControl;
+  options.serverSettingsService?.onSettingsChanged((settings, previous) => {
+    if (settings.instructionRestoration !== previous.instructionRestoration)
+      void supervisor.refreshInstructionRestoration();
+  });
   if (sessionWakeService) {
     app.use("/session-wake/*", hostCheckMiddleware);
     app.route("/session-wake", createSessionWakeRoutes(sessionWakeService));
@@ -2406,6 +2478,9 @@ export function createApp(options: AppOptions): AppResult {
     "/api/version",
     createVersionRoutes({
       getLatestVersion: options.getLatestVersion,
+      installedMachineControlAvailable: supportsInstalledMachineControl(),
+      agentAuthRouterAvailable:
+        process.platform !== "win32" && Boolean(options.sessionMetadataService),
       getExperimentalConversationAvailable: () =>
         Boolean(conversationSubscriptions),
       getSqliteStatus: () => discoverySqlite.getStatus(),
@@ -2424,6 +2499,7 @@ export function createApp(options: AppOptions): AppResult {
       }),
       browserSettingsBackupAvailable: !!options.browserSettingsBackupService,
       securityClientAuditAvailable: !!options.securityClientService,
+      nativePush: options.nativePushService?.version(),
       getDeviceBridgeState: () => {
         if (!options.deviceBridgeService) return "unavailable";
         return options.deviceBridgeService.hasBinary()
@@ -2738,6 +2814,7 @@ export function createApp(options: AppOptions): AppResult {
       eventBus: options.eventBus,
     }),
   );
+  app.route("/api/sessions", createContextBreakdownRoutes({ supervisor }));
   app.route(
     "/api",
     createToolResultMediaRoutes({
@@ -3145,6 +3222,15 @@ export function createApp(options: AppOptions): AppResult {
       scanner,
       dataDir: effectiveDataDir,
       service: projectFileCompletion,
+    }),
+  );
+  app.route(
+    "/api/projects",
+    createProjectFileViewSearchRoutes({
+      scanner,
+      service: projectFileCompletion,
+      allowedPaths: getAllowedFilePaths,
+      includeProjects: shouldIncludeProjects,
     }),
   );
   app.route(
@@ -3688,6 +3774,7 @@ export function createApp(options: AppOptions): AppResult {
       loadSessionSummary: loadPublicShareSessionSummary,
       fetchProjectFile: fetchPublicShareProjectFile,
       dataDir: effectiveDataDir,
+      localFilePolicy: localResourcePathPolicy,
       getRelayConfig: () =>
         options.remoteAccessService?.getRelayConfig() ?? null,
       getPublicSharesEnabled: () =>

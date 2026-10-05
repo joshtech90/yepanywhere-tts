@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 
+import { RoutedSessionContext } from "../../contexts/RoutedSessionContext";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -40,6 +41,20 @@ describe("useProviderSubscriptionUsage", () => {
     state.sourceKey = `usage-source-${Math.random()}`;
     mockGetUsage.mockReset();
     mockGetUsage.mockResolvedValue({ usage: null });
+  });
+
+  it("never reads or refreshes the direct account from a routed session", async () => {
+    state.capabilities = ["provider-subscription-usage"];
+    const { result } = renderHook(() => useProviderSubscriptionUsage("codex"), {
+      wrapper: ({ children }) => (
+        <RoutedSessionContext value={true}>{children}</RoutedSessionContext>
+      ),
+    });
+    await act(async () => {
+      await result.current.refresh();
+    });
+    expect(mockGetUsage).not.toHaveBeenCalled();
+    expect(result.current.usage).toBeNull();
   });
 
   it("makes no request until the server advertises the capability", async () => {

@@ -4,6 +4,28 @@ import java.net.URI
 import java.net.URLDecoder
 
 object AppLinkDestination {
+    data class NativePairingLink(val username: String, val password: String, val relayWebsocketUrl: String)
+
+    /** Legacy password-bearing App Links stay in native memory in bundled mode. */
+    fun toNativePairingLink(action: String?, appLink: String?): NativePairingLink? {
+        if (action != ACTION_VIEW || toWebClientUrl(appLink, "https://appassets.androidplatform.net/") == null) return null
+        return runCatching {
+            val params = parseQuery(URI(checkNotNull(appLink)).rawQuery)
+            val relay = params["r"]?.takeIf(String::isNotBlank)?.let { raw ->
+                val uri = URI(raw)
+                require(uri.host != null && uri.userInfo == null && uri.rawFragment == null && uri.rawQuery == null)
+                val scheme = when (uri.scheme) {
+                    "https", "wss" -> "wss"
+                    "http", "ws" -> "ws"
+                    else -> error("Invalid relay scheme")
+                }
+                val path = uri.rawPath.orEmpty().trimEnd('/').let { if (it.endsWith("/ws")) it else "$it/ws" }
+                "$scheme://${uri.rawAuthority}$path"
+            }.orEmpty()
+            NativePairingLink(checkNotNull(params["u"]), checkNotNull(params["p"]), relay)
+        }.getOrNull()
+    }
+
     fun toWebClientUrlForIntent(
         action: String?,
         appLink: String?,

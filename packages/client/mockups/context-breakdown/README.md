@@ -6,6 +6,13 @@ mockup on 2026-09-30 of a `/context`-style breakdown. It makes no server or
 provider requests; figures are fixed sample data from a Sonnet 5 session with
 a 1M window.
 
+The production implementation is documented in
+[context breakdown](../../../../topics/context-breakdown.md). It departs from
+this fixture: the Conversation split comes from the provider's own message
+breakdown rather than a YA transcript estimate, there is no **Count exactly**
+button (the popover always requests the exact count), and the popover keeps
+its shipped 320px width. The fixture remains the original proposal.
+
 The proposed data source is the Claude Agent SDK's
 `query.getContextUsage({ detail })`, which returns the same categories
 `/context` prints plus per-item lists (`memory_files`, `skills`, `mcp_tools`,

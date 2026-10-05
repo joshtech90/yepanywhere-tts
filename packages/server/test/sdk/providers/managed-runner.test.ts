@@ -609,6 +609,27 @@ describe("managed runner stdio protocol", () => {
         lastRawProviderEventSource: "fake-managed-runner",
       }),
     );
+    // The context breakdown crosses the host boundary like any session RPC.
+    expect(
+      harness.messages.find((message) => message.type === "launchAccepted")
+        ?.metadata?.capabilities?.getContextBreakdown,
+    ).toBe(true);
+    harness.send({
+      type: "rpc",
+      leaseId: "lease-test-123",
+      controlId: "context-breakdown",
+      id: 4,
+      method: "getContextBreakdown",
+      args: [],
+    });
+    await waitFor(() =>
+      harness.messages.some(
+        (message) =>
+          message.type === "rpcResult" &&
+          message.id === 4 &&
+          message.result?.model === "fake-managed-runner",
+      ),
+    );
     harness.send({
       type: "queuePush",
       leaseId: "lease-test-123",

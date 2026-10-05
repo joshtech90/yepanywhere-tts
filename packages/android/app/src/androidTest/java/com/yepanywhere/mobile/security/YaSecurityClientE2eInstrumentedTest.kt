@@ -3,8 +3,8 @@ package com.yepanywhere.mobile.security
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import com.yepanywhere.mobile.connection.YaMessageTransport
-import com.yepanywhere.mobile.connection.YaNativeProfileConnector
-import com.yepanywhere.mobile.connection.YaNativeSecureConnection
+import com.yepanywhere.mobile.connection.YaRustProfileConnector
+import com.yepanywhere.mobile.connection.YaRustTls
 import com.yepanywhere.mobile.connection.YaPairingCoordinator
 import com.yepanywhere.mobile.connection.YaServerConnectionManager
 import com.yepanywhere.mobile.profiles.YaPairedServerProfile
@@ -16,6 +16,8 @@ import com.yepanywhere.mobile.profiles.YaStoredResumeCredential
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import okhttp3.OkHttpClient
 import org.json.JSONObject
@@ -48,11 +50,11 @@ class YaSecurityClientE2eInstrumentedTest {
             .build()
         val keys = AndroidKeystoreSecurityClientKeyStore()
         var keyAlias: String? = null
+        val repository = InMemoryPairedServerRepository()
+        YaRustTls.ensure(context)
+        val connector = YaRustProfileConnector(repository)
         try {
-            val connection = YaNativeSecureConnection(httpClient)
-            val connector = YaNativeProfileConnector(connection)
             val route = YaServerRoute.direct(checkNotNull(wsUrl))
-            val repository = InMemoryPairedServerRepository()
             val securityClients = YaSecurityClientCoordinator(
                 repository = repository,
                 keys = keys,
@@ -80,6 +82,12 @@ class YaSecurityClientE2eInstrumentedTest {
                     keys.publicKeySpki(checkNotNull(keyAlias)),
                 )
 
+                val saved = checkNotNull(repository.snapshot(paired.id))
+                val resumedFromMain = withContext(Dispatchers.Main) {
+                    connector.resume(paired, checkNotNull(saved.resumeCredential).credential)
+                }
+                resumedFromMain.transport.closeAndAwait()
+
                 val manager = YaServerConnectionManager(
                     profileId = paired.id,
                     repository = repository,
@@ -102,11 +110,9 @@ class YaSecurityClientE2eInstrumentedTest {
                     paired.id,
                     YaSecurityClientBinding.registered(checkNotNull(keyAlias), unknownClientId),
                 )
-                val fullForUnknown = connector.login(
-                    route,
-                    checkNotNull(username),
-                    checkNotNull(password),
-                )
+                val fullForUnknown = withContext(Dispatchers.Main) {
+                    connector.login(route, checkNotNull(username), checkNotNull(password))
+                }
                 val recovered = try {
                     withTimeout(STEP_TIMEOUT_MS) {
                         securityClients.ensure(
@@ -164,6 +170,7 @@ class YaSecurityClientE2eInstrumentedTest {
                 assertNull(revoked.resumeCredential)
             }
         } finally {
+            connector.close()
             keyAlias?.let { runCatching { keys.delete(it) } }
             httpClient.connectionPool.evictAll()
             httpClient.dispatcher.executorService.shutdown()

@@ -109,6 +109,13 @@ turn a failing full CI run into a pass, and CI retries do not make an
 intermittent assertion healthy. Visual verification and capture remain owned by
 [UI testing](ui-testing.md), including a user's explicit visual-QA handoff.
 
+The separate iPad WebKit job allows 45 minutes for cold dependency installation
+and tests. [CI 36908114440](https://github.com/kzahel/yepanywhere/actions/runs/36908114440)
+exhausted the former 15-minute job limit while downloading 125 MB of Ubuntu
+packages from the hosted image's Azure mirror; the browser tests never began.
+The job budget is three times that observed limit, independently of Playwright's
+per-test deadlines and the unchanged input-latency assertions.
+
 The full-app Playwright configuration still defaults to one worker. Run-scoped
 services share mutable state, while the opt-in worker fixture below isolates
 parallel files. CI now exercises two worker-owned servers in each of the two
@@ -171,6 +178,17 @@ active after assertions. The page fixture settles all managed callbacks
 before removing interception patterns and reports handler errors. In
 Playwright 1.58, `unrouteAll({ behavior: "wait" })` alone can force-continue a
 sibling request while its callback still awaits a fetch response.
+
+Windows cleanup runs `taskkill /T /F` asynchronously so launcher pipes and
+child exit events can drain. A nonzero result is accepted only after the owned
+target is verified absent; a live target still fails cleanup with the command's
+diagnostics. Computer-control CI retains its browser traces on either platform.
+Packaged startup checks wait for valid port-file contents rather than treating
+file creation as publication, and include the selected port in readiness errors.
+Browser assertions inside a short settling window control browser time while
+preserving the real response/render path, then resume or advance its timer to
+verify the settled state. Assertion round-trip latency must not consume the
+window being asserted.
 
 A full local run on 2026-09-29 passed 345 cases with 12 platform/device skips,
 two workers and no retries in 8.0 minutes, including teardown. This establishes

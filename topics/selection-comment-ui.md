@@ -70,6 +70,14 @@ The early Phase 1 gaps were fixed 2026-06-23, verified in the running app.
   paragraphs are measured (e.g. while streaming). Circles keep the existing
   hover-reveal and Appearance always-show behavior; the rail never intercepts
   pointer events, so text selection is unaffected.
+- **Mermaid blocks are excluded from the quote rail.** Diagram labels and
+  retained Mermaid source never receive paragraph quote circles, in assistant
+  text or Markdown file previews. This exclusion also applies before rendering,
+  after a render failure, and while showing diagram source. A surface containing
+  only a Mermaid block has no whole-block fallback quote circle, including in
+  block-only quote mode. Surrounding prose keeps its normal quote controls;
+  the diagram's source/render toggle and explicit code-copy control remain
+  available.
 - **Dedicated right-side quote lane — fixed.** The per-paragraph `>` circles now
   live in a reserved right-side rail beside assistant prose, with the ordinary
   copy/render controls to its left. Assistant text no longer renders underneath

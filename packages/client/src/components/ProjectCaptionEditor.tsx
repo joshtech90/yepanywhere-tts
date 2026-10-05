@@ -3,6 +3,7 @@ import {
   normalizeProjectCaption,
 } from "@yep-anywhere/shared";
 import { useCallback, useRef, useState } from "react";
+import { useLongPress } from "../hooks/useLongPress";
 import { useI18n } from "../i18n";
 import type { Project } from "../types";
 import styles from "./ProjectCaptionEditor.module.css";
@@ -15,8 +16,9 @@ interface ProjectCaptionEditorProps {
 
 /**
  * Caption line on a project card. Read-only when no save handler is given;
- * otherwise clicking the caption (or the "Add a caption" placeholder) opens
- * an inline editor with save (✓) and cancel (×) controls.
+ * otherwise the small pencil button, or a long press / right-click on the
+ * caption, opens an inline editor with save (✓) and cancel (×) controls.
+ * A plain tap on the caption opens the project like the rest of the card.
  */
 export function ProjectCaptionEditor({
   project,
@@ -41,13 +43,18 @@ export function ProjectCaptionEditor({
     input.select();
   }, []);
 
-  const startEdit = (event: React.MouseEvent) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const openEditor = () => {
     setDraft(caption?.text ?? "");
     setError(null);
     closingRef.current = false;
     setEditing(true);
+  };
+  const longPress = useLongPress(openEditor);
+
+  const startEdit = (event: React.MouseEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openEditor();
   };
 
   const cancelEdit = (event: React.SyntheticEvent) => {
@@ -179,15 +186,52 @@ export function ProjectCaptionEditor({
 
   if (onUpdateCaption) {
     return (
-      <div className={styles.slot}>
+      <div className={`${styles.slot} ${styles.editableSlot}`}>
+        {caption && (
+          // biome-ignore lint/a11y/noStaticElementInteractions lint/a11y/useKeyWithClickEvents: the long press is a touch shortcut; the pencil button is the keyboard path to the editor
+          <span
+            className={`${styles.caption} ${styles.pressable}`}
+            title={sourceHint}
+            {...longPress.handlers}
+            onClick={(event) => {
+              // A plain tap belongs to the card; only the click ending a
+              // long press is swallowed.
+              let swallowed = true;
+              longPress.click(() => {
+                swallowed = false;
+              })();
+              if (swallowed) {
+                event.preventDefault();
+                event.stopPropagation();
+              }
+            }}
+          >
+            {caption.text}
+          </span>
+        )}
         <button
           type="button"
-          className={caption ? styles.caption : styles.placeholder}
-          aria-label={t("projectCaptionEdit")}
-          title={caption ? sourceHint : t("projectCaptionEdit")}
+          className={styles.editButton}
+          aria-label={
+            caption ? t("projectCaptionEdit") : t("projectCaptionAdd")
+          }
+          title={caption ? t("projectCaptionEdit") : t("projectCaptionAdd")}
           onClick={startEdit}
         >
-          {caption ? caption.text : t("projectCaptionAdd")}
+          <svg
+            width="12"
+            height="12"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M12 20h9" />
+            <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z" />
+          </svg>
         </button>
       </div>
     );

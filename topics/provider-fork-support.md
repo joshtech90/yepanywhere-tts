@@ -44,6 +44,7 @@ forkSession?: (options: {
   upToMessageId?: string;  // inclusive prefix slice; omit for full copy
   boundary?: ProviderForkBoundary; // typed server-resolved identity
   title?: string;          // title for the new session
+  launchSettings?: EffectiveSessionLaunchSettingsValue; // resolved native launch choices
 }) => Promise<{ sessionId: string; filePath?: string }>;
 ```
 
@@ -81,11 +82,48 @@ Contract obligations, not just the shape:
   separate setting and a helper may deliberately use a lower level. A fork
   request may carry an explicit `thinking` option, which becomes the fork's
   recorded launch settings ([mid-session effort change](mid-session-effort-change.md)
-  § Fork launch settings); without it the fork's first send uses the client's
-  per-model default as before.
+  § Fork launch settings). Without an override, thinking and effort inherit
+  from the source along with its permission mode and service tier. Browser
+  defaults do not replace those inherited settings on first send.
 - **Never emulated when absent.** Absence means the capability does not exist;
   YA must not ship a fork-labeled button backed by replay/forgery on a provider
   that cannot truly fork (`session-context-actions.md` § Fork; `types.ts:291`).
+
+## Launch settings inheritance
+
+Clone, ordinary prefix forks, and legacy aside clones save a complete child
+`effectiveLaunchSettings` snapshot before reporting success. Permissions,
+model, thinking/effort and service tier inherit from the source's current
+settled configuration, even when the transcript is cut at a historical turn.
+Each explicit validated successor override wins. Null/provider-default choices
+remain intentional defaults. The child has its own revision sequence; later
+source or child changes are independent.
+
+An owned source is sampled after preceding configuration changes and pending
+snapshot writes settle, using standing permission policy and last applied
+effort. A stopped source uses its durable snapshot. A pre-snapshot source uses
+existing read-only launch recovery, YA requested-model metadata and conservative
+server/provider fallbacks. Ambiguous legacy permission evidence never infers
+Bypass. Clone does not activate or migrate the source, copy unsent browser
+choices or grant a new host sandbox/Computer Control boundary. Existing operator
+policy and provider/model capability restrictions still apply.
+
+Summary, retitle and recap generators retain their deliberate native helper
+policy/effort overrides. The final summary child carries the original source
+snapshot captured for the generator, with any explicit target override; it
+never adopts temporary helper settings or a later source edit.
+
+A child snapshot-write failure fails creation acknowledgement. The native
+transcript may already exist, so the error states that a child was created but
+its settings could not be saved; diagnostics retain its actual identity. YA
+keeps the source unchanged and does not delete independently usable children.
+A retry can create another child.
+
+The existing optional `session.effectiveLaunchSettings` response controls client
+restoration. Older servers retain field-absence fallback; older clients that
+submit defaults as explicit overrides can still replace saved choices. No new
+browser request fields, capability or compatibility floor are introduced.
+Implementation and verification: [clone-settings repair](../docs/tactical/140-clone-session-settings-inheritance.md).
 
 ## Reference implementation: Claude
 
@@ -128,7 +166,8 @@ Codex models forks natively in its app-server protocol. The vendored v2
 Implementation:
 
 1. For a full fork, YA calls `thread/fork` with the source `threadId`, `cwd`,
-   and the normal default Codex permission policy. The native response's
+   and the inherited Codex approval/sandbox policy, model, service tier and
+   effort configuration. The native response's
    `thread.id` becomes `{ sessionId }`.
 2. For a new sliced fork, durable response normalization preserves Codex's
    `internal_chat_message_metadata_passthrough.turn_id` as non-enumerable,

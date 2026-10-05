@@ -64,7 +64,7 @@ export function createSessionContentSearchRoutes(
       return c.json({ error: "Invalid content search" }, 400);
     if (!deps.retainedCollections)
       return c.json({ error: "Session catalog unavailable" }, 503);
-    if (active >= 4)
+    if (active >= 64)
       return c.json({ error: "Content search is busy; retry shortly" }, 429);
     const { cursor, ...request } = parsed.data;
     const key = createHash("sha256")

@@ -192,6 +192,7 @@ class YaSecurityClientCoordinator(
         path: String,
         body: JSONObject? = null,
     ): YaApiResponse {
+        transport.directRequest(method, path, body)?.let { return it }
         val requestId = UUID.randomUUID().toString()
         val message = JSONObject()
             .put("type", "request")

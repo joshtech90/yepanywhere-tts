@@ -26,6 +26,7 @@ export interface SessionListSummary {
   fullTitle: SessionSummary["fullTitle"];
   createdAt?: SessionSummary["createdAt"];
   updatedAt: SessionSummary["updatedAt"];
+  lastHumanTurnAt?: SessionSummary["lastHumanTurnAt"];
   provider: SessionSummary["provider"];
   customTitle?: SessionSummary["customTitle"];
   isArchived?: SessionSummary["isArchived"];
@@ -60,7 +61,7 @@ export function toSessionListSummary(
     | "isStarred"
     | "asyncQuestions"
   > &
-    Pick<SessionListSummary, "createdAt">,
+    Pick<SessionListSummary, "createdAt" | "lastHumanTurnAt">,
 ): SessionListSummary {
   return {
     id: summary.id,
@@ -69,6 +70,9 @@ export function toSessionListSummary(
     fullTitle: summary.fullTitle,
     createdAt: summary.createdAt,
     updatedAt: summary.updatedAt,
+    ...(summary.lastHumanTurnAt !== undefined
+      ? { lastHumanTurnAt: summary.lastHumanTurnAt }
+      : {}),
     provider: summary.provider,
     ...(summary.asyncQuestions !== undefined
       ? { asyncQuestions: summary.asyncQuestions }

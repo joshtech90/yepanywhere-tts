@@ -1,7 +1,7 @@
 use tauri::{
     menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, SubmenuBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Emitter,
+    AppHandle,
 };
 use tauri_plugin_autostart::ManagerExt as _;
 
@@ -143,6 +143,26 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
         true,
         None::<&str>,
     )?;
+    // The application menu remains reachable even when the tray icon is hidden
+    // by a crowded macOS menu bar. Both entry points use the same controller.
+    #[cfg(target_os = "macos")]
+    if let Some(menu) = app.menu() {
+        if let Some(application) = menu.items()?.first().and_then(|item| item.as_submenu()) {
+            let item = MenuItem::with_id(
+                app,
+                "app-check-updates",
+                "Check for Updates…",
+                true,
+                None::<&str>,
+            )?;
+            application.insert(&item, 2)?;
+            app.on_menu_event(|app, event| {
+                if event.id.as_ref() == "app-check-updates" {
+                    crate::updater::check(app, "manual");
+                }
+            });
+        }
+    }
     let restart = MenuItem::with_id(app, "restart", "Restart Server", true, None::<&str>)?;
     let autostart = CheckMenuItem::with_id(
         app,
@@ -263,15 +283,7 @@ pub fn setup_tray(app: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
                 let _ = crate::windows::show_diagnostics_window(app);
             }
             "check-updates" => {
-                // Hidden WKWebViews can suspend after extended inactivity.
-                // Native code must wake the updater before asking its renderer
-                // to check; a suspended event handler cannot show itself.
-                if let Err(error) = crate::windows::show_main_window(app) {
-                    eprintln!("Failed to show updater window: {error}");
-                }
-                if let Err(error) = app.emit_to("main", "check-for-updates", ()) {
-                    eprintln!("Failed to request update check: {error}");
-                }
+                crate::updater::check(app, "manual");
             }
             "autostart" => {
                 let was_enabled = app.autolaunch().is_enabled().unwrap_or(false);

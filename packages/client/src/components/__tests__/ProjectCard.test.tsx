@@ -354,7 +354,7 @@ describe("ProjectCard", () => {
       </I18nProvider>,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Edit caption" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add a caption" }));
     const input = screen.getByRole<HTMLInputElement>("textbox", {
       name: "Project caption",
     });
@@ -413,7 +413,7 @@ describe("ProjectCard", () => {
         </MemoryRouter>
       </I18nProvider>,
     );
-    expect(screen.getByText("Add a caption")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Add a caption" })).toBeTruthy();
     unmount();
 
     render(
@@ -427,7 +427,35 @@ describe("ProjectCard", () => {
         </MemoryRouter>
       </I18nProvider>,
     );
-    expect(screen.queryByText("Add a caption")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add a caption" })).toBeNull();
+  });
+
+  it("opens the project on a caption tap and edits only on a long press", () => {
+    render(
+      <I18nProvider>
+        <MemoryRouter>
+          <ProjectCard
+            project={{
+              ...project,
+              caption: { text: "From the readme.", source: "readme" },
+            }}
+            needsAttentionCount={0}
+            thinkingCount={0}
+            onUpdateCaption={vi.fn()}
+          />
+        </MemoryRouter>
+      </I18nProvider>,
+    );
+    const caption = screen.getByText("From the readme.");
+    fireEvent.click(caption);
+    expect(
+      screen.queryByRole("textbox", { name: "Project caption" }),
+    ).toBeNull();
+
+    fireEvent.contextMenu(caption);
+    expect(
+      screen.getByRole("textbox", { name: "Project caption" }),
+    ).toBeTruthy();
   });
 
   it("shows a project queue count badge", () => {

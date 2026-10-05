@@ -9,7 +9,7 @@ import { recordUiCapture } from "./support/ui-capture.js";
 test.use({ serviceWorkers: "block" });
 
 for (const viewport of [
-  { name: "desktop", width: 1200, height: 600, streaming: true },
+  { name: "desktop", width: 1000, height: 600, streaming: true },
   { name: "phone", width: 375, height: 812, streaming: true },
   { name: "streaming-disabled", width: 1200, height: 600, streaming: false },
 ]) {
@@ -58,6 +58,12 @@ for (const viewport of [
               id: sessionId,
               projectId,
               provider: "codex",
+              model: "gpt-6.1-sol",
+              effectiveModelSettings: {
+                requestedModel: "gpt-6.1-sol",
+                thinking: { type: "enabled" },
+                effort: "high",
+              },
               title: "Codex streaming snapshots",
               createdAt: timestamp,
               updatedAt: timestamp,
@@ -134,6 +140,9 @@ for (const viewport of [
     await page.setViewportSize(viewport);
     await page.goto(`${baseURL}/projects/${projectId}/sessions/${sessionId}`);
     const list = page.locator(".message-list");
+    const badge = page.locator(".provider-badge-button .provider-badge");
+    await expect(badge).toHaveAttribute("aria-label", "gpt-6.1-sol");
+    await expect(badge).toHaveText("Cd So 6.1High");
     await expect(list.getByText(text, { exact: true })).toHaveCount(1);
     await expect(list.locator('[data-render-type="text"]')).toHaveCount(1);
     await expect.poll(() => Boolean(emit)).toBe(true);

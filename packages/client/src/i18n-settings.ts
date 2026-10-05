@@ -152,15 +152,6 @@ export function getSettingsCategories(
       description: t("settingsStorageDescription"),
     },
     {
-      id: "computer-control",
-      label: t("computerTitle"),
-      description: t("settingsComputerDescription"),
-      requires: {
-        anyCapability: [SERVER_CAPABILITIES.computerControl.name],
-        unsupportedMessage: t("computerUnsupportedServer"),
-      },
-    },
-    {
       id: "agent-context",
       label: t("settingsAgentContextTitle"),
       description: t("settingsAgentContextDescription"),

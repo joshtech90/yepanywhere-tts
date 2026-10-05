@@ -173,10 +173,18 @@ it("retains 100 project inventories and expires by last use after a week", async
   const projects = Array.from({ length: 100 }, (_, i) =>
     join(root, `project-${i}`),
   );
-  for (const project of projects) {
-    await mkdir(project);
-    await writeFile(join(project, "known.txt"), "fixture");
-    await completed(service, project, "known");
+  // The retention contract needs 100 real inventories, but not serial cold
+  // Git launches. A loaded workspace/browser run exhausted 30s on 2026-10-01.
+  // Keep all inventories and assertions while bounding fixture work to two
+  // projects at once, matching the service's two active-scan slots.
+  for (let offset = 0; offset < projects.length; offset += 2) {
+    await Promise.all(
+      projects.slice(offset, offset + 2).map(async (project) => {
+        await mkdir(project);
+        await writeFile(join(project, "known.txt"), "fixture");
+        await completed(service, project, "known");
+      }),
+    );
   }
   const calls = vi.mocked(spawn).mock.calls.length;
   for (const project of projects) {

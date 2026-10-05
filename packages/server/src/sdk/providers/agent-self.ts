@@ -5,6 +5,7 @@ import type {
   AgentSelfValue,
 } from "../../agent-tools/protocol.js";
 import { createAgentSelfLease } from "../../agent-tools/service.js";
+import { startMachineControlToolsSession } from "./machine-control.js";
 import type { SDKMessage } from "../types.js";
 import type {
   AgentSession,
@@ -162,8 +163,13 @@ export async function startAgentSelfSession(
   options: StartSessionOptions,
   start: (options: StartSessionOptions) => Promise<AgentSession>,
 ): Promise<AgentSession> {
+  const startWithNativeSudo = (resolved: StartSessionOptions) =>
+    startMachineControlToolsSession(provider, resolved, start);
   if (!eligible(provider, options))
-    return await start({ ...options, agentEnvironment: undefined });
+    return await startWithNativeSudo({
+      ...options,
+      agentEnvironment: undefined,
+    });
   const state = new AgentSelfState(provider, options);
   const lease = await createAgentSelfLease((launchId) =>
     state.snapshot(launchId),
@@ -177,7 +183,7 @@ export async function startAgentSelfSession(
   };
   let session: AgentSession;
   try {
-    session = await start({
+    session = await startWithNativeSudo({
       ...options,
       agentEnvironment: environment,
       getSessionChildEnv: (sessionId, executor) => ({

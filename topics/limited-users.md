@@ -319,6 +319,16 @@ the capability and fallback were approved on 2026-09-28.
 and Start sessions grants. [Project service](project-service.md#app-address-in-project-settings)
 owns publication, owner ceilings, inline links and revocation behavior.
 
+The File Viewer's public-link dialog also permits file addresses when the user
+has Allow public apps and Start sessions access to the selected project.
+The address routes check that supplied project themselves, limit inventory
+to the caller's own rows, and enforce persisted creator ownership for replacement
+and release. All served files, including linked files and symlink targets, stay
+inside that project's canonical root. The administrator-only public-file-share
+inventory stays hidden and unrequested. Incoming address requests recheck the
+creator's current account and grants. See
+[file vhosts](active-content-security.md#file-vhosts) for the exact contract.
+
 Enforcement is a single server-side middleware ahead of every API route, so
 a route added later is refused for limited users until it is listed. It is
 **default-deny**: a request path a limited principal is not explicitly
@@ -339,7 +349,9 @@ The decision is made on the path the router dispatches, after
 percent-decoding, so an encoded spelling such as `/api/%69ssues` is judged
 as the `/api/issues` route it reaches. A project grant comes only from a
 project or session id in that path: a `projectId` query parameter opens
-nothing, since most routes ignore one. An id segment that is not valid
+nothing, since most routes ignore one. The explicitly allowed file-address
+routes are the exception: they validate the supplied project and creator at
+the route before reading or changing mappings. An id segment that is not valid
 percent-encoding is refused.
 
 | operation | limited user |
@@ -852,13 +864,22 @@ model or effort changes made by the superuser.
   noisy guest can throttle the host; the server's own per-identity SRP
   limiter already exists to contain that.
 
-  **Password managers (2026-09-28).** The form labels the routing field
-  **Server name** and keeps it out of autofill; **Log in as** is the visible
-  `autocomplete="username"` field, so a browser saves and restores the
-  identity with its password. A blank identity signs in as the owner and is
-  filled with the server name before the browser records the login. This
-  browser's saved relay hosts remember every identity used per server, so a
-  restored identity also restores the server name, on edit or at submit.
+  **Password managers (2026-10-03).** One relay login form always offers the
+  required computer/server name as `name="username"`, with its stable
+  `id="relayUsername"` and `autocomplete="username"`. Password uses
+  `name="password"` and `autocomplete="current-password"`. Opening Advanced
+  never changes these attributes. The optional **Log in as** field lives under
+  Advanced, marked experimental, with `name="limited-user"` and
+  `autocomplete="off"`; it is absent from the DOM while Advanced is collapsed.
+  An `?as=` link expands Advanced to show its prefilled limited-user name.
+  Blank means owner; an explicitly supplied name selects that limited user's
+  identity without changing or inferring the required computer name. Collapsing
+  Advanced preserves an explicitly entered override. Owner submission never
+  copies the computer name into the limited-user field. Submission reads live
+  form values so autofill works even before React receives an input event.
+  These hints prioritize existing owner credentials; browsers and password
+  managers may still apply their own heuristics, and automatic saving/restoring
+  of all three limited-user login values is not promised.
 
   **Identity lookup and timing.** The server resolves the `srp_hello`
   identity by a constant-time map lookup of username to salt and verifier

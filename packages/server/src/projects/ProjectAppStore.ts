@@ -300,4 +300,19 @@ export class ProjectAppStore {
       );
     });
   }
+
+  /** Revoke and release every address, retaining project history and visibility. */
+  releaseAll(
+    projectId: string,
+    beforeRelease: (rows: ProjectAppReservation[]) => Promise<void>,
+  ): Promise<void> {
+    return this.change(async (state) => {
+      await beforeRelease(
+        state.reservations.filter((row) => row.projectId === projectId),
+      );
+      state.reservations = state.reservations.filter(
+        (row) => row.projectId !== projectId,
+      );
+    });
+  }
 }

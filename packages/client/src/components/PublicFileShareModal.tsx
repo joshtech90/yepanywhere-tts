@@ -5,6 +5,7 @@ import type {
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
 import { useFileVhostService } from "../hooks/useFileVhostService";
+import { useCanUseBearerGrants } from "../hooks/useActingPrincipal";
 import { useI18n } from "../i18n";
 import { writeClipboardTextLater } from "../lib/clipboard";
 import { publicSharePlayUrlFromFileShareUrl } from "../lib/publicSharePlay";
@@ -43,6 +44,7 @@ export function PublicFileShareModal({
 }: PublicFileShareModalProps) {
   const { t } = useI18n();
   const vhostService = useFileVhostService(projectId);
+  const canUseBearerGrants = useCanUseBearerGrants();
   const transformUrl = (url: string) =>
     (playLinks && publicSharePlayUrlFromFileShareUrl(url)) || url;
   const [items, setItems] = useState<PublicFileShareManagementItem[]>([]);
@@ -54,6 +56,10 @@ export function PublicFileShareModal({
   const manualUrlRef = useRef<HTMLInputElement>(null);
 
   const loadShares = useCallback(async () => {
+    if (!canUseBearerGrants) {
+      setLoading(false);
+      return;
+    }
     setLoading(true);
     setError(null);
     try {
@@ -71,7 +77,7 @@ export function PublicFileShareModal({
     } finally {
       setLoading(false);
     }
-  }, [filePath, projectId, t]);
+  }, [filePath, projectId, t, canUseBearerGrants]);
 
   useEffect(() => {
     void loadShares();
@@ -171,17 +177,19 @@ export function PublicFileShareModal({
           <WarningIcon />
           <span>{t("publicFileShareWarning")}</span>
         </div>
-        <button
-          type="button"
-          className={`settings-button settings-button-primary ${styles.createButton}`}
-          disabled={working !== null}
-          onClick={() => void createAndCopyShare()}
-        >
-          <LinkIcon />
-          {working === "create"
-            ? t("publicFileShareCreating")
-            : t("publicFileShareCreate")}
-        </button>
+        {canUseBearerGrants && (
+          <button
+            type="button"
+            className={`settings-button settings-button-primary ${styles.createButton}`}
+            disabled={working !== null}
+            onClick={() => void createAndCopyShare()}
+          >
+            <LinkIcon />
+            {working === "create"
+              ? t("publicFileShareCreating")
+              : t("publicFileShareCreate")}
+          </button>
+        )}
 
         {manualUrl && (
           <label className={styles.manualCopy}>
@@ -196,54 +204,58 @@ export function PublicFileShareModal({
           <PublicShareFeedback tone="notice">{notice}</PublicShareFeedback>
         )}
 
-        <div className={styles.inventory}>
-          <div className={styles.inventoryHeading}>
-            <strong>{t("publicFileShareExisting")}</strong>
+        {canUseBearerGrants && (
+          <div className={styles.inventory}>
+            <div className={styles.inventoryHeading}>
+              <strong>{t("publicFileShareExisting")}</strong>
+            </div>
+            {loading ? (
+              <PublicShareInventoryEmpty loading>
+                {t("publicFileShareLoading")}
+              </PublicShareInventoryEmpty>
+            ) : items.length === 0 ? (
+              <PublicShareInventoryEmpty>
+                {t("publicFileShareEmpty")}
+              </PublicShareInventoryEmpty>
+            ) : (
+              <PublicShareInventoryList compact>
+                {items.map((item) => {
+                  const revoking = working === `revoke:${item.shareId}`;
+                  return (
+                    <PublicShareInventoryRow
+                      key={item.shareId}
+                      title={
+                        item.title || filePath.split("/").at(-1) || filePath
+                      }
+                      mode="live"
+                      modeLabel={t("publicShareLiveBadge")}
+                      copyAction={{
+                        label: t("publicFileShareCopy"),
+                        disabled: working !== null,
+                        onClick: () => void copyShare(item),
+                      }}
+                      revokeAction={{
+                        label: t("publicFileShareRevoke"),
+                        disabled: working !== null,
+                        working: revoking,
+                        onClick: () => void revokeShare(item),
+                      }}
+                    >
+                      <PublicShareInventoryMeta>
+                        {new Date(item.createdAt).toLocaleString()}
+                      </PublicShareInventoryMeta>
+                    </PublicShareInventoryRow>
+                  );
+                })}
+              </PublicShareInventoryList>
+            )}
+            {!loading && (
+              <PublicShareInventoryCount>
+                {t("publicFileShareCount", { count: items.length })}
+              </PublicShareInventoryCount>
+            )}
           </div>
-          {loading ? (
-            <PublicShareInventoryEmpty loading>
-              {t("publicFileShareLoading")}
-            </PublicShareInventoryEmpty>
-          ) : items.length === 0 ? (
-            <PublicShareInventoryEmpty>
-              {t("publicFileShareEmpty")}
-            </PublicShareInventoryEmpty>
-          ) : (
-            <PublicShareInventoryList compact>
-              {items.map((item) => {
-                const revoking = working === `revoke:${item.shareId}`;
-                return (
-                  <PublicShareInventoryRow
-                    key={item.shareId}
-                    title={item.title || filePath.split("/").at(-1) || filePath}
-                    mode="live"
-                    modeLabel={t("publicShareLiveBadge")}
-                    copyAction={{
-                      label: t("publicFileShareCopy"),
-                      disabled: working !== null,
-                      onClick: () => void copyShare(item),
-                    }}
-                    revokeAction={{
-                      label: t("publicFileShareRevoke"),
-                      disabled: working !== null,
-                      working: revoking,
-                      onClick: () => void revokeShare(item),
-                    }}
-                  >
-                    <PublicShareInventoryMeta>
-                      {new Date(item.createdAt).toLocaleString()}
-                    </PublicShareInventoryMeta>
-                  </PublicShareInventoryRow>
-                );
-              })}
-            </PublicShareInventoryList>
-          )}
-          {!loading && (
-            <PublicShareInventoryCount>
-              {t("publicFileShareCount", { count: items.length })}
-            </PublicShareInventoryCount>
-          )}
-        </div>
+        )}
         {vhostService && (
           <FileVhostSection filePath={filePath} service={vhostService} />
         )}

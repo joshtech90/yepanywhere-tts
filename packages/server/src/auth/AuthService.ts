@@ -133,6 +133,8 @@ export class AuthService {
    * Generates cookie secret if not provided.
    */
   async initialize(): Promise<void> {
+    let failureReason = "could not read the authentication file";
+    let fileLoaded = false;
     try {
       await fs.mkdir(this.dataDir, { recursive: true });
       await enforceOwnerReadWriteFilePermissions(
@@ -141,9 +143,27 @@ export class AuthService {
       );
 
       const content = await fs.readFile(this.filePath, "utf-8");
+      fileLoaded = true;
+      if (content.trim().length === 0) {
+        failureReason = "the authentication file is empty";
+        throw new Error(failureReason);
+      }
+      if (/^\0+$/.test(content)) {
+        failureReason = "the authentication file contains only zero bytes";
+        throw new Error(failureReason);
+      }
+      if (content.includes("\0")) {
+        failureReason =
+          "the authentication file contains unexpected zero bytes";
+        throw new Error(failureReason);
+      }
+      failureReason =
+        "the authentication file contains invalid or truncated JSON";
       const parsed: unknown = JSON.parse(content);
+      failureReason =
+        "the authentication file has an unsupported format or version";
       if (!isValidAuthState(parsed)) {
-        throw new Error("auth.json has an unknown or malformed shape");
+        throw new Error(failureReason);
       }
 
       if (parsed.version === CURRENT_VERSION) {
@@ -158,21 +178,25 @@ export class AuthService {
           account: parsed.account,
           sessions: {},
         };
+        failureReason = "could not persist the authentication file migration";
         await this.save();
+      } else {
+        throw new Error(failureReason);
       }
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      if (fileLoaded || (error as NodeJS.ErrnoException).code !== "ENOENT") {
         // Fail closed. Starting "fresh" here once turned a truncated file into
         // a server with no password and no logins, so every browser holding
         // another credential became the owner, limited users included
         // (topics/security.md § Local Access). The file is left as it is.
         this.loadRefused = true;
         throw new Error(
-          `[AuthService] ${this.filePath} is unreadable (${error instanceof Error ? error.message : String(error)}). ` +
-            "Refusing to start with local authentication off. Restore the file, " +
-            "run --setup-auth <password> to replace it with a new owner password " +
-            "(a copy of it is kept), or delete it to deliberately reset local " +
-            "access to its unconfigured default.",
+          `[AuthService] ${this.filePath} is unreadable: ${failureReason}. ` +
+            "Refusing to start with local authentication off. " +
+            "Preserve a backup of this file before attempting recovery. " +
+            "Restore a known-good backup, or move this file aside to deliberately reset local access. " +
+            "Then restart the server. After a reset, reconfigure local authentication; " +
+            "previous local logins will no longer work.",
         );
       }
       // No file at all: local access was never configured.
@@ -463,10 +487,11 @@ export class AuthService {
     if (this.loadRefused) return;
     try {
       const content = JSON.stringify(this.state, null, 2);
-      // Atomic: saves run on every login check, and an in-place write that a
-      // restart interrupts leaves an empty file (see initialize).
+      // Sync before replacement: an interrupted in-place save once damaged
+      // this file, and atomic replacement alone does not flush staged data.
       await writeFileAtomically(this.filePath, content, {
         mode: OWNER_READ_WRITE_FILE_MODE,
+        durable: true,
       });
       await enforceOwnerReadWriteFilePermissions(
         this.filePath,

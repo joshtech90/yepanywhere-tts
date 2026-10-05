@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { cpSync, mkdtempSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { removeFixtureDirectory } from "./remove-fixture-directory.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -117,10 +117,5 @@ try {
     );
   }
 } finally {
-  await rm(directory, {
-    recursive: true,
-    force: true,
-    maxRetries: 3,
-    retryDelay: 100,
-  });
+  await removeFixtureDirectory(directory);
 }

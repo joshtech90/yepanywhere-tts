@@ -81,6 +81,19 @@
   min-height: 36px;
 }
 
+.replace {
+  align-items: center;
+  display: flex;
+  flex: 1 1 100%;
+  font-size: 0.8rem;
+  gap: 8px;
+  min-height: 44px;
+}
+
+.replace input {
+  margin: 0;
+}
+
 .access select,
 .access input {
   background: var(--bg-input);

@@ -41,6 +41,21 @@
   gap: 8px;
   min-width: 0;
 }
+.deleteActions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.table {
+  --settings-first-column-width: 22%;
+}
+.table th:nth-child(2) {
+  width: 33%;
+}
+.table th:nth-child(3) {
+  width: 23%;
+}
 .row > button {
   justify-self: start;
 }

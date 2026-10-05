@@ -260,6 +260,14 @@ the idle boundary and accepts the pending selection.
 **Show thinking** remains a browser display preference. It is deliberately not
 part of the provider launch snapshot and does not move with a session.
 
+Clone and prefix forks preserve the source's current settled launch settings,
+with explicit successor overrides taking precedence. A child receives its own
+complete snapshot before creation succeeds, so opening it in a browser with
+different new-session defaults cannot reset its first send. Legacy aside clones
+use the same rule. Historical transcript cutoff does not rewind configuration;
+see [provider fork support](provider-fork-support.md#launch-settings-inheritance)
+for recovery, helper overrides and creation failure behavior.
+
 ## UI placement
 
 The session-defaults settings panel follows the launch decision order through

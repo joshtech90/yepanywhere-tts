@@ -48,15 +48,41 @@ export function parseInstallationBody(
 
 export function parseNotificationBody(
   value: unknown,
-): { intent: PushIntent } | undefined {
-  if (!isExactRecord(value, ["intent"])) return undefined;
+):
+  | { intent: PushIntent; sessionId?: string; eventId?: string; test?: boolean }
+  | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value))
+    return undefined;
+  const row = value as Record<string, unknown>;
   if (
-    typeof value.intent !== "string" ||
-    !PUSH_INTENTS.includes(value.intent as PushIntent)
+    Object.keys(row).some(
+      (key) => !["intent", "sessionId", "eventId", "test"].includes(key),
+    )
+  )
+    return undefined;
+  for (const key of ["sessionId", "eventId"]) {
+    if (
+      row[key] !== undefined &&
+      (typeof row[key] !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(row[key] as string))
+    )
+      return undefined;
+  }
+  if (row.test !== undefined && row.test !== true) return undefined;
+  if (
+    typeof row.intent !== "string" ||
+    !PUSH_INTENTS.includes(row.intent as PushIntent)
   ) {
     return undefined;
   }
-  return { intent: value.intent as PushIntent };
+  return {
+    intent: row.intent as PushIntent,
+    ...(row.sessionId === undefined
+      ? {}
+      : { sessionId: row.sessionId as string }),
+    ...(row.eventId === undefined ? {} : { eventId: row.eventId as string }),
+    ...(row.test === undefined ? {} : { test: true }),
+  };
 }
 
 function isExactRecord(

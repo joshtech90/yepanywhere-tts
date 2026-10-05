@@ -43,6 +43,38 @@ const done = {
   resumeCursor: "tail",
 };
 
+it("bounds file reads and applies changed concurrency without restarting scans", async () => {
+  useFakeClock();
+  const completions: Array<() => void> = [];
+  const fetch = vi
+    .fn()
+    .mockImplementation(
+      () => new Promise((resolve) => completions.push(() => resolve(done))),
+    );
+  const pool = new ContentSearchPool(2);
+  const scan = new ContentSearchScan(
+    "needle",
+    { roles: ["user"] },
+    { fetch },
+    vi.fn(),
+    pool,
+  );
+  scan.update(
+    new Map(Array.from({ length: 8 }, (_, i) => [`session-${i}`, "1"])),
+  );
+  await vi.advanceTimersByTimeAsync(32);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  pool.setLimit(4);
+  expect(fetch).toHaveBeenCalledTimes(4);
+  pool.setLimit(1);
+  for (const finish of completions.splice(0)) finish();
+  await vi.advanceTimersByTimeAsync(32);
+  expect(fetch).toHaveBeenCalledTimes(5);
+  scan.stop();
+  for (const finish of completions.splice(0)) finish();
+  await vi.advanceTimersByTimeAsync(32);
+});
+
 it("aborts hidden work without losing its cursor or accepting a late response", async () => {
   useFakeClock();
   let finish!: (value: typeof done) => void;

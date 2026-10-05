@@ -1,15 +1,14 @@
 # Mobile Server Pairing And Native Connection Ownership
 
 > A mobile companion pairs with one logical YA server independently of the
-> route used to reach it; native UI and background work use a native secure
-> connection core, while the bundled full web client normally acquires its own
-> logical lease on that core so entering the complete interface does not
-> require a second login.
+> route used to reach it; native login and background work use a native secure connection core, while
+> the bundled web UI is the main foreground and acquires its own logical lease
+> on that core without receiving credentials or requiring a second login.
 
 Topic: mobile-server-pairing
 
 Status: Approved architecture direction. This document fixes the product and
-ownership boundaries agreed on 2026-08-02. The unified security-client wire,
+ownership boundaries agreed on 2026-08-02 and revised to a WebView-first foreground on 2026-09-30. The unified security-client wire,
 continuity-key, audit, revocation, capability, and stable-release compatibility
 contract is approved in [`security-client-audit.md`](security-client-audit.md).
 
@@ -27,25 +26,44 @@ Related:
 
 ## Accepted Product Shape
 
-The Android app has two permanent foreground presentations:
+The ordinary Android app uses the complete bundled web client for projects,
+sessions, transcripts, input, tools and settings. Native Compose owns pairing,
+login, reauthentication, the saved-server catalog, host selection, removal and
+platform notification controls. Native SRP, secure storage, encryption, route
+selection, reconnect and source-scoped connection managers remain authoritative.
+The duplicate native dashboard and Conversation UI have been removed; they are
+no longer release prerequisites or an alternate presentation to maintain.
 
-- a focused native Compose experience for onboarding, server selection, inbox,
-  Conversation view, and the routine mobile supervision path; and
-- the complete bundled web client for users who prefer the web presentation or
-  need the full desktop-strength interface, rich tools, settings, and
-  unsupported native surfaces.
+The initial mobile release supports server-owner login. Native limited-user
+sign-in, including separate relay-server and SRP-user identities, is explicitly
+deferred by the maintainer on 2026-10-01. Existing web limited-user support
+remains available; this is a mobile release-scope decision.
 
-The bundled client is not merely temporary migration scaffolding. It is a
-first-class, full-fidelity alternative. The native presentation may grow until
-it covers most routine mobile use without requiring the bundled presentation
-to disappear. Compose remains the primary mobile product surface; the bundled
-client is the complete escape hatch for missing native settings, uncommon rich
-renderers, and users who explicitly prefer it. Its transport should be usable
-and bounded, but it does not set the optimization priorities for the native
-application.
+Android's launcher returns to the selected native tab in the bundled web UI.
+Without a saved server it shows native pairing. Switching hosts opens native
+management; ordinary selection focuses an existing tab for that profile or
+creates one. Explicit New tab may duplicate a profile. Host selection never
+modifies another host's credentials, and web code does not maintain a second
+paired-host catalog.
 
-Native background work cannot depend on the WebView. A Kotlin connection core
-must eventually support Compose and an explicitly enabled foreground activity
+Switch Host disconnects the foreground consumer without signing out the saved
+server. Returning to management during resume must not turn a temporarily absent
+on-disk credential into a persistent sign-in warning. While the source is
+connecting or retrying, management reports that connection state; after it stops,
+management recomputes credential availability. A restored valid credential shows
+an idle saved host and reopens without a password. Missing or expired credentials
+require reauthentication; revocation always wins. Management observes these
+changes without acquiring a connection or background subscription.
+
+Android's WebView container owns system-bar and display-cutout spacing once,
+including side cutouts in landscape. It forwards zero for those handled insets
+to web CSS while continuing to deliver keyboard inset changes. Opening, closing,
+or recreating the view must not retain duplicate or stale safe-area padding.
+The shared web client's safe-area rules remain available to browsers and PWAs;
+Android does not override those rules globally.
+
+Native background work cannot depend on the WebView. The native connection core
+must support Compose and an explicitly enabled foreground activity
 service without allocating a WebView or JavaScript runtime. Native FCM receipt
 continues to remain independent of either foreground presentation.
 
@@ -187,8 +205,7 @@ state includes:
 Non-secret metadata can use app-private DataStore. Passwords are used only for
 the visible SRP login and are not persisted. Resume base keys and broker
 capabilities are encrypted under Android Keystore-backed keys and excluded
-from backup/device transfer. A future iOS implementation applies the same
-ownership model with Keychain-backed storage.
+from backup/device transfer. The iOS shell applies this ownership model with Keychain-backed storage.
 
 The native store is independent of browser `localStorage`. Native Compose and
 background operation must never require a WebView profile to exist.
@@ -217,7 +234,7 @@ builds create user-owned state. V2 adds the continuity-key alias, pending
 idempotent registration request id, server-issued client id, and local revoked
 state. A successful full-SRP `pair()` performs initial registration on that
 still-open authenticated connection before closing it and committing the
-profile, so the dashboard can show the phone immediately. A lost registration
+profile, so server security settings can show the phone immediately. A lost registration
 response reuses the pending request id and same key rather than prompting for
 the password again.
 
@@ -278,9 +295,9 @@ start a new bounded cycle; no work restarts after the final lease is gone.
 Routes are tried in deterministic order: the last successful/preferred route,
 then remaining direct routes, then remaining legacy relay routes. Every
 automatic candidate must prove the saved SRP resume credential. A successful
-fallback becomes preferred. The initial implementation uses one ordinary
-legacy relay `/ws` per profile; relay `/mux` remains a later optimization and
-is not probed or assumed by Android.
+fallback becomes preferred. Eligible relay routes use the native relay-mux runtime described below,
+with exact legacy fallback when the relay does not support mux. Direct routes
+remain ordinary secure WebSockets.
 
 If every reachable route rejects resume, Android deletes only the encrypted
 credential and requires visible SRP login. Network failure does not silently
@@ -288,20 +305,18 @@ become password authentication, and a failed request is not rerouted or
 replayed. Full SRP onboarding targets exactly the route the user entered and
 persists a profile only after the authenticated server proof succeeds.
 
-Compose consumes domain-facing repositories for server state, inbox, sessions,
-notifications, and projections. The raw multiplexed protocol remains internal
+Native management consumes profile/connection state; notification and optional
+foreground work consume domain-facing repositories. The raw multiplexed protocol remains internal
 transport plumbing rather than becoming the UI's permanent data model.
 
-### Initial native Compose contract
+### Native login and host-management contract
 
-The Android launcher now opens a native Compose server surface by default; it
-does not allocate a WebView or JavaScript runtime merely because the app is
-opened. This remains true when Android delivers a later launcher `ACTION_MAIN`
-intent to the existing single-task activity. Only a valid exact
-`https://yepanywhere.com/open` `ACTION_VIEW` App Link hands its typed destination
-to the dedicated full-web activity. **Open full app** remains available from
-every native state and starts the same bundled or hosted client channel without
-routing that web client's traffic through Kotlin.
+The launcher opens the bundled web UI for a saved selected profile, or native
+pairing when no profiles exist. A native host-management request prevents that
+automatic launch so the user can select, add, reauthenticate or remove a host.
+Native management observes stored profiles and connection status without
+acquiring activity or session-list subscriptions. Only explicit authentication,
+selection or server revocation actions acquire connection demand.
 
 The default native onboarding surface asks only for the remote-access username
 and password. It matches the web relay login by using
@@ -319,20 +334,26 @@ cleared from Compose state on submission, and never placed in saved instance
 state, a ViewModel field, DataStore, or the web bridge. A profile is persisted
 only after the authenticated server proof succeeds.
 
-The initial signed-in surface can select or forget local server profiles,
-display connection and reauthentication state, and read up to 50 compact
-session summaries through the existing encrypted `GET /api/sessions` request.
-It is deliberately read-only: opening a full session, tools, settings, and all
-unsupported detail remains the full web client's job. Forgetting a profile
-requires confirmation and removes its protected resume credential. A rejected
-or expired resume keeps the non-secret profile visible and offers explicit full
-SRP reauthentication through its preferred route.
+Native management selects, adds, reauthenticates and removes saved profiles.
+Removing a registered device first attempts server revocation and then local
+credential/key deletion; an explicit Forget anyway confirmation handles an
+unreachable server. A rejected or expired resume keeps the non-secret profile
+visible and offers full SRP reauthentication. Selection opens the complete web
+app, with all ordinary session/settings actions using the borrowed native source.
 
-The foreground Compose activity acquires one connection lease only while the
-activity is started. Backgrounding it, replacing it with the full-web activity,
-or destroying it cancels an in-flight summary load and releases that lease; if
-it was the final owner, the socket and retry work return to idle. This behavior
-does not imply or emulate the separately reviewed foreground activity service.
+Native management does not acquire summary/activity leases. The bundled
+WebView's document capability outlives its foreground transport lease:
+backgrounding and host management release transport demand, and foregrounding
+reacquires it without replacing the document. Document navigation/destruction
+retires both. Final-owner release stops the socket and retry work. This does
+not start or emulate the separately reviewed foreground activity service.
+
+Password-bearing App Links are parsed by Android into transient visible UI
+state, cleared from the Intent, and never forwarded as web URLs/fragments.
+Submission clears the prefill before the native login attempt. No password is
+saved in a ViewModel, instance state or profile. Unsupported transport WebViews
+show a native unavailable/back surface; protocol failure shows native Retry
+rather than falling through to browser login.
 
 ### Native secure-transport checkpoint
 
@@ -421,8 +442,10 @@ host at a time. Native supplies document-scoped opaque source handles for its
 paired-profile catalog; every request, subscription, upload, and cancellation
 is scoped to one handle. WebView "Switch Host" selects or opens another native
 source and changes the client source runtime. It does not enter the browser
-login/profile flow. Kotlin acquires the target lease before releasing an old
-WebView-only lease, while unrelated native demand remains untouched.
+login/profile flow. Opening native host management suspends the old WebView
+consumer; returning to that tab resumes the same document, while selecting a
+cold tab creates its own profile-bound document capability. Unrelated native
+demand remains untouched, including a sibling lease on the same source.
 
 This is a logical-consumer boundary, not a new server session or authentication
 layer. Compose, a foreground service, and the WebView may make concurrent
@@ -443,7 +466,7 @@ Upload behavior preserves the existing relay contract:
 - each chunk crosses the bridge as an ArrayBuffer when the installed WebView
   supports it, receives the existing upload id and offset header, is
   independently encrypted, and is written by the server before completion;
-- bridge and OkHttp queue high/low-water marks bound resident data and suspend
+- bridge credits and a 512 KiB native socket queue threshold bound resident data and suspend
   the WebView reader when the native or network consumer falls behind; and
 - abort, navigation, process teardown, invalid offset, and queue overflow fail
   the one upload or WebView lease without retaining the remaining file.
@@ -483,6 +506,109 @@ and retains a distinct browser-scoped resume session after the user explicitly
 authenticates there. The baseline does not mint, delegate, or expose a child
 resume credential merely to avoid the second prompt. Any later delegated-token
 proposal requires its own security and compatibility review.
+
+### Implemented bridge contract
+
+`window.yaNativeTransport` is restricted to the bundled app-assets origin and
+accepts messages only from its main frame. Hosted-latest and debug URL overrides retain their independent web
+login and do not receive the native data plane. The signed client registers a
+custom source transport under the native profile id; it receives an opaque
+document handle and display metadata, never password, resume material, transport
+keys, native installation secrets or server-side authentication session ids.
+
+Protocol 1 frames have a 16-byte header and at most 64 KiB payload. One frame
+per direction awaits a matching handle/id/offset acknowledgement. ArrayBuffer
+is preferred; an explicit negotiated base64 string fallback has the same
+limits. Each direction reassembles one logical message of at most 32 MiB; the
+outbound bridge retains at most 32 messages and 64 MiB. Requests are limited to
+32 concurrent operations, subscriptions to 64, and uploads to four per consumer.
+Wrong-origin and subframe messages are ignored. Stale handles, invalid
+kind/sequence/size/offset and queue overflow reject traffic and close only the
+document's consumer. No bridge limit is lifted
+by changing the separate 16 KiB notification/control-plane guard.
+
+The adapter preserves response headers, status, setup-required errors, same-API
+redirects, media, request abort, and session/activity/watch/glossary/worktree
+subscriptions. Native generates wire request, subscription and upload ids.
+Browser profile metadata is not forwarded as native identity. Native alone
+restores subscriptions and owns bounded source reconnect. Speech and device
+signaling capabilities are absent until their native adapters are implemented.
+
+Uploads stream at most 100 MiB in 64 KiB chunks, with exact offsets and the
+established encrypted binary upload format. Acknowledging a local upload frame
+waits for the native socket queue to have room. Cancellation releases only that
+upload; the existing server has no cancel frame, so native sends its existing
+end frame to close server state. An incomplete upload fails size validation;
+a fully transferred upload may complete server-side after the client aborts,
+with the normal staged-upload expiry. Network loss fails in-flight
+uploads; they never resume midway on a replacement connection. A late queued
+chunk fails only its upload; ordinary upload/network failure must not close the
+local document bridge or replace the page with a native failure screen.
+
+Document replacement, Activity destruction, renderer loss and backgrounding
+release the WebView lease. Ordinary Android background/foreground transitions,
+including a platform file chooser, retain the selected WebView, document handle,
+JavaScript heap, DOM, draft and scroll state. They resume transport independently;
+pending requests/uploads fail cleanly and existing streams recover. Frame credit
+waits must not expire solely because the WebView is stopped. Inactive consumers
+must not maintain source subscriptions or retries. Local draft storage remains
+the web draft owner.
+
+### Android native tabs and launcher lifetime
+
+One launcher Activity owns host management and native tabs. Reopening from the
+launcher or recents must not navigate to Projects, show a login sheet, or reload
+a healthy retained document. Orientation/window-size changes preserve it too.
+Android may kill the process or renderer: this fallback restores the selected
+profile and safe route with a fresh document, not a promised JavaScript snapshot.
+Persistent tab records contain identity, profile and route paths; they exclude
+credential-bearing queries/fragments and credentials. Forgotten profiles lose
+their tabs.
+
+A permanent 48dp native toolbar below system/cutout insets shows the host, a
+one-tap tab-count picker, and New tab. Picker rows show host, page, selection and
+close controls. Merely opening or dismissing the picker preserves the WebView.
+New tab chooses a saved host directly or opens native pairing. Ordinary host
+selection reuses an existing tab; explicit new tabs may share a profile while
+retaining independent navigation. The toolbar is an explicitly approved
+2026-10-04 default-visible mobile affordance.
+
+Only the selected tab retains a live WebView. Switching away saves in-memory
+navigation history and destroys that tab's document and transport lease; switching
+back reconstructs it lazily. Background-open tabs have metadata only. There are
+at most 32 tabs, with an explicit close-first message at the limit.
+
+Long-pressing an internal YA link offers Open in new tab in the background.
+User-initiated new-window internal links open a foreground native tab. Exact
+bundled-origin navigation alone qualifies as internal; external HTTPS links
+open the system browser, and unsupported schemes remain blocked. A temporary
+new-window URL resolver never receives a native bridge. Each tab's document
+capability is bound to its original native profile and cannot be rebound to
+another host by changing selection.
+
+## Bundled client offline entry and refresh
+
+A saved native source mounts the bundled page before its network connection is
+ready. Cold acquisition and network failure keep Projects/session navigation,
+available content and local drafts usable. Failed reads appear within the page;
+they must not replace its shell. The top connection bar is exceptional-state
+feedback, independent of developer diagnostics, and disappears when healthy.
+The first successful activity subscription revalidates reads from cold entry.
+
+Android native reconnect retains lease owners and subscription intents, joins
+an existing acquisition/retry, and can replace a stale transport after network
+restoration. The WebView requests a new bounded native cycle on visible demand,
+network restoration or a visible 60-second backstop after exhaustion. There is
+no hidden retry timer. Authentication rejection/revocation and a broken local
+bridge are distinct from network failure and do not enter that recovery loop.
+Recovery updates the mounted page without a document reload.
+
+Bundled native pages support pull-down refresh beginning at the top of the page
+or transcript, including pages that fit without overflow. Release after an
+84 CSS-pixel pull reloads the current route; local draft storage retains drafts.
+Inputs, nested scrolling, horizontal drags, multitouch and cancelled gestures do
+not trigger refresh. The existing upward bottom-edge reload and its session
+route restriction are unchanged; mobile browsers supply their own top gesture.
 
 ## Direct, Relay, And LAN Discovery
 
@@ -577,21 +703,154 @@ Revocation is hierarchical:
 Exact offline revocation, tombstone, retry, and cross-side acknowledgement
 semantics remain implementation decisions.
 
-## iOS Direction
+## iOS And Shared Rust Direction
 
-The conceptual model is platform-neutral: a local paired-server profile,
-paired device, expiring connection credentials, route candidates, push
-capability, typed inbox/session repositories, and revocation. A future SwiftUI
-app uses Keychain-backed credentials and its platform's foreground/background
-and LAN discovery facilities. Android- and iOS-specific UI and lifecycle code
-need not share widgets or pretend their background execution rules are
-identical.
+On 2026-10-01 the maintainer accepted the shared Rust mobile connection core
+and pinned RustCrypto `srp 0.7.0-rc.3` after the crypto/native-build proof and
+Daybreak Blue engineering review. The
+[iOS implementation plan](../docs/tactical/138-ios-native-core-proof.md)
+records evidence, remaining production gates and the next checkpoint.
+`packages/mobile-core-proof` remains isolated fixture tooling; it is not the
+production connection core. The current Android core remains Kotlin until its
+later migration demonstrates parity.
 
-The wire protocols and projection schemas should remain shared even if the
-first native connection implementations are written separately in Kotlin and
-Swift.
+The selected ownership is:
+
+| Layer | Responsibility |
+| --- | --- |
+| Shared Rust core, exposed through UniFFI | SRP/server proofs, resume, encryption, direct/relay connections, route selection, bounded request/subscription/upload work, reconnect and teardown |
+| SwiftUI shell | Native owner login, host management, Keychain, WKWebView bridge, Apple lifecycle and notification adapters |
+| Kotlin/Compose shell | Native owner login, host management, Keystore-backed storage, WebView bridge, Android lifecycle and notification adapters |
+| Bundled React client | Full foreground application through source-scoped native leases; no passwords or resume/transport keys |
+
+### Existing-server compatibility
+
+This is a mobile implementation change, not an authentication migration.
+The server retains its existing SRP-6a/SHA-512 profile, verifier storage,
+proof encodings, key derivation, secretbox framing and resume versions. The
+Rust adapter must match that wire contract and supported legacy fallbacks;
+the library's high-level default profile is not a drop-in replacement. No new
+server route, field, capability or protocol version is required. Existing
+clients keep working; owners do not reset passwords or re-enroll credentials.
+The initial native release remains owner-only, with limited-user login deferred.
+
+The 0.7 release candidate is accepted with known limits: no independent SRP
+audit, no claim of whole-adapter constant-time behavior or complete secret
+erasure, and the inherited offline-guessing risk after salt/verifier theft.
+Acceptance does not waive bounded hostile-input validation, OS randomness,
+server authentication before credential persistence, secure native storage,
+WebView secret isolation or deterministic cancellation/teardown. Verify these
+through the production adapter and live disposable-server tests before real
+credentials. SRP 0.6 and BigUint secret arithmetic stay in differential test
+tooling, outside the shipping core; dependency upgrades require review.
+
+OPAQUE is a possible later protocol investment, not current implementation
+scope. A migration would need a separately authenticated full-handshake suite
+selection and password-dependent enrollment; `resumeProtocolVersion` does not
+select the authentication algorithm. The current Rust/iOS work does not require
+that migration or any server credential conversion.
+
+### Current iOS implementation and platform sequence
+
+The iOS 17+ consumer shell and production Rust core are implemented and verified
+on an owned simulator against unchanged disposable YA servers. Owner login
+verifies M2 and encrypted server-info before saving a native credential. Resume
+requires authenticated protocol 3 or later, binds both nonces and persists the
+highest authenticated version, including advances during reconnect, before
+capability negotiation or continuity check-in can fail. The old stored credential
+is invalidated before resume; cancellation before a verified proof can restore
+it, while a verified newer pin can never restore an older one. Swift task
+cancellation cancels and frees its Rust future, including a stalled handshake.
+Missing
+security-client audit capability preserves owner operation without registration
+requests; supported servers receive native SecKey continuity proofs tied to the
+current authenticated transport nonce.
+
+The shell atomically stores profiles and credentials in protected native state,
+keeps mutations disabled while Keychain is unavailable, and separates persistent
+WebKit data by profile. Switch Host, backgrounding and document replacement
+release the foreground lease. Launch/foreground resume restore the application
+route and React-owned draft; iOS provides no Android foreground-service promise.
+A new profile and credential are durable before security-client registration,
+so registration/storage failure remains recoverable with the same request/key.
+Known revocation prevents fresh owner login from silently re-enrolling that
+installation. Forget revokes on the server before local tombstoned cleanup;
+unreachable servers require an explicit local-only Forget Anyway decision.
+
+The Rust actor bounds requests, subscriptions, uploads and queued event bytes.
+Disconnect fails pending requests/uploads without replay, then makes three
+bounded resume attempts and restores owned subscriptions. Closing cancels writes
+and retry/restoration work and erases retained native credential exports. A
+saturated subscription loses that subscription instead of unrelated work.
+Uploads preserve the unchanged server's upload_end completion/abort semantics;
+fully transferred staging data retains the server's normal draft TTL semantics.
+
+Direct, negotiated relay mux and exact custom/legacy relay endpoints are tested.
+The shared Rust wire now pools concurrent relay profiles on one physical
+socket per normalized eligible endpoint. Each circuit keeps its own SRP,
+encryption, inbound queue and lifetime. The pool caps active relay endpoints at
+32, circuits at the lesser of the relay limit and 64, queued frames at 32 per
+circuit, and queued payload bytes at 64 MiB per physical socket. A lagging
+circuit closes without closing healthy peers; a physical socket failure wakes
+all affected circuits for independent bounded recovery. The final circuit
+releases the socket. Direct/custom endpoints and mux setup/overflow failures
+retain exact independent-socket fallback.
+
+NativeRuntime now serializes each profile's authentication and supplies
+independent NativeSourceLease owners. It caps active profiles and owners per
+profile at 64. Subscription/upload identifiers are scoped to an owner; releasing
+one owner cancels its pending work and retires only its resources. Lease event
+queues cap at 64 events / 32 MiB each and 64 MiB aggregate per source; aggregate
+pressure retires the largest lagging owner before an innocent producer. Pending
+resource cleanup retains bounded admission. The final owner closes its source,
+and explicit profile/runtime retirement cancels all corresponding owners.
+
+Android production transport now uses this Rust runtime through UniFFI. Kotlin
+retains Keystore/profile encoding, security-client adapters, platform demand,
+foreground/background ownership, native login/hosts and the WebView bridge.
+Its former SRP/crypto/socket backend is retained only for differential tests.
+Saved credentials are converted inside native protected storage without changing
+Keystore aliases or records. The native route adapter respects Android network
+security policy. Rust tries the preferred candidate, then direct-first fallback,
+authenticates the saved identity on every attempt and persists the highest proof
+version before consumers. Authenticated reconnect stays limited to three attempts;
+Kotlin does not add another retry cycle after Rust exhausts them.
+
+Android connection setup accepts callers on the UI dispatcher: full login,
+profile pairing and resume perform their native future polling and protected
+credential persistence off the main thread. OS certificate and revocation
+verification stays enabled; it must never require relaxing Android's main-thread
+network policy. Live acceptance starts pairing from Main, including an opt-in
+public `wss://` relay run against a disposable server. Plaintext local relay
+acceptance alone does not establish that the shipping TLS login path works.
+
+The iOS shell displays one selected foreground profile while other native owners
+can retain independent source demand. Switch Host and replacement documents
+release only the foreground lease. Background suspension retires the foreground
+runtime and creates a fresh runtime for activation; it cannot retain Android
+foreground-service demand. Each current iOS profile still configures one exact
+route, using common mux-to-legacy fallback. SwiftUI, Keychain, WebKit and Apple
+notification/lifecycle behavior remain platform adapters.
+
+The notification foundation owns Apple permission/FCM token handling and
+protected broker credentials, but common per-server native push enrollment is
+still pending. Unconfigured builds report unavailable and registration alone
+never reports delivery enabled. The broader phone/tablet/network matrix, live
+APNs, signing and store publication remain release gates. See
+[the iOS README](../packages/ios/README.md) for reproducible acceptance commands.
+
+The [shared transport migration](../docs/tactical/139-shared-mobile-transport-migration.md)
+tracks Android/iOS acceptance and release evidence. Existing manager/bridge and
+legacy differential tests remain, alongside live production Rust execution.
+Android release work continues independently of iOS store work.
 
 ## Compatibility And Approval Gates
+
+Native Android/iOS CI runs immediately for native/platform and shared-core
+inputs, and daily for the complete default-branch source, including ordinary
+bundled web changes. Manual dispatch remains available. The exact trigger and
+release-verification policy lives in
+[Native app CI cadence](../docs/development/testing.md#native-app-ci-cadence).
 
 The optional `security-client-audit-v1` and
 `native-push-subscriptions-v1` contracts, reviewed stable releases, and exact
@@ -619,15 +878,14 @@ and subscription messages and adds no server route or capability by itself.
 4. **Select direct and relay routes — complete:** attach a candidate automatically only
    after resume proves credential continuity; otherwise require explicit SRP
    reauthentication and profile selection.
-5. **Bind the first Compose consumer — complete:** explicit onboarding,
-   profile selection, reauthentication, connection state, and compact existing
-   session summaries use the native core while the full web client remains an
-   escape hatch.
+5. **Bind native host management — complete:** onboarding, selection,
+   reauthentication and connection state remain native without dashboard demand.
 6. **Register security clients and revocation:** attach expiring native
    sessions to a Keystore-key-verified cross-platform security-client record,
    retain legacy web audit visibility, and cascade explicit revocation.
-7. **Feed native inbox and Conversation view:** add only the separately
-   approved bounded APIs/projections required by useful Compose surfaces.
+7. **Use the full web foreground — complete:** ordinary sessions, transcripts,
+   input and settings use the native SourceTransport; duplicate native
+   dashboard/Conversation presentation is removed.
 8. **Attach native push subscriptions:** make broker subscriptions children of
    the paired device and validate notification presentation/taps end to end.
 9. **Add bounded LAN discovery:** discover candidates in foreground and accept
@@ -638,10 +896,17 @@ and subscription messages and adds no server route or capability by itself.
     make selection presentation-only, pool one or more eligible relay circuits,
     carry ordinary/full traffic through each logical circuit, preserve exact
     legacy fallback, and prove per-profile failure isolation and fairness.
-12. **Bind the bundled WebView to native transport:** implement and benchmark a
-    bounded `NativeSourceTransport` lease so opening the complete UI reuses the
+12. **Bind the bundled WebView to native transport — complete:** a bounded
+    `NativeSourceTransport` lease opens the complete UI through the
     selected authenticated Android profile without exposing its credential;
     source-scoped handles implement host switching without web-owned login.
 13. **Revisit independent WebView transport only from evidence:** retain normal
     browser SRP as a possible later mode when measured throughput, lifecycle,
     or isolation benefits outweigh its separate-login and session-slot costs.
+
+Native transport diagnostics expose frame/byte counts, outbound queued-byte
+high-water, cancellation/overflow counts, and p50/p95 credit and main-thread
+frame handling times through the native Activity for command-driven probes.
+Samples use bounded 256-entry rings and contain no message content or secrets.
+These are observational bridge measurements, not server/network or fleet
+performance claims.

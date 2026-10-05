@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { exitIfUnsafeHome } from "./safe-home.js";
 
 const rawArgs = process.argv.slice(2);
@@ -32,6 +33,21 @@ if (!command) {
 }
 
 exitIfUnsafeHome({ entrypoint: command });
+
+// Launch the workspace's Node tools directly instead of their Windows .cmd
+// shims. A shell concatenates arguments, loses literal quoting, and emits
+// DEP0190 on supported Node versions.
+let executable = command;
+let childArgs = args;
+if (command === "vitest" || command === "tsx") {
+  const require = createRequire(join(process.cwd(), "package.json"));
+  const packagePath = require.resolve(`${command}/package.json`);
+  const metadata = JSON.parse(readFileSync(packagePath, "utf8"));
+  const bin =
+    typeof metadata.bin === "string" ? metadata.bin : metadata.bin[command];
+  executable = process.execPath;
+  childArgs = [resolve(dirname(packagePath), bin), ...args];
+}
 
 // Tests bind Unix sockets under the child's TMPDIR, and macOS caps socket
 // paths at 104 bytes. Its per-user tmpdir (/var/folders/.../T/) leaves too
@@ -66,11 +82,11 @@ function cleanupTemporaryHome() {
   rmSync(temporaryRoot, { recursive: true, maxRetries: 3, retryDelay: 100 });
 }
 
-// Node 24+ on Windows requires shell:true to spawn .cmd files (CVE-2024-27980).
-// DEP0190 warns about unescaped args, but args come from package.json scripts, not user input.
+// Other package-script commands may still be .cmd shims on Windows. Native
+// Node and the tools resolved above do not need that fallback.
 const isWindows = process.platform === "win32";
 
-const child = spawn(command, args, {
+const child = spawn(executable, childArgs, {
   stdio: [stdinNull ? "ignore" : "inherit", "inherit", "inherit"],
   env: temporaryHome
     ? {
@@ -82,7 +98,9 @@ const child = spawn(command, args, {
         TMP: temporaryDirectory,
       }
     : process.env,
-  ...(isWindows ? { shell: true } : {}),
+  ...(isWindows && executable !== process.execPath && command !== "node"
+    ? { shell: true }
+    : {}),
 });
 
 child.on("exit", (code, signal) => {

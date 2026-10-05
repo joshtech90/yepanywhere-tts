@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileViewDraft } from "../fileViewCommand";
 import {
   buildRunExactlyPrompt,
   getLeadingSlashQuery,
@@ -33,6 +34,28 @@ describe("slashCommands", () => {
     });
     expect(parseComposerSlashCommand("f check status")).toBeNull();
     expect(parseComposerSlashCommand("!git diff")).toBeNull();
+  });
+
+  it("routes /v and /view as the file-view command with their raw argument", () => {
+    for (const text of ["/v src index.ts:4", "/VIEW src index.ts:4"]) {
+      expect(resolveComposerSlashTurn(text, rewind)).toEqual({
+        kind: "custom",
+        command: "view",
+        argument: "src index.ts:4",
+      });
+    }
+    expect(readFileViewDraft("/view  a b")).toEqual({
+      command: "view",
+      argument: "a b",
+      argumentStart: 7,
+    });
+    // Still typing the command name, or a multi-line draft, is not a query.
+    expect(readFileViewDraft("/view")).toBeNull();
+    expect(readFileViewDraft("/v a\nb")).toBeNull();
+    expect(getSlashCommandMenuParts("view")).toMatchObject({
+      shortcut: "/v",
+      label: "/view file",
+    });
   });
 
   it("parses highlighted model shortcut as the model command", () => {

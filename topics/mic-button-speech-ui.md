@@ -542,6 +542,17 @@ Turn/endpointing still finalizes through `is_final` transcript partials. In the
 initial implementation, Esc may duplicate that same toggle behavior when focus
 is in the composer.
 
+The voice shortcut is Ctrl+Space, judged by the modifiers that genuinely
+apply rather than by the raw `ctrlKey` flag
+(`packages/client/src/lib/modifierChords.ts`), so fast "Ctrl+V, Space"
+rollover types a space instead of toggling the mic. A fresh Ctrl hold always
+makes Space the shortcut, whichever key is released first. After an earlier
+key in the same hold, the gap since that key's release decides: under 50 ms
+(or before its release) Space is typed; from 300 ms it is the shortcut; in
+between it is the shortcut unless Ctrl is released before Space. Gaps are
+measured from the events' own timestamps, so a busy main thread delivering a
+keystroke burst late does not change the verdict.
+
 Proposed stronger Esc behavior: while a mic transaction is active, Esc should
 remove all speech inserted since the button press and stop recognition. That
 is broader than spoken `cancel`, which only removes the latest finalized

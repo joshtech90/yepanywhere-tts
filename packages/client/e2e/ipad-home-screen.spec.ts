@@ -91,12 +91,13 @@ test.describe("iPad Home Screen", () => {
 
     await page.click('[data-testid="relay-mode-button"]');
     await page.fill('[data-testid="relay-username-input"]', SERVER_NAME);
-    await page.fill('[data-testid="relay-limited-username-input"]', GUEST);
     await page.fill('[data-testid="srp-password-input"]', GUEST_PASSWORD);
     await expect(
       page.locator('[data-testid="remember-me-checkbox"]'),
     ).toBeChecked();
+    // The limited-user identity is an advanced field.
     await page.click("text=Show Advanced Options");
+    await page.fill('[data-testid="relay-limited-username-input"]', GUEST);
     await page.fill('[data-testid="custom-relay-url-input"]', relayWsURL);
     await page.click('[data-testid="login-button"]');
     // At iPad portrait width the signed-in app collapses its sidebar.

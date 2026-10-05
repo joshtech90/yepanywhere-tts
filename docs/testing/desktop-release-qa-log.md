@@ -13,6 +13,113 @@ Result meanings:
   action that was not available during the run.
 - **NOT RUN** — the check was outside the completed scope; the reason is noted.
 
+## 2026-10-03 — native updater implementation verification
+
+Update state, startup/daily scheduling, manual coalescing, dismissal and progress
+now belong to Rust. macOS uses an AppKit window, Windows a Common Controls v6
+Task Dialog, and neither renders release notes. Local About checks use a
+cookie/origin/socket-gated fixed action over the existing private server pipe.
+Packaged YA identity comes from the immutable runtime manifest; desktop servers
+skip standalone update discovery. Older shells give explicit menu guidance.
+
+A separately identified macOS QA app used the current source, private data root,
+and the existing release signing procedure for its Bun and Mach-O native modules.
+The first local bundle omitted the CI native-module signing step and failed
+library validation; applying that existing step and verifying the complete
+bundle restored readiness. No signing entitlement or production profile changed.
+Native interaction used Computer Use against that QA app. The available offer
+came from the real Latest feed; no installation was requested.
+
+| Check | Result |
+| --- | --- |
+| macOS application-menu manual check | PASS: native window foregrounded, Stable 0.2.2 current |
+| Native Latest offer | PASS: 0.3.3001, installed version, Update and restart/Later, no changelog |
+| Switch back to Stable | PASS: offer discarded, explicit up-to-date result |
+| Minimize and manual check | PASS: same native window restored and current result visible |
+| Native window close | PASS: dismissed without exiting the desktop process |
+| Actual packaged About Check for Updates | PASS: authenticated Settings request foregrounded the native window |
+| Real network failure and retry | PASS: process-scoped unreachable proxy yielded visible error, channel selector and retry; retry returned to the same error surface |
+| Final signed bundled runtime smoke | PASS: private Bun agent-self, readiness, auth, manifest version, rejected unauthenticated action and exactly one authenticated pipe action |
+| Browser Settings regressions | PASS: desktop/phone handoff, failure guidance, older shell fallback and unchanged standalone checking; no page errors |
+| Rust unit tests | PASS: 34, including manual/automatic joining, stale dismissal and install guards |
+| macOS Cargo Clippy (Apple Silicon and Intel) and Apple Silicon debug app build | PASS |
+| Windows x64 cross compilation and Clippy (all targets) | PASS using the Windows SDK through cargo-xwin |
+| Required repository checks | PASS: lint, format, typecheck, full workspace tests (serial workspace execution), console scan |
+| Windows native interaction/install/relaunch | NOT RUN: configured Windows testbed unready |
+| macOS install/relaunch, sleep/wake and hours-idle history | NOT RUN: Mac VM exclusively claimed; host smoke did not install or reproduce those histories |
+
+The first concurrent root test run hit five timeouts in unrelated server suites;
+a repeat recovered four, the isolated Codex suite passed all 127 enabled tests,
+and the complete serial workspace run passed. Existing negative-path log warnings
+remain tracked by `gaps/unit-failure-path-log-warnings.md` and the client warning
+gaps; no diagnostic suppression was added. The About CSS ownership check deferred
+extraction because its shared legacy rules have 24 coupled edges.
+
+Reviewed native captures are under
+`.artifacts/ui-testing/2026-10-03-native-updater/{current,available,failure}.jpg`;
+reviewed Settings captures at 1000×600 and 375×812 are under
+`.artifacts/ui-testing/2026-10-03-native-updates-settings/`. They were presented
+through the artifact facility and inspected individually. Native controls and
+error text fit without clipping; phone build/status text wraps without overflow.
+The VM long-idle gap remains open. This is source verification, not a new Stable
+release or acceptance of Windows native presentation/install behavior.
+
+## 2026-10-03 — stable update routing and bundled version
+
+The public Stable feed advertises desktop 0.2.2; the previous Stable is 0.2.1.
+Both untouched published Apple Silicon app archives matched their GitHub asset
+SHA-256 and passed strict recursive macOS code-signature verification:
+
+| Release | App archive SHA-256 | Bundled YA manifest |
+| --- | --- | --- |
+| 0.2.1 | `70833526c77d5d7d4926a3c1a39e8e1d149e8930ba3db4acdc580b0232cd8d6e` | `v0.9.0-6-g7a241eaa0` |
+| 0.2.2 | `b00d92d1ad06d9b5c92357f29a9dc970286169ddb27cc2cd3cceb2e6e6daad8a` | `v0.9.1-56-g1002ac1c9` |
+
+The packaged Bun/server ran on the controller with a disposable data root and
+working directory outside a Git checkout. The real bundled client ran in
+Playwright Chromium with the native runtime labels supplied through the same
+metadata shape as the dashboard initialization script. This exercises actual
+release server/client bytes, but is not a native Tauri-window or VM test.
+Desktop (1000×600) and phone (375×812) captures were presented through the
+artifact facility and inspected individually. Each About view shows the correct
+desktop/build labels and a Check for Updates button, with no result after its
+request completes. The build label wraps on phone without horizontal overflow.
+An unrelated host Codex update dialog was dismissed through its ordinary
+**Not now** action; no provider installation was performed.
+
+| Check | 0.2.1 | 0.2.2 |
+| --- | --- | --- |
+| Authenticated bundled `/api/version` identity | FAIL: `dev`, `source` | FAIL: `dev`, `source` |
+| Bundled runtime identity | PASS: Bun 1.3.14 | PASS: Bun 1.3.14 |
+| Desktop Stable feed | PASS: offers 0.2.2 | PASS: HTTP 204, current |
+| About Check for Updates reaches desktop updater | FAIL: only server version request | FAIL: only server version request |
+| About check gives completed-result feedback | FAIL: no result | FAIL: no result |
+| Reported source-version popup in clean local dashboard | NOT REPRODUCED | NOT REPRODUCED |
+| Fresh native menu-bar check on VM | BLOCKED: target exclusively claimed | BLOCKED: target exclusively claimed |
+
+Both server API responses report `latest: null`, `updateAvailable: false`,
+`installSource: "source"`, `current: "dev"`, and `desktopRuntime: true`.
+The server package retains `0.0.1` and tries Git discovery instead of using its
+accurate immutable runtime manifest. About's button refreshes that standalone
+version API even while displaying native desktop labels. The standalone
+`/version/dev` endpoint independently returns HTTP 400. These defects are corrected by the native updater implementation below.
+
+Machine Control doctor found the Mac VM ready, but exclusive claim acquisition
+was refused because another active test session owned it. That session renewed
+its claim during the investigation. Isolated workspaces were unavailable.
+No guest operation, claim takeover, or host UI input was attempted. The
+September 28 native results below remain the existing tray-check evidence;
+this run adds no native menu, install/relaunch, sleep/wake, or long-idle result.
+The then-current renderer regression harness passed, including
+manual/automatic overlap, channel switching, stale dismissal, error recovery,
+explicit installation, and simulated six-hour idle. Its native boundary is
+controlled, so it does not establish behavior in signed Stable releases.
+
+Ignored release probes are retained in `tasks/desktop-update-investigation/`;
+reviewed packaged-client captures and observations are under
+`.artifacts/ui-testing/2026-10-03-desktop-updates/{0.2.1,0.2.2}/`.
+No application fix or release was made during the baseline investigation.
+
 ## 2026-09-28 — manual update feedback and hidden windows
 
 The common Machine Control CLI resumed the claimed macOS VM normally. The

@@ -9,6 +9,13 @@ interface YaPairedServerRepository {
         select: Boolean = false,
     )
 
+    /** Production storage overrides this with one protected-state mutation. */
+    suspend fun updateCredential(profileId: String, resumeCredential: YaStoredResumeCredential) {
+        val current = checkNotNull(snapshot(profileId)) { "Cannot store a credential for an unknown profile" }
+        check(current.profile.securityClient?.revoked != true)
+        upsert(current.profile, resumeCredential)
+    }
+
     suspend fun clearCredential(profileId: String)
 
     suspend fun updateSecurityClientBinding(

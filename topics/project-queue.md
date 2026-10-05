@@ -510,7 +510,9 @@ Three outcomes, all decided at enqueue so the user learns immediately:
   user chose a lane that waits for the project, so the loop it starts keeps
   waiting, including for items this queue is about to promote.
 - **Composer-only** — `/model`, `/btw`, `/done`, `/archive`, `/terminate`,
-  `/title`, `/compact`. These act on composer or client state, so queueing
+  `/title`, `/compact`, and `/v`/`/view` where YA's
+  [view command](view-command.md) is available. These act on composer or
+  client state, so queueing
   one would have to either run it now or run it later against a composer that
   no longer exists. They are refused with a visible reason and the draft is
   restored.
@@ -566,6 +568,37 @@ browser `File` objects, blob URLs, or in-flight upload handles. Promotion
 materializes those staged files into the new session's normal attachment
 destination. The design and lifecycle are documented in
 `docs/tactical/028-pre-session-attachment-staging.md`.
+
+When a session composer redirects its draft through the new-session chooser,
+already uploaded attachments are read through their original session's
+authenticated upload route and copied into account staging first. Both queued
+and immediate delivery materialize into the chosen project's new session
+before the first message. A failed copy prevents submission and restores the
+draft. The source files remain intact. This reuses Project Queue's existing
+staging capability and does not add a sandbox choice to the chooser. Final
+storage and sandbox access remain governed by
+[Attachment Storage](attachment-storage.md#location-resolution).
+
+A submission racing an upload failure is refused rather than sending a subset
+of its files. The draft and successful uploads remain available for recovery;
+the failed file must be attached again. The collector carries those successful
+results through the direct-send, deferred-send and Project Queue error paths.
+
+Attachments protected by a synced draft are copied into queue ownership on
+create or edit. The queue stores the copies' canonical references in the
+submitted order, including when mixed with retained or unsynced attachments.
+Reload, promotion and cancellation use those references; cancelling an item
+or rolling back a failed save leaves the synced originals usable.
+
+With draft synchronization initialized (`draft-sync-v1`), a queued draft may
+combine upload batches from the same account. Create and edit preserve each
+reference's canonical batch and the submitted order, including retained files
+from earlier batches. Reload and promotion deliver every accepted file in that
+order. The envelope's batch does not require all references to share a batch;
+each is validated against its own staging record in the item's account store.
+This uses the existing draft-sync support and request shape, with no additional
+capability. Without draft-sync initialization, newly transferred drafts retain
+the staging service's single-batch validation.
 
 Staged references belong to the account that queued the item. Queuing looks
 the drafts up only in the acting account's own draft store — the superuser's,

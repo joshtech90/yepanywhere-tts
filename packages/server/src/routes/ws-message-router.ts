@@ -304,6 +304,12 @@ interface MessageRouteHandlers {
     msg: RemoteClientMessage & { type: "upload_end" },
   ) => Promise<void>;
   onPing: (msg: RemoteClientMessage & { type: "ping" }) => Promise<void> | void;
+  onResponseStreamAck?: (
+    msg: RemoteClientMessage & { type: "response_stream_ack" },
+  ) => void;
+  onResponseStreamCancel?: (
+    msg: RemoteClientMessage & { type: "response_stream_cancel" },
+  ) => void;
   onSpeechControl?: (
     msg: RemoteClientMessage & { type: "speech_control" },
   ) => Promise<void> | void;
@@ -372,6 +378,12 @@ export async function routeClientMessageSafely(
         break;
       case "ping":
         await handlers.onPing(msg);
+        break;
+      case "response_stream_ack":
+        handlers.onResponseStreamAck?.(msg);
+        break;
+      case "response_stream_cancel":
+        handlers.onResponseStreamCancel?.(msg);
         break;
       case "speech_control":
         if (handlers.onSpeechControl) {

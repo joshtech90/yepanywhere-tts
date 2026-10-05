@@ -37,7 +37,10 @@ export type ProjectServiceProcessState =
 
 /** One project service launch; no provider session or host TCP listener. */
 export class ProjectServiceProcess {
-  readonly port = randomInt(10_000, 60_000);
+  // Below every default ephemeral range (Linux 32768+, macOS and Windows
+  // 49152+): outgoing connections inside the sandbox take their source ports
+  // from that range, and one held 40614 when a CI service tried to listen.
+  readonly port = randomInt(10_000, 32_768);
   state: ProjectServiceProcessState = "starting";
   error?: string;
   log = "";

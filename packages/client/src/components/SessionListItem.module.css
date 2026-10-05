@@ -33,7 +33,7 @@
   cursor: pointer;
 }
 .searchRow:has([data-search-previews]) :global(.session-list-item__meta) {
-  padding-right: 52px;
+  padding-right: 94px;
 }
 .searchSelection input {
   position: absolute;
@@ -321,5 +321,13 @@
   /* Child rows stay tappable even though the outline is otherwise dense. */
   .providerChildrenOutlineLink {
     min-height: 32px;
+  }
+}
+
+/* Avoid WebKit's first-tap hover reveal. Touch rows reveal their menu through
+   the shared focus/open rules instead of permanently covering every title. */
+@media (hover: hover) and (pointer: fine) {
+  :global(.session-list-item):hover .body > :global(.session-list-item__menu) {
+    opacity: 1;
   }
 }

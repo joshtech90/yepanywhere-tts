@@ -1,7 +1,6 @@
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setImmediate } from "node:timers/promises";
 import { expect, it, vi } from "vitest";
 import { createApp } from "../setup/create-app.js";
 import { MockClaudeSDK } from "../../src/sdk/mock.js";
@@ -47,6 +46,18 @@ it("app disposal settles the scanner writer and drops its trailing snapshot", as
     projectsDir: join(directory, "projects"),
     sdk: new MockClaudeSDK(),
   });
+  // App disposal awaits other services before reaching the scanner. Observe
+  // that boundary explicitly rather than releasing the writer after one turn.
+  let markScannerDisposing = () => {};
+  const scannerDisposing = new Promise<void>((resolve) => {
+    markScannerDisposing = resolve;
+  });
+  const disposeScanner = instance.scanner.dispose.bind(instance.scanner);
+  vi.spyOn(instance.scanner, "dispose").mockImplementation(() => {
+    const result = disposeScanner();
+    markScannerDisposing();
+    return result;
+  });
   let disposal: Promise<void> | undefined;
   try {
     await instance.scanner.listProjects();
@@ -57,7 +68,7 @@ it("app disposal settles the scanner writer and drops its trailing snapshot", as
     disposal = instance.disposeSessionReaders().then(() => {
       finishedAtDisposal = writes.finished;
     });
-    await setImmediate();
+    await scannerDisposing;
     release();
     await disposal;
     expect(finishedAtDisposal).toBe(true);

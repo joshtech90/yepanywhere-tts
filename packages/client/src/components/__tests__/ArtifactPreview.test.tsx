@@ -17,7 +17,10 @@ const state = vi.hoisted(() => ({
   getPublicFileShares: vi.fn(),
   createPublicFileShare: vi.fn(),
 }));
-const runtime = { sourceKey: "localhost", transport: { fetch: state.fetch } };
+const runtime = {
+  sourceKey: "localhost",
+  transport: { fetch: state.fetch, capabilities: { sameOriginUrls: true } },
+};
 vi.mock("../../contexts/SourceRuntimeContext", () => ({
   useCurrentSourceRuntime: () => runtime,
 }));

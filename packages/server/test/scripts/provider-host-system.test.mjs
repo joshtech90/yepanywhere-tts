@@ -118,8 +118,11 @@ describe.skipIf(!["linux", "darwin"].includes(process.platform))(
           token: (await readFile(join(directory, "host/token"), "utf8")).trim(),
           protocolVersion: 3,
         };
+        // Inventory verifies worker identity through the native process probe,
+        // bounded at 3s on macOS. Intel CI 36820386055 exhausted this helper's
+        // default 1s status budget; allow 4x that observed limit for inventory.
         const inventory = () =>
-          requestProviderHost(connection, { op: "inventory" });
+          requestProviderHost(connection, { op: "inventory" }, 4_000);
         const before = await inventory();
         worker = before.runtimes?.[0] ?? before[0];
         expect(worker.pid).toBeGreaterThan(1);

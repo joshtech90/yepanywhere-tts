@@ -257,6 +257,23 @@ shell-startup and test-hermeticity rules for the local `BASH_ENV` bridge.
   strings; multi-select answers are string arrays. A completed interview can
   resume into another `AskUserQuestion`, which should reuse the normal
   waiting-input lifecycle instead of needing a special chained-interview state.
+- A running Bash call in a YA-owned, locally executed Claude session shows its
+  live output on the pending row, as the Claude Code TUI does. The SDK sends no
+  output until the call ends, so YA tails the file the CLI streams it to,
+  `<tmp>/claude-<uid>/<cwd-slug>/<session>/tasks/<task_id>.output`, found
+  through the `task_started` message that names the call's `tool_use_id`. The
+  CLI announces a foreground command only after it has run several seconds
+  (about 6.5 s observed with SDK 0.3.283), so short commands show no preview
+  and the first preview already holds the output so far. Previews poll once a
+  second, carry the first 2 KiB and last 8 KiB with an omitted-bytes marker,
+  and stop at the call's result, its `task_notification`, or the end of the
+  session's stream. They travel as `_isStreaming` `tool_output_preview`
+  messages keyed `tool_output_preview:<tool_use_id>`, which clients keep out of
+  the transcript and older clients ignore; they never reach the model. The
+  file layout is CLI-internal: when the file cannot be found within five
+  polls, the call simply has no preview. Remote-executor sessions get none.
+  Viewers can decline previews with the Live Command Output setting
+  ([stream parity](stream-persisted-render-parity.md)).
 
 ## Transcript Structure: Forest, Connector Rows, Dead Segments
 

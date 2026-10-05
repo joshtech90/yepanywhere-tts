@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "source": "tssrp6a@3.0.0 + tweetnacl@1.0.3",
+  "srp": {
+    "groupBits": 2048,
+    "hash": "SHA-512",
+    "N": "ac6bdb41324a9a9bf166de5e1389582faf72b6651987ee07fc3192943db56050a37329cbb4a099ed8193e0757767a13dd52312ab4b03310dcd7f48a9da04fd50e8083969edb767b0cf6095179a163ab3661a05fbd5faaae82918a9962f0b93b855f97993ec975eeaa80d740adbf4ff747359d041d5c33ea71d281e446b14773bca97b43a23fb801676bd207a436c6481f1d2b9078717461a5b9d32e688f87748544523b524b0d57d5ea77a2775d2ecfa032cfbdbf52fb3786160279004e57ae6af874e7303ce53299ccc041c7bc308d82a5698f3a8d0c38271ae35f8e9dbfbb694b5c803d89f7ae435de236d525f54759b65e372fcd68ef20fa7111f9e4aff73",
+    "g": "2",
+    "username": "android-native-interop",
+    "password": "correct horse battery staple",
+    "salt": "1",
+    "clientPrivate": "1",
+    "serverPrivate": "1d",
+    "x": "6a3714a3d9638edfda92cb7b982fbae89fb0a504d686993ef24793bf537beebb4b4b3b3d18253c889ccc09c8856ed59b1d2acdaa38481a3b7bd19cb7af1c6c9b",
+    "verifier": "5e09cc8a68d397b9042c27d487fcd3d6d0e5bc8ade8cbeb38ebd8a3e223e9370388ef9af6b1417df0585f9025cdf114761d3c22787c55201d15b3b8624a1561e18af093a475977eb0d6948da3b31d26b05a360d07e8db8aac0b6d48f64c927848bd23dd29cd96ba8c063f5085359e28b486dd2b0a98b872e78f39724c4acfa2131ed249cfd37ce4ed4873770888c1666116d04f415107653b948739bc0cee0f069e70442e2444fa51c28bac4377eb1d0fd039b2aef649ea2af9b9b9ef239bbf1c9e4404e41cfaf71fd2b0deb36d91dd00bc471a99cf8f42f307b0bb2c6c5c94c59820f8f695236dfad3d841df08f130f63e627eae8ac195eb9ee00dddf23274f",
+    "k": "ee881e03028fe8958639bec52094eb6127081e7ea8e7d0f2618ac8a2a8df48d66f44ec14659a56822279817d1fa484b5a13f1495c1d77c112ed424971721a43c",
+    "u": "9da7569f9634e914313e3fb57c80fccff091983ab7bcd12064a275d08fc30a0612666f7dc0e127587215fb83ab952e82400cc4e41d72bd1df3ea652c723941f2",
+    "A": "2",
+    "B": "44f05dfcdb2173aa1332d104a55c9f002a2affbf4073802e2704ca1261ddae458daa3b09ed46a671ca6a9da410db71b955c2a1faafc29da3c9addd224a2027256503271a66b2280da7bc427feb6437f87acae409abe960993385746907bb0a9f952515bf84afa38e2a67c14c9e6e850d031f377dce09f4155bf01905516a8c66111b7f2ea375807724bb80e78d37e1317d5769a81261da9cd9f674ceb461a5ab4ea1c77d46a93bfdb72c07b18d6e80924a6bf60a2d8020a195ce62de7ddb251133ea3a7502374141f67d898904949961059c29c80f5044beea1c9825000c10877ac53fa97e1019f742e36bd98613b93f1e858bac2a76532ee4d28f7b67d8e483",
+    "S": "2a4d7f3eafe50427532b8a705ed4d8603684c8b2c2b359a64b40b5261a3bb30a8c321e0b6e49b34fb3c61e0d6d3db915e42877a5c69c0546c3b354991ed0c1a021c2dbec8fc14234061bb39505f79ae554a4dde4f8f1a655d4f46573ba62688352514bd31629224732226206d7d21eb61122d6df621a5d254a618d09dd6753075394e5231b5b52b4d0ed3f41996f01770e64f611a7536867417ff567f1cf8423a381583bc86ab73041d893e789e87f56f587668414eb4ab40337ae73866543c60c168343c9a20942eafb7786bf742feef5c4d7bf9239ba7c4f5e58e17b928f9fd0d6e353cbcbc1afaee9363b617e5e75a4ad360c201792fdd49a867defa0ced6",
+    "M1": "32040947eb49a3711d533e307ca506e3e0167bea237068439635fd36b94720672013349bcfe1b24baaecd503745004f61883f713a99c9276ebacbe1e4b30b3",
+    "M2": "d6386243402ae27644a7971b155c9aa38a66b386a1ce68629f6273698e96bdb77c4766ef0069063a49d7d8f839da2f3573572f36b4938b975597c36f90399ed4",
+    "rawSessionKeyHex": "2a4d7f3eafe50427532b8a705ed4d8603684c8b2c2b359a64b40b5261a3bb30a8c321e0b6e49b34fb3c61e0d6d3db915e42877a5c69c0546c3b354991ed0c1a021c2dbec8fc14234061bb39505f79ae554a4dde4f8f1a655d4f46573ba62688352514bd31629224732226206d7d21eb61122d6df621a5d254a618d09dd6753075394e5231b5b52b4d0ed3f41996f01770e64f611a7536867417ff567f1cf8423a381583bc86ab73041d893e789e87f56f587668414eb4ab40337ae73866543c60c168343c9a20942eafb7786bf742feef5c4d7bf9239ba7c4f5e58e17b928f9fd0d6e353cbcbc1afaee9363b617e5e75a4ad360c201792fdd49a867defa0ced6",
+    "baseKeyHex": "59e1dd3e851cea22679f27cdedf50a4215afd8496b39bcaffff0fd2cc6ccfc6c"
+  },
+  "fullSession": {
+    "sessionId": "android-native-interop-session",
+    "transportNonce": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX",
+    "transportKeyHex": "0b41f018766ee9327da63636864c768a96fe37beb2d807601128ec0d66a880d0",
+    "serverInfoPlaintext": "{\"type\":\"srp_verify_server_info\",\"sessionId\":\"android-native-interop-session\",\"transportNonce\":\"QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZX\",\"resumeProtocolVersion\":3}",
+    "serverInfoProof": {
+      "nonce": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3",
+      "ciphertext": "RlduIr4Kzqf5oTI9FG6uRw+xqYqiXlGMG8L45fr1vwLz9qyxMC+kHWeh1+vJEdPEvD6VjUmbGJfUN4baEyKeDFDWURGCumSCb4+VLXySX1cPDvnAAivCiCymg/6lb4WvSoS4QBE9hdwI5rFelyBrpby+EFxkrvXYedoIiKMIxdSQpyRJO78IQDX5Qim/bfGHOfF2lUp1dc+16cL6TCD1LGC3Hm1rQbgrBCESdQ=="
+    }
+  },
+  "binaryEnvelope": {
+    "format": 1,
+    "plaintext": "{\"seq\":0,\"msg\":{\"type\":\"ping\",\"id\":\"android-native-interop-ping\"}}",
+    "nonce": "gIGCg4SFhoeIiYqLjI2Oj5CRkpOUlZaX",
+    "envelopeBase64": "AYCBgoOEhYaHiImKi4yNjo+QkZKTlJWWl+6boOvPXWnHVkr5JXdeJgCCRklPp7FZWYZpdhqZnYNk50VFQQqsXZKjfOaYofmupV0mRzdAp/AZbf0+edX+07bU9o+Kx2TZXkvRS6nupwKbUtsn"
+  },
+  "resume": {
+    "clientNonce": "oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3",
+    "serverNonce": "wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX",
+    "proofPlaintext": "{\"timestamp\":1800000000000,\"challenge\":\"wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX\",\"sessionId\":\"android-native-interop-session\"}",
+    "proof": {
+      "nonce": "4OHi4+Tl5ufo6err7O3u7/Dx8vP09fb3",
+      "ciphertext": "gbjmUCN//DOknOdIJks5X+s/Xyuki+sS1HXt9VO5Xur16tgUS8P/51XF9ljrZtsic1i39GV8SuRA4d2AvWz45TGTxN2T6KlICtD/UmmHGJ+UhzhURPdc6gUgRcivez94DZm5KrBa1UApS7NYpTQhqHKZQ//AwuNOx3VMV30EnHvfTVMPUJ3s"
+    },
+    "serverProofPlaintext": "{\"type\":\"srp_resume_server_proof\",\"sessionId\":\"android-native-interop-session\",\"serverNonce\":\"wMHCw8TFxsfIycrLzM3Oz9DR0tPU1dbX\",\"clientNonce\":\"oKGio6SlpqeoqaqrrK2ur7CxsrO0tba3\",\"resumeProtocolVersion\":3}",
+    "serverProof": {
+      "nonce": "EBESExQVFhcYGRobHB0eHyAhIiMkJSYn",
+      "ciphertext": "OUT4dmz7zGX/6GMQ6YUR18DD1IQmRnH+l8fJENxMydvSYKKqfhSeApP0DGeEFIaiCVs3Nfz62av35PqTggiPh8OA4bpiv0fDl61CjjUJev9GZNYCmvxxAY8Z1BHXCkQGoxx50o1e2R1mY7AMZEHrUVocgeV67jqpwACz+Cm//bEpRh+M68t6yD7SG92H+3/1dIPrw5ruVxzI8qnwlKE/0nvYwPA21xGX9bkLhDuwxo6g2ukZukJHE4HV9rrSNmK208VyEPQd0Qhuf+DwRGSAeQKsazRW8NbQi7x2"
+    },
+    "transportKeyHex": "c57c0fca62edb584845dcf82c0b2eb01a0c4abd201578eb0613f54c7b8fe28ee"
+  }
+}

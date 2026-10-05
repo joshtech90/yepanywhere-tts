@@ -119,6 +119,323 @@ test.afterAll(async () => {
   if (directory) await rm(directory, { recursive: true });
 });
 
+test("replaces the derived file address and acknowledges sequential manual typing during updates", async ({
+  page,
+}) => {
+  const report = join(directory, "bundle", "report.html");
+  await copyFile(entry, report);
+  const oldPath = entry;
+  const response = await page.request.post(
+    `${base}/api/artifacts/vhost-sites`,
+    {
+      headers: { "X-Yep-Anywhere": "true" },
+      data: { name: "report", path: oldPath, public: true },
+    },
+  );
+  expect(response.ok(), await response.text()).toBe(true);
+  await page.goto(
+    `${base}/e2e/fixtures/artifact-viewer.html?file-vhost&path=${encodeURIComponent(report)}`,
+  );
+  const name = page.getByRole("textbox", { name: "Address name" });
+  await expect(name).toHaveValue("report");
+  const replace = page.getByRole("checkbox", {
+    name: "Replace an existing mapping with this name",
+  });
+  await expect(replace).not.toBeChecked();
+  await replace.check();
+  await expect(name).toHaveValue("report");
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await recordUiCapture(
+      page,
+      `file-vhost-replace-${viewport.width}`,
+      viewport,
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+  await page.getByRole("button", { name: "Serve here", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: /report.localhost/ }),
+  ).toBeVisible();
+  const current = await page.request.get(
+    `${base}/api/artifacts/vhost-sites?path=${encodeURIComponent(report)}`,
+  );
+  expect((await current.json()).sites).toHaveLength(1);
+  await name.focus();
+  await page.keyboard.press("ControlOrMeta+A");
+  await page.keyboard.press("Backspace");
+  const before = await page
+    .getByTestId("background-updates")
+    .getAttribute("data-updates");
+  let expected = "";
+  for (const character of "manual-report") {
+    expected += character;
+    await page.keyboard.type(character);
+    await expect(name).toHaveValue(expected, { timeout: 100 });
+  }
+  await expect(page.getByTestId("background-updates")).not.toHaveAttribute(
+    "data-updates",
+    before!,
+  );
+  await page.getByRole("button", { name: "Serve here", exact: true }).click();
+  await expect(
+    page.getByRole("link", { name: /manual-report.localhost/ }),
+  ).toBeVisible();
+});
+
+test("sorts app tables by full paths and elides their paths responsively", async ({
+  page,
+}) => {
+  const roots = [
+    "/home/graehl/projects/a-very-long-workspace-name/research/alpha/site/report.html",
+    "/home/graehl/projects/a-very-long-workspace-name/research/zeta/site/index.html",
+  ];
+  await page.route("**/api/version*", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.current = "0.9.4";
+    body.artifactViewer.vhostSites = [
+      { name: "zeta", path: roots[1], public: true },
+      { name: "alpha", path: roots[0], public: true },
+    ];
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/artifacts/vhost-sites", (route) =>
+    route.fulfill({ json: { sites: [] } }),
+  );
+  await page.route("**/api/project-apps", (route) =>
+    route.fulfill({
+      json: {
+        projects: [
+          ...roots.map((path, index) => ({
+            projectId: `project-${index}`,
+            name: index ? "Zeta" : "Alpha",
+            path: dirname(path),
+            info: { state: "ready" },
+          })),
+          {
+            projectId: "short-home",
+            name: "Short home",
+            path: "/home/graehl/archer/scooter-parkour",
+            info: { state: "ready" },
+          },
+          {
+            projectId: "short-root",
+            name: "Short absolute",
+            path: "/tmp/compact-probe",
+            info: { state: "ready" },
+          },
+        ],
+        reservations: roots.map((_, index) => ({
+          projectId: `project-${index}`,
+          name: index ? "zeta" : "alpha",
+          namespace: "apps.test",
+          owner: "superuser",
+        })),
+      },
+    }),
+  );
+  await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);
+  const vhosts = page.getByRole("table", { name: "HTTP vhosts" });
+  const projects = page.getByRole("table", { name: "Project apps" });
+  await vhosts.getByRole("button", { name: "Serves", exact: true }).click();
+  await expect(vhosts.locator("tbody tr").first()).toContainText("alpha");
+  await vhosts.getByRole("button", { name: "Serves", exact: true }).click();
+  await expect(vhosts.locator("tbody tr").first()).toContainText("zeta");
+  await projects
+    .getByRole("button", { name: "Project folder", exact: true })
+    .click();
+  await expect(projects.locator("tbody tr").first()).toContainText(
+    "Short home",
+  );
+  await projects
+    .getByRole("button", { name: "Project folder", exact: true })
+    .click();
+  await expect(projects.locator("tbody tr").first()).toContainText(
+    "Short absolute",
+  );
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    for (const path of [
+      "/home/graehl/archer/scooter-parkour",
+      "/tmp/compact-probe",
+    ]) {
+      const gap = await projects.getByTitle(path).evaluate((element) => {
+        const prefix = element.firstElementChild!;
+        const tail = prefix.nextElementSibling!;
+        const ink = document.createRange();
+        ink.selectNodeContents(prefix);
+        return (
+          tail.getBoundingClientRect().left - ink.getBoundingClientRect().right
+        );
+      });
+      expect(gap).toBeLessThanOrEqual(0.5);
+    }
+    for (const [table, name] of [
+      [vhosts, "vhosts"],
+      [projects, "project-apps"],
+    ] as const) {
+      await table.scrollIntoViewIfNeeded();
+      await recordUiCapture(page, `${name}-paths-${viewport.width}`, viewport);
+      const bounds = await table
+        .locator("[title]")
+        .first()
+        .evaluate((element) => ({
+          width: element.clientWidth,
+          childWidth: [...element.children].reduce(
+            (sum, child) => sum + child.getBoundingClientRect().width,
+            0,
+          ),
+        }));
+      expect(bounds.childWidth).toBeLessThanOrEqual(bounds.width + 1);
+    }
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+    ).toBe(true);
+  }
+});
+
+test("minimizes app details and confirms distinct app and project deletions", async ({
+  page,
+}) => {
+  const projects = [
+    {
+      projectId: "canvas",
+      name: "Canvas",
+      path: "/home/graehl/archer/scooter-parkour",
+      info: { state: "ready" },
+    },
+    {
+      projectId: "probe",
+      name: "Probe",
+      path: "/tmp/compact-probe",
+      info: { state: "ready" },
+    },
+  ];
+  const deletedApps: string[] = [];
+  const deletedProjects: string[] = [];
+  await page.route("**/api/version*", async (route) => {
+    const response = await route.fetch();
+    const body = await response.json();
+    body.current = "0.9.4";
+    await route.fulfill({ response, json: body });
+  });
+  await page.route("**/api/project-apps", (route) =>
+    route.fulfill({
+      json: {
+        projects: projects.filter(
+          (row) => !deletedApps.includes(row.projectId),
+        ),
+        reservations: [],
+      },
+    }),
+  );
+  await page.route("**/api/projects/*/app", (route) => {
+    const id = new URL(route.request().url()).pathname.split("/")[3]!;
+    if (route.request().method() === "DELETE") {
+      deletedApps.push(id);
+      return route.fulfill({ json: { deleted: true } });
+    }
+    return route.fulfill({
+      json: {
+        projectId: id,
+        state: "ready",
+        declaration: null,
+        latestArtifact: null,
+        canExecute: true,
+        removedFrom: [],
+      },
+    });
+  });
+  await page.route("**/api/projects/*/app/address", (route) =>
+    route.fulfill({ json: { enabled: false, reservations: [] } }),
+  );
+  await page.route("**/api/projects/*", (route) => {
+    expect(route.request().method()).toBe("DELETE");
+    deletedProjects.push(
+      new URL(route.request().url()).pathname.split("/")[3]!,
+    );
+    return route.fulfill({ json: { removed: true } });
+  });
+  await page.goto(`${base}/e2e/fixtures/artifact-viewer.html?settings`);
+  const inventory = page.getByRole("region", { name: "Project apps" });
+  for (const viewport of [
+    { width: 1200, height: 600 },
+    { width: 1000, height: 600 },
+    { width: 375, height: 812 },
+  ]) {
+    await page.setViewportSize(viewport);
+    const trigger = inventory.getByRole("button", {
+      name: "Canvas",
+      exact: true,
+    });
+    await trigger.click();
+    await expect(
+      inventory.getByRole("button", { name: "Delete app", exact: true }),
+    ).toBeVisible();
+    const minimize = inventory.getByRole("button", {
+      name: "Minimize details",
+      exact: true,
+    });
+    await expect(minimize).toHaveText("_");
+    await minimize.scrollIntoViewIfNeeded();
+    await recordUiCapture(
+      page,
+      `app-delete-controls-${viewport.width}`,
+      viewport,
+    );
+    expect(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= innerWidth,
+      ),
+    ).toBe(true);
+    await minimize.click();
+    await expect(trigger).toBeFocused();
+  }
+  await inventory.getByRole("button", { name: "Canvas", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await inventory
+    .getByRole("button", { name: "Delete app", exact: true })
+    .click();
+  expect(deletedApps).toEqual([]);
+  page.once("dialog", (dialog) => dialog.accept());
+  await inventory
+    .getByRole("button", { name: "Delete app", exact: true })
+    .click();
+  await expect(
+    inventory.getByRole("button", { name: "Canvas", exact: true }),
+  ).toHaveCount(0);
+  expect(deletedApps).toEqual(["canvas"]);
+  expect(deletedProjects).toEqual([]);
+  await inventory.getByRole("button", { name: "Probe", exact: true }).click();
+  page.once("dialog", (dialog) => dialog.accept());
+  await inventory
+    .getByRole("button", { name: "Delete project", exact: true })
+    .click();
+  await expect(
+    inventory.getByRole("button", { name: "Probe", exact: true }),
+  ).toHaveCount(0);
+  // App removal can invalidate the row before the subsequent project DELETE
+  // arrives. Join that operation rather than using row disappearance as its
+  // acknowledgement.
+  await expect.poll(() => deletedApps).toEqual(["canvas", "probe"]);
+  await expect.poll(() => deletedProjects).toEqual(["probe"]);
+});
+
 test("edits mapped source from default sanitized HTML and preserves a stale preview", async ({
   page,
 }) => {
@@ -209,6 +526,11 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
   // during the second gesture. Keep two full mode boots and use the verified
   // URL for each duplicate gesture; 30s is twice the observed deadline.
   test.setTimeout(30_000);
+  // CI 36972149383 missed the 5s edit-dialog deadline; its retry needed
+  // 4.869s for that assertion and 18.6s overall. The earlier cold popup
+  // measured 5.7s (CI 36665933364). Give each first mode boot 15s (~2.6x
+  // that observed maximum), retaining the 30s case and all gesture checks.
+  const modeBootTimeout = 15_000;
   const htmlPath = join(directory, "bundle", "mode-controls.html");
   await writeFile(htmlPath, "<!doctype html><h1>Viewer mode controls</h1>");
   await page.goto(
@@ -241,7 +563,7 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
         await tab.waitForURL("**/file-view?**");
         await expect(
           tab.getByRole("dialog", { name: "Edit source", exact: true }),
-        ).toBeVisible();
+        ).toBeVisible({ timeout: modeBootTimeout });
         await expect(
           tab.getByRole("button", { name: "Exit edit mode" }),
         ).toHaveAttribute("aria-pressed", "true");
@@ -249,7 +571,7 @@ test("viewer icon modes toggle locally and open through Shift and middle clicks"
         await tab.waitForURL("**/file-view?**");
         await expect(
           tab.getByRole("button", { name: "Stop interactive preview" }),
-        ).toHaveAttribute("aria-pressed", "true");
+        ).toHaveAttribute("aria-pressed", "true", { timeout: modeBootTimeout });
       }
       verifiedModeUrl ??= tab.url();
       await expect(control).toHaveAttribute("aria-pressed", "false");
@@ -442,6 +764,32 @@ test("sanitized preview section links scroll within the document", async ({
     .frames()
     .find((candidate) => candidate.url().startsWith("about:srcdoc"));
   expect(frame?.url()).toBe("about:srcdoc#far");
+});
+
+test("sanitized preview relative links open the neighboring file in the viewer", async ({
+  page,
+}) => {
+  await page.goto(
+    `${base}/e2e/fixtures/artifact-viewer.html?links&path=${encodeURIComponent("/docs/cv/index.html")}`,
+  );
+  const preview = page.frameLocator('iframe[title="Linked notes"]');
+  const link = preview.getByRole("link", { name: "Paper PDF" });
+  // Resolved on the file, not on the embedding page's route.
+  await expect(link).toHaveAttribute(
+    "href",
+    `/api/local-file?path=${encodeURIComponent("/docs/cv/paper.pdf")}`,
+  );
+  await expect(
+    preview.getByRole("link", { name: "Elsewhere" }),
+  ).toHaveAttribute("href", "https://example.invalid/");
+  await link.click();
+  await expect(page.getByTestId("opened-path")).toHaveText(
+    "/docs/cv/paper.pdf",
+  );
+  // The viewer took the click, so the frame stayed on the preview.
+  expect(
+    page.frames().some((frame) => frame.url().startsWith("about:srcdoc")),
+  ).toBe(true);
 });
 
 test("artifact Edit links open an authenticated editor tab and preserve the original view", async ({

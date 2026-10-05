@@ -345,6 +345,44 @@ describe("ReadRenderer", () => {
     expect(screen.queryByText(/continues in Shell/)).toBeNull();
   });
 
+  it("revokes an opened PDF's object URL once the new tab has had time to load it", () => {
+    vi.useFakeTimers();
+    const open = vi.spyOn(window, "open").mockReturnValue(null);
+    const { createObjectURL, revokeObjectURL } = URL;
+    URL.createObjectURL = vi.fn(() => "blob:pdf-tab");
+    const revoke = vi.fn();
+    URL.revokeObjectURL = revoke;
+    try {
+      renderInSession(
+        <div>
+          {readRenderer
+            .prepare(
+              recordFromLegacyArgs(
+                { file_path: "" },
+                {
+                  type: "pdf",
+                  file: { base64: btoa("%PDF-1.4"), originalSize: 8 },
+                },
+                false,
+                "complete",
+              ),
+            )
+            .renderToolResult(renderContext)}
+        </div>,
+      );
+      fireEvent.click(screen.getByRole("button", { name: /open pdf/i }));
+      expect(open).toHaveBeenCalledWith("blob:pdf-tab", "_blank");
+      expect(revoke).not.toHaveBeenCalled();
+      vi.advanceTimersByTime(60_000);
+      expect(revoke).toHaveBeenCalledWith("blob:pdf-tab");
+    } finally {
+      open.mockRestore();
+      URL.createObjectURL = createObjectURL;
+      URL.revokeObjectURL = revokeObjectURL;
+      vi.useRealTimers();
+    }
+  });
+
   describe("image reads", () => {
     afterEach(() => {
       // Unmount first so resetting the store doesn't re-render a mounted tree

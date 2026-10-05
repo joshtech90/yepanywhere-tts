@@ -774,6 +774,14 @@ Pinned Codex evidence:
 - `references/codex/codex-rs/core/src/agents_md_manager.rs`
 - `references/codex/codex-rs/core/tests/suite/agents_md.rs`
 
+## Optional restoration of previously read instructions
+
+Implemented, with the user-directed approximate-read allowance and provider-owned
+tracking, in [the current contract](agent-context-injection.md#optional-instruction-restoration).
+The implementation accepts at least 80% verified line coverage instead of the
+original sketch's strict completeness requirement. The remaining boot-manager,
+compiler, and protected-capsule designs above remain dormant.
+
 ## Open decisions
 
 - Which provider-native role should own a protected capsule without changing

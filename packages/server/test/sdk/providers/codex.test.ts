@@ -40,6 +40,7 @@ import {
   CodexProvider,
   type CodexProviderConfig,
   formatCodexLoginCommand,
+  isCodexCyberAccessDenial,
 } from "../../../src/sdk/providers/codex.js";
 import {
   prepareSessionSandbox,
@@ -1095,6 +1096,165 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
+  it("treats any 403 as a refused cyber access program", () => {
+    const message =
+      'unexpected status 403 Forbidden: {"detail":"The requested Cyber access program is not authorized for this model."}';
+    const daybreakMessage =
+      'unexpected status 403 Forbidden: {"detail":"Daybreak isn\'t available for this model. Turn off Daybreak or choose another model."}, url: https://chatgpt.com/backend-api/codex/responses';
+    expect(
+      isCodexCyberAccessDenial({
+        message,
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } },
+      }),
+    ).toBe(true);
+    expect(
+      isCodexCyberAccessDenial({
+        message: "Reconnecting... 1/5",
+        additionalDetails: daybreakMessage,
+        codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 403 } },
+      }),
+    ).toBe(true);
+    expect(
+      isCodexCyberAccessDenial({
+        message: "unexpected status 403 Forbidden: workspace disabled",
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } },
+      }),
+    ).toBe(true);
+    // The status is read from the text when the structured info lacks it.
+    expect(
+      isCodexCyberAccessDenial({
+        message: daybreakMessage,
+        codexErrorInfo: "other",
+      }),
+    ).toBe(true);
+    expect(
+      isCodexCyberAccessDenial({
+        message: "Reconnecting... 1/5",
+        additionalDetails: daybreakMessage,
+        codexErrorInfo: null,
+      }),
+    ).toBe(true);
+    expect(
+      isCodexCyberAccessDenial({
+        message,
+        codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } },
+      }),
+    ).toBe(false);
+    expect(
+      isCodexCyberAccessDenial({
+        message: "unexpected status 401 Unauthorized",
+        codexErrorInfo: "unauthorized",
+      }),
+    ).toBe(false);
+  });
+
+  it.each(["cyberAccessDenied", "cyberAccessRetrying"] as const)(
+    "retries without a refused cyber access program (%s)",
+    async (failure) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-cyber-access-retry-"));
+      const logPath = join(tempDir, "fake-codex-requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-codex-cyber-access-retry",
+        buildFakeCodexFailureAppServer(logPath, failure, 0),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      testProvider.setCyberAccessProgramGetter(() => "daybreak-blue");
+      const readTurn = async (
+        session: Awaited<ReturnType<CodexProvider["startSession"]>>,
+      ) => {
+        const messages: Array<Record<string, unknown>> = [];
+        while (true) {
+          const next = await session.iterator.next();
+          if (next.done) break;
+          messages.push(next.value);
+          if (next.value.type === "result") break;
+        }
+        return messages;
+      };
+      const turnStarts = () =>
+        readFakeCodexRequests(logPath)
+          .filter((request) => request.method === "turn/start")
+          .map((request) => request.params ?? {});
+
+      const session = await testProvider.startSession({
+        cwd: tempDir,
+        model: "gpt-5.6-codex",
+        initialMessage: { text: "keep this prompt singular", uuid: "user-1" },
+      });
+      try {
+        const messages = await readTurn(session);
+        expect(
+          messages.filter((message) => message.type === "user"),
+        ).toHaveLength(1);
+        expect(
+          messages.filter((message) => message.type === "error"),
+        ).toMatchObject([
+          {
+            codexWillRetry: true,
+            codexCyberAccessRetry: true,
+          },
+        ]);
+        expect(messages).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              type: "assistant",
+              message: expect.objectContaining({ content: "Recovered answer" }),
+            }),
+          ]),
+        );
+        expect(turnStarts()).toEqual([
+          expect.objectContaining({
+            clientUserMessageId: "user-1",
+            cyberAccessProgram: "daybreakBlue",
+          }),
+          expect.objectContaining({ input: [] }),
+        ]);
+        expect(turnStarts()[1]).not.toHaveProperty("cyberAccessProgram");
+        const requests = readFakeCodexRequests(logPath);
+        const interrupts = requests.filter(
+          (request) => request.method === "turn/interrupt",
+        );
+        expect(interrupts).toHaveLength(
+          failure === "cyberAccessRetrying" ? 1 : 0,
+        );
+        if (failure === "cyberAccessRetrying") {
+          expect(interrupts[0]?.params).toMatchObject({
+            threadId: "thread-failure",
+            turnId: "turn-1",
+          });
+          expect(requests.indexOf(interrupts[0]!)).toBeLessThan(
+            requests.findIndex(
+              (request) =>
+                request.method === "turn/start" &&
+                request.params?.cyberAccessProgram === undefined,
+            ),
+          );
+          expect(
+            messages.some((message) => message.subtype === "interrupted"),
+          ).toBe(false);
+        }
+
+        // The refusal is remembered for this account and model, so the next
+        // turn does not fail first.
+        session.queue.push({ text: "second turn", uuid: "user-2" });
+        const secondMessages = await readTurn(session);
+        expect(secondMessages.some((message) => message.type === "error")).toBe(
+          false,
+        );
+        expect(turnStarts()).toHaveLength(3);
+        expect(turnStarts()[2]).toMatchObject({
+          clientUserMessageId: "user-2",
+        });
+        expect(turnStarts()[2]).not.toHaveProperty("cyberAccessProgram");
+      } finally {
+        await session.abort();
+        await session.iterator.return?.(undefined);
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("retries manual compaction before releasing queued user input", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-compact-retry-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -1633,54 +1793,86 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
-  it("isolates one-turn effort and maps regular Max to the model's ultra", async () => {
-    const tempDir = mkdtempSync(join(tmpdir(), "codex-turn-effort-"));
-    const logPath = join(tempDir, "requests.jsonl");
-    const codexPath = createFakeCodexCommand(
-      tempDir,
-      "fake-effort",
-      buildFakeCodexPermissionAppServer(logPath),
-    );
-    const testProvider = new CodexProvider({ codexPath });
-    const session = await testProvider.startSession({
-      cwd: tempDir,
-      model: "gpt-5.4-mini",
-      effort: "high",
-      initialMessage: { text: "careful", metadata: { turnEffort: "slow" } },
-    });
-    try {
-      await consumeCodexTurn(session.iterator);
-      session.queue.push({ text: "ordinary" });
-      await consumeCodexTurn(session.iterator);
-      session.queue.push({
-        text: "maximum",
-        metadata: { turnEffort: "slowest" },
+  it.each([false, true])(
+    "isolates one-turn effort and maps Max using the selected catalog (routed: %s)",
+    async (routed) => {
+      const tempDir = mkdtempSync(join(tmpdir(), "codex-turn-effort-"));
+      const logPath = join(tempDir, "requests.jsonl");
+      const codexPath = createFakeCodexCommand(
+        tempDir,
+        "fake-effort",
+        buildFakeCodexPermissionAppServer(logPath),
+      );
+      const testProvider = new CodexProvider({ codexPath });
+      const session = await testProvider.startSession({
+        cwd: tempDir,
+        model: "gpt-5.4-mini",
+        effort: "high",
+        ...(routed
+          ? {
+              routerLaunch: {
+                bindingId: "binding",
+                accountId: "account",
+                baseUrl: "http://127.0.0.1:9999",
+                token: "synthetic-test-token",
+                models: [
+                  {
+                    id: "gpt-5.4-mini",
+                    name: "Pinned model",
+                    supportsEffort: true,
+                    defaultReasoningEffort: "high",
+                    supportedReasoningEfforts: [
+                      "none",
+                      "low",
+                      "medium",
+                      "high",
+                      "xhigh",
+                      "ultra",
+                    ].map((reasoningEffort) => ({
+                      reasoningEffort,
+                      description: reasoningEffort,
+                    })),
+                  },
+                ],
+              },
+            }
+          : {}),
+        initialMessage: { text: "careful", metadata: { turnEffort: "slow" } },
       });
-      await consumeCodexTurn(session.iterator);
-      session.queue.push({
-        text: "brief",
-        metadata: { turnEffort: "fastest" },
-      });
-      await consumeCodexTurn(session.iterator);
-      await session.setEffort?.("max");
-      session.queue.push({ text: "normal max" });
-      await consumeCodexTurn(session.iterator);
-      const requests = readFakeCodexRequests(logPath);
-      expect(
-        requests
-          .filter((request) => request.method === "turn/start")
-          .map((request) => request.params?.effort),
-      ).toEqual(["xhigh", "high", "ultra", "none", "ultra"]);
-      expect(
-        requests
-          .filter((request) => request.method === "thread/settings/update")
-          .map((request) => request.params?.effort),
-      ).toEqual(["high", "high", "high", "ultra"]);
-    } finally {
-      await session.abort();
-      rmSync(tempDir, { recursive: true, force: true });
-    }
-  });
+      try {
+        await consumeCodexTurn(session.iterator);
+        session.queue.push({ text: "ordinary" });
+        await consumeCodexTurn(session.iterator);
+        session.queue.push({
+          text: "maximum",
+          metadata: { turnEffort: "slowest" },
+        });
+        await consumeCodexTurn(session.iterator);
+        session.queue.push({
+          text: "brief",
+          metadata: { turnEffort: "fastest" },
+        });
+        await consumeCodexTurn(session.iterator);
+        await session.setEffort?.("max");
+        session.queue.push({ text: "normal max" });
+        await consumeCodexTurn(session.iterator);
+        const requests = readFakeCodexRequests(logPath);
+        expect(
+          requests
+            .filter((request) => request.method === "turn/start")
+            .map((request) => request.params?.effort),
+        ).toEqual(["xhigh", "high", "ultra", "none", "ultra"]);
+        expect(
+          requests
+            .filter((request) => request.method === "thread/settings/update")
+            .map((request) => request.params?.effort),
+        ).toEqual(["high", "high", "high", "ultra"]);
+      } finally {
+        await session.abort();
+        rmSync(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("updates model and effort during a live turn and retains both", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-settings-"));
@@ -2877,6 +3069,42 @@ describe("CodexProvider app-server lifecycle", () => {
     }
   });
 
+  it("reaps model discovery before releasing its result and profile", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-model-owner-"));
+    const logPath = join(tempDir, "fake-codex-requests.jsonl");
+    const pidPath = join(tempDir, "model-owner.pid");
+    const source = buildFakeCodexAppServer(
+      logPath,
+      "chatgpt",
+      undefined,
+      false,
+      {
+        data: [{ id: "owned-model", model: "owned-model" }],
+      },
+    ).replace(
+      'import { appendFileSync } from "node:fs";',
+      `import { writeFileSync as writeModelPid } from "node:fs";
+writeModelPid(${JSON.stringify(pidPath)}, String(process.pid));
+process.on("SIGTERM", () => setTimeout(() => process.exit(0), 150));
+import { appendFileSync } from "node:fs";`,
+    );
+    const codexPath = createFakeCodexCommand(
+      tempDir,
+      "fake-codex-model-owner",
+      source,
+    );
+    try {
+      expect(
+        (await new CodexProvider({ codexPath }).getAvailableModels())[0]?.id,
+      ).toBe("owned-model");
+      const pid = Number(readFileSync(pidPath, "utf8"));
+      expect(Number.isSafeInteger(pid)).toBe(true);
+      expect(() => process.kill(pid, 0)).toThrow();
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("maps thinking off to the model's lowest effort on a cold catalog", async () => {
     const tempDir = mkdtempSync(join(tmpdir(), "codex-provider-thinking-off-"));
     const logPath = join(tempDir, "fake-codex-requests.jsonl");
@@ -3055,6 +3283,13 @@ describe("CodexProvider app-server lifecycle", () => {
         cwd: tempDir,
         upToMessageId: "assistant-2-turn-2",
         title: "Forked from second turn",
+        launchSettings: {
+          permissionMode: "bypassPermissions",
+          requestedModel: "gpt-5.4-codex",
+          serviceTier: "fast",
+          thinking: { type: "adaptive" },
+          effort: "high",
+        },
       });
 
       expect(fork).toEqual({
@@ -3076,8 +3311,11 @@ describe("CodexProvider app-server lifecycle", () => {
         threadId: "source-thread",
         lastTurnId: "turn-2",
         cwd: tempDir,
-        approvalPolicy: "on-request",
-        sandbox: "workspace-write",
+        approvalPolicy: "never",
+        sandbox: "danger-full-access",
+        model: "gpt-5.4-codex",
+        serviceTier: "fast",
+        config: { model_reasoning_effort: "high" },
         excludeTurns: true,
       });
       expect(
@@ -3128,6 +3366,13 @@ describe("CodexProvider app-server lifecycle", () => {
       const testProvider = new CodexProvider({ codexPath });
       const fork = await testProvider.forkSession({
         sessionId: "source-thread",
+        launchSettings: {
+          permissionMode: "plan",
+          requestedModel: "gpt-5.4-codex",
+          serviceTier: null,
+          thinking: { type: "adaptive" },
+          effort: "low",
+        },
         cwd: tempDir,
         boundary: {
           kind: "turn",
@@ -3144,6 +3389,11 @@ describe("CodexProvider app-server lifecycle", () => {
       expect(
         requests.find((request) => request.method === "thread/fork")?.params,
       ).toMatchObject({
+        approvalPolicy: "on-request",
+        sandbox: "read-only",
+        model: "gpt-5.4-codex",
+        serviceTier: null,
+        config: { model_reasoning_effort: "low" },
         threadId: "source-thread",
         lastTurnId: "turn-2",
       });
@@ -3660,7 +3910,11 @@ process.stdin.on("data", (chunk) => {
 
 function buildFakeCodexFailureAppServer(
   logPath: string,
-  codexErrorInfo: "serverOverloaded" | "usageLimitExceeded",
+  codexErrorInfo:
+    | "serverOverloaded"
+    | "usageLimitExceeded"
+    | "cyberAccessDenied"
+    | "cyberAccessRetrying",
   failuresBeforeSuccess: number,
   failureMethod: "turn/start" | "thread/compact/start" = "turn/start",
 ): string {
@@ -3674,6 +3928,7 @@ const failureMethod = ${JSON.stringify(failureMethod)};
 let buffer = "";
 let turnSequence = 0;
 let failureSequence = 0;
+let retryingTurnId = null;
 
 function write(payload) {
   process.stdout.write(JSON.stringify({ jsonrpc: "2.0", ...payload }) + "\\n");
@@ -3723,6 +3978,12 @@ function handleMessage(message) {
     case "initialize":
       respond(message.id, { userAgent: "fake-codex-failure" });
       break;
+    case "account/read":
+      respond(message.id, {
+        account: { type: "chatgpt", email: "second@example.com", planType: "pro" },
+        requiresOpenaiAuth: true,
+      });
+      break;
     case "skills/list":
       respond(message.id, {
         data: [{
@@ -3745,7 +4006,10 @@ function handleMessage(message) {
       const turnId = \`turn-\${turnSequence}\`;
       const isCompact = message.method === "thread/compact/start";
       const turn = { id: turnId, status: "inProgress", error: null };
-      const shouldFail = message.method === failureMethod && ++failureSequence <= failuresBeforeSuccess;
+      // An unenrolled account refuses every turn that requests a program.
+      const shouldFail = codexErrorInfo.startsWith("cyberAccess")
+        ? message.params?.cyberAccessProgram != null
+        : message.method === failureMethod && ++failureSequence <= failuresBeforeSuccess;
       respond(message.id, isCompact ? {} : { turn });
       setTimeout(() => {
         if (isCompact) {
@@ -3756,13 +4020,30 @@ function handleMessage(message) {
           });
         }
         if (shouldFail) {
-          const error = {
+          const error = codexErrorInfo.startsWith("cyberAccess") ? {
+            message: 'unexpected status 403 Forbidden: {"detail":"The requested Cyber access program is not authorized for this model."}',
+            codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 403 } },
+            additionalDetails: null,
+          } : {
             message: codexErrorInfo === "serverOverloaded"
               ? "Selected model is at capacity."
               : "Usage limit reached.",
             codexErrorInfo,
             additionalDetails: null,
           };
+          if (codexErrorInfo === "cyberAccessRetrying") {
+            retryingTurnId = turnId;
+            notify("error", {
+              threadId: "thread-failure", turnId,
+              error: {
+                message: "Reconnecting... 1/5",
+                codexErrorInfo: { responseStreamDisconnected: { httpStatusCode: 403 } },
+                additionalDetails: 'unexpected status 403 Forbidden: {"detail":"Daybreak isn\\'t available for this model. Turn off Daybreak or choose another model."}',
+              },
+              willRetry: true,
+            });
+            return;
+          }
           notify("error", {
             threadId: "thread-failure",
             turnId,
@@ -3788,6 +4069,13 @@ function handleMessage(message) {
       }, isCompact ? 20 : 0);
       break;
     }
+    case "turn/interrupt":
+      if (retryingTurnId) {
+        completeTurn(retryingTurnId, "interrupted", null);
+        retryingTurnId = null;
+      }
+      respond(message.id, {});
+      break;
     default:
       respond(message.id, {});
       break;
@@ -6362,6 +6650,58 @@ describe("CodexProvider Event Normalization", () => {
     expect(second[0]).toMatchObject(
       codexAgentMessageDeltaFixtures.expectedSecondMessage,
     );
+  });
+
+  it("shows a live content-filter block under its durable message id", () => {
+    const provider = createTestProvider() as unknown as {
+      convertNotificationToSDKMessages: (
+        notification: { method: string; params?: unknown },
+        sessionId: string,
+        usageByTurnId: Map<string, unknown>,
+        liveEventState: ReturnType<typeof createLiveEventState>,
+      ) => Array<Record<string, unknown>>;
+    };
+    const developerMessage = (id: string, text: string) => ({
+      method: "rawResponseItem/completed",
+      params: {
+        threadId: "thread-1",
+        turnId: "turn-1",
+        item: {
+          type: "message",
+          id,
+          role: "developer",
+          content: [{ type: "input_text", text }],
+        },
+      },
+    });
+    const convert = (notification: { method: string; params?: unknown }) =>
+      provider.convertNotificationToSDKMessages(
+        notification,
+        "session-1",
+        new Map(),
+        createLiveEventState(),
+      );
+
+    expect(
+      convert(
+        developerMessage(
+          "msg-filter",
+          "<content_filter_guidance>\nOffer a permitted alternative.\n</content_filter_guidance>",
+        ),
+      ),
+    ).toEqual([
+      expect.objectContaining({
+        type: "system",
+        subtype: "content_filter_block",
+        uuid: "msg-filter",
+        content: "Offer a permitted alternative.",
+      }),
+    ]);
+    expect(
+      convert(
+        developerMessage("msg-env", "<multi_agent_mode>x</multi_agent_mode>"),
+      ),
+    ).toEqual([]);
   });
 
   it("bounds live command-output snapshots to a head and tail window", () => {

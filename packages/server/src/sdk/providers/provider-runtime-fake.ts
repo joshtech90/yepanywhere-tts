@@ -176,6 +176,15 @@ export async function startFakeProviderSession(
       { id: "fake-managed-runner", name: "Fake managed runner" },
     ],
     supportedCommands: async () => [],
+    getContextBreakdown: async () => ({
+      model: "fake-managed-runner",
+      totalTokens: 10,
+      maxTokens: 100,
+      categories: [
+        { key: "messages", name: "Messages", tokens: 10, kind: "used" },
+        { key: "free", name: "Free space", tokens: 90, kind: "free" },
+      ],
+    }),
     setModel: async () => {},
   };
 }

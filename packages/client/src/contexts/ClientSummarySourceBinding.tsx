@@ -92,6 +92,7 @@ export function ClientSummarySourceBinding(): null {
   const currentHostId = remote?.currentHostId ?? null;
   const sourceKey = useMemo(
     () =>
+      remote?.nativeSource?.sourceKey ??
       resolveClientSummarySourceKey({
         pathname: location.pathname,
         remote: hasRemote
@@ -101,12 +102,18 @@ export function ClientSummarySourceBinding(): null {
             }
           : null,
       }),
-    [currentDirectUrl, currentHostId, hasRemote, location.pathname],
+    [
+      currentDirectUrl,
+      currentHostId,
+      hasRemote,
+      location.pathname,
+      remote?.nativeSource,
+    ],
   );
 
-  const transportRegistration = hasRemote
-    ? SECURE_TRANSPORT_REGISTRATION
-    : LOCAL_TRANSPORT_REGISTRATION;
+  const transportRegistration =
+    remote?.nativeSource?.registration ??
+    (hasRemote ? SECURE_TRANSPORT_REGISTRATION : LOCAL_TRANSPORT_REGISTRATION);
   getSourceRuntimeRegistry().registerSourceTransport(
     sourceKey,
     transportRegistration,

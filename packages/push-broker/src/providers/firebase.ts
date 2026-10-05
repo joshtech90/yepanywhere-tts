@@ -72,13 +72,28 @@ export function createFirebasePushProvider(
 
 function buildFirebaseMessage(delivery: PushDelivery): Message {
   const common = {
-    notification: {
-      title: delivery.message.title,
-      body: delivery.message.body,
-    },
     data: {
       intent: delivery.message.intent,
       subscriptionId: delivery.message.subscriptionId,
+      ...(delivery.message.sessionId
+        ? { sessionId: delivery.message.sessionId }
+        : {}),
+      ...(delivery.message.eventId
+        ? { eventId: delivery.message.eventId }
+        : {}),
+      ...(delivery.message.test ? { test: "true" } : {}),
+    },
+    // Android owns filtering and tray presentation even without an Activity.
+    android: { priority: "high" as const },
+    // Apple presents the bounded generic alert while the app is suspended.
+    apns: {
+      headers: { "apns-priority": "10", "apns-push-type": "alert" },
+      payload: {
+        aps: {
+          alert: { title: delivery.message.title, body: delivery.message.body },
+          sound: "default",
+        },
+      },
     },
   };
 

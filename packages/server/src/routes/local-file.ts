@@ -1,6 +1,5 @@
-import { readFile, type FileHandle } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, extname } from "node:path";
-import { Readable } from "node:stream";
 import { parseLineColumn } from "@yep-anywhere/shared";
 import { type Context, Hono } from "hono";
 import { renderMarkdownFilePreview } from "../augments/markdown-file-preview.js";
@@ -12,8 +11,7 @@ import {
 } from "./local-resource-policy.js";
 import {
   createMutableFileCacheMetadata,
-  createNotModifiedResponse,
-  isMutableFileNotModified,
+  createMutableFileResponse,
   mutableFileCacheHeaders,
   type MutableFileOpener,
   openMutableFileSnapshot,
@@ -110,16 +108,16 @@ function localFileHref(
   return `/api/local-file?${params.toString()}`;
 }
 
-function renderMarkdownDocument(
-  filePath: string,
+/**
+ * A rendered Markdown file as a standalone page, with a **Raw** link to
+ * `rawUrl`. A line target scrolls to and highlights its rendered block.
+ */
+export function renderMarkdownDocument(
+  title: string,
   bodyHtml: string,
+  rawUrl: string,
   lineTarget: number | undefined,
 ): string {
-  const title = basename(filePath);
-  const rawUrl = localFileHref(filePath, {
-    rawMarkdown: true,
-    lineNumber: lineTarget,
-  });
   const bodyClass =
     lineTarget === undefined ? "" : ' class="has-line-target-arrival"';
   const lineTargetScript =
@@ -500,11 +498,16 @@ export function createLocalFileHandler(deps: LocalFileDeps) {
         c.header("Content-Disposition", "inline");
         c.header("Cache-Control", "private, no-store");
         c.header("X-Content-Type-Options", "nosniff");
+        const lineTarget = hasLineTarget ? requested.lineNumber : undefined;
         return c.html(
           renderMarkdownDocument(
-            resolvedPath,
+            basename(resolvedPath),
             html,
-            hasLineTarget ? requested.lineNumber : undefined,
+            localFileHref(resolvedPath, {
+              rawMarkdown: true,
+              lineNumber: lineTarget,
+            }),
+            lineTarget,
           ),
         );
       }
@@ -516,7 +519,6 @@ export function createLocalFileHandler(deps: LocalFileDeps) {
       if (!snapshot) {
         return c.json({ error: "Path is not a file" }, 400);
       }
-      let fileHandle: FileHandle | undefined = snapshot.handle;
       const cacheMetadata = createMutableFileCacheMetadata(snapshot.stats);
       const headers = createUntrustedFileResponseHeaders({
         baseHeaders: {
@@ -527,21 +529,12 @@ export function createLocalFileHandler(deps: LocalFileDeps) {
         disposition: "inline",
         filePath: resolvedPath,
       });
-      try {
-        if (isMutableFileNotModified(c.req.raw.headers, cacheMetadata)) {
-          return createNotModifiedResponse(headers);
-        }
-        const stream = fileHandle.createReadStream({
-          autoClose: true,
-          start: 0,
-        });
-        const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
-        const response = new Response(body, { headers });
-        fileHandle = undefined;
-        return response;
-      } finally {
-        await fileHandle?.close();
-      }
+      return await createMutableFileResponse(
+        c.req.raw.headers,
+        snapshot,
+        cacheMetadata,
+        headers,
+      );
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code === "ENOENT") {
         return c.json({ error: "File not found" }, 404);

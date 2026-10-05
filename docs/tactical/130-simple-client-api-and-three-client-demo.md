@@ -10,6 +10,13 @@ web preview is implemented at `/-/preview`; browser validation is recorded in th
 checkpoint below. The Android Compose preview and direct-server AVD proof are
 implemented; remaining measurement/acquisition gates are open. Raw token assembly is explicitly deferred. iOS remains out of scope.
 
+The mobile foreground decision changed on 2026-09-30: Android now reuses the
+full bundled web UI with native authentication/transport. The duplicate Compose
+Conversation presentation described here is retired by
+[tactical 083](083-android-bundled-web-native-transport.md). Shared contracts,
+compiler/decoder helpers and the web preview remain reusable experiments; their
+remaining gates do not block publishing the mobile shell.
+
 ## Outcome
 
 A small web client proves a new YA server API for simple clients, connecting to

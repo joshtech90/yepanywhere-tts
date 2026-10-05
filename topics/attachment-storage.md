@@ -38,8 +38,13 @@ only in this browser and separated by server and acting username. It keeps up
 to 50 prompts and 50 uploaded files within a 100 MiB file budget. Choosing a
 recent upload stages a fresh copy; it does not reuse another session's access.
 The paperclip opens the native picker; right-click or a downward swipe opens
-the gallery, which also offers the picker. These are recent uploads saved by
-the new-session/project composers, not a server-wide attachment inventory.
+the attachment panel. Recent uploads start collapsed above the memo and file
+actions nearest the composer. Session composers also record upload history.
+Entries retain their project/session origin when known and show relative age;
+generic clipboard names such as `image.png` are omitted. Older entries lacking
+origin metadata are labeled unknown. Image hover previews use the same large,
+viewport-bounded placement as attachment chips. This remains browser-local
+history, not a server-wide attachment inventory.
 
 With the browser-local Appearance setting *Recent prompt rail* on (off by
 default: dragging prompts in is a YA-novel interaction), new-session and

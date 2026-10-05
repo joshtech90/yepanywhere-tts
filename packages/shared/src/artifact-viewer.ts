@@ -48,6 +48,9 @@ export interface ArtifactVhost {
  */
 export interface ArtifactVhostSite {
   name: string;
+  ownerUsername?: string;
+  projectId?: string;
+  projectRoot?: string;
   /** Absolute server path of the served file or directory. */
   path: string;
   /** No app link required; with a password, visitors must supply it. */
@@ -68,6 +71,17 @@ export interface ArtifactVhostSiteView extends ArtifactVhostSite {
   publicUrl?: string;
   /** `http://name.localhost:<port>/`, when local serving is enabled. */
   localUrl?: string;
+  /** For a file row: what it serves by following the file's links. */
+  linkedFiles?: ArtifactVhostLinkedFiles;
+}
+
+/** The files a file row reaches through its links, the file itself included. */
+export interface ArtifactVhostLinkedFiles {
+  count: number;
+  /** The first files found, relative to the served file's folder. */
+  paths: string[];
+  /** A walk limit stopped before every link was followed. */
+  truncated: boolean;
 }
 
 export interface ArtifactViewerConfig {

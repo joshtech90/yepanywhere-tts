@@ -1,3 +1,4 @@
+import { RoutedSessionContext } from "../contexts/RoutedSessionContext";
 import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
 import { SessionIssuesLink } from "../components/SessionIssuesLink";
 import { useNonHumanUserTurnNavigation } from "../hooks/useNonHumanUserTurnNavigation";
@@ -28,8 +29,11 @@ import {
   SYNTHETIC_DONE_COMMAND_CAPABILITY,
   SYNTHETIC_TERMINATE_COMMAND_CAPABILITY,
   classifyQueuedYaCommand,
+  type FileViewLineTarget,
+  type FileViewSearchResult,
   getCanonicalInvocationToken,
   isClaudeProviderName,
+  parseFileViewArgument,
   readInventoryGoalDetails,
   serverHasCapability,
   startsWithSlashCommand,
@@ -62,6 +66,7 @@ import {
   SessionViewerTranscriptGate,
 } from "../components/SessionManagedViewer";
 import sessionHeaderStyles from "../components/SessionHeader.module.css";
+import { LastSessionFile } from "../components/LastSessionFile";
 import styles from "./SessionPage.module.css";
 import { GoalFlag } from "../components/GoalNotice";
 import { ClearloopRemainingBadge } from "../components/ClearloopRemainingBadge";
@@ -82,6 +87,8 @@ import { useSessionThinkingSelection } from "../hooks/useSessionThinkingSelectio
 import { ProjectAppViewer } from "../components/ProjectAppViewer";
 import type { VoiceInputButtonRef } from "../components/VoiceInputButton";
 import { useCanUseBearerGrants } from "../hooks/useActingPrincipal";
+import { useComposerHistoryScope } from "../hooks/useComposerHistoryScope";
+import { rememberComposerUpload } from "../lib/composerHistory";
 import { BtwAsideStickyCards } from "../components/BtwAsideStickyCards";
 import { ClientLogRecordingBadge } from "../components/ClientLogRecordingBadge";
 import { ExternalSessionWarning } from "../components/ExternalSessionWarning";
@@ -172,7 +179,16 @@ import { useLongPress } from "../hooks/useLongPress";
 import { useProjectAppUpdates } from "../hooks/useProjectAppUpdates";
 import { useVersion } from "../hooks/useVersion";
 import { useSessionSpeechVocabulary } from "../hooks/useSessionSpeechVocabulary";
-import type { DraftTextChangeMetadata } from "../lib/commentAnchors";
+import type {
+  CommentAnchor,
+  DraftTextChangeMetadata,
+} from "../lib/commentAnchors";
+import { recentProjectFileMentions } from "../lib/recentProjectPathLinks";
+import { buildProjectFileViewUrl } from "../components/FileDiffViewLinks";
+import {
+  getProjectViewerFilePath,
+  presentProjectFileViewer,
+} from "../components/FilePathLink";
 import {
   deleteDraftAttachmentRef,
   validateDraftAttachmentRefs,
@@ -247,11 +263,13 @@ import {
   appendComposerTransferDraft,
   appendSlashCommandDraft,
   collectComposerAttachmentsForSubmission as collectComposerAttachmentsForSubmissionHelper,
+  ComposerAttachmentUploadError,
   createComposerDraftAttachmentState,
   hasComposerDraftContent,
   insertComposerTransferText,
   materializeComposerAttachmentsForSubmission,
   splitComposerAttachmentsForSubmission,
+  stageComposerAttachmentsForNewSession,
   type PreparedComposerSubmission,
   uploadComposerAttachmentFile,
 } from "../lib/sessionComposerSubmission";
@@ -292,9 +310,11 @@ import {
   type GeneratedRetitleInsertion,
   resolveSessionPageTitle,
 } from "../lib/sessionTitleHelpers";
+import { resolveFileViewSubmission } from "../lib/fileViewCommand";
 import {
   CLIENT_SLASH_COMMANDS,
   createClientSlashCommand,
+  FILE_VIEW_COMMAND_NAMES,
   normalizeSlashCommandForMatch,
   resolveComposerDoneTarget,
   resolveComposerSessionOperation,
@@ -530,6 +550,7 @@ function SessionPageContent({
   const { projects } = useProjects();
   const activeProjectSessionIds = useActiveProjectSessionIds(projectId);
   const clientSummarySourceKey = useClientSummarySourceKey();
+  const historyScope = useComposerHistoryScope();
   const sourceRuntime = useCurrentSourceRuntime();
   const sourceApi = sourceRuntime.api;
   const sourceSummary = sourceRuntime.summary;
@@ -787,6 +808,8 @@ function SessionPageContent({
   const [rightPaneTarget, setRightPaneTarget] = useState<HTMLDivElement | null>(
     null,
   );
+  const [viewerLayerTarget, setViewerLayerTarget] =
+    useState<HTMLDivElement | null>(null);
   // A limited user is refused operator app links, so those apps are not
   // offered to them; artifacts and their own sandboxed session apps still
   // are (topics/limited-users.md § Authorization).
@@ -1309,6 +1332,20 @@ function SessionPageContent({
   // as a live one, so they are offered whenever the server and provider
   // support rewind (topics/session-rewind.md), not only for a live process.
   const supportsRewind = supportsSessionRewind(versionInfo, effectiveProvider);
+  // `/v` opens a file without a turn, so it needs no live process; a
+  // provider command or skill named `v` or `view` keeps its name
+  // (topics/view-command.md).
+  const supportsFileViewCommand =
+    status.owner !== "external" &&
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.projectFileViewCommand.name,
+    ) &&
+    !slashCommands.some((command) =>
+      FILE_VIEW_COMMAND_NAMES.includes(
+        normalizeSlashCommandForMatch(command.name),
+      ),
+    );
   const allSlashCommands = useMemo(() => {
     if (status.owner === "external") {
       return [];
@@ -1333,6 +1370,9 @@ function SessionPageContent({
       for (const command of REWIND_SLASH_COMMANDS) {
         orderedCommands.push(createClientSlashCommand(command));
       }
+    }
+    if (supportsFileViewCommand) {
+      orderedCommands.push(createClientSlashCommand("view"));
     }
     if (supportsManualCompact) {
       const compact = slashCommands.find(
@@ -1377,6 +1417,7 @@ function SessionPageContent({
     slashCommands,
     status.owner,
     supportsBtwAsides,
+    supportsFileViewCommand,
     supportsManualCompact,
     supportsRewind,
     supportsSyntheticTerminate,
@@ -2413,6 +2454,11 @@ function SessionPageContent({
         void handleLocalTitleCommand(sessionOperation.title);
         return null;
       }
+      if (slashTurn.command === "view" && supportsFileViewCommand) {
+        endCorrectionForLocalCommand();
+        void handleFileViewCommand(slashTurn.argument);
+        return null;
+      }
       if (slashTurn.command === "btw" && !supportsBtwAsides) {
         draftControlsRef.current?.setDraft(text);
         showToast(
@@ -2525,6 +2571,7 @@ function SessionPageContent({
         pendingMessageId: options?.pendingMessageId,
         updatePendingMessage,
         uploadingStatus: t("sessionUploading"),
+        uploadFailureMessage: t("composerAttachmentUploadFailed"),
       });
     },
     [setComposerAttachments, t, updatePendingMessage],
@@ -2848,6 +2895,8 @@ function SessionPageContent({
       }
       console.error("Failed to send:", err);
       let finalError: unknown = err;
+      if (err instanceof ComposerAttachmentUploadError)
+        currentAttachments = err.attachments;
       logSessionUiTrace("composer-send-error", {
         sessionId,
         tempId,
@@ -3417,6 +3466,8 @@ function SessionPageContent({
     } catch (err) {
       console.error("Failed to queue deferred message:", err);
       let finalError: unknown = err;
+      if (err instanceof ComposerAttachmentUploadError)
+        currentAttachments = err.attachments;
       logSessionUiTrace("composer-deferred-error", {
         sessionId,
         tempId,
@@ -3562,6 +3613,7 @@ function SessionPageContent({
     // direct paths run it (topics/project-queue.md § Queued YA commands).
     const classified = classifyQueuedYaCommand(text, {
       rewindSupported: supportsRewind,
+      fileViewSupported: supportsFileViewCommand,
     });
     const refuseCommand = (message: string) => {
       draftControlsRef.current?.setDraft(text);
@@ -3649,6 +3701,13 @@ function SessionPageContent({
 
     try {
       currentAttachments = await collectComposerAttachmentsForSubmission();
+      if (targetType === "new-session") {
+        currentAttachments = await stageComposerAttachmentsForNewSession({
+          attachments: currentAttachments,
+          sourceTransport,
+          sourceProjectId: projectId,
+        });
+      }
       if (
         targetType === "new-session" &&
         newSessionTarget?.delivery === "now"
@@ -3811,6 +3870,8 @@ function SessionPageContent({
       );
     } catch (err) {
       console.error("Failed to queue Project Queue message:", err);
+      if (err instanceof ComposerAttachmentUploadError)
+        currentAttachments = err.attachments;
       logSessionUiTrace("composer-project-queue-error", {
         sessionId,
         projectId,
@@ -4686,13 +4747,27 @@ function SessionPageContent({
         return startBtwAside(argument);
       }
       if (command === "done") {
-        if (!closeFocusedBtwAside(argument)) {
-          showToast(
-            "/done closes a focused /btw aside; no aside is focused.",
-            "error",
-          );
+        if (closeFocusedBtwAside(argument)) {
+          return true;
         }
-        return true;
+        // Menu and toolbar selection reach here without the composer's
+        // submit routing, so apply the same decision it would.
+        const sessionOperation = resolveComposerSessionOperation({
+          text: argument ? `/done ${argument}` : "/done",
+          routesToFocusedAside: false,
+          syntheticDoneEnabled,
+          syntheticDoneSupported: supportsSyntheticDone,
+          syntheticArchiveSupported: supportsSyntheticArchive,
+          syntheticTerminateSupported: supportsSyntheticTerminate,
+          hasAttachments:
+            attachmentsRef.current.length > 0 ||
+            pendingUploadsRef.current.size > 0,
+        });
+        if (sessionOperation.kind === "session-boundary") {
+          void handleSyntheticSessionBoundary(sessionOperation.command);
+          return true;
+        }
+        return false;
       }
       if (
         command === "clear" ||
@@ -4707,9 +4782,13 @@ function SessionPageContent({
       closeFocusedBtwAside,
       handleCompactSession,
       handleRewindCommand,
-      showToast,
+      handleSyntheticSessionBoundary,
       startBtwAside,
       supportsManualCompact,
+      supportsSyntheticArchive,
+      supportsSyntheticDone,
+      supportsSyntheticTerminate,
+      syntheticDoneEnabled,
     ],
   );
 
@@ -4923,8 +5002,9 @@ function SessionPageContent({
   // Handle file attachment uploads
   // Each file uploads independently (parallel) and its promise is tracked
   // so handleSend can wait for in-flight uploads before sending
-  const handleAttach = useCallback(
+  const uploadAttachedFiles = useCallback(
     (files: File[]) => {
+      const uploads: Promise<ComposerAttachment | null>[] = [];
       const draftBatchId = stagedAttachmentUploadsEnabled
         ? ensureDraftAttachmentBatchId()
         : null;
@@ -4972,6 +5052,18 @@ function SessionPageContent({
         })
           .then(
             (uploaded) => {
+              if (historyScope)
+                void rememberComposerUpload(historyScope, file, {
+                  projectId,
+                  projectName: project?.name,
+                  sessionId,
+                  sessionTitle: session?.title ?? undefined,
+                }).catch((cause) =>
+                  showToast(
+                    t("composerHistorySaveError", { error: String(cause) }),
+                    "error",
+                  ),
+                );
               if (uploaded.mimeType.startsWith("image/")) {
                 const cachedFile = isComposerStagedAttachment(uploaded)
                   ? {
@@ -5023,7 +5115,9 @@ function SessionPageContent({
           });
 
         pendingUploadsRef.current.set(tempId, uploadPromise);
+        uploads.push(uploadPromise);
       }
+      return Promise.all(uploads);
     },
     [
       attachmentQuality,
@@ -5034,8 +5128,18 @@ function SessionPageContent({
       setComposerAttachments,
       showToast,
       stagedAttachmentUploadsEnabled,
+      historyScope,
+      project?.name,
+      session?.title,
       t,
     ],
+  );
+
+  const handleAttach = useCallback(
+    async (files: File[]) => {
+      await uploadAttachedFiles(files);
+    },
+    [uploadAttachedFiles],
   );
 
   useIncomingShareFiles(handleAttach, {
@@ -5297,6 +5401,106 @@ function SessionPageContent({
 
   const handleGenerateAndApplyTitle = () => {
     handleStartRetitleTitle({ applyWhenReady: true });
+  };
+
+  const quoteTextBlockRef = useRef<((anchor: CommentAnchor) => void) | null>(
+    null,
+  );
+  const quoteFromTranscript = useCallback((anchor: CommentAnchor) => {
+    quoteTextBlockRef.current?.(anchor);
+  }, []);
+  const fileViewCommandCountRef = useRef(0);
+
+  /** Open one `/v` result the way a file link in this session opens. */
+  const openFileViewEntry = (
+    path: string,
+    line: FileViewLineTarget | undefined,
+  ): string => {
+    const filePath = getProjectViewerFilePath(projectId, path);
+    presentProjectFileViewer({
+      id: `file-view-command-${++fileViewCommandCountRef.current}`,
+      sessionId: actualSessionId,
+      projectId,
+      filePath,
+      lineNumber: line?.lineNumber,
+      lineEnd: line?.lineEnd,
+      quoteReply: quoteFromTranscript,
+      openInNewTabUrl: toBrowserAppHref(
+        buildProjectFileViewUrl({
+          basePath,
+          filePath,
+          lineNumber: line?.lineNumber,
+          lineEnd: line?.lineEnd,
+          projectId,
+          viewMode: "full",
+        }),
+      ),
+    });
+    return filePath;
+  };
+  const openFileViewEntryRef = useRef(openFileViewEntry);
+  openFileViewEntryRef.current = openFileViewEntry;
+  // Stable across renders, so the composer is not re-rendered for it.
+  const fileViewCommandOptions = useMemo(
+    () => ({
+      open: (path: string, line?: FileViewLineTarget) => {
+        openFileViewEntryRef.current(path, line);
+      },
+    }),
+    [],
+  );
+
+  /**
+   * `/v parts…`: open the best-ranked matching file the way a file link in
+   * this session opens (topics/view-command.md). The composer already emptied
+   * on submit; a failure restores the typed command.
+   */
+  const handleFileViewCommand = async (argument: string) => {
+    const controls = draftControlsRef.current;
+    const fail = (message: string) => {
+      controls?.restoreFromStorage();
+      showToast(message, "error");
+    };
+    const { parts, line } = parseFileViewArgument(argument);
+    if (!parts.length) {
+      fail(t("fileViewNeedsPath", { command: "v" }));
+      return;
+    }
+    const query = parts.join(" ");
+    let result: FileViewSearchResult;
+    try {
+      result = await resolveFileViewSubmission(
+        (path, init) => sourceTransport.fetch<FileViewSearchResult>(path, init),
+        projectId,
+        parts,
+        recentProjectFileMentions(activityRenderItems),
+      );
+    } catch (error) {
+      fail(
+        t("fileViewSearchFailed", {
+          query,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+      return;
+    }
+    const entry = result.entries[0];
+    if (!entry) {
+      fail(t("fileViewNoMatch", { query }));
+      return;
+    }
+    controls?.confirmInputClear();
+    const filePath = openFileViewEntry(entry.path, line);
+    // A named path is unambiguous; a search that picked among several says so.
+    if (entry.tier !== "path" && result.entries.length > 1) {
+      showToast(
+        t("fileViewOpenedOfMany", {
+          path: filePath,
+          count: `${result.entries.length}${result.truncated ? "+" : ""}`,
+        }),
+        "info",
+      );
+    }
   };
 
   const handleLocalTitleCommand = async (title: string | null) => {
@@ -5623,11 +5827,8 @@ function SessionPageContent({
       );
     }
 
-    return (
-      <div className="error">
-        {t("sessionErrorPrefix")} {error.message}
-      </div>
-    );
+    // A failed read must not remove navigation, the transcript or the draft.
+    // Render the failure inside the transcript below, including cold entry.
   }
 
   // Sidebar icon component
@@ -5962,6 +6163,27 @@ function SessionPageContent({
                         />
                       )}
                     </button>
+                    {session?.routerBinding &&
+                      serverHasCapability(
+                        versionInfo,
+                        SERVER_CAPABILITIES.agentAuthRouter.name,
+                      ) && (
+                        <span
+                          className={sessionHeaderStyles.routerAccount}
+                          title={
+                            session.routerBinding.reason ??
+                            t("routerPinnedAccount", {
+                              account: session.routerBinding.accountId,
+                            })
+                          }
+                        >
+                          {t("routerPinnedAccount", {
+                            account: session.routerBinding.accountId,
+                          })}
+                          {session.routerBinding.policy &&
+                            ` · ${t(session.routerBinding.policy === "most-remaining" ? "routerPoolMostRemaining" : session.routerBinding.policy === "round-robin" ? "routerPoolRoundRobin" : "routerPoolManual")}`}
+                        </span>
+                      )}
                     {currentGoal && (
                       <GoalFlag
                         objective={currentGoal}
@@ -6445,6 +6667,11 @@ function SessionPageContent({
           }`}
         >
           <main className={`${styles.messages} session-messages`} tabIndex={-1}>
+            {error && (
+              <div role="status">
+                {t("sessionErrorPrefix")} {error.message}
+              </div>
+            )}
             {loading ? (
               <div className="loading">
                 <div>{t("sessionLoading")}</div>
@@ -6490,6 +6717,12 @@ function SessionPageContent({
                       rightPaneTarget={rightPaneTarget}
                       rightPaneWide={isWideScreen}
                     >
+                      <LastSessionFile
+                        sessionId={actualSessionId}
+                        target={viewerLayerTarget}
+                        inactive={isDomLingerParked}
+                        quoteReply={quoteFromTranscript}
+                      />
                       <MessageList
                         messages={messages}
                         transcriptDisplayObjects={
@@ -6528,6 +6761,7 @@ function SessionPageContent({
                         onToggleBtwAsideExpanded={toggleBtwAsideExpanded}
                         onTransferBtwAsideTurn={transferBtwTurnToMotherComposer}
                         onQuoteSelection={insertQuotedSelection}
+                        quoteTextBlockRef={quoteTextBlockRef}
                         onStartNewSessionFromSelection={
                           startNewSessionFromSelection
                         }
@@ -6628,7 +6862,11 @@ function SessionPageContent({
               </SessionMetadataProvider>
             )}
           </main>
-          <div className={styles.viewerLayer} data-session-viewer-layer />
+          <div
+            className={styles.viewerLayer}
+            data-session-viewer-layer
+            ref={setViewerLayerTarget}
+          />
           {showBtwSidePane && focusedBtwAside && (
             <BtwAsidePane
               aside={focusedBtwAside}
@@ -6912,12 +7150,24 @@ function SessionPageContent({
                   sessionId={sessionId}
                   attachments={mainComposerForAside ? [] : attachments}
                   onAttach={mainComposerForAside ? undefined : handleAttach}
+                  onAttachAudioMemo={
+                    mainComposerForAside
+                      ? undefined
+                      : async (file) => {
+                          const uploaded = await uploadAttachedFiles([file]);
+                          if (!uploaded[0])
+                            throw new Error(t("audioMemoUploadFailed"));
+                        }
+                  }
                   onRemoveAttachment={
                     mainComposerForAside ? undefined : handleRemoveAttachment
                   }
                   uploadProgress={mainComposerForAside ? [] : uploadProgress}
                   slashCommands={allSlashCommands}
                   onCustomCommand={handleCustomCommand}
+                  fileViewCommand={
+                    supportsFileViewCommand ? fileViewCommandOptions : undefined
+                  }
                   onBtwShortcut={
                     childSessionParentHref || supportsBtwAsides
                       ? handleBtwShortcut
@@ -7058,7 +7308,9 @@ function SessionPageContent({
         draftControlsRef.current?.focus?.({ preventScroll: true })
       }
     >
-      {content}
+      <RoutedSessionContext value={Boolean(session?.routerBinding)}>
+        {content}
+      </RoutedSessionContext>
     </AsyncQuestionsProvider>
   );
 }

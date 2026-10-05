@@ -3,7 +3,7 @@ import { defineConfig } from "@playwright/test";
 if (process.env.NO_COLOR) delete process.env.NO_COLOR;
 export default defineConfig({
   testDir: "./e2e",
-  testMatch: "computer-control.spec.ts",
+  testMatch: "installed-machine-control-selection.spec.ts",
   outputDir: `../../.artifacts/computer-control-results/${randomUUID()}`,
   globalTeardown: "./e2e/global-teardown.ts",
   workers: 1,

@@ -68,4 +68,25 @@ describe("push broker request validation", () => {
     ).toBeDefined();
     expect(parseInstallationBody({})).toBeUndefined();
   });
+  it("bounds optional opaque navigation and test hints without accepting URLs or content", () => {
+    expect(
+      parseNotificationBody({
+        intent: "input_required",
+        sessionId: "session-1",
+        eventId: "event_1",
+        test: true,
+      }),
+    ).toBeDefined();
+    for (const extra of [
+      { sessionId: "https://attacker.test" },
+      { sessionId: "x".repeat(129) },
+      { test: false },
+      { eventId: "../path" },
+      { url: "/sessions/1" },
+      { title: "private" },
+    ])
+      expect(
+        parseNotificationBody({ intent: "input_required", ...extra }),
+      ).toBeUndefined();
+  });
 });

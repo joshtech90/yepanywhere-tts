@@ -22,6 +22,9 @@ export interface PushMessage {
   body: string;
   intent: PushIntent;
   subscriptionId: string;
+  sessionId?: string;
+  eventId?: string;
+  test?: boolean;
 }
 
 export interface PushDelivery {

@@ -339,20 +339,37 @@ test("a drag keeps its press point when the browser loses it mid-drag", async ({
     await page.mouse.up();
     await page.waitForTimeout(600);
 
-    const selected = await page.evaluate(
-      () => document.getSelection()?.toString() ?? "",
-    );
+    // Snapshot at the native copy event: live rows can arrive between an
+    // earlier evaluate and the shortcut (CI 36977077788 inserted message 7).
+    await page.evaluate(() => {
+      document.addEventListener(
+        "copy",
+        () => {
+          document.documentElement.dataset.testCopySelection =
+            document.getSelection()?.toString() ?? "";
+        },
+        { capture: true, once: true },
+      );
+    });
     await page.evaluate(() => navigator.clipboard.writeText(""));
     await page.keyboard.press(
       process.platform === "darwin" ? "Meta+c" : "Control+c",
     );
     const copied = await page.evaluate(() => navigator.clipboard.readText());
+    const selected = await page.evaluate(
+      () => document.documentElement.dataset.testCopySelection ?? "",
+    );
     expect(activity.messages()).toBeGreaterThan(0);
     expect(await anchor()).toEqual(pressed);
     expect(selected.length).toBeGreaterThan(60);
-    // Native copy omits UI glyphs the selection's text includes.
+    // This fixture has no authored > text; native copy omits quote-button
+    // glyphs that raw Selection.toString includes.
     expect(copied.replace(/\s+/g, " ")).toContain(
-      selected.replace(/\s+/g, " ").trim().slice(0, 40),
+      selected
+        .replace(/(^|\s)>(?=\s|$)/g, "$1")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 40),
     );
   } finally {
     activity.stop();

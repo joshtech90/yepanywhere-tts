@@ -14,8 +14,8 @@ import { matchesRelayLoginTarget } from "../../lib/remoteRoutePaths";
 import { RelayLoginPage } from "../RelayLoginPage";
 
 /**
- * The password manager saves and restores the identity ("Log in as") with the
- * password; saved hosts restore the server name, which is not an account.
+ * Saved login credentials always target the computer name and password.
+ * The optional limited-user identity is an independent Advanced field.
  */
 
 const { connectViaRelay } = vi.hoisted(() => ({
@@ -36,9 +36,9 @@ vi.mock("../../i18n", () => ({
 
 const RELAY = "wss://relay.example/ws";
 
-function renderPage() {
+function renderPage(url = "/login/relay") {
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[url]}>
       <RelayLoginPage />
     </MemoryRouter>,
   );
@@ -69,54 +69,93 @@ describe("RelayLoginPage", () => {
     vi.unstubAllGlobals();
   });
 
-  it("offers the identity, not the server name, to the password manager", () => {
+  it("keeps the computer name as the autocomplete username with Advanced open or closed", () => {
     renderPage();
-    expect(identityField().getAttribute("autocomplete")).toBe("username");
-    expect(identityField().name).toBe("username");
-    expect(serverField().getAttribute("autocomplete")).toBe("off");
+    expect(screen.queryByTestId("relay-limited-username-input")).toBeNull();
+    expect(serverField().getAttribute("autocomplete")).toBe("username");
+    expect(serverField().name).toBe("username");
+    expect(serverField().id).toBe("relayUsername");
     expect(passwordField().getAttribute("autocomplete")).toBe(
       "current-password",
     );
+
+    fireEvent.click(screen.getByText("relayLoginShowAdvanced"));
+    expect(identityField().getAttribute("autocomplete")).toBe("off");
+    expect(identityField().name).toBe("limited-user");
+    expect(serverField().getAttribute("autocomplete")).toBe("username");
+    expect(serverField().name).toBe("username");
+    expect(document.querySelectorAll('[autocomplete="username"]')).toHaveLength(
+      1,
+    );
+
+    fireEvent.click(screen.getByText("relayLoginHideAdvanced"));
+    expect(screen.queryByTestId("relay-limited-username-input")).toBeNull();
+    expect(serverField().name).toBe("username");
+    expect(serverField().getAttribute("autocomplete")).toBe("username");
   });
 
-  it("restores the server name when the identity is filled in", () => {
+  it("requires a computer name even when a limited user has a saved host", async () => {
     upsertRelayHost({
       relayUrl: RELAY,
-      relayUsername: "ygraehl",
-      srpUsername: "archer",
+      relayUsername: "ownerbox",
+      srpUsername: "guest",
     });
     renderPage();
-
-    fireEvent.change(identityField(), { target: { value: "archer" } });
-    expect(serverField().value).toBe("ygraehl");
+    fireEvent.click(screen.getByText("relayLoginShowAdvanced"));
+    fireEvent.change(identityField(), { target: { value: "guest" } });
+    fireEvent.change(passwordField(), { target: { value: "guest-pw" } });
+    expect(serverField().value).toBe("");
+    fireEvent.click(screen.getByTestId("login-button"));
+    expect(screen.getByTestId("login-error").textContent).toBe(
+      "relayLoginErrorServerNameRequired",
+    );
+    expect(connectViaRelay).not.toHaveBeenCalled();
   });
 
-  it("keeps a server name the user typed", () => {
-    upsertRelayHost({
-      relayUrl: RELAY,
-      relayUsername: "ygraehl",
-      srpUsername: "archer",
-    });
+  it("signs the owner in without populating the limited-user field", async () => {
     renderPage();
-
-    fireEvent.change(serverField(), { target: { value: "otherbox" } });
-    fireEvent.change(identityField(), { target: { value: "archer" } });
-    expect(serverField().value).toBe("otherbox");
-  });
-
-  it("signs the owner in under the server name and shows it as the identity", async () => {
-    renderPage();
-    fireEvent.change(serverField(), { target: { value: "YGraehl" } });
+    fireEvent.change(serverField(), { target: { value: "OwnerBox" } });
     fireEvent.change(passwordField(), { target: { value: "owner-pw" } });
     fireEvent.click(screen.getByTestId("login-button"));
 
     await waitFor(() => expect(connectViaRelay).toHaveBeenCalledTimes(1));
     expect(connectViaRelay.mock.calls[0]?.[0]).toMatchObject({
-      relayUsername: "ygraehl",
-      srpUsername: "ygraehl",
+      relayUsername: "ownerbox",
+      srpUsername: "ownerbox",
       srpPassword: "owner-pw",
     });
-    expect(identityField().value).toBe("ygraehl");
+    fireEvent.click(screen.getByText("relayLoginShowAdvanced"));
+    expect(identityField().value).toBe("");
+  });
+
+  it("expands a limited-user link and preserves the override when Advanced is collapsed", async () => {
+    renderPage("/login/relay?u=ownerbox&as=guest");
+    expect(identityField().value).toBe("guest");
+    fireEvent.change(identityField(), { target: { value: "OtherGuest" } });
+    expect(serverField().value).toBe("ownerbox");
+    fireEvent.click(screen.getByText("relayLoginHideAdvanced"));
+    fireEvent.change(passwordField(), { target: { value: "guest-pw" } });
+    fireEvent.click(screen.getByTestId("login-button"));
+    await waitFor(() => expect(connectViaRelay).toHaveBeenCalledTimes(1));
+    expect(connectViaRelay.mock.calls[0]?.[0]).toMatchObject({
+      relayUsername: "ownerbox",
+      srpUsername: "otherguest",
+      srpPassword: "guest-pw",
+    });
+  });
+
+  it("uses live limited-user values independently from the computer name", async () => {
+    renderPage("/login/relay?u=ownerbox&as=guest");
+    serverField().value = "otherbox";
+    identityField().value = "otherguest";
+    passwordField().value = "guest-pw";
+    fireEvent.click(screen.getByTestId("login-button"));
+    await waitFor(() => expect(connectViaRelay).toHaveBeenCalledTimes(1));
+    expect(connectViaRelay.mock.calls[0]?.[0]).toMatchObject({
+      relayUsername: "otherbox",
+      srpUsername: "otherguest",
+      srpPassword: "guest-pw",
+    });
   });
 
   it("retargets a prefilled sign-in link to the corrected server it submits", async () => {
@@ -148,23 +187,20 @@ describe("RelayLoginPage", () => {
     expect(matchesRelayLoginTarget(location, "ygraehl", RELAY)).toBe(true);
   });
 
-  it("looks the server name up at submit when the fill was not seen as an edit", async () => {
-    upsertRelayHost({
-      relayUrl: RELAY,
-      relayUsername: "ygraehl",
-      srpUsername: "archer",
-    });
+  it("submits autofilled computer name and password without React input events", async () => {
     renderPage();
-    // A password manager can set values without an input event reaching React.
-    identityField().value = "archer";
-    passwordField().value = "archer-pw";
+    // Password managers can fill the DOM before React sees an edit.
+    serverField().value = "OwnerBox";
+    passwordField().value = "owner-pw";
     fireEvent.click(screen.getByTestId("login-button"));
 
     await waitFor(() => expect(connectViaRelay).toHaveBeenCalledTimes(1));
     expect(connectViaRelay.mock.calls[0]?.[0]).toMatchObject({
-      relayUsername: "ygraehl",
-      srpUsername: "archer",
-      srpPassword: "archer-pw",
+      relayUsername: "ownerbox",
+      srpUsername: "ownerbox",
+      srpPassword: "owner-pw",
     });
+    fireEvent.click(screen.getByText("relayLoginShowAdvanced"));
+    expect(identityField().value).toBe("");
   });
 });

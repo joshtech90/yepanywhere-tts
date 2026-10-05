@@ -21,6 +21,43 @@ vi.mock("node:child_process", async () => {
 });
 
 describe("Git execution", () => {
+  it.each([
+    [
+      null,
+      "SIGTERM",
+      "Git operation timed out after 60 seconds.\npartial progress",
+    ],
+    ["ERR_CHILD_PROCESS_STDIO_MAXBUFFER", "SIGTERM", "partial progress"],
+    [128, null, "partial progress"],
+  ])(
+    "distinguishes timeout from failure %s / %s",
+    async (code, signal, stderr) => {
+      execFileMock.mockImplementation(
+        (
+          _command: string,
+          _args: string[],
+          _options: unknown,
+          callback: ExecFileCallback,
+        ) => {
+          callback(
+            Object.assign(new Error("Command failed"), {
+              code,
+              signal,
+              killed: true,
+            }),
+            "",
+            "partial progress",
+          );
+          return { stdin: new PassThrough() };
+        },
+      );
+      const { runGit } = await import("../../src/git/gitExec.js");
+      await expect(
+        runGit("/project", ["push"], { timeout: 60_000 }),
+      ).rejects.toMatchObject({ stderr });
+    },
+  );
+
   it("preserves captured output on command failures", async () => {
     execFileMock.mockImplementation(
       (

@@ -1,7 +1,7 @@
 package com.yepanywhere.mobile.profiles
 
 import com.yepanywhere.mobile.connection.YaResumeCredential
-import com.yepanywhere.mobile.connection.YaSecureTransportCrypto
+import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -40,7 +40,7 @@ internal object YaPairedServerCodec {
                 .put("version", CREDENTIAL_SCHEMA_VERSION)
                 .put("username", stored.credential.username)
                 .put("sessionId", stored.credential.sessionId)
-                .put("baseKey", YaSecureTransportCrypto.encodeBase64(key))
+                .put("baseKey", Base64.encodeToString(key, Base64.NO_WRAP))
                 .put("resumeProtocolVersion", stored.credential.resumeProtocolVersion)
                 .put("establishedAtEpochMs", stored.establishedAtEpochMs)
                 .put("lastResumedAtEpochMs", stored.lastResumedAtEpochMs ?: JSONObject.NULL)
@@ -57,7 +57,7 @@ internal object YaPairedServerCodec {
             root.length() == 7 &&
                 root.getInt("version") == CREDENTIAL_SCHEMA_VERSION,
         )
-        val baseKey = YaSecureTransportCrypto.decodeBase64(root.getString("baseKey"))
+        val baseKey = Base64.decode(root.getString("baseKey"), Base64.NO_WRAP)
         return try {
             YaStoredResumeCredential(
                 credential = YaResumeCredential(

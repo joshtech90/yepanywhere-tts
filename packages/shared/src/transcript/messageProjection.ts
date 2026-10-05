@@ -3,6 +3,7 @@ import {
   isSyntheticNoResponseTurn,
 } from "../claude-sdk-schema/guards.js";
 import { isPostCompactReplayText } from "../postCompactReplay.js";
+import { INSTRUCTION_RESTORATION_PREAMBLE } from "../instructionRestoration.js";
 import type { ContentBlock, Message } from "./message.js";
 import type {
   RenderItem,
@@ -159,7 +160,10 @@ function isPostCompactReplayMessage(msg: Message): boolean {
   }
   const text =
     typeof content === "string" ? content : contentBlocksText(content);
-  if (!isPostCompactReplayText(text)) {
+  if (
+    !isPostCompactReplayText(text) &&
+    !text.trimStart().startsWith(INSTRUCTION_RESTORATION_PREAMBLE)
+  ) {
     return false;
   }
   const role =
@@ -348,7 +352,10 @@ export function isRealUserTurn(msg: UserTurnCandidate): boolean {
   }
   const text =
     typeof content === "string" ? content : contentBlocksText(content);
-  return !isPostCompactReplayText(text);
+  return (
+    !isPostCompactReplayText(text) &&
+    !text.trimStart().startsWith(INSTRUCTION_RESTORATION_PREAMBLE)
+  );
 }
 
 function isDisplayableThinking(
@@ -494,6 +501,7 @@ function processMessage(
     if (
       subtype === "compact_boundary" ||
       subtype === "turn_aborted" ||
+      subtype === "content_filter_block" ||
       subtype === "config_ack" ||
       subtype === "away_summary" ||
       subtype === "subagent_activity"
@@ -505,13 +513,15 @@ function processMessage(
           ? msg.content
           : subtype === "turn_aborted"
             ? "Turn aborted"
-            : subtype === "config_ack"
-              ? "Configuration updated"
-              : subtype === "away_summary"
-                ? "Recap unavailable"
-                : subtype === "subagent_activity"
-                  ? "Subagent updated"
-                  : "Context compacted";
+            : subtype === "content_filter_block"
+              ? ""
+              : subtype === "config_ack"
+                ? "Configuration updated"
+                : subtype === "away_summary"
+                  ? "Recap unavailable"
+                  : subtype === "subagent_activity"
+                    ? "Subagent updated"
+                    : "Context compacted";
       const systemItem: SystemItem = {
         type: "system",
         id: msgId,
@@ -906,9 +916,15 @@ function attachToolResult(
     item.toolName,
   );
 
+  // A streaming result is the running call's output so far; the call stays
+  // pending and its final result can still attach.
+  const isLiveOutput = resultMessage._isStreaming === true;
+
   // Create a new ToolCallItem to ensure React sees the change
   let status: ToolCallItem["status"] = "complete";
-  if (isInterruptedProcessResult || item.status === "aborted") {
+  if (isLiveOutput) {
+    status = "pending";
+  } else if (isInterruptedProcessResult || item.status === "aborted") {
     status = "aborted";
   } else if (isBackgroundProcessResult) {
     status = item.status === "incomplete" ? "incomplete" : "pending";
@@ -928,7 +944,11 @@ function attachToolResult(
   };
 
   items[index] = updatedItem;
-  if (!isBackgroundProcessResult && !isInterruptedProcessResult) {
+  if (
+    !isLiveOutput &&
+    !isBackgroundProcessResult &&
+    !isInterruptedProcessResult
+  ) {
     pendingToolCalls.delete(toolUseId);
   }
 }

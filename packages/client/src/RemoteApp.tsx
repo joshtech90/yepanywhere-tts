@@ -26,6 +26,7 @@ import {
 } from "react";
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { BottomOverscrollReload } from "./components/BottomOverscrollReload";
+import { NativePullToRefresh } from "./components/NativePullToRefresh";
 import { ClientLogRecordingBadge } from "./components/ClientLogRecordingBadge";
 import { ConnectionBar } from "./components/ConnectionBar";
 import { HostOfflineModal } from "./components/HostOfflineModal";
@@ -34,6 +35,7 @@ import { RemoteCompatibilityNotices } from "./components/RemoteCompatibilityNoti
 import { StorageFilesystemBanner } from "./components/StorageFilesystemBanner";
 import { StartupShell } from "./components/StartupShell";
 import { ClientSummarySourceBinding } from "./contexts/ClientSummarySourceBinding";
+import { NativeConnectionProvider } from "./contexts/NativeConnectionProvider";
 import {
   HostIdentityProvider,
   useHostIdentity,
@@ -85,7 +87,7 @@ function ConnectedAppContentInner({ children }: { children: ReactNode }) {
   const { t } = useI18n();
   const location = useLocation();
   useRemoteActivityBusConnection();
-  const { currentRelayUsername } = useRemoteConnection();
+  const { currentRelayUsername, nativeSource } = useRemoteConnection();
   const { version: versionInfo } = useVersion();
   const { icon: hostIdentityIcon } = useHostIdentity();
   const sourceKey = useClientSummarySourceKey();
@@ -159,6 +161,7 @@ function ConnectedAppContentInner({ children }: { children: ReactNode }) {
         disabled={isSessionDetailRoute}
         onReload={reloadFrontend}
       />
+      {nativeSource && <NativePullToRefresh onReload={reloadFrontend} />}
       {children}
       <Suspense fallback={null}>
         <FloatingActionButton />
@@ -185,6 +188,7 @@ export function UnauthenticatedGate() {
     currentRelayUsername,
     currentRelayUrl,
     isIntentionalDisconnect,
+    nativeSource,
   } = useRemoteConnection();
   const basePath = useRemoteBasePath();
   const location = useLocation();
@@ -200,7 +204,8 @@ export function UnauthenticatedGate() {
   if (
     connection &&
     !isIntentionalDisconnect &&
-    matchesRelayLoginTarget(location, currentRelayUsername, currentRelayUrl)
+    (nativeSource ||
+      matchesRelayLoginTarget(location, currentRelayUsername, currentRelayUrl))
   ) {
     return <Navigate to={safeReturnTo ?? `${basePath}/projects`} replace />;
   }
@@ -357,13 +362,24 @@ function RemoteAppInner({ children }: Props) {
  * - SchemaValidationProvider (localStorage only, no connection needed)
  * - Connection-independent hooks (notify sync, log collection)
  */
+function ApplicationConnectionProvider({ children }: Props) {
+  const channel = window.yaNativeTransport;
+  return channel ? (
+    <NativeConnectionProvider channel={channel}>
+      {children}
+    </NativeConnectionProvider>
+  ) : (
+    <RemoteConnectionProvider>{children}</RemoteConnectionProvider>
+  );
+}
+
 export function RemoteApp({ children }: Props) {
   useEffect(() => initClientLogCollection(), []);
   useSyncNotifyInAppSetting();
 
   return (
     <ToastProvider>
-      <RemoteConnectionProvider>
+      <ApplicationConnectionProvider>
         <ClientSummarySourceBinding />
         <CurrentSourceRuntimeProvider>
           <InboxProvider>
@@ -372,7 +388,7 @@ export function RemoteApp({ children }: Props) {
             </SchemaValidationProvider>
           </InboxProvider>
         </CurrentSourceRuntimeProvider>
-      </RemoteConnectionProvider>
+      </ApplicationConnectionProvider>
     </ToastProvider>
   );
 }

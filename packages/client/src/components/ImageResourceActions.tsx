@@ -137,6 +137,14 @@ export function useImageResourceActions({
       dismissLabel={t("imageResourceDismissMenu" as never)}
       onClose={() => setContextMenu(null)}
       onOpen={onOpen}
+      fileTarget={
+        publicShare === null && sessionMetadata?.projectId && filePath
+          ? {
+              projectId: sessionMetadata.projectId,
+              path: coordinates.projectRelativePath ?? filePath,
+            }
+          : undefined
+      }
       download={loadBlob ? { fileName, loadBlob } : undefined}
       onCopyImage={
         loadBlob

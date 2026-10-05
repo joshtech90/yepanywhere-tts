@@ -1,7 +1,10 @@
+import type { DesktopControlOrigin } from "../../desktop/machine-control.js";
 // Provider abstraction types for multi-provider support
 import type {
   ClaudeSteerBackgroundBashSettings,
+  ContextBreakdown,
   ConversationContextTurn,
+  EffectiveSessionLaunchSettings,
   ModelInfo,
   PermissionMode,
   PromptCacheKeepaliveProviderInfo,
@@ -194,10 +197,20 @@ export function inactiveProviderSessionOptionsResult(
  * Options for starting a new agent session.
  */
 export interface StartSessionOptions {
-  /** Local session-owned grant; never serialized into a remote provider host. */
-  computerControl?: import("../../computer-control/contract.js").ComputerSession;
+  /** Private runtime transport only; never retained or returned to browsers. */
+  routerLaunch?: import("../../services/AgentAuthRouter.js").RouterLaunch;
+  instructionRestoration?: import("@yep-anywhere/shared").InstructionRestorationSettings;
+  instructionReadHistory?: SDKMessage[];
+  /** Hosted launches stream history over the worker socket before live observation. */
+  deferInstructionHistory?: boolean;
+  /** @deprecated Retired selection; accepted only for an explicit refusal. */
+  computerControl?: boolean;
   /** Operator opt-in, preserved across provider-host process boundaries. */
   agentSelf?: boolean;
+  /** Explicit installed MC advertisement; no resident grant or supervisor. */
+  machineControl?: boolean;
+  /** Private credential proof; never accepted from JSON or restored settings. */
+  desktopControlOrigin?: DesktopControlOrigin;
   /** Trusted owner-supplied child environment; never a client request field. */
   agentEnvironment?: Record<string, string>;
   /**
@@ -311,6 +324,16 @@ export interface StartSessionOptions {
  * This is the common interface all providers must return.
  */
 export interface AgentSession {
+  hydrateInstructionReadHistory?: (
+    messages: SDKMessage[],
+    complete: boolean,
+  ) => Promise<void>;
+  configureInstructionRestoration?: (
+    control: import("./instruction-restoration.js").InstructionRestorationControl,
+  ) => Promise<void>;
+  forceReadInstructions?: (
+    paths: readonly string[],
+  ) => Promise<"native-history" | "user-turn">;
   /** Active turn retained by an existing provider owner during controller reload. */
   initialTurnState?: "idle" | "in-turn";
   /** Publish selected/pending settings to the optional owning-session projection. */
@@ -420,6 +443,8 @@ export interface AgentSession {
    * Only supported by Claude SDK 0.2.7+.
    */
   supportedCommands?: () => Promise<SlashCommand[]>;
+  /** What fills the live context window, by category (`/context` data). */
+  getContextBreakdown?: () => Promise<ContextBreakdown>;
   /**
    * Change the model mid-session without restarting.
    * Only supported by Claude SDK 0.2.7+.
@@ -617,6 +642,11 @@ export interface AgentProvider {
     title?: string;
     /** Project-private provider state and process confinement inherited by the fork. */
     sessionSandbox?: SessionSandboxRuntime;
+    /** Resolved YA settings; native forks must not reset these to defaults. */
+    launchSettings?: Omit<
+      EffectiveSessionLaunchSettings,
+      "schemaVersion" | "revision"
+    >;
   }) => Promise<{
     sessionId: string;
     /** Provider-owned durable file; internal hint for immediate discovery. */

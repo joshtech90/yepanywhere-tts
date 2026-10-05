@@ -11,6 +11,7 @@ data class BrokerInstallationCredentials(
     val installationId: String,
     val installationSecret: String,
 )
+data class BrokerSubscriptionCredentials(val subscriptionId: String, val sendSecret: String)
 
 sealed interface CreateInstallationResult {
     data class Created(val credentials: BrokerInstallationCredentials) :
@@ -42,6 +43,25 @@ class PushBrokerClient internal constructor(
     },
 ) : PushBrokerApi {
     private val endpoint = parseEndpoint(endpoint)
+
+    fun createSubscription(credentials: BrokerInstallationCredentials): BrokerSubscriptionCredentials? {
+        if (!isValidCredentials(credentials)) return null
+        val response = request("POST", "v1/installations/${credentials.installationId}/subscriptions", credentials.installationSecret, "{}") ?: return null
+        if (response.status != 201) return null
+        return try {
+            val value = JSONObject(checkNotNull(response.body))
+            check(value.length() == 2)
+            BrokerSubscriptionCredentials(value.getString("subscriptionId"), value.getString("sendSecret")).also {
+                check(INSTALLATION_ID_PATTERN.matches(it.subscriptionId) && INSTALLATION_SECRET_PATTERN.matches(it.sendSecret))
+            }
+        } catch (_: Exception) { null }
+    }
+
+    fun deleteSubscription(credentials: BrokerInstallationCredentials, subscriptionId: String): Boolean {
+        if (!isValidCredentials(credentials) || !INSTALLATION_ID_PATTERN.matches(subscriptionId)) return false
+        val response = request("DELETE", "v1/installations/${credentials.installationId}/subscriptions/$subscriptionId", credentials.installationSecret, null)
+        return response?.status == 204 || response?.status == 404
+    }
 
     override fun createInstallation(fid: String): CreateInstallationResult {
         if (!isValidFid(fid)) return CreateInstallationResult.Failed

@@ -84,6 +84,18 @@ inherits YA's own `base-uri` policy, which refuses a `<base href=
 table-of-contents or cross-reference link scrolls within the preview instead
 of navigating the frame to the YA route (2026-09-25).
 
+A relative link such as `paper.pdf` had the same defect: it loaded a YA route
+beside the embedding page, which the scriptless frame shows blank. When the
+viewer knows the previewed file's absolute path, the wrapper resolves each
+relative link against that file's folder, as a linked-site walk does, and
+rewrites it to a local-file resource link naming the resolved file. The
+same-origin sandbox lets the trusted viewer listen for clicks inside the
+frame; a primary click on a rewritten link opens that file through the
+viewer's ordinary local-resource path, where the server's file-access checks
+still apply. External, root-relative and scheme links are unchanged. The
+public-share play frame already routes relative links the same way through
+its injected handler (2026-09-30).
+
 This is defense in depth at the client presentation boundary. The later server
 containment protects old clients, address-bar visits, modified browser
 navigation that escapes interception, redirects, and copied raw endpoints.
@@ -415,19 +427,60 @@ from YA's actual listening port.
 A vhost row may serve a file or directory itself instead of a loopback port
 (**Serves: File or directory** in the same table). The row maps
 `name.localhost` and `name.<public root>` to an absolute server path, read
-live on every request. A file answers at `/`; when it is HTML it also answers
-at the paths of the assets its elements load, decided by the live file
-share's `findHtmlRootAssetReferences` rule with the file's directory as site
-root, so an `<a href>`, CSS `url()` or sibling file gains nothing. A directory
-serves the files beneath it, `index.html` for a folder (redirecting a
-slashless folder URL to its slash). Dot segments, dotfiles, backslashes and
-encoded escapes fail; symlinks must resolve inside the root; every served file
-must also pass the local file policy. Only GET and HEAD are served, with the
-artifact origin's CSP sandbox, `nosniff`, `no-referrer`, `no-store` and
-permissions policy.
+live on every request.
+
+**A file row serves what the file links to.** The file keeps the short
+address `/` (and its own name, `/<file>`), and a reader can follow its links:
+the row serves every file reachable from it through references in HTML,
+Markdown and CSS documents — element sources, `<a href>`, `srcset`, CSS
+`url()` and `@import`, Markdown links, images and reference definitions —
+followed transitively through linked documents (`walkLinkedSite` in
+`packages/shared/src/linked-site.ts`). A link is an implied grant: its target
+may lie outside the file's folder or any project, limited only by the local
+file policy. Each target answers at the URL a browser requests for it with the
+root at `/`: `../../topics/speech-mt.md` from the root is requested as
+`/topics/speech-mt.md` and answers with that file, so the address stays short
+with no redirect or rewriting. A leading `/` in a reference names the root's
+folder. When two targets resolve to one URL, the first found keeps it. A file
+nothing links to answers 404. The walk stops at 2,000 files or 200 documents
+read; documents over 8 MiB are served but not followed. A walk is reused for
+2 seconds, then for as long as no file it inspected has changed, appeared or
+disappeared, so an edit to any linked page takes effect on the next request
+after that.
+
+A Markdown target that a browser opens as a page (a navigation, not a script's
+fetch) is YA's rendered Markdown page, the same one the local-file viewer
+serves. Its own relative links and images stay relative, so they resolve on
+the vhost too, and its **Raw** link, like any `?raw` request, returns the text
+as `text/plain`.
+
+A directory serves the files beneath it, `index.html` for a folder
+(redirecting a slashless folder URL to its slash); dot segments, dotfiles,
+backslashes and encoded escapes fail there, and symlinks must resolve inside
+the root. Every served file must pass the local file policy. Only GET and HEAD
+are served, with the artifact origin's CSP sandbox, `nosniff`, `no-referrer`,
+`no-store` and permissions policy.
+
+Settings shows each saved file row's reach beside its path as **N files**
+(**N+ files** when a limit stopped the walk), with a tooltip listing the first
+20 paths relative to the file's folder. `GET /api/artifacts/vhost-sites`
+carries it as `linkedFiles`.
+
+The Apps settings tables sort ascending, then descending, by clicking a
+column header. The vhost **Serves** column compares full paths (or numeric
+ports); Project apps includes a sortable **Project folder** column. Sorting
+changes display order only, preserving saved row order and editor identity.
+Both tables share the sort-heading mechanism and responsive path display:
+home paths use `~`, long parents elide in the middle, and the final folder
+and filename have priority. Hover exposes the full absolute path, also
+available in the selected row's editor or project details. Retained project
+addresses participate in sorting; a missing project has no known folder.
 
 Names are first come, first served across port rows, file rows and project app
-addresses: a claim or save that collides is refused, as is a new row named
+addresses: a claim or save that collides is refused unless a file-address
+claim explicitly requests replacement of an existing file row. Port rows and
+project app reservations cannot be replaced by a file-address claim.
+Also refused is a new row named
 `localhost`, `artifacts`, `relay`, `www`, `ya`, one starting `app-` or
 `sbx-`, or one whose public hostname is YA's own client or artifact host.
 File rows are saved in a separate `vhostSites` list; a save that omits the
@@ -447,11 +500,37 @@ credentials travel inside the tunnel's HTTPS; on `name.localhost` they are
 plain local HTTP.
 
 The File Viewer's public-share dialog offers **Serve at its own address** for
-the viewed file to the superuser: a suggested name from the file name, the
+the viewed file: a suggested name from the file name, the
 host suffix, and the access choice (Public by default there, since a pretty
 public address is the purpose). It claims a file row through
 `POST /api/artifacts/vhost-sites`, lists this file's rows, and copies or stops
 serving them; Settings → Apps lists and edits every row.
+
+**Replace an existing mapping with this name** defaults unchecked. Checked,
+it sends `replace: true`; the suggested name remains deterministic, without a
+collision-avoiding suffix, and a manually entered name works the same way.
+The form remains available alongside this file's existing mappings. A successful
+replacement changes the path and access choice at the same address, clears an
+old visitor password unless a new password was selected, and revokes existing
+private links and app cookies. Collision and creator checks use the current
+configuration at the serialized write boundary, after path validation.
+
+Limited users need **Allow public apps** and Start sessions access to the
+selected project. They see only their own mappings in that project and may
+replace or release only mappings they created; an older mapping without a
+creator belongs to the superuser. Creator identity comes from the authenticated
+acting principal, never request fields or the name. It survives settings saves
+and restarts. Limited-user file roots, linked files and symlink targets must
+remain in the canonical project root. Incoming requests recheck the creator's
+enabled account, publication permission and project grant; private mappings
+also require Allow private app links. Limited users use the address section
+without requests to the administrator-only public-file-share inventory.
+
+Replacement and limited-user file addresses require the separate explicit
+`vhost-file-site-replacement` capability (ID 109). Without it, clients hide
+the checkbox and retain administrator-only file-address behavior. The supported
+optional release corpus v0.9.0–v0.9.2 lacks the file-vhost routes; none of its
+existing capability meanings is broadened.
 
 `vhost-file-sites` (ID 105, version-implied from 0.9.4; maintainer approval
 2026-09-30, `Qcompat`) owns the `vhostSites` field and the

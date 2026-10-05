@@ -439,12 +439,15 @@ describe("TextBlock", () => {
         container.querySelector(`.${localMediaStyles.inlinePlayer}`),
       ).toBeTruthy();
     });
-    expect(
-      container
-        .querySelector(`.${localMediaStyles.inlinePlayer}`)
-        ?.getAttribute("src"),
-    ).toBe("blob:video-preview");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // A direct transport hands the player the server URL to stream, instead
+    // of fetching the whole video into a blob first.
+    const videoUrl = "/api/local-image?path=%2Ftmp%2Fdemo.mp4";
+    const inlinePlayer = container.querySelector<HTMLVideoElement>(
+      `.${localMediaStyles.inlinePlayer}`,
+    );
+    expect(inlinePlayer?.getAttribute("src")).toBe(videoUrl);
+    expect(inlinePlayer?.preload).toBe("metadata");
+    expect(fetchMock).not.toHaveBeenCalled();
 
     const clickAllowed = fireEvent.click(
       screen.getByRole("link", { name: /demo/i }),
@@ -454,10 +457,13 @@ describe("TextBlock", () => {
     expect(screen.getByRole("dialog").textContent).toContain("demo.mp4");
     await waitFor(() => {
       expect(
-        screen.getByRole("dialog").querySelector(`.${localMediaStyles.player}`),
-      ).toBeTruthy();
+        screen
+          .getByRole("dialog")
+          .querySelector(`.${localMediaStyles.player}`)
+          ?.getAttribute("src"),
+      ).toBe(videoUrl);
     });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("opens semantic local media links through the existing modal", async () => {

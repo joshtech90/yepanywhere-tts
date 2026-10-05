@@ -11,6 +11,9 @@ export interface ArtifactVhost {
 /** A vhost serving one file or directory itself; see `VhostSiteServer`. */
 export interface ArtifactVhostSite {
   name: string;
+  ownerUsername?: string;
+  projectId?: string;
+  projectRoot?: string;
   /** Absolute path, home-expanded when saved. */
   path: string;
   public?: boolean;
@@ -220,6 +223,20 @@ export function parseVhostSites(
       throw new Error(`Vhost "${name}" path must be absolute or start with ~`);
     if (row.public !== undefined && typeof row.public !== "boolean")
       throw new Error("Vhost public access must be true or false");
+    const prior = previous?.find((site) => site.name === name);
+    const ownerUsername = row.ownerUsername ?? prior?.ownerUsername;
+    const projectId = row.projectId ?? prior?.projectId;
+    const projectRoot = row.projectRoot ?? prior?.projectRoot;
+    if (
+      ownerUsername !== undefined &&
+      (typeof ownerUsername !== "string" ||
+        !ownerUsername ||
+        typeof projectId !== "string" ||
+        !projectId ||
+        typeof projectRoot !== "string" ||
+        !projectRoot)
+    )
+      throw new Error(`Vhost "${name}" needs its creator and project scope`);
     // `password` sets (a string) or clears (empty or null) the visitor
     // password; absent keeps the saved one. A stored hash is accepted as is,
     // which is how a settings file carries it.
@@ -247,6 +264,13 @@ export function parseVhostSites(
     sites.push({
       name,
       path,
+      ...(ownerUsername
+        ? {
+            ownerUsername: ownerUsername as string,
+            projectId: projectId as string,
+            projectRoot: projectRoot as string,
+          }
+        : {}),
       ...(row.public ? { public: true } : {}),
       ...(passwordHash ? { passwordHash } : {}),
     });

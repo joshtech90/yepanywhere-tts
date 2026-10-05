@@ -1,10 +1,19 @@
+import { useRouterDiscovery } from "../hooks/useRouterDiscovery";
+import {
+  RouterPoolSelector,
+  routedModels,
+  routerPoolMembers,
+} from "./RouterPoolSelector";
+import { resolveRouterModel } from "@yep-anywhere/shared";
+import type { RouterSelection } from "./RouterPoolSelector";
 import { DraftSyncNotice } from "./DraftSyncNotice";
 import { DRAFT_STORAGE_EVENT } from "../lib/draftSyncStorage";
-import { ComputerSessionSelection } from "./ComputerSessionSelection";
+import { MachineControlSessionSelection } from "./MachineControlSessionSelection";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import type { ProjectAppTarget } from "../api/projectApp";
 import { TemplateProjectForm } from "./TemplateProjectForm";
 import { ComposerRecents } from "./ComposerRecents";
+import { AudioMemoPanel } from "./AudioMemoPanel";
 import { PromptHistoryRail } from "./PromptHistoryRail";
 import {
   rememberComposerPrompt,
@@ -233,7 +242,7 @@ import {
   prependSpeechMessagePrefix,
   resolveDeliverySpeechPrefix,
 } from "../lib/speechMessagePrefix";
-import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
+import { handleVoiceInputShortcutKeyDown } from "../lib/voiceInputShortcut";
 import { generateUUID } from "../lib/uuid";
 import { useVersion } from "../hooks/useVersion";
 import { useSpeechCaptureSettings } from "../hooks/useSpeechCaptureSettings";
@@ -446,6 +455,13 @@ export function NewSessionForm({
   const [selectedProvider, setSelectedProvider] = useState<ProviderName | null>(
     null,
   );
+  const [routerSelection, setRouterSelection] =
+    useState<RouterSelection | null>(null);
+  useEffect(() => {
+    setRouterSelection((selection) =>
+      selection?.sourceKey === clientSummarySourceKey ? selection : null,
+    );
+  }, [clientSummarySourceKey]);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [selectedThinkingMode, setSelectedThinkingMode] =
     useState<ThinkingMode>("off");
@@ -453,7 +469,10 @@ export function NewSessionForm({
     useState<EffortLevel>("high");
   const [selectedRecapMode, setSelectedRecapMode] = useState<RecapMode>("off");
   const [sandboxLevel, setSandboxLevel] = useState<SessionSandboxLevel>("none");
-  const [computerSelected, setComputerSelected] = useState(false);
+  const [machineControlSelected, setMachineControlSelected] = useState(false);
+  const selectMachineControl = useCallback((selected: boolean) => {
+    setMachineControlSelected(selected);
+  }, []);
   const [sandboxNetworkFirewall, setSandboxNetworkFirewall] = useState(true);
   const [recapAfterSeconds, setRecapAfterSeconds] = useState(
     DEFAULT_RECAP_AFTER_SECONDS,
@@ -581,6 +600,8 @@ export function NewSessionForm({
     ? JSON.stringify([clientSummarySourceKey, principal.username])
     : null;
   const [recentUploadsOpen, setRecentUploadsOpen] = useState(false);
+  const [audioMemoOpen, setAudioMemoOpen] = useState(false);
+  const memoPendingIdRef = useRef<string | null>(null);
   const attachGesture = useRef({ y: 0, swiped: false });
   const launchLock = useMemo<LaunchLock>(
     () => launchLockFor(principal),
@@ -618,15 +639,6 @@ export function NewSessionForm({
   const sandboxLocalAuthOpen =
     effectiveSandboxLevel === "project-write" &&
     versionInfo?.sessionSandboxing?.localAuthEnforced === false;
-  // Whether this form may offer computer control and send the launch field.
-  // The server's select() still decides; this only keeps the offer and the
-  // request from disagreeing.
-  const computerControlEligible =
-    selectedProvider === "codex" &&
-    !effectiveExecutor &&
-    effectiveSandboxLevel === "none" &&
-    !launch &&
-    serverHasCapability(versionInfo, SERVER_CAPABILITIES.computerControl.name);
   const supportsProjectQueue = serverSupportsProjectQueue(versionInfo);
   const projectQueueCtrlEnterEnabled =
     versionInfo?.clientDefaults?.projectQueueCtrlEnterEnabled ??
@@ -995,12 +1007,14 @@ export function NewSessionForm({
             ).catch(() => {});
           }
           if (historyScope)
-            void rememberComposerUpload(historyScope, uploadFile).catch(
-              (cause) =>
-                showToast(
-                  t("composerHistorySaveError", { error: String(cause) }),
-                  "error",
-                ),
+            void rememberComposerUpload(historyScope, uploadFile, {
+              projectId,
+              projectName: selectedProject?.name ?? projectInput,
+            }).catch((cause) =>
+              showToast(
+                t("composerHistorySaveError", { error: String(cause) }),
+                "error",
+              ),
             );
           return {
             ...stagedRef,
@@ -1071,6 +1085,9 @@ export function NewSessionForm({
       attachmentQuality,
       historyScope,
       sourceTransport,
+      projectId,
+      selectedProject?.name,
+      projectInput,
       ensureDraftAttachmentBatchId,
       setPendingFiles,
       showToast,
@@ -1099,7 +1116,7 @@ export function NewSessionForm({
     stale: providersStale,
   } = useProviders();
   const { usage: subscriptionUsage } = useProviderSubscriptionUsage(
-    selectedProvider,
+    routerSelection ? null : selectedProvider,
     { bootstrapTier: "supplementary" },
   );
   const {
@@ -1175,7 +1192,50 @@ export function NewSessionForm({
   );
   const selectedProviderInfo =
     selectedProviderQuery.row ?? aggregateProviderInfo;
-  const availableModels: ModelInfo[] = selectedProviderInfo?.models ?? [];
+  const routerEnabled =
+    serverHasCapability(
+      versionInfo,
+      SERVER_CAPABILITIES.agentAuthRouter.name,
+    ) &&
+    !launchLock.limited &&
+    !effectiveExecutor &&
+    effectiveSandboxLevel === "none" &&
+    (selectedProvider === "claude" || selectedProvider === "codex");
+  const routerDiscovery = useRouterDiscovery(selectedProvider, routerEnabled);
+  const accountModels = useMemo(
+    () =>
+      routedModels(
+        routerDiscovery.data,
+        selectedProvider,
+        routerSelection?.poolId,
+      ),
+    [routerDiscovery.data, selectedProvider, routerSelection?.poolId],
+  );
+  const availableModels: ModelInfo[] = useMemo(() => {
+    const direct = selectedProviderInfo?.models ?? [];
+    const merged = new Map(direct.map((m) => [m.id, m]));
+    for (const m of accountModels) {
+      const representedByAlias = direct.some(
+        (d) =>
+          d.id !== m.id && resolveRouterModel(d.id, accountModels) === m.id,
+      );
+      if (representedByAlias && selectedModel !== m.id) continue;
+      if (!merged.has(m.id) || routerSelection) merged.set(m.id, m);
+    }
+    if (routerSelection)
+      for (const m of direct) {
+        const routed = accountModels.find(
+          (a) => a.id === resolveRouterModel(m.id, accountModels),
+        );
+        if (routed) merged.set(m.id, { ...routed, id: m.id, name: m.name });
+      }
+    return [...merged.values()];
+  }, [
+    selectedProviderInfo?.models,
+    accountModels,
+    routerSelection,
+    selectedModel,
+  ]);
   const visibleModels = useMemo(
     () =>
       withProviderVisibleModelSelection(
@@ -1191,9 +1251,46 @@ export function NewSessionForm({
     (selectedProviderQuery.fresh &&
       !selectedProviderQuery.refreshing &&
       selectedProviderQuery.error === null);
-  const hasSelectedProviderModel =
-    selectedProviderCatalogCurrent &&
-    hasRequiredProviderModel(selectedProvider, availableModels, selectedModel);
+  const routerThinking: ThinkingOption =
+    selectedThinkingMode === "off"
+      ? "off"
+      : selectedThinkingMode === "auto"
+        ? "auto"
+        : `on:${selectedEffortLevel}`;
+  const compatibleMembers = routerSelection?.poolId
+    ? routerPoolMembers(
+        routerDiscovery.data,
+        routerSelection.poolId,
+        selectedProvider,
+        selectedModel,
+        routerThinking,
+      )
+    : [];
+  const selectedRouterPool = routerDiscovery.data?.pools.find(
+    (p) => p.id === routerSelection?.poolId,
+  );
+  const routerAccountId =
+    selectedRouterPool?.policy === "manual"
+      ? compatibleMembers.length === 1
+        ? compatibleMembers[0]?.id
+        : routerSelection?.accountId
+      : undefined;
+  const routedModel = resolveRouterModel(selectedModel, accountModels);
+  const hasSelectedProviderModel = routerSelection
+    ? !!(
+        routerEnabled &&
+        routedModel &&
+        !routerDiscovery.error &&
+        compatibleMembers.length &&
+        (selectedRouterPool?.policy !== "manual" ||
+          compatibleMembers.some((a) => a.id === routerAccountId))
+      )
+    : selectedProviderCatalogCurrent &&
+      hasRequiredProviderModel(
+        selectedProvider,
+        selectedProviderInfo?.models ?? [],
+        selectedModel,
+      );
   const helperSelectableModels = useMemo(
     () => [...visibleModels],
     [visibleModels],
@@ -1234,10 +1331,9 @@ export function NewSessionForm({
       }),
     [selectedModelInfo, selectedProviderInfo, t],
   );
-  const effectiveEffortLevel = resolveSupportedEffortLevel(
-    selectedEffortLevel,
-    effortOptions,
-  );
+  const effectiveEffortLevel = routerSelection
+    ? selectedEffortLevel
+    : resolveSupportedEffortLevel(selectedEffortLevel, effortOptions);
   const thinkingModeOptions = useMemo(
     () =>
       getThinkingModeOptions({
@@ -1247,10 +1343,9 @@ export function NewSessionForm({
       }),
     [effortOptions, selectedModelInfo, selectedProviderInfo],
   );
-  const effectiveThinkingMode = resolveSupportedThinkingMode(
-    selectedThinkingMode,
-    thinkingModeOptions,
-  );
+  const effectiveThinkingMode = routerSelection
+    ? selectedThinkingMode
+    : resolveSupportedThinkingMode(selectedThinkingMode, thinkingModeOptions);
   // A locked effort also settles the thinking mode it implies, so the panel
   // that would let either be changed is withheld rather than shown inert.
   const showThinkingControls =
@@ -1264,6 +1359,21 @@ export function NewSessionForm({
   const effectivePermissionMode = permissionModeOptions.includes(mode)
     ? mode
     : "default";
+  const supportsInstalledMachineControl = serverHasCapability(
+    versionInfo,
+    SERVER_CAPABILITIES.installedMachineControl.name,
+  );
+  const machineControlEligible =
+    supportsInstalledMachineControl &&
+    !effectiveExecutor &&
+    effectiveSandboxLevel === "none" &&
+    !launch &&
+    effectivePermissionMode !== "plan" &&
+    (selectedProvider === "codex"
+      ? effectivePermissionMode === "bypassPermissions"
+      : ["claude", "claude-gateway", "claude-ollama"].includes(
+          selectedProvider ?? "",
+        ));
   const getLegacyProviderDefaultSeed = useCallback(
     (providerName: ProviderName) => ({
       model:
@@ -1829,6 +1939,7 @@ export function NewSessionForm({
   const handleProviderSelect = (providerName: ProviderName) => {
     hasUserCustomizedDefaultsRef.current = true;
     setSelectedProvider(providerName);
+    setRouterSelection(null);
     const provider = providers.find((p) => p.name === providerName);
     const providerModels = provider?.models ?? [];
     const providerDefaults = getProviderSessionDefaults(
@@ -2320,7 +2431,9 @@ export function NewSessionForm({
     async (activeProjectId: string, sessionId: string) => {
       const pendingUploads = [...pendingStagedUploadsRef.current.values()];
       if (pendingUploads.length > 0) {
-        await Promise.all(pendingUploads);
+        const results = await Promise.all(pendingUploads);
+        if (results.some((result) => result === null))
+          throw new Error(t("sessionDraftAttachmentsUnavailable"));
       }
 
       const currentFiles = pendingFilesRef.current;
@@ -2369,6 +2482,7 @@ export function NewSessionForm({
             t("newSessionUploadError", { message: uploadMessage }),
             "error",
           );
+          throw uploadErr;
         }
       }
 
@@ -2428,16 +2542,36 @@ export function NewSessionForm({
   );
 
   const handleStartSession = useCallback(
-    async (messageOverride?: unknown, speechTriggered = false) => {
+    async (
+      messageOverride?: unknown,
+      speechTriggered = false,
+      propagateFailure = false,
+    ) => {
       const override =
         typeof messageOverride === "string" ? messageOverride : undefined;
       if (override === undefined && deferSpeechDelivery("start")) {
         return;
       }
 
+      if (
+        routerSelection &&
+        (routerSelection.sourceKey !== clientSummarySourceKey ||
+          !serverHasCapability(
+            versionInfo,
+            SERVER_CAPABILITIES.agentAuthRouter.name,
+          ) ||
+          launchLock.limited ||
+          effectiveExecutor ||
+          effectiveSandboxLevel !== "none" ||
+          launch)
+      ) {
+        showToast(t("routerLaunchUnsupported"), "error");
+        return;
+      }
       const finalMessage = (override ?? draftControls.getDraft()).trimEnd();
 
-      const hasContent = finalMessage.trim() || pendingFiles.length > 0;
+      const submissionFiles = pendingFilesRef.current;
+      const hasContent = finalMessage.trim() || submissionFiles.length > 0;
       // A muted composer composes its own first turn, so an empty message is
       // not a reason to refuse the start.
       if (
@@ -2447,8 +2581,10 @@ export function NewSessionForm({
         isStarting ||
         !hasSelectedProviderModel ||
         projectPending
-      )
+      ) {
+        if (propagateFailure) throw new Error(t("composerMemoCannotStart"));
         return;
+      }
 
       const deliverySpeechPrefix = resolveDeliverySpeechPrefix({
         configuredPrefix: speechMessagePrefix,
@@ -2545,12 +2681,30 @@ export function NewSessionForm({
         const creationProvenance = getUiCreationProvenance(versionInfo);
         const sessionOptions = {
           creationProvenance,
-          ...(computerSelected && computerControlEligible
-            ? { computerControl: true }
+          ...(supportsInstalledMachineControl
+            ? {
+                machineControl:
+                  machineControlSelected && machineControlEligible,
+              }
             : {}),
+
           mode: sessionMode,
-          model: selectedModel ?? undefined,
-          thinking,
+          model: routerSelection ? routedModel : selectedModel || undefined,
+          ...(routerSelection &&
+          serverHasCapability(
+            versionInfo,
+            SERVER_CAPABILITIES.agentAuthRouter.name,
+          )
+            ? {
+                routerAccountId,
+                ...(routerSelection.poolId
+                  ? {
+                      routerPoolId: routerSelection.poolId,
+                    }
+                  : {}),
+              }
+            : {}),
+          thinking: routerSelection ? routerThinking : thinking,
           showThinking,
           provider: selectedProvider ?? undefined,
           executor: effectiveExecutor ?? undefined,
@@ -2611,7 +2765,7 @@ export function NewSessionForm({
           return;
         }
 
-        if (pendingFiles.length > 0) {
+        if (submissionFiles.length > 0) {
           // Two-phase flow: create session first, then upload to real session folder
           // Step 1: Create the session without sending a message
           const createRequestSentAtMs = Date.now();
@@ -2766,11 +2920,14 @@ export function NewSessionForm({
                 recapAfterSeconds,
               },
               initialTitle: trimmedMessage,
-              initialModel: selectedModel ?? undefined,
+              initialModel: routerSelection
+                ? routedModel
+                : selectedModel || undefined,
               initialProvider: selectedProvider ?? undefined,
             }),
           },
         );
+        return true;
       } catch (err) {
         console.error("Failed to start session:", err);
         draftControls.restoreFromStorage();
@@ -2813,13 +2970,20 @@ export function NewSessionForm({
           }
         }
         showToast(errorMessage, "error");
+        if (propagateFailure) throw err;
       }
     },
     [
       basePath,
       draftControls,
-      computerControlEligible,
-      computerSelected,
+      routerSelection,
+      routedModel,
+      routerAccountId,
+      routerThinking,
+      clientSummarySourceKey,
+      supportsInstalledMachineControl,
+      machineControlSelected,
+      machineControlEligible,
       creatingTemplateProject,
       templateProjectBusy,
       historyScope,
@@ -2863,6 +3027,11 @@ export function NewSessionForm({
   );
 
   const handleQueueProjectSession = async (messageOverride?: unknown) => {
+    if (routerSelection) {
+      showToast(t("routerQueueUnsupported"), "error");
+      return;
+    }
+    if (machineControlSelected && machineControlEligible) return;
     if (creatingTemplateProject || templateProjectBusy) return;
     const override =
       typeof messageOverride === "string" ? messageOverride : undefined;
@@ -3434,12 +3603,10 @@ export function NewSessionForm({
 
   const handleComposerKeyDown = useCallback(
     (event: KeyboardEvent<HTMLDivElement>) => {
-      if (!isVoiceInputShortcut(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const voice = voiceButtonRef.current;
-      if (!voice?.isAvailable) return;
-      voice.toggle();
+      handleVoiceInputShortcutKeyDown(event, () => {
+        const voice = voiceButtonRef.current;
+        if (voice?.isAvailable) voice.toggle();
+      });
     },
     [],
   );
@@ -3471,19 +3638,23 @@ export function NewSessionForm({
   useAttachmentNavigationGuard(attachmentNavigationGuardActive);
   const canQueueProjectSession = Boolean(
     allowProjectQueue &&
+      !(machineControlSelected && machineControlEligible) &&
       showProjectQueueAction &&
       (message.trim() || speechPending !== null || interimTranscript) &&
       pendingFilesReadyForProjectQueue &&
       hasProjectQueueTargetProject &&
       hasSelectedProviderModel,
   );
-  const projectQueueNewSessionTitle = !pendingFilesReadyForProjectQueue
-    ? t("projectQueueNewSessionAttachmentsPreparing")
-    : hasProjectQueueTargetProject
-      ? projectQueueCtrlEnterEnabled
-        ? t("toolbarProjectQueueTooltipWithShortcut")
-        : t("toolbarProjectQueueTooltip")
-      : t("projectQueueNewSessionNeedsProject");
+  const projectQueueNewSessionTitle =
+    machineControlSelected && machineControlEligible
+      ? t("machineControlImmediateLaunchOnly")
+      : !pendingFilesReadyForProjectQueue
+        ? t("projectQueueNewSessionAttachmentsPreparing")
+        : hasProjectQueueTargetProject
+          ? projectQueueCtrlEnterEnabled
+            ? t("toolbarProjectQueueTooltipWithShortcut")
+            : t("toolbarProjectQueueTooltip")
+          : t("projectQueueNewSessionNeedsProject");
   const manualDeliverySpeechPrefix =
     speechMessagePrefix &&
     asrAttributionMs > 0 &&
@@ -3548,10 +3719,53 @@ export function NewSessionForm({
       };
     }, [draftControls, projectId, newSessionDraftKey]);
   // Shared input area with toolbar (textarea + attach/voice on left, send on right)
-  const inputArea = (
+  const inputArea = audioMemoOpen ? (
+    <AudioMemoPanel
+      projectId={projectId}
+      commitLabel={t("composerMemoStart")}
+      onCancel={() => {
+        setPendingFiles((previous) =>
+          previous.filter((item) => item.id !== memoPendingIdRef.current),
+        );
+        memoPendingIdRef.current = null;
+        setAudioMemoOpen(false);
+      }}
+      onCommit={async (file, transcript) => {
+        if (
+          !pendingFilesRef.current.some(
+            (item) => item.kind === "local" && item.file === file,
+          )
+        ) {
+          const previousMemoId = memoPendingIdRef.current;
+          const id = `memo-${generateUUID()}`;
+          memoPendingIdRef.current = id;
+          setPendingFiles((previous) => [
+            ...previous.filter((item) => item.id !== previousMemoId),
+            { kind: "local", id, file },
+          ]);
+        }
+        const suffix = transcript.trim()
+          ? `🎤 ${t("audioMemoTranscriptSuffix")}\n${transcript.trim()}`
+          : "";
+        const text =
+          [draftControls.getDraft().trimEnd(), suffix]
+            .filter(Boolean)
+            .join("\n\n") || `🎤 ${t("audioMemoTitle")}`;
+        if (!(await handleStartSession(text, false, true)))
+          throw new Error(t("composerMemoCannotStart"));
+      }}
+    />
+  ) : (
     <>
       <DraftSyncNotice draftKey={newSessionDraftKey} />
       <ComposerRecents
+        newSession
+        onMemo={
+          allowAttachments && !composerMuted && !speechPending
+            ? () => setAudioMemoOpen(true)
+            : undefined
+        }
+        disabled={isStarting}
         scope={historyScope}
         onFiles={addPendingFiles}
         uploadsOpen={recentUploadsOpen}
@@ -3677,9 +3891,13 @@ export function NewSessionForm({
                 <button
                   type="button"
                   className="toolbar-button"
-                  onClick={() => {
+                  onClick={(event) => {
                     if (attachGesture.current.swiped) {
                       attachGesture.current.swiped = false;
+                      return;
+                    }
+                    if (event.shiftKey && !composerMuted && !speechPending) {
+                      setAudioMemoOpen(true);
                       return;
                     }
                     fileInputRef.current?.click();
@@ -3704,7 +3922,7 @@ export function NewSessionForm({
                       setRecentUploadsOpen(true);
                     }
                   }}
-                  title="Choose files; right-click or swipe down for recent uploads"
+                  title={t("composerAttachTooltip")}
                   disabled={isStarting}
                   aria-label={t("newSessionAttachFiles")}
                 >
@@ -4062,6 +4280,7 @@ export function NewSessionForm({
                       {selectedProviderInfo?.displayName ?? selectedProvider}
                     </span>
                     {selectedProviderInfo &&
+                      !routerSelection &&
                       !selectedProviderInfo.authenticated &&
                       !selectedProviderInfo.enabled && (
                         <span className={styles.choiceStatus}>
@@ -4548,7 +4767,9 @@ export function NewSessionForm({
     effectiveSandboxLevel === "project-write"
       ? sessionDefaultCopy.sandbox.title
       : null,
-    computerSelected ? t("computerSessionOptIn") : null,
+    machineControlSelected && machineControlEligible
+      ? t("newSessionMachineControlTitle")
+      : null,
     effectiveExecutor
       ? `${t("newSessionRunOnTitle")}: ${effectiveExecutor}`
       : null,
@@ -4769,16 +4990,42 @@ export function NewSessionForm({
           data-new-session-secondary-options="true"
           hidden={!showAdvancedOptions}
         >
+          {serverHasCapability(
+            versionInfo,
+            SERVER_CAPABILITIES.agentAuthRouter.name,
+          ) &&
+            !launchLock.limited &&
+            !effectiveExecutor &&
+            effectiveSandboxLevel === "none" &&
+            (selectedProvider === "claude" || selectedProvider === "codex") && (
+              <RouterPoolSelector
+                provider={selectedProvider}
+                model={selectedModel}
+                thinking={routerThinking}
+                data={routerDiscovery.data}
+                busy={routerDiscovery.busy}
+                error={routerDiscovery.error}
+                retry={() => void routerDiscovery.reload()}
+                sourceKey={clientSummarySourceKey}
+                value={
+                  routerSelection?.sourceKey === clientSummarySourceKey
+                    ? routerSelection
+                    : null
+                }
+                onChange={setRouterSelection}
+                disabled={isStarting}
+              />
+            )}
           {permissionSection}
           {showThinkingSection}
           {recapSection}
           {helperSideModelSection}
           {promptSuggestionSection}
           {sandboxSection}
-          <ComputerSessionSelection
-            eligible={computerControlEligible}
-            selected={computerSelected}
-            onChange={setComputerSelected}
+          <MachineControlSessionSelection
+            eligible={machineControlEligible}
+            selected={machineControlSelected}
+            onChange={selectMachineControl}
             disabled={isStarting}
             showCaption={showOptionCaptions}
           />

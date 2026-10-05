@@ -4,11 +4,15 @@ import {
   DesktopBootstrapService,
 } from "./DesktopBootstrapService.js";
 
+import { initializeNativeMachineControl } from "./machine-control.js";
+
 const STARTUP_TIMEOUT_MS = 15_000;
 const STARTUP_MODE = "stdin-v1";
 
 interface DesktopStartupFrame {
   protocol: number;
+  nativeUpdates?: boolean;
+  machineControlSocket?: string;
   masterSecret: string;
 }
 
@@ -24,6 +28,10 @@ function parseStartupFrame(line: string): DesktopStartupFrame {
   return {
     protocol: value.protocol,
     masterSecret: value.masterSecret,
+    nativeUpdates: value.nativeUpdates === true,
+    ...(typeof value.machineControlSocket === "string"
+      ? { machineControlSocket: value.machineControlSocket }
+      : {}),
   };
 }
 
@@ -65,7 +73,18 @@ export async function readDesktopBootstrapServiceFromStdin(): Promise<
   }
 
   const frame = parseStartupFrame(await readStartupLine());
+  if (frame.machineControlSocket !== undefined)
+    await initializeNativeMachineControl(frame.machineControlSocket);
   return new DesktopBootstrapService({
     masterSecret: frame.masterSecret,
+    ...(frame.nativeUpdates
+      ? {
+          onCheckUpdates: () => {
+            process.stdout.write(
+              'YEP_DESKTOP_ACTION {"action":"check-updates"}\n',
+            );
+          },
+        }
+      : {}),
   });
 }

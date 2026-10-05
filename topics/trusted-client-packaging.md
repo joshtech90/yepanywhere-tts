@@ -35,6 +35,9 @@ The mobile ownership decision is recorded separately in
 [`mobile-server-pairing.md`](mobile-server-pairing.md): native Compose and
 background operation use a native secure connection core, while the bundled
 full web client acquires an isolated logical lease on the same core.
+The accepted shared Rust/iOS direction and unchanged-server compatibility
+contract are owned by that topic's
+[iOS and shared Rust section](mobile-server-pairing.md#ios-and-shared-rust-direction).
 
 ## Current Mobile Packaging Checkpoint
 
@@ -44,7 +47,8 @@ assets through Android's HTTPS app-assets origin; a separate hosted-`latest`
 release channel loads a fixed YA HTTPS origin for Play internal or closed
 testing. Neither channel accepts an arbitrary runtime UI URL. Its native host
 is exact-origin and main-frame bound and exposes only declared high-level
-methods. The current methods are `host.describe`, `notifications.status`, and
+methods. The small control-plane methods are `host.describe`,
+`notifications.status`, and
 the explicitly user-triggered `notifications.requestPermission`; no method
 exports native credentials.
 
@@ -58,13 +62,10 @@ PNGs; those fallbacks precompose the same Y over a green circle. Google Play's
 512-pixel listing icon remains a separate full-bleed artifact rather than a
 launcher resource.
 
-The longer-term foreground choice has two permanent presentations. Android
-Compose, and later iOS SwiftUI, own the focused native companion and
-Conversation-view surfaces. The complete bundled web client remains a
-full-fidelity escape hatch for users who prefer it and for rich tools, settings,
-and unsupported native surfaces; it is not the primary mobile product surface.
-Hosted `latest` remains valuable for transitional testing, but it does not
-answer the stronger production trust requirement below.
+The selected foreground is the bundled full web UI, with native login and host
+management. A duplicate native dashboard or Conversation renderer is not a
+release prerequisite. Hosted-latest retains independent web authentication and
+never receives the privileged bundled native transport.
 
 Bundled app-assets JavaScript is trusted application code: it is shipped under
 the APK signature, is isolated in the app WebView, and does not load ordinary
@@ -73,19 +74,97 @@ The native host still remains exact-origin and method-scoped as inexpensive
 defense in depth.
 
 The bundled client normally uses a native data-plane adapter so an already
-authenticated Android user is not asked to log in again merely to reach a
-setting or rich renderer missing from Compose. The adapter exposes high-level
+authenticated Android user enters the complete application without a second
+web login. The adapter exposes high-level
 source operations over a bounded exact-origin channel; Kotlin keeps SRP and
 resume material private and arbitrates concurrent Compose, foreground-service,
 and WebView leases. Binary uploads remain chunked and flow-controlled rather
 than copied into one bridge message.
 
 Still unresolved are the stable public asset update/signing policy and the
-exact native secure storage/rotation model. An independently authenticated
+remaining storage/rotation acceptance across release-device builds. An
+independently authenticated
 WebView remains a possible future performance or isolation mode, but it uses
 normal explicit SRP and its own browser-scoped resume session. The baseline
 does not mint or hand off a child credential. Native installation and
 push-management secrets remain app-private and are not web credentials.
+
+## Android Internal CI Delivery
+
+Android CI builds a bundled Release AAB in its verification job. Publication
+requires an explicit manual dispatch on main with `publish_internal=true`,
+the repository publishing switch enabled, and both build and instrumentation
+gates passing. It signs that run's exact artifact with the existing upload key
+and publishes to the existing Play internal testing track. Pushes, nightly
+runs, tags, pull requests, forks and manual runs without the publish option
+cannot publish. The hosted-latest flavor is verified separately and is not
+the uploaded package.
+
+CI codes are `10000 + run_number * 100 + run_attempt`; attempts must remain
+below 100. These monotonically advance for new workflow runs without a source
+version bump. The human version is `0.1.2-ci.<run>.<attempt>`. Local fixed-version
+builds retain their checked-in version. After CI delivery starts, local manual
+uploads must explicitly choose a code above the current Play release.
+
+Publishing uses short-lived GitHub OIDC credentials for a dedicated Play
+publisher; this is a deployment principal, separate from YA owner/user/device
+principals and application transport credentials. The Google grant is limited
+to this app's testing releases. Production and tester membership are not
+modified. The workflow retains a signed AAB and receipt with source SHA,
+version, bundle SHA-256, internal track and publication result.
+
+A requested release of the already published source is skipped. An older version
+cannot replace a newer internal release. A mismatching uploaded bundle, unknown
+track, failed test, rejected API validation or failed commit stops publication;
+there is no fallback to a different track or an uninstallable draft.
+Verification runs cancel superseded runs on the same ref. Explicit release
+runs use a separate concurrency group and finish without automatic cancellation;
+a new push cannot interrupt the selected release or its Play edit. Only the
+latest pending release is retained. Failed builds leave the preceding available
+internal release in place.
+
+Setup and activation state are in [mobile store preparation](../docs/distribution/mobile/README.md#android-ci-internal-delivery).
+The trusted delivery path is enabled and verified: its first successful hosted
+publication produced code 56401, with its signed bundle and receipt retained
+and Play availability confirmed. Both Android verification gates and the
+main browser CI suite passed for that source. The maintainer subsequently
+selected explicit release requests instead of publication after every CI run.
+
+## Selected iOS Packaging Direction
+
+The iOS shell bundles the same full React application in the signed app and
+loads it in WKWebView. SwiftUI owns login and host management; the shared Rust
+core owns authenticated transport, and Keychain protects persisted resume
+credentials. The bridge grants only bounded, source-scoped operations to the
+owning bundled main-frame document. Passwords, resume keys and transport keys
+never enter JavaScript. Navigation or document destruction invalidates its
+handles and releases its native leases.
+
+The consumer application is implemented in `packages/ios`, with shared native
+transport in `packages/mobile-core`. The iOS 17+ shell uses a bundled
+`yepapp://bundle` origin and a separate persistent WKWebsiteDataStore per
+native profile. No developer server or hosted login is part of this path.
+Full replacement navigation and renderer loss invalidate the document handle.
+Asset path traversal and foreign/stale document messages are rejected.
+
+The privileged document forbids embedded frames. Its additional CSP is inserted
+before bundled scripts and fails closed if the entry HTML cannot be recognized.
+This policy excludes executing same-origin children that could proxy through
+parent functions; `isMainFrame` alone is not asserted to distinguish such calls.
+Embedded HTML/app viewers need a separately unprivileged surface before they
+can be enabled. Blob download navigation also awaits a native download adapter;
+these [viewer/export gaps](../gaps/ios-webview-viewers-and-downloads.md) remain
+release acceptance work. The existing native source adapter's speech/device-stream
+unsupported fallbacks also remain in effect.
+
+Simulator acceptance covers the shipped React UI, source requests and events,
+chunked responses, upload-consumption acknowledgement, Blob media metadata,
+Keychain persistence/failure paths, native continuity proofs, real sequential
+keyboard input with concurrent updates, saved routes/drafts across suspension
+and relaunch, and native Switch Host. The Apple device target links separately;
+physical-device, signing and notification delivery remain release acceptance.
+Reproducible commands and packaging limits live in
+[the iOS README](../packages/ios/README.md).
 
 ## Deferred Verification Setup
 

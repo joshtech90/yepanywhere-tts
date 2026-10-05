@@ -6,7 +6,6 @@ import {
   stat,
   type FileHandle,
 } from "node:fs/promises";
-import { Readable } from "node:stream";
 import {
   basename,
   dirname,
@@ -40,8 +39,7 @@ import { expandHomePath } from "../utils/expandHomePath.js";
 import { createLocalResourcePathPolicy } from "./local-resource-policy.js";
 import {
   createMutableFileCacheMetadata,
-  createNotModifiedResponse,
-  isMutableFileNotModified,
+  createMutableFileResponse,
   mutableFileCacheHeaders,
   type MutableFileOpener,
   openMutableFileSnapshot,
@@ -1257,18 +1255,12 @@ export function createFilesRoutes(deps: FilesDeps): Hono {
       filePath: fileName,
     });
 
-    try {
-      if (isMutableFileNotModified(c.req.raw.headers, cacheMetadata)) {
-        return createNotModifiedResponse(headers);
-      }
-      const stream = fileHandle.createReadStream({ autoClose: true, start: 0 });
-      const body = Readable.toWeb(stream) as ReadableStream<Uint8Array>;
-      const response = new Response(body, { headers });
-      fileHandle = undefined;
-      return response;
-    } finally {
-      await fileHandle?.close();
-    }
+    return createMutableFileResponse(
+      c.req.raw.headers,
+      { handle: fileHandle, stats },
+      cacheMetadata,
+      headers,
+    );
   });
 
   /**

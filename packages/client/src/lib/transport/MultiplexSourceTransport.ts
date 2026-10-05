@@ -251,6 +251,18 @@ abstract class MultiplexSourceTransport<TConnection extends MultiplexConnection>
     );
   }
 
+  fetchStream(
+    path: string,
+    init?: { signal?: AbortSignal },
+  ): Promise<Response> {
+    this.assertNotDisposed();
+    return this.withConnection((connection) =>
+      connection.fetchStream
+        ? connection.fetchStream(path, init)
+        : connection.fetchResponse(path, init),
+    );
+  }
+
   upload(
     projectId: string,
     sessionId: string,

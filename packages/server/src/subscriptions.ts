@@ -10,6 +10,7 @@ import {
   createStreamAugmenter,
   markSubagent,
 } from "./augments/index.js";
+import { isLiveToolOutputMessage } from "@yep-anywhere/shared";
 import { createTaskListAugmenter } from "./augments/task-list-augments.js";
 import { getLogger } from "./logging/logger.js";
 import {
@@ -33,6 +34,8 @@ export interface SubscriptionOptions extends SessionQueueSummaryDeps {
   logLabel?: string;
   /** Whether this subscriber wants live provider deltas and streaming augments. */
   wantsLiveDeltas?: boolean;
+  /** Whether this subscriber wants running tool calls' live output. */
+  wantsLiveToolOutput?: boolean;
   /** Injectable augmenter factory for deterministic transport tests. */
   createAugmenter?: typeof createStreamAugmenter;
   /** Authenticated exact probes for bare absolute-path viewer links. */
@@ -109,6 +112,7 @@ export function createSessionSubscription(
 ): { cleanup: () => void } {
   let completed = false;
   const wantsLiveDeltas = options?.wantsLiveDeltas !== false;
+  const wantsLiveToolOutput = options?.wantsLiveToolOutput !== false;
   const unregisterViewer = process.registerViewer();
   const unregisterLiveDeltaSubscriber = wantsLiveDeltas
     ? process.registerLiveDeltaSubscriber()
@@ -380,6 +384,9 @@ export function createSessionSubscription(
             event.message as Record<string, unknown>,
           );
           if (!wantsLiveDeltas && isLiveDeltaMessage(message)) {
+            break;
+          }
+          if (!wantsLiveToolOutput && isLiveToolOutputMessage(message)) {
             break;
           }
           taskListAugmenter.processMessage(message);

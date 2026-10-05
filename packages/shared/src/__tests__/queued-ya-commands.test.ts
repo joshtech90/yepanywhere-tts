@@ -61,6 +61,15 @@ describe("classifyQueuedYaCommand", () => {
     });
   });
 
+  it("refuses /v only where YA's file-view command is available", () => {
+    for (const text of ["/v src index", "/view README.md"]) {
+      expect(
+        classifyQueuedYaCommand(text, { ...rewind, fileViewSupported: true }),
+      ).toEqual({ kind: "composer-only", name: "view" });
+      expect(classifyQueuedYaCommand(text, rewind)).toEqual({ kind: "prompt" });
+    }
+  });
+
   it("names /fork as not yet queueable rather than running it", () => {
     expect(classifyQueuedYaCommand("/fork 4", rewind)).toEqual({
       kind: "unsupported",

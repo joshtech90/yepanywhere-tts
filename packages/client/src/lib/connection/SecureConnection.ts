@@ -32,6 +32,7 @@ import {
   SPEECH_RELAY_CHANNEL,
   TransportChunkError,
   TransportChunkReassembler,
+  decodeResponseChunkPayload,
   encodeUploadChunkPayload,
   isBinaryData,
   isCompressionSupported,
@@ -54,8 +55,9 @@ import {
 import { RelayProtocol } from "./RelayProtocol";
 import type { SecureConnectionSocket } from "./SecureConnectionSocket";
 import {
+  decodeJsonEnvelopePayload,
   decrypt,
-  decryptBinaryEnvelopeWithDecompression,
+  decryptBinaryEnvelopeRaw,
   deriveSecretboxKey,
   deriveTransportKey,
   encrypt,
@@ -179,6 +181,12 @@ export class SecureConnection implements Connection {
   private nextOutboundSeq = 0;
   private lastInboundSeq: number | null = null;
   private readonly inboundChunks = new TransportChunkReassembler();
+  /**
+   * Inbound messages handled so far, in arrival order. Decompression is
+   * asynchronous, so without this a later uncompressed message could be
+   * handled first and fail the sequence check.
+   */
+  private inboundQueue: Promise<void> = Promise.resolve();
   private pendingResumeClientNonce: string | null = null;
   private pendingResumeServerNonce: string | null = null;
   private minimumResumeProtocolVersion: number | null = null;
@@ -250,6 +258,7 @@ export class SecureConnection implements Connection {
         isConnected: () =>
           this.connectionState === "authenticated" &&
           this.ws?.readyState === WEBSOCKET_OPEN_STATE,
+        supportsStreamedResponses: true,
       },
       {
         debugEnabled: () => getRelayDebugEnabled(),
@@ -803,7 +812,7 @@ export class SecureConnection implements Connection {
         this.resetSequenceState();
 
         if (this.ws) {
-          this.ws.onmessage = (event) => this.handleMessage(event.data);
+          this.ws.onmessage = (event) => this.enqueueInboundMessage(event.data);
         }
 
         this.onSessionEstablished?.(this.storedSession);
@@ -1105,7 +1114,7 @@ export class SecureConnection implements Connection {
             authRejectHandler,
           );
         } else if (this.connectionState === "authenticated") {
-          this.handleMessage(event.data);
+          this.enqueueInboundMessage(event.data);
         }
       };
 
@@ -1364,6 +1373,12 @@ export class SecureConnection implements Connection {
     }
   }
 
+  private enqueueInboundMessage(data: unknown): void {
+    const handled = this.inboundQueue.then(() => this.handleMessage(data));
+    // A failure still surfaces as an unhandled rejection; the queue moves on.
+    this.inboundQueue = handled.catch(() => undefined);
+  }
+
   /**
    * Handle incoming WebSocket messages (after authentication).
    */
@@ -1379,14 +1394,24 @@ export class SecureConnection implements Connection {
       try {
         const completeMessage = this.inboundChunks.acceptFrame(data);
         if (!completeMessage) return;
-        decrypted = await decryptBinaryEnvelopeWithDecompression(
+        const envelope = decryptBinaryEnvelopeRaw(
           completeMessage,
           this.sessionKey,
         );
-        if (!decrypted) {
+        if (!envelope) {
           console.warn("[SecureConnection] Failed to decrypt binary envelope");
           return;
         }
+        if (envelope.format === BinaryFormat.RESPONSE_CHUNK) {
+          const chunk = decodeResponseChunkPayload(envelope.payload);
+          if (!this.acceptInboundSequence(chunk.seq)) return;
+          this.protocol.handleResponseChunk(chunk.requestId, chunk.data);
+          return;
+        }
+        decrypted = await decodeJsonEnvelopePayload(
+          envelope.format,
+          envelope.payload,
+        );
       } catch (err) {
         console.warn("[SecureConnection] Binary envelope error:", err);
         if (err instanceof TransportChunkError) {
@@ -1409,17 +1434,7 @@ export class SecureConnection implements Connection {
     try {
       const payload = JSON.parse(decrypted);
       if (isSequencedEncryptedPayload(payload)) {
-        if (
-          this.lastInboundSeq !== null &&
-          payload.seq <= this.lastInboundSeq
-        ) {
-          console.warn(
-            `[SecureConnection] Replay/old sequence rejected: seq=${payload.seq}, last=${this.lastInboundSeq}`,
-          );
-          this.ws?.close(4004, "Replay detected");
-          return;
-        }
-        this.lastInboundSeq = payload.seq;
+        if (!this.acceptInboundSequence(payload.seq)) return;
         msg = payload.msg as YepMessage;
       } else {
         console.warn("[SecureConnection] Missing/invalid encrypted sequence");
@@ -1435,6 +1450,23 @@ export class SecureConnection implements Connection {
     }
 
     this.protocol.routeMessage(msg);
+  }
+
+  /**
+   * Accepts the next inbound encrypted sequence number, closing the socket on
+   * a replayed or reordered one. JSON messages and raw response chunks share
+   * the server's one counter.
+   */
+  private acceptInboundSequence(seq: number): boolean {
+    if (this.lastInboundSeq !== null && seq <= this.lastInboundSeq) {
+      console.warn(
+        `[SecureConnection] Replay/old sequence rejected: seq=${seq}, last=${this.lastInboundSeq}`,
+      );
+      this.ws?.close(4004, "Replay detected");
+      return false;
+    }
+    this.lastInboundSeq = seq;
+    return true;
   }
 
   /**
@@ -1564,6 +1596,13 @@ export class SecureConnection implements Connection {
 
   async fetchResponse(path: string, init?: RequestInit): Promise<Response> {
     return this.protocol.fetchResponse(path, init);
+  }
+
+  async fetchStream(
+    path: string,
+    init?: { signal?: AbortSignal },
+  ): Promise<Response> {
+    return this.protocol.fetchStream(path, init);
   }
 
   subscribeConversation(
@@ -1846,7 +1885,7 @@ export class SecureConnection implements Connection {
             authRejectHandler,
           );
         } else if (this.connectionState === "authenticated") {
-          this.handleMessage(event.data);
+          this.enqueueInboundMessage(event.data);
         }
       };
 

@@ -8,7 +8,7 @@ const DEFAULT_PERMISSION_TIMEOUT_MS = 2 * 60_000;
 
 export interface NativeHostDescriptor {
   protocol: typeof NATIVE_HOST_PROTOCOL;
-  platform: "android";
+  platform: "android" | "ios";
   appVersion: string;
   buildVersion: number;
   features: string[];
@@ -227,7 +227,7 @@ function parseDescriptor(value: unknown): NativeHostDescriptor {
   if (
     !isRecord(value) ||
     value.protocol !== NATIVE_HOST_PROTOCOL ||
-    value.platform !== "android" ||
+    (value.platform !== "android" && value.platform !== "ios") ||
     typeof value.appVersion !== "string" ||
     typeof value.buildVersion !== "number" ||
     !Array.isArray(value.features) ||
@@ -237,7 +237,7 @@ function parseDescriptor(value: unknown): NativeHostDescriptor {
   }
   return {
     protocol: NATIVE_HOST_PROTOCOL,
-    platform: "android",
+    platform: value.platform,
     appVersion: value.appVersion,
     buildVersion: value.buildVersion,
     features: [...value.features],

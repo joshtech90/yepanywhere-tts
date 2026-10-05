@@ -1,0 +1,54 @@
+name: YAProof
+options:
+  minimumXcodeGenVersion: 2.45.0
+  deploymentTarget:
+    iOS: "16.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    ARCHS: arm64
+    GENERATE_INFOPLIST_FILE: YES
+    HEADER_SEARCH_PATHS: "$(SRCROOT)/Generated"
+    OTHER_SWIFT_FLAGS: "$(inherited) -Xcc -fmodule-map-file=$(SRCROOT)/Generated/ya_mobile_core_proofFFI.modulemap"
+    SWIFT_TREAT_WARNINGS_AS_ERRORS: YES
+    GCC_TREAT_WARNINGS_AS_ERRORS: YES
+targets:
+  YAProof:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - Generated/ya_mobile_core_proof.swift
+      - path: ../../android/app/src/sharedTest/resources/ya-secure-interop-v1.json
+        buildPhase: resources
+      - path: ../test-vectors/minimal-public-unicode.json
+        buildPhase: resources
+      - path: ../test-vectors/minimal-m1.json
+        buildPhase: resources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.yepanywhere.crypto-proof.dev
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Info.plist
+        # Cargo also emits a dylib. Explicit archive paths prevent the linker
+        # from selecting an unbundled dylib that works only on this simulator host.
+        "OTHER_LDFLAGS[sdk=iphoneos*]": '$(inherited) "$(SRCROOT)/../target/aarch64-apple-ios/release/libya_mobile_core_proof.a" -framework Security'
+        "OTHER_LDFLAGS[sdk=iphonesimulator*]": '$(inherited) "$(SRCROOT)/../target/aarch64-apple-ios-sim/release/libya_mobile_core_proof.a" -framework Security'
+  YAProofTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Tests]
+    dependencies:
+      - target: YAProof
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.yepanywhere.crypto-proof.dev.tests
+schemes:
+  YAProof:
+    build:
+      targets:
+        YAProof: all
+        YAProofTests: [test]
+    test:
+      targets: [YAProofTests]

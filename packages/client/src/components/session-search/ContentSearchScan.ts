@@ -151,7 +151,12 @@ export class ContentSearchPool {
   private active = 0;
   private waiting = new Map<object, () => Promise<void> | undefined>();
 
-  constructor(private readonly limit = 4) {}
+  constructor(private limit = 4) {}
+
+  setLimit(limit: number) {
+    this.limit = limit;
+    this.pump();
+  }
 
   add(owner: object, next: () => Promise<void> | undefined) {
     this.waiting.set(owner, next);

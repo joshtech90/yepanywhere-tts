@@ -1,12 +1,84 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
+import type { ContextBreakdown } from "@yep-anywhere/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
 import { ContextThresholdQuickEdit } from "../ContextThresholdQuickEdit";
 
 const refresh = vi.fn();
 const updateSetting = vi.fn(async () => undefined);
+const serverVersion = vi.hoisted(() => ({ current: "0.9.2" }));
+const getSessionContextBreakdown = vi.hoisted(() => vi.fn());
+
+vi.mock("../../hooks/useVersion", () => ({
+  useVersion: () => ({ version: { current: serverVersion.current } }),
+}));
+
+vi.mock("../../api/client", () => ({
+  api: { getSessionContextBreakdown },
+}));
+
+const BREAKDOWN: ContextBreakdown = {
+  model: "claude-sonnet-5",
+  totalTokens: 69_700,
+  maxTokens: 1_000_000,
+  autoCompactAtTokens: 967_000,
+  categories: [
+    { key: "systemTools", name: "System tools", tokens: 24_100, kind: "used" },
+    {
+      key: "memoryFiles",
+      name: "Memory files",
+      tokens: 25_300,
+      kind: "used",
+      items: [
+        { label: "~/.claude/CLAUDE.md", detail: "User", tokens: 24_700 },
+        { label: "~/agents/CLAUDE.local.md", detail: "Local", tokens: 600 },
+      ],
+    },
+    {
+      key: "messages",
+      name: "Messages",
+      tokens: 9_500,
+      kind: "used",
+      messageParts: {
+        toolCallTokens: 2_000,
+        toolResultTokens: 5_200,
+        assistantTextTokens: 1_500,
+        userTextTokens: 300,
+      },
+    },
+    { key: "other", name: "Brand new row", tokens: 800, kind: "used" },
+    { key: "free", name: "Free space", tokens: 930_300, kind: "free" },
+  ],
+};
+
+function renderClaudeSession() {
+  render(
+    <I18nProvider>
+      <ContextThresholdQuickEdit
+        provider="claude"
+        model="fable"
+        sessionId="session-1"
+        usage={{
+          inputTokens: 69_700,
+          contextWindow: 1_000_000,
+          percentage: 7,
+          cacheReadTokens: 68_900,
+        }}
+      />
+    </I18nProvider>,
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: /Subscription usage 100% used/ }),
+  );
+}
 
 vi.mock("../../hooks/useProviderSubscriptionUsage", () => ({
   useProviderSubscriptionUsage: () => ({
@@ -54,6 +126,68 @@ describe("ContextThresholdQuickEdit", () => {
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();
+    serverVersion.current = "0.9.2";
+  });
+
+  it("asks an older server for no breakdown", () => {
+    renderClaudeSession();
+
+    expect(screen.getByRole("dialog").textContent).not.toContain(
+      "Context window",
+    );
+    expect(getSessionContextBreakdown).not.toHaveBeenCalled();
+  });
+
+  it("shows what fills the window, with expandable rows", async () => {
+    serverVersion.current = "0.9.4";
+    getSessionContextBreakdown.mockResolvedValue({ breakdown: BREAKDOWN });
+    renderClaudeSession();
+
+    await screen.findByText("Instruction files");
+    expect(getSessionContextBreakdown).toHaveBeenCalledWith("session-1");
+    const dialog = screen.getByRole("dialog");
+    expect(dialog.textContent).toContain("Tool definitions");
+    expect(dialog.textContent).toContain("Brand new row");
+    expect(dialog.textContent).toContain("Autocompacts at 967.0K");
+    expect(dialog.textContent).not.toContain("~/.claude/CLAUDE.md");
+
+    fireEvent.click(screen.getByRole("button", { name: /Instruction files/ }));
+    expect(dialog.textContent).toContain("~/.claude/CLAUDE.md");
+    expect(dialog.textContent).toContain("24.7K");
+
+    fireEvent.click(screen.getByRole("button", { name: /Conversation/ }));
+    expect(dialog.textContent).toContain("Tool results");
+    expect(dialog.textContent).toContain("5.2K");
+    // The existing last-turn rows remain below the breakdown.
+    expect(dialog.textContent).toContain("Read from cache");
+  });
+
+  it("renders nothing for a session without a live breakdown", async () => {
+    serverVersion.current = "0.9.4";
+    getSessionContextBreakdown.mockResolvedValue({ breakdown: null });
+    renderClaudeSession();
+
+    await waitFor(() =>
+      expect(getSessionContextBreakdown).toHaveBeenCalledOnce(),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole("dialog").textContent).not.toContain(
+        "Counting context",
+      ),
+    );
+    expect(screen.getByRole("dialog").textContent).not.toContain(
+      "Context window",
+    );
+  });
+
+  it("reports a provider failure inside the section", async () => {
+    serverVersion.current = "0.9.4";
+    getSessionContextBreakdown.mockRejectedValue(
+      new Error("token count unavailable"),
+    );
+    renderClaudeSession();
+
+    await screen.findByText("Breakdown unavailable: token count unavailable");
   });
 
   it("opens applicable subscription windows on left click", () => {

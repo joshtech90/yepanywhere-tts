@@ -1,0 +1,209 @@
+/* Context-window breakdown section of the context-usage popover. Category
+   colours derive from theme tokens so every theme gets distinct hues without
+   a new palette. */
+
+.breakdown {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+/* The subscription block that follows has no separator of its own. */
+.breakdown + :global(.subscription-usage-header) {
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--border-color);
+}
+
+[data-key] {
+  --segment: var(--text-muted);
+}
+[data-key="systemPrompt"] {
+  --segment: var(--text-dimmed);
+}
+[data-key="systemTools"] {
+  --segment: var(--primary-color);
+}
+[data-key="mcpTools"] {
+  --segment: color-mix(in srgb, var(--primary-color) 50%, var(--success-color));
+}
+[data-key="agents"] {
+  --segment: color-mix(in srgb, var(--warning-color) 50%, var(--error-color));
+}
+[data-key="memoryFiles"] {
+  --segment: var(--warning-color);
+}
+[data-key="skills"] {
+  --segment: var(--success-color);
+}
+[data-key="messages"] {
+  --segment: color-mix(in srgb, var(--primary-color) 55%, var(--error-color));
+}
+
+.summary {
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.windowMeter {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  height: 4px;
+  overflow: hidden;
+  background: var(--bg-tertiary);
+  border-radius: 999px;
+}
+
+.windowUsed {
+  min-width: 2px;
+  background: var(--text-muted);
+}
+
+.windowReserve {
+  background: repeating-linear-gradient(
+    135deg,
+    var(--text-dimmed) 0 2px,
+    transparent 2px 4px
+  );
+}
+
+.compactMark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--color-warning, #d29922);
+}
+
+.caption {
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.composition {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 2px;
+}
+
+.composition > span {
+  flex-basis: 0;
+  min-width: 2px;
+  background: var(--segment);
+}
+
+.categories,
+.items {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.categories {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Rows are buttons where expandable; 28px keeps them tappable on phones. */
+.head {
+  display: grid;
+  grid-template-columns: 8px 8px 1fr auto 30px;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 28px;
+  padding: 0;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  text-align: left;
+  background: none;
+  border: 0;
+}
+
+button.head {
+  cursor: pointer;
+}
+
+button.head:hover {
+  color: var(--text-primary);
+}
+
+.caret[data-open] {
+  justify-self: center;
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid var(--text-muted);
+  transition: transform 0.1s;
+}
+
+.caret[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+.swatch {
+  width: 8px;
+  height: 8px;
+  background: var(--segment);
+  border-radius: 2px;
+}
+
+.label,
+.itemLabel {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tokens {
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.share {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* Right inset = share column + gap, so item counts align with row counts. */
+.items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 0 0 var(--space-1) 22px;
+  padding: 0 36px 0 var(--space-2);
+  border-left: 1px solid var(--border-color);
+}
+
+.item {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: baseline;
+  gap: var(--space-2);
+  color: var(--text-secondary);
+  font-size: var(--font-size-xs);
+}
+
+.itemDetail {
+  color: var(--text-dimmed);
+}
+
+.note,
+.aside {
+  color: var(--text-muted);
+  font-size: var(--font-size-xs);
+}
+
+.note {
+  font-style: italic;
+}

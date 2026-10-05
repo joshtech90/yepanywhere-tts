@@ -446,6 +446,9 @@ class RemoteAgentSession {
       ...(capabilities.supportedCommands
         ? { supportedCommands: () => this.rpc("supportedCommands") }
         : {}),
+      ...(capabilities.getContextBreakdown
+        ? { getContextBreakdown: () => this.rpc("getContextBreakdown") }
+        : {}),
       ...(capabilities.setModel
         ? { setModel: (model) => this.rpc("setModel", [model]) }
         : {}),

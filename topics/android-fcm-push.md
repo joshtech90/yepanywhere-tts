@@ -6,14 +6,12 @@
 
 Topic: android-fcm-push
 
-Status: The credential-free broker v1 is implemented, deployed, and proven
-through FCM to a physical Pixel. The current Android shell owns notification
-permission/channel status, a Keystore-backed broker installation whose FCM
-target follows FID replacement, and a per-server continuity key that registers
-and checks in through the implemented unified security-client server contract.
-The native-push server contract, server-specific subscription enrollment, and
-native notification presentation remain pending. The obsolete Tauri Mobile
-source has been removed.
+Status: Per-host enrollment, generic native presentation and authenticated
+session taps are implemented for Android and iOS. The updated broker is deployed;
+physical Android tests prove two-host isolation, foreground/background events,
+session taps and headless presentation. iOS sandbox provisioning, two-host
+enrollment and real background APNs presentation pass; live tap routing remains
+under validation in [the delivery plan](../docs/tactical/141-native-push-delivery.md).
 
 Related:
 
@@ -94,7 +92,7 @@ phone and server.
 The default server-pairing path is the existing username/password SRP flow over
 the upstream public relay. The same normalized username is the relay target and
 SRP identity, matching the web relay login. A custom relay or direct connection
-is an explicit advanced choice. The native Kotlin core owns that native login
+is an explicit advanced choice. The shared Rust core owns that native login
 and its Keystore-backed resume credential. Push enrollment happens only after
 the server records the authenticated paired device:
 
@@ -252,14 +250,21 @@ details from the user's YA server over its normal authenticated connection.
 
 This is the conservative default direction.
 
-The credential-free v1 initially accepted four fixed intents: approval
-required, input required, session completed, and session failed. The unified
-security-client baseline adds `security_event` for an owner-enabled new-client
-alert. Deploy that allowlist addition before a YA server submits the new intent;
-an older or self-hosted broker rejects it boundedly and the server does not
-queue or retry it. All intents produce bounded fixed copy. The provider payload
-contains the intent and opaque subscription id so the app can fetch current
-details from its authenticated YA server.
+The v1 accepts four fixed intents: approval required, input required, session
+completed, and session failed. New-client/security alerts remain deferred.
+Optional `sessionId` and `eventId` fields accept only opaque base64url characters
+and at most 128 characters each; `test` accepts only `true`. All other fields
+are rejected, including URLs, project ids and user-generated title/body text.
+The YA server resolves a session tap through its authenticated destination route.
+
+Android receives high-priority data messages. Its native service validates the
+saved subscription binding and OS permission, deduplicates bounded event ids,
+and posts fixed copy without starting a WebView or connecting to YA. Disabled,
+forgotten, revoked and unknown bindings do not display or open a host.
+Foreground activity suppresses ordinary messages; explicit test messages still
+show. iOS receives an APNs alert with fixed copy and the same opaque data. iOS
+can suppress unknown/disabled messages while active and fences every tap, but
+an APNs alert already in flight can still appear while the app is suspended.
 
 ### Descriptive
 
@@ -337,8 +342,8 @@ The first-class Android project:
   app-private Android Keystore-backed storage excluded from backup;
 - uses Firebase auto-initialization plus one app-start registration request
   only while installation work is absent or pending; and
-- does not display an app-owned notification, fetch YA state, or create a
-  server-specific broker subscription.
+- enrolls only after explicit per-host enable and the exact optional YA
+  capability/origin check; ordinary receipt does not fetch YA state.
 
 The plaintext FID is sent directly to the configured HTTPS broker and is never
 persisted or returned to JavaScript. Debug builds log only coarse registration
@@ -346,10 +351,16 @@ outcomes and received data-key names plus notification presence. FIDs,
 notification title/body, broker capabilities, and token values are never
 logged. Release builds log none of this diagnostic material.
 
-For notification payloads, foreground receipt invokes the diagnostic service.
-With no app process or Activity alive, Firebase/Android owns background tray
-presentation and does not invoke `onMessageReceived`; this distinction is
-expected and must not be mistaken for a failed delivery.
+Each native app retains bounded subscription-to-profile metadata and the
+installation management capability in backup-excluded native storage. The
+send capability is transferred once to the authenticated YA server and discarded
+by the app. Broker-origin changes fail closed; development installation records
+from the earlier unbound Android envelope are reset, without changing host
+credentials or continuity keys. A failed cleanup retains a disabled tombstone;
+re-enrollment cannot overwrite it. Disable/forget retires local routing before
+broker revocation, independently of YA host reachability. A source child that
+cannot be deleted immediately is invalidated on its next broker `404`.
+Permission and installed delivery state alone do not enroll any host.
 
 ## First-Class Shell Live Verification
 
@@ -370,12 +381,12 @@ Pixel 7a running Android 17 / API 37:
    configuration, and returned secrets were neither printed nor retained in
    the repository.
 
-## Future Apple Delivery
+## Apple Delivery
 
-A future YA iOS app should use the same device push subscription and broker
+The YA iOS app uses the same device push subscription and broker
 service rather than introducing another public notification service.
 
-The initial iOS direction is to use Firebase Cloud Messaging's Apple-platform
+The iOS integration uses Firebase Cloud Messaging's Apple-platform
 integration. The iOS app registers through the FCM SDK, Firebase maps that
 registration to Apple Push Notification service (APNs), and the broker submits
 through the same FCM server interface used for Android. The Firebase project
@@ -389,8 +400,26 @@ new public hostname or a new YA-server subscription model.
 iOS silent/background delivery is opportunistic and subject to platform
 throttling. The dependable initial product path should use visible
 notifications and fetch current details from the authenticated YA server when
-the user opens them. Exact Apple notification behavior must be validated during
-iOS implementation.
+the user opens them. The implemented iOS shell uses fixed APNs alert copy, protected per-host
+Keychain bindings and an authenticated destination lookup after native resume.
+Six push tests, the full simulator suite and signed phone native/UI regressions
+pass. Acceptance catalogs use separate push storage, preserving ordinary saved
+bindings during QA cleanup. First enrollment waits for APNs/FCM and protected
+broker registration after permission returns. This is one event-driven wait
+with a 15-second deadline; backgrounding or cancellation ends it, and registration
+failure remains retryable. The native list's Enable/Disable and Send test controls
+act independently; testing must not disable the host's enrollment.
+
+Private development setup now registers the explicit YA bundle with Push
+Notifications and the corresponding Firebase Apple app. A sandbox, topic-specific
+APNs key is uploaded to Firebase's development slot. Private configuration and
+key backups remain outside Git. Debug provisioning must contain the development
+APNs entitlement. The signed phone proves two-host enrollment and generic
+background session-event presentation. Eight focused native push tests pass on
+simulator and phone. Live system-notification taps remain under validation;
+the current controller reports them non-hittable and its tap attempts do not
+open YA. Production APNs credentials and App Store/TestFlight signing remain
+separate release gates in the delivery plan.
 
 ## Self-Hosted And Configured Variants
 

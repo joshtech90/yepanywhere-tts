@@ -21,22 +21,15 @@ class YaPairingCoordinator(
         password: String,
         route: YaServerRoute,
     ): YaPairedServerProfile {
-        val transport = connector.login(route, username, password)
+        val establishedAt = nowEpochMs()
+        var profile = YaPairedServerProfile.create(label, username, route, establishedAt)
+            .copy(lastConnectedAtEpochMs = establishedAt)
+        if (securityClients != null) {
+            profile = profile.copy(securityClient = YaSecurityClientBinding.pending(
+                YaSecurityClientProtocol.keyAlias(profile.id)))
+        }
+        val transport = connector.loginProfile(profile, route, password)
         try {
-            val establishedAt = nowEpochMs()
-            var profile = YaPairedServerProfile.create(
-                label = label,
-                username = username,
-                route = route,
-                nowEpochMs = establishedAt,
-            ).copy(lastConnectedAtEpochMs = establishedAt)
-            if (securityClients != null) {
-                profile = profile.copy(
-                    securityClient = YaSecurityClientBinding.pending(
-                        YaSecurityClientProtocol.keyAlias(profile.id),
-                    ),
-                )
-            }
             repository.upsert(
                 profile = profile,
                 resumeCredential = YaStoredResumeCredential(
@@ -74,9 +67,9 @@ class YaPairingCoordinator(
             snapshot.profile.routes.firstOrNull { it.id == routeId }
                 ?: error("Cannot authenticate through an unknown route")
         }
-        val transport = connector.login(
+        val transport = connector.loginProfile(
+            profile = snapshot.profile,
             route = route,
-            username = snapshot.profile.username,
             password = password,
         )
         try {

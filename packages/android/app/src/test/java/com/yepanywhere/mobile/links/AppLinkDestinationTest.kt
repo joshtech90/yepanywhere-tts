@@ -8,6 +8,17 @@ class AppLinkDestinationTest {
     private val clientUrl = "https://appassets.androidplatform.net/"
 
     @Test
+    fun nativePairingKeepsCredentialsOutOfWebUrls() {
+        assertEquals(AppLinkDestination.NativePairingLink("user", "password", "wss://relay.example/ws"),
+            AppLinkDestination.toNativePairingLink("android.intent.action.VIEW",
+                "https://yepanywhere.com/open?u=user&p=password&r=https%3A%2F%2Frelay.example"))
+        assertNull(AppLinkDestination.toNativePairingLink("android.intent.action.VIEW",
+            "https://evil.example/open?u=user&p=password"))
+        assertNull(AppLinkDestination.toNativePairingLink("android.intent.action.VIEW",
+            "https://yepanywhere.com/open?u=user&p=password&r=javascript%3Aevil"))
+    }
+
+    @Test
     fun ignoresOrdinaryLauncherIntentsEvenWhenTheActivityAlreadyExists() {
         assertNull(
             AppLinkDestination.toWebClientUrlForIntent(

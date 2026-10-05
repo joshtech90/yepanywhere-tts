@@ -2,6 +2,7 @@ export interface DesktopRuntimeMetadata {
   desktopVersion: string;
   bundledYaVersion?: string;
   commit?: string;
+  nativeUpdateCheck?: boolean;
 }
 
 declare global {
@@ -29,6 +30,7 @@ export function getDesktopRuntimeMetadata(): DesktopRuntimeMetadata | null {
     desktopVersion,
     bundledYaVersion: optionalString(values.bundledYaVersion),
     commit: optionalString(values.commit),
+    ...(values.nativeUpdateCheck === true ? { nativeUpdateCheck: true } : {}),
   };
 }
 

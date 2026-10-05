@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { HTTPException } from "hono/http-exception";
 import type { ArtifactServer } from "../artifacts/ArtifactServer.js";
 import {
   validateArtifactConfig,
@@ -23,7 +24,11 @@ export function createArtifactConfigWriter(
   options: ArtifactConfigWriterOptions,
 ) {
   let updating = false;
-  async function apply(c: Context, input: unknown): Promise<Response | null> {
+  async function apply(
+    c: Context,
+    input: unknown,
+    afterSave?: (config: ArtifactConfig) => Promise<void>,
+  ): Promise<Response | null> {
     if (options.locked || !options.settings)
       return c.json(
         { error: "Artifact configuration is controlled at launch" },
@@ -34,7 +39,7 @@ export function createArtifactConfigWriter(
     let config: ArtifactConfig;
     try {
       config = validateArtifactConfig(
-        input,
+        typeof input === "function" ? input(options.server.config) : input,
         options.server.config.expiryDays,
         options.server.config,
       );
@@ -68,6 +73,7 @@ export function createArtifactConfigWriter(
       if (shadowed)
         throw new Error(`The name "${shadowed}" is one of YA's own hosts`);
     } catch (error) {
+      if (error instanceof HTTPException) throw error;
       return c.json(
         {
           error:
@@ -98,6 +104,7 @@ export function createArtifactConfigWriter(
         await options.server.configure(previous);
         throw error;
       }
+      await afterSave?.(options.server.config);
       return null;
     } finally {
       updating = false;

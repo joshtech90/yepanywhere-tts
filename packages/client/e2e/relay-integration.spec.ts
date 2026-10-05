@@ -10,7 +10,7 @@
  * 3. Verify projects load via relay connection
  */
 
-import { mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { join } from "node:path";
 import {
@@ -157,16 +157,84 @@ test.describe("Full Relay Integration", () => {
     await page.goto(remotePreviewURL);
     await goToRelayLogin(page);
 
-    // Fill in relay login form (username is both relay ID and SRP identity)
-    await page.fill(
-      '[data-testid="relay-username-input"]',
-      TEST_RELAY_USERNAME,
-    );
-    await page.fill('[data-testid="srp-password-input"]', TEST_SRP_PASSWORD);
+    const computer = page.getByTestId("relay-username-input");
+    const password = page.getByTestId("srp-password-input");
+    const limitedUser = page.getByTestId("relay-limited-username-input");
+    await expect(limitedUser).toHaveCount(0);
+    for (const viewport of [
+      { width: 1000, height: 600 },
+      { width: 375, height: 812 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await recordUiCapture(page, `relay-login-default-${viewport.width}`);
+    }
 
-    // Show advanced options to set custom relay URL (local test relay)
+    // Real key events must survive React updates, including the relay preview
+    // derived from the computer name. This form has no live session stream.
+    const typeAndCheck = async (
+      input: import("@playwright/test").Locator,
+      value: string,
+    ) => {
+      await input.evaluate((element) => {
+        const field = element as HTMLInputElement;
+        const samples: Array<{ ms: number; present: boolean }> = [];
+        let started = 0;
+        field.addEventListener("keydown", () => {
+          started = performance.now();
+        });
+        field.addEventListener("input", () => {
+          const expected = field.value;
+          const keyStarted = started;
+          requestAnimationFrame(() => {
+            samples.push({
+              ms: performance.now() - keyStarted,
+              present: field.value.startsWith(expected),
+            });
+            field.dataset.typingSamples = JSON.stringify(samples);
+          });
+        });
+      });
+      await input.pressSequentially(value, { delay: 20 });
+      await expect(input).toHaveValue(value);
+      await expect
+        .poll(
+          async () =>
+            JSON.parse(
+              (await input.getAttribute("data-typing-samples")) ?? "[]",
+            ).length,
+        )
+        .toBe(value.length);
+      const samples = JSON.parse(
+        (await input.getAttribute("data-typing-samples")) ?? "[]",
+      ) as Array<{ ms: number; present: boolean }>;
+      expect(
+        samples.every(({ ms, present }) => present && ms <= 100),
+        JSON.stringify(samples),
+      ).toBe(true);
+    };
+    await typeAndCheck(computer, TEST_RELAY_USERNAME);
+    await typeAndCheck(password, TEST_SRP_PASSWORD);
+
+    // Advanced adds only an optional identity; the computer's autofill slot
+    // remains stable, and clearing the override still signs in as the owner.
     await page.click("text=Show Advanced Options");
+    await expect(computer).toHaveAttribute("name", "username");
+    await expect(computer).toHaveAttribute("autocomplete", "username");
+    await expect(limitedUser).toHaveAttribute("autocomplete", "off");
+    await typeAndCheck(limitedUser, "limited-guest");
+    await limitedUser.clear();
     await page.fill('[data-testid="custom-relay-url-input"]', relayWsURL);
+    for (const viewport of [
+      { width: 1000, height: 600 },
+      { width: 375, height: 812 },
+    ]) {
+      await page.setViewportSize(viewport);
+      await page.evaluate(() => window.scrollTo(0, 0));
+      await recordUiCapture(page, `relay-login-advanced-${viewport.width}`);
+    }
+
+    // Restore the suite viewport, above the app's sidebar breakpoint.
+    await page.setViewportSize({ width: 1280, height: 720 });
 
     // Submit form
     await page.click('[data-testid="login-button"]');
@@ -441,6 +509,96 @@ test.describe("Full Relay Integration", () => {
       ).toBeGreaterThan(20);
     } finally {
       await rm(sessionFile);
+    }
+  });
+
+  test("a download past the single-message limit streams to disk over the relay", async ({
+    page,
+    baseURL,
+    remotePreviewURL,
+    relayWsURL,
+  }) => {
+    test.setTimeout(120_000);
+    const projectPath = join(e2ePaths.tempDir, "streamed-download-project");
+    const projectId = Buffer.from(projectPath).toString("base64url");
+    const sessionId = "streamed-download-session";
+    const sessionDirectory = join(
+      e2ePaths.claudeSessionsDir,
+      hostname(),
+      projectPath.replace(/\//g, "-"),
+    );
+    const sessionFile = join(sessionDirectory, `${sessionId}.jsonl`);
+    const fileName = "streamed-download.bin";
+    // Over the 64 MiB a single relayed response may carry.
+    const fileBytes = deterministicNoise(66 * 1024 * 1024);
+    const receivedFrameSizes: number[] = [];
+    page.on("websocket", (socket) => {
+      socket.on("framereceived", ({ payload }) => {
+        if (typeof payload === "string") return;
+        receivedFrameSizes.push(Buffer.from(payload).byteLength);
+      });
+    });
+
+    await mkdir(projectPath, { recursive: true });
+    await mkdir(sessionDirectory, { recursive: true });
+    await writeFile(join(projectPath, fileName), fileBytes);
+    await writeFile(
+      sessionFile,
+      JSON.stringify({
+        type: "user",
+        cwd: projectPath,
+        message: { role: "user", content: "download generated content" },
+        timestamp: new Date().toISOString(),
+        uuid: "streamed-download-user",
+      }),
+    );
+
+    try {
+      await expect
+        .poll(
+          async () =>
+            (
+              await fetch(
+                `${baseURL}/api/projects/${projectId}/sessions/${sessionId}?fullHistory=1`,
+                { headers: { "X-Yep-Anywhere": "true" } },
+              )
+            ).status,
+          { timeout: 10_000 },
+        )
+        .toBe(200);
+      await loginViaRelay(page, remotePreviewURL, relayWsURL);
+      await page.goto(
+        remoteRelayUrl(
+          remotePreviewURL,
+          `projects/${projectId}/file?path=${encodeURIComponent(fileName)}`,
+        ),
+      );
+      // The streamed path needs the page to be under its service worker.
+      await expect
+        .poll(() =>
+          page.evaluate(() => navigator.serviceWorker?.controller != null),
+        )
+        .toBe(true);
+
+      const downloadPromise = page.waitForEvent("download", {
+        timeout: 60_000,
+      });
+      await page.locator(".file-viewer-download-btn").click();
+      const download = await downloadPromise;
+      expect(download.suggestedFilename()).toBe(fileName);
+      expect(download.url()).toContain("/__ya-download/");
+      const savedPath = await download.path();
+      expect((await readFile(savedPath)).equals(fileBytes)).toBe(true);
+      expect(
+        receivedFrameSizes.every(
+          (size) =>
+            size <=
+            1 + TRANSPORT_CHUNK_HEADER_SIZE + TRANSPORT_CHUNK_PAYLOAD_MAX_BYTES,
+        ),
+      ).toBe(true);
+    } finally {
+      await rm(sessionFile);
+      await rm(projectPath, { recursive: true });
     }
   });
 

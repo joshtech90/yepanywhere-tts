@@ -9,6 +9,10 @@ import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
 import android.webkit.WebView
+import android.view.ViewGroup
+import androidx.core.graphics.Insets
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import android.webkit.WebViewClient
 import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
@@ -32,8 +36,29 @@ import org.junit.runner.RunWith
 @RunWith(AndroidJUnit4::class)
 class WebClientActivityTest {
     @Test
+    fun systemBarsAndCutoutAreAppliedOnceWithoutConsumingKeyboardInsets() {
+        launchClient().use { scenario ->
+            scenario.onActivity { activity ->
+                val root = activity.findViewById<ViewGroup>(android.R.id.content).getChildAt(0)
+                val handled = WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.displayCutout()
+                for (bars in listOf(Insets.of(0, 45, 0, 24), Insets.of(36, 0, 0, 48))) {
+                    val original = WindowInsetsCompat.Builder()
+                        .setInsets(handled, bars)
+                        .setInsets(WindowInsetsCompat.Type.ime(), Insets.of(0, 0, 0, 320))
+                        .build()
+                    val forwarded = ViewCompat.dispatchApplyWindowInsets(root, original)
+                    assertEquals(bars, Insets.of(root.paddingLeft, root.paddingTop, root.paddingRight, root.paddingBottom))
+                    assertEquals(Insets.NONE, forwarded.getInsets(handled))
+                    assertEquals(320, forwarded.getInsets(WindowInsetsCompat.Type.ime()).bottom)
+                }
+                ViewCompat.requestApplyInsets(root)
+            }
+        }
+    }
+
+    @Test
     fun nativeHostDescribesAndroidOverWebMessage() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             assertEquals("\"object\"", evaluateJavaScript(scenario, "typeof window.yaNative"))
 
@@ -72,7 +97,7 @@ class WebClientActivityTest {
 
     @Test
     fun notificationStatusIsBoundedAndPermissionRequiresUserAction() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             requestNativeMethod(scenario, "notification-status", "notifications.status")
             awaitJavaScript(
@@ -117,7 +142,7 @@ class WebClientActivityTest {
         } else {
             null
         }
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             scenario.onActivity { activity -> activity.onUserInteraction() }
             postNativeMethod(
@@ -154,7 +179,7 @@ class WebClientActivityTest {
 
     @Test
     fun nativeHostIsAbsentFromAnUnapprovedOrigin() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             scenario.onActivity { activity ->
                 activity.findViewById<WebView>(R.id.web_client).apply {
@@ -183,7 +208,7 @@ class WebClientActivityTest {
 
     @Test
     fun nativeHostDoesNotReplyToASubframe() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             evaluateJavaScript(
                 scenario,
@@ -247,7 +272,7 @@ class WebClientActivityTest {
 
     @Test
     fun activityRecreationRestoresTheClientAndNativeHost() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
 
             scenario.recreate()
@@ -260,7 +285,7 @@ class WebClientActivityTest {
 
     @Test
     fun rotationRestoresTheClientAndNativeHost() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             try {
                 scenario.onActivity { activity ->
@@ -281,7 +306,7 @@ class WebClientActivityTest {
 
     @Test
     fun backNavigatesWebHistoryBeforeFinishingTheActivity() {
-        ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+        launchClient().use { scenario ->
             awaitJavaScript(scenario, "document.readyState", "\"complete\"")
             awaitJavaScript(scenario, "window.location.pathname", "\"/login\"")
             val initialUrl = evaluateJavaScript(scenario, "window.location.href")
@@ -320,7 +345,7 @@ class WebClientActivityTest {
             intending(hasAction(Intent.ACTION_VIEW)).respondWith(
                 ActivityResult(Activity.RESULT_OK, null),
             )
-            ActivityScenario.launch(WebClientActivity::class.java).use { scenario ->
+            launchClient().use { scenario ->
                 awaitJavaScript(scenario, "document.readyState", "\"complete\"")
                 evaluateJavaScript(
                     scenario,
@@ -336,6 +361,22 @@ class WebClientActivityTest {
         } finally {
             Intents.release()
         }
+    }
+
+    private fun launchClient(): ActivityScenario<WebClientActivity> {
+        // Control-plane tests have no native profile. Start at the stable login
+        // route so a / -> /login redirect cannot discard the test's reply state.
+        // Activity consumes/clears Intent.data, which ActivityScenario uses
+        // for lifecycle matching. Load the route after its launch instead.
+        val scenario = ActivityScenario.launch(WebClientActivity::class.java)
+        scenario.onActivity { activity ->
+            activity.findViewById<WebView>(R.id.web_client).apply {
+                stopLoading()
+                loadUrl("${WebClientConfig.fromBuild().origin}/login")
+            }
+        }
+        awaitJavaScript(scenario, "location.pathname === '/login' && document.readyState === 'complete'", "true")
+        return scenario
     }
 
     private fun requestHostDescription(

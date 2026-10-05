@@ -377,6 +377,216 @@ describe("ProjectQueueService", () => {
     });
   });
 
+  it.each([
+    ["one batch", "batch-a", "batch-a"],
+    ["multiple batches", "batch-b", "batch-c"],
+  ])(
+    "queues synced copies from %s through create, edit and reload",
+    async (_label, secondBatch, thirdBatch) => {
+      const stagingService = new AttachmentStagingService({
+        stagingRoot: path.join(testDir, "staging"),
+      });
+      const first = await completeDraftUpload(
+        stagingService,
+        Buffer.from("synced original"),
+      );
+      const second = await completeDraftUpload(
+        stagingService,
+        Buffer.from("unsynced attachment"),
+        secondBatch,
+      );
+      const third = await completeDraftUpload(
+        stagingService,
+        Buffer.from("synced addition"),
+        thirdBatch,
+      );
+      const protectedIds = new Set([first.ref.id, third.ref.id]);
+      stagingService.setDraftProtection((_owner, id) => protectedIds.has(id));
+      const service = await createService(undefined, stagingService);
+      const created = await service.createItem({
+        projectId,
+        projectPath: "/tmp/project-queue",
+        request: {
+          target: { type: "new-session", provider: "codex" },
+          message: {
+            text: "start later with synced files",
+            stagedAttachments: {
+              batchId: first.batchId,
+              refs: [first.ref, second.ref],
+              updatedAt: first.ref.updatedAt,
+            },
+          },
+        },
+      });
+      const createdRefs = created.message.stagedAttachments!.refs;
+      expect(createdRefs.map((ref) => ref.batchId)).toEqual([
+        first.batchId,
+        second.batchId,
+      ]);
+      expect(createdRefs[0]?.id).not.toBe(first.ref.id);
+      expect(createdRefs[1]?.id).toBe(second.ref.id);
+      const updated = await service.updateItem(projectId, created.id, {
+        message: {
+          text: created.message.text,
+          stagedAttachments: {
+            batchId: third.batchId,
+            refs: [third.ref, ...createdRefs],
+            updatedAt: third.ref.updatedAt,
+          },
+        },
+      });
+      const updatedRefs = updated!.message.stagedAttachments!.refs;
+      expect(updated!.message.stagedAttachments!.batchId).toBe(third.batchId);
+      expect(updatedRefs.map((ref) => ref.batchId)).toEqual([
+        third.batchId,
+        first.batchId,
+        second.batchId,
+      ]);
+      expect(updatedRefs[0]?.id).not.toBe(third.ref.id);
+      expect(updatedRefs.slice(1)).toEqual(createdRefs);
+      await expect(
+        stagingService.validateQueueRefs(created.id, updatedRefs),
+      ).resolves.toEqual(updatedRefs);
+
+      const reloaded = await createService(undefined, stagingService);
+      expect(
+        reloaded.listProject(projectId).items[0]?.message.stagedAttachments
+          ?.refs,
+      ).toEqual(updatedRefs);
+      const files = await stagingService.materializeQueueAttachmentsForSession({
+        queueItemId: created.id,
+        refs: updatedRefs,
+        projectPath: "/tmp/project-queue",
+        sessionId: "queued-session",
+      });
+      expect(
+        await Promise.all(files.map((file) => fs.readFile(file.path, "utf-8"))),
+      ).toEqual(["synced addition", "synced original", "unsynced attachment"]);
+      await reloaded.deleteItem(projectId, created.id);
+      for (const ref of updatedRefs) {
+        expect(stagingService.getRecord(ref.id)).toBeNull();
+      }
+      for (const upload of [first, third]) {
+        await expect(
+          stagingService.validateDraftRefs(upload.batchId, [upload.ref]),
+        ).resolves.toEqual([upload.ref]);
+      }
+    },
+  );
+
+  it.each(["foreign account", "wrong batch"])(
+    "rejects a mixed-batch %s reference on create and edit",
+    async (invalidKind) => {
+      const staging = new AttachmentStagingService({
+        stagingRoot: path.join(testDir, "staging"),
+      });
+      staging.setDraftProtection(() => true);
+      const alice = staging.forUser("alice");
+      const first = await completeDraftUpload(
+        alice,
+        Buffer.from("alice's file"),
+      );
+      const source =
+        invalidKind === "foreign account" ? staging.forUser("bob") : alice;
+      const second = await completeDraftUpload(
+        source,
+        Buffer.from("second file"),
+        "batch-b",
+      );
+      const invalidRef =
+        invalidKind === "wrong batch"
+          ? { ...second.ref, batchId: "batch-c" }
+          : second.ref;
+      const service = await createService(undefined, staging);
+      const message = (refs: StagedAttachmentRef[]) => ({
+        text: "queue these files",
+        stagedAttachments: {
+          batchId: first.batchId,
+          refs,
+          updatedAt: first.ref.updatedAt,
+        },
+      });
+      const request = {
+        target: { type: "new-session" as const },
+        message: message([first.ref, invalidRef]),
+      };
+      await expect(
+        service.createItem({
+          projectId,
+          projectPath: testDir,
+          createdByUser: "alice",
+          request,
+        }),
+      ).rejects.toThrow(`Staged attachment not found: ${second.ref.id}`);
+      expect(service.listProject(projectId).items).toEqual([]);
+
+      const created = await service.createItem({
+        projectId,
+        projectPath: testDir,
+        createdByUser: "alice",
+        request: { ...request, message: message([first.ref]) },
+      });
+      const retained = created.message.stagedAttachments!.refs;
+      await expect(
+        service.updateItem(
+          projectId,
+          created.id,
+          {
+            message: message([...retained, invalidRef]),
+          },
+          { editor: "alice" },
+        ),
+      ).rejects.toThrow(`Staged attachment not found: ${second.ref.id}`);
+      expect(
+        service.listProject(projectId).items[0]?.message.stagedAttachments
+          ?.refs,
+      ).toEqual(retained);
+      await expect(
+        alice.validateQueueRefs(created.id, retained),
+      ).resolves.toEqual(retained);
+      await expect(
+        alice.validateDraftRefs(first.batchId, [first.ref]),
+      ).resolves.toEqual([first.ref]);
+      await expect(
+        source.validateDraftRefs(second.batchId, [second.ref]),
+      ).resolves.toEqual([second.ref]);
+    },
+  );
+
+  it("preserves synced originals when saving a queued copy fails", async () => {
+    const stagingService = new AttachmentStagingService({
+      stagingRoot: path.join(testDir, "staging"),
+    });
+    const { batchId, ref } = await completeDraftUpload(
+      stagingService,
+      Buffer.from("synced original"),
+    );
+    stagingService.setDraftProtection((_owner, id) => id === ref.id);
+    const service = await createService(undefined, stagingService);
+    await fs.mkdir(service.getFilePath());
+    await expect(
+      service.createItem({
+        projectId,
+        projectPath: "/tmp/project-queue",
+        request: {
+          target: { type: "new-session" },
+          message: {
+            text: "queue with a synced attachment",
+            stagedAttachments: {
+              batchId,
+              refs: [ref],
+              updatedAt: ref.updatedAt,
+            },
+          },
+        },
+      }),
+    ).rejects.toMatchObject({ code: expect.stringMatching(/EISDIR|EPERM/) });
+    expect(service.listProject(projectId).items).toEqual([]);
+    await expect(
+      stagingService.validateDraftRefs(batchId, [ref]),
+    ).resolves.toEqual([ref]);
+  });
+
   it("restores draft ownership when an attachment update cannot be saved", async () => {
     const stagingService = new AttachmentStagingService({
       stagingRoot: path.join(testDir, "staging"),

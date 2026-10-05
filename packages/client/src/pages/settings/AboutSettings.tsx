@@ -40,15 +40,15 @@ export function AboutSettings() {
   const sourceKey = useClientSummarySourceKey();
   useSettingsPaneTitle(t("aboutTitle"));
   const { canInstall, isInstalled, install } = usePwaInstall();
+  const desktopRuntime = getDesktopRuntimeMetadata();
   const {
     version: versionInfo,
     loading: versionLoading,
     error: versionError,
     refetchFresh: refetchVersionFresh,
-  } = useVersion({ freshOnMount: true });
+  } = useVersion({ freshOnMount: !desktopRuntime });
   const remoteConnection = useOptionalRemoteConnection();
   const { resetOnboarding } = useOnboarding();
-  const desktopRuntime = getDesktopRuntimeMetadata();
   const currentRelayUsername = remoteConnection?.currentRelayUsername ?? null;
   const getNoticesForVersion = useCallback(
     (candidate: VersionInfo | null) => {
@@ -60,6 +60,7 @@ export function AboutSettings() {
         latestVersion: candidate?.latest ?? null,
         updateAvailable: candidate?.updateAvailable ?? false,
         installSource: candidate?.installSource,
+        desktopRuntime: candidate?.desktopRuntime,
         resumeProtocolVersion: candidate?.resumeProtocolVersion,
         remoteCompatibilityLevel: candidate?.remoteCompatibilityLevel,
         capabilities: candidate?.capabilities,
@@ -120,12 +121,33 @@ export function AboutSettings() {
     restoreRemoteCompatibilityNotices(remoteCompatibilityNotices);
   }, [remoteCompatibilityNotices, restoreRemoteCompatibilityNotices]);
 
+  const [desktopCheckStatus, setDesktopCheckStatus] = useState<
+    "opened" | "failed" | "menu" | null
+  >(null);
   const handleCheckUpdates = useCallback(async () => {
+    if (desktopRuntime) {
+      if (!desktopRuntime.nativeUpdateCheck) {
+        setDesktopCheckStatus("menu");
+        return;
+      }
+      try {
+        const response = await fetch("/desktop-bootstrap/check-updates", {
+          method: "POST",
+          headers: { "X-Yep-Anywhere": "true" },
+          credentials: "same-origin",
+        });
+        setDesktopCheckStatus(response.ok ? "opened" : "failed");
+      } catch {
+        setDesktopCheckStatus("failed");
+      }
+      return;
+    }
     const freshVersion = await refetchVersionFresh();
     restoreRemoteCompatibilityNotices(
       getNoticesForVersion(freshVersion ?? versionInfo),
     );
   }, [
+    desktopRuntime,
     getNoticesForVersion,
     refetchVersionFresh,
     restoreRemoteCompatibilityNotices,
@@ -237,12 +259,27 @@ export function AboutSettings() {
                     </p>
                   </>
                 )}
+                {desktopCheckStatus && (
+                  <p role="status">
+                    {t(
+                      desktopCheckStatus === "opened"
+                        ? "aboutDesktopUpdateOpened"
+                        : desktopCheckStatus === "menu"
+                          ? "aboutDesktopUpdateMenu"
+                          : "aboutDesktopUpdateFailed",
+                    )}
+                  </p>
+                )}
                 {versionError && (
                   <p className="settings-warning">{t("aboutUnableRefresh")}</p>
                 )}
-                {versionInfo?.updateAvailable && !remoteCompatibilityNotice && (
-                  <p className="settings-update-hint">{t("aboutUpdateHint")}</p>
-                )}
+                {!desktopRuntime &&
+                  versionInfo?.updateAvailable &&
+                  !remoteCompatibilityNotice && (
+                    <p className="settings-update-hint">
+                      {t("aboutUpdateHint")}
+                    </p>
+                  )}
               </div>
               <div className="settings-item-actions">
                 <button

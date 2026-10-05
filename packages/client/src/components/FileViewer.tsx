@@ -5,6 +5,7 @@ import {
   serverHasCapability,
   type FileContentResponse,
   type GitFileDiffMode,
+  type LocalResourceRef,
 } from "@yep-anywhere/shared";
 import {
   memo,
@@ -49,7 +50,6 @@ import {
   writeClipboardTextLater,
 } from "../lib/clipboard";
 import { getEmbeddedFileMediaBlob } from "../lib/embeddedFileMedia";
-import { downloadBlob } from "../lib/imageActions";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
 import { extractMarkdownSnippetsFromSelection } from "../lib/markdownSelectionCopy";
 import { getRenderedFileClipboardPayload } from "../lib/renderedFileClipboard";
@@ -101,11 +101,13 @@ import {
 } from "./FileDiffViewLinks";
 import { FileRevisionLink } from "./FileRevisionLink";
 import { PublicFileShareModal } from "./PublicFileShareModal";
+import { useFileVhostService } from "../hooks/useFileVhostService";
 import {
   FilePathContextMenu,
   type FileViewPresentation,
   supportsSourceAndPreview,
   localSourceTarget,
+  useSaveResourceDownload,
   useStartNewSessionFromFile,
   useStartNewSessionWithPrefillAction,
 } from "./FileResourceActions";
@@ -550,6 +552,20 @@ const DEFAULT_FILE_VIEWER_SOURCE: FileViewerSource = {
       : undefined,
 };
 
+/**
+ * A raw file URL that differs per file version, so a media element given it
+ * after an edit requests the new bytes instead of keeping what it loaded.
+ * The raw routes ignore the extra query parameter.
+ */
+function versionedRawFileUrl(
+  url: string,
+  metadata: FileContentResponse["metadata"],
+): string {
+  if (metadata.modifiedAt === undefined) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}v=${metadata.modifiedAt}-${metadata.size}`;
+}
+
 function getTargetTopWithinContainer(
   container: HTMLElement,
   target: HTMLElement,
@@ -805,6 +821,7 @@ export const FileViewer = memo(function FileViewer({
     projectFileModal,
     handleClick: handleLocalResourceClick,
     handleContextMenu: handleLocalResourceContextMenu,
+    openResource: openLocalResource,
     closeModal: closeLocalMediaModal,
     closeLocalFileModal,
     closeProjectFileModal,
@@ -819,6 +836,14 @@ export const FileViewer = memo(function FileViewer({
   const handleMarkdownLocalResourceClick = useCallback(
     (event: ReactMouseEvent<HTMLDivElement>) =>
       localResourceClickRef.current(event),
+    [],
+  );
+  const openLocalResourceRef = useRef(openLocalResource);
+  openLocalResourceRef.current = openLocalResource;
+  const handleHtmlPreviewLocalResourceLink = useCallback(
+    (resource: LocalResourceRef, anchor: HTMLAnchorElement) => {
+      openLocalResourceRef.current(resource, anchor);
+    },
     [],
   );
   const handleMarkdownLocalResourceContextMenu = useCallback(
@@ -1267,10 +1292,9 @@ export const FileViewer = memo(function FileViewer({
       setRawObjectUrl(null);
       return;
     }
-    if (
-      !source.fetchRawFileBlob ||
-      (getEmbeddedMediaKind(mimeType) === "pdf" && sameOriginUrls)
-    ) {
+    // An addressable server lets the browser read the raw response itself,
+    // streaming and range-seeking it, instead of holding the file in a Blob.
+    if (!source.fetchRawFileBlob || sameOriginUrls) {
       setRawObjectUrl(null);
       return;
     }
@@ -1441,6 +1465,12 @@ export const FileViewer = memo(function FileViewer({
   const rawFileUrl = fileData
     ? (source.getRawFileUrl?.(projectId, filePath, false) ?? fileData.rawUrl)
     : null;
+  // What a direct tab renders for images and embedded media: the raw
+  // response, keyed by file version so a reload after an edit refetches it.
+  const directMediaUrl =
+    sameOriginUrls && rawFileUrl && fileData
+      ? versionedRawFileUrl(rawFileUrl, fileData.metadata)
+      : null;
   const imageOpenUrl = loadedIsImage
     ? sameOriginUrls && rawFileUrl
       ? rawFileUrl
@@ -1455,31 +1485,31 @@ export const FileViewer = memo(function FileViewer({
     publicShareContext !== null,
   );
 
+  const saveDownload = useSaveResourceDownload();
   const handleDownload = useCallback(() => {
     if (!fileData) return;
-    if (source.fetchRawFileBlob) {
-      void source
-        .fetchRawFileBlob(fileData, filePath, true)
-        .then((blob) => downloadBlob(blob, fileName))
-        .catch((err) => {
-          setError(err instanceof Error ? err.message : String(err));
-        });
-      return;
-    }
-
-    void transport
-      .fetchBlob(
-        toSourceTransportApiPath(
-          projectRawFileApiPath(projectId, filePath, true),
-        ),
-      )
-      .then((blob) => downloadBlob(blob, fileName))
-      .catch((err) => {
-        setError(
-          err instanceof Error ? err.message : "Failed to download file",
-        );
-      });
-  }, [fileData, fileName, filePath, projectId, source, transport]);
+    const fetchRawFileBlob = source.fetchRawFileBlob;
+    saveDownload({
+      fileName,
+      directUrl: source.getRawFileUrl?.(projectId, filePath, true) ?? undefined,
+      loadBlob: fetchRawFileBlob
+        ? () => fetchRawFileBlob(fileData, filePath, true)
+        : () =>
+            transport.fetchBlob(
+              toSourceTransportApiPath(
+                projectRawFileApiPath(projectId, filePath, true),
+              ),
+            ),
+    });
+  }, [
+    fileData,
+    fileName,
+    filePath,
+    projectId,
+    saveDownload,
+    source,
+    transport,
+  ]);
 
   const absoluteViewerLink = useMemo(
     () => new URL(standaloneViewerUrl, window.location.href).href,
@@ -1563,17 +1593,8 @@ export const FileViewer = memo(function FileViewer({
     );
   }
 
-  // Render error state
-  if (!diffActive && (error || !fileData)) {
-    return (
-      <div className="file-viewer">
-        <div className="file-viewer-error">
-          {error || t("fileViewerNotFound" as never)}
-        </div>
-      </div>
-    );
-  }
-
+  // A load error renders in the body below the header, so back, close, and
+  // reload stay reachable.
   const metadata = fileData?.metadata;
   const content = fileData?.content;
   const isImage = loadedIsImage;
@@ -1642,7 +1663,7 @@ export const FileViewer = memo(function FileViewer({
         </div>
       );
     }
-    if (!fileData || !metadata) {
+    if (error || !fileData || !metadata) {
       return (
         <div className="file-viewer-error">
           {error || t("fileViewerNotFound" as never)}
@@ -1652,7 +1673,8 @@ export const FileViewer = memo(function FileViewer({
 
     // Image files
     if (isImage) {
-      const imageUrl = source.fetchRawFileBlob ? rawObjectUrl : rawFileUrl;
+      const imageUrl =
+        directMediaUrl ?? (source.fetchRawFileBlob ? rawObjectUrl : rawFileUrl);
       const imageLinkUrl = imageOpenUrl ?? imageUrl;
       return (
         <div className="file-viewer-image">
@@ -1679,13 +1701,9 @@ export const FileViewer = memo(function FileViewer({
 
     const embeddedMediaKind = getEmbeddedMediaKind(metadata.mimeType);
     if (embeddedMediaKind) {
-      // A directly addressable PDF is read from its own response as it
-      // arrives, rather than first copied whole into a blob.
       const mediaUrl =
-        !source.fetchRawFileBlob ||
-        (embeddedMediaKind === "pdf" && sameOriginUrls)
-          ? rawFileUrl
-          : rawObjectUrl;
+        directMediaUrl ??
+        (!source.fetchRawFileBlob ? rawFileUrl : rawObjectUrl);
       return mediaUrl ? (
         <FileViewerEmbeddedMedia
           kind={embeddedMediaKind}
@@ -1730,6 +1748,8 @@ export const FileViewer = memo(function FileViewer({
             toolbarHost={modeControlsHost}
             reloadKey={frameReloadKey}
             onFindSource={setHtmlFindSource}
+            documentPath={absoluteCopyPath}
+            onLocalResourceLink={handleHtmlPreviewLocalResourceLink}
           />
         );
       }
@@ -2033,7 +2053,7 @@ export const FileViewer = memo(function FileViewer({
             />
           )}
         <span ref={setModeControlsHost} />
-        {!diffActive && fileData && (
+        {!diffActive && (fileData || error) && (
           <button
             type="button"
             className={`file-viewer-action${freshness?.state === "stale" ? ` ${viewerStyles.reloadStale}` : ""}`}
@@ -2088,7 +2108,12 @@ export const FileViewer = memo(function FileViewer({
         )}
         {publicShareContext === null &&
           source === DEFAULT_FILE_VIEWER_SOURCE &&
-          !diffActive && <PublicFileShareButton onOpen={setFileShareAnchor} />}
+          !diffActive && (
+            <PublicFileShareButton
+              projectId={projectId}
+              onOpen={setFileShareAnchor}
+            />
+          )}
         {publicShareContext !== null &&
           publicShareContext.projectId !== null &&
           !diffActive &&
@@ -2199,6 +2224,15 @@ export const FileViewer = memo(function FileViewer({
           }
           onStartNewSession={startNewSession}
           localSource={localSource}
+          fileTarget={
+            publicShareContext === null
+              ? {
+                  projectId,
+                  path: projectRelativeCopyPath ?? filePath,
+                  origPath: fileVersionControl.worktreeFile?.origPath,
+                }
+              : undefined
+          }
           onCopyProjectRelativePath={
             projectRelativeCopyPath
               ? () => void writeClipboardText(projectRelativeCopyPath)
@@ -2393,15 +2427,19 @@ function CopyIcon() {
 
 function PublicFileShareButton({
   onOpen,
+  projectId,
 }: {
   onOpen: (anchor: DOMRect) => void;
+  projectId: string;
 }) {
   const { t } = useI18n();
   const { version } = useVersion();
   const { status } = usePublicShareStatus();
+  const fileVhost = useFileVhostService(projectId);
   if (
-    status?.canCreate !== true ||
-    !serverHasCapability(version, PUBLIC_FILE_SHARES_CAPABILITY)
+    !fileVhost &&
+    (status?.canCreate !== true ||
+      !serverHasCapability(version, PUBLIC_FILE_SHARES_CAPABILITY))
   ) {
     return null;
   }

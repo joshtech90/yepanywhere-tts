@@ -42,6 +42,9 @@ export interface LimitedLaunchBody {
   sandboxNetworkFirewall?: boolean;
   executor?: string;
   computerControl?: boolean;
+  routerAccountId?: string;
+  routerPoolId?: string;
+  routerPolicy?: string;
 }
 
 /** What a request asked for, as distinct from what the launch will use. */
@@ -79,7 +82,16 @@ export function actingUsername(c: Context): string | undefined {
 function hostEscapeError(options: {
   executor?: string;
   computerControl?: boolean;
+  routerAccountId?: string;
+  routerPoolId?: string;
+  routerPolicy?: string;
 }): string | null {
+  if (
+    options.routerAccountId !== undefined ||
+    options.routerPoolId !== undefined ||
+    options.routerPolicy !== undefined
+  )
+    return "Router account and pool selection requires the server owner";
   if (options.executor) {
     return "This user's sessions run only on this host, not on a remote executor";
   }

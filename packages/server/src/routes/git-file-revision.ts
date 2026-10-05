@@ -5,6 +5,7 @@ import type {
 import type { Context } from "hono";
 import { Hono } from "hono";
 import { runGit } from "../git/gitExec.js";
+import { githubFileLink } from "../git/githubFileLink.js";
 import type { ProjectScanner } from "../projects/scanner.js";
 import { repositoryRelativePath } from "../review/repositoryPath.js";
 import { resolveProjectPath } from "./projectParam.js";
@@ -81,6 +82,9 @@ export function createGitFileRevisionRoutes(deps: GitFileRevisionDeps): Hono {
         isGitRepo: true,
         commit,
         dirty,
+        githubLink: commit
+          ? await githubFileLink(projectPath, commit.hash, historyPath, git)
+          : null,
       } satisfies GitFileRevision);
     } catch (error) {
       return gitError(c, error);

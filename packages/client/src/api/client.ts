@@ -1,4 +1,12 @@
-import type { SessionClearloopBadge } from "@yep-anywhere/shared";
+import type {
+  AgentAuthRouterOverview,
+  AgentAuthRouterPoolInput,
+} from "@yep-anywhere/shared";
+import type {
+  SessionClearloopBadge,
+  AgentAuthRouterStatus,
+  AgentAuthRouterRecovery,
+} from "@yep-anywhere/shared";
 import type {
   AppSessionSummary,
   RetainedSessionCollectionState,
@@ -19,6 +27,7 @@ import type {
   CodexReasoningSummary,
   ConnectionsResponse,
   CreatePublicFileShareRequest,
+  ContextBreakdown,
   CreatePublicFileShareResponse,
   CreateProjectWorkstreamRequest,
   CreateProjectWorkstreamResponse,
@@ -284,8 +293,13 @@ export function isUnchangedGlobalSessionsResponse(
 }
 
 export interface SessionOptions {
+  routerAccountId?: string;
+  routerPoolId?: string;
+  routerPolicy?: "manual" | "round-robin" | "most-remaining";
   creationProvenance?: SessionCreationProvenance;
+  /** @deprecated Old selection is rejected; use machineControl. */
   computerControl?: boolean;
+  machineControl?: boolean;
   mode?: PermissionMode;
   /** Model ID (e.g., "sonnet", "opus", "qwen2.5-coder:0.5b") */
   model?: string;
@@ -434,6 +448,83 @@ export const api = {
     }),
 
   ...createSessionApi(fetchJSON),
+  routerSelection: (provider: string) =>
+    fetchJSON<AgentAuthRouterOverview | null>("/agent-auth-router/selection", {
+      method: "POST",
+      body: JSON.stringify({ provider }),
+    }),
+  routerStatus: () => fetchJSON<AgentAuthRouterStatus>("/agent-auth-router"),
+  routerRecovery: () =>
+    fetchJSON<AgentAuthRouterRecovery>("/agent-auth-router/recovery"),
+  routerRetryCancellations: () =>
+    fetchJSON<AgentAuthRouterStatus>("/agent-auth-router/retry-cancellations", {
+      method: "POST",
+      body: "{}",
+    }),
+  routerConnect: (socketPath?: string) =>
+    fetchJSON<AgentAuthRouterStatus>("/agent-auth-router/connect", {
+      method: "POST",
+      body: JSON.stringify({ socketPath }),
+    }),
+  routerDisconnect: () =>
+    fetchJSON<AgentAuthRouterStatus>("/agent-auth-router/disconnect", {
+      method: "POST",
+      body: "{}",
+    }),
+  routerAccounts: () =>
+    fetchJSON<{
+      accounts: {
+        id: string;
+        provider: "claude" | "codex";
+        enabled: boolean;
+        directAccountAccess?: boolean;
+        renewal: string;
+      }[];
+    }>("/agent-auth-router/accounts"),
+  routerCatalog: (id: string) =>
+    fetchJSON<{
+      models: { id: string; name: string; contextWindow?: number }[];
+    }>(`/agent-auth-router/accounts/${encodeURIComponent(id)}/catalog`),
+  routerOverview: (
+    body: {
+      poolId?: string;
+      model?: string;
+      policy?: "manual" | "round-robin" | "most-remaining";
+    } = {},
+  ) =>
+    fetchJSON<AgentAuthRouterOverview>("/agent-auth-router/overview", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  routerRefreshOverview: (body: {
+    accountId: string;
+    poolId?: string;
+    model?: string;
+  }) =>
+    fetchJSON<AgentAuthRouterOverview>("/agent-auth-router/overview/refresh", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  routerSavePool: (body: AgentAuthRouterPoolInput) =>
+    fetchJSON("/agent-auth-router/pools/save", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  routerRemovePool: (body: { id: string; revision: number }) =>
+    fetchJSON("/agent-auth-router/pools/remove", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  routerQuotas: (id: string) =>
+    fetchJSON<{
+      status: string;
+      observedAt: string;
+      windows: {
+        bucket: string;
+        remainingPercent: number | null;
+        resetsAt: string | null;
+      }[];
+    }>(`/agent-auth-router/accounts/${encodeURIComponent(id)}/quotas`),
   // Server metadata/admin API
   ...serverMetadataApi,
 
@@ -756,6 +847,10 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         computerControl: options?.computerControl,
+        machineControl: options?.machineControl,
+        routerAccountId: options?.routerAccountId,
+        routerPoolId: options?.routerPoolId,
+        routerPolicy: options?.routerPolicy,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
         sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
@@ -796,6 +891,10 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         computerControl: options?.computerControl,
+        machineControl: options?.machineControl,
+        routerAccountId: options?.routerAccountId,
+        routerPoolId: options?.routerPoolId,
+        routerPolicy: options?.routerPolicy,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
         sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
@@ -836,6 +935,10 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         computerControl: options?.computerControl,
+        machineControl: options?.machineControl,
+        routerAccountId: options?.routerAccountId,
+        routerPoolId: options?.routerPoolId,
+        routerPolicy: options?.routerPolicy,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
         sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
@@ -871,6 +974,10 @@ export const api = {
         showThinking: options?.showThinking,
         provider: options?.provider,
         computerControl: options?.computerControl,
+        machineControl: options?.machineControl,
+        routerAccountId: options?.routerAccountId,
+        routerPoolId: options?.routerPoolId,
+        routerPolicy: options?.routerPolicy,
         executor: options?.executor,
         sandboxLevel: options?.sandboxLevel,
         sandboxNetworkFirewall: options?.sandboxNetworkFirewall,
@@ -1405,6 +1512,11 @@ export const api = {
       body: JSON.stringify(config),
     }),
 
+  getSessionContextBreakdown: (sessionId: string) =>
+    fetchJSON<{ breakdown: ContextBreakdown | null }>(
+      `/sessions/${encodeURIComponent(sessionId)}/context-breakdown`,
+    ),
+
   getProcessModels: (processId: string) =>
     fetchJSON<{
       models: ModelInfo[];
@@ -1559,6 +1671,13 @@ export const api = {
 
   // Server settings API (persistent server configuration)
   getServerSettings: () => fetchJSON<{ settings: ServerSettings }>("/settings"),
+  previewInstructionRestoration: (
+    settings: import("@yep-anywhere/shared").InstructionRestorationSettings,
+  ) =>
+    fetchJSON<{ prefix: string; matches: string[]; truncated: boolean }>(
+      "/settings/instruction-restoration/preview",
+      { method: "POST", body: JSON.stringify(settings) },
+    ),
 
   getHostAwakeStatus: (forceRefresh = false) =>
     fetchJSON<{ status: HostAwakeStatus }>(
@@ -1984,6 +2103,7 @@ export interface ServerSettings {
    * Absent on older servers; default off.
    */
   postCompactReplay?: PostCompactReplaySettings;
+  instructionRestoration?: import("@yep-anywhere/shared").InstructionRestorationSettings;
   /**
    * Warn before a mid-session effort change on a long-context session and
    * offer a fork instead. Absent on older servers, which then never warn.

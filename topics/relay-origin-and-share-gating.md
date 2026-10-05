@@ -221,25 +221,35 @@ code should still carry the normal file-viewer shell, spacing, rendered
 Markdown behavior, local-media modal, copy affordances, and line/source toggle
 behavior where those affordances are read-only.
 
-A dedicated live file share authorizes exactly its root file. When that root is
-a bounded Markdown, MDX, or Quarto Markdown source, it also authorizes
-directly referenced SVG, raster-image, and supported video assets one level
-deep. An HTML root instead authorizes what its elements load, which is what
-the viewer's **play** action below inlines: `link rel=stylesheet` CSS,
-`script src` JavaScript, `link rel=icon`, `img`, `source`, and `video` media
-and `video poster` images. One shared decision, `findHtmlRootAssetReferences`
-in `packages/shared`, serves both the server's authorization and the play
-page's inlining, so play never requests a file the share refuses. A reference
-made any other way — an `<a href>`, a CSS `url()`, a preload hint — gains no
-authority, even for a file of an asset type. The root's own directory is its
-site root: `/assets/app.js` in `dist/index.html` names `dist/assets/app.js`,
-as a browser serving that directory would load it. A Markdown root gains no
-script or stylesheet authority. A share never authorizes another linked
-document, a nested asset referenced by an asset, a project scan,
-source-control data, or an app-data attachment. Each
-asset request rereads the current root before authorizing the target, so editing
-the root immediately removes stale references and admits current ones. Root and
-asset responses keep the existing no-store and active-content hardening.
+A dedicated live file share authorizes its root file and everything the root
+links to, followed transitively through linked HTML, Markdown and CSS
+documents — the same walk (`walkLinkedSite` in `packages/shared`) that decides
+what a [file vhost](active-content-security.md#file-vhosts) serves, so the two
+surfaces serve one file set. Every reference counts: element sources,
+`<a href>`, `srcset`, CSS `url()` and `@import`, Markdown links, images and
+reference definitions. A link is an implied grant. A target inside the share's
+project is opened as the share opens project files (symlinks refused). A
+target outside the project is requested by absolute path and served only when
+the local file policy admits it, checked again on every read. The root's own
+directory is its site root: `/assets/app.js` in `dist/index.html` names
+`dist/assets/app.js`. A file nothing links to, a project scan, source-control
+data and an app-data attachment stay unauthorized. The walk's limits and reuse
+match the file vhost's: an edit to any linked document takes effect within
+about 2 seconds. Root and linked responses keep the existing no-store and
+active-content hardening.
+
+Rendered Markdown links and images that climb out of the document's folder with
+`..` render as links, and the share viewer follows them through the same share.
+A live file share's viewer, marked by `standalone=1` on the links the server
+mints, names a linked file outside the project by its absolute path: its file
+page, raw and media reads, link rewriting and play all accept one. A session
+share's viewer keeps project-relative paths only, so a transcript never links
+a file its share would refuse. An outside document is read with its own folder
+standing in as the project, so before answering, the server restates that
+document's project-file links as absolute local-file links; the viewer then
+resolves them against the share, never against the share's project. Play
+resolves the root's asset references from its absolute path, so an asset above
+the project is inlined too.
 
 **Play for public file viewers.** The hosted share viewer shows an HTML root
 as a scriptless preview and offers a play toggle: an ordinary link that opens
@@ -251,7 +261,7 @@ a fragment-bearing `Referer` with a request, so the secret stays out of the
 static host's access log; like any share link it remains in the address bar
 and browser history. A play link can be reloaded, pasted into a fresh tab, or
 passed on, and it authorizes exactly what its file share does — the root and
-its directly referenced assets, read live — until that share is revoked.
+what it links to, read live — until that share is revoked.
 
 The play page loads the share itself. The relay has no HTTP path to the host,
 so the page opens its own relay WebSocket to the named host and makes the same
@@ -259,11 +269,12 @@ secret-only reads the share viewer makes: the root through
 `/public-api/shares/:secret/files` and each asset the root's elements load
 through the share's raw file route. Those
 requests are plaintext share requests with the relay-operator visibility
-described above. It inlines the assets as data URLs, capped at 48 MiB in
-total; a reference the share does not serve (a missing file, or a server
-older than this rule) stays as written and fails inside the sandbox. Fonts and
-images named in CSS, whether in a stylesheet or the root's own `style`, are
-not inlined yet, so the share does not authorize them.
+described above. It inlines what the root's elements load (stylesheets,
+scripts, icons and media, as `findHtmlRootAssetReferences` in
+`packages/shared` finds them) as data URLs, capped at 48 MiB in total; a
+reference the share does not serve (a missing file, or an older server) stays
+as written and fails inside the sandbox. Fonts and images named in CSS are
+authorized but not inlined yet.
 
 `play.html` is a separate entry of the hosted client build, outside the app's
 routes, so it never meets the login gate. It carries its own Content Security
@@ -287,7 +298,11 @@ Relative URLs in the document therefore resolve against the play page, so a
 fragment-only link would navigate the frame to `play.html` without its grant;
 a click handler injected ahead of the document's own scripts resolves such
 links on the frame's own location instead, including links the document
-creates at runtime.
+creates at runtime. The same handler takes any other relative link, which
+names a file beside the shared one: the frame holds no grant, so it posts the
+link to the play page, which resolves it as the share's walk does and opens
+that file through the same share — an HTML file in play, anything else in the
+share's file viewer. The share still decides whether the root links to it.
 
 The File Viewer creation action is visible only for the ordinary live working
 file when Public Read-Only Share can currently create links and the server has
@@ -367,7 +382,9 @@ project filename. The existing public view omits those private anchors. A
 frozen revision may replay a specific autolink only when that already-known
 decision and its allowed target were captured with the revision. Mere
 client-side rewriting or current path existence never expands the allowed set;
-exposing all linked project files would be a separate explicit capability.
+for a session share, exposing all linked project files would be a separate
+explicit capability. A live file share differs by design: its root is a file
+the owner chose, and it serves what that file links to (above).
 
 ## Future E2E Direction
 

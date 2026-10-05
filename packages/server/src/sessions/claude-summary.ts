@@ -228,6 +228,20 @@ function getFirstUserTitleCandidate(
   return extractTitleContent(objectBlocks);
 }
 
+function validTimestamp(entry: ClaudeSessionEntry): string | undefined {
+  const timestampMs = Date.parse(getTimestamp(entry));
+  return Number.isFinite(timestampMs)
+    ? new Date(timestampMs).toISOString()
+    : undefined;
+}
+
+export interface ClaudeCatalogHead {
+  /** Whole: search matches the session's own words; surfaces truncate. */
+  title?: string;
+  /** The first timestamped entry, as the summary's `createdAt` takes it. */
+  createdAt?: string;
+}
+
 /**
  * Fold one entry into a running title pick. Returns true once a real prompt
  * settled the title; until then a placeholder (see
@@ -247,12 +261,11 @@ function considerTitleCandidate(
   return true;
 }
 
-/** Collection discovery never parses past this prefix to obtain a title.
- * The text is returned whole: search matches the session's own words, and a
- * display-width truncation belongs at the surface that renders them. */
-export async function readClaudeCatalogTitle(
+/** Collection discovery never parses past this prefix for a title or the
+ * session's creation time. */
+export async function readClaudeCatalogHead(
   filePath: string,
-): Promise<string | undefined> {
+): Promise<ClaudeCatalogHead> {
   const file = await open(filePath, "r");
   try {
     const buffer = Buffer.alloc(256 * 1024);
@@ -260,6 +273,7 @@ export async function readClaudeCatalogTitle(
     const text = buffer.subarray(0, bytesRead).toString("utf8");
     const lines = text.split("\n");
     if (bytesRead === buffer.length) lines.pop();
+    let createdAt: string | undefined;
     const pick: { content?: string } = {};
     for (const line of lines) {
       if (!line.trim()) continue;
@@ -270,19 +284,41 @@ export async function readClaudeCatalogTitle(
         continue;
       }
       if (!entry || typeof entry !== "object") continue;
+      createdAt ??= validTimestamp(entry);
       if (considerTitleCandidate(pick, entry)) break;
     }
-    return pick.content === undefined
-      ? undefined
-      : sanitizeSessionTitle(pick.content) || undefined;
+    const title =
+      pick.content === undefined
+        ? undefined
+        : sanitizeSessionTitle(pick.content) || undefined;
+    return {
+      ...(title !== undefined ? { title } : {}),
+      ...(createdAt ? { createdAt } : {}),
+    };
   } finally {
     await file.close();
   }
 }
 
+/** Collection discovery never parses past this prefix to obtain a title.
+ * The text is returned whole: search matches the session's own words, and a
+ * display-width truncation belongs at the surface that renders them. */
+export async function readClaudeCatalogTitle(
+  filePath: string,
+): Promise<string | undefined> {
+  return (await readClaudeCatalogHead(filePath)).title;
+}
+
+export interface ClaudeCatalogTail {
+  /** The latest conversation timestamp. */
+  updatedAt?: string;
+  /** The latest human turn, by the summary's own per-entry test. */
+  lastHumanTurnAt?: string;
+}
+
 /**
- * The tail counterpart of `readClaudeCatalogTitle`: the latest conversation
- * timestamp a collection row can claim without a full parse.
+ * The tail counterpart of `readClaudeCatalogHead`: the latest conversation
+ * and human-turn timestamps a collection row can claim without a full parse.
  *
  * Catalog rows are built for sessions the summary index cannot answer for —
  * every session is dirty for a beat after any append — so their only other
@@ -295,13 +331,13 @@ export async function readClaudeCatalogTitle(
  * building the DAG, so it approximates the active branch: a dead post-rewind
  * branch at the tail could win. That is acceptable for a bounded projection
  * the exact indexed summary replaces as soon as it is warm, and it is strictly
- * closer than storage time either way. Returns undefined when no conversation
- * row carries a usable timestamp inside the window, leaving the caller's
- * storage-time fallback in place.
+ * closer than storage time either way. A field is omitted when no row inside
+ * the window carries it, leaving the caller's fallback in place: storage time
+ * for `updatedAt`, and the creation time for a human turn further back.
  */
-export async function readClaudeCatalogRecency(
+export async function readClaudeCatalogTail(
   filePath: string,
-): Promise<string | undefined> {
+): Promise<ClaudeCatalogTail> {
   const file = await open(filePath, "r");
   try {
     const { size } = await file.stat();
@@ -312,7 +348,10 @@ export async function readClaudeCatalogRecency(
     const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
     // A window that starts mid-file opens mid-line; that fragment is not JSON.
     if (position > 0) lines.shift();
+    let updatedAt: string | undefined;
+    let lastHumanTurnAt: string | undefined;
     for (let i = lines.length - 1; i >= 0; i -= 1) {
+      if (updatedAt && lastHumanTurnAt) break;
       const line = lines[i]?.trim();
       if (!line) continue;
       let entry: ClaudeSessionEntry;
@@ -323,12 +362,16 @@ export async function readClaudeCatalogRecency(
       }
       if (!entry || typeof entry !== "object") continue;
       if (!CONVERSATION_TYPES.has(entry.type)) continue;
-      const timestampMs = Date.parse(getTimestamp(entry));
-      if (Number.isFinite(timestampMs)) {
-        return new Date(timestampMs).toISOString();
-      }
+      const timestamp = validTimestamp(entry);
+      if (!timestamp) continue;
+      updatedAt ??= timestamp;
+      if (!lastHumanTurnAt && getFirstUserTitleCandidate(entry))
+        lastHumanTurnAt = timestamp;
     }
-    return undefined;
+    return {
+      ...(updatedAt ? { updatedAt } : {}),
+      ...(lastHumanTurnAt ? { lastHumanTurnAt } : {}),
+    };
   } finally {
     await file.close();
   }

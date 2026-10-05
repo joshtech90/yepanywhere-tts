@@ -43,6 +43,34 @@ import {
 import { getServerCapabilities } from "../../src/routes/version.js";
 
 describe("Version Routes", () => {
+  it("advertises installed MC only with its mounted supported-host route", () => {
+    const name = SERVER_CAPABILITIES.installedMachineControl.name;
+    expect(getServerCapabilities()).not.toContain(name);
+    expect(
+      getServerCapabilities({ installedMachineControlAvailable: true }),
+    ).toContain(name);
+    expect(
+      getServerCapabilities({
+        installedMachineControlAvailable: true,
+        deniedCapabilities: [name],
+      }),
+    ).not.toContain(name);
+  });
+  it("advertises native push only with a configured mounted adapter", () => {
+    const name = SERVER_CAPABILITIES.nativePushSubscriptions.name;
+    expect(
+      getServerCapabilities({ securityClientAuditAvailable: true }),
+    ).not.toContain(name);
+    const nativePush = {
+      protocolVersion: 1 as const,
+      brokerUrl: "https://push.example.test",
+      privacyModes: ["generic"] as ["generic"],
+    };
+    expect(getServerCapabilities({ nativePush })).toContain(name);
+    expect(
+      getServerCapabilities({ nativePush, deniedCapabilities: [name] }),
+    ).not.toContain(name);
+  });
   // A version-implied capability is inferred only from a release at least
   // its introducedIn. A source build between releases reports the previous
   // tag's version, so a capability left out of this list is invisible to the

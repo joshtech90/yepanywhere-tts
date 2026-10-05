@@ -559,6 +559,7 @@ export class RemoteSessionService {
     // A cache of relay logins, so an unreadable one still starts fresh.
     await writeFileAtomically(this.filePath, content, {
       mode: OWNER_READ_WRITE_FILE_MODE,
+      durable: true,
     });
     await enforceOwnerReadWriteFilePermissions(
       this.filePath,

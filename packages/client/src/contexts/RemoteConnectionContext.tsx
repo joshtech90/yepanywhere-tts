@@ -101,7 +101,13 @@ export interface ConnectViaRelayOptions {
   session?: StoredSession;
 }
 
-interface RemoteConnectionState {
+export interface RemoteConnectionState {
+  /** Installed native shell supplies its source without web credential storage. */
+  nativeSource?: {
+    sourceKey: ClientSummarySourceKey;
+    registration: import("../lib/sourceRuntime").SourceTransportRegistration;
+  };
+  switchHost?: () => void;
   /** The active connection (null if not connected) */
   connection: Connection | null;
   /** Whether a connection attempt is in progress */
@@ -149,9 +155,8 @@ interface RemoteConnectionState {
   resumeSession: (password: string) => Promise<void>;
 }
 
-const RemoteConnectionContext = createContext<RemoteConnectionState | null>(
-  null,
-);
+export const RemoteConnectionContext =
+  createContext<RemoteConnectionState | null>(null);
 
 const STORAGE_KEY = "yep-anywhere-remote-credentials";
 

@@ -50,6 +50,9 @@ export function ReloadBannerStack({
 
     let animationFrame: number | null = null;
     const updatePlacement = () => {
+      // The empty stack stays mounted for future notices. Measuring it after
+      // composer mutations would force page layout on ordinary typing.
+      if (!stack.firstElementChild) return;
       stack.style.setProperty("--reload-banner-stack-lift", "0px");
 
       const stackRect = stack.getBoundingClientRect();
@@ -113,6 +116,7 @@ export function ReloadBannerStack({
       );
     };
     const schedulePlacement = () => {
+      if (!stack.firstElementChild) return;
       if (animationFrame !== null) {
         window.cancelAnimationFrame(animationFrame);
       }

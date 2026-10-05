@@ -9,7 +9,6 @@
 
 import { useLocation } from "react-router-dom";
 import { useActivityBusState } from "../hooks/useActivityBusState";
-import { useDeveloperMode } from "../hooks/useDeveloperMode";
 import styles from "./ConnectionBar.module.css";
 
 /** Routes where we don't show the connection bar */
@@ -18,14 +17,13 @@ const LOGIN_ROUTES = ["/login", "/login/direct", "/login/relay"];
 export function ConnectionBar() {
   const location = useLocation();
   const { connectionState } = useActivityBusState();
-  const { showConnectionBars } = useDeveloperMode();
 
-  // Don't show on login routes or if disabled in settings
+  // Network loss is ordinary feedback, independent of developer diagnostics.
   const isLoginRoute = LOGIN_ROUTES.some(
     (route) =>
       location.pathname === route || location.pathname.startsWith(`${route}/`),
   );
-  if (isLoginRoute || !showConnectionBars) {
+  if (isLoginRoute) {
     return null;
   }
 

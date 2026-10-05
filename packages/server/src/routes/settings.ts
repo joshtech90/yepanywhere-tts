@@ -43,9 +43,11 @@ import {
   parseClaudeSteerBackgroundBashSettings,
   parseLongContextEffortWarningSettings,
   parsePostCompactReplaySettings,
+  parseInstructionRestorationSettings,
   parseSpeechVoiceBackends,
 } from "@yep-anywhere/shared";
 import { Hono } from "hono";
+import { InstructionPackets } from "../sdk/providers/instruction-packets.js";
 import { PRINCIPAL_VARIABLE, type Principal } from "../auth/principal.js";
 import {
   type FileAccessSettings,
@@ -234,6 +236,34 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
         gatewayServiceExportPaths: defaultGatewayServiceExportPaths(),
       },
     });
+  });
+
+  app.post("/instruction-restoration/preview", async (c) => {
+    const principal = c.get(PRINCIPAL_VARIABLE);
+    if (principal && principal.kind !== "superuser")
+      return c.json({ error: "Administrator access required" }, 403);
+    const settings = parseInstructionRestorationSettings(
+      await c.req.json().catch(() => null),
+    );
+    if (!settings?.pathPrefix)
+      return c.json(
+        { error: "Invalid instruction path prefix or pattern" },
+        400,
+      );
+    try {
+      return c.json(
+        await new InstructionPackets(
+          settings.pathPrefix,
+          settings.pattern,
+          process.cwd(),
+        ).preview(),
+      );
+    } catch (error) {
+      return c.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        400,
+      );
+    }
   });
 
   app.get("/host-awake/status", async (c) => {
@@ -1043,6 +1073,21 @@ export function createSettingsRoutes(deps: SettingsRoutesDeps) {
           );
         }
         updates.postCompactReplay = parsedReplay;
+      }
+
+      if ("instructionRestoration" in body) {
+        const parsed = parseInstructionRestorationSettings(
+          body.instructionRestoration,
+        );
+        if (!parsed)
+          return c.json(
+            {
+              error:
+                "instructionRestoration requires known providers, an absolute prefix, a relative .md glob, and delayTurns from 0 to 10",
+            },
+            400,
+          );
+        updates.instructionRestoration = parsed;
       }
 
       if ("longContextEffortWarning" in body) {

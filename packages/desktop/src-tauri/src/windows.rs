@@ -281,7 +281,8 @@ pub fn open_diagnostics_window(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 pub fn open_updater_window(app: AppHandle) -> Result<(), String> {
-    show_main_window(&app)
+    crate::updater::check(&app, "manual");
+    Ok(())
 }
 
 #[cfg(test)]

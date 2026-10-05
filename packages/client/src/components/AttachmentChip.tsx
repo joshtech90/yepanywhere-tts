@@ -1,4 +1,6 @@
-import { planThumbnail, toUrlProjectId } from "@yep-anywhere/shared";
+import { planThumbnail } from "@yep-anywhere/shared";
+import { getPersistedAttachmentUploadUrl } from "../lib/attachmentUploadUrl";
+export { getPersistedAttachmentUploadUrl } from "../lib/attachmentUploadUrl";
 import {
   useCallback,
   useEffect,
@@ -92,50 +94,6 @@ export function getAttachmentIdFromPersistedPath(
   const filename = filePath.split(/[\\/]/).pop() ?? "";
   const match = ATTACHMENT_FILENAME_ID.exec(filename);
   return match?.[1] ?? null;
-}
-
-export function getPersistedAttachmentUploadUrl(
-  filePath: string | undefined,
-  projectId?: string,
-): string | null {
-  if (!filePath) return null;
-  const separator = filePath.includes("\\") ? "\\" : "/";
-  const parts = filePath.split(/[\\/]/);
-  if (parts.length < 3) return null;
-
-  const filename = parts[parts.length - 1];
-  const pathSessionId = parts[parts.length - 2];
-  const projectSegment = parts[parts.length - 3];
-
-  if (!filename || !pathSessionId || !projectSegment) return null;
-  if (!ATTACHMENT_FILENAME_ID.test(filename)) return null;
-
-  // The persisted path names the physical session directory the file was
-  // materialized into, which can differ from the logical session id the
-  // client is viewing (provisional first-turn id, fork source id). Use the
-  // path's directory for the session segment so the server's exact lookup
-  // always hits; only the project segment needs logical identity, because an
-  // app-data project key is irreversible to a URL project id.
-  if (projectId) {
-    return `/api/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(pathSessionId)}/upload/${encodeURIComponent(filename)}`;
-  }
-
-  if (projectSegment === ".attachments") {
-    const projectPath = parts.slice(0, -3).join(separator);
-    if (!projectPath) return null;
-    const projectId = toUrlProjectId(projectPath);
-    return `/api/projects/${projectId}/sessions/${encodeURIComponent(pathSessionId)}/upload/${encodeURIComponent(filename)}`;
-  }
-
-  if (projectSegment === "attachments" && parts[parts.length - 4] === ".yep") {
-    const projectPath = parts.slice(0, -4).join(separator);
-    if (!projectPath) return null;
-    const projectId = toUrlProjectId(projectPath);
-    return `/api/projects/${projectId}/sessions/${encodeURIComponent(pathSessionId)}/upload/${encodeURIComponent(filename)}`;
-  }
-
-  if (projectSegment === "attachments") return null;
-  return `/api/projects/${projectSegment}/sessions/${encodeURIComponent(pathSessionId)}/upload/${encodeURIComponent(filename)}`;
 }
 
 function useCachedAttachmentImage(

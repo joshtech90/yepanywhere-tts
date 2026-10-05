@@ -210,7 +210,14 @@ export async function readHostSample(capacity) {
     ]);
   const meminfo = parseMeminfo(meminfoRaw);
   const cgroupMemoryCurrentBytes = parseByteCount(memoryCurrent);
-  const hostAvailableMemoryBytes = meminfo.MemAvailable ?? os.freemem();
+  const hostFreeMemoryBytes = os.freemem();
+  // Darwin's free pages exclude reclaimable inactive/purgeable memory. Node's
+  // availableMemory uses libuv's separate availability API for those pages;
+  // os.freemem incorrectly made a cached host fail a 1 GiB availability gate.
+  const hostAvailableMemoryBytes =
+    os.platform() === "darwin"
+      ? process.availableMemory()
+      : (meminfo.MemAvailable ?? hostFreeMemoryBytes);
   const cgroupAvailableMemoryBytes =
     capacity.memory.cgroupLimitBytes !== null &&
     cgroupMemoryCurrentBytes !== null
@@ -221,7 +228,14 @@ export async function readHostSample(capacity) {
     loadAverage: os.loadavg().map((value) => round(value)),
     cpuCounters: parseCpuCounters(procStat),
     memory: {
+      hostFreeBytes: hostFreeMemoryBytes,
       hostAvailableBytes: hostAvailableMemoryBytes,
+      availabilitySource:
+        os.platform() === "darwin"
+          ? "node-available-memory"
+          : meminfo.MemAvailable !== undefined
+            ? "linux-memavailable"
+            : "os-free-memory",
       cgroupCurrentBytes: cgroupMemoryCurrentBytes,
       cgroupAvailableBytes: cgroupAvailableMemoryBytes,
       effectiveAvailableBytes: Math.min(

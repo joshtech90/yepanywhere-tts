@@ -3,14 +3,25 @@ import type { ReactNode } from "react";
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { api } from "../api/client";
+import { useCurrentSourceRuntime } from "../contexts/SourceRuntimeContext";
 import { useOptionalToastContext } from "../contexts/ToastContext";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { beginTooltipSuppression } from "../hooks/useTooltipAppearance";
+import {
+  useGitHubFileLink,
+  type GitHubFileTarget,
+} from "../hooks/useGitHubFileLink";
 import { useRetainedVersionInfo, useVersion } from "../hooks/useVersion";
 import { useI18n } from "../i18n";
 import { toBrowserAppHref } from "../lib/appHref";
 import { useClientSummarySourceKey } from "../lib/clientSummaryStore";
-import { downloadBlob } from "../lib/imageActions";
+import { downloadBlob, downloadUrl } from "../lib/imageActions";
+import { toSourceTransportApiPath } from "../lib/sourceTransportPaths";
+import {
+  canStreamDownloadToDisk,
+  saveStreamedDownload,
+} from "../lib/streamedDownload";
+import { writeClipboardText } from "../lib/clipboard";
 import { isMarkdownLikeFile } from "../lib/markdownFiles";
 import {
   createNewSessionPrefillToken,
@@ -38,7 +49,16 @@ export function supportsSourceAndPreview(
  * a URL the browser downloads itself.
  */
 export type ResourceDownload =
-  | { fileName: string; loadBlob: () => Promise<Blob> }
+  | {
+      fileName: string;
+      loadBlob: () => Promise<Blob>;
+      /**
+       * The same bytes as a same-origin `/api` attachment URL. A transport
+       * whose `/api` URLs the browser can address saves through it, so the
+       * file streams to disk instead of being buffered whole in the page.
+       */
+      directUrl?: string;
+    }
   | { url: string };
 
 export interface ResourceContextMenuProps {
@@ -55,6 +75,7 @@ export interface ResourceContextMenuProps {
   onCopyProjectRelativePath?: () => void;
   onCopyPublicUrl?: () => void;
   onCopyViewerLink?: () => void;
+  fileTarget?: GitHubFileTarget;
   download?: ResourceDownload;
   /** An outside path whose checkout or directory may open in a new tab. */
   localSource?: LocalSourceTarget;
@@ -245,25 +266,41 @@ function OpenLocalSourceMenuItem({
 }
 
 /**
- * Saves a resource menu download. Fetched bytes go under `fileName`, and a
- * failed fetch is reported: the menu has closed by the time the fetch settles,
- * so the reason goes to an error toast. A URL is handed to the browser, whose
- * own download UI reports its failures.
+ * Saves a resource download. On a transport whose `/api` URLs the browser can
+ * address, a `directUrl` goes to the browser's own download, which reports
+ * its failures. Otherwise fetched bytes go under `fileName`, and a failed
+ * fetch is reported in an error toast: the menu has closed by the time the
+ * fetch settles, and a viewer's download failure must not replace the file it
+ * is showing. A URL is handed to the browser, whose own download UI reports
+ * its failures.
  */
-function useSaveResourceDownload() {
+export function useSaveResourceDownload() {
   const { t } = useI18n();
   const showToast = useOptionalToastContext()?.showToast;
-  return (download: ResourceDownload) => {
-    if ("url" in download) {
-      const anchor = document.createElement("a");
-      anchor.href = download.url;
-      anchor.click();
-      return;
-    }
-    const { fileName, loadBlob } = download;
-    void loadBlob()
-      .then((blob) => downloadBlob(blob, fileName))
-      .catch((error: unknown) => {
+  const transport = useCurrentSourceRuntime().transport;
+  const sameOriginUrls = transport.capabilities.sameOriginUrls;
+  return useCallback(
+    (download: ResourceDownload) => {
+      if ("url" in download) {
+        const anchor = document.createElement("a");
+        anchor.href = download.url;
+        anchor.click();
+        return;
+      }
+      const { directUrl, fileName, loadBlob } = download;
+      if (directUrl && sameOriginUrls) {
+        downloadUrl(directUrl, fileName);
+        return;
+      }
+      // A transport that streams bodies hands this one to the service worker,
+      // which writes it to disk as it arrives; otherwise it is collected.
+      const save =
+        directUrl && transport.fetchStream && canStreamDownloadToDisk()
+          ? transport
+              .fetchStream(toSourceTransportApiPath(directUrl))
+              .then((response) => saveStreamedDownload(response, fileName))
+          : loadBlob().then((blob) => downloadBlob(blob, fileName));
+      void save.catch((error: unknown) => {
         showToast?.(
           t("resourceDownloadFailed" as never, {
             fileName,
@@ -272,7 +309,9 @@ function useSaveResourceDownload() {
           "error",
         );
       });
-  };
+    },
+    [sameOriginUrls, showToast, t, transport],
+  );
 }
 
 function FilePathContextMenuItem({
@@ -371,9 +410,11 @@ export function ResourceContextMenu({
   onStartNewSession,
   onStop,
   stopLabel,
+  fileTarget,
 }: ResourceContextMenuProps) {
   const { t } = useI18n();
   const saveDownload = useSaveResourceDownload();
+  const githubLink = useGitHubFileLink(fileTarget);
   const [panel, setPanel] = useState<"open" | "root">("root");
   const hasPresentationChoice = Boolean(onOpenSource && onOpenPreview);
   const hasCopyActions = Boolean(
@@ -384,7 +425,8 @@ export function ResourceContextMenu({
       onCopyImage ||
       onCopyViewerLink ||
       onCopyContents ||
-      onCopyRenderedContents,
+      onCopyRenderedContents ||
+      githubLink,
   );
   const usesHoverFlyout =
     window.innerWidth >= 520 &&
@@ -402,7 +444,15 @@ export function ResourceContextMenu({
     Number(Boolean(onCopyFilePath)) +
     Number(Boolean(onCopyViewerLink)) +
     Number(Boolean(onCopyContents)) +
-    Number(Boolean(onCopyRenderedContents));
+    Number(Boolean(onCopyRenderedContents)) +
+    Number(Boolean(githubLink));
+  const githubDescription = githubLink
+    ? !githubLink.pushed
+      ? t("fileLinkGitHubUnpushed")
+      : githubLink.dirty
+        ? t("fileLinkGitHubDirty")
+        : null
+    : null;
 
   // The right-click that opened this menu came from a link that was almost
   // certainly showing its hover tooltip, and the pointer then holds still — so
@@ -429,7 +479,10 @@ export function ResourceContextMenu({
 
   const rootMenuLeft = Math.max(8, Math.min(x, window.innerWidth - 230));
   const rootMenuHeight =
-    16 + rootItemCount * (usesHoverFlyout ? 36 : 44) + (hasCopyActions ? 9 : 0);
+    16 +
+    rootItemCount * (usesHoverFlyout ? 36 : 44) +
+    (hasCopyActions ? 9 : 0) +
+    (githubDescription ? 24 : 0);
   const rootMenuTop = Math.max(
     8,
     Math.min(y, window.innerHeight - rootMenuHeight),
@@ -599,6 +652,38 @@ export function ResourceContextMenu({
                 {stopLabel}
               </FilePathContextMenuItem>
             </>
+          ) : null}
+          {githubLink ? (
+            <button
+              type="button"
+              role="menuitem"
+              disabled={!githubLink.pushed}
+              className={
+                !githubLink.pushed
+                  ? styles.githubUnpushed
+                  : githubLink.dirty
+                    ? styles.githubDirty
+                    : undefined
+              }
+              onMouseEnter={
+                usesHoverFlyout ? () => setPanel("root") : undefined
+              }
+              onClick={() =>
+                select(() => void writeClipboardText(githubLink.url))
+              }
+            >
+              <span className={styles.githubLabel}>
+                <CopyIcon />
+                <span>
+                  {t("fileLinkMenuCopyGitHubLink")}
+                  {githubDescription ? (
+                    <small className={styles.githubDescription}>
+                      {githubDescription}
+                    </small>
+                  ) : null}
+                </span>
+              </span>
+            </button>
           ) : null}
         </div>
       ) : null}

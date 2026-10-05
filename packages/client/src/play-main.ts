@@ -10,6 +10,7 @@
 import {
   DEFAULT_RELAY_URL,
   type FileContentResponse,
+  linkedDocumentKind,
   normalizeRelayUrl,
 } from "@yep-anywhere/shared";
 import enMessages from "./i18n/en.json";
@@ -18,8 +19,13 @@ import {
   fetchPublicShareRawFileBlob,
 } from "./lib/publicShareFiles";
 import {
+  absolutePublicSharePath,
   buildPlayableHtml,
+  buildPublicShareFileUrl,
+  buildPublicSharePlayUrl,
+  PLAY_LINK_MESSAGE,
   parsePublicSharePlayUrl,
+  playLinkSharePath,
 } from "./lib/publicSharePlay";
 import { fetchPublicShareJsonViaRelay } from "./lib/publicShareRelay";
 
@@ -58,6 +64,8 @@ async function main(): Promise<void> {
     relayUsername: target.relayUsername,
     secret: target.secret,
     projectId: target.projectId,
+    // Play is only ever for a live file share.
+    standaloneFile: true,
   };
   const root = await fetchPublicShareJsonViaRelay<FileContentResponse>({
     relayUrl: grant.relayUrl,
@@ -66,8 +74,12 @@ async function main(): Promise<void> {
   });
   if (typeof root.content !== "string")
     throw new Error(enMessages.publicSharePlayNoContent);
-  const html = await buildPlayableHtml(root.content, target.path, (path) =>
-    fetchPublicShareRawFileBlob(grant, root, path),
+  // Assets resolve from the root's absolute path, so a reference above the
+  // project reaches what the share's link walk authorizes there.
+  const html = await buildPlayableHtml(
+    root.content,
+    absolutePublicSharePath(target.projectId, target.path) ?? target.path,
+    (path) => fetchPublicShareRawFileBlob(grant, root, path),
   );
   const title = target.path.split("/").at(-1) ?? target.path;
   document.title = title;
@@ -78,6 +90,27 @@ async function main(): Promise<void> {
   frame.srcdoc = html;
   notice.remove();
   document.body.append(frame);
+  // A link the frame posts opens that file through the same share: HTML in
+  // play, anything else in the share's file viewer. The share decides
+  // whether the root links to it.
+  const basePath = window.location.pathname.replace(/\/play\.html$/, "");
+  window.addEventListener("message", (event) => {
+    const data = event.data as { protocol?: unknown; href?: unknown } | null;
+    if (
+      event.source !== frame.contentWindow ||
+      data?.protocol !== PLAY_LINK_MESSAGE ||
+      typeof data.href !== "string"
+    )
+      return;
+    const path = playLinkSharePath(target.projectId, target.path, data.href);
+    if (!path) return;
+    const next = { ...target, path };
+    window.location.assign(
+      linkedDocumentKind(path) === "html"
+        ? buildPublicSharePlayUrl(basePath, next)
+        : buildPublicShareFileUrl(basePath, next),
+    );
+  });
 }
 
 main().catch((error: unknown) => {

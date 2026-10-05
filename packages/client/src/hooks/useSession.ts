@@ -9,8 +9,10 @@ import {
   type SlashCommand,
   type UploadedFile,
   DEFAULT_RECAP_AFTER_SECONDS,
+  findGoalCommand,
   getModelContextWindow,
   normalizeRecapAfterSeconds,
+  withKnownGoal,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../api/client";
@@ -58,6 +60,15 @@ import {
 } from "./useSessionMessages";
 import { useSessionStream } from "./useSessionStream";
 import { stripQueuedTurnMarkers } from "../lib/queuedTurnMarkers";
+import {
+  isLiveToolOutputMessage,
+  TOOL_OUTPUT_PREVIEW_MESSAGE_TYPE,
+} from "@yep-anywhere/shared";
+import {
+  clearCompletedToolOutputPreviews,
+  setToolOutputPreview,
+} from "../lib/toolOutputPreviews";
+import { getLiveToolOutputEnabled } from "./useLiveToolOutputEnabled";
 import {
   type SessionWatchChangeEvent,
   useSessionWatchStream,
@@ -635,6 +646,7 @@ export function useSession(
   }
   const handleTranscriptReconciled = useCallback(
     (updatedAt: string) => {
+      setError(null);
       if (reconciledTranscriptRef.current.sessionId === sessionId) {
         reconciledTranscriptRef.current.updatedAt = updatedAt;
       }
@@ -1076,6 +1088,7 @@ export function useSession(
   // Handle initial load completion from useSessionMessages
   const handleLoadComplete = useCallback(
     (result: SessionLoadResult) => {
+      setError(null);
       // Only update status from REST if we don't already have an owned status from navigation.
       // This prevents a race condition where:
       // 1. Session created with initialStatus = {owner: "self"}
@@ -1993,6 +2006,26 @@ export function useSession(
           }
         }
 
+        // Live output of a running tool call: shown on its pending row only,
+        // and dropped here when declined, since older servers ignore the
+        // subscription's request not to send it.
+        if (
+          !getLiveToolOutputEnabled() &&
+          isLiveToolOutputMessage(sdkMessage)
+        ) {
+          return;
+        }
+        if (msgType === TOOL_OUTPUT_PREVIEW_MESSAGE_TYPE) {
+          if (
+            typeof sdkMessage.tool_use_id === "string" &&
+            typeof sdkMessage.content === "string"
+          ) {
+            setToolOutputPreview(sdkMessage.tool_use_id, sdkMessage.content);
+          }
+          return;
+        }
+        if (msgType === "user") clearCompletedToolOutputPreviews(sdkMessage);
+
         // Predicted next-user-prompt suggestion: store and don't add to message list
         if (msgType === "prompt_suggestion") {
           const suggestion = sdkMessage.suggestion;
@@ -2041,8 +2074,13 @@ export function useSession(
         (incoming as { eventType?: string }).eventType = undefined;
 
         if (Array.isArray(sdkMessage.slash_command_inventory)) {
+          const inventory =
+            sdkMessage.slash_command_inventory as SlashCommand[];
+          // A live inventory reported before the provider states its goal
+          // (process start, skills refresh) must not erase the known goal.
           setSlashCommands(
-            sdkMessage.slash_command_inventory as SlashCommand[],
+            (current) =>
+              withKnownGoal(inventory, findGoalCommand(current)) ?? inventory,
           );
         }
 

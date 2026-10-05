@@ -6,6 +6,7 @@ import {
   renderHook,
   screen,
   within,
+  waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../../i18n";
@@ -80,6 +81,8 @@ describe("FilePathContextMenu", () => {
   afterEach(() => {
     cleanup();
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    versionState.capabilities = [];
   });
 
   it("opens an outside path's Source Control browser in a new tab", () => {
@@ -201,6 +204,59 @@ describe("FilePathContextMenu", () => {
     ).toEqual(["Open", "Copy public URL"]);
     fireEvent.click(screen.getByRole("menuitem", { name: "Copy public URL" }));
     expect(onCopyPublicUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("copies the committed GitHub URL and keeps dirty guidance at the bottom", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("navigator", { language: "en", clipboard: { writeText } });
+    const url = "https://github.com/me/repo/blob/1234/file.txt";
+    versionState.capabilities = ["git-file-revision"];
+    vi.spyOn(api, "getGitFileRevision").mockResolvedValue({
+      path: "file.txt",
+      isGitRepo: true,
+      commit: null,
+      dirty: true,
+      githubLink: { url, pushed: true },
+    });
+    const { onClose } = renderMenu({
+      fileTarget: { projectId: "project", path: "file.txt" },
+    });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("menuitem", { name: /Copy GitHub link/ }),
+      ).not.toBeNull(),
+    );
+    const item = screen.getByRole("menuitem", { name: /Copy GitHub link/ });
+    expect(screen.getAllByRole("menuitem").at(-1)).toBe(item);
+    expect(item.textContent).toContain("Local edits won’t be included");
+    fireEvent.click(item);
+    expect(writeText).toHaveBeenCalledWith(url);
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("disables an unpushed GitHub revision even when the file is dirty", async () => {
+    versionState.capabilities = ["git-file-revision"];
+    vi.spyOn(api, "getGitFileRevision").mockResolvedValue({
+      path: "file.txt",
+      isGitRepo: true,
+      commit: null,
+      dirty: true,
+      githubLink: {
+        url: "https://github.com/me/repo/blob/1234/file.txt",
+        pushed: false,
+      },
+    });
+    const { onClose } = renderMenu({
+      fileTarget: { projectId: "project", path: "file.txt" },
+    });
+    const item = await screen.findByRole("menuitem", {
+      name: /Copy GitHub link/,
+    });
+    expect(item.getAttribute("disabled")).not.toBeNull();
+    expect(item.textContent).toContain("Revision not pushed to GitHub");
+    expect(item.textContent).not.toContain("Local edits");
+    fireEvent.click(item);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("opens adjacent submenus on hover-capable pointers", () => {

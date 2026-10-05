@@ -2,6 +2,7 @@ import {
   mkdtemp,
   mkdir,
   realpath,
+  readFile,
   rm,
   symlink,
   utimes,
@@ -192,6 +193,68 @@ it("restricts inventory to administrators and retains orphan names for token-rev
   expect(
     (await (await app.request(`/api/projects/${projectId}/app`)).json()).state,
   ).toBe("ready");
+});
+
+it("deletes only an administrator's selected app and releases every address", async () => {
+  const remove = () =>
+    app.request(`/api/projects/${projectId}/app`, { method: "DELETE" });
+  expect((await remove()).status).toBe(403);
+  principal = { kind: "superuser" };
+  for (const namespace of ["first.example", "previous.example"]) {
+    await store.reserve(
+      { projectId, namespace, name: "canvas", owner: "archer" },
+      async () => {},
+    );
+  }
+  await store.setHidden(projectId, "archer", true, "superuser");
+  const rotate = vi.spyOn(artifacts.vhostAccess, "rotate");
+  const stop = vi.spyOn(services, "stop");
+  expect((await remove()).status).toBe(200);
+  expect(stop).toHaveBeenCalledWith(projectId, expect.any(Function));
+  expect(rotate).toHaveBeenCalledTimes(2);
+  expect(await store.reservations(projectId)).toEqual([]);
+  await expect(
+    readFile(join(projectPath, ".project-template/app.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readFile(join(projectPath, "dist/index.html"), "utf8")).toBe(
+    "<h1>Static starter</h1>",
+  );
+  expect(await scanner.getProject(projectId)).not.toBeNull();
+  expect(await store.visibilityHistory(projectId)).toHaveLength(1);
+  expect(
+    (await (await app.request("/api/project-apps")).json()).projects,
+  ).toEqual([]);
+  expect((await remove()).status).toBe(200);
+});
+
+it("does not show an unrelated missing project as a missing app", async () => {
+  principal = { kind: "superuser" };
+  await rm(projectPath, { recursive: true });
+  expect(
+    (await (await app.request("/api/project-apps")).json()).projects,
+  ).toEqual([]);
+  expect(
+    (await app.request(`/api/projects/${projectId}/app`, { method: "DELETE" }))
+      .status,
+  ).toBe(404);
+});
+
+it("refuses to delete a declaration through a parent symlink outside the project", async () => {
+  principal = { kind: "superuser" };
+  const outside = join(root, "outside");
+  await mkdir(outside);
+  await writeFile(join(outside, "app.json"), "keep");
+  await rm(join(projectPath, ".project-template"), { recursive: true });
+  await symlink(
+    outside,
+    join(projectPath, ".project-template"),
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  expect(
+    (await app.request(`/api/projects/${projectId}/app`, { method: "DELETE" }))
+      .status,
+  ).toBe(403);
+  expect(await readFile(join(outside, "app.json"), "utf8")).toBe("keep");
 });
 
 it("enforces public publishing and private-link retrieval independently, including revocation", async () => {

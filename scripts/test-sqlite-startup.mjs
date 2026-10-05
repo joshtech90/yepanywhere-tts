@@ -1,11 +1,12 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
+import { waitForPortFile } from "./wait-for-port-file.mjs";
+import { removeFixtureDirectory } from "./remove-fixture-directory.mjs";
 
 const [expected, packageDir = "dist/npm-package", launchMode] =
   process.argv.slice(2);
@@ -125,13 +126,16 @@ for (const state of [
     // slower than the SQLite initialization.
     const deadline =
       Date.now() + (process.platform === "win32" ? 120_000 : 30_000);
-    while (!existsSync(portFile) && !exited && Date.now() < deadline)
-      await delay(50);
-    assert.ok(
-      !exited && existsSync(portFile),
-      `Server failed to start: ${spawnError ?? ""}\n${output}`,
-    );
-    const port = Number(readFileSync(portFile, "utf8"));
+    // writeFileSync creates the file before writing its digits. A parent on
+    // another process can observe that empty file, especially on Windows.
+    const port = await waitForPortFile(portFile, deadline, () => {
+      assert.ok(
+        !exited,
+        `Server failed to start: ${spawnError ?? ""}\n${output}`,
+      );
+    }).catch((error) => {
+      throw new Error(`${error.message}\n${output}`, { cause: error });
+    });
     // Publishing a listening port can precede the first responsive request
     // during cold Windows initialization. Readiness shares the startup budget;
     // a single timed-out GET must not reject an otherwise healthy launch.
@@ -150,7 +154,7 @@ for (const state of [
     }
     assert.ok(
       response,
-      `Server never became responsive: ${readinessError}\n${output}`,
+      `Server never became responsive on port ${port}: ${readinessError}\n${output}`,
     );
     assert.equal(response.status, 200, output);
     const version = await response.json();
@@ -254,11 +258,6 @@ for (const state of [
     }, 10_000);
     await completion;
     clearTimeout(killTimer);
-    await rm(temporary, {
-      recursive: true,
-      force: true,
-      maxRetries: 3,
-      retryDelay: 100,
-    });
+    await removeFixtureDirectory(temporary);
   }
 }

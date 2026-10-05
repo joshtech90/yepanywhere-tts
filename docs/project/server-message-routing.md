@@ -8,6 +8,8 @@ late joiners catch up. Read alongside:
 - [`ws-auth-state-model.md`](ws-auth-state-model.md) — admission and SRP state
 - [`packages/client/RENDERING_PERFORMANCE.md`](../../packages/client/RENDERING_PERFORMANCE.md)
   — what happens after the frame arrives in the browser
+- [relay transfer size](../../topics/media-rendering-and-routing.md#relay-transfer-size)
+  — file bodies that stream as raw chunks instead of one response
 
 ## One-paragraph summary
 

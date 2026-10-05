@@ -279,6 +279,39 @@ describe("clientSummaryState", () => {
     ).toEqual({ surface: "desktop" });
   });
 
+  it("applies a snapshot without touching the prior state and merges repeated rows", () => {
+    const before = applyGlobalSessionsCollectionSnapshot(
+      createEmptyClientSummaryState(),
+      {
+        query: { scope: "global-sessions" },
+        sessions: [globalSession("kept")],
+        hasMore: false,
+      },
+      NOW,
+    );
+    const priorEntities = before.sessions.entities;
+    const after = applyGlobalSessionsCollectionSnapshot(
+      before,
+      {
+        query: { scope: "global-sessions" },
+        sessions: [
+          globalSession("repeated", { title: "First" }),
+          globalSession("repeated", { title: "Second", isStarred: true }),
+        ],
+        hasMore: false,
+      },
+      NOW + 1,
+    );
+
+    expect(before.sessions.entities).toBe(priorEntities);
+    expect([...priorEntities.keys()]).toEqual(["kept"]);
+    expect(selectSessionCollectionRecord(after, "kept")).toBeDefined();
+    expect(selectSessionCollectionRecord(after, "repeated")).toMatchObject({
+      title: "Second",
+      isStarred: true,
+    });
+  });
+
   it("preserves question previews across partial updates and projects known empty results", () => {
     const asyncQuestions = {
       omitted: false,

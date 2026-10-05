@@ -32,6 +32,8 @@ export interface SessionCatalogRow {
   projectIdentityKey: string;
   updatedAt: string;
   createdAt?: string;
+  /** The latest turn a person wrote; the sidebar files sessions by it. */
+  lastHumanTurnAt?: string;
   /** Untruncated; surfaces truncate for display. */
   title?: string | null;
   provider?: ProviderName;

@@ -90,7 +90,6 @@ afterEach(() => {
 describe("SettingsLayout capability gating", () => {
   it("covers the categories whose panes an older server cannot serve", () => {
     expect(gatedCategories.map((category) => category.id).sort()).toEqual([
-      "computer-control",
       "emulator",
       "issues",
       "project-templates",

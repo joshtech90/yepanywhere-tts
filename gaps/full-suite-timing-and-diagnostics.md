@@ -59,3 +59,13 @@ the other timing and diagnostic findings above remain open.
 Contributing-model: 6-Astra.
 
 Found 2026-09-08 while validating issue #121 relay file downloads.
+
+2026-10-03: router recovery validation's full `pnpm test` passed (6,316 server
+and 6,655 client tests), but still emitted unasserted WARN diagnostics from
+negative project-queue dispatch, clearloop launch/reconcile, transcript fork,
+CUDA-unavailable voice registration, gateway readiness timeout and malformed
+pi registry fixtures. Router recovery's focused service/component/browser
+checks were warning-free. Those unrelated fixture diagnostics remain here
+because asserting their intentional failures crosses queue, provider and
+gateway test ownership; changing or suppressing them in the router recovery
+patch would obscure the behavior under review.

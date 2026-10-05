@@ -8,7 +8,68 @@
 
 Topic: server-capabilities
 
+`vhost-file-site-replacement` (permanent ID 109, explicit optional bit) gates
+the file-address replacement checkbox and limited-user file-address access.
+It extends the existing file-address routes with explicit `replace: true` and
+persisted creator ownership, with project-confined limited-user publication.
+The 2026-10-01 optional release review checked v0.9.0, v0.9.1 and v0.9.2;
+none has the file-vhost routes. Without the new bit, replacement stays hidden
+and file addresses remain administrator-only. ID 105 retains its original
+meaning. Standing maintainer compatibility authorization applies.
+
+## Most remaining router policy
+
+`agent-auth-router-most-remaining` (permanent optional ID 117) adds negotiated
+`routerPolicy: "most-remaining"`, supported-policy/admission-refresh metadata and
+cached ranking evidence. Both YA support and AAR `most-remaining-v1` are required
+before displaying the option. The optional 2026-10-04 corpus v0.9.0–v0.9.2 lacks
+AAR routes; without the bit, preserve Manual/Round robin and disable unsupported
+pool defaults with upgrade guidance. No existing capability changes meaning.
+See [the router contract](agent-auth-router.md#most-remaining-and-admission-refresh).
+
 ## Source Of Truth
+
+`agent-auth-router-owned-pools` (permanent ID 116, explicit optional bit)
+adds `canManagePools` metadata and owner/use authority handling. False hides
+integration editing; old-router editing remains the fallback. See the
+[ownership contract](agent-auth-router.md#router-owned-pool-compatibility).
+
+`agent-auth-router-pools` (permanent ID 115, explicit optional bit) gates owner
+POST overview/refresh and pool save/remove routes, plus new-session
+`routerPoolId`/`routerPolicy` fields. The 2026-10-03 optional corpus v0.9.0–v0.9.2
+lacks AAR. Without the bit the client retains manual account controls and sends
+no pool requests. Existing capabilities keep their meaning. AAR additionally
+must advertise `pools-v1`. See [pools and overview](agent-auth-router.md#pools-and-quota-overview).
+
+`agent-auth-router-recovery` (permanent ID 114, explicit optional bit) gates
+owner-only `GET /api/agent-auth-router/recovery` and
+`POST /api/agent-auth-router/retry-cancellations`. The 2026-10-03 optional
+release corpus v0.9.0, v0.9.1 and v0.9.2 lacks AAR routes. The maintainer
+authorized this follow-up to the opt-in manual router integration. Without the
+new bit, clients use only the original router controls and requests; the
+existing `agent-auth-router` capability is not broadened. Recovery controls
+remain hidden when the original integration is unavailable. See
+[router recovery](agent-auth-router.md#status-and-recovery).
+
+`project-app-deletion` (permanent ID 110, explicit optional bit) owns
+administrator DELETE `/api/projects/:projectId/app`. The 2026-10-01 release
+review checked the approved v0.9.0–v0.9.2 corpus, which lacks project-app
+routes. Without the bit clients hide app/project cleanup controls and show
+update guidance. Existing project deletion retains its meaning. See
+[app inventory](project-service.md#app-address-in-project-settings).
+
+`context-usage-breakdown` (permanent ID 108, version-implied from 0.9.4) owns
+`GET /api/sessions/:sessionId/context-breakdown`. v0.9.0–v0.9.2 lack the
+route; without the capability the context-usage popover shows only its
+existing rows and sends no breakdown request. The maintainer approved this
+gate on 2026-10-01. See [context breakdown](context-breakdown.md#wire-contract).
+
+Optional `GitFileRevision.githubLink` metadata supplies file-menu GitHub
+permalinks and push status. The maintainer approved field-presence gating on
+2026-09-30 after checking v0.9.0, v0.9.1, and v0.9.2, which lack the field.
+Older responses omit the menu item; clients use only the already-gated
+file-revision and file-owner endpoints. No existing capability meaning changes.
+See [Copy GitHub link](source-control.md#copy-github-link-from-a-file-menu).
 
 The optional `session.effectiveLaunchSettings` response snapshot uses field
 presence rather than a new capability or handshake, approved by the maintainer
@@ -18,6 +79,13 @@ request mapping and browser-local fallback. With it, dormant controls use the
 saved values and resume sends only deliberate overrides through existing
 request fields. No new endpoint or existing capability meaning changes. See
 [session defaults](session-defaults.md#per-session-live-picks-vs-global-defaults).
+
+`project-file-view-command` (permanent ID 107, version-implied from 0.9.4)
+owns `GET /api/projects/:projectId/file-view-search` and the `/v` / `/view`
+composer command. v0.9.0–v0.9.2 lack the route; clients neither advertise nor
+intercept `/v` without it, so the typed text reaches the provider and no
+search request is made. The maintainer approved this gate on 2026-09-30. See
+[view command](view-command.md#compatibility).
 
 `vhost-file-sites` (permanent ID 105, version-implied from 0.9.4) owns the
 `vhostSites` artifact configuration/status field and the owner routes
@@ -955,24 +1023,17 @@ The audit complements, rather than replaces, released-server behavior
 fixtures. A capability may be registered perfectly while the client still
 mounts its consumers before checking it.
 
-## Optional Windows Computer Control
+## Retired Windows Computer Control
 
-Managed downloads add permanent optional ID 71, `computer-control-releases`,
-under the end-to-end install/update request approved on 2026-09-12. Stable
-v0.8.0/v0.8.1 lack its four `/api/computer-control/releases/*` routes and
-`release` status. Without ID 71 the client sends no release-management request
-and shows server-update guidance while retaining ID 70 local-install controls.
-The isolated browser regression exercises both old-server fallbacks. ID 70
-and all existing capabilities retain their meanings.
-
-The 2026-09-12 optional compatibility review covers stable v0.8.0 and v0.8.1;
-neither has the new contract. Permanent optional ID 70,
-`optional-computer-control`, covers the authenticated operator routes and
-explicit session-start selection. Advertisement means the server can report
-availability; Windows/Node/local-Codex eligibility and default-off enablement
-remain separate checks. Absent support sends no computer-control requests or
-launch fields. See [Computer Control](optional-computer-control.md) for the
-exact routes and authority contract. No older capability changes meaning.
+**Current (0.9.4):** permanent IDs 70 `optional-computer-control` and 71
+`computer-control-releases` are withdrawn from advertisement and remain
+reserved with their original meanings. The client no longer offers their
+settings or session tool. Authenticated legacy routes return 410 migration
+guidance; true old session selections are rejected before provider launch.
+Installed Machine Control uses distinct ID 112 and an optional launch field.
+An older host advertising 70/71 does not receive new readiness requests or
+installed selections without 112. [Computer Control](optional-computer-control.md)
+owns the bounded cleanup and intentional authority change.
 
 ## Experimental issue/session associations
 
@@ -986,3 +1047,15 @@ Existing capabilities and protocol levels keep their meanings. The unpublished v
 contract may evolve before release; released changes need the usual review. See
 [issue/session associations](issue-session-associations.md#compatibility-and-migrations)
 for exact routes, fields and source-switch behavior.
+
+## Installed Machine Control compatibility
+
+**Decision (2026-10-02):** Allocate permanent optional capability 112,
+`installed-machine-control`, for read-only installation readiness and explicit
+`machineControl?: boolean` launch selection. It does not extend legacy 70/71.
+The optional support corpus v0.9.0, v0.9.1 and v0.9.2 lacks this interface;
+clients hide its picker and send no new request or field without the bit.
+The maintainer's resumed end-to-end implementation follows the presented plan
+in [tactical 142](../docs/tactical/142-machine-control-desktop-consumer.md#session-picker-compatibility-decision).
+The bit means the readiness route is mounted on a supported host; installed
+product availability is reported separately and verified again at launch.

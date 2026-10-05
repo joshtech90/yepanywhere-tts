@@ -49,6 +49,10 @@ import {
 import { useContentSearch } from "../components/session-search/useContentSearch";
 import { SearchTitle } from "../components/session-search/SearchTitle";
 import { SearchSessionMatches } from "../components/session-search/SearchSessionMatches";
+import {
+  searchNeedles,
+  useSearchIntersection,
+} from "../components/session-search/useSearchIntersection";
 import styles from "../components/session-search/SessionSearch.module.css";
 import { useGlobalSessionsFeed } from "../hooks/useGlobalSessionsFeed";
 import { useProjectQueues } from "../hooks/useProjectQueues";
@@ -57,7 +61,9 @@ import { useProviders } from "../hooks/useProviders";
 import { usePublicShareStatus } from "../hooks/usePublicShareStatus";
 import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import { useServerSettings } from "../hooks/useServerSettings";
+import { useSessionRightPaneSetting } from "../hooks/useSessionRightPaneSetting";
 import { useVersion } from "../hooks/useVersion";
+import { useModalBackGesture } from "../components/ui/Modal";
 import { useI18n } from "../i18n";
 import { MainContent, useNavigationLayout } from "../layouts";
 import { setNewSessionPrefill } from "../lib/newSessionPrefill";
@@ -84,6 +90,7 @@ interface SearchHistoryControls {
   limit: string;
   selected: string[];
   onlySelected?: boolean;
+  intersection?: boolean;
 }
 
 export function GlobalSessionsPage() {
@@ -98,7 +105,10 @@ function SessionSearchPage() {
     () => createSessionApi(runtime.transport.fetch.bind(runtime.transport)),
     [runtime],
   );
-  const { openSidebar, isWideScreen } = useNavigationLayout();
+  const { openSidebar, isWideScreen, setRightPaneExpanded } =
+    useNavigationLayout();
+  const { sessionRightPaneEnabled } = useSessionRightPaneSetting();
+  const [detailHost, setDetailHost] = useState<HTMLDivElement | null>(null);
   const basePath = useRemoteBasePath();
   const navigate = useNavigate();
   const sourceKey = useClientSummarySourceKey();
@@ -152,6 +162,14 @@ function SessionSearchPage() {
     [processes, terminatedProcesses],
   );
   const query = params.get("q") ?? "";
+  const [intersection, setIntersection] = useState(
+    remembered?.intersection ?? true,
+  );
+  const needles = useMemo(
+    () => searchNeedles(query, intersection),
+    [query, intersection],
+  );
+  const firstNeedle = needles[0] ?? "";
   const project = params.get("project") ?? "";
   const providerParam = params.get("provider") ?? "";
   const executorParam = params.get("executor") ?? "";
@@ -194,7 +212,7 @@ function SessionSearchPage() {
     [fields, supported],
   );
   const [basis, setBasis] = useState<TimeBasis>(
-    remembered?.basis ?? (params.has("age") ? "activity" : "turns"),
+    remembered?.basis ?? "activity",
   );
   const [young, setYoung] = useState(
     remembered?.young ?? params.get("age") ?? "",
@@ -220,6 +238,7 @@ function SessionSearchPage() {
       limit,
       selected: [...selected],
       onlySelected,
+      intersection,
     };
     window.history.replaceState(
       { ...window.history.state, yaSessionSearch: controls },
@@ -235,10 +254,21 @@ function SessionSearchPage() {
     limit,
     selected,
     onlySelected,
+    intersection,
   ]);
   const [manage, setManage] = useState(false);
   const [zoomed, setZoomed] = useState<SearchPreviewTarget>();
   const [expanded, setExpanded] = useState<SearchPreviewTarget["session"]>();
+  const paneOpen = sessionRightPaneEnabled && !!(zoomed || expanded);
+  // One history owner survives switching between the match list and a turn.
+  useModalBackGesture(() => {
+    setZoomed(undefined);
+    setExpanded(undefined);
+  }, paneOpen);
+  useEffect(() => {
+    setRightPaneExpanded?.(paneOpen);
+    return () => setRightPaneExpanded?.(false);
+  }, [paneOpen, setRightPaneExpanded]);
   const [pending, setPending] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const changeParam = useCallback(
@@ -350,19 +380,35 @@ function SessionSearchPage() {
   const [helpInline, setHelpInline] = useState(false);
   const contentCandidates = useMemo(
     () =>
-      candidates.filter((session) => turnSearchProviders.has(session.provider)),
+      candidates
+        .filter((session) => turnSearchProviders.has(session.provider))
+        .sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt)),
     [candidates, turnSearchProviders],
   );
   const resultList = useRef<HTMLUListElement>(null);
-  const scan = useContentSearch(
+  const acquisition = useContentSearch(
     contentCandidates,
-    query,
+    firstNeedle,
     effectiveFields,
     supported && !invalidRange,
     basis === "turns" ? bounds.after : undefined,
     basis === "turns" ? bounds.before : undefined,
     viewportRows,
   );
+  const filtered = useSearchIntersection(acquisition.matches, needles);
+  const partial = useMemo(() => {
+    if (!filtered.incomplete?.size) return acquisition.partial;
+    const reasons = new Map(acquisition.partial);
+    for (const id of filtered.incomplete)
+      reasons.set(id, t("sessionSearchIntersectionIncomplete"));
+    return reasons;
+  }, [acquisition.partial, filtered.incomplete, t]);
+  const scan = {
+    ...acquisition,
+    partial,
+    matches: filtered.matches,
+    running: acquisition.running || filtered.filtering,
+  };
   const discoveryOrder = useRef(new Map<string, number>());
   const orderedNeedle = useRef(query);
   const results = useMemo(() => {
@@ -381,9 +427,10 @@ function SessionSearchPage() {
           const titles = effectiveFields.includes("title")
             ? titleMatches(
                 session,
-                query,
+                firstNeedle,
                 basis === "turns" ? bounds.after : undefined,
                 basis === "turns" ? bounds.before : undefined,
+                needles.slice(1),
               )
             : [];
           const matches = [...titles, ...turns];
@@ -406,6 +453,8 @@ function SessionSearchPage() {
     scan.matches,
     effectiveFields,
     query,
+    firstNeedle,
+    needles,
     basis,
     bounds,
   ]);
@@ -621,7 +670,10 @@ function SessionSearchPage() {
     return () => observer.disconnect();
   }, [showMore, renderedCount, results.length]);
   return (
-    <MainContent isWideScreen={isWideScreen}>
+    <MainContent
+      isWideScreen={isWideScreen}
+      innerClassName={paneOpen ? styles.withDetail : undefined}
+    >
       <PageHeader
         title={t("globalSessionsTitle")}
         onOpenSidebar={openSidebar}
@@ -630,6 +682,8 @@ function SessionSearchPage() {
           <SearchHeader
             query={query}
             onQuery={onQuery}
+            intersection={intersection}
+            onIntersection={setIntersection}
             fields={effectiveFields}
             onFields={updateFields}
             supported={supported}
@@ -842,7 +896,7 @@ function SessionSearchPage() {
                       matches.find((match) => match.role === "title")
                         ?.fullText ?? getSessionDisplayTitle(session)
                     }
-                    query={effectiveFields.includes("title") ? query : ""}
+                    query={effectiveFields.includes("title") ? firstNeedle : ""}
                   />
                 }
                 fullTitle={session.fullTitle ?? getSessionDisplayTitle(session)}
@@ -895,7 +949,7 @@ function SessionSearchPage() {
                           )
                         : 0
                     }
-                    query={query}
+                    query={firstNeedle}
                     basePath={basePath}
                     onZoom={setZoomed}
                   />
@@ -990,7 +1044,8 @@ function SessionSearchPage() {
           canMarkUnread={selectedSessions.some((s) => !s.hasUnread)}
         />
       </main>
-      {expanded && (
+      {paneOpen && <div ref={setDetailHost} className={styles.detailHost} />}
+      {expanded && !(paneOpen && zoomed) && (!paneOpen || detailHost) && (
         <SearchSessionMatches
           session={
             sessions.find((session) => session.id === expanded.id) ?? expanded
@@ -999,20 +1054,22 @@ function SessionSearchPage() {
             results.find(({ session }) => session.id === expanded.id)
               ?.matches ?? []
           }
-          query={query}
+          query={firstNeedle}
           running={scan.running}
           limited={scan.limitedSessions.has(expanded.id)}
           partial={scan.partial}
           diagnostics={scan.diagnostics}
           basePath={basePath}
           onZoom={setZoomed}
+          paneTarget={paneOpen ? detailHost : undefined}
           onClose={() => setExpanded(undefined)}
         />
       )}
-      {zoomed && (
+      {zoomed && (!paneOpen || detailHost) && (
         <SearchZoomPreview
           target={zoomed}
-          query={query}
+          paneTarget={paneOpen ? detailHost : undefined}
+          query={firstNeedle}
           basePath={basePath}
           onClose={() => setZoomed(undefined)}
         />

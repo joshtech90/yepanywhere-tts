@@ -235,70 +235,88 @@ describe("Project Queue attachments of limited users", () => {
       });
   }
 
-  it("queues, survives a restart, and dispatches a limited user's staged draft", async () => {
-    const alice = staging.forUser("alice");
-    const ref = await stageDraft(alice, "batch-a", "notes.txt", "from alice");
-    principal = limitedUser("alice", projectId);
-
-    const created = await routes()("POST", `/${projectId}/queue`, {
-      target: { type: "new-session", provider: "claude" },
-      message: stagedMessage("read my notes", "batch-a", [ref]),
-    });
-    expect(created.status).toBe(201);
-    const { item } = (await created.json()) as {
-      item: ProjectQueueItemSummary;
-    };
-    expect(item.createdByUser).toBe("alice");
-    // The draft became the item's, inside alice's own store.
-    expect(alice.getRecord(ref.id)?.owner).toEqual({
-      type: "project-queue",
-      queueItemId: item.id,
-    });
-    await expect(alice.listDraftAttachments("batch-a")).resolves.toEqual([]);
-    expect(staging.getRecord(ref.id)).toBeNull();
-
-    // A restart loads the persisted queue and each account's staging index.
-    ({ staging, queue } = await startServer());
-    expect(queue.listProject(projectId).items).toMatchObject([
-      { id: item.id, createdByUser: "alice", status: "queued" },
-    ]);
-
-    const supervisor = new RecordingSupervisor(projectId);
-    const scheduler = new ProjectQueueScheduler({
-      projectQueueService: queue,
-      supervisor,
-      eventBus: new EventBus(),
-      attachmentStagingService: staging,
-      getLimitedUserGrants: (username) =>
-        username === "alice" ? grantsFor(projectId) : null,
-      isSessionFreshForLimitedTurn: async () => true,
-      idleGraceMs: 1,
-    });
-    try {
-      // The restart paused dispatch; Start now on the item resumes it.
-      expect(queue.isDispatchPaused()).toBe(true);
-      const promoted = await scheduler.promoteNow(projectId, { force: true });
-      expect(promoted).toMatchObject({ promoted: true });
-      expect(supervisor.resumeCalls).toHaveLength(1);
-      const [attachment] = supervisor.resumeCalls[0]!.message.attachments!;
-      expect(attachment).toMatchObject({ id: ref.id, name: ref.name });
-      await expect(fs.readFile(attachment!.path, "utf-8")).resolves.toBe(
-        "from alice",
+  it.each(["batch-a", "batch-b"])(
+    "queues and dispatches a limited user's files with second batch %s after restart",
+    async (secondBatch) => {
+      // As with an initialized draft-sync store, allow per-ref batch validation.
+      staging.setDraftProtection(() => false);
+      const alice = staging.forUser("alice");
+      const ref = await stageDraft(alice, "batch-a", "notes.txt", "from alice");
+      const second = await stageDraft(
+        alice,
+        secondBatch,
+        "more.txt",
+        "more from alice",
       );
-      expect(supervisor.resumeCalls[0]!.message.metadata).toMatchObject({
-        sentByUser: "alice",
+      principal = limitedUser("alice", projectId);
+
+      const created = await routes()("POST", `/${projectId}/queue`, {
+        target: { type: "new-session", provider: "claude" },
+        message: stagedMessage("read my notes", "batch-a", [ref, second]),
       });
-      // Settling the item removes its staged copy from alice's store.
-      await waitFor(async () => {
-        expect(queue.listProject(projectId).items).toEqual([]);
-        await expect(
-          staging.forUser("alice").listQueueAttachments(item.id),
-        ).resolves.toEqual([]);
+      expect(created.status).toBe(201);
+      const { item } = (await created.json()) as {
+        item: ProjectQueueItemSummary;
+      };
+      expect(item.createdByUser).toBe("alice");
+      // The draft became the item's, inside alice's own store.
+      expect(alice.getRecord(ref.id)?.owner).toEqual({
+        type: "project-queue",
+        queueItemId: item.id,
       });
-    } finally {
-      await scheduler.dispose();
-    }
-  });
+      await expect(alice.listDraftAttachments("batch-a")).resolves.toEqual([]);
+      expect(staging.getRecord(ref.id)).toBeNull();
+
+      // A restart loads the persisted queue and each account's staging index.
+      ({ staging, queue } = await startServer());
+      expect(queue.listProject(projectId).items).toMatchObject([
+        { id: item.id, createdByUser: "alice", status: "queued" },
+      ]);
+
+      const supervisor = new RecordingSupervisor(projectId);
+      const scheduler = new ProjectQueueScheduler({
+        projectQueueService: queue,
+        supervisor,
+        eventBus: new EventBus(),
+        attachmentStagingService: staging,
+        getLimitedUserGrants: (username) =>
+          username === "alice" ? grantsFor(projectId) : null,
+        isSessionFreshForLimitedTurn: async () => true,
+        idleGraceMs: 1,
+      });
+      try {
+        // The restart paused dispatch; Start now on the item resumes it.
+        expect(queue.isDispatchPaused()).toBe(true);
+        const promoted = await scheduler.promoteNow(projectId, { force: true });
+        expect(promoted).toMatchObject({ promoted: true });
+        expect(supervisor.resumeCalls).toHaveLength(1);
+        const [attachment] = supervisor.resumeCalls[0]!.message.attachments!;
+        expect(attachment).toMatchObject({ id: ref.id, name: ref.name });
+        await expect(fs.readFile(attachment!.path, "utf-8")).resolves.toBe(
+          "from alice",
+        );
+        const attachments = supervisor.resumeCalls[0]!.message.attachments!;
+        expect(attachments.map((file) => file.id)).toEqual([ref.id, second.id]);
+        expect(
+          await Promise.all(
+            attachments.map((file) => fs.readFile(file.path, "utf-8")),
+          ),
+        ).toEqual(["from alice", "more from alice"]);
+        expect(supervisor.resumeCalls[0]!.message.metadata).toMatchObject({
+          sentByUser: "alice",
+        });
+        // Settling the item removes its staged copy from alice's store.
+        await waitFor(async () => {
+          expect(queue.listProject(projectId).items).toEqual([]);
+          await expect(
+            staging.forUser("alice").listQueueAttachments(item.id),
+          ).resolves.toEqual([]);
+        });
+      } finally {
+        await scheduler.dispose();
+      }
+    },
+  );
 
   it("refuses a reference staged by another account, leaving that draft alone", async () => {
     const alice = staging.forUser("alice");

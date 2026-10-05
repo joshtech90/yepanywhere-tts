@@ -259,6 +259,64 @@ describe("createSessionSubscription", () => {
     });
   });
 
+  it("withholds only live tool output from subscribers that decline it", async () => {
+    const { process, fireEvent } = createMockProcess();
+    const { emit, events } = collectEmit();
+
+    createSessionSubscription(process, emit, { wantsLiveToolOutput: false });
+    const toolResult = (streaming: boolean) =>
+      ({
+        type: "message",
+        message: {
+          type: "user",
+          uuid: "codex-result-1",
+          ...(streaming ? { _isStreaming: true } : {}),
+          message: {
+            role: "user",
+            content: [
+              { type: "tool_result", tool_use_id: "call-1", content: "out" },
+            ],
+          },
+        },
+      }) as ProcessEvent;
+
+    await fireEvent({
+      type: "message",
+      message: {
+        type: "tool_output_preview",
+        uuid: "tool_output_preview:toolu_1",
+        tool_use_id: "toolu_1",
+        content: "tick 1",
+        _isStreaming: true,
+      },
+    } as ProcessEvent);
+    await fireEvent(toolResult(true));
+    await fireEvent({
+      type: "message",
+      message: {
+        type: "assistant",
+        uuid: "text-live-1",
+        _isStreaming: true,
+        message: { role: "assistant", content: "partial" },
+      },
+    } as ProcessEvent);
+    await fireEvent(toolResult(false));
+
+    const sent = events
+      .filter(([type]) => type === "message")
+      .map(([, data]) => data as Record<string, unknown>);
+    // A completed message is sent raw and again once enriched.
+    expect(new Set(sent.map((message) => message.uuid))).toEqual(
+      new Set(["text-live-1", "codex-result-1"]),
+    );
+    expect(
+      sent.filter(
+        (message) =>
+          message.uuid === "codex-result-1" && message._isStreaming === true,
+      ),
+    ).toHaveLength(0);
+  });
+
   it("emits connected with correct process state", () => {
     const { process } = createMockProcess({
       state: { type: "waiting-input", request: { prompt: "Continue?" } },

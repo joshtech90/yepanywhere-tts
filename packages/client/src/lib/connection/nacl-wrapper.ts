@@ -317,9 +317,18 @@ export async function decryptBinaryEnvelopeWithDecompression(
   if (!result) {
     return null;
   }
+  return decodeJsonEnvelopePayload(result.format, result.payload);
+}
 
-  const { format, payload } = result;
-
+/**
+ * The JSON text of a decrypted payload, decompressing format 0x03.
+ *
+ * @throws BinaryEnvelopeError if the format is not JSON (0x01 or 0x03)
+ */
+export async function decodeJsonEnvelopePayload(
+  format: BinaryFormatValue,
+  payload: Uint8Array,
+): Promise<string> {
   if (format === BinaryFormat.COMPRESSED_JSON) {
     // Decompress gzip payload (format 0x03)
     const decompressed = await decompressToString(payload);

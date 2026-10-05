@@ -24,6 +24,7 @@ import {
   type SubscriptionState,
 } from "./types.js";
 import type { VapidKeys } from "./vapid.js";
+import type { NativePushService } from "./NativePushService.js";
 
 const CURRENT_VERSION = 1;
 const DEFAULT_URGENT_DELIVERY: PushDeliveryUrgency = "high";
@@ -36,6 +37,10 @@ export interface PushServiceOptions {
 }
 
 export class PushService {
+  private nativePush?: NativePushService;
+  setNativePushService(service: NativePushService): void {
+    this.nativePush = service;
+  }
   private state: SubscriptionState;
   private dataDir: string;
   private filePath: string;
@@ -165,7 +170,10 @@ export class PushService {
    * Get subscription count.
    */
   getSubscriptionCount(): number {
-    return Object.keys(this.state.subscriptions).length;
+    return (
+      Object.keys(this.state.subscriptions).length +
+      (this.nativePush?.count() ?? 0)
+    );
   }
 
   /**
@@ -226,28 +234,24 @@ export class PushService {
   ): Promise<SendResult[]> {
     this.ensureInitialized();
 
-    if (!this.vapidKeys) {
-      throw new Error("VAPID keys not configured");
-    }
-
     const browserProfileIds = Object.keys(this.state.subscriptions);
-
-    if (browserProfileIds.length === 0) {
-      return [];
-    }
-
-    const results = await Promise.all(
-      browserProfileIds.map((browserProfileId) =>
-        this.sendToBrowserProfile(browserProfileId, payload, {
-          deliveryUrgency: options?.deliveryUrgency,
-        }),
+    if (!this.vapidKeys && browserProfileIds.length > 0)
+      throw new Error("VAPID keys not configured");
+    const [results, nativeResults] = await Promise.all([
+      Promise.all(
+        browserProfileIds.map((browserProfileId) =>
+          this.sendToBrowserProfile(browserProfileId, payload, {
+            deliveryUrgency: options?.deliveryUrgency,
+          }),
+        ),
       ),
-    );
+      this.nativePush?.sendToAll(payload) ?? Promise.resolve([]),
+    ]);
 
     // Clean up invalid subscriptions
     await this.cleanupInvalidSubscriptions(results);
 
-    return results;
+    return [...results, ...nativeResults];
   }
 
   /**

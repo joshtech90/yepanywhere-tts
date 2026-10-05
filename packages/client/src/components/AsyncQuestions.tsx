@@ -9,6 +9,10 @@ import {
   useState,
 } from "react";
 import { createPortal } from "react-dom";
+import type { ProjectPathLinkTarget } from "@yep-anywhere/shared";
+import { usePublicShareContext } from "../contexts/PublicShareContext";
+import { useOptionalSessionMetadata } from "../contexts/SessionMetadataContext";
+import { useRemoteBasePath } from "../hooks/useRemoteBasePath";
 import type { ComposerOverflowTier } from "../hooks/useMessageInputToolbarLayout";
 import { useAsyncQuestions } from "../contexts/AsyncQuestionsContext";
 import { isQuestionAnswered } from "../lib/asyncQuestionRecords";
@@ -438,9 +442,18 @@ export function AsyncQuestionsButton({
   );
 }
 
-function InlineQuestion({ question }: { question: AsyncQuestion }) {
+function InlineQuestion({
+  question,
+  projectPathLinks,
+}: {
+  question: AsyncQuestion;
+  projectPathLinks?: readonly ProjectPathLinkTarget[];
+}) {
   const state = useAsyncQuestions()!;
   const { t } = useI18n();
+  const sessionMetadata = useOptionalSessionMetadata();
+  const publicShare = usePublicShareContext();
+  const basePath = useRemoteBasePath();
   const root = useRef<HTMLDivElement>(null);
   const [error, setError] = useState(false);
   const record = state.records[question.id];
@@ -449,8 +462,25 @@ function InlineQuestion({ question }: { question: AsyncQuestion }) {
   const answered = isQuestionAnswered(record);
   const update = state.update;
   const titleHtml = useMemo(
-    () => renderFixedFontRichContent(question.title, { diffAware: false }).html,
-    [question.title],
+    () =>
+      renderFixedFontRichContent(question.title, {
+        diffAware: false,
+        linkifyUrls: true,
+        projectId:
+          sessionMetadata?.projectId ?? publicShare?.projectId ?? undefined,
+        projectPath: sessionMetadata?.projectPath ?? undefined,
+        basePath,
+        publicShare,
+        projectPathLinks,
+      }).html,
+    [
+      question.title,
+      sessionMetadata?.projectId,
+      sessionMetadata?.projectPath,
+      basePath,
+      publicShare,
+      projectPathLinks,
+    ],
   );
   useEffect(() => {
     if (record?.seen || !root.current) return;
@@ -623,9 +653,11 @@ function InlineQuestion({ question }: { question: AsyncQuestion }) {
 
 export function AsyncQuestionMessage({
   renderId,
+  projectPathLinks,
   fallback,
 }: {
   renderId: string;
+  projectPathLinks?: readonly ProjectPathLinkTarget[];
   fallback: ReactNode;
 }) {
   const state = useAsyncQuestions();
@@ -635,7 +667,11 @@ export function AsyncQuestionMessage({
   return (
     <>
       {questions.map((question) => (
-        <InlineQuestion key={question.id} question={question} />
+        <InlineQuestion
+          key={question.id}
+          question={question}
+          projectPathLinks={projectPathLinks}
+        />
       ))}
     </>
   );

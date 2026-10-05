@@ -40,13 +40,29 @@ Bounded classification/extraction should distinguish these without unbounded
 JSON parsing or silently hiding possible User/Ass. coverage loss.
 
 The requested one-active-needle-per-viewer server guard is not implemented.
-Current client generations share four request slots, and the server separately
-caps batches; neither establishes viewer/revision ownership. The canonical
+Current client generations share configurable slots (default four), and the
+server separately caps batches; neither establishes viewer/revision ownership.
+The canonical
 [stopgap contract](../topics/all-session-content-search.md#server-needle-ownership-requested-stopgap-not-yet-enforced)
 allows an initial global last-writer-wins guard, requires stale-owner teardown,
 and preserves parallel session fan-out. Implement behind a reviewed compatible
 protocol before claiming that invariant; client cancellation alone is insufficient.
 The [index sketches](../topics/all-session-content-search.sketches.md) preserve
 candidate structures and measurement gates.
+
+## Optional backing storage for old turns
+
+Evaluate a reasonable disk-backed store (DuckDB is a candidate) for searchable
+historical turns on the server. Keep provider transcripts canonical, store
+derived state only in YA app data, and cover append/rewrite invalidation,
+stable turn IDs, exact substring verification and bounded on-demand context.
+Ship it as a configurable, default-disabled feature until query latency,
+ingest cost, memory and concurrent search behavior are measured against scans.
+Later conditional default enablement may distinguish local app-data storage
+from NFS; filesystem detection and crash/locking behavior must be established
+before relying on that distinction. NFS must retain the explicit opt-in path.
+
+Requested 2026-09-30 while improving all-session search.
+Contributing-model: 6.1-Sol.
 
 Found 2026-09-14 while implementing the approved All Sessions search design.

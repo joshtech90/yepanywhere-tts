@@ -21,9 +21,17 @@ import {
   type RegisterSecurityClientRequest,
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { AuthenticatedSrpTransportContext } from "../../src/middleware/authenticated-transport.js";
+import {
+  AUTHENTICATED_SRP_TRANSPORT,
+  type AuthenticatedSrpTransportContext,
+} from "../../src/middleware/authenticated-transport.js";
 import { RemoteSessionService } from "../../src/remote-access/RemoteSessionService.js";
 import { PushService } from "../../src/push/PushService.js";
+import {
+  NativePushService,
+  normalizeNativePushBroker,
+} from "../../src/push/NativePushService.js";
+import { createNativePushRoutes } from "../../src/routes/native-push.js";
 import { BrowserProfileService } from "../../src/services/BrowserProfileService.js";
 import { ConnectedBrowsersService } from "../../src/services/ConnectedBrowsersService.js";
 import {
@@ -208,6 +216,216 @@ describe("SecurityClientService", () => {
       deferAfterResponse: () => {},
     };
   }
+
+  const enrollment = {
+    subscriptionId: "a".repeat(22),
+    sendSecret: "b".repeat(43),
+    privacyMode: "generic" as const,
+  };
+  const brokerUrl = "https://push.example.test";
+
+  it("owns native push through current checked-in transport, persists privately and revokes", async () => {
+    const owner = await transport();
+    const { client } = await service.register(
+      registration(createTestKey(), owner),
+      owner,
+    );
+    await expect(
+      service.setNativePush(
+        client.clientId,
+        await transport(),
+        enrollment,
+        brokerUrl,
+      ),
+    ).rejects.toMatchObject({ code: "security_client_connection_bound" });
+    await service.setNativePush(client.clientId, owner, enrollment, brokerUrl);
+    expect(service.get(client.clientId).push).toMatchObject({
+      enabled: true,
+      subscriptionId: enrollment.subscriptionId,
+    });
+    expect(JSON.stringify(service.get(client.clientId))).not.toContain(
+      enrollment.sendSecret,
+    );
+    const stateFile = path.join(testDir, "security-clients.json");
+    expect((await fs.stat(stateFile)).mode & 0o777).toBe(0o600);
+    expect(await fs.readFile(stateFile, "utf8")).toContain(
+      enrollment.sendSecret,
+    );
+    await service.shutdown();
+    service = new SecurityClientService({
+      dataDir: testDir,
+      remoteSessionService: remoteSessions,
+    });
+    await service.initialize();
+    expect(service.nativePushDestinations(brokerUrl)).toHaveLength(1);
+    expect(
+      service.nativePushDestinations("https://elsewhere.test"),
+    ).toHaveLength(0);
+    await service.prepareRevocation(client.clientId);
+    expect(service.nativePushDestinations(brokerUrl)).toEqual([]);
+    expect(await fs.readFile(stateFile, "utf8")).not.toContain(
+      enrollment.sendSecret,
+    );
+  });
+
+  it("bounds native enrollment and cannot manufacture ownership with headers", async () => {
+    const owner = await transport();
+    const { client } = await service.register(
+      registration(createTestKey(), owner),
+      owner,
+    );
+    const push = new NativePushService(service, brokerUrl);
+    const routes = createNativePushRoutes(service, push);
+    const route = `/api/security/clients/${client.clientId}/native-push-subscription`;
+    const headers = { "Content-Type": "application/json" };
+    expect(
+      (
+        await routes.request(route, {
+          method: "PUT",
+          headers: { ...headers, "X-Security-Client": client.clientId },
+          body: JSON.stringify(enrollment),
+        })
+      ).status,
+    ).toBe(400);
+    const env = { [AUTHENTICATED_SRP_TRANSPORT]: owner };
+    expect(
+      (
+        await routes.request(
+          route,
+          { method: "PUT", headers, body: " ".repeat(8193) },
+          env,
+        )
+      ).status,
+    ).toBe(413);
+    expect(
+      (
+        await routes.request(
+          route,
+          {
+            method: "PUT",
+            headers,
+            body: JSON.stringify({
+              ...enrollment,
+              brokerUrl: "https://attacker.test",
+            }),
+          },
+          env,
+        )
+      ).status,
+    ).toBe(400);
+    const response = await routes.request(
+      route,
+      { method: "PUT", headers, body: JSON.stringify(enrollment) },
+      env,
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Cache-Control")).toBe("no-store");
+    expect(await response.text()).not.toContain(enrollment.sendSecret);
+    expect(
+      (await routes.request(route, { method: "DELETE" }, env)).status,
+    ).toBe(200);
+    expect(service.get(client.clientId).push.enabled).toBe(false);
+  });
+
+  it("delivers generic native events without VAPID and skips unsupported policy kinds", async () => {
+    const owner = await transport();
+    const { client } = await service.register(
+      registration(createTestKey(), owner),
+      owner,
+    );
+    await service.setNativePush(client.clientId, owner, enrollment, brokerUrl);
+    const fetcher = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => new Response(null, { status: 202 }));
+    const native = new NativePushService(service, brokerUrl, fetcher);
+    const push = new PushService({ dataDir: testDir });
+    await push.initialize();
+    push.setNativePushService(native);
+    expect(push.getSubscriptionCount()).toBe(1);
+    for (const reason of ["completed", "error"] as const) {
+      expect(
+        (
+          await push.sendToAll({
+            type: "session-halted",
+            sessionId: "private-session",
+            projectId: "private-project",
+            projectName: "private-name",
+            reason,
+            duration: 1,
+            timestamp: new Date().toISOString(),
+          })
+        )[0]?.success,
+      ).toBe(true);
+    }
+    expect(
+      fetcher.mock.calls.map(
+        (call) => JSON.parse(String(call[1]?.body)).intent,
+      ),
+    ).toEqual(["session_completed", "session_failed"]);
+    expect(JSON.stringify(fetcher.mock.calls)).not.toContain("private-project");
+    expect(JSON.stringify(fetcher.mock.calls)).not.toContain("private-name");
+    expect(
+      service.nativePushDestination(client.clientId, owner, "private-session"),
+    ).toBe("/projects/private-project/sessions/private-session");
+    expect(JSON.stringify(service.get(client.clientId))).not.toContain(
+      "private-project",
+    );
+    expect(fetcher.mock.calls[0]?.[1]?.redirect).toBe("error");
+    expect(
+      await push.sendToAll({
+        type: "dismiss",
+        sessionId: "private-session",
+        timestamp: new Date().toISOString(),
+      }),
+    ).toEqual([]);
+    expect(service.get(client.clientId).push.lastDeliveryAt).toBeDefined();
+    native.shutdown();
+  });
+
+  it("invalidates broker 404 without retiring a concurrently replaced child", async () => {
+    const owner = await transport();
+    const { client } = await service.register(
+      registration(createTestKey(), owner),
+      owner,
+    );
+    await service.setNativePush(client.clientId, owner, enrollment, brokerUrl);
+    let finish!: (response: Response) => void;
+    const fetcher = vi.fn<typeof fetch>().mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const push = new NativePushService(service, brokerUrl, fetcher);
+    const pending = push.test(client.clientId);
+    const replacement = { ...enrollment, subscriptionId: "c".repeat(22) };
+    await service.setNativePush(client.clientId, owner, replacement, brokerUrl);
+    finish(new Response(null, { status: 404 }));
+    expect((await pending).success).toBe(false);
+    expect(service.get(client.clientId).push.subscriptionId).toBe(
+      replacement.subscriptionId,
+    );
+    fetcher.mockImplementation(async () => new Response(null, { status: 503 }));
+    expect((await push.test(client.clientId)).success).toBe(false);
+    expect(service.get(client.clientId).push.enabled).toBe(true);
+    fetcher.mockImplementation(async () => new Response(null, { status: 404 }));
+    await push.test(client.clientId);
+    expect(service.get(client.clientId).push.enabled).toBe(false);
+    expect(fetcher).toHaveBeenCalledTimes(3);
+  });
+
+  it("rejects broker paths and credentials instead of redirecting secrets", () => {
+    expect(normalizeNativePushBroker("https://push.example.test/")).toBe(
+      brokerUrl,
+    );
+    for (const value of [
+      "http://push.example.test",
+      "https://user@push.example.test",
+      "https://push.example.test/path",
+      "https://push.example.test/?x=1",
+    ])
+      expect(() => normalizeNativePushBroker(value)).toThrow();
+  });
 
   it("registers a signed client without exposing its public key", async () => {
     const key = createTestKey();

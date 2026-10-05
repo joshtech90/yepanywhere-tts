@@ -1,4 +1,5 @@
 import { DRAFT_SCHEMA } from "./migrations/008-drafts.js";
+import { DRAFT_CHANGES_SCHEMA } from "./migrations/009-draft-changes.js";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { SqliteStatus } from "@yep-anywhere/shared";
@@ -44,6 +45,7 @@ export const DISCOVERY_MIGRATIONS: readonly DiscoveryMigration[] = [
   { version: 6, sql: ISSUE_CONFIRMATION_SCHEMA },
   { version: 7, sql: JIRA_PROJECT_SCHEMA },
   { version: 8, sql: DRAFT_SCHEMA },
+  { version: 9, sql: DRAFT_CHANGES_SCHEMA },
 ];
 
 /** Construct fixtures with the actual historical schema, never a parallel SQL copy. */

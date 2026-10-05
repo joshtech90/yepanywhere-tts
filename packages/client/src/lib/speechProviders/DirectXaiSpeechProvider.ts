@@ -57,7 +57,7 @@ async function readErrorBody(response: Response): Promise<string> {
   return text.length > 500 ? `${text.slice(0, 500)}...` : text;
 }
 
-async function postDirectXaiStt(
+export async function postDirectXaiStt(
   audio: Blob,
   credential: XaiSttCredential,
 ): Promise<string> {
@@ -69,7 +69,9 @@ async function postDirectXaiStt(
     ? "ogg"
     : audio.type.includes("webm")
       ? "webm"
-      : "bin";
+      : audio.type.includes("wav")
+        ? "wav"
+        : "bin";
   form.append("file", audio, `speech.${extension}`);
 
   const controller = new AbortController();

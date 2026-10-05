@@ -1,3 +1,5 @@
+import { desktopControlOrigin } from "../desktop/machine-control.js";
+import { RETIRED_COMPUTER_CONTROL_ERROR } from "../machine-control/legacy-retirement.js";
 import {
   ALL_PERMISSION_MODES,
   type ContextUsage,
@@ -21,18 +23,17 @@ import {
   type UserMessageMetadata,
   type UrlProjectId,
   type WorkstreamId,
-  GOAL_COMMAND_NAME,
   SESSION_UNREAD_TIMESTAMP,
   agentHarness,
   buildEffectiveAgentContext,
   getModelContextWindow,
-  readGoalDetails,
   isThinkingOption,
   isUrlProjectId,
   isWorkstreamId,
   mainWorkstreamId,
   truncateSessionTitle,
   readQueuedYaCommand,
+  withKnownGoal,
   type SessionRewindReason,
   type SessionRewindRecord,
   type UpdateClearloopRequest,
@@ -159,6 +160,7 @@ import type {
   Supervisor,
 } from "../supervisor/Supervisor.js";
 import {
+  ForkSettingsPersistenceError,
   ResumeCompactionError,
   RetryableSessionLaunchError,
   SessionConfigurationConflictError,
@@ -198,7 +200,7 @@ import {
   resolveRecoveredGroupForDelivery,
   resumeRecoveredGroup,
 } from "./session-recovered-queue.js";
-import { inheritSuccessorLaunchSettings } from "./session-launch-inheritance.js";
+import { inheritSuccessorLaunchSettings } from "../supervisor/sessionLaunchInheritance.js";
 import { buildThinkingOptions } from "./session-thinking-options.js";
 import {
   actingUsername,
@@ -260,26 +262,8 @@ async function getSessionSlashCommands(
     }
   }
   // A stopped session has no provider to ask, so the last observed goal stands
-  // in for live state. A live inventory that already reports goal state wins;
-  // unknown goal state is not evidence that the goal was cleared. An emulated
-  // entry — YA's `/loop wish` alias for a Claude build with no native `/goal` —
-  // carries no goal state by design, and replacing it would drop the provider
-  // text YA has to send (topics/emulated-slash-commands.md § Claude goal
-  // commands).
-  const savedGoal = goalCommandOf(metadata);
-  if (!savedGoal) return commands ?? null;
-  const merged =
-    commands?.map((command) =>
-      command.name === GOAL_COMMAND_NAME &&
-      command.invocation?.kind !== "emulated" &&
-      readGoalDetails(command)?.goalObjective === undefined
-        ? savedGoal
-        : command,
-    ) ?? null;
-  if (merged?.some((command) => command.name === GOAL_COMMAND_NAME)) {
-    return merged;
-  }
-  return [...(merged ?? []), savedGoal];
+  // in for live state.
+  return withKnownGoal(commands, goalCommandOf(metadata));
 }
 
 function roundedMs(value: number): number {
@@ -440,8 +424,12 @@ async function resolveSessionReader({
 }
 
 interface StartSessionBody {
+  routerAccountId?: string;
+  routerPoolId?: string;
+  routerPolicy?: "manual" | "round-robin" | "most-remaining";
   creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
+  machineControl?: boolean;
   message: string;
   images?: string[];
   documents?: string[];
@@ -490,8 +478,12 @@ function hasSessionMessageContent(body: StartSessionBody): boolean {
 }
 
 interface CreateSessionBody {
+  routerAccountId?: string;
+  routerPoolId?: string;
+  routerPolicy?: "manual" | "round-robin" | "most-remaining";
   creationProvenance?: SessionCreationProvenance;
   computerControl?: boolean;
+  machineControl?: boolean;
   mode?: PermissionMode;
   model?: string;
   serviceTier?: string;
@@ -3076,6 +3068,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         forkedFromSessionId:
           metadata?.forkedFromSessionId ?? sessionSummary?.forkedFromSessionId,
         creationProvenance: metadata?.creationProvenance,
+        routerBinding: metadata?.routerBinding,
         initialPrompt:
           metadata?.initialPrompt ?? sessionSummary?.fullTitle ?? undefined,
         heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
@@ -3622,6 +3615,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             parentSessionKind: metadata?.parentSessionKind,
             forkedFromSessionId: metadata?.forkedFromSessionId,
             creationProvenance: metadata?.creationProvenance,
+            routerBinding: metadata?.routerBinding,
             initialPrompt: metadata?.initialPrompt,
             heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
             wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
@@ -4053,6 +4047,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         forkedFromSessionId:
           metadata?.forkedFromSessionId ?? session.forkedFromSessionId,
         creationProvenance: metadata?.creationProvenance,
+        routerBinding: metadata?.routerBinding,
         initialPrompt: metadata?.initialPrompt ?? session.fullTitle,
         heartbeatTurnsEnabled: metadata?.heartbeatTurnsEnabled,
         wakeTurnsEnabled: metadata?.wakeTurnsEnabled,
@@ -4112,6 +4107,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
+
+    if (
+      body.machineControl !== undefined &&
+      typeof body.machineControl !== "boolean"
+    )
+      return c.json({ error: "machineControl must be a boolean" }, 400);
+    if (body.computerControl)
+      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
 
     const modeError = permissionModeError(body.mode);
     if (modeError) {
@@ -4201,7 +4204,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        routerAccountId: body.routerAccountId,
+        routerPoolId: body.routerPoolId,
+        routerPolicy: body.routerPolicy,
         computerControl: body.computerControl,
+        machineControl: body.machineControl,
+        desktopControlOrigin:
+          body.machineControl === true ? desktopControlOrigin(c) : undefined,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4296,6 +4305,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // Body is optional for this endpoint
     }
 
+    if (
+      body.machineControl !== undefined &&
+      typeof body.machineControl !== "boolean"
+    )
+      return c.json({ error: "machineControl must be a boolean" }, 400);
+    if (body.computerControl)
+      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
+
     const modeError = permissionModeError(body.mode);
     if (modeError) {
       return c.json({ error: modeError }, 400);
@@ -4356,7 +4373,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        routerAccountId: body.routerAccountId,
+        routerPoolId: body.routerPoolId,
+        routerPolicy: body.routerPolicy,
         computerControl: body.computerControl,
+        machineControl: body.machineControl,
+        desktopControlOrigin:
+          body.machineControl === true ? desktopControlOrigin(c) : undefined,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4435,6 +4458,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       return c.json({ error: "Invalid JSON body" }, 400);
     }
 
+    if (
+      body.machineControl !== undefined &&
+      typeof body.machineControl !== "boolean"
+    )
+      return c.json({ error: "machineControl must be a boolean" }, 400);
+    if (body.computerControl)
+      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
+
     const limitedLaunch = applyLimitedLaunchPolicy(c, body);
     if (limitedLaunch.kind === "error")
       return c.json({ error: limitedLaunch.error }, 403);
@@ -4508,7 +4539,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        routerAccountId: body.routerAccountId,
+        routerPoolId: body.routerPoolId,
+        routerPolicy: body.routerPolicy,
         computerControl: body.computerControl,
+        machineControl: body.machineControl,
+        desktopControlOrigin:
+          body.machineControl === true ? desktopControlOrigin(c) : undefined,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4575,6 +4612,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       // Body is optional for this endpoint
     }
 
+    if (
+      body.machineControl !== undefined &&
+      typeof body.machineControl !== "boolean"
+    )
+      return c.json({ error: "machineControl must be a boolean" }, 400);
+    if (body.computerControl)
+      return c.json({ error: RETIRED_COMPUTER_CONTROL_ERROR }, 400);
+
     const limitedLaunch = applyLimitedLaunchPolicy(c, body);
     if (limitedLaunch.kind === "error")
       return c.json({ error: limitedLaunch.error }, 403);
@@ -4628,7 +4673,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         thinking,
         effort,
         providerName: body.provider,
+        routerAccountId: body.routerAccountId,
+        routerPoolId: body.routerPoolId,
+        routerPolicy: body.routerPolicy,
         computerControl: body.computerControl,
+        machineControl: body.machineControl,
+        desktopControlOrigin:
+          body.machineControl === true ? desktopControlOrigin(c) : undefined,
         executor,
         sandboxLevel: sandboxSelection.sandboxLevel,
         sandboxNetworkFirewall: sandboxSelection.sandboxNetworkFirewall,
@@ -4704,6 +4755,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body = await c.req.json<StartSessionBody>();
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    if (
+      body.routerAccountId !== undefined ||
+      body.routerPoolId !== undefined ||
+      body.routerPolicy !== undefined
+    ) {
+      return c.json(
+        {
+          error:
+            "Router account selection is only supported when creating a session; resumed sessions retain their pin",
+        },
+        400,
+      );
     }
 
     const modeError = permissionModeError(body.mode);
@@ -5769,12 +5834,21 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           providerName: sourceProvider,
           upToMessageId: body.forkUpToMessageId,
           title: forkTitle,
+          launchOverrides: {
+            requestedModel,
+            thinking: body.thinking,
+            permissionMode: restartPermissionMode,
+            serviceTier:
+              body.serviceTier !== undefined
+                ? (serviceTier ?? null)
+                : undefined,
+          },
           sandboxLevel: restartSandboxLevel,
           sandboxNetworkFirewall: restartSandboxNetworkFirewall,
           sandboxStateKey: originalMetadata?.sandboxStateKey,
         });
       } catch (error) {
-        if (claimed) {
+        if (claimed && !(error instanceof ForkSettingsPersistenceError)) {
           await deps.sessionMetadataService?.releaseForkOrdinal(claimed);
         }
         getLogger().warn(
@@ -7223,10 +7297,13 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         upToMessageId,
         boundary: providerBoundary,
         title: forkTitle,
+        ...(forkThinking !== undefined
+          ? { launchOverrides: { thinking: forkThinking } }
+          : {}),
         ...inheritedSandboxSettings(originalMetadata),
       });
     } catch (error) {
-      if (claimed) {
+      if (claimed && !(error instanceof ForkSettingsPersistenceError)) {
         await deps.sessionMetadataService?.releaseForkOrdinal(claimed);
       }
       getLogger().warn(
@@ -7244,7 +7321,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         "Transcript fork failed",
       );
       return c.json(
-        hasIntentFields
+        hasIntentFields && !(error instanceof ForkSettingsPersistenceError)
           ? {
               error:
                 "No new session was created. The source session is unchanged. Try again after the selected response completes.",
@@ -7266,12 +7343,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
     const savedExecutor = parseOptionalExecutor(
       deps.sessionMetadataService?.getExecutor(sessionId),
     ).executor;
-    let inheritedModel = resolveInheritedForkModel(
-      deps.sessionMetadataService?.getRequestedModel(sessionId),
-      sourceProcess?.resolvedModel,
-      sourceProcess?.model,
-    );
-    if (!inheritedModel) {
+    let inheritedModel = fork.launchSettings
+      ? (fork.launchSettings.requestedModel ?? undefined)
+      : resolveInheritedForkModel(
+          deps.sessionMetadataService?.getRequestedModel(sessionId),
+          sourceProcess?.resolvedModel,
+          sourceProcess?.model,
+        );
+    if (!fork.launchSettings && !inheritedModel) {
       const fullSummary = await findSessionSummaryAcrossProviders(
         project,
         sessionId,
@@ -7303,28 +7382,6 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       },
     );
     await recordCreationProvenance(fork.sessionId, body.creationProvenance);
-    if (deps.sessionMetadataService && forkThinking !== undefined) {
-      // A fork asked to start at a different effort (the long-context
-      // effort-change warning's "fork instead" path) records that choice as
-      // the fork's launch settings, so its first send and every later
-      // server-side turn use it rather than the browser's per-model default.
-      // See topics/mid-session-effort-change.md.
-      const launch = inheritSuccessorLaunchSettings(
-        originalMetadata?.effectiveLaunchSettings,
-        { sameProvider: true },
-        { requestedModel: inheritedModel, thinking: forkThinking },
-      );
-      await deps.sessionMetadataService.recordEffectiveLaunchSettings(
-        fork.sessionId,
-        {
-          permissionMode: launch.permissionMode ?? "default",
-          requestedModel: launch.requestedModel ?? null,
-          serviceTier: launch.serviceTier ?? null,
-          thinking: launch.thinking ?? null,
-          effort: launch.effort ?? null,
-        },
-      );
-    }
     const forkCreator = actingUsername(c);
     if (forkCreator) {
       // A limited user's fork is theirs, like a session they start
@@ -7509,6 +7566,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         ...inheritedSandboxSettings(sourceMetadata),
       });
       generatorSessionId = generator.sessionId;
+      requestedModel =
+        generator.launchSettings?.requestedModel ?? requestedModel;
       await updateForkSummaryChildMetadata(
         generator.sessionId,
         sessionId,
@@ -7730,7 +7789,7 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       const savedExecutor = parseOptionalExecutor(
         deps.sessionMetadataService.getExecutor(sessionId),
       ).executor;
-      const requestedModel = resolveInheritedForkModel(
+      let requestedModel = resolveInheritedForkModel(
         deps.sessionMetadataService.getRequestedModel(sessionId),
         sourceProcess?.resolvedModel,
         sourceSession.model,
@@ -7753,6 +7812,8 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             ...inheritedSandboxSettings(originalMetadata),
           });
           generatorSessionId = generator.sessionId;
+          requestedModel =
+            generator.launchSettings?.requestedModel ?? requestedModel;
           await updateForkSummaryChildMetadata(
             generator.sessionId,
             sessionId,
@@ -7810,6 +7871,9 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
           targetTitle = title;
           const target = await deps.supervisor.forkSession({
             sessionId,
+            launchSettings: generator.launchSettings,
+            launchOverrides:
+              mode !== undefined ? { permissionMode: mode } : undefined,
             projectPath: sourceProjectPath,
             providerName,
             ...(boundary.providerBoundary
@@ -7980,7 +8044,10 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
             } catch (cleanupError) {
               logCleanupFailure("archive-target", cleanupError);
             }
-          } else if (fallbackClaim) {
+          } else if (
+            fallbackClaim &&
+            !(error instanceof ForkSettingsPersistenceError)
+          ) {
             try {
               await deps.sessionMetadataService?.releaseForkOrdinal(
                 fallbackClaim,
@@ -8162,6 +8229,20 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
       body = await c.req.json<StartSessionBody & { deferred?: boolean }>();
     } catch {
       return c.json({ error: "Invalid JSON body" }, 400);
+    }
+
+    if (
+      body.routerAccountId !== undefined ||
+      body.routerPoolId !== undefined ||
+      body.routerPolicy !== undefined
+    ) {
+      return c.json(
+        {
+          error:
+            "Router account selection is only supported when creating a session; resumed sessions retain their pin",
+        },
+        400,
+      );
     }
 
     const modeError = permissionModeError(body.mode);
@@ -8980,6 +9061,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
 
   // POST /api/projects/:projectId/sessions/:sessionId/clone - Clone a session
   routes.post("/projects/:projectId/sessions/:sessionId/clone", async (c) => {
+    if (
+      deps.sessionMetadataService?.getMetadata(c.req.param("sessionId"))
+        ?.routerBinding
+    )
+      return c.json(
+        { error: "Clone of routed sessions is not supported yet" },
+        409,
+      );
     const projectId = c.req.param("projectId");
     const sessionId = c.req.param("sessionId");
 
@@ -9059,6 +9148,14 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         isCodexProviderName(originalResolution?.source.provider) ||
         isCodexProviderName(project.provider) ||
         (!originalSession && project.provider === "claude");
+
+      const cloneSettings = !shouldCloneFromCodex
+        ? await deps.supervisor.resolveForkLaunchSettings(
+            sessionId,
+            project.path,
+            cloneProvider,
+          )
+        : undefined;
 
       if (shouldCloneFromCodex) {
         const codexReader = getCodexReader(project.path);
@@ -9141,6 +9238,12 @@ export function createSessionsRoutes(deps: SessionsDeps): Hono {
         );
       } else {
         result = await cloneClaudeSession(sessionDir, sessionId);
+      }
+      if (cloneSettings) {
+        await deps.supervisor.recordForkLaunchSettings(
+          result.newSessionId,
+          cloneSettings,
+        );
       }
       if (!shouldCloneFromCodex) {
         // The verbatim copy keeps every uuid, so the source's rewound groups

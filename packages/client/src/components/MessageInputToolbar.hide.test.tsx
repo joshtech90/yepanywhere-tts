@@ -54,17 +54,16 @@ function renderToolbar(overrides: Partial<MessageInputToolbarViewProps> = {}) {
 }
 
 describe("MessageInputToolbar quick hide", () => {
-  it("offers Hide beside a regular control hint on right-click", () => {
+  it("retains Hide in the attachment share menu on right-click", () => {
     const onHideControl = vi.fn();
     renderToolbar({ onHideControl });
 
     fireEvent.contextMenu(screen.getByTitle("Attach files"));
 
     expect(
-      screen.getByRole("dialog", { name: "Toolbar control actions" })
-        .textContent,
+      screen.getByRole("menu", { name: "Share to session" }).textContent,
     ).toContain("Attach files");
-    fireEvent.click(screen.getByRole("button", { name: "Hide" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Hide" }));
     expect(onHideControl).toHaveBeenCalledWith("attachments");
   });
 

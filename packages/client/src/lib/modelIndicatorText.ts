@@ -28,9 +28,6 @@ type ModelGlyphRule = {
 };
 
 const codexModelGlyphRules: ReadonlyArray<ModelGlyphRule> = [
-  { patterns: ["gpt-6-astra"], glyph: "As", fixedSuffix: "" },
-  { patterns: ["gpt-6-sol"], glyph: "So", fixedSuffix: "" },
-  { patterns: ["gpt-6-luna"], glyph: "Lu", fixedSuffix: "" },
   {
     patterns: ["gpt-daybreak-blue-latest"],
     glyph: "Db",
@@ -163,6 +160,23 @@ function deriveModelGlyphMatch(
     /-(?:gateway|ollama|oss|acp)$/u,
     "",
   );
+  // Match named GPT families across releases instead of falling back to the
+  // full identifier whenever a minor version is added. Keep the original
+  // GPT-6 shorthand and distinguish newer versions and qualified variants.
+  if (baseProviderKey === "codex") {
+    const namedModel = normalizedModel.match(
+      /^gpt-(\d+(?:\.\d+)*)-(astra|sol|luna)(?:-(.+))?$/u,
+    );
+    if (namedModel && Number(namedModel[1]?.split(".")[0]) >= 6) {
+      const [, version, family, qualifier] = namedModel;
+      return {
+        glyph: family === "astra" ? "As" : family === "sol" ? "So" : "Lu",
+        suffix: [version === "6" ? "" : version, qualifier]
+          .filter(Boolean)
+          .join("-"),
+      };
+    }
+  }
   const providerRules =
     modelGlyphRulesByProvider[providerKey] ??
     modelGlyphRulesByProvider[baseProviderKey] ??

@@ -226,6 +226,50 @@ describe("ReloadBanner", () => {
     }
   });
 
+  it("skips empty-stack geometry and positions a later notice", async () => {
+    vi.spyOn(window, "innerWidth", "get").mockReturnValue(1280);
+    vi.spyOn(window, "innerHeight", "get").mockReturnValue(1080);
+    vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+      callback(0);
+      return 1;
+    });
+    const geometry = vi
+      .spyOn(HTMLElement.prototype, "getBoundingClientRect")
+      .mockImplementation(function (this: HTMLElement) {
+        if (this.classList.contains("reload-banner-stack"))
+          return rect(814, 1014, 454, 54);
+        if (this.classList.contains("session-input"))
+          return rect(278, 918, 1002, 162);
+        if (this.tagName === "BUTTON") return rect(1080, 1032, 100, 36);
+        return rect(0, 0, 0, 0);
+      });
+    const view = (notice: boolean) => (
+      <>
+        <footer className="session-input">
+          <button type="button">Composer action</button>
+        </footer>
+        <ReloadBannerStack avoidSessionComposer>
+          {notice && <div>Reload notice</div>}
+        </ReloadBannerStack>
+      </>
+    );
+    const { rerender, unmount } = render(view(false));
+    document.querySelector<HTMLElement>(".session-input")!.style.height =
+      "162px";
+    await Promise.resolve();
+    fireEvent(window, new Event("resize"));
+    expect(geometry).not.toHaveBeenCalled();
+
+    rerender(view(true));
+    fireEvent(window, new Event("resize"));
+    expect(
+      document
+        .querySelector<HTMLElement>(".reload-banner-stack")
+        ?.style.getPropertyValue("--reload-banner-stack-lift"),
+    ).toBe("158px");
+    unmount();
+  });
+
   it("lifts above a session composer when the corner would cover a control", () => {
     vi.spyOn(window, "innerWidth", "get").mockReturnValue(1280);
     vi.spyOn(window, "innerHeight", "get").mockReturnValue(1080);

@@ -4,6 +4,9 @@ import android.util.Log
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import com.yepanywhere.mobile.BuildConfig
+import com.yepanywhere.mobile.YepAnywhereApplication
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.Dispatchers
 
 class YepFirebaseMessagingService : FirebaseMessagingService() {
     override fun onNewToken(token: String) {
@@ -28,6 +31,9 @@ class YepFirebaseMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
+        runBlocking(Dispatchers.IO) {
+            NativePushPresenter.present(applicationContext, (application as YepAnywhereApplication).nativeRuntime, message.data)
+        }
         if (BuildConfig.DEBUG) {
             Log.i(
                 TAG,

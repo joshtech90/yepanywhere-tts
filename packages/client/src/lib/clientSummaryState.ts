@@ -115,10 +115,10 @@ function getRecord(
   );
 }
 
-function putRecord(
+function resolveRecordIds(
   state: ClientSummaryState,
   record: SessionCollectionRecord,
-): ClientSummaryState {
+): SessionCollectionRecord {
   const id = resolveSessionCollectionId(state, record.id);
   const parentSessionId = record.parentSessionId
     ? resolveSessionCollectionId(state, record.parentSessionId)
@@ -126,14 +126,20 @@ function putRecord(
   const forkedFromSessionId = record.forkedFromSessionId
     ? resolveSessionCollectionId(state, record.forkedFromSessionId)
     : record.forkedFromSessionId;
-  const normalizedRecord =
-    id === record.id &&
+  return id === record.id &&
     parentSessionId === record.parentSessionId &&
     forkedFromSessionId === record.forkedFromSessionId
-      ? record
-      : { ...record, id, parentSessionId, forkedFromSessionId };
+    ? record
+    : { ...record, id, parentSessionId, forkedFromSessionId };
+}
+
+function putRecord(
+  state: ClientSummaryState,
+  record: SessionCollectionRecord,
+): ClientSummaryState {
+  const normalizedRecord = resolveRecordIds(state, record);
   const entities = new Map(state.sessions.entities);
-  entities.set(id, normalizedRecord);
+  entities.set(normalizedRecord.id, normalizedRecord);
   return {
     ...state,
     sessions: {
@@ -1514,11 +1520,11 @@ function withUnreadField(
   };
 }
 
-function upsertSnapshotRecord(
+function snapshotRecord(
   state: ClientSummaryState,
   row: GlobalSessionItem,
   observation: SessionCollectionObservation,
-): ClientSummaryState {
+): SessionCollectionRecord {
   let record = getRecord(state, row.id);
 
   record = withContentFields(
@@ -1582,16 +1588,14 @@ function upsertSnapshotRecord(
 
   record = withUnreadField(record, row.hasUnread, observation);
 
-  record = {
+  return resolveRecordIds(state, {
     ...record,
     snapshotObservedAt: Math.max(
       record.snapshotObservedAt ?? NO_OBSERVATION,
       observation.observedAt,
     ),
     observedAt: Math.max(record.observedAt, observation.observedAt),
-  };
-
-  return putRecord(state, record);
+  });
 }
 
 function upsertQuery(
@@ -1614,9 +1618,10 @@ function upsertQuery(
     (snapshot.mode === "append" || snapshot.catalog?.complete === false) &&
     existing
   ) {
+    const existingIdSet = new Set(existing.ids);
     ids = [
       ...existing.ids,
-      ...incomingIds.filter((id) => !existing.ids.includes(id)),
+      ...incomingIds.filter((id) => !existingIdSet.has(id)),
     ];
   } else if (snapshot.mode === "prepend" && existing) {
     const incomingIdSet = new Set(incomingIds);
@@ -1758,9 +1763,16 @@ export function applyGlobalSessionsCollectionSnapshot(
     snapshot.catalog ? "partial-snapshot" : "full-snapshot",
     "global-sessions",
   );
-  let next = state;
+  if (!snapshot.sessions.length)
+    return upsertQuery(state, snapshot, requestStartedAt);
+  // One entity-map copy per snapshot: copying per row made a catalog-sized
+  // snapshot quadratic, a main-thread stall that delayed typed input. Rows
+  // still read the working map, so a repeated id merges as it did row by row.
+  const entities = new Map(state.sessions.entities);
+  const next = { ...state, sessions: { ...state.sessions, entities } };
   for (const row of snapshot.sessions) {
-    next = upsertSnapshotRecord(next, row, observation);
+    const record = snapshotRecord(next, row, observation);
+    entities.set(record.id, record);
   }
   return upsertQuery(next, snapshot, requestStartedAt);
 }

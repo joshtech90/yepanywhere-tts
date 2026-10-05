@@ -7,6 +7,11 @@ Topic: settings-collections
 
 ## Layout convention
 
+Domain names and suffixes in Apps inventory rows remain single lines with
+ellipsis when space is tight. Opening a neighboring detail pane must not turn
+the inventory into tall wrapped rows; the selected item's full name remains
+available in its detail pane and the domain name's hover title.
+
 Use this pattern for user-created collections such as Apps domains and project
 apps when each item has an options block. Show identifying information and a
 few useful comparison columns in a semantic table. Keep inputs, explanatory

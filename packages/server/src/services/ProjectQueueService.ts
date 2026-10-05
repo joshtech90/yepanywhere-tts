@@ -286,7 +286,6 @@ function normalizeUploadedFile(value: unknown, index: number): UploadedFile {
 function normalizeStagedAttachmentRef(
   value: unknown,
   index: number,
-  batchId: string,
 ): StagedAttachmentRef {
   if (!isRecord(value)) {
     throw new ProjectQueueValidationError(
@@ -325,7 +324,6 @@ function normalizeStagedAttachmentRef(
   if (
     !id ||
     !refBatchId ||
-    refBatchId !== batchId ||
     !originalName ||
     !name ||
     !mimeType ||
@@ -391,9 +389,9 @@ function normalizeStagedAttachments(
       "message.stagedAttachments.refs must be an array",
     );
   }
-  const refs = value.refs.map((ref, index) =>
-    normalizeStagedAttachmentRef(ref, index, batchId),
-  );
+  // Synced drafts can combine batches; staging validates each canonical ref
+  // in the queuing account's store before taking ownership.
+  const refs = value.refs.map(normalizeStagedAttachmentRef);
   if (refs.length === 0) {
     throw new ProjectQueueValidationError(
       "message.stagedAttachments.refs must not be empty",
@@ -1420,11 +1418,14 @@ export class ProjectQueueService {
           : undefined;
       const transferredAddedRefs = transfer?.refs ?? [];
       const preparedRefsById = new Map(
-        [...validatedRetainedRefs, ...transferredAddedRefs].map((ref) => [
-          ref.id,
-          ref,
-        ]),
+        validatedRetainedRefs.map((ref) => [ref.id, ref]),
       );
+      // Transfer preserves input order, but copies synced drafts with new IDs.
+      // Resolve by the submitted ID and persist the returned queue-owned ref.
+      for (const [index, requestedRef] of addedRefs.entries()) {
+        const preparedRef = transferredAddedRefs[index];
+        if (preparedRef) preparedRefsById.set(requestedRef.id, preparedRef);
+      }
       const refs = stagedAttachments.refs.map((requestedRef) => {
         const preparedRef = preparedRefsById.get(requestedRef.id);
         if (!preparedRef) {

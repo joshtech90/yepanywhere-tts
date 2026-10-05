@@ -69,6 +69,18 @@ describe("HTML root asset references", () => {
     expect(resolveHtmlRootAssetPath("dist/index.html", "a%2Fb.png")).toBeNull();
   });
 
+  it("keeps an absolute root's form, reaching above any project", () => {
+    expect(
+      resolveHtmlRootAssetPath("/p/research/report.html", "../../lib/a.css"),
+    ).toBe("/lib/a.css");
+    expect(resolveHtmlRootAssetPath("/p/report.html", "/x.png")).toBe(
+      "/p/x.png",
+    );
+    expect(
+      resolveHtmlRootAssetPath("/p/report.html", "../../x.png"),
+    ).toBeNull();
+  });
+
   it("reports where each value was written, quoted or not", () => {
     const html =
       "<IMG SRC=pic.png ALT=x><script src='a.js?x=1&amp;y=2'></script>";

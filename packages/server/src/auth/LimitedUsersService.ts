@@ -551,6 +551,7 @@ export class LimitedUsersService {
     // Atomic: an in-place write interrupted by shutdown leaves an empty file.
     await writeFileAtomically(this.filePath, content, {
       mode: OWNER_READ_WRITE_FILE_MODE,
+      durable: true,
     });
     await enforceOwnerReadWriteFilePermissions(
       this.filePath,

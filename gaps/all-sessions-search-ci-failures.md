@@ -393,3 +393,42 @@ was discarded after all ten phone cases reported a four-pixel difference.
 Found 2026-09-15 while reporting source CI after publishing the catch-up fix.
 Contributing-model: 6-Astra
 Contributing-model: Opus 5
+
+2026-10-01 — CI [36799408077](https://github.com/kzahel/yepanywhere/actions/runs/36799408077)
+passed both browser shards but retried the desktop reservation case. The first
+attempt compared the reserved 111.59375px height with a settled 93.59375px
+height after waiting for a match. That host-side wait can consume the product's
+500ms quiet period. The assertion now pauses browser time before releasing
+the response, advances acquisition in 50ms steps until the match mounts, checks
+reservation while time remains paused, then resumes real scheduling for the
+completion/settled assertion. All rendering and network responses remain real.
+Stress verification also found that a prior viewport's matching transcript
+can remain on the same worker; the case now measures its own session row
+instead of selecting every matching card. Keep this gap open until new CI
+establishes first-attempt reliability; the historical local passes alone were
+not sufficient closure evidence.
+
+Final local verification: 20 reservation repetitions passed across desktop and
+phone with four workers and no retries. The full browser suite then passed
+360 cases with 11 platform/device skips and no retries. This is macOS local
+evidence, not a replacement for a new CI run.
+
+Remote verification at repair commit `17a085b59`: [CI 36816545726](https://github.com/kzahel/yepanywhere/actions/runs/36816545726)
+passed all 24 jobs on its first run. The two browser shards passed 179 and 182
+cases without retries, including both reservation viewports. The full unit
+suite and Windows computer-control cleanup also passed. [Runtime/SQLite
+36816545797](https://github.com/kzahel/yepanywhere/actions/runs/36816545797)
+passed all 12 platform/runtime legs. This supplies the missing native CI
+evidence for the reservation repair. Keep the broader gap open for repeated
+first-attempt stability and the reader-selection behavior recorded above.
+
+2026-10-02 — two local recurrences. A full four-worker browser run failed
+the large-catalog typing check at 117ms (limit 100ms) with no dropped
+characters; alone it measured 26ms. Profiling under CPU throttle found
+applying a catalog snapshot copied the client's entity map once per row, a
+~90ms unthrottled stall for 1000 rows whenever a snapshot landed during
+typing. Snapshots now share one copy. Separately, "follows appended turns
+and newly discovered sessions" failed once in three local full-file runs
+(the live beta request never appeared within 30s) and passed 3/3 alone; it
+is unexplained.
+Contributing-model: opus-5-5

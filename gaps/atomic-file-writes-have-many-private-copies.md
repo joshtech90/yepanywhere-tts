@@ -30,9 +30,10 @@ Two things make the sweep worth doing rather than filing forever:
   `wx`, and the index writers derive their staging name from pid + time +
   `Math.random()`.
 
-So the sweep is not mechanical: the helper needs a durability option (fsync,
-and `syncDirectory` from the same directory) before the fsyncing callers can
-move, and each caller's flag choices have to be read rather than assumed.
+The helper now has an opt-in `durable` mode (file sync before rename, then
+`syncDirectory`), used by credential and project-ownership stores as of
+2026-10-01. The sweep remains open: fsyncing callers can now migrate, but each
+caller's flag choices and failure semantics have to be read rather than assumed.
 
 Found 2026-09-19 while landing harsh-review item 47 (a08cc4a9..69501d94),
 which introduced the helper.

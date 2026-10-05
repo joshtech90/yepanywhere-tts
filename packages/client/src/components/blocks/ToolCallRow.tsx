@@ -39,6 +39,7 @@ import {
   getVisibilityAwareTooltipText,
   isElementFullyScrollVisible,
 } from "../../lib/tooltipVisibility";
+import { useToolOutputPreview } from "../../lib/toolOutputPreviews";
 import { validateToolResult } from "../../lib/validateToolResult";
 import type {
   ToolCallItem,
@@ -543,7 +544,8 @@ function useNearViewportHydration(
   };
 }
 
-export const ToolCallRow = memo(function ToolCallRow(props: Props) {
+export const ToolCallRow = memo(function ToolCallRow(rowProps: Props) {
+  const props = useLiveOutputPreview(rowProps);
   const originalOutput =
     props.toolResult?.structured ?? props.toolResult?.content;
   return (
@@ -562,6 +564,45 @@ export const ToolCallRow = memo(function ToolCallRow(props: Props) {
     </ToolDisplayBoundary>
   );
 });
+
+/**
+ * A pending shell call shows its live output through the same
+ * `_previewResult` input field providers that stream partial results set
+ * themselves: a Claude call's from the preview store, a Codex call's from the
+ * streaming result it holds while it runs.
+ */
+function useLiveOutputPreview(props: Props): Props {
+  const pendingShell =
+    props.status === "pending" &&
+    isBashLikeToolName(props.toolName) &&
+    isRecord(props.toolInput);
+  const storedPreview = useToolOutputPreview(
+    pendingShell ? props.id : undefined,
+  );
+  const preview =
+    storedPreview ??
+    (pendingShell && typeof props.toolResult?.content === "string"
+      ? props.toolResult.content
+      : undefined);
+  return useMemo(
+    () =>
+      preview === undefined || !isRecord(props.toolInput)
+        ? props
+        : {
+            ...props,
+            toolInput: {
+              ...props.toolInput,
+              _previewResult: {
+                stdout: preview,
+                stderr: "",
+                interrupted: false,
+                isImage: false,
+              },
+            },
+          },
+    [props, preview],
+  );
+}
 
 function PreparedToolCallRow(props: Props & { originalOutput?: unknown }) {
   const { t } = useI18n();

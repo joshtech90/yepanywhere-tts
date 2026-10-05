@@ -34,6 +34,39 @@ import {
 } from "../index.js";
 
 describe("server capability advertisements", () => {
+  it("requires separate explicit router recovery support, including on an older router-capable server", () => {
+    const base = CAPABILITY_ID_ALLOCATIONS.agentAuthRouter.name;
+    const recovery = CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.name;
+    for (const current of ["0.9.0", "0.9.1", "0.9.2", "0.9.4"]) {
+      expect(
+        serverHasCapability(
+          { current, ...encodeVersionedServerCapabilities([base], current) },
+          recovery,
+        ),
+      ).toBe(false);
+      expect(
+        serverHasCapability(
+          {
+            current,
+            ...encodeVersionedServerCapabilities([base, recovery], current),
+          },
+          recovery,
+        ),
+      ).toBe(true);
+    }
+  });
+  it("requires explicit native push support on the stable release corpus", () => {
+    const name = CAPABILITY_ID_ALLOCATIONS.nativePushSubscriptions.name;
+    for (const current of ["0.9.0", "0.9.1", "0.9.2", "0.9.4"]) {
+      expect(serverHasCapability({ current }, name)).toBe(false);
+      expect(
+        serverHasCapability(
+          { current, ...encodeVersionedServerCapabilities([name], current) },
+          name,
+        ),
+      ).toBe(true);
+    }
+  });
   it("requires explicit session-term support independently of vocabulary controls", () => {
     const name = CAPABILITY_ID_ALLOCATIONS.speechVocabularySessionTerms.name;
     const vocabulary = CAPABILITY_ID_ALLOCATIONS.speechVocabulary.name;

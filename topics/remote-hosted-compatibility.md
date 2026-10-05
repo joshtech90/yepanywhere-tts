@@ -155,6 +155,21 @@ ordered message at a time and retains at most 64 MiB for reassembly. Missing,
 interleaved, oversized, or interrupted sequences fail closed. File uploads keep
 their existing `0x02` format and 64 KiB application chunks.
 
+Format `0x06` carries raw bytes of a streamed response body inside an
+encrypted envelope: an 8-byte outbound sequence number, the 16-byte request
+UUID, then the bytes. It is not advertised in `formats`: a server sends it
+only for a request that set `stream: true`, which a client sets only on an
+encrypted connection that can decode it. The contract is in
+[relay transfer size](media-rendering-and-routing.md#relay-transfer-size).
+The 2026-10-04 review checked the core corpus `v0.8.0`, `v0.8.1`, `v0.9.0`,
+`v0.9.1` and `v0.9.2` (and `v0.7.0`). Each reads only a request's `id`,
+`method`, `path`, `headers` and `body`, so it ignores `stream` and answers
+with the single `response` the client still accepts. The client sends
+`response_stream_ack` and `response_stream_cancel` only for a stream a server
+started, so an older server never receives them. No capability is needed,
+since the fallback is the old behavior and needs no client-side branch on the
+server version. Standing maintainer compatibility authorization applies.
+
 New direct and secure clients advertise `0x05`. A new server sends bounded
 chunks only to those clients; without `0x05`, it preserves the complete-frame
 behavior. The supported core release corpus (`v0.5.2`, `v0.6.0`, `v0.6.1`,

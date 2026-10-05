@@ -138,20 +138,20 @@ export function useSessionRightPane(
       string,
       SessionVhostApp & { announcementId: string }
     >();
+    const initializing = !initialized.current.has(key);
     for (const message of messages) {
       for (const raw of sessionToolUrls(message)) {
         const app = sessionVhostApp(raw, config, window.location.href);
         const announcementId = `${message.uuid ?? message.id ?? "output"}:${raw}`;
+        // Historical tool URLs stay historical even if bearer access, vhost
+        // metadata or a sandbox mapping makes them resolvable only later.
+        if (initializing)
+          announced.current.add(`vhost:${key}:${announcementId}`);
         if (app) found.set(announcementId, { ...app, announcementId });
       }
     }
     // Loaded history offers links, but cannot establish that an app is still alive.
-    if (!initialized.current.has(key)) {
-      initialized.current.add(key);
-      for (const app of found.values()) {
-        announced.current.add(`vhost:${key}:${app.announcementId}`);
-      }
-    }
+    if (initializing) initialized.current.add(key);
     setState((previous) => {
       if (previous.key !== key) return previous;
       const known = new Set(previous.apps.map((app) => app.announcementId));

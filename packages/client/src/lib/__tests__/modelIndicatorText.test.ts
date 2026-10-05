@@ -63,11 +63,25 @@ describe("getModelIndicatorModelLabel", () => {
       ["gpt-6-astra", "Cd As"],
       ["gpt-6-sol", "Cd So"],
       ["gpt-6-luna", "Cd Lu"],
+      ["gpt-6.1-sol", "Cd So 6.1"],
+      ["gpt-6.1-astra", "Cd As 6.1"],
+      ["gpt-6.2-luna", "Cd Lu 6.2"],
+      ["gpt-7.1-sol", "Cd So 7.1"],
+      ["gpt-6.1-sol-preview", "Cd So 6.1-preview"],
+      ["gpt-6.1-solar", "Cd gpt-6.1-solar"],
       ["gpt-5.6-sol", "Cd ☀"],
       ["gpt-5.6-terra", "Cd ♁"],
       ["gpt-5.6-luna", "Cd ☾"],
     ])("%s uses its semantic short glyph", (model, expected) => {
       expect(getModelIndicatorModelLabel("codex", model)).toBe(expected);
+    });
+    it.each([
+      ["codex", "openai/gpt-6.1-sol", "Cd So 6.1"],
+      ["codex", "gpt-6.1-codex-sol", "Cd So 6.1"],
+      ["codex-oss", "gpt-6.1-sol", "Cd↓ So 6.1"],
+      ["opencode", "github-copilot/gpt-6.1-sol", "OC copilot So 6.1"],
+    ])("%s abbreviates versioned named model %s", (provider, model, label) => {
+      expect(getModelIndicatorModelLabel(provider, model)).toBe(label);
     });
     it("gpt-5.4-mini", () => {
       expect(getModelIndicatorModelLabel("codex", "gpt-5.4-mini")).toBe(

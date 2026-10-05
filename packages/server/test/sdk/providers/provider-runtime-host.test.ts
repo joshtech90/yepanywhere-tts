@@ -1791,6 +1791,42 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     }
   });
 
+  it("transfers instruction history larger than the host launch limit over worker RPC", async () => {
+    const runtimeRoot = await mkdtemp(
+      join(runtimeTmpDir, "provider-history-test-"),
+    );
+    temporaryPaths.push(runtimeRoot);
+    const controlSocketPath = join(runtimeRoot, "host.sock");
+    const host = new ProviderRuntimeHost({
+      runtimeDir: runtimeRoot,
+      controlSocketPath,
+      token: "history-token",
+      workerPath: fixtureWorker,
+    });
+    await host.start();
+    process.env.YEP_PROVIDER_RUNTIME_SOCKET = controlSocketPath;
+    process.env.YEP_PROVIDER_RUNTIME_TOKEN = "history-token";
+    process.env.YEP_SERVER_GENERATION = "instruction-history";
+    expect(await initializeProviderRuntimeHost()).toBe(true);
+    try {
+      const session = await startHostedProviderSession(
+        "claude",
+        {
+          cwd: runtimeRoot,
+          instructionReadHistory: Array.from({ length: 64 }, (_, i) => ({
+            type: "user" as const,
+            uuid: `history-${i}`,
+            content: "x".repeat(20000),
+          })),
+        },
+        {},
+      );
+      await session.abort();
+    } finally {
+      await host.shutdown("instruction history complete");
+    }
+  });
+
   it("holds replayed callbacks until Process installs its handlers", async () => {
     const runtimeRoot = await mkdtemp(
       join(runtimeTmpDir, "provider-proxy-test-"),
@@ -2010,6 +2046,64 @@ describe.skipIf(!nativeHostSupported)("ProviderRuntimeHost", () => {
     await second.abort();
     await waitUntil(() => host.runtimes.size === 0);
     await host.shutdown("proxy test complete");
+  });
+
+  it("reattaches only the same router binding", async () => {
+    const runtimeRoot = await mkdtemp(
+      join(runtimeTmpDir, "provider-router-test-"),
+    );
+    temporaryPaths.push(runtimeRoot);
+    const controlSocketPath = join(runtimeRoot, "host.sock");
+    const host = new ProviderRuntimeHost({
+      runtimeDir: runtimeRoot,
+      controlSocketPath,
+      token: "proxy-token",
+      workerPath: fixtureWorker,
+    });
+    await host.start();
+    process.env.YEP_PROVIDER_RUNTIME_SOCKET = controlSocketPath;
+    process.env.YEP_PROVIDER_RUNTIME_TOKEN = "proxy-token";
+    process.env.YEP_SERVER_GENERATION = "one";
+    expect(await initializeProviderRuntimeHost()).toBe(true);
+    const routerLaunch = {
+      bindingId: "original",
+      accountId: "account",
+      baseUrl: "http://127.0.0.1:8417/codex",
+      token: "synthetic-inference-secret",
+    };
+    const first = await startHostedProviderSession(
+      "codex",
+      { cwd: runtimeRoot, routerLaunch },
+      {},
+    );
+    await first.iterator.next();
+    await first.publishAgentctlSessionId?.("routed-session");
+    const pending = first.iterator.next();
+    await first.detachForServerReload?.();
+    await pending;
+    closeProviderRuntimeHostRegistration();
+    process.env.YEP_SERVER_GENERATION = "two";
+    expect(await initializeProviderRuntimeHost()).toBe(true);
+    await expect(
+      startHostedProviderSession(
+        "codex",
+        {
+          cwd: runtimeRoot,
+          resumeSessionId: "routed-session",
+          routerLaunch: { ...routerLaunch, bindingId: "different" },
+        },
+        {},
+      ),
+    ).rejects.toThrow("router binding");
+    const second = await startHostedProviderSession(
+      "codex",
+      { cwd: runtimeRoot, resumeSessionId: "routed-session", routerLaunch },
+      {},
+    );
+    expect(second.initializedSessionId).toBe("routed-session");
+    expect(host.runtimes.size).toBe(1);
+    await second.abort();
+    await host.shutdown("router reattachment proof complete");
   });
 
   it("replaces a retained runtime when its network boundary changes", async () => {

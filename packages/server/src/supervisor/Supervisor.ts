@@ -1,3 +1,4 @@
+import type { AgentAuthRouter } from "../services/AgentAuthRouter.js";
 import { randomUUID } from "node:crypto";
 import { resolveStandingPermissionMode } from "./standingPermissionMode.js";
 import {
@@ -24,7 +25,7 @@ import {
   readGoalDetails,
   truncateSessionTitle,
 } from "@yep-anywhere/shared";
-import type { ComputerSession } from "../computer-control/contract.js";
+import { RETIRED_COMPUTER_CONTROL_ERROR } from "../machine-control/legacy-retirement.js";
 import type { ClaudeGoalSnapshot } from "../sdk/providers/claude-goal.js";
 import { registerForkedSessionFile } from "../sessions/fork-discovery.js";
 import {
@@ -36,7 +37,10 @@ import type { AgentActivity, PendingInputType } from "@yep-anywhere/shared";
 import { DEFAULT_IDLE_TIMEOUT_MS } from "../defaults.js";
 import { createLruMap, refreshLruMap } from "../lib/lruCollections.js";
 import { getLogger } from "../logging/logger.js";
-import type { SessionMetadataService } from "../metadata/index.js";
+import type {
+  EffectiveSessionLaunchSettingsValue,
+  SessionMetadataService,
+} from "../metadata/index.js";
 import type { ToolResultMediaStore } from "../media/ToolResultMediaStore.js";
 import type { NotificationService } from "../notifications/index.js";
 import {
@@ -125,6 +129,10 @@ import {
 } from "./SessionActivationCoordinator.js";
 import { HeartbeatSweepScheduler, earliestDueAt } from "./heartbeatSchedule.js";
 import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
+import {
+  inheritSuccessorLaunchSettings,
+  type SuccessorLaunchOverrides,
+} from "./sessionLaunchInheritance.js";
 import {
   AGENT_SERVER_TOKEN_ENV,
   type AgentServerAccess,
@@ -624,6 +632,14 @@ export interface SupervisorOptions {
   ) => PromptCacheKeepaliveSettings | undefined;
   /** Callback to read the post-compact continuation setting. */
   getPostCompactReplaySettings?: () => PostCompactReplaySettings | undefined;
+  getInstructionRestorationSettings?: () =>
+    | import("@yep-anywhere/shared").InstructionRestorationSettings
+    | undefined;
+  readInstructionHistory?: (
+    sessionId: string,
+    projectId: UrlProjectId,
+    provider: ProviderName,
+  ) => Promise<SDKMessage[]>;
   /** Callback to read live cache-miss billing monitor settings. */
   getCacheMissBillingSettings?: () => CacheMissBillingSettings | undefined;
   /**
@@ -637,6 +653,8 @@ export interface SupervisorOptions {
     | undefined;
   /** Maximum time to wait for a graceful provider interrupt before hard abort. */
   interruptTimeoutMs?: number;
+  /** Optional private router connection for manually pinned native sessions. */
+  agentAuthRouter?: AgentAuthRouter;
   /** Metadata service used to hide/archive server-owned helper forks. */
   sessionMetadataService?: SessionMetadataService;
   /** Read-state service updated when a synthetic done boundary commits. */
@@ -660,8 +678,28 @@ function agentServerEnvironment(
   return access ? { [AGENT_SERVER_TOKEN_ENV]: access.token } : undefined;
 }
 
+export class ForkSettingsPersistenceError extends Error {
+  constructor(
+    readonly sessionId: string,
+    cause: unknown,
+  ) {
+    super(
+      "A transcript child was created, but its settings could not be saved. The source is unchanged.",
+      { cause },
+    );
+    this.name = "ForkSettingsPersistenceError";
+  }
+}
+
 export class Supervisor {
-  computerControl?: import("../computer-control/service.js").ComputerControlService;
+  private readonly instructionOptions: Pick<
+    SupervisorOptions,
+    "getInstructionRestorationSettings" | "readInstructionHistory"
+  >;
+  private readonly instructionSessions = new Map<
+    Process,
+    import("../sdk/providers/types.js").AgentSession
+  >();
   private processes: Map<string, Process> = new Map();
   private sessionToProcess: Map<string, string> = new Map(); // sessionId -> processId
   private terminalProviderStatuses = createLruMap<
@@ -778,6 +816,7 @@ export class Supervisor {
     }
   >();
   private interruptTimeoutMs: number;
+  private agentAuthRouter?: AgentAuthRouter;
   private sessionMetadataService?: SessionMetadataService;
   private notificationService?: NotificationService;
   private sessionQueuePersistenceService?: SessionQueuePersistenceService;
@@ -794,6 +833,7 @@ export class Supervisor {
   private recapPausedSessionIds = new Set<string>();
 
   constructor(options: SupervisorOptions) {
+    this.instructionOptions = options;
     this.providerDiscoveryEnabled = options.provider !== null;
     this.provider = options.provider ?? null;
     this.sdk = options.sdk ?? null;
@@ -839,6 +879,7 @@ export class Supervisor {
     this.interruptTimeoutMs =
       options.interruptTimeoutMs ?? DEFAULT_INTERRUPT_TIMEOUT_MS;
     this.sessionMetadataService = options.sessionMetadataService;
+    this.agentAuthRouter = options.agentAuthRouter;
     this.notificationService = options.notificationService;
     this.sessionQueuePersistenceService =
       options.sessionQueuePersistenceService;
@@ -1360,6 +1401,15 @@ export class Supervisor {
     modelSettings?: ModelSettings,
     resumeSessionId?: string,
   ): Promise<Process> {
+    if (
+      modelSettings?.routerAccountId ||
+      modelSettings?.routerPoolId ||
+      this.sessionMetadataService?.getMetadata(resumeSessionId ?? "")
+        ?.routerBinding
+    ) {
+      throw new Error("Router sessions require a native provider adapter");
+    }
+
     if (!this.realSdk) {
       throw new Error("realSdk is not available");
     }
@@ -1391,6 +1441,8 @@ export class Supervisor {
     );
     // Start session WITHOUT an initial message - agent will wait
     const result = await this.realSdk.startSession({
+      machineControl: modelSettings?.machineControl,
+      desktopControlOrigin: modelSettings?.desktopControlOrigin,
       cwd: projectPath,
       // No initialMessage - queue will block until one is pushed
       resumeSessionId,
@@ -1474,6 +1526,7 @@ export class Supervisor {
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
+      getContextBreakdownFn: result.getContextBreakdown,
       supportedCommandsFn: supportedCommands,
       onCommandsObserved: (sessionId, commands) =>
         this.sessionMetadataService?.observeCommandInventory(
@@ -1548,30 +1601,13 @@ export class Supervisor {
     return { objective: goal.goalObjective, status: "paused" };
   }
 
-  /** Claims a computer-control grant for a launch that asked for one. */
-  private selectComputerControl(
-    tempSessionId: string,
-    modelSettings: ModelSettings | undefined,
-    activeProvider: AgentProvider,
-  ): ComputerSession | undefined {
-    return this.computerControl?.select(
-      tempSessionId,
-      modelSettings?.computerControl,
-      activeProvider.name,
-      modelSettings?.executor,
-      modelSettings?.sandboxLevel,
-    );
-  }
-
   private async settleProviderStart<T>(
     start: Promise<T>,
     required: boolean,
-    computerControl?: ComputerSession,
   ): Promise<T> {
     try {
       return await start;
     } catch (error) {
-      await computerControl?.close();
       if (required) {
         throw new RetryableSessionLaunchError(error);
       }
@@ -2165,6 +2201,15 @@ export class Supervisor {
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
   ): Promise<Process> {
+    if (
+      modelSettings?.routerAccountId ||
+      modelSettings?.routerPoolId ||
+      this.sessionMetadataService?.getMetadata(resumeSessionId ?? "")
+        ?.routerBinding
+    ) {
+      throw new Error("Router sessions require a native provider adapter");
+    }
+
     const tempSessionId = resumeSessionId ?? randomUUID();
 
     // realSdk is guaranteed to exist here (checked in startSession)
@@ -2201,6 +2246,8 @@ export class Supervisor {
       modelSettings,
     );
     const result = await this.realSdk.startSession({
+      machineControl: modelSettings?.machineControl,
+      desktopControlOrigin: modelSettings?.desktopControlOrigin,
       cwd: projectPath,
       resumeSessionId,
       resumeSessionAt: truncation.resumeSessionAt,
@@ -2285,6 +2332,7 @@ export class Supervisor {
       effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
       interruptFn: interrupt,
       supportedModelsFn: supportedModels,
+      getContextBreakdownFn: result.getContextBreakdown,
       supportedCommandsFn: supportedCommands,
       onCommandsObserved: (sessionId, commands) =>
         this.sessionMetadataService?.observeCommandInventory(
@@ -2399,11 +2447,7 @@ export class Supervisor {
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
     // Start session WITHOUT an initial message - agent will wait
-    const computerControl = this.selectComputerControl(
-      tempSessionId,
-      modelSettings,
-      activeProvider,
-    );
+
     const agentServerAccess = this.agentServerAccessForLaunch(
       Boolean(sessionSandbox) ||
         modelSettings?.sandboxLevel === "project-write",
@@ -2414,177 +2458,258 @@ export class Supervisor {
       activeProvider.name,
       modelSettings,
     );
-    const start = activeProvider.startSession({
-      computerControl,
-      cwd: projectPath,
-      // No initialMessage - queue will block until one is pushed
-      resumeSessionId,
-      resumeSessionAt: truncation.resumeSessionAt,
-      resumeDropsTurn: truncation.resumeDropsTurn,
-      permissionMode: effectiveMode,
-      model: modelSettings?.model,
-      serviceTier: modelSettings?.serviceTier,
-      thinking: modelSettings?.thinking,
-      effort: modelSettings?.effort,
-      ...(compactAtContextTokenLimit === undefined
-        ? {}
-        : { compactAtContextTokenLimit }),
-      ...(launchCompactPercentOverride === undefined
-        ? {}
-        : { launchCompactPercentOverride }),
-      claudeSteerBackgroundBash: this.getClaudeSteerBackgroundBashSettings?.(),
-      restoredGoal: this.readRestoredGoal(resumeSessionId),
-      clientName: modelSettings?.clientName,
-      executor: modelSettings?.executor,
-      remoteEnv: modelSettings?.remoteEnv,
-      globalInstructions: modelSettings?.globalInstructions,
-      getSessionChildEnv: this.getSessionChildEnv
-        ? (sessionId) =>
-            this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ?? {}
-        : undefined,
-      agentServerEnvironment: agentServerEnvironment(agentServerAccess),
-      sessionSandbox,
-      sessionSandboxOptions,
-      shouldEmitLiveDeltas: () =>
-        processHolder.process?.hasLiveDeltaSubscribers() ?? false,
-      onPermissionModeApplied: (mode) =>
-        processHolder.process?.setAppliedPermissionMode(mode),
-      onProviderRetentionChange: () =>
-        this.handleProviderRetentionChanged(processHolder),
-      onToolApproval: async (toolName, input, opts) => {
-        if (!processHolder.process) {
-          return { behavior: "deny", message: "Process not ready" };
+    const routed =
+      modelSettings?.routerAccountId ||
+      modelSettings?.routerPoolId ||
+      this.sessionMetadataService?.getMetadata(tempSessionId)?.routerBinding;
+    if (
+      routed &&
+      (modelSettings?.executor ||
+        sessionSandboxOptions?.level === "project-write")
+    ) {
+      throw new Error(
+        "Router sessions require a local unsandboxed owner launch",
+      );
+    }
+    if (
+      modelSettings?.routerAccountId !== undefined &&
+      (typeof modelSettings.routerAccountId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(modelSettings.routerAccountId))
+    )
+      throw new Error("Invalid router account");
+    if (
+      modelSettings?.routerPoolId !== undefined &&
+      (typeof modelSettings.routerPoolId !== "string" ||
+        !/^[a-f0-9-]{36}$/.test(modelSettings.routerPoolId))
+    )
+      throw new Error("Invalid router pool");
+    if (
+      modelSettings?.routerPolicy !== undefined &&
+      (!modelSettings.routerPoolId ||
+        !["manual", "round-robin", "most-remaining"].includes(
+          modelSettings.routerPolicy,
+        ))
+    )
+      throw new Error("Invalid router policy");
+    if (routed && !this.agentAuthRouter)
+      throw new Error("Router integration unavailable");
+    const routerLaunch = await this.agentAuthRouter?.launch(
+      tempSessionId,
+      activeProvider.name,
+      modelSettings?.model,
+      modelSettings?.routerAccountId,
+      modelSettings?.routerPoolId,
+      modelSettings?.routerPolicy,
+      modelSettings,
+    );
+    try {
+      const start = activeProvider.startSession({
+        routerLaunch,
+        machineControl: modelSettings?.machineControl,
+        desktopControlOrigin: modelSettings?.desktopControlOrigin,
+        cwd: projectPath,
+        // No initialMessage - queue will block until one is pushed
+        ...(await this.instructionLaunchOptions(
+          activeProvider.name,
+          resumeSessionId,
+          projectId,
+          Boolean(sessionSandbox) || Boolean(modelSettings?.executor),
+        )),
+        resumeSessionId,
+        resumeSessionAt: truncation.resumeSessionAt,
+        resumeDropsTurn: truncation.resumeDropsTurn,
+        permissionMode: effectiveMode,
+        model: modelSettings?.model,
+        serviceTier: modelSettings?.serviceTier,
+        thinking: modelSettings?.thinking,
+        effort: modelSettings?.effort,
+        ...(compactAtContextTokenLimit === undefined
+          ? {}
+          : { compactAtContextTokenLimit }),
+        ...(launchCompactPercentOverride === undefined
+          ? {}
+          : { launchCompactPercentOverride }),
+        claudeSteerBackgroundBash:
+          this.getClaudeSteerBackgroundBashSettings?.(),
+        restoredGoal: this.readRestoredGoal(resumeSessionId),
+        clientName: modelSettings?.clientName,
+        executor: modelSettings?.executor,
+        remoteEnv: modelSettings?.remoteEnv,
+        globalInstructions: modelSettings?.globalInstructions,
+        getSessionChildEnv: this.getSessionChildEnv
+          ? (sessionId) =>
+              this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ??
+              {}
+          : undefined,
+        agentServerEnvironment: agentServerEnvironment(agentServerAccess),
+        sessionSandbox,
+        sessionSandboxOptions,
+        shouldEmitLiveDeltas: () =>
+          processHolder.process?.hasLiveDeltaSubscribers() ?? false,
+        onPermissionModeApplied: (mode) =>
+          processHolder.process?.setAppliedPermissionMode(mode),
+        onProviderRetentionChange: () =>
+          this.handleProviderRetentionChanged(processHolder),
+        onToolApproval: async (toolName, input, opts) => {
+          if (!processHolder.process) {
+            return { behavior: "deny", message: "Process not ready" };
+          }
+          return processHolder.process.handleToolApproval(
+            toolName,
+            input,
+            opts,
+          );
+        },
+      });
+      const result = await this.settleProviderStart(
+        start,
+        retryProviderStartupFailure || requireProviderSessionId,
+      );
+
+      const {
+        iterator,
+        queue,
+        abort,
+        detachForServerReload,
+        activateCallbacks,
+        isProcessAlive,
+        probeLiveness,
+        getProviderActivity,
+        getProviderRetention,
+        setMaxThinkingTokens,
+        setEffort,
+        interrupt,
+        steer,
+        steerUsesMessageQueue,
+        supportedModels,
+        supportedCommands,
+        setModel,
+        runProviderCommand,
+        publishAgentctlSessionId,
+      } = result;
+
+      const options: ProcessConstructorOptions = {
+        projectPath,
+        projectId,
+        sessionId: tempSessionId,
+        initialState: "idle",
+        idleTimeoutMs: this.idleTimeoutMs,
+        projectDisplayName: this.projectDisplayName,
+        queue,
+        sessionQueuePersistenceService: this.sessionQueuePersistenceService,
+        toolResultMediaStore: this.toolResultMediaStore,
+        abortFn: abort,
+        detachForServerReloadFn: detachForServerReload,
+        isProcessAlive,
+        shouldRetainIdleProcess: (sessionId) =>
+          this.shouldRetainIdleProcess(sessionId),
+        initialProviderRuntimeStatus: resumeSessionId
+          ? this.terminalProviderStatuses.get(resumeSessionId)
+          : null,
+        probeLivenessFn: probeLiveness,
+        getProviderActivityFn: getProviderActivity,
+        getProviderRetentionFn: getProviderRetention,
+        getRuntimeUnviewedSinceFn: result.getRuntimeUnviewedSince,
+        setRuntimeViewerPresenceFn: result.setRuntimeViewerPresence,
+        refreshPromptCacheFn: result.refreshPromptCache,
+        isAutomationPaused: () =>
+          this.isAutomationPausedUntilUserTurn(
+            resumeSessionId ?? tempSessionId,
+          ),
+        pid: () => {
+          const p = result.pid;
+          return typeof p === "function" ? p() : p;
+        },
+        setMaxThinkingTokensFn: setMaxThinkingTokens,
+        publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
+        setEffortFn: setEffort,
+        effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
+        interruptFn: interrupt,
+        steerFn: steer,
+        steerUsesMessageQueue,
+        supportedModelsFn: supportedModels,
+        getContextBreakdownFn: result.getContextBreakdown,
+        supportedCommandsFn: supportedCommands,
+        onCommandsObserved: (sessionId, commands) =>
+          this.sessionMetadataService?.observeCommandInventory(
+            sessionId,
+            commands,
+          ) ?? Promise.resolve(),
+        setModelFn: setModel,
+        runProviderCommandFn: runProviderCommand,
+        providerInitializesOnFirstMessage:
+          activeProvider.initializesOnFirstMessage === true,
+        appendConversationContextFn: result.appendConversationContext,
+        initializedSessionId: result.initializedSessionId,
+        publishAgentctlSessionIdFn: publishAgentctlSessionId,
+        permissionMode: effectiveMode,
+        provider: activeProvider.name,
+        model: modelSettings?.model,
+        requestedModel: modelSettings?.requestedModel,
+        gatewayServiceId: result.gatewayServiceId,
+        compactAtContextPercent: modelSettings?.compactAtContextPercent,
+        compactAtContextWindow: modelSettings?.compactAtContextWindow,
+        forceYaOrchestratedCompaction:
+          modelSettings?.forceYaOrchestratedCompaction,
+        compactAtContextTokenLimit,
+        launchCompactPercentOverride,
+        serviceTier: modelSettings?.serviceTier,
+        thinking: modelSettings?.thinking,
+        effort: modelSettings?.effort,
+        executor: modelSettings?.executor,
+        execution: result.execution,
+        permissions: modelSettings?.permissions,
+        recapMode: modelSettings?.recapMode,
+        recapAfterSeconds: modelSettings?.recapAfterSeconds,
+        promptSuggestionMode,
+        helperSideModel: modelSettings?.helperSideModel,
+        sandboxEnforcement: sessionSandbox?.enforcement,
+        sandboxStateKey: sessionSandbox?.stateKey,
+        sandboxProjectPath: sessionSandbox?.projectPath,
+      };
+
+      const process = new Process(iterator, options);
+      processHolder.process = process;
+      this.holdAgentServerAccess(process, agentServerAccess);
+      this.instructionSessions.set(process, result);
+      this.observeProcessEvents(process);
+      activateCallbacks?.();
+      await this.consumePendingRewind(process, resumeSessionId, truncation);
+
+      // Wait for the real session ID from the provider
+      if (!resumeSessionId) {
+        await this.settleProviderSessionId(process, requireProviderSessionId);
+      }
+      if (sessionSandbox) {
+        await this.persistProcessSandboxOrAbort(process);
+      }
+
+      if (routerLaunch && tempSessionId !== process.sessionId) {
+        try {
+          await this.sessionMetadataService!.remapSessionId(
+            tempSessionId,
+            process.sessionId,
+          );
+        } catch (error) {
+          await process.abort();
+          throw error;
         }
-        return processHolder.process.handleToolApproval(toolName, input, opts);
-      },
-    });
-    const result = await this.settleProviderStart(
-      start,
-      retryProviderStartupFailure || requireProviderSessionId,
-      computerControl,
-    );
+      }
 
-    const {
-      iterator,
-      queue,
-      abort,
-      detachForServerReload,
-      activateCallbacks,
-      isProcessAlive,
-      probeLiveness,
-      getProviderActivity,
-      getProviderRetention,
-      setMaxThinkingTokens,
-      setEffort,
-      interrupt,
-      steer,
-      steerUsesMessageQueue,
-      supportedModels,
-      supportedCommands,
-      setModel,
-      runProviderCommand,
-      publishAgentctlSessionId,
-    } = result;
+      await this.activationCoordinator.persistSuccessfulSessionBoundaryOrAbort(
+        process,
+      );
+      // Recreated processes for an existing session should not emit session-created again.
+      this.registerProcess(process, !resumeSessionId);
 
-    const options: ProcessConstructorOptions = {
-      projectPath,
-      projectId,
-      sessionId: tempSessionId,
-      initialState: "idle",
-      idleTimeoutMs: this.idleTimeoutMs,
-      projectDisplayName: this.projectDisplayName,
-      queue,
-      sessionQueuePersistenceService: this.sessionQueuePersistenceService,
-      toolResultMediaStore: this.toolResultMediaStore,
-      abortFn: abort,
-      detachForServerReloadFn: detachForServerReload,
-      isProcessAlive,
-      shouldRetainIdleProcess: (sessionId) =>
-        this.shouldRetainIdleProcess(sessionId),
-      initialProviderRuntimeStatus: resumeSessionId
-        ? this.terminalProviderStatuses.get(resumeSessionId)
-        : null,
-      probeLivenessFn: probeLiveness,
-      getProviderActivityFn: getProviderActivity,
-      getProviderRetentionFn: getProviderRetention,
-      getRuntimeUnviewedSinceFn: result.getRuntimeUnviewedSince,
-      setRuntimeViewerPresenceFn: result.setRuntimeViewerPresence,
-      refreshPromptCacheFn: result.refreshPromptCache,
-      isAutomationPaused: () =>
-        this.isAutomationPausedUntilUserTurn(resumeSessionId ?? tempSessionId),
-      pid: () => {
-        const p = result.pid;
-        return typeof p === "function" ? p() : p;
-      },
-      setMaxThinkingTokensFn: setMaxThinkingTokens,
-      publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
-      setEffortFn: setEffort,
-      effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
-      interruptFn: interrupt,
-      steerFn: steer,
-      steerUsesMessageQueue,
-      supportedModelsFn: supportedModels,
-      supportedCommandsFn: supportedCommands,
-      onCommandsObserved: (sessionId, commands) =>
-        this.sessionMetadataService?.observeCommandInventory(
-          sessionId,
-          commands,
-        ) ?? Promise.resolve(),
-      setModelFn: setModel,
-      runProviderCommandFn: runProviderCommand,
-      providerInitializesOnFirstMessage:
-        activeProvider.initializesOnFirstMessage === true,
-      appendConversationContextFn: result.appendConversationContext,
-      initializedSessionId: result.initializedSessionId,
-      publishAgentctlSessionIdFn: publishAgentctlSessionId,
-      permissionMode: effectiveMode,
-      provider: activeProvider.name,
-      model: modelSettings?.model,
-      requestedModel: modelSettings?.requestedModel,
-      gatewayServiceId: result.gatewayServiceId,
-      compactAtContextPercent: modelSettings?.compactAtContextPercent,
-      compactAtContextWindow: modelSettings?.compactAtContextWindow,
-      forceYaOrchestratedCompaction:
-        modelSettings?.forceYaOrchestratedCompaction,
-      compactAtContextTokenLimit,
-      launchCompactPercentOverride,
-      serviceTier: modelSettings?.serviceTier,
-      thinking: modelSettings?.thinking,
-      effort: modelSettings?.effort,
-      executor: modelSettings?.executor,
-      execution: result.execution,
-      permissions: modelSettings?.permissions,
-      recapMode: modelSettings?.recapMode,
-      recapAfterSeconds: modelSettings?.recapAfterSeconds,
-      promptSuggestionMode,
-      helperSideModel: modelSettings?.helperSideModel,
-      sandboxEnforcement: sessionSandbox?.enforcement,
-      sandboxStateKey: sessionSandbox?.stateKey,
-      sandboxProjectPath: sessionSandbox?.projectPath,
-    };
-
-    const process = new Process(iterator, options);
-    processHolder.process = process;
-    this.holdAgentServerAccess(process, agentServerAccess);
-    this.observeProcessEvents(process);
-    activateCallbacks?.();
-    await this.consumePendingRewind(process, resumeSessionId, truncation);
-
-    // Wait for the real session ID from the provider
-    if (!resumeSessionId) {
-      await this.settleProviderSessionId(process, requireProviderSessionId);
+      return process;
+    } catch (error) {
+      if (routerLaunch && !resumeSessionId) {
+        // The connector retains pending cancellation durably if AAR is offline.
+        await this.agentAuthRouter?.cancel(tempSessionId).catch(() => {});
+      }
+      throw error;
     }
-    if (sessionSandbox) {
-      await this.persistProcessSandboxOrAbort(process);
-    }
-
-    await this.activationCoordinator.persistSuccessfulSessionBoundaryOrAbort(
-      process,
-    );
-    // Recreated processes for an existing session should not emit session-created again.
-    this.registerProcess(process, !resumeSessionId);
-
-    return process;
   }
 
   /**
@@ -2648,11 +2773,6 @@ export class Supervisor {
     );
     const sessionSandbox = await prepareSessionSandbox(sessionSandboxOptions);
 
-    const computerControl = this.selectComputerControl(
-      tempSessionId,
-      modelSettings,
-      activeProvider,
-    );
     const agentServerAccess = this.agentServerAccessForLaunch(
       Boolean(sessionSandbox) ||
         modelSettings?.sandboxLevel === "project-write",
@@ -2663,185 +2783,266 @@ export class Supervisor {
       activeProvider.name,
       modelSettings,
     );
-    const start = activeProvider.startSession({
-      computerControl,
-      cwd: projectPath,
-      resumeSessionId,
-      resumeSessionAt: truncation.resumeSessionAt,
-      resumeDropsTurn: truncation.resumeDropsTurn,
-      permissionMode: effectiveMode,
-      model: modelSettings?.model,
-      serviceTier: modelSettings?.serviceTier,
-      thinking: modelSettings?.thinking,
-      effort: modelSettings?.effort,
-      ...(compactAtContextTokenLimit === undefined
-        ? {}
-        : { compactAtContextTokenLimit }),
-      ...(launchCompactPercentOverride === undefined
-        ? {}
-        : { launchCompactPercentOverride }),
-      claudeSteerBackgroundBash: this.getClaudeSteerBackgroundBashSettings?.(),
-      restoredGoal: this.readRestoredGoal(resumeSessionId),
-      executor: modelSettings?.executor,
-      remoteEnv: modelSettings?.remoteEnv,
-      globalInstructions: modelSettings?.globalInstructions,
-      getSessionChildEnv: this.getSessionChildEnv
-        ? (sessionId) =>
-            this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ?? {}
-        : undefined,
-      agentServerEnvironment: agentServerEnvironment(agentServerAccess),
-      sessionSandbox,
-      sessionSandboxOptions,
-      shouldEmitLiveDeltas: () =>
-        processHolder.process?.hasLiveDeltaSubscribers() ?? false,
-      onPermissionModeApplied: (mode) =>
-        processHolder.process?.setAppliedPermissionMode(mode),
-      onProviderRetentionChange: () =>
-        this.handleProviderRetentionChanged(processHolder),
-      onToolApproval: async (toolName, input, opts) => {
-        if (!processHolder.process) {
-          return { behavior: "deny", message: "Process not ready" };
+    const routed =
+      modelSettings?.routerAccountId ||
+      modelSettings?.routerPoolId ||
+      this.sessionMetadataService?.getMetadata(tempSessionId)?.routerBinding;
+    if (
+      routed &&
+      (modelSettings?.executor ||
+        sessionSandboxOptions?.level === "project-write")
+    ) {
+      throw new Error(
+        "Router sessions require a local unsandboxed owner launch",
+      );
+    }
+    if (
+      modelSettings?.routerAccountId !== undefined &&
+      (typeof modelSettings.routerAccountId !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(modelSettings.routerAccountId))
+    )
+      throw new Error("Invalid router account");
+    if (
+      modelSettings?.routerPoolId !== undefined &&
+      (typeof modelSettings.routerPoolId !== "string" ||
+        !/^[a-f0-9-]{36}$/.test(modelSettings.routerPoolId))
+    )
+      throw new Error("Invalid router pool");
+    if (
+      modelSettings?.routerPolicy !== undefined &&
+      (!modelSettings.routerPoolId ||
+        !["manual", "round-robin", "most-remaining"].includes(
+          modelSettings.routerPolicy,
+        ))
+    )
+      throw new Error("Invalid router policy");
+    if (routed && !this.agentAuthRouter)
+      throw new Error("Router integration unavailable");
+    const routerLaunch = await this.agentAuthRouter?.launch(
+      tempSessionId,
+      activeProvider.name,
+      modelSettings?.model,
+      modelSettings?.routerAccountId,
+      modelSettings?.routerPoolId,
+      modelSettings?.routerPolicy,
+      modelSettings,
+    );
+    try {
+      const start = activeProvider.startSession({
+        routerLaunch,
+        machineControl: modelSettings?.machineControl,
+        desktopControlOrigin: modelSettings?.desktopControlOrigin,
+        cwd: projectPath,
+        resumeSessionId,
+        ...(await this.instructionLaunchOptions(
+          activeProvider.name,
+          resumeSessionId,
+          projectId,
+          Boolean(sessionSandbox) || Boolean(modelSettings?.executor),
+        )),
+        resumeSessionAt: truncation.resumeSessionAt,
+        resumeDropsTurn: truncation.resumeDropsTurn,
+        permissionMode: effectiveMode,
+        model: modelSettings?.model,
+        serviceTier: modelSettings?.serviceTier,
+        thinking: modelSettings?.thinking,
+        effort: modelSettings?.effort,
+        ...(compactAtContextTokenLimit === undefined
+          ? {}
+          : { compactAtContextTokenLimit }),
+        ...(launchCompactPercentOverride === undefined
+          ? {}
+          : { launchCompactPercentOverride }),
+        claudeSteerBackgroundBash:
+          this.getClaudeSteerBackgroundBashSettings?.(),
+        restoredGoal: this.readRestoredGoal(resumeSessionId),
+        executor: modelSettings?.executor,
+        remoteEnv: modelSettings?.remoteEnv,
+        globalInstructions: modelSettings?.globalInstructions,
+        getSessionChildEnv: this.getSessionChildEnv
+          ? (sessionId) =>
+              this.getSessionChildEnv?.(sessionId, modelSettings?.executor) ??
+              {}
+          : undefined,
+        agentServerEnvironment: agentServerEnvironment(agentServerAccess),
+        sessionSandbox,
+        sessionSandboxOptions,
+        shouldEmitLiveDeltas: () =>
+          processHolder.process?.hasLiveDeltaSubscribers() ?? false,
+        onPermissionModeApplied: (mode) =>
+          processHolder.process?.setAppliedPermissionMode(mode),
+        onProviderRetentionChange: () =>
+          this.handleProviderRetentionChanged(processHolder),
+        onToolApproval: async (toolName, input, opts) => {
+          if (!processHolder.process) {
+            return { behavior: "deny", message: "Process not ready" };
+          }
+          return processHolder.process.handleToolApproval(
+            toolName,
+            input,
+            opts,
+          );
+        },
+      });
+      const result = await this.settleProviderStart(
+        start,
+        retryProviderStartupFailure || requireProviderSessionId,
+      );
+
+      const {
+        iterator,
+        queue,
+        abort,
+        detachForServerReload,
+        activateCallbacks,
+        isProcessAlive,
+        probeLiveness,
+        getProviderActivity,
+        getProviderRetention,
+        setMaxThinkingTokens,
+        setEffort,
+        interrupt,
+        steer,
+        steerUsesMessageQueue,
+        supportedModels,
+        supportedCommands,
+        setModel,
+        runProviderCommand,
+        publishAgentctlSessionId,
+      } = result;
+
+      const options: ProcessConstructorOptions = {
+        projectPath,
+        projectId,
+        sessionId: tempSessionId,
+        idleTimeoutMs: this.idleTimeoutMs,
+        projectDisplayName: this.projectDisplayName,
+        initialState: result.initialTurnState ?? "idle",
+        queue,
+        sessionQueuePersistenceService: this.sessionQueuePersistenceService,
+        toolResultMediaStore: this.toolResultMediaStore,
+        abortFn: abort,
+        detachForServerReloadFn: detachForServerReload,
+        isProcessAlive,
+        shouldRetainIdleProcess: (sessionId) =>
+          this.shouldRetainIdleProcess(sessionId),
+        initialProviderRuntimeStatus: resumeSessionId
+          ? this.terminalProviderStatuses.get(resumeSessionId)
+          : null,
+        probeLivenessFn: probeLiveness,
+        getProviderActivityFn: getProviderActivity,
+        getProviderRetentionFn: getProviderRetention,
+        getRuntimeUnviewedSinceFn: result.getRuntimeUnviewedSince,
+        setRuntimeViewerPresenceFn: result.setRuntimeViewerPresence,
+        refreshPromptCacheFn: result.refreshPromptCache,
+        isAutomationPaused: () =>
+          this.isAutomationPausedUntilUserTurn(
+            resumeSessionId ?? tempSessionId,
+          ),
+        pid: () => {
+          const p = result.pid;
+          return typeof p === "function" ? p() : p;
+        },
+        setMaxThinkingTokensFn: setMaxThinkingTokens,
+        publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
+        setEffortFn: setEffort,
+        effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
+        interruptFn: interrupt,
+        steerFn: steer,
+        steerUsesMessageQueue,
+        supportedModelsFn: supportedModels,
+        getContextBreakdownFn: result.getContextBreakdown,
+        supportedCommandsFn: supportedCommands,
+        onCommandsObserved: (sessionId, commands) =>
+          this.sessionMetadataService?.observeCommandInventory(
+            sessionId,
+            commands,
+          ) ?? Promise.resolve(),
+        setModelFn: setModel,
+        runProviderCommandFn: runProviderCommand,
+        providerInitializesOnFirstMessage:
+          activeProvider.initializesOnFirstMessage === true,
+        appendConversationContextFn: result.appendConversationContext,
+        initializedSessionId: result.initializedSessionId,
+        publishAgentctlSessionIdFn: publishAgentctlSessionId,
+        permissionMode: effectiveMode,
+        provider: activeProvider.name,
+        model: modelSettings?.model,
+        requestedModel: modelSettings?.requestedModel,
+        gatewayServiceId: result.gatewayServiceId,
+        compactAtContextPercent: modelSettings?.compactAtContextPercent,
+        compactAtContextWindow: modelSettings?.compactAtContextWindow,
+        forceYaOrchestratedCompaction:
+          modelSettings?.forceYaOrchestratedCompaction,
+        compactAtContextTokenLimit,
+        launchCompactPercentOverride,
+        serviceTier: modelSettings?.serviceTier,
+        thinking: modelSettings?.thinking,
+        effort: modelSettings?.effort,
+        executor: modelSettings?.executor,
+        execution: result.execution,
+        permissions: modelSettings?.permissions,
+        recapMode: modelSettings?.recapMode,
+        recapAfterSeconds: modelSettings?.recapAfterSeconds,
+        promptSuggestionMode,
+        helperSideModel: modelSettings?.helperSideModel,
+        sandboxEnforcement: sessionSandbox?.enforcement,
+        sandboxStateKey: sessionSandbox?.stateKey,
+        sandboxProjectPath: sessionSandbox?.projectPath,
+      };
+
+      const process = new Process(iterator, options);
+      processHolder.process = process;
+      this.holdAgentServerAccess(process, agentServerAccess);
+      this.instructionSessions.set(process, result);
+      this.observeProcessEvents(process);
+      activateCallbacks?.();
+      await this.consumePendingRewind(process, resumeSessionId, truncation);
+
+      const queueBeforeProviderSettlement =
+        !resumeSessionId && requireProviderSessionId;
+      if (queueBeforeProviderSettlement) {
+        await this.queueInitialProcessMessage(process, message);
+      }
+
+      // Wait for the real session ID from the provider before registering.
+      // Message-driven providers only emit their init event after input arrives.
+      if (!resumeSessionId) {
+        await this.settleProviderSessionId(process, requireProviderSessionId);
+      }
+      if (sessionSandbox) {
+        await this.persistProcessSandboxOrAbort(process);
+      }
+
+      if (!queueBeforeProviderSettlement) {
+        await this.queueInitialProcessMessage(process, message);
+      }
+
+      if (routerLaunch && tempSessionId !== process.sessionId) {
+        try {
+          await this.sessionMetadataService!.remapSessionId(
+            tempSessionId,
+            process.sessionId,
+          );
+        } catch (error) {
+          await process.abort();
+          throw error;
         }
-        return processHolder.process.handleToolApproval(toolName, input, opts);
-      },
-    });
-    const result = await this.settleProviderStart(
-      start,
-      retryProviderStartupFailure || requireProviderSessionId,
-      computerControl,
-    );
+      }
 
-    const {
-      iterator,
-      queue,
-      abort,
-      detachForServerReload,
-      activateCallbacks,
-      isProcessAlive,
-      probeLiveness,
-      getProviderActivity,
-      getProviderRetention,
-      setMaxThinkingTokens,
-      setEffort,
-      interrupt,
-      steer,
-      steerUsesMessageQueue,
-      supportedModels,
-      supportedCommands,
-      setModel,
-      runProviderCommand,
-      publishAgentctlSessionId,
-    } = result;
+      await this.activationCoordinator.persistSuccessfulSessionBoundaryOrAbort(
+        process,
+      );
+      this.registerProcess(process, !resumeSessionId);
 
-    const options: ProcessConstructorOptions = {
-      projectPath,
-      projectId,
-      sessionId: tempSessionId,
-      idleTimeoutMs: this.idleTimeoutMs,
-      projectDisplayName: this.projectDisplayName,
-      initialState: result.initialTurnState ?? "idle",
-      queue,
-      sessionQueuePersistenceService: this.sessionQueuePersistenceService,
-      toolResultMediaStore: this.toolResultMediaStore,
-      abortFn: abort,
-      detachForServerReloadFn: detachForServerReload,
-      isProcessAlive,
-      shouldRetainIdleProcess: (sessionId) =>
-        this.shouldRetainIdleProcess(sessionId),
-      initialProviderRuntimeStatus: resumeSessionId
-        ? this.terminalProviderStatuses.get(resumeSessionId)
-        : null,
-      probeLivenessFn: probeLiveness,
-      getProviderActivityFn: getProviderActivity,
-      getProviderRetentionFn: getProviderRetention,
-      getRuntimeUnviewedSinceFn: result.getRuntimeUnviewedSince,
-      setRuntimeViewerPresenceFn: result.setRuntimeViewerPresence,
-      refreshPromptCacheFn: result.refreshPromptCache,
-      isAutomationPaused: () =>
-        this.isAutomationPausedUntilUserTurn(resumeSessionId ?? tempSessionId),
-      pid: () => {
-        const p = result.pid;
-        return typeof p === "function" ? p() : p;
-      },
-      setMaxThinkingTokensFn: setMaxThinkingTokens,
-      publishAgentSelfSelectionFn: result.publishAgentSelfSelection,
-      setEffortFn: setEffort,
-      effortUpdatesActiveTurn: result.effortUpdatesActiveTurn,
-      interruptFn: interrupt,
-      steerFn: steer,
-      steerUsesMessageQueue,
-      supportedModelsFn: supportedModels,
-      supportedCommandsFn: supportedCommands,
-      onCommandsObserved: (sessionId, commands) =>
-        this.sessionMetadataService?.observeCommandInventory(
-          sessionId,
-          commands,
-        ) ?? Promise.resolve(),
-      setModelFn: setModel,
-      runProviderCommandFn: runProviderCommand,
-      providerInitializesOnFirstMessage:
-        activeProvider.initializesOnFirstMessage === true,
-      appendConversationContextFn: result.appendConversationContext,
-      initializedSessionId: result.initializedSessionId,
-      publishAgentctlSessionIdFn: publishAgentctlSessionId,
-      permissionMode: effectiveMode,
-      provider: activeProvider.name,
-      model: modelSettings?.model,
-      requestedModel: modelSettings?.requestedModel,
-      gatewayServiceId: result.gatewayServiceId,
-      compactAtContextPercent: modelSettings?.compactAtContextPercent,
-      compactAtContextWindow: modelSettings?.compactAtContextWindow,
-      forceYaOrchestratedCompaction:
-        modelSettings?.forceYaOrchestratedCompaction,
-      compactAtContextTokenLimit,
-      launchCompactPercentOverride,
-      serviceTier: modelSettings?.serviceTier,
-      thinking: modelSettings?.thinking,
-      effort: modelSettings?.effort,
-      executor: modelSettings?.executor,
-      execution: result.execution,
-      permissions: modelSettings?.permissions,
-      recapMode: modelSettings?.recapMode,
-      recapAfterSeconds: modelSettings?.recapAfterSeconds,
-      promptSuggestionMode,
-      helperSideModel: modelSettings?.helperSideModel,
-      sandboxEnforcement: sessionSandbox?.enforcement,
-      sandboxStateKey: sessionSandbox?.stateKey,
-      sandboxProjectPath: sessionSandbox?.projectPath,
-    };
-
-    const process = new Process(iterator, options);
-    processHolder.process = process;
-    this.holdAgentServerAccess(process, agentServerAccess);
-    this.observeProcessEvents(process);
-    activateCallbacks?.();
-    await this.consumePendingRewind(process, resumeSessionId, truncation);
-
-    const queueBeforeProviderSettlement =
-      !resumeSessionId && requireProviderSessionId;
-    if (queueBeforeProviderSettlement) {
-      await this.queueInitialProcessMessage(process, message);
+      return process;
+    } catch (error) {
+      if (routerLaunch && !resumeSessionId) {
+        // The connector retains pending cancellation durably if AAR is offline.
+        await this.agentAuthRouter?.cancel(tempSessionId).catch(() => {});
+      }
+      throw error;
     }
-
-    // Wait for the real session ID from the provider before registering.
-    // Message-driven providers only emit their init event after input arrives.
-    if (!resumeSessionId) {
-      await this.settleProviderSessionId(process, requireProviderSessionId);
-    }
-    if (sessionSandbox) {
-      await this.persistProcessSandboxOrAbort(process);
-    }
-
-    if (!queueBeforeProviderSettlement) {
-      await this.queueInitialProcessMessage(process, message);
-    }
-
-    await this.activationCoordinator.persistSuccessfulSessionBoundaryOrAbort(
-      process,
-    );
-    this.registerProcess(process, !resumeSessionId);
-
-    return process;
   }
 
   /**
@@ -2855,6 +3056,15 @@ export class Supervisor {
     permissionMode?: PermissionMode,
     modelSettings?: ModelSettings,
   ): Promise<Process> {
+    if (
+      modelSettings?.routerAccountId ||
+      modelSettings?.routerPoolId ||
+      this.sessionMetadataService?.getMetadata(resumeSessionId ?? "")
+        ?.routerBinding
+    ) {
+      throw new Error("Router sessions require a native provider adapter");
+    }
+
     if (modelSettings?.sandboxLevel === "project-write") {
       throw new Error(
         "Project-write session sandboxing requires a local Claude or Codex provider runtime.",
@@ -2947,6 +3157,23 @@ export class Supervisor {
             effortWasRequested &&
             existingProcess.effort !== modelSettings?.effort;
 
+          if (
+            thinkingChanged ||
+            effortChanged ||
+            (modelSettings?.model &&
+              modelSettings.model !== existingProcess.model)
+          ) {
+            await this.agentAuthRouter?.validateSessionSettings(
+              sessionId,
+              modelSettings?.model ?? existingProcess.model,
+              {
+                thinking: modelSettings?.thinking ?? existingProcess.thinking,
+                effort: effortWasRequested
+                  ? modelSettings?.effort
+                  : existingProcess.effort,
+              },
+            );
+          }
           if (thinkingChanged || effortChanged) {
             if (
               thinkingChanged &&
@@ -3217,6 +3444,10 @@ export class Supervisor {
     upToMessageId?: string;
     boundary?: ProviderForkBoundary;
     title?: string;
+    /** Explicit helper/successor choices; all other fields inherit. */
+    launchOverrides?: SuccessorLaunchOverrides;
+    /** Frozen source settings for a multi-stage fork job. */
+    launchSettings?: EffectiveSessionLaunchSettingsValue;
     sandboxLevel?: SessionSandboxLevel;
     sandboxNetworkFirewall?: boolean;
     sandboxStateKey?: string;
@@ -3224,6 +3455,7 @@ export class Supervisor {
     sessionId: string;
     sandboxStateKey?: string;
     sessionSandbox?: Awaited<ReturnType<typeof prepareSessionSandbox>>;
+    launchSettings: EffectiveSessionLaunchSettingsValue;
   }> {
     const provider = this.resolveProvider(
       options.providerName ? { providerName: options.providerName } : undefined,
@@ -3231,8 +3463,36 @@ export class Supervisor {
     if (!provider) {
       throw new Error("provider is not available");
     }
+    if (
+      this.sessionMetadataService?.getMetadata(options.sessionId)?.routerBinding
+    )
+      throw new Error(
+        "Fork and clone of routed sessions are not supported yet",
+      );
     if (typeof provider.forkSession !== "function") {
       throw new Error(`${provider.name} does not support transcript fork`);
+    }
+    let launchSettings =
+      options.launchSettings ??
+      (await this.resolveForkLaunchSettings(
+        options.sessionId,
+        options.projectPath,
+        provider.name,
+        options.launchOverrides,
+      ));
+    if (options.launchSettings && options.launchOverrides) {
+      const launch = inheritSuccessorLaunchSettings(
+        options.launchSettings,
+        { sameProvider: true },
+        options.launchOverrides,
+      );
+      launchSettings = {
+        permissionMode: launch.permissionMode ?? this.defaultPermissionMode,
+        requestedModel: launch.requestedModel ?? null,
+        serviceTier: launch.serviceTier ?? null,
+        thinking: launch.thinking ?? null,
+        effort: launch.effort ?? null,
+      };
     }
     const sessionSandbox = await prepareSessionSandbox({
       instructions: this.newSessionSandboxOptions(
@@ -3265,6 +3525,7 @@ export class Supervisor {
       boundary: options.boundary,
       title: options.title,
       sessionSandbox,
+      launchSettings,
     });
     registerForkedSessionFile(provider.name, fork.sessionId, fork.filePath);
     // The new transcript is written by us. Announce it so file-activity
@@ -3273,11 +3534,74 @@ export class Supervisor {
     this.emitSessionForked(fork.sessionId, options.sessionId, {
       projectPath: options.projectPath,
     });
+    await this.recordForkLaunchSettings(fork.sessionId, launchSettings);
     return {
       sessionId: fork.sessionId,
       sandboxStateKey: sessionSandbox?.stateKey,
       sessionSandbox,
+      launchSettings,
     };
+  }
+
+  async resolveForkLaunchSettings(
+    sessionId: string,
+    projectPath: string,
+    providerName: ProviderName,
+    overrides: SuccessorLaunchOverrides = {},
+  ): Promise<EffectiveSessionLaunchSettingsValue> {
+    const projectId =
+      this.sessionMetadataService?.getMetadata(sessionId)?.workingProjectId ??
+      encodeProjectId(projectPath);
+    const source = await this.activationCoordinator.snapshotLaunchSettings(
+      projectId,
+      sessionId,
+      providerName,
+    );
+    let model = resolveInheritedForkModel(source.requestedModel ?? undefined);
+    if (!model) {
+      const summary = await this.onSessionSummary?.(sessionId, projectId);
+      model = resolveInheritedForkModel(
+        source.requestedModel ?? undefined,
+        summary?.model,
+      );
+    }
+    const launch = inheritSuccessorLaunchSettings(
+      source,
+      { sameProvider: true },
+      {
+        ...overrides,
+        requestedModel: overrides.requestedModel ?? model,
+      },
+    );
+    return {
+      permissionMode: launch.permissionMode ?? this.defaultPermissionMode,
+      requestedModel: launch.requestedModel ?? null,
+      serviceTier: launch.serviceTier ?? null,
+      thinking: launch.thinking ?? null,
+      effort: launch.effort ?? null,
+    };
+  }
+
+  async recordForkLaunchSettings(
+    sessionId: string,
+    settings: EffectiveSessionLaunchSettingsValue,
+  ): Promise<void> {
+    try {
+      await this.sessionMetadataService?.recordEffectiveLaunchSettings(
+        sessionId,
+        settings,
+      );
+    } catch (error) {
+      getLogger().error(
+        {
+          event: "session_fork_settings_save_failed",
+          sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        "A transcript child was created, but its settings could not be saved",
+      );
+      throw new ForkSettingsPersistenceError(sessionId, error);
+    }
   }
 
   /**
@@ -3453,6 +3777,14 @@ export class Supervisor {
       };
     }
     sinceMs = this.recapFloorMs(process.sessionId, sinceMs);
+    if (
+      this.sessionMetadataService?.getMetadata(process.sessionId)?.routerBinding
+    )
+      return {
+        supported: false,
+        emitted: false,
+        reason: "Separate helpers are unavailable for routed sessions",
+      };
     if (typeof provider.forkSession !== "function") {
       return process.requestTailedRecapFallback(provider, { sinceMs });
     }
@@ -3527,11 +3859,13 @@ export class Supervisor {
           strategy: "fork",
           generatorSessionId: generator.sessionId,
           cwd: process.projectPath,
-          model: resolveInheritedForkModel(
-            process.requestedModel,
-            process.resolvedModel,
-            process.model,
-          ),
+          model:
+            generator.launchSettings.requestedModel ??
+            resolveInheritedForkModel(
+              process.requestedModel,
+              process.resolvedModel,
+              process.model,
+            ),
           signal: abortController.signal,
           sessionSandbox: generator.sessionSandbox,
         })
@@ -3743,10 +4077,14 @@ export class Supervisor {
 
   async pauseSessionAutomation(sessionId: string): Promise<void> {
     await this.sessionDone.pauseSessionAutomation(sessionId);
+    await this.refreshInstructionRestoration(
+      this.getProcessForSession(sessionId),
+    );
   }
 
   private resumeAutomationAfterUserTurn(process: Process): void {
     this.sessionDone.resumeAfterUserTurn(process);
+    void this.refreshInstructionRestoration(process);
   }
 
   async pauseRecapsUntilUserTurn(processId: string): Promise<boolean> {
@@ -5042,6 +5380,14 @@ export class Supervisor {
         reason: "process not found",
       };
     }
+    if (
+      this.sessionMetadataService?.getMetadata(process.sessionId)?.routerBinding
+    )
+      return {
+        supported: false,
+        emitted: false,
+        reason: "Separate recap helpers are unavailable for routed sessions",
+      };
     if (this.isRecapPausedUntilUserTurn(process.sessionId)) {
       return {
         supported: true,
@@ -5292,12 +5638,70 @@ export class Supervisor {
     this.eventBus.emit(event);
   }
 
+  private async instructionLaunchOptions(
+    provider: ProviderName,
+    sessionId: string | undefined,
+    projectId: UrlProjectId,
+    isolated: boolean,
+  ): Promise<
+    Pick<
+      import("../sdk/providers/types.js").StartSessionOptions,
+      "instructionRestoration" | "instructionReadHistory"
+    >
+  > {
+    const settings =
+      this.instructionOptions.getInstructionRestorationSettings?.();
+    if (!settings?.providers[provider] || isolated) return {};
+    return {
+      instructionRestoration: settings,
+      instructionReadHistory: sessionId
+        ? await this.instructionOptions.readInstructionHistory?.(
+            sessionId,
+            projectId,
+            provider,
+          )
+        : undefined,
+    };
+  }
+
+  async refreshInstructionRestoration(only?: Process): Promise<void> {
+    const settings =
+      this.instructionOptions.getInstructionRestorationSettings?.();
+    for (const [process, session] of this.instructionSessions) {
+      if (only && only !== process) continue;
+      const enabled =
+        settings?.providers[process.provider] &&
+        !process.executor &&
+        !process.sandboxEnforcement;
+      try {
+        await session.configureInstructionRestoration?.({
+          settings: enabled ? settings : null,
+          paused:
+            process.state.type === "waiting-input" ||
+            this.isAutomationPausedUntilUserTurn(process.sessionId) ||
+            this.isRecapPausedUntilUserTurn(process.sessionId),
+        });
+      } catch (error) {
+        getLogger().warn(
+          { err: error, sessionId: process.sessionId },
+          "Instruction restoration configuration failed",
+        );
+      }
+    }
+  }
+
   private observeProcessEvents(process: Process): void {
     if (this.observedProcessIds.has(process.id)) {
       return;
     }
     this.observedProcessIds.add(process.id);
     process.subscribe((event) => {
+      if (
+        event.type === "state-change" ||
+        event.type === "user-turn-accepted"
+      ) {
+        void this.refreshInstructionRestoration(process);
+      }
       if (event.type === "non-human-user-turn") {
         void this.sessionMetadataService
           ?.recordNonHumanUserTurn(process.sessionId, event.turn)
@@ -5695,6 +6099,8 @@ export class Supervisor {
   private assertSessionSandboxSettings(
     modelSettings: ModelSettings | undefined,
   ): void {
+    if (modelSettings?.computerControl)
+      throw new Error(RETIRED_COMPUTER_CONTROL_ERROR);
     const error = getSessionSandboxSettingsError(
       modelSettings?.sandboxLevel,
       modelSettings?.recapMode,
@@ -5752,6 +6158,7 @@ export class Supervisor {
   }
 
   private unregisterProcess(process: Process): void {
+    this.instructionSessions.delete(process);
     this.agentServerAccessByProcess.get(process.id)?.revoke();
     this.agentServerAccessByProcess.delete(process.id);
     this.assertProviderOwnershipSettled(process, "unregister");

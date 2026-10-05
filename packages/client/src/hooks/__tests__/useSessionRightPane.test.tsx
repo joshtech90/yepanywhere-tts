@@ -56,6 +56,37 @@ describe("session right pane lifecycle", () => {
     expect(reloaded.result.current.apps).toHaveLength(1);
     expect(reloaded.result.current.selected).toBeUndefined();
   });
+  it("keeps historical output closed when app metadata arrives later", () => {
+    localStorage.setItem(UI_KEYS.sessionRightPane, "true");
+    invalidateLocalStorageValues();
+    const history = [{ ...output("review"), uuid: "historical-app" }];
+    const pendingConfig: ArtifactViewerStatus = { ...config, vhosts: [] };
+    const { result, rerender } = renderHook(
+      ({ messages, config }) =>
+        useSessionRightPane(
+          "late-metadata",
+          messages,
+          config,
+          true,
+          "late-metadata",
+        ),
+      {
+        initialProps: { messages: history, config: pendingConfig },
+      },
+    );
+    expect(result.current.apps).toHaveLength(0);
+    rerender({ messages: history, config });
+    expect(result.current.apps).toHaveLength(1);
+    expect(result.current.selected).toBeUndefined();
+    act(() => result.current.select(result.current.apps[0]!.url));
+    expect(result.current.expanded).toBe(true);
+    act(() => result.current.close());
+    rerender({
+      messages: [...history, { ...output("review"), uuid: "fresh-app" }],
+      config,
+    });
+    expect(result.current.selected?.url).toContain("/review");
+  });
   it("auto-opens a fresh artifact without vhosts and does not open older history", async () => {
     localStorage.setItem(UI_KEYS.sessionRightPane, "true");
     invalidateLocalStorageValues();

@@ -17,9 +17,14 @@ and `packages/desktop/scripts/updater-macos-idle-smoke.py` for the reproduction
 boundary. Six minutes exercises the documented suspension threshold but does
 not establish behavior after hours or a MacBook sleep/wake cycle.
 
+The October 3 implementation replaces renderer-owned update state/timers with
+Rust and AppKit/Windows native controls. A host macOS check restored the native
+window after minimization and closing, with explicit current-version feedback.
+This removes dependence on the packaged `main` renderer. The VM was exclusively
+claimed, and no hours-long or sleep/wake reproduction was completed.
+
 Next evidence: exact installed desktop version and a reproduction after the
-same sleep/wake or long-running history. Inspect whether the packaged `main`
-renderer remains alive, receives the tray event, and finishes native IPC.
+same sleep/wake or long-running history on the new native implementation.
 Keep manual no-update and failure feedback explicit; automatic checks alone
 are intentionally silent in those cases.
 

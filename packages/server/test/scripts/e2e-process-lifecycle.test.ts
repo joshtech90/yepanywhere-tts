@@ -8,15 +8,43 @@ import {
   terminateRegisteredProcess,
 } from "../../../client/e2e/support/process-lifecycle.js";
 
-function forceCleanup(pid: number): void {
+async function forceCleanup(pid: number): Promise<void> {
   try {
-    signalProcessTree(pid, true);
+    await signalProcessTree(pid, true);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
   }
 }
 
 describe("E2E detached process cleanup", () => {
+  it.runIf(process.platform === "win32")(
+    "reclaims a live Windows child tree and permits repeated cleanup",
+    async () => {
+      const child = spawn(
+        process.execPath,
+        [
+          "-e",
+          `
+          const {spawn} = require('node:child_process');
+          const descendant = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {stdio: 'ignore'});
+          console.log(descendant.pid);
+          setInterval(() => {}, 1000);
+        `,
+        ],
+        { detached: true, stdio: ["ignore", "pipe", "pipe"] },
+      );
+      try {
+        const [data] = await once(child.stdout!, "data");
+        const descendant = Number.parseInt(String(data), 10);
+        await terminateChildProcess(child, "Windows regression tree");
+        expect(() => process.kill(child.pid!, 0)).toThrow();
+        expect(() => process.kill(descendant, 0)).toThrow();
+        await terminateChildProcess(child, "already reclaimed tree");
+      } finally {
+        await terminateChildProcess(child, "Windows regression cleanup");
+      }
+    },
+  );
   it.skipIf(process.platform === "win32")(
     "refuses coordinator recovery without the original identity or with a mismatch",
     async () => {
@@ -75,7 +103,7 @@ describe("E2E detached process cleanup", () => {
         await terminateChildProcess(child, "dead-leader regression", identity);
         expect(() => process.kill(descendant, 0)).toThrow();
       } finally {
-        forceCleanup(child.pid!);
+        await forceCleanup(child.pid!);
       }
     },
   );

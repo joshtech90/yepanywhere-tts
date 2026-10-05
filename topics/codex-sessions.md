@@ -115,9 +115,49 @@ selection on each user turn rather than at thread scope. YA-internal helper
 turns, such as the ephemeral recap thread, never send it. Codex forwards the
 program only for ChatGPT-authenticated accounts, and upstream states plainly
 that requesting a program does not grant access, so the control must not be
-described as enabling anything. `Thread.daybreakEnabled` is a separate
+described as enabling anything.
+
+Enrollment belongs to the signed-in ChatGPT account and is checked per model.
+The one server-wide selection can therefore reach an account or model that is
+not enrolled, for example after switching the Codex home to another
+subscription. The backend refuses such a turn with HTTP 403; observed bodies
+include `The requested Cyber access program is not authorized for this model.`
+and `Daybreak isn't available for this model.` Enrollment can also depend on
+how the account signed in, such as device auth without a hardware key, so YA
+treats any 403 on a turn that requested a program as that refusal without
+matching the body. The status comes from `codexErrorInfo`, else from Codex's
+`unexpected status 403` error text. A native retry notification reports that 403
+as `responseStreamDisconnected` and puts the denial text in
+`additionalDetails`, while its main message is `Reconnecting... n/max`.
+YA recognizes that refusal on the first notification, interrupts the native
+retry, and waits for the refused turn's completion before starting another.
+It does not wait for Codex's reconnect budget to expire. YA then reruns the
+turn at once without the program and without resending the user's input.
+The refusal appears as a
+retrying warning, not a turn failure. YA remembers the refusal for that
+account, model and program for as long as the server process runs, so later
+turns in any session under that account send no program and do not fail
+first. The account is identified by the `account/read` type and email and is
+read once per session. If it cannot be read, the refusal applies only to that
+session. The same 403 on a turn that requested no program is an ordinary
+failure. Knowing enrollment before the first turn would need per-subscription
+flags ([sketch](../gaps/sketches/provider-subscription-switching.md)). `Thread.daybreakEnabled` is a separate
 client-saved metadata flag that no Codex behavior reads; YA neither writes nor
 consumes it.
+
+## Content-filter blocks
+
+From Codex 0.160, a response the content filter blocks is retried after Codex
+records a developer message wrapped in `<content_filter_guidance>`. Its text
+tells the agent how to recover, either Codex's built-in wording or a per-model
+replacement from the model catalog. YA hides other developer messages but shows
+this one as a "Response blocked by content filter" row. The guidance is shown
+in full, never collapsed, because the message is the only durable record that a
+block happened; the retry's own error is transient. The live
+`rawResponseItem/completed` and persisted response item share the provider's
+message id, so a backfill merges them into one row.
+`packages/server/src/codex/contentFilterBlock.ts` recognizes the message for
+both paths.
 
 ## App-server notification correlation
 

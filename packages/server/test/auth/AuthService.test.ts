@@ -1,8 +1,9 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthService } from "../../src/auth/AuthService.js";
+import * as atomicFile from "../../src/utils/writeFileAtomically.js";
 
 describe("AuthService file permissions", () => {
   let service: AuthService;
@@ -118,16 +119,36 @@ describe("AuthService unreadable state", () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await fs.rm(testDir, { recursive: true, force: true });
   });
 
   // A restart that interrupted an in-place save once left auth.json empty,
   // and the server came up with no password: every browser holding another
   // credential became the owner, a limited user's included.
-  for (const [label, content] of [
-    ["empty", ""],
-    ["truncated", '{"version":2,"enabled":true,"acc'],
-    ["an unknown version", '{"version":99,"enabled":true,"sessions":{}}'],
+  for (const [label, content, reason] of [
+    ["empty", "", "the authentication file is empty"],
+    ["whitespace", " \n\t", "the authentication file is empty"],
+    [
+      "827 zero bytes",
+      "\0".repeat(827),
+      "the authentication file contains only zero bytes",
+    ],
+    [
+      "partially zero-filled",
+      '{"version":2}\0',
+      "the authentication file contains unexpected zero bytes",
+    ],
+    [
+      "truncated",
+      '{"version":2,"enabled":true,"acc',
+      "the authentication file contains invalid or truncated JSON",
+    ],
+    [
+      "an unknown version",
+      '{"version":99,"enabled":true,"sessions":{}}',
+      "the authentication file has an unsupported format or version",
+    ],
   ] as const) {
     it(`refuses to start from ${label} state and keeps the file`, async () => {
       const filePath = path.join(testDir, "auth.json");
@@ -137,12 +158,71 @@ describe("AuthService unreadable state", () => {
         cookieSecret: "test-secret",
       });
       await expect(service.initialize()).rejects.toThrow(
-        /Refusing to start with local authentication off/,
+        new RegExp(
+          `${reason}.*Refusing to start with local authentication off`,
+        ),
       );
       expect(service.isEnabled()).toBe(false);
       expect(await fs.readFile(filePath, "utf8")).toBe(content);
     });
   }
+
+  it("gives recovery instructions without exposing invalid credential data", async () => {
+    const filePath = path.join(testDir, "auth.json");
+    const privateValue = "private-credential-must-not-appear";
+    const content = `{"passwordHash":"${privateValue}"} trailing`;
+    await fs.writeFile(filePath, content);
+    const service = new AuthService({ dataDir: testDir });
+
+    const error = await service.initialize().catch((failure: Error) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain(filePath);
+    expect((error as Error).message).toContain("Preserve a backup");
+    expect((error as Error).message).toContain("Restore a known-good backup");
+    expect((error as Error).message).toContain("move this file aside");
+    expect((error as Error).message).toContain(
+      "reconfigure local authentication",
+    );
+    expect((error as Error).message).not.toContain(privateValue);
+    expect((error as Error).message).not.toContain("Unexpected token");
+    expect(await fs.readFile(filePath, "utf8")).toBe(content);
+  });
+
+  it("does not disclose an unsupported version value", async () => {
+    const privateValue = "private-credential-must-not-appear";
+    await fs.writeFile(
+      path.join(testDir, "auth.json"),
+      JSON.stringify({ version: privateValue, sessions: {} }),
+    );
+    const service = new AuthService({ dataDir: testDir });
+
+    const error = await service.initialize().catch((failure: Error) => failure);
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("unsupported format or version");
+    expect((error as Error).message).not.toContain(privateValue);
+  });
+
+  it("refuses a failed migration even when the save error is ENOENT", async () => {
+    const filePath = path.join(testDir, "auth.json");
+    const content = JSON.stringify({ version: 1, enabled: true, sessions: {} });
+    await fs.writeFile(filePath, content);
+    const failure = Object.assign(new Error("staging directory vanished"), {
+      code: "ENOENT",
+    });
+    vi.spyOn(atomicFile, "writeFileAtomically").mockRejectedValueOnce(failure);
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const service = new AuthService({ dataDir: testDir });
+
+    await expect(service.initialize()).rejects.toThrow(
+      /could not persist.*Refusing to start/,
+    );
+    expect(log).toHaveBeenCalledWith(
+      "[AuthService] Failed to save state:",
+      failure,
+    );
+    expect(service.isEnabled()).toBe(true);
+    expect(await fs.readFile(filePath, "utf8")).toBe(content);
+  });
 
   it("starts unconfigured when there is no state file at all", async () => {
     const service = new AuthService({

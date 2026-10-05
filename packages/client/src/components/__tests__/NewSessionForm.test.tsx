@@ -176,7 +176,7 @@ const {
       newSessionDefaults?: {
         provider?: "claude" | "claude-gateway" | "codex" | "opencode";
         model?: string;
-        permissionMode?: "default" | "auto";
+        permissionMode?: "default" | "auto" | "bypassPermissions" | "plan";
         recapMode?: "off" | "native" | "side-session" | "fork";
         recapAfterSeconds?: number;
         promptSuggestionMode?: "off" | "native";
@@ -314,6 +314,42 @@ vi.mock("react-router-dom", async () => {
 vi.mock("../../api/client", () => ({
   api: {
     addProject: mockAddProject,
+    routerSelection: vi.fn(async () => ({
+      accounts: [
+        {
+          id: "routed-account",
+          provider: "claude",
+          enabled: true,
+          models: [
+            {
+              id: "claude-opus-4-8",
+              name: "Opus 4.8",
+              supportsEffort: true,
+              supportsAdaptiveThinking: true,
+              supportedReasoningEfforts: [
+                { reasoningEffort: "high", description: "High" },
+              ],
+            },
+          ],
+        },
+      ],
+      pools: [
+        {
+          id: "work",
+          name: "Work",
+          provider: "claude",
+          accountIds: ["routed-account"],
+          policy: "round-robin",
+        },
+      ],
+    })),
+    routerStatus: vi.fn(async () => ({ state: "connected" })),
+    routerAccounts: vi.fn(async () => ({
+      accounts: [{ id: "routed-account", provider: "claude", enabled: true }],
+    })),
+    routerCatalog: vi.fn(async () => ({
+      models: [{ id: "routed-model", name: "Routed model" }],
+    })),
     startSession: mockStartSession,
     startDetachedSession: mockStartDetachedSession,
     createDetachedSession: mockCreateDetachedSession,
@@ -566,48 +602,47 @@ vi.mock("../../contexts/ToastContext", () => ({
   }),
 }));
 
-vi.mock("../../i18n", () => ({
-  useI18n: () => ({
-    t: (key: string, vars?: Record<string, string | number>) => {
-      const text: Record<string, string> = {
-        effortLevelLowLabel: "Low",
-        effortLevelMediumLabel: "Medium",
-        effortLevelHighLabel: "High",
-        effortLevelExtraLabel: "Extra",
-        effortLevelExtraHighLabel: "Extra High",
-        effortLevelMaxLabel: "Max",
-        effortLevelLowDescription: "Fastest responses",
-        effortLevelMediumDescription: "Moderate reasoning",
-        effortLevelHighDescription: "Deep reasoning",
-        effortLevelExtraDescription: "For your hardest tasks",
-        effortLevelExtraHighDescription: "Extra-high reasoning",
-        effortLevelMaxDescription: "Maximum effort",
-        recapModeSideSessionTimedDescription:
-          "Summarize tailed assistant output after backgrounding (not closing) for {seconds} s.",
-        recapModeForkTimedDescription:
-          "Summarize from a temporary fork after backgrounding (not closing) for {seconds} s.",
-        toolbarProjectQueueTooltipWithShortcut:
-          "Send after all sessions in this project are idle\nCtrl+Enter",
-        composerFullPaneExpand: "Expand composer",
-        composerFullPaneExpandTitle: "Expand composer ({shortcut})",
-        composerFullPaneRestore: "Restore composer",
-        composerFullPaneRestoreTitle: "Restore composer ({shortcut})",
-        speechPrefixDeliveryLabel: "{action}. Prepends {prefix}.",
-        speechPrefixDeliveryTooltip: "{tooltip} Prepends {prefix}.",
-        newSessionFixedTitle: "Set by your account",
-        newSessionFixedSandboxValue: "Always on",
-        newSessionSandboxUnavailableMissingPackages:
-          "Unavailable: install {packages} on the server to enable sandboxed sessions.",
-      };
-      let translated = text[key] ?? key;
-      if (!vars) return translated;
-      for (const [name, value] of Object.entries(vars)) {
-        translated = translated.replaceAll(`{${name}}`, String(value));
-      }
-      return translated;
-    },
-  }),
-}));
+vi.mock("../../i18n", () => {
+  const t = (key: string, vars?: Record<string, string | number>) => {
+    const text: Record<string, string> = {
+      effortLevelLowLabel: "Low",
+      effortLevelMediumLabel: "Medium",
+      effortLevelHighLabel: "High",
+      effortLevelExtraLabel: "Extra",
+      effortLevelExtraHighLabel: "Extra High",
+      effortLevelMaxLabel: "Max",
+      effortLevelLowDescription: "Fastest responses",
+      effortLevelMediumDescription: "Moderate reasoning",
+      effortLevelHighDescription: "Deep reasoning",
+      effortLevelExtraDescription: "For your hardest tasks",
+      effortLevelExtraHighDescription: "Extra-high reasoning",
+      effortLevelMaxDescription: "Maximum effort",
+      recapModeSideSessionTimedDescription:
+        "Summarize tailed assistant output after backgrounding (not closing) for {seconds} s.",
+      recapModeForkTimedDescription:
+        "Summarize from a temporary fork after backgrounding (not closing) for {seconds} s.",
+      toolbarProjectQueueTooltipWithShortcut:
+        "Send after all sessions in this project are idle\nCtrl+Enter",
+      composerFullPaneExpand: "Expand composer",
+      composerFullPaneExpandTitle: "Expand composer ({shortcut})",
+      composerFullPaneRestore: "Restore composer",
+      composerFullPaneRestoreTitle: "Restore composer ({shortcut})",
+      speechPrefixDeliveryLabel: "{action}. Prepends {prefix}.",
+      speechPrefixDeliveryTooltip: "{tooltip} Prepends {prefix}.",
+      newSessionFixedTitle: "Set by your account",
+      newSessionFixedSandboxValue: "Always on",
+      newSessionSandboxUnavailableMissingPackages:
+        "Unavailable: install {packages} on the server to enable sandboxed sessions.",
+    };
+    let translated = text[key] ?? key;
+    if (!vars) return translated;
+    for (const [name, value] of Object.entries(vars)) {
+      translated = translated.replaceAll(`{${name}}`, String(value));
+    }
+    return translated;
+  };
+  return { useI18n: () => ({ t }) };
+});
 
 vi.mock("../FilterDropdown", () => ({
   FilterDropdown: ({
@@ -1487,6 +1522,40 @@ describe("NewSessionForm", () => {
     ]);
   });
 
+  it("keeps the normal model and thinking selection when using a compatible pool", async () => {
+    versionState.version = { capabilities: ["agent-auth-router"] };
+    modelSettingsState.thinkingMode = "on";
+    serverSettingsState.isLoading = false;
+    render(
+      <NewSessionForm
+        projectId="project-1"
+        selectedProject={chooserProjects[0]}
+        projects={[...chooserProjects]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Claude" }));
+    openAdvancedOptions();
+    fireEvent.click(screen.getAllByRole("button", { name: "Opus 4.8" })[0]!);
+    fireEvent.change(await screen.findByLabelText("routerPool"), {
+      target: { value: "work" },
+    });
+    expect(screen.queryByLabelText("routerModel")).toBeNull();
+    expect(screen.queryByLabelText("routerAccount")).toBeNull();
+    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+      target: { value: "hello" },
+    });
+    fireEvent.click(
+      screen.getByRole("button", { name: "newSessionStartAction" }),
+    );
+    await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+    expect(mockStartSession.mock.calls[0]?.[2]).toMatchObject({
+      provider: "claude",
+      routerPoolId: "work",
+      model: "claude-opus-4-8",
+      thinking: "on:high",
+    });
+  });
+
   it("submits the selected Claude provider and model to startSession", async () => {
     serverSettingsState.settings = {
       newSessionDefaults: {
@@ -2246,57 +2315,90 @@ describe("NewSessionForm", () => {
     );
   });
 
-  it("offers computer control to an eligible Codex session and submits it", async () => {
+  it.each([true, false])(
+    "submits the explicit installed MC choice %s on supported local Codex launches",
+    async (selected) => {
+      versionState.version = {
+        capabilities: [
+          PROJECT_QUEUE_CAPABILITY,
+          SERVER_CAPABILITIES.installedMachineControl.name,
+        ],
+      };
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "codex",
+          model: "gpt-5.4",
+          permissionMode: "bypassPermissions",
+        },
+      };
+      serverSettingsState.isLoading = false;
+      mockConnectionFetch.mockResolvedValue({ available: true });
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      openAdvancedOptions();
+      await screen.findByTestId("filter-newSessionMachineControlTitle");
+      expect(selectedDropdownValue("newSessionMachineControlTitle")).toBe(
+        "off",
+      );
+      if (selected)
+        fireEvent.click(
+          dropdownOption("newSessionMachineControlTitle", "showThinkingOn"),
+        );
+      fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
+        target: { value: "use installed control" },
+      });
+      fireEvent.click(
+        screen.getByRole("button", { name: "newSessionStartAction" }),
+      );
+      await waitFor(() => expect(mockStartSession).toHaveBeenCalledTimes(1));
+      expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
+        expect.objectContaining({ machineControl: selected }),
+      );
+      expect(mockConnectionFetch).toHaveBeenCalledWith("/machine-control");
+    },
+  );
+
+  it.each(["default", "plan"] as const)(
+    "does not probe installed MC for ineligible Codex mode %s",
+    async (permissionMode) => {
+      versionState.version = {
+        capabilities: [SERVER_CAPABILITIES.installedMachineControl.name],
+      };
+      serverSettingsState.settings = {
+        newSessionDefaults: {
+          provider: "codex",
+          model: "gpt-5.4",
+          permissionMode,
+        },
+      };
+      serverSettingsState.isLoading = false;
+      render(
+        <NewSessionForm
+          projectId="project-1"
+          selectedProject={chooserProjects[0]}
+          projects={[...chooserProjects]}
+        />,
+      );
+      openAdvancedOptions();
+      expect(mockConnectionFetch).not.toHaveBeenCalledWith("/machine-control");
+      expect(
+        screen.queryByTestId("filter-newSessionMachineControlTitle"),
+      ).toBeNull();
+    },
+  );
+
+  it("ignores the retired component even when an older server advertises it", async () => {
     versionState.version = {
       capabilities: [
         PROJECT_QUEUE_CAPABILITY,
         SERVER_CAPABILITIES.computerControl.name,
       ],
     };
-    serverSettingsState.settings = {
-      newSessionDefaults: {
-        provider: "codex",
-        model: "gpt-5.4",
-        permissionMode: "default",
-      },
-    };
-    serverSettingsState.isLoading = false;
-    mockConnectionFetch.mockImplementation((path: string) =>
-      path === "/computer-control"
-        ? Promise.resolve({ enabled: true, available: true })
-        : Promise.resolve({}),
-    );
-
-    render(
-      <NewSessionForm
-        projectId="project-1"
-        selectedProject={chooserProjects[0]}
-        projects={[...chooserProjects]}
-      />,
-    );
-
-    openAdvancedOptions();
-    await screen.findByTestId("filter-newSessionComputerControlTitle");
-    fireEvent.click(
-      dropdownOption("newSessionComputerControlTitle", "showThinkingOn"),
-    );
-    fireEvent.change(screen.getByPlaceholderText("newSessionPlaceholder"), {
-      target: { value: "drive the computer" },
-    });
-    fireEvent.click(
-      screen.getByRole("button", { name: "newSessionStartAction" }),
-    );
-
-    await waitFor(() => {
-      expect(mockStartSession).toHaveBeenCalledTimes(1);
-    });
-    expect(mockStartSession.mock.calls[0]?.[2]).toEqual(
-      expect.objectContaining({ computerControl: true }),
-    );
-  });
-
-  it("neither offers nor requests computer control without the capability", async () => {
-    versionState.version = { capabilities: [PROJECT_QUEUE_CAPABILITY] };
     serverSettingsState.settings = {
       newSessionDefaults: {
         provider: "codex",

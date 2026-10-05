@@ -4,6 +4,12 @@ All notable changes to the Yep Anywhere website and remote relay client will be 
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Fixed
+- Associate Google Play-signed Android installations with `yepanywhere.com`
+  for password-manager credential sharing, retaining the development signer.
+
 ## [site-v1.11.0] - 2026-09-26
 
 ### Added

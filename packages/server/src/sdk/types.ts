@@ -1,3 +1,4 @@
+import type { DesktopControlOrigin } from "../desktop/machine-control.js";
 // Core types for Claude SDK abstraction
 
 // Re-export PermissionMode from shared
@@ -110,6 +111,7 @@ export interface UserMessage {
     | "heartbeat"
     | "project-queue"
     | "wake"
+    | "instruction-restoration"
     | "post-compact-replay";
   /** YA-internal guard so deferred/recovered delivery is not re-accepted. */
   recapResumeHandled?: true;
@@ -199,6 +201,9 @@ export interface ProviderRetentionSnapshot {
 }
 
 export interface StartSessionOptions {
+  /** Installed MC command advertisement; independent of native access. */
+  machineControl?: boolean;
+  desktopControlOrigin?: DesktopControlOrigin;
   cwd: string;
   initialMessage?: UserMessage;
   resumeSessionId?: string;
@@ -324,6 +329,10 @@ export interface StartSessionResult {
    * Only supported by Claude SDK 0.2.7+.
    */
   supportedCommands?: () => Promise<SlashCommand[]>;
+  /** What fills the live context window, by category (`/context` data). */
+  getContextBreakdown?: () => Promise<
+    import("@yep-anywhere/shared").ContextBreakdown
+  >;
   /**
    * Change the model mid-session without restarting.
    * Only supported by Claude SDK 0.2.7+.

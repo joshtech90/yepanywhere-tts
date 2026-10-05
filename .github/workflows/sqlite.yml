@@ -35,6 +35,10 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ steps.bun.outputs.version }}
+      - name: Verify fixture deletion under both runtimes
+        run: |
+          node scripts/test-fixture-directory-cleanup.mjs
+          bun scripts/test-fixture-directory-cleanup.mjs
       - run: pnpm build:bundle
       - name: Check public entry-point runtime preflight
         run: node scripts/test-runtime-preflight.mjs

@@ -660,6 +660,72 @@ export const CAPABILITY_ID_ALLOCATIONS = {
     name: "file-owner-project",
     introducedIn: "0.9.4",
   },
+  projectFileViewCommand: {
+    id: 107,
+    direction: "server",
+    name: "project-file-view-command",
+    introducedIn: "0.9.4",
+  },
+  contextUsageBreakdown: {
+    id: 108,
+    direction: "server",
+    name: "context-usage-breakdown",
+    introducedIn: "0.9.4",
+  },
+  vhostFileSiteReplacement: {
+    id: 109,
+    direction: "server",
+    name: "vhost-file-site-replacement",
+    introducedIn: "0.9.4",
+  },
+  projectAppDeletion: {
+    id: 110,
+    direction: "server",
+    name: "project-app-deletion",
+    introducedIn: "0.9.4",
+  },
+  nativePushSubscriptions: {
+    id: 111,
+    direction: "server",
+    name: "native-push-subscriptions-v1",
+    introducedIn: "0.9.4",
+  },
+  installedMachineControl: {
+    id: 112,
+    direction: "server",
+    name: "installed-machine-control",
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouter: {
+    id: 113,
+    direction: "server",
+    name: "agent-auth-router",
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterMostRemaining: {
+    id: 117,
+    name: "agent-auth-router-most-remaining",
+    direction: "server",
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterOwnedPools: {
+    id: 116,
+    name: "agent-auth-router-owned-pools",
+    direction: "server",
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterPools: {
+    id: 115,
+    name: "agent-auth-router-pools",
+    direction: "server",
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterRecovery: {
+    id: 114,
+    direction: "server",
+    name: "agent-auth-router-recovery",
+    introducedIn: "0.9.4",
+  },
 } as const satisfies Record<string, CapabilityIdAllocation>;
 
 export type CapabilityBitset = readonly (readonly [

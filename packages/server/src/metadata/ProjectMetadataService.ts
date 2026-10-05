@@ -540,7 +540,7 @@ export class ProjectMetadataService {
   private async doSave(): Promise<void> {
     try {
       const content = JSON.stringify(this.state, null, 2);
-      await writeFileAtomically(this.filePath, content);
+      await writeFileAtomically(this.filePath, content, { durable: true });
     } catch (error) {
       console.error("[ProjectMetadataService] Failed to save state:", error);
       throw error;

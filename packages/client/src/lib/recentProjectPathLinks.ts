@@ -13,31 +13,48 @@ type RecentProjectPathLinks = Map<string, string>;
 export function recentProjectFileMentions(
   items: readonly RenderItem[],
 ): string[] {
-  const recent = new Set<string>();
-  const remember = (links: readonly ProjectPathLinkTarget[] | undefined) => {
+  return recentProjectFileMentionSources(items).map(({ path }) => path);
+}
+
+/**
+ * Each recently mentioned project file with the id of the transcript item
+ * that last mentioned it, most recent first, at most 100.
+ */
+export function recentProjectFileMentionSources(
+  items: readonly RenderItem[],
+): { path: string; itemId: string }[] {
+  const recent = new Map<string, string>();
+  const remember = (
+    itemId: string,
+    links: readonly ProjectPathLinkTarget[] | undefined,
+  ) => {
     for (const link of links ?? []) {
       recent.delete(link.filePath);
-      recent.add(link.filePath);
+      recent.set(link.filePath, itemId);
     }
   };
   for (const item of applyRecentProjectPathLinks([...items])) {
     if (item.type === "text") {
-      remember(item.projectPathLinks);
-      remember(linksFromRenderedHtml(item.augmentHtml));
+      remember(item.id, item.projectPathLinks);
+      remember(item.id, linksFromRenderedHtml(item.augmentHtml));
     }
-    if (item.type === "user_prompt") remember(item.projectPathLinks);
+    if (item.type === "user_prompt") remember(item.id, item.projectPathLinks);
     if (item.type === "tool_call") {
       if (item.toolInput && typeof item.toolInput === "object") {
         remember(
+          item.id,
           readProjectPathLinkTargets(
             (item.toolInput as Record<string, unknown>)._projectPathLinks,
           ),
         );
       }
-      remember(item.toolResult?.projectPathLinks);
+      remember(item.id, item.toolResult?.projectPathLinks);
     }
   }
-  return [...recent].reverse().slice(0, 100);
+  return [...recent]
+    .reverse()
+    .slice(0, 100)
+    .map(([path, itemId]) => ({ path, itemId }));
 }
 
 function contentText(content: string | ContentBlock[]): string {

@@ -135,10 +135,12 @@ export function findHtmlRootAssetReferences(
 }
 
 /**
- * The project-relative path an HTML root's reference names, or null when it
- * names nothing the share could serve: another origin or scheme, a fragment,
- * or a path above the project root. A leading `/` resolves from the root's
- * own directory, as a browser serving that directory as its site would.
+ * The path an HTML root's reference names, in the root path's own form:
+ * project-relative for a project-relative root, absolute for an absolute one.
+ * Null when it names nothing the share could serve: another origin or scheme,
+ * a fragment, or a path above the project (or filesystem) root. A leading `/`
+ * resolves from the root's own directory, as a browser serving that directory
+ * as its site would.
  */
 export function resolveHtmlRootAssetPath(
   rootPath: string,
@@ -155,7 +157,13 @@ export function resolveHtmlRootAssetPath(
   }
   const pathOnly = trimmed.split(/[?#]/, 1)[0] ?? "";
   if (!pathOnly) return null;
-  const parts = rootPath.split("/").slice(0, -1).filter(Boolean);
+  const root = rootPath.replaceAll("\\", "/");
+  const prefix = /^(?:[A-Za-z]:)?\//.exec(root)?.[0] ?? "";
+  const parts = root
+    .slice(prefix.length)
+    .split("/")
+    .slice(0, -1)
+    .filter(Boolean);
   // Above the site root a browser stays at it; above the project root a
   // relative reference names a file the share can never serve.
   const floor = pathOnly.startsWith("/") ? parts.length : 0;
@@ -170,7 +178,7 @@ export function resolveHtmlRootAssetPath(
     }
     parts.push(segment);
   }
-  return parts.length > 0 ? parts.join("/") : null;
+  return parts.length > 0 ? `${prefix}${parts.join("/")}` : null;
 }
 
 function scanAttributes(

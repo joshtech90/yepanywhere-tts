@@ -1,4 +1,7 @@
 import { DraftSyncNotice } from "./DraftSyncNotice";
+import { AudioMemoPanel } from "./AudioMemoPanel";
+import { ComposerRecents } from "./ComposerRecents";
+import { useComposerHistoryScope } from "../hooks/useComposerHistoryScope";
 import { NewSessionQueueMark } from "./NewSessionQueueMark";
 import { useComposerVoiceRef } from "../hooks/useComposerVoiceRef";
 import {
@@ -15,6 +18,7 @@ import {
   commandMatchesInvocationQuery,
   type CollapsedComposerButtonPreference,
   type EffortLevel,
+  type FileViewLineTarget,
   findSkillInvocations,
   findUnrecognizedInvocations,
   getCanonicalInvocationToken,
@@ -116,7 +120,7 @@ import {
   createClientSpeechTurnId,
   createSpeechTargetId,
 } from "../lib/speechTargets";
-import { isVoiceInputShortcut } from "../lib/voiceInputShortcut";
+import { handleVoiceInputShortcutKeyDown } from "../lib/voiceInputShortcut";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import { hasComposerDraftContent } from "../lib/sessionComposerSubmission";
 import type {
@@ -141,8 +145,10 @@ import {
   type VoiceInputButtonRef,
 } from "./VoiceInputButton";
 import styles from "./MessageInput.module.css";
+import { useFileViewCompletion } from "../hooks/useFileViewCompletion";
 import { useProjectFileCompletion } from "../hooks/useProjectFileCompletion";
 import type { RenderItem } from "@yep-anywhere/shared/transcript/items";
+import { FileViewCompletionSheet } from "./FileViewCompletionSheet";
 import { ProjectFileCompletionMenu } from "./ProjectFileCompletionMenu";
 import { QuestionAsideHint } from "./QuestionAsideCard";
 
@@ -311,6 +317,8 @@ interface Props {
   attachments?: MessageInputAttachment[];
   /** Callback when user selects files to attach */
   onAttach?: (files: File[]) => void;
+  /** Resolves only once the audio memo is retained by the attachment pipeline. */
+  onAttachAudioMemo?: (file: File) => Promise<void>;
   /** Callback when user removes an attachment */
   onRemoveAttachment?: (id: string) => void;
   /** Progress info for in-flight uploads */
@@ -329,6 +337,14 @@ interface Props {
   slashCommands?: SlashCommand[];
   /** Callback for custom client-side commands (e.g., "model"). Return true if handled. */
   onCustomCommand?: (command: string) => boolean;
+  /**
+   * Offer `/v` file-view completion. Set only where the owner handles a
+   * submitted `/v` (topics/view-command.md); `open` shows a result without
+   * submitting the draft (Ctrl+Enter).
+   */
+  fileViewCommand?: {
+    open: (path: string, line?: FileViewLineTarget) => void;
+  };
   /** Start a /btw aside. When text is present, the caller may send it immediately. */
   onBtwShortcut?: (text: string) => boolean;
   /** Whether this composer is currently routing sends to a focused /btw aside. */
@@ -469,6 +485,7 @@ export function MessageInput({
   sessionId,
   attachments = [],
   onAttach,
+  onAttachAudioMemo,
   onRemoveAttachment,
   uploadProgress = [],
   supportsPermissionMode = true,
@@ -478,6 +495,7 @@ export function MessageInput({
   primaryActionKind,
   slashCommands = [],
   onCustomCommand,
+  fileViewCommand,
   onBtwShortcut,
   btwActive = false,
   btwHasAsides = false,
@@ -511,6 +529,9 @@ export function MessageInput({
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [isComposing, setIsComposing] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const [audioMemoOpen, setAudioMemoOpen] = useState(false);
+  const [attachmentPanelOpen, setAttachmentPanelOpen] = useState(false);
+  const historyScope = useComposerHistoryScope();
   const voiceButtonRef = useRef<VoiceInputButtonRef>(null);
   const sharedVoiceRef = useComposerVoiceRef(voiceButtonRef, onVoiceControl);
   const typingStartedAtRef = useRef<string | null>(null);
@@ -1179,6 +1200,19 @@ export function MessageInput({
     textarea: textareaRef,
     setText,
     replace: replaceDraftRangeUndoably,
+    items: completionRenderItems,
+    disabled: disabled || collapsed || !!interimTranscript,
+  });
+  const fileViewCompletion = useFileViewCompletion({
+    enabled: !!fileViewCommand,
+    projectId,
+    text,
+    textarea: textareaRef,
+    replace: replaceDraftRangeUndoably,
+    // Called from a key handler, after `handleSubmit` below is initialized.
+    submit: (draft) => void handleSubmit(draft),
+    open: fileViewCommand?.open,
+    enterInsertsNewline: fullPane,
     items: completionRenderItems,
     disabled: disabled || collapsed || !!interimTranscript,
   });
@@ -2544,6 +2578,7 @@ export function MessageInput({
       return;
     }
     if (fileCompletion.onKeyDown(e)) return;
+    if (fileViewCompletion.onKeyDown(e)) return;
     if (
       e.key === "Enter" &&
       !e.nativeEvent.isComposing &&
@@ -3539,17 +3574,42 @@ export function MessageInput({
           return;
         }
       }
-      if (!isVoiceInputShortcut(event)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      const voice = voiceButtonRef.current;
-      if (!voice?.isAvailable) return;
-      voice.toggle();
+      handleVoiceInputShortcutKeyDown(event, () => {
+        const voice = voiceButtonRef.current;
+        if (voice?.isAvailable) voice.toggle();
+      });
     },
     [newSessionOptionsMode, closeNewSessionOptions],
   );
 
+  useEffect(() => {
+    if (!onAttachAudioMemo || disabled || speechPending || audioMemoOpen)
+      return;
+    const startMemo = (event: globalThis.KeyboardEvent) => {
+      if (
+        !event.ctrlKey ||
+        !event.shiftKey ||
+        event.code !== "Space" ||
+        event.repeat
+      )
+        return;
+      // Ordinary typing must not force layout for an unrelated shortcut.
+      if (!textareaRef.current?.getClientRects().length) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      setAudioMemoOpen(true);
+    };
+    document.addEventListener("keydown", startMemo, true);
+    return () => document.removeEventListener("keydown", startMemo, true);
+  }, [onAttachAudioMemo, disabled, speechPending, audioMemoOpen]);
+
   const toolbarProps: MessageInputToolbarProps = {
+    onAttachmentPanel:
+      canAttach && !disabled ? () => setAttachmentPanelOpen(true) : undefined,
+    onRecordAudioMemo:
+      onAttachAudioMemo && !disabled && !speechPending
+        ? () => setAudioMemoOpen(true)
+        : undefined,
     sessionId,
     mode,
     onModeChange,
@@ -3664,6 +3724,21 @@ export function MessageInput({
       onKeyDownCapture={handleComposerKeyDown}
     >
       <DraftSyncNotice draftKey={draftKey} sessionId={sessionId} />
+      {attachmentPanelOpen && onAttach && (
+        <ComposerRecents
+          scope={historyScope}
+          onFiles={onAttach}
+          uploadsOpen
+          onUploadsClose={() => setAttachmentPanelOpen(false)}
+          onBrowse={() => fileInputRef.current?.click()}
+          onMemo={
+            onAttachAudioMemo && !speechPending
+              ? () => setAudioMemoOpen(true)
+              : undefined
+          }
+          disabled={disabled}
+        />
+      )}
       {!composerIsEmpty && (
         <button
           type="button"
@@ -3841,12 +3916,14 @@ export function MessageInput({
               }}
               onBlur={() => {
                 fileCompletion.onBlur();
+                fileViewCompletion.onBlur();
                 cancelRecallDrawer();
                 controls.flushDraft();
                 setTextareaFocused(false);
               }}
               onFocus={() => {
                 fileCompletion.onFocus();
+                fileViewCompletion.onFocus();
                 keyboardViewportBaselineRef.current =
                   getComposerViewportHeight();
                 setTextareaFocused(true);
@@ -3890,7 +3967,14 @@ export function MessageInput({
           )}
         </div>
 
-        <ProjectFileCompletionMenu completion={fileCompletion} />
+        <ProjectFileCompletionMenu
+          completion={fileCompletion}
+          spans={fileCompletion.spans}
+        />
+        <FileViewCompletionSheet
+          completion={fileViewCompletion}
+          onGoToTurn={turnRecall?.onGoToTurn}
+        />
         {(showBangChip || showBangEscapedChip) && (
           <div
             className={`bang-composer-chip${
@@ -4548,6 +4632,37 @@ export function MessageInput({
       </div>
     </div>
   );
+  if (audioMemoOpen && onAttachAudioMemo) {
+    return (
+      <AudioMemoPanel
+        projectId={projectId}
+        sessionId={sessionId}
+        onCancel={() => setAudioMemoOpen(false)}
+        onCommit={async (file, transcript) => {
+          const draft = controls.getDraft();
+          const metadata = buildSubmissionMetadata(
+            effectivePrimaryActionKind === "steer"
+              ? "steer"
+              : effectivePrimaryActionKind === "queue"
+                ? "deferred"
+                : "direct",
+          );
+          await onAttachAudioMemo(file);
+          const suffix = transcript.trim()
+            ? `🎤 ${t("audioMemoTranscriptSuffix")}\n${transcript.trim()}`
+            : "";
+          const message =
+            [draft.trimEnd(), suffix].filter(Boolean).join("\n\n") ||
+            `🎤 ${t("audioMemoTitle")}`;
+          controls.setDraft(message);
+          controls.clearInput();
+          resetCompositionMetadata();
+          onSend(message, metadata);
+          setAudioMemoOpen(false);
+        }}
+      />
+    );
+  }
   return (
     <>
       {showQuestionAsideHint && (

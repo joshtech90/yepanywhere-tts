@@ -36,7 +36,9 @@ React source importing the actual `ProjectCard`, and a fixture-owned CSS
 Module. Sixteen sample projects exercise attention/queue counts, long content,
 responsive columns, code-name chips, captions, and the card's gear/trash/plus
 controls; every third project omits its caption and code name so the sparse
-card is covered too. `I18nProvider` uses English, and `MemoryRouter` keeps
+card is covered too. Each card has four SVG controls: settings, removal, new
+session, and the caption pencil, including when the caption is empty (64 SVGs
+across the 16 cards). `I18nProvider` uses English, and `MemoryRouter` keeps
 card/new-session navigation inside the fixture. The gear, trash, and inline
 code-name/caption editors change local feedback or preview state only;
 navigation displays its destination. No action contacts a provider, changes or

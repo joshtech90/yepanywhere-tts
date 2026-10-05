@@ -1,5 +1,9 @@
+import { routerModelSupportsThinking } from "@yep-anywhere/shared";
+import {
+  codexRouterArguments,
+  codexRouterEnvironment,
+} from "./router-transport.js";
 import { startAgentSelfSession } from "./agent-self.js";
-import { COMPUTER_TOOL_NAMESPACE } from "../../computer-control/contract.js";
 /**
  * Codex Provider implementation using codex app-server JSON-RPC.
  *
@@ -23,6 +27,7 @@ import {
   createCodexToolCorrelation,
   type CodexReasoningSummary,
   type EffortLevel,
+  type EffectiveSessionLaunchSettings,
   hasInvocationCandidate,
   type ModelInfo,
   normalizeCodexAsyncUserInputQuestions,
@@ -51,6 +56,10 @@ import {
   normalizeCodexToolOutputWithContext,
   parseCodexToolArguments,
 } from "../../codex/normalization.js";
+import {
+  CODEX_CONTENT_FILTER_BLOCK_SUBTYPE,
+  codexContentFilterGuidance,
+} from "../../codex/contentFilterBlock.js";
 import { formatCodexSubagentActivity } from "../../codex/subagentActivity.js";
 import { getLogger } from "../../logging/logger.js";
 import { attachToolResultMediaCandidates } from "../../media/inlineImageData.js";
@@ -68,6 +77,10 @@ import {
 import { logSDKMessage } from "../messageLogger.js";
 import { MessageQueue } from "../messageQueue.js";
 import { stripYaControlPlaneCredentials } from "./env-filter.js";
+import {
+  type LiveToolOutput,
+  renderLiveToolOutput,
+} from "./live-tool-output.js";
 import type {
   ProviderActivitySnapshot,
   ProviderCommandResult,
@@ -119,6 +132,8 @@ import type {
   TurnSteerResponse,
   UserInput,
 } from "./codex-protocol/index.js";
+import type { CyberAccessProgram } from "./codex-protocol/generated/v2/CyberAccessProgram.js";
+import type { TurnError } from "./codex-protocol/generated/v2/TurnError.js";
 import type { SandboxPolicy as CodexSandboxPolicy } from "./codex-protocol/generated/v2/SandboxPolicy.js";
 import {
   createLaunchAgentctlSessionEnvBridge,
@@ -449,12 +464,67 @@ interface CodexTurnRuntimeState {
     requestAccepted: Promise<boolean>;
   };
   overloadRetryController?: AbortController;
+  /** Signed-in account identity that scopes cyber access denials. */
+  cyberAccessAccountKey?: string;
   activePermissionMode: PermissionMode;
   turnEffortOverride: EffortLevel | null | undefined;
   activeTurnHasEffortOverride?: boolean;
   workspaceWriteSandboxPolicy: CodexSandboxPolicy | null;
   activeToolCallIds: Set<string>;
   backgroundToolCallIds: Set<string>;
+}
+
+type CodexRetryableTurnErrorKind = "serverOverloaded" | "cyberAccessDenied";
+
+interface CodexRetryableTurnError {
+  kind: CodexRetryableTurnErrorKind;
+  message: SDKMessage;
+}
+
+type CodexTurnErrorText = Pick<TurnError, "message" | "codexErrorInfo"> &
+  Partial<Pick<TurnError, "additionalDetails">>;
+
+function codexTurnErrorHttpStatus(error: CodexTurnErrorText): number | null {
+  const info = error.codexErrorInfo;
+  if (info && typeof info === "object" && "httpConnectionFailed" in info) {
+    return info.httpConnectionFailed.httpStatusCode;
+  }
+  if (
+    info &&
+    typeof info === "object" &&
+    "responseStreamDisconnected" in info
+  ) {
+    return info.responseStreamDisconnected.httpStatusCode;
+  }
+  // Codex's error text carries the status even when the structured info
+  // does not, for example `unexpected status 403 Forbidden: {...}`.
+  const match = /\bunexpected status (\d{3})\b/.exec(
+    `${error.message}\n${error.additionalDetails ?? ""}`,
+  );
+  return match ? Number(match[1]) : null;
+}
+
+/**
+ * On a turn that requested a cyber access program, any HTTP 403 is treated as
+ * the backend refusing that program. The refusal wording varies (`The
+ * requested Cyber access program is not authorized for this model.`,
+ * `Daybreak isn't available for this model.`) and enrollment can also hinge
+ * on how the account signed in, so the body is not matched: a turn without
+ * the program always beats a failed one.
+ */
+export function isCodexCyberAccessDenial(error: CodexTurnErrorText): boolean {
+  return codexTurnErrorHttpStatus(error) === 403;
+}
+
+function classifyCodexTurnError(
+  error: CodexTurnErrorText,
+  cyberAccessRequested: boolean,
+): CodexRetryableTurnErrorKind | null {
+  if (error.codexErrorInfo === "serverOverloaded") return "serverOverloaded";
+  if (cyberAccessRequested && isCodexCyberAccessDenial(error)) {
+    return "cyberAccessDenied";
+  }
+  return null;
 }
 
 function getCodexNotificationTurnId(
@@ -638,11 +708,7 @@ interface CodexLiveEventState {
 export const CODEX_LIVE_TOOL_OUTPUT_HEAD_CHARS = 32 * 1024;
 export const CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS = 32 * 1024;
 
-export interface CodexLiveToolOutput {
-  head: string;
-  tail: string;
-  omittedChars: number;
-}
+export type CodexLiveToolOutput = LiveToolOutput;
 
 export function appendCodexLiveToolOutput(
   output: CodexLiveToolOutput | undefined,
@@ -663,11 +729,6 @@ export function appendCodexLiveToolOutput(
     tail = tail.slice(-CODEX_LIVE_TOOL_OUTPUT_TAIL_CHARS);
   }
   return { head, tail, omittedChars };
-}
-
-export function renderCodexLiveToolOutput(output: CodexLiveToolOutput): string {
-  if (output.omittedChars === 0) return `${output.head}${output.tail}`;
-  return `${output.head}\n… ${output.omittedChars} characters omitted from the live preview; the completed result shows the full output …\n${output.tail}`;
 }
 
 interface CodexFailureTraceEvent {
@@ -928,6 +989,7 @@ class CodexAppServerClient {
       notification: JsonRpcNotification,
     ) => boolean,
     private readonly sessionSandbox?: SessionSandboxRuntime,
+    private readonly launchArguments: string[] = [],
   ) {}
 
   get isClosed(): boolean {
@@ -960,7 +1022,12 @@ class CodexAppServerClient {
       throw new Error("Codex app-server already connected");
     }
 
-    const commandArgs = ["app-server", "--listen", "stdio://"];
+    const commandArgs = [
+      "app-server",
+      "--listen",
+      "stdio://",
+      ...this.launchArguments,
+    ];
     const sandboxed = this.sessionSandbox?.wrapSpawn(
       this.command,
       commandArgs,
@@ -976,7 +1043,10 @@ class CodexAppServerClient {
             detached: process.platform !== "win32",
             stdio: sandboxed?.stdio ?? ["pipe", "pipe", "pipe"],
             env: sandboxed?.env ?? this.env,
-            shell: sandboxed ? false : process.platform === "win32",
+            shell: sandboxed
+              ? false
+              : process.platform === "win32" &&
+                !this.command.toLowerCase().endsWith(".exe"),
           },
         );
       } finally {
@@ -1276,6 +1346,8 @@ export class CodexProvider implements AgentProvider {
     "provider-default";
   private getConfiguredCyberAccessProgram: () => CodexCyberAccessProgram = () =>
     DEFAULT_CODEX_CYBER_ACCESS_PROGRAM;
+  /** Account, model and program scopes whose program request was refused. */
+  private readonly cyberAccessDenials = new Set<string>();
   private getConfiguredSubagentMaxDepth: () => SubagentMaxDepth = () =>
     DEFAULT_SUBAGENT_MAX_DEPTH;
 
@@ -1518,7 +1590,9 @@ export class CodexProvider implements AgentProvider {
           detached: process.platform !== "win32",
           stdio: ["pipe", "pipe", "pipe"],
           env: this.getCodexEnv(),
-          shell: process.platform === "win32",
+          shell:
+            process.platform === "win32" &&
+            !codexCommand.toLowerCase().endsWith(".exe"),
         },
       );
 
@@ -1530,13 +1604,9 @@ export class CodexProvider implements AgentProvider {
         if (settled) return;
         settled = true;
         clearTimeout(timeoutHandle);
-        void terminateChildProcess(child).catch((error) => {
-          log.warn(
-            { error, pid: child.pid },
-            "Failed to terminate Codex model-list app-server",
-          );
-        });
-        handler();
+        // Keep the discovery lease until the process releases its profile.
+        // In particular, Windows cannot remove a still-open SQLite database.
+        void terminateChildProcess(child).then(handler, reject);
       };
 
       const parseAndHandleLine = (line: string) => {
@@ -1705,9 +1775,19 @@ export class CodexProvider implements AgentProvider {
     effort?: import("@yep-anywhere/shared").EffortLevel,
     thinking?: import("@yep-anywhere/shared").ThinkingConfig,
     model?: StartSessionOptions["model"],
+    accountModels?: readonly ModelInfo[],
   ): NonNullable<TurnStartParams["effort"]> | undefined {
+    if (
+      accountModels &&
+      effort &&
+      !routerModelSupportsThinking(
+        accountModels.find((m) => m.id === model),
+        `on:${effort}`,
+      )
+    )
+      throw new Error("Thinking level unavailable for the pinned account");
     if (thinking?.type === "disabled") {
-      const supported = this.modelCache?.models.find(
+      const supported = (accountModels ?? this.modelCache?.models)?.find(
         (candidate) => candidate.id === model,
       )?.supportedReasoningEfforts;
       if (
@@ -1750,7 +1830,7 @@ export class CodexProvider implements AgentProvider {
       case "xhigh":
         return "xhigh";
       case "max": {
-        const selectedModel = this.modelCache?.models.find(
+        const selectedModel = (accountModels ?? this.modelCache?.models)?.find(
           (candidate) =>
             candidate.id === model || (!model && candidate.isDefault),
         );
@@ -1836,9 +1916,10 @@ export class CodexProvider implements AgentProvider {
     // These effort mappings read the model's supported efforts, which a fresh
     // session worker has not loaded yet.
     if (
-      options.effort === "max" ||
-      options.thinking?.type === "disabled" ||
-      options.initialMessage?.metadata?.turnEffort
+      !options.routerLaunch &&
+      (options.effort === "max" ||
+        options.thinking?.type === "disabled" ||
+        options.initialMessage?.metadata?.turnEffort)
     )
       await this.getAvailableModels();
     const installationLease =
@@ -1848,6 +1929,9 @@ export class CodexProvider implements AgentProvider {
     const queue = new MessageQueue();
     const abortController = new AbortController();
     const runtimeState: CodexTurnRuntimeState = {
+      ...(options.routerLaunch
+        ? { cyberAccessAccountKey: `aar:${options.routerLaunch.accountId}` }
+        : {}),
       threadId: options.resumeSessionId ?? "",
       resolvedModel: options.model ?? "default",
       turnModelOverride: options.model ?? null,
@@ -1907,7 +1991,6 @@ export class CodexProvider implements AgentProvider {
         yield* sessionIterator;
       } finally {
         settleInitialActiveClient(null);
-        await options.computerControl?.close();
         await installationLease.release();
       }
     })();
@@ -1943,7 +2026,6 @@ export class CodexProvider implements AgentProvider {
       iterator,
       queue,
       abort: async () => {
-        await options.computerControl?.close();
         settleInitialActiveClient(null);
         if (
           activeClient &&
@@ -1986,12 +2068,15 @@ export class CodexProvider implements AgentProvider {
         );
       },
       setEffort: async (effort) => {
-        if (effort === "max") await this.getAvailableModels();
+        if (effort === "max" && !options.routerLaunch)
+          await this.getAvailableModels();
         if (runtimeState.activeTurnHasEffortOverride) {
           runtimeState.turnEffortOverride = effort ?? null;
-          const model = (await this.getAvailableModels()).find(
-            (candidate) => candidate.id === runtimeState.resolvedModel,
-          );
+          const model = (
+            options.routerLaunch
+              ? (options.routerLaunch.models ?? [])
+              : await this.getAvailableModels()
+          ).find((candidate) => candidate.id === runtimeState.resolvedModel);
           await activeClient?.request("thread/settings/update", {
             threadId: runtimeState.threadId,
             effort:
@@ -1999,6 +2084,7 @@ export class CodexProvider implements AgentProvider {
                 effort,
                 options.thinking,
                 runtimeState.resolvedModel,
+                options.routerLaunch?.models,
               ) ?? model?.defaultReasoningEffort,
           });
           return;
@@ -2010,6 +2096,7 @@ export class CodexProvider implements AgentProvider {
                 effort,
                 options.thinking,
                 runtimeState.turnModelOverride ?? runtimeState.resolvedModel,
+                options.routerLaunch?.models,
               ),
             });
           } catch (error) {
@@ -2033,8 +2120,22 @@ export class CodexProvider implements AgentProvider {
         }
         runtimeState.turnEffortOverride = effort ?? null;
       },
+      supportedModels: async () =>
+        options.routerLaunch
+          ? (options.routerLaunch.models ?? [])
+          : this.getAvailableModels(),
       effortUpdatesActiveTurn: true,
       setModel: async (model) => {
+        if (
+          options.routerLaunch?.models &&
+          !routerModelSupportsThinking(
+            options.routerLaunch.models.find((m) => m.id === model),
+            runtimeState.turnEffortOverride
+              ? `on:${runtimeState.turnEffortOverride}`
+              : "auto",
+          )
+        )
+          throw new Error("Model unavailable for the pinned account");
         if (model !== undefined) {
           await updateActiveTurnSettings({ model });
         }
@@ -2370,6 +2471,14 @@ export class CodexProvider implements AgentProvider {
         }
 
         if (name === "status" || name === "usage") {
+          if (options.routerLaunch)
+            return {
+              handled: true,
+              output: {
+                summary:
+                  "Account usage is available in the router account controls.",
+              },
+            };
           const client = activeClient ?? (await initialActiveClient);
           if (!client) {
             return {
@@ -2528,6 +2637,10 @@ export class CodexProvider implements AgentProvider {
     boundary?: ProviderForkBoundary;
     title?: string;
     sessionSandbox?: SessionSandboxRuntime;
+    launchSettings?: Omit<
+      EffectiveSessionLaunchSettings,
+      "schemaVersion" | "revision"
+    >;
   }): Promise<{ sessionId: string; filePath?: string }> {
     return this.installationCoordinator.withReadLease(
       CODEX_INSTALLATION_FAMILY,
@@ -2542,9 +2655,19 @@ export class CodexProvider implements AgentProvider {
     boundary?: ProviderForkBoundary;
     title?: string;
     sessionSandbox?: SessionSandboxRuntime;
+    launchSettings?: Omit<
+      EffectiveSessionLaunchSettings,
+      "schemaVersion" | "revision"
+    >;
   }): Promise<{ sessionId: string; filePath?: string }> {
     if (options.boundary && options.boundary.kind !== "turn") {
       throw new Error("Codex fork requires a turn boundary");
+    }
+    if (
+      options.launchSettings?.effort === "max" ||
+      options.launchSettings?.thinking?.type === "disabled"
+    ) {
+      await this.getAvailableModels();
     }
     const codexCommand = await this.resolveCodexCommand();
     const appServer = new CodexAppServerClient(
@@ -2573,7 +2696,9 @@ export class CodexProvider implements AgentProvider {
                 options.upToMessageId,
               )
             : undefined;
-      const policy = this.mapPermissionModeToThreadPolicy(undefined);
+      const policy = this.mapPermissionModeToThreadPolicy(
+        options.launchSettings?.permissionMode,
+      );
       const fork = await appServer.request<ThreadForkResponse>(
         "thread/fork",
         this.createThreadForkParams(
@@ -2771,10 +2896,13 @@ export class CodexProvider implements AgentProvider {
     const appServer = new CodexAppServerClient(
       codexCommand,
       options.cwd,
-      codexEnv,
+      options.routerLaunch
+        ? codexRouterEnvironment(codexEnv, options.routerLaunch)
+        : codexEnv,
       (notification) =>
         this.shouldSuppressLiveDeltaNotification(notification, options),
       sessionSandbox,
+      options.routerLaunch ? codexRouterArguments(options.routerLaunch) : [],
     );
     setActiveClient(appServer);
 
@@ -2807,7 +2935,7 @@ export class CodexProvider implements AgentProvider {
       const experimentalApiEnabled = await this.initializeAppServer(
         appServer,
         options.clientName,
-        Boolean(this.config.externalChatgptAuth || options.computerControl),
+        Boolean(this.config.externalChatgptAuth),
       );
       appServer.notify("initialized");
       await this.loginWithExternalChatgptAuth(appServer);
@@ -2843,7 +2971,6 @@ export class CodexProvider implements AgentProvider {
       sessionId = threadResult.thread.id;
       agentctlSessionEnvBridge.publishSessionId(sessionId);
       runtimeState.threadId = sessionId;
-      options.computerControl?.rename(sessionId);
       runtimeState.resolvedModel = threadResult.model;
       if (threadResult.sandbox?.type === "workspaceWrite") {
         runtimeState.workspaceWriteSandboxPolicy = threadResult.sandbox;
@@ -2860,6 +2987,7 @@ export class CodexProvider implements AgentProvider {
             sandbox: CODEX_POLICY_OVERRIDES.sandbox,
           },
           model: options.model ?? null,
+          ...(options.routerLaunch ? { modelProvider: "aar" } : {}),
         },
         "Started Codex app-server session thread",
       );
@@ -2879,6 +3007,8 @@ export class CodexProvider implements AgentProvider {
       const requestedReasoningEffort = this.mapEffortToReasoningEffort(
         options.effort,
         options.thinking,
+        options.model,
+        options.routerLaunch?.models,
       );
       const sessionConfigAck = this.createSessionConfigAckMessage(
         sessionId,
@@ -2973,9 +3103,10 @@ export class CodexProvider implements AgentProvider {
         provider: CodexProvider,
         turn: CodexThreadTurn,
         notificationBarrierSequence: number,
+        cyberAccessRequested = false,
       ): AsyncGenerator<
         SDKMessage,
-        { overloadError: SDKMessage | null },
+        { retryableError: CodexRetryableTurnError | null },
         void
       > {
         const activeTurnId = turn.id;
@@ -2993,7 +3124,7 @@ export class CodexProvider implements AgentProvider {
           };
         }
         let emittedTurnError = false;
-        let overloadError: SDKMessage | null = null;
+        let retryableError: CodexRetryableTurnError | null = null;
         let suppressedPreTurnNotifications: {
           count: number;
           firstSequence: number;
@@ -3143,12 +3274,17 @@ export class CodexProvider implements AgentProvider {
             usageByTurnId,
             liveEventState,
           );
-          const isServerOverload = provider.isCodexServerOverloadedNotification(
+          const retryableKind = provider.classifyRetryableTurnError(
             notification,
             effectiveActiveTurnId,
+            cyberAccessRequested,
           );
-          const suppressFailedOverloadCompletion =
-            overloadError !== null &&
+          const interruptCyberAccessRetry =
+            retryableKind === "cyberAccessDenied" &&
+            retryableError === null &&
+            asCodexErrorNotification(notification.params)?.willRetry === true;
+          const suppressFailedRetryableCompletion =
+            retryableError !== null &&
             notification.method === "turn/completed" &&
             provider.isTurnTerminalNotification(
               notification,
@@ -3165,11 +3301,11 @@ export class CodexProvider implements AgentProvider {
                       provider.formatCodexFailureTrace(failureTrace),
                   } as SDKMessage)
                 : rawMsg;
-            if (isServerOverload && msg.type === "error") {
-              overloadError = msg;
+            if (retryableKind && msg.type === "error") {
+              retryableError = { kind: retryableKind, message: msg };
               continue;
             }
-            if (suppressFailedOverloadCompletion) {
+            if (suppressFailedRetryableCompletion) {
               continue;
             }
             failureTrace.lastEmittedMessage =
@@ -3177,7 +3313,13 @@ export class CodexProvider implements AgentProvider {
             yield msg;
           }
 
-          if (isServerOverload) {
+          if (retryableKind) {
+            if (interruptCyberAccessRetry) {
+              await appServer.request("turn/interrupt", {
+                threadId: runtimeState.threadId,
+                turnId: effectiveActiveTurnId,
+              });
+            }
             continue;
           }
           if (
@@ -3198,7 +3340,7 @@ export class CodexProvider implements AgentProvider {
         failureTrace.activeTurnId = null;
 
         if (signal.aborted) {
-          return { overloadError: null };
+          return { retryableError: null };
         }
 
         if (
@@ -3223,14 +3365,15 @@ export class CodexProvider implements AgentProvider {
               turn.error.message,
             ),
           } as SDKMessage;
-          if (turn.error.codexErrorInfo === "serverOverloaded") {
-            return { overloadError: fallbackError };
+          const kind = classifyCodexTurnError(turn.error, cyberAccessRequested);
+          if (kind) {
+            return { retryableError: { kind, message: fallbackError } };
           }
           yield fallbackError;
         }
 
-        if (overloadError) {
-          return { overloadError };
+        if (retryableError) {
+          return { retryableError };
         }
 
         runtimeState.pendingCompaction = undefined;
@@ -3238,7 +3381,7 @@ export class CodexProvider implements AgentProvider {
           type: "result",
           session_id: sessionId,
         } as SDKMessage;
-        return { overloadError: null };
+        return { retryableError: null };
       };
 
       const overloadRetryWait =
@@ -3334,11 +3477,14 @@ export class CodexProvider implements AgentProvider {
             if (next.method === "turn/started") {
               const params = asCodexTurnCompletedNotification(next.params);
               if (params?.threadId === sessionId) {
-                const { overloadError } = yield* consumeTurn(
+                // A turn YA did not start requested no cyber access program,
+                // so only an overload can come back as retryable here.
+                const { retryableError } = yield* consumeTurn(
                   this,
                   params.turn,
                   0,
                 );
+                const overloadError = retryableError?.message;
                 if (overloadError) {
                   const compaction = runtimeState.pendingCompaction;
                   if (compaction) {
@@ -3430,6 +3576,12 @@ export class CodexProvider implements AgentProvider {
           const turnPolicy =
             this.mapPermissionModeToThreadPolicy(turnPermissionMode);
           runtimeState.activePermissionMode = turnPermissionMode;
+          const cyberAccess = await this.resolveTurnCyberAccess(
+            appServer,
+            runtimeState,
+            sessionId,
+            runtimeState.turnModelOverride ?? runtimeState.resolvedModel,
+          );
           const turnStartParams = this.createTurnStartParams(
             sessionId,
             preparedInput.input,
@@ -3439,14 +3591,17 @@ export class CodexProvider implements AgentProvider {
             runtimeState.turnModelOverride,
             runtimeState.turnEffortOverride,
             message.uuid,
+            cyberAccess.program,
           );
           let restoreThreadEffort: (() => Promise<unknown>) | undefined;
           if (message.turnEffort) {
             const modelId =
               runtimeState.turnModelOverride ?? runtimeState.resolvedModel;
-            const model = (await this.getAvailableModels()).find(
-              (candidate) => candidate.id === modelId,
-            );
+            const model = (
+              options.routerLaunch
+                ? (options.routerLaunch.models ?? [])
+                : await this.getAvailableModels()
+            ).find((candidate) => candidate.id === modelId);
             if (!model)
               throw new Error(`No effort catalog for model ${modelId}`);
             const normal: ThinkingOption =
@@ -3470,6 +3625,7 @@ export class CodexProvider implements AgentProvider {
               selected.effort,
               selected.thinking,
               modelId,
+              options.routerLaunch?.models,
             );
             runtimeState.activeTurnHasEffortOverride = true;
             restoreThreadEffort = () =>
@@ -3480,6 +3636,7 @@ export class CodexProvider implements AgentProvider {
                     runtimeState.turnEffortOverride ?? undefined,
                     options.thinking,
                     modelId,
+                    options.routerLaunch?.models,
                   ) ??
                   model.defaultReasoningEffort ??
                   threadResult.reasoningEffort ??
@@ -3525,25 +3682,53 @@ export class CodexProvider implements AgentProvider {
             "Started Codex app-server turn",
           );
           let overloadRetryAttempt = 0;
+          let cyberAccessProgram = cyberAccess.program;
           while (!signal.aborted) {
-            const { overloadError } = yield* consumeTurn(
+            const { retryableError } = yield* consumeTurn(
               this,
               turnResult.turn,
               notificationBarrierSequence,
+              cyberAccessProgram !== null,
             );
-            if (!overloadError) break;
+            if (!retryableError) break;
 
-            overloadRetryAttempt += 1;
-            const retryReady = yield* prepareOverloadRetry(
-              overloadError,
-              overloadRetryAttempt,
-            );
-            if (!retryReady) {
+            if (retryableError.kind === "cyberAccessDenied") {
+              // The refusal happens before any model output, so the turn
+              // reruns at once without the program. Later turns for this
+              // account and model omit it from the start.
+              if (cyberAccess.scope) {
+                this.cyberAccessDenials.add(cyberAccess.scope);
+              }
+              cyberAccessProgram = null;
               yield {
-                type: "result",
-                session_id: sessionId,
+                ...retryableError.message,
+                codexWillRetry: true,
+                codexCyberAccessRetry: true,
               } as SDKMessage;
-              break;
+              log.info(
+                {
+                  sessionId,
+                  turnId: retryableError.message.codexTurnId,
+                  model:
+                    runtimeState.turnModelOverride ??
+                    runtimeState.resolvedModel,
+                  cyberAccessProgram: cyberAccess.program,
+                },
+                "Codex account is not authorized for the cyber access program; retrying without it",
+              );
+            } else {
+              overloadRetryAttempt += 1;
+              const retryReady = yield* prepareOverloadRetry(
+                retryableError.message,
+                overloadRetryAttempt,
+              );
+              if (!retryReady) {
+                yield {
+                  type: "result",
+                  session_id: sessionId,
+                } as SDKMessage;
+                break;
+              }
             }
 
             const retryTurnStartParams = this.createTurnStartParams(
@@ -3554,6 +3739,8 @@ export class CodexProvider implements AgentProvider {
               runtimeState.workspaceWriteSandboxPolicy,
               runtimeState.turnModelOverride,
               runtimeState.turnEffortOverride,
+              undefined,
+              cyberAccessProgram,
             );
             if (message.turnEffort)
               retryTurnStartParams.effort = turnStartParams.effort;
@@ -3574,7 +3761,7 @@ export class CodexProvider implements AgentProvider {
                 approvalPolicy: turnPolicy.approvalPolicy,
                 sandboxPolicy: retryTurnStartParams.sandboxPolicy,
               },
-              "Retried Codex overloaded turn without resending user input",
+              "Retried failed Codex turn without resending user input",
             );
           }
           runtimeState.activeTurnHasEffortOverride = false;
@@ -3672,17 +3859,21 @@ export class CodexProvider implements AgentProvider {
     return false;
   }
 
-  private isCodexServerOverloadedNotification(
+  /**
+   * Classify a turn error that YA retries itself. A cyber access
+   * denial counts only when this turn requested a program; the same 403 on a
+   * turn that sent none has nothing to drop.
+   */
+  private classifyRetryableTurnError(
     notification: JsonRpcNotification,
     turnId: string,
-  ): boolean {
-    if (notification.method !== "error") return false;
+    cyberAccessRequested: boolean,
+  ): CodexRetryableTurnErrorKind | null {
+    if (notification.method !== "error") return null;
     const params = asCodexErrorNotification(notification.params);
-    return (
-      params?.turnId === turnId &&
-      params.willRetry === false &&
-      params.error.codexErrorInfo === "serverOverloaded"
-    );
+    if (params?.turnId !== turnId) return null;
+    const kind = classifyCodexTurnError(params.error, cyberAccessRequested);
+    return params.willRetry && kind !== "cyberAccessDenied" ? null : kind;
   }
 
   private updateBackgroundProcessTracking(
@@ -3885,6 +4076,7 @@ export class CodexProvider implements AgentProvider {
   ): ThreadStartParams {
     return {
       model: options.model ?? null,
+      ...(options.routerLaunch ? { modelProvider: "aar" } : {}),
       ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
@@ -3893,19 +4085,6 @@ export class CodexProvider implements AgentProvider {
       experimentalRawEvents: false,
       ...(options.sessionSandbox?.instructions?.startFromDefault === false
         ? { baseInstructions: "" }
-        : {}),
-      ...(options.computerControl
-        ? {
-            dynamicTools: [
-              {
-                type: "namespace" as const,
-                name: COMPUTER_TOOL_NAMESPACE,
-                description:
-                  "Optional Windows desktop control for this selected session.",
-                tools: options.computerControl.tools,
-              },
-            ],
-          }
         : {}),
     };
   }
@@ -3920,6 +4099,7 @@ export class CodexProvider implements AgentProvider {
     const params: CodexThreadResumeParamsForRequest = {
       threadId: options.resumeSessionId ?? sessionId,
       model: options.model ?? null,
+      ...(options.routerLaunch ? { modelProvider: "aar" } : {}),
       ...(options.serviceTier ? { serviceTier: options.serviceTier } : {}),
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
@@ -3938,16 +4118,31 @@ export class CodexProvider implements AgentProvider {
       cwd: string;
       lastTurnId?: string;
       sessionSandbox?: SessionSandboxRuntime;
+      launchSettings?: Omit<
+        EffectiveSessionLaunchSettings,
+        "schemaVersion" | "revision"
+      >;
     },
     policy: CodexThreadPolicy,
     experimentalApiEnabled = false,
   ): CodexThreadForkParamsForRequest {
+    const settings = options.launchSettings;
+    const model =
+      settings?.requestedModel && settings.requestedModel !== "default"
+        ? settings.requestedModel
+        : undefined;
     const params: CodexThreadForkParamsForRequest = {
+      ...(model ? { model } : {}),
+      ...(settings ? { serviceTier: settings.serviceTier } : {}),
       threadId: options.sessionId,
       ...(options.lastTurnId ? { lastTurnId: options.lastTurnId } : {}),
       cwd: options.cwd,
       ...this.buildThreadPermissionParams(policy),
-      config: this.buildThreadConfigOverrides({}),
+      config: this.buildThreadConfigOverrides({
+        model,
+        thinking: settings?.thinking ?? undefined,
+        effort: settings?.effort ?? undefined,
+      }),
       ...this.limitedUserThreadInstructions(options.sessionSandbox),
     };
     if (experimentalApiEnabled) {
@@ -4069,7 +4264,11 @@ export class CodexProvider implements AgentProvider {
   private buildThreadConfigOverrides(
     options: Pick<
       StartSessionOptions,
-      "compactAtContextTokenLimit" | "effort" | "thinking" | "model"
+      | "compactAtContextTokenLimit"
+      | "effort"
+      | "thinking"
+      | "model"
+      | "routerLaunch"
     >,
   ): NonNullable<ThreadStartParams["config"]> {
     // The OpenAI browser plugin controls a desktop-owned browser backend that
@@ -4103,6 +4302,7 @@ export class CodexProvider implements AgentProvider {
       options.effort,
       options.thinking,
       options.model,
+      options.routerLaunch?.models,
     );
     if (reasoningEffort) {
       config.model_reasoning_effort = reasoningEffort;
@@ -4250,6 +4450,7 @@ export class CodexProvider implements AgentProvider {
     modelOverride: string | null = options.model ?? null,
     effortOverride: EffortLevel | null | undefined = options.effort,
     clientUserMessageId?: string,
+    cyberAccessProgram: CyberAccessProgram | null = null,
   ): TurnStartParams {
     return {
       threadId,
@@ -4264,12 +4465,13 @@ export class CodexProvider implements AgentProvider {
               effortOverride,
               options.thinking,
               modelOverride ?? undefined,
+              options.routerLaunch?.models,
             ),
       ...this.buildTurnPermissionParams(
         turnPolicy,
         workspaceWriteSandboxPolicy,
       ),
-      ...this.buildTurnCyberAccessParams(),
+      ...(cyberAccessProgram ? { cyberAccessProgram } : {}),
     };
   }
 
@@ -4278,14 +4480,70 @@ export class CodexProvider implements AgentProvider {
    * every user turn carries the current selection. Omitting the field keeps
    * Codex's automatic choice, which is what the default does. YA-internal
    * helper turns such as the recap thread never send it.
+   *
+   * Enrollment belongs to the ChatGPT account and model, not to YA's
+   * server-wide setting, so a selection the backend already refused for this
+   * account and model is omitted rather than failing every turn. `scope` is
+   * null when no program is configured; it names the denial to record if the
+   * backend refuses the requested one.
    */
-  private buildTurnCyberAccessParams(): Partial<
-    Pick<TurnStartParams, "cyberAccessProgram">
-  > {
-    const wireValue = codexCyberAccessProgramWireValue(
+  private async resolveTurnCyberAccess(
+    appServer: CodexAppServerClient,
+    runtimeState: CodexTurnRuntimeState,
+    sessionId: string,
+    model: string | null,
+  ): Promise<{ program: CyberAccessProgram | null; scope: string | null }> {
+    const program = codexCyberAccessProgramWireValue(
       this.getConfiguredCyberAccessProgram(),
     );
-    return wireValue ? { cyberAccessProgram: wireValue } : {};
+    if (!program) return { program: null, scope: null };
+    runtimeState.cyberAccessAccountKey ??= await this.readCyberAccessAccountKey(
+      appServer,
+      sessionId,
+    );
+    const scope = JSON.stringify([
+      runtimeState.cyberAccessAccountKey,
+      model,
+      program,
+    ]);
+    return {
+      program: this.cyberAccessDenials.has(scope) ? null : program,
+      scope,
+    };
+  }
+
+  /**
+   * Identify the signed-in account for cyber access denials. An account
+   * switch replaces the app-server process, so one read per session suffices.
+   * When the account cannot be read, a denial stays confined to this session.
+   */
+  private async readCyberAccessAccountKey(
+    appServer: CodexAppServerClient,
+    sessionId: string,
+  ): Promise<string> {
+    try {
+      const response = await withCodexTimeout(
+        appServer.request<unknown>("account/read", { refreshToken: false }),
+        ACCOUNT_RATE_LIMITS_TIMEOUT_MS,
+        "Codex account status",
+      );
+      const account =
+        response && typeof response === "object"
+          ? (response as { account?: { type?: unknown; email?: unknown } })
+              .account
+          : undefined;
+      if (typeof account?.type === "string") {
+        return typeof account.email === "string" && account.email
+          ? `${account.type}:${account.email}`
+          : account.type;
+      }
+    } catch (error) {
+      log.warn(
+        { sessionId, error },
+        "Could not read Codex account for cyber access program scoping",
+      );
+    }
+    return `session:${sessionId}`;
   }
 
   private buildTurnPermissionParams(
@@ -5185,31 +5443,16 @@ export class CodexProvider implements AgentProvider {
         : {};
 
     switch (request.method) {
-      case "item/tool/call": {
-        if (
-          !options.computerControl?.acceptsThread(params.threadId) ||
-          signal.aborted ||
-          typeof params.tool !== "string" ||
-          params.namespace !== COMPUTER_TOOL_NAMESPACE
-        ) {
-          return {
-            success: false,
-            contentItems: [
-              {
-                type: "inputText",
-                text: "Computer control is unavailable or revoked for this session",
-              },
-            ],
-          };
-        }
-        return options.computerControl.call(
-          params.tool,
-          params.arguments,
-          typeof params.callId === "string"
-            ? params.callId
-            : String(request.id),
-        );
-      }
+      case "item/tool/call":
+        return {
+          success: false,
+          contentItems: [
+            {
+              type: "inputText",
+              text: "No dynamic tool is registered for this session",
+            },
+          ],
+        };
       case "item/commandExecution/requestApproval": {
         const commandParams = this.asCommandExecutionRequestApprovalParams(
           request.params,
@@ -6518,7 +6761,7 @@ export class CodexProvider implements AgentProvider {
       delta,
     );
     liveEventState.streamingToolOutputByItemKey.set(key, output);
-    const content = renderCodexLiveToolOutput(output);
+    const content = renderLiveToolOutput(output);
 
     const message = withCodexTimestamp({
       type: "user",
@@ -6813,6 +7056,30 @@ export class CodexProvider implements AgentProvider {
           turnId: params.turnId,
           itemId: callId,
           callId,
+          phase: "completed",
+          sourceEvent: "rawResponseItem/completed",
+        });
+        return [message];
+      }
+
+      case "message": {
+        const guidance = codexContentFilterGuidance(item);
+        const itemId = this.getOptionalString(item.id);
+        if (guidance === null || !itemId) return [];
+        const message = withCodexTimestamp(
+          {
+            type: "system",
+            subtype: CODEX_CONTENT_FILTER_BLOCK_SUBTYPE,
+            session_id: sessionId,
+            uuid: itemId,
+            content: guidance,
+          } as SDKMessage,
+          observedAt,
+        );
+        logSdkCorrelationDebug(sessionId, message, {
+          eventKind: "content_filter_block",
+          turnId: params.turnId,
+          itemId,
           phase: "completed",
           sourceEvent: "rawResponseItem/completed",
         });

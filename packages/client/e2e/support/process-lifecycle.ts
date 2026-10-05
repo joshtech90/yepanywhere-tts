@@ -1,6 +1,9 @@
-import { execFileSync, type ChildProcess } from "node:child_process";
+import { execFile, type ChildProcess } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { promisify } from "node:util";
+
+const execFileAsync = promisify(execFile);
 
 interface ProcessIdentityApi {
   readProcessStartTime(pid: number): string | null;
@@ -36,11 +39,15 @@ export async function captureLeaderStartTime(
   return (await identityApi()).readProcessStartTime(pid) ?? undefined;
 }
 
-export function signalProcessTree(pid: number, force = false): void {
+export async function signalProcessTree(
+  pid: number,
+  force = false,
+): Promise<void> {
   if (process.platform === "win32") {
-    execFileSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+    // Drain launcher pipes and deliver child exit events while taskkill runs.
+    // Preserve its output so a real cleanup failure remains diagnosable.
+    await execFileAsync("taskkill", ["/PID", String(pid), "/T", "/F"], {
       windowsHide: true,
-      stdio: "ignore",
       timeout: 10_000,
     });
   } else {
@@ -84,15 +91,21 @@ export async function terminateRegisteredProcess(
   };
   if (!alive()) return;
   try {
-    signalProcessTree(pid);
+    await signalProcessTree(pid);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    // taskkill can return nonzero when the target exits during its tree walk.
+    // Accept that race only after the owned target is demonstrably absent.
+    if (alive()) throw error;
   }
   const gracefulDeadline = Date.now() + 10_000;
   while (alive() && Date.now() < gracefulDeadline)
     await new Promise((resolve) => setTimeout(resolve, 50));
   if (!alive()) return;
-  signalProcessTree(pid, true);
+  try {
+    await signalProcessTree(pid, true);
+  } catch (error) {
+    if (alive()) throw error;
+  }
   const forcedDeadline = Date.now() + 2_000;
   while (alive() && Date.now() < forcedDeadline)
     await new Promise((resolve) => setTimeout(resolve, 50));

@@ -1,12 +1,21 @@
 export function downloadBlob(blob: Blob, fileName: string): void {
   const url = URL.createObjectURL(blob);
+  downloadUrl(url, fileName);
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+/**
+ * Hands a same-origin URL to the browser's own download, which streams the
+ * response to disk. The `download` attribute keeps an error response from
+ * navigating the page: the browser reports it as a failed download instead.
+ */
+export function downloadUrl(url: string, fileName: string): void {
   const anchor = document.createElement("a");
   anchor.href = url;
   anchor.download = fileName;
   document.body.append(anchor);
   anchor.click();
   anchor.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 async function toPngBlob(blob: Blob): Promise<Blob> {

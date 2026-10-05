@@ -181,6 +181,8 @@ export interface SpeechProviderEvents {
 
 /** Options at construction time. */
 export interface SpeechProviderOptions extends SpeechProviderEvents {
+  /** Supply an independently owned capture clone; the provider closes its tracks. */
+  acquireAudioStream?: () => Promise<MediaStream>;
   /** Language tag, e.g. "en-US". Provider may ignore if not applicable. */
   lang?: string;
   /** Context attached to YA-server transcription requests. */

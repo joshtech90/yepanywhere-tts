@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
+import { reportedYaVersion } from "./runtime-manifest.mjs";
 const desktopDir = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const appBundle = process.env.YEP_DESKTOP_APP_BUNDLE?.trim();
 const triple =
@@ -121,6 +122,11 @@ const child = spawn(bun, ["run", entry], {
   },
 });
 
+const lines = createInterface({ input: child.stdout });
+let nativeChecks = 0;
+lines.on("line", (line) => {
+  if (line === 'YEP_DESKTOP_ACTION {"action":"check-updates"}') nativeChecks++;
+});
 let stderr = "";
 child.stderr.setEncoding("utf8");
 child.stderr.on("data", (chunk) => {
@@ -141,10 +147,9 @@ function stopTree() {
 
 try {
   child.stdin.end(
-    `${JSON.stringify({ protocol: 1, masterSecret: secret })}\n`,
+    `${JSON.stringify({ protocol: 1, masterSecret: secret, nativeUpdates: true })}\n`,
   );
   const ready = await new Promise((resolveReady, rejectReady) => {
-    const lines = createInterface({ input: child.stdout });
     const timer = setTimeout(() => {
       lines.close();
       rejectReady(new Error(`Timed out waiting for readiness\n${stderr}`));
@@ -158,7 +163,6 @@ try {
     lines.on("line", (line) => {
       if (!line.startsWith("YEP_DESKTOP_READY ")) return;
       clearTimeout(timer);
-      lines.close();
       resolveReady(JSON.parse(line.slice("YEP_DESKTOP_READY ".length)));
     });
   });
@@ -192,10 +196,36 @@ try {
   if (!status.ok || !(await status.json()).authenticated) {
     throw new Error(`Desktop session auth failed with ${status.status}`);
   }
+  const versionResponse = await fetch(`${baseUrl}/api/version?fresh=1`, {
+    headers: { cookie, "X-Yep-Anywhere": "true" },
+  });
+  const version = await versionResponse.json();
+  const manifest = JSON.parse(readFileSync(join(serverDir, "desktop-runtime-manifest.json"), "utf8"));
+  if (!versionResponse.ok || version.current !== reportedYaVersion(manifest.yepVersion) ||
+      version.installSource !== "release-package" || version.desktopRuntime !== true ||
+      version.latest !== null || version.updateAvailable !== false) {
+    throw new Error(
+      `Packaged desktop version did not match its immutable manifest: yepVersion ${JSON.stringify(manifest.yepVersion)}, reported ${JSON.stringify(version)}`,
+    );
+  }
+  const refused = await fetch(`${baseUrl}/desktop-bootstrap/check-updates`, {
+    method: "POST", headers: { Origin: baseUrl, "X-Yep-Anywhere": "true" },
+  });
+  if (refused.status !== 404 || nativeChecks !== 0) throw new Error("Unauthenticated native check was accepted");
+  const accepted = await fetch(`${baseUrl}/desktop-bootstrap/check-updates`, {
+    method: "POST", headers: { cookie, Origin: baseUrl, "X-Yep-Anywhere": "true" },
+  });
+  if (!accepted.ok || !(await accepted.json()).accepted) throw new Error("Desktop native check handoff failed");
+  const deadline = Date.now() + 5000;
+  while (nativeChecks === 0 && Date.now() < deadline) {
+    await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+  }
+  if (nativeChecks !== 1) throw new Error("Desktop check did not produce exactly one private pipe action");
   console.log(
     `${appBundle ? "Signed desktop app" : "Packaged desktop runtime"} smoke passed (protocol ${ready.protocol}, dynamic port).`,
   );
 } finally {
+  lines.close();
   stopTree();
   rmSync(dataDir, { recursive: true, force: true });
 }

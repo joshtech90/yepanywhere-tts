@@ -9,12 +9,14 @@ export function SettingsCollection({
   title,
   detail,
   onClose,
+  actions,
 }: {
   children: ReactNode;
   selectedKey: string | number | null;
   title: string;
   detail: ReactNode;
   onClose: () => void;
+  actions?: ReactNode;
 }) {
   const { t } = useI18n();
   const titleId = useId();
@@ -39,8 +41,15 @@ export function SettingsCollection({
           <section className={styles.detail} aria-labelledby={titleId}>
             <div className={styles.heading}>
               <h4 id={titleId}>{title}</h4>
-              <button ref={close} type="button" onClick={dismiss}>
-                {t("settingsCollectionBack")}
+              {actions}
+              <button
+                ref={close}
+                type="button"
+                onClick={dismiss}
+                aria-label={t("settingsCollectionMinimize")}
+                title={t("settingsCollectionMinimize")}
+              >
+                <span aria-hidden="true">_</span>
               </button>
             </div>
             {detail}

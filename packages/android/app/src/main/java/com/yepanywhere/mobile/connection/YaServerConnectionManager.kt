@@ -26,6 +26,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -88,6 +89,11 @@ class YaConnectionLease internal constructor(
 ) : Closeable {
     private val released = AtomicBoolean(false)
 
+    suspend fun reconnect() {
+        check(!released.get()) { "Connection lease is released" }
+        manager.reconnect(id)
+    }
+
     suspend fun request(
         method: String,
         path: String,
@@ -105,6 +111,7 @@ class YaConnectionLease internal constructor(
         provider: String? = null,
         lastEventId: String? = null,
         wantsLiveDeltas: Boolean? = null,
+        coverage: JSONObject? = null,
     ): YaSubscription {
         check(!released.get()) { "Connection lease is released" }
         return manager.subscribe(
@@ -115,8 +122,22 @@ class YaConnectionLease internal constructor(
             provider = provider,
             lastEventId = lastEventId,
             wantsLiveDeltas = wantsLiveDeltas,
+            coverage = coverage,
         )
     }
+
+    suspend fun startUpload(params: JSONObject): YaNativeUpload {
+        check(!released.get())
+        return manager.startUpload(id, params)
+    }
+
+    suspend fun sendUploadChunk(uploadId: String, offset: Long, chunk: ByteArray) {
+        check(!released.get())
+        manager.sendUploadChunk(id, uploadId, offset, chunk)
+    }
+
+    suspend fun endUpload(uploadId: String) = manager.endUpload(id, uploadId)
+    suspend fun cancelUpload(uploadId: String) = manager.cancelUpload(id, uploadId)
 
     suspend fun releaseAndAwait() {
         if (released.compareAndSet(false, true)) manager.releaseLease(id)
@@ -143,6 +164,8 @@ class YaConnectionLease internal constructor(
     }
 }
 
+data class YaNativeUpload(val id: String, val events: Flow<JSONObject>)
+
 class YaServerConnectionManager(
     private val profileId: String,
     private val repository: YaPairedServerRepository,
@@ -157,6 +180,7 @@ class YaServerConnectionManager(
     private val leases = mutableMapOf<String, MutableSet<String>>()
     private val pendingRequests = mutableMapOf<String, CompletableDeferred<YaApiResponse>>()
     private val subscriptions = mutableMapOf<String, SubscriptionRecord>()
+    private val uploads = mutableMapOf<String, UploadRecord>()
     private var connection: YaRoutedTransport? = null
     private var connectionJob: Job? = null
     private var connectionGeneration = 0L
@@ -226,6 +250,7 @@ class YaServerConnectionManager(
             if (response.status >= 400) throw YaApiException(response)
             response
         } finally {
+            transport.cancelRequest(requestId)
             mutex.withLock { pendingRequests.remove(requestId) }
         }
     }
@@ -240,10 +265,13 @@ class YaServerConnectionManager(
         wantsLiveDeltas: Boolean?,
         conversation: ConversationQuery? = null,
         bindingId: String? = null,
+        coverage: JSONObject? = null,
     ): YaSubscription {
         require(channel in SUPPORTED_SUBSCRIPTION_CHANNELS ||
             (channel == "/api/experimental/conversation/subscribe" && conversation != null && bindingId != null))
         if (conversation != null) SimpleClientContract.decodeConversationQuery(conversation.toJson())
+        require(channel !in setOf("glossary", "worktree") || !projectId.isNullOrBlank())
+        require(channel != "worktree" || coverage != null)
         require(channel != "session" || !sessionId.isNullOrBlank())
         require(channel != "session-watch" || (!sessionId.isNullOrBlank() && !projectId.isNullOrBlank()))
         val transport = ensureConnected(leaseId)
@@ -260,6 +288,7 @@ class YaServerConnectionManager(
             wantsLiveDeltas = wantsLiveDeltas,
             events = eventChannel,
             conversation = conversation,
+            coverage = coverage,
         )
         mutex.withLock {
             val owned = checkNotNull(leases[leaseId]) { "Connection lease is released" }
@@ -283,6 +312,72 @@ class YaServerConnectionManager(
         }
     }
 
+    internal suspend fun startUpload(leaseId: String, params: JSONObject): YaNativeUpload {
+        val size = params.getLong("size")
+        require(size in 0..(100L * 1024 * 1024))
+        require(params.getString("filename").length in 1..1024)
+        val kind = params.getString("type")
+        require(kind == "upload_start" || kind == "staged_upload_start")
+        if (kind == "upload_start") {
+            require(params.getString("projectId").isNotBlank() && params.getString("sessionId").isNotBlank())
+        }
+        val transport = ensureConnected(leaseId)
+        val id = UUID.randomUUID().toString()
+        val events = Channel<JSONObject>(64)
+        val record = UploadRecord(id, leaseId, size, transport, events)
+        val message = JSONObject().put("type", kind).put("uploadId", id)
+        listOf("projectId", "sessionId", "filename", "size", "mimeType", "width", "height", "batchId")
+            .forEach { key -> if (params.has(key)) message.put(key, params.get(key)) }
+        mutex.withLock {
+            check(leases.containsKey(leaseId) && connection?.transport === transport)
+            require(uploads.values.count { it.leaseId == leaseId } < 4) { "Too many native uploads" }
+            uploads[id] = record
+            try { transport.send(message) } catch (error: Throwable) { uploads.remove(id); throw error }
+        }
+        return YaNativeUpload(id, events.receiveAsFlow())
+    }
+
+    internal suspend fun sendUploadChunk(leaseId: String, uploadId: String, offset: Long, chunk: ByteArray) {
+        val record = mutex.withLock {
+            checkNotNull(uploads[uploadId]) { "Upload is no longer active" }.also {
+                require(it.leaseId == leaseId && connection?.transport === it.transport)
+            }
+        }
+        record.writes.withLock {
+            require(chunk.size in 1..65536 && offset == record.offset && offset <= record.size - chunk.size)
+            record.transport.sendUploadChunk(uploadId, offset, chunk)
+            record.offset += chunk.size
+        }
+    }
+
+    internal suspend fun endUpload(leaseId: String, uploadId: String) {
+        val record = mutex.withLock {
+            checkNotNull(uploads[uploadId]).also { require(it.leaseId == leaseId) }
+        }
+        record.writes.withLock {
+            require(record.offset == record.size) { "Upload is incomplete" }
+            record.transport.send(JSONObject().put("type", "upload_end").put("uploadId", uploadId))
+        }
+    }
+
+    internal suspend fun cancelUpload(leaseId: String, uploadId: String) {
+        val record = mutex.withLock {
+            val record = uploads[uploadId] ?: return
+            require(record.leaseId == leaseId)
+            uploads.remove(uploadId)
+            record
+        }
+        // The established protocol has no cancel frame. End always closes its
+        // server state: incomplete files fail size validation; a file whose
+        // bytes already arrived may complete (staged expiry still applies).
+        record.writes.withLock {
+            runCatching {
+                record.transport.cancelUpload(uploadId)
+            }
+        }
+        record.events.close(CancellationException("Upload consumer released"))
+    }
+
     internal fun releaseLeaseAsync(leaseId: String) {
         scope.launch { releaseLease(leaseId) }
     }
@@ -292,6 +387,8 @@ class YaServerConnectionManager(
             leases.remove(leaseId)?.toList().orEmpty()
         }
         subscriptionsToClose.forEach { closeSubscription(it) }
+        val ownedUploads = mutex.withLock { uploads.values.filter { it.leaseId == leaseId }.map { it.id } }
+        ownedUploads.forEach { cancelUpload(leaseId, it) }
 
         var job: Job? = null
         var transport: YaMessageTransport? = null
@@ -336,6 +433,39 @@ class YaServerConnectionManager(
         }
     }
 
+    /** A foreground recovery signal replaces a stale socket, never its owners. */
+    internal suspend fun reconnect(leaseId: String) {
+        val ready = mutex.withLock {
+            check(leases.containsKey(leaseId)) { "Connection lease is released" }
+            check(mutableState.value.phase !in setOf(YaConnectionPhase.REAUTHENTICATION_REQUIRED, YaConnectionPhase.REVOKED)) {
+                "This server requires authentication"
+            }
+            // Join an existing acquisition/retry instead of multiplying cycles.
+            if (connectionJob != null && mutableState.value.phase in setOf(YaConnectionPhase.CONNECTING, YaConnectionPhase.RETRYING)) {
+                return@withLock connectionReady
+            }
+            connectionGeneration += 1
+            connectionJob?.cancel()
+            connection?.transport?.cancel()
+            connection = null
+            connectionJob = null
+            val error = YaConnectionUnavailableException("Connection reconnecting")
+            failPendingLocked(error)
+            uploads.values.forEach { it.events.close(error) }
+            uploads.clear()
+            failConversationsLocked(error)
+            connectionReady.completeExceptionally(error)
+            mutableState.value = YaConnectionState(YaConnectionPhase.CONNECTING)
+            startConnectionIfNeededLocked()
+            connectionReady
+        }
+        ready.await()
+        val settled = withTimeout(REQUEST_TIMEOUT_MS) {
+            state.first { it.phase !in setOf(YaConnectionPhase.CONNECTING, YaConnectionPhase.RETRYING) }
+        }
+        check(settled.phase == YaConnectionPhase.CONNECTED) { "Native connection is unavailable" }
+    }
+
     private fun startConnectionIfNeededLocked() {
         if (leases.isEmpty() || connection != null || connectionJob != null) return
         connectionGeneration += 1
@@ -377,7 +507,7 @@ class YaServerConnectionManager(
                     repository.recordSuccessfulAuthentication(
                         profileId = profileId,
                         routeId = routed.route.id,
-                        resumeCredential = stored.copy(lastResumedAtEpochMs = connectedAt),
+                        resumeCredential = stored.copy(credential = routed.transport.credential, lastResumedAtEpochMs = connectedAt),
                         connectedAtEpochMs = connectedAt,
                     )
                     installConnection(generation, routed)
@@ -395,6 +525,10 @@ class YaServerConnectionManager(
                         "Sign in again to resume this server",
                         error,
                     )
+                    return
+                } catch (error: YaRustTerminalException) {
+                    if (error.phase == YaConnectionPhase.REAUTHENTICATION_REQUIRED) repository.clearCredential(profileId)
+                    failTerminal(generation, ready, error.phase, "Native connection ended; retry or sign in again", error)
                     return
                 } catch (error: YaAllRoutesRejectedException) {
                     repository.clearCredential(profileId)
@@ -487,6 +621,35 @@ class YaServerConnectionManager(
     ) {
         val type = message.optString("type")
         when (type) {
+            "state" -> {
+                when (message.optString("phase")) {
+                    "RETRYING" -> {
+                        mutex.withLock {
+                            if (connectionGeneration != generation || connection?.transport !== transport) return
+                            failPendingLocked(YaConnectionUnavailableException("Native connection was lost"))
+                            uploads.values.forEach { it.events.close(YaConnectionUnavailableException("Upload connection was lost")) }
+                            uploads.clear()
+                            failConversationsLocked(YaConnectionUnavailableException("Conversation connection was lost"))
+                            mutableState.value = YaConnectionState(YaConnectionPhase.RETRYING)
+                        }
+                    }
+                    "CONNECTED" -> {
+                        val snapshot = checkNotNull(repository.snapshot(profileId))
+                        securityClients?.ensure(snapshot.profile, transport)
+                        val route = snapshot.profile.routes.firstOrNull { it.id == transport.routeId }
+                            ?: connection?.route ?: error("Native route is unavailable")
+                        val stored = checkNotNull(repository.snapshot(profileId)?.resumeCredential)
+                        val connectedAt = maxOf(nowEpochMs(), stored.establishedAtEpochMs)
+                        repository.recordSuccessfulAuthentication(profileId, route.id, stored.copy(credential = transport.credential, lastResumedAtEpochMs = connectedAt), connectedAt)
+                        mutex.withLock {
+                            if (connectionGeneration != generation || connection?.transport !== transport) return
+                            connection = YaRoutedTransport(route, transport)
+                            mutableState.value = YaConnectionState(YaConnectionPhase.CONNECTED, routeId = route.id)
+                        }
+                    }
+                    "FAILED", "REAUTHENTICATION_REQUIRED" -> throw YaRustTerminalException(YaConnectionPhase.valueOf(message.getString("phase")))
+                }
+            }
             "response" -> {
                 val id = message.getString("id")
                 val response = message.toApiResponse()
@@ -501,6 +664,22 @@ class YaServerConnectionManager(
                             leases[subscription.leaseId]?.remove(id)
                             subscription.events.close(YaApiException(response))
                         }
+                    }
+                    Unit
+                }
+            }
+
+            "upload_progress", "upload_complete", "upload_error" -> {
+                mutex.withLock {
+                    if (connectionGeneration != generation || connection?.transport !== transport) return
+                    val id = message.getString("uploadId")
+                    val record = uploads[id] ?: return
+                    if (record.events.trySend(message).isFailure) {
+                        uploads.remove(id)
+                        record.events.close(YaSubscriptionOverflowException())
+                    } else if (type != "upload_progress") {
+                        uploads.remove(id)
+                        record.events.close()
                     }
                     Unit
                 }
@@ -535,6 +714,8 @@ class YaServerConnectionManager(
             if (connectionGeneration != generation) return
             if (transport == null || connection?.transport === transport) connection = null
             failPendingLocked(YaConnectionUnavailableException("Native connection was lost", error))
+            uploads.values.forEach { it.events.close(YaConnectionUnavailableException("Upload connection was lost", error)) }
+            uploads.clear()
             failConversationsLocked(error)
         }
     }
@@ -613,6 +794,7 @@ class YaServerConnectionManager(
         val wantsLiveDeltas: Boolean?,
         val events: Channel<YaSubscriptionEvent>,
         val conversation: ConversationQuery? = null,
+        val coverage: JSONObject? = null,
     ) {
         fun subscribeMessage(): JSONObject {
             conversation?.let {
@@ -629,14 +811,25 @@ class YaServerConnectionManager(
                 .putOptional("provider", provider)
                 .putOptional("lastEventId", lastEventId)
                 .putOptional("wantsLiveDeltas", wantsLiveDeltas)
+                .putOptional("coverage", coverage)
         }
     }
+
+    private class UploadRecord(
+        val id: String,
+        val leaseId: String,
+        val size: Long,
+        val transport: YaMessageTransport,
+        val events: Channel<JSONObject>,
+        var offset: Long = 0,
+        val writes: Mutex = Mutex(),
+    )
 
     private class ReauthenticationRequired : IllegalStateException()
 
     companion object {
         private val SUPPORTED_METHODS = setOf("GET", "POST", "PUT", "DELETE", "PATCH")
-        private val SUPPORTED_SUBSCRIPTION_CHANNELS = setOf("session", "activity", "session-watch")
+        private val SUPPORTED_SUBSCRIPTION_CHANNELS = setOf("session", "activity", "session-watch", "glossary", "worktree")
         private val MANAGED_REQUEST_HEADERS = setOf("content-type", "x-yep-anywhere")
         private const val REQUEST_TIMEOUT_MS = 30_000L
         private const val SUBSCRIPTION_BUFFER_SIZE = 64

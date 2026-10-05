@@ -50,3 +50,17 @@ Four focused worker-two repeats passed without retries; the next full worker-fou
 run passed this case too. The earlier CI cold-source reload failure is avoided by
 serving the private YA's immutable invocation bundle. Repeat exact CI first-attempt
 evidence is still required before closing this intermittent gap.
+
+## Hosted CI follow-up — 2026-10-01
+
+While repairing unrelated iOS simulator and Project App CI failures,
+[run 36884537869](https://github.com/kzahel/yepanywhere/actions/runs/36884537869)
+on `4036a1bda` reproduced the bottom-pinning failure at
+`packages/client/e2e/async-questions.spec.ts:219`: the distance from bottom
+remained 141 pixels, expected less than 3, through the 5-second poll. Its
+existing retry passed; shard one finished with 178 passed, 7 skipped and
+this single flaky result. Project App passed on its first attempt.
+
+This is further evidence that the scroll timing defect remains open. The
+iOS CI repair does not touch this flow, its assertions or its retry policy;
+isolating the remaining asynchronous pinning dependency is separate work.

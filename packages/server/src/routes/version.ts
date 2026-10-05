@@ -263,11 +263,36 @@ export function getCurrentVersionInfoComputations(): number {
 /**
  * Read the current package version and best-effort install source.
  */
+export function readDesktopBuildVersion(
+  serverDirectory: string,
+): CurrentVersionInfo {
+  try {
+    const manifest = JSON.parse(
+      fs.readFileSync(
+        path.join(serverDirectory, "desktop-runtime-manifest.json"),
+        "utf8",
+      ),
+    );
+    const version =
+      typeof manifest.yepVersion === "string"
+        ? normalizeGitDescribeVersion(manifest.yepVersion)
+        : null;
+    if (version && /^\d+\.\d+\.\d+(?:$|[-+])/.test(version)) {
+      return { version, installSource: "release-package" };
+    }
+  } catch {
+    /* Missing/corrupt packaged metadata must not probe an ambient checkout. */
+  }
+  return { version: "unknown", installSource: "release-package" };
+}
+
 async function computeCurrentVersionInfo(): Promise<CurrentVersionInfo> {
   try {
     // In production (npm package), package.json is in the parent of dist/
     // In development, it's in packages/server/
     const packageJsonPath = path.resolve(__dirname, "../../package.json");
+    if (process.env.YEP_DESKTOP === "1")
+      return readDesktopBuildVersion(path.dirname(packageJsonPath));
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
     const version = packageJson.version || "unknown";
 
@@ -465,8 +490,12 @@ export const RESUME_PROTOCOL_VERSION = 3;
 export const REMOTE_COMPATIBILITY_LEVEL = 10;
 
 const BASE_CAPABILITIES: string[] = [
+  SERVER_CAPABILITIES.contextUsageBreakdown.name,
+  SERVER_CAPABILITIES.projectFileViewCommand.name,
   SERVER_CAPABILITIES.fileOwnerProject.name,
   SERVER_CAPABILITIES.vhostFileSites.name,
+  SERVER_CAPABILITIES.vhostFileSiteReplacement.name,
+  SERVER_CAPABILITIES.projectAppDeletion.name,
   SERVER_CAPABILITIES.localSourceBrowse.name,
   SERVER_CAPABILITIES.personalProjectHiding.name,
   SERVER_CAPABILITIES.projectService.name,
@@ -590,6 +619,7 @@ export interface VersionRouteOptions {
   getCurrentVersionInfo?: () => Promise<CurrentVersionInfo>;
   /** Whether the signed security-client audit routes are mounted. */
   securityClientAuditAvailable?: boolean;
+  nativePush?: import("@yep-anywhere/shared").NativePushVersionInfo;
   /** Whether the browser-settings backup storage route is mounted. */
   browserSettingsBackupAvailable?: boolean;
   /** Dynamic device bridge state: available (binary exists), downloadable (ADB found, no binary), unavailable (no ADB). */
@@ -619,6 +649,9 @@ export interface VersionRouteOptions {
   desktopRuntime?: boolean;
   /** Whether this Hono generation is registered with a provider host. */
   providerHostControlAvailable?: boolean;
+  /** Installed MC readiness route is mounted on this supported host. */
+  installedMachineControlAvailable?: boolean;
+  agentAuthRouterAvailable?: boolean;
   /** Whether the operator enabled experimental live worktree monitoring. */
   isLiveWorktreeMonitoringEnabled?: () => boolean;
   /** Version-implied contracts deliberately unavailable in this generation. */
@@ -674,8 +707,15 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   capabilities.push(SERVER_CAPABILITIES.vhostBearerAccess.name);
   if (options?.vhostAppControlAvailable)
     capabilities.push(SERVER_CAPABILITIES.vhostAppControl.name);
-  capabilities.push(SERVER_CAPABILITIES.computerControl.name);
-  capabilities.push(SERVER_CAPABILITIES.computerControlReleases.name);
+  if (options?.agentAuthRouterAvailable) {
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouter.name);
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterRecovery.name);
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterPools.name);
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterOwnedPools.name);
+    capabilities.push(SERVER_CAPABILITIES.agentAuthRouterMostRemaining.name);
+  }
+  if (options?.installedMachineControlAvailable)
+    capabilities.push(SERVER_CAPABILITIES.installedMachineControl.name);
   capabilities.push(SERVER_CAPABILITIES.claudeGatewayServices.name);
   if (options?.getExperimentalConversationAvailable?.())
     capabilities.push(SERVER_CAPABILITIES.experimentalConversation.name);
@@ -696,6 +736,8 @@ export function getServerCapabilities(options?: VersionRouteOptions): string[] {
   if (options?.securityClientAuditAvailable) {
     capabilities.push(SECURITY_CLIENT_AUDIT_CAPABILITY);
   }
+  if (options?.nativePush)
+    capabilities.push(SERVER_CAPABILITIES.nativePushSubscriptions.name);
   if (options?.voiceInputEnabled !== false) {
     capabilities.push(VOICE_INPUT_CAPABILITY);
   }
@@ -797,13 +839,15 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
     // For dev versions like "v0.1.7-3-g050bfd2", extract base version "v0.1.7"
     // to compare against the update server.
     const baseVersion = current.split("-")[0] || current;
-    const latest = await (options?.getLatestVersion ?? getLatestVersion)(
-      baseVersion,
-      options?.installId,
-      {
-        forceRefresh: fresh,
-      },
-    );
+    const latest = options?.desktopRuntime
+      ? null
+      : await (options?.getLatestVersion ?? getLatestVersion)(
+          baseVersion,
+          options?.installId,
+          {
+            forceRefresh: fresh,
+          },
+        );
     const updateAvailable = latest ? isNewerSemver(baseVersion, latest) : false;
 
     const info: VersionInfo = {
@@ -822,6 +866,10 @@ export function createVersionRoutes(options?: VersionRouteOptions): Hono {
         ? { sourceRevision: currentVersionInfo.sourceRevision }
         : {}),
       resumeProtocolVersion: RESUME_PROTOCOL_VERSION,
+      ...(options?.nativePush &&
+      capabilities.includes(SERVER_CAPABILITIES.nativePushSubscriptions.name)
+        ? { nativePush: options.nativePush }
+        : {}),
       remoteCompatibilityLevel: REMOTE_COMPATIBILITY_LEVEL,
       ...(capabilityEncoding
         ? encodeVersionedServerCapabilities(

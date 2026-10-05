@@ -7,7 +7,11 @@ import { fileURLToPath } from "node:url";
 import { toUrlProjectId } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp as createFixtureApp } from "../setup/create-app.js";
-import { MockClaudeSDK, createMockScenario } from "../../src/sdk/mock.js";
+import {
+  MockClaudeSDK,
+  MockRealClaudeSDK,
+  createMockScenario,
+} from "../../src/sdk/mock.js";
 import {
   closeProviderRuntimeHostRegistration,
   initializeProviderRuntimeHost,
@@ -101,6 +105,71 @@ describe("Sessions API", () => {
     // Per-case provider history has a shorter lifetime than the file's app
     // registry. Stop its readers/watchers before removing that history.
     await rm(testDir, { recursive: true, force: true });
+  });
+
+  describe("installed MC launch selection", () => {
+    it.each([
+      ["project", false],
+      ["project", true],
+      ["detached", false],
+      ["detached", true],
+    ] as const)(
+      "carries true, false and absent selection through %s create-only=%s",
+      async (placement, createOnly) => {
+        const { app, supervisor } = createApp({
+          sdk: mockSdk,
+          projectsDir: testDir,
+          realSdk: new MockRealClaudeSDK(),
+        });
+        const start = vi.spyOn(supervisor, "startSession");
+        const create = vi.spyOn(supervisor, "createSession");
+        const path =
+          placement === "project"
+            ? `/api/projects/${projectId}/sessions`
+            : "/api/sessions";
+        for (const machineControl of [true, false, undefined]) {
+          const response = await app.request(
+            `${path}${createOnly ? "/create" : ""}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Yep-Anywhere": "true",
+              },
+              body: JSON.stringify({ message: "hello", machineControl }),
+            },
+          );
+          expect(response.status).toBe(200);
+          const options = createOnly
+            ? create.mock.lastCall?.[2]
+            : start.mock.lastCall?.[3];
+          expect(options?.machineControl).toBe(machineControl);
+        }
+      },
+    );
+    it.each([
+      { machineControl: "true" },
+      { machineControl: true, computerControl: true },
+    ])(
+      "rejects invalid or conflicting selection %j before launching",
+      async (selection) => {
+        const { app, supervisor } = createApp({
+          sdk: mockSdk,
+          projectsDir: testDir,
+        });
+        const start = vi.spyOn(supervisor, "startSession");
+        const response = await app.request("/api/sessions", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Yep-Anywhere": "true",
+          },
+          body: JSON.stringify({ message: "hello", ...selection }),
+        });
+        expect(response.status).toBe(400);
+        expect(start).not.toHaveBeenCalled();
+      },
+    );
   });
 
   describe("POST /api/projects/:projectId/sessions", () => {
@@ -283,6 +352,16 @@ describe("Sessions API", () => {
   });
 
   describe("POST /api/projects/:projectId/sessions/:sessionId/resume", () => {
+    beforeEach(async () => {
+      // Resume a persisted Claude session, rather than making a missing mock
+      // id probe unrelated providers before falling back to Claude. The
+      // full workspace run hit 5s in that unrelated discovery before teardown.
+      await writeFile(
+        join(testDir, "localhost", "-home-user-myproject", "sess-123.jsonl"),
+        `${JSON.stringify({ type: "user", cwd: "/home/user/myproject", message: { content: "Hello" } })}\n`,
+      );
+    });
+
     it("returns 400 if message is missing", async () => {
       const { app } = createApp({ sdk: mockSdk, projectsDir: testDir });
 

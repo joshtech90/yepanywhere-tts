@@ -24,8 +24,39 @@ const MAX_BUFFER = 32 * 1024 * 1024;
 const MAX_RETAINED_BYTES = 128 * 1024 * 1024;
 const MAX_ACTIVE_QUERIES = 8;
 
+/** An inventory path, and whether Git's index lists it. */
+export interface InventoryEntry extends ProjectFileCompletionEntry {
+  tracked: boolean;
+}
+
+/**
+ * One request's read of a project's retained inventory, for a caller that
+ * ranks it its own way. The entries stay owned by the service.
+ */
+export interface InventoryView {
+  entries: readonly InventoryEntry[];
+  /** The inventory may still gain paths, or is known stale. */
+  pending(): boolean;
+  truncated: boolean;
+  /**
+   * The subset of `paths` that is still present and not ignored under the
+   * current ignore rules, the same recheck completion applies before offering
+   * a retained path.
+   */
+  eligible(paths: readonly string[]): Promise<Set<string>>;
+  /**
+   * Stream one `git ls-files` listing of this project, with whatever arguments
+   * select a non-Git project's empty repository prepended.
+   */
+  enumerate(
+    args: readonly string[],
+    visit: (path: string) => boolean,
+    signal: AbortSignal,
+  ): Promise<void>;
+}
+
 interface Inventory {
-  entries: ProjectFileCompletionEntry[];
+  entries: InventoryEntry[];
   ready: Promise<void>;
   pending: boolean;
   error?: unknown;
@@ -52,10 +83,7 @@ export class ProjectFileCompletion {
   private readonly abort = new AbortController();
   private unsubscribeFiles?: () => void;
   private unsubscribeActivity?: () => void;
-  private readonly queries = new Map<
-    string,
-    Promise<ProjectFileCompletionResult>
-  >();
+  private readonly queries = new Map<string, Promise<unknown>>();
 
   constructor(
     private readonly dataDir: string,
@@ -72,8 +100,21 @@ export class ProjectFileCompletion {
     query: string,
     recent: readonly string[],
   ): Promise<ProjectFileCompletionResult> {
-    if (this.abort.signal.aborted)
-      return Promise.reject(new Error("File completion disposed"));
+    return this.withInventory(project, ["query", query, recent], (view) =>
+      this.queryInventory(view, query, recent),
+    );
+  }
+
+  /**
+   * Run one deduplicated, slot-limited request against the project's retained
+   * inventory, acquiring or refreshing it as completion does. `key` identifies
+   * identical in-flight requests.
+   */
+  withInventory<T>(
+    project: string,
+    key: unknown,
+    read: (view: InventoryView) => Promise<T>,
+  ): Promise<T> {
     project = resolve(project);
     this.unsubscribeFiles ??= onProjectFileChange((path) =>
       this.invalidate(path),
@@ -85,18 +126,52 @@ export class ProjectFileCompletion {
       )
         this.invalidate(fromUrlProjectId(event.projectId));
     });
-    const key = JSON.stringify([project, query, recent]);
-    const existing = this.queries.get(key);
-    if (existing) return existing;
+    return this.withQuery([project, key], () =>
+      this.acquire(project).then((state) => read(this.view(project, state))),
+    );
+  }
+
+  /**
+   * Run one request in the service's shared query slots: identical in-flight
+   * requests share one computation, at most eight run at once, and disposal
+   * waits for them.
+   */
+  withQuery<T>(key: unknown, work: () => Promise<T>): Promise<T> {
+    if (this.abort.signal.aborted)
+      return Promise.reject(new Error("File completion disposed"));
+    const queryKey = JSON.stringify(key);
+    const existing = this.queries.get(queryKey);
+    if (existing) return existing as Promise<T>;
     if (this.queries.size >= MAX_ACTIVE_QUERIES)
       return Promise.reject(
         new Error("File completion is busy; try again shortly"),
       );
-    const pending = this.queryInventory(project, query, recent).finally(() =>
-      this.queries.delete(key),
-    );
-    this.queries.set(key, pending);
+    const pending = work().finally(() => this.queries.delete(queryKey));
+    this.queries.set(queryKey, pending);
     return pending;
+  }
+
+  /**
+   * Stream `git ls-files` over a directory outside any retained inventory,
+   * treating it as a non-Git tree so its own `.gitignore` files still apply.
+   * Nothing is retained; the caller's visitor decides when to stop.
+   */
+  async enumerateDirectory(
+    directory: string,
+    args: readonly string[],
+    visit: (path: string) => boolean,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const gitArgs = [
+      `--git-dir=${await this.emptyGitDir()}`,
+      `--work-tree=${directory}`,
+    ];
+    await enumerateProjectFiles(
+      directory,
+      [...gitArgs, ...args],
+      visit,
+      AbortSignal.any([this.abort.signal, signal]),
+    );
   }
 
   private invalidate(project: string): void {
@@ -114,11 +189,7 @@ export class ProjectFileCompletion {
     this.inventories.clear();
   }
 
-  private async queryInventory(
-    project: string,
-    query: string,
-    recent: readonly string[],
-  ): Promise<ProjectFileCompletionResult> {
+  private async acquire(project: string): Promise<Inventory> {
     const now = this.options.now?.() ?? Date.now();
     for (const [path, inventory] of this.inventories) {
       if (!inventory.pending && now - inventory.lastUsedAt > UNUSED_MS)
@@ -169,13 +240,40 @@ export class ProjectFileCompletion {
     }
     await state.ready;
     if (state.error) throw state.error;
+    return state;
+  }
+
+  private view(project: string, state: Inventory): InventoryView {
+    const entries = state.entries;
+    return {
+      entries,
+      pending: () =>
+        state.pending ||
+        (!state.error && state.dirty) ||
+        state.entries !== entries,
+      truncated: state.truncated,
+      eligible: (paths) => this.eligible(project, state, paths),
+      enumerate: (args, visit, signal) =>
+        enumerateProjectFiles(
+          project,
+          [...state.args, ...args],
+          visit,
+          AbortSignal.any([this.abort.signal, signal]),
+        ),
+    };
+  }
+
+  private async queryInventory(
+    view: InventoryView,
+    query: string,
+    recent: readonly string[],
+  ): Promise<ProjectFileCompletionResult> {
     const needle = query.toLowerCase();
     const ranks = new Map(recent.map((path, index) => [path, index]));
-    const inventoryEntries = state.entries;
-    const recentMatches: ProjectFileCompletionEntry[] = [];
-    const otherMatches: ProjectFileCompletionEntry[] = [];
+    const recentMatches: InventoryEntry[] = [];
+    const otherMatches: InventoryEntry[] = [];
     let matched = 0;
-    for (const entry of inventoryEntries) {
+    for (const entry of view.entries) {
       if (!entry.path.toLowerCase().includes(needle)) continue;
       matched++;
       if (ranks.has(entry.path)) recentMatches.push(entry);
@@ -185,17 +283,37 @@ export class ProjectFileCompletion {
       (a, b) => (ranks.get(a.path) ?? 0) - (ranks.get(b.path) ?? 0),
     );
 
-    // Cached paths are only candidates: recheck current ignore rules before
-    // offering them, including tracked files matching newly written rules.
     const selected = [...recentMatches, ...otherMatches].slice(0, 100);
+    const eligible = await view.eligible(selected.map((entry) => entry.path));
+    const offered = selected.filter((entry) => eligible.has(entry.path));
+    return {
+      entries: offered
+        .slice(0, 30)
+        .map(({ path, kind }): ProjectFileCompletionEntry => ({ path, kind })),
+      pending: view.pending(),
+      truncated:
+        view.truncated || matched > selected.length || offered.length > 30,
+    };
+  }
+
+  /**
+   * Cached paths are only candidates: recheck current ignore rules before
+   * offering them, including tracked files matching newly written rules, and
+   * drop paths that no longer exist.
+   */
+  private async eligible(
+    project: string,
+    state: Inventory,
+    paths: readonly string[],
+  ): Promise<Set<string>> {
     const ignored = new Set<string>();
-    if (selected.length) {
+    if (paths.length) {
       try {
         const { stdout } = await runGit(
           project,
           [...state.args, "check-ignore", "--no-index", "-z", "--stdin"],
           {
-            input: `${selected.map((entry) => entry.path).join("\0")}\0`,
+            input: `${paths.join("\0")}\0`,
             maxBuffer: MAX_BUFFER,
           },
         );
@@ -213,10 +331,10 @@ export class ProjectFileCompletion {
       }
     }
     const present = await Promise.all(
-      selected.map(async (entry) => {
-        if (ignored.has(entry.path)) return false;
+      paths.map(async (path) => {
+        if (ignored.has(path)) return false;
         try {
-          await lstat(join(project, entry.path));
+          await lstat(join(project, path));
           return true;
         } catch (error) {
           if (
@@ -230,16 +348,7 @@ export class ProjectFileCompletion {
         }
       }),
     );
-    const eligible = selected.filter((_, index) => present[index]);
-    return {
-      entries: eligible.slice(0, 30),
-      pending:
-        state.pending ||
-        (!state.error && state.dirty) ||
-        state.entries !== inventoryEntries,
-      truncated:
-        state.truncated || matched > selected.length || eligible.length > 30,
-    };
+    return new Set(paths.filter((_, index) => present[index]));
   }
 
   private refresh(
@@ -286,7 +395,7 @@ export class ProjectFileCompletion {
       await enumerateProjectFiles(
         project,
         ["ls-files", "-z", "--cached"],
-        (path) => inventory.add(path),
+        (path) => inventory.add(path, true),
         this.abort.signal,
       );
       state.args = [];
@@ -306,7 +415,7 @@ export class ProjectFileCompletion {
           "--directory",
           "--no-empty-directory",
         ],
-        (path) => inventory.add(path),
+        (path) => inventory.add(path, false),
         this.abort.signal,
       );
     }
@@ -332,7 +441,7 @@ export class ProjectFileCompletion {
       await enumerateProjectFiles(
         project,
         [...state.args, "ls-files", "-z", "--others", "--exclude-standard"],
-        (path) => inventory.add(path),
+        (path) => inventory.add(path, false),
         this.abort.signal,
       );
       this.publish(state, inventory);
@@ -377,7 +486,7 @@ export class ProjectFileCompletion {
 }
 
 class CompletionInventory {
-  readonly entries = new Map<string, ProjectFileCompletionEntry>();
+  readonly entries = new Map<string, InventoryEntry>();
   truncated = false;
   private bytes = 0;
 
@@ -386,20 +495,20 @@ class CompletionInventory {
     private readonly maxBytes: number,
   ) {}
 
-  add(path: string): boolean {
+  add(path: string, tracked: boolean): boolean {
     if (
       path.length > 4096 ||
       /\p{Cc}/u.test(path) ||
       path.split("/").includes(".git")
     )
       return true;
-    if (!this.addEntry(path)) return false;
+    if (!this.addEntry(path, tracked)) return false;
     for (
       let slash = path.indexOf("/");
       slash >= 0;
       slash = path.indexOf("/", slash + 1)
     ) {
-      if (!this.addEntry(path.slice(0, slash + 1))) return false;
+      if (!this.addEntry(path.slice(0, slash + 1), tracked)) return false;
     }
     return true;
   }
@@ -408,7 +517,7 @@ class CompletionInventory {
     if (this.entries.delete(path)) this.bytes -= path.length * 2 + 128;
   }
 
-  private addEntry(path: string): boolean {
+  private addEntry(path: string, tracked: boolean): boolean {
     if (this.entries.has(path)) return true;
     const bytes = path.length * 2 + 128;
     if (this.bytes + bytes > this.maxBytes) {
@@ -418,6 +527,7 @@ class CompletionInventory {
     this.entries.set(path, {
       path,
       kind: path.endsWith("/") ? "directory" : "file",
+      tracked,
     });
     this.bytes += bytes;
     this.truncated =

@@ -114,7 +114,9 @@ export function TemplateProjectForm({
         });
         setLocalAttachments((items) => [...items, ref]);
         if (historyScope)
-          void rememberComposerUpload(historyScope, file).catch((cause) =>
+          void rememberComposerUpload(historyScope, file, {
+            projectName: name,
+          }).catch((cause) =>
             showToast(
               t("composerHistorySaveError", { error: String(cause) }),
               "error",
@@ -306,6 +308,8 @@ export function TemplateProjectForm({
       {intent === undefined && (
         <div>
           <ComposerRecents
+            newSession
+            disabled={locked || !attachmentsSupported}
             scope={historyScope}
             onFiles={(files) => void attachFiles(files)}
             uploadsOpen={recentUploadsOpen}

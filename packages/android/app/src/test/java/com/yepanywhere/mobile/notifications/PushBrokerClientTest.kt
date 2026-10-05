@@ -108,6 +108,30 @@ class PushBrokerClientTest {
         )
     }
 
+    @Test
+    fun subscriptionManagementIsBoundedAndUsesOnlyInstallationAuthority() {
+        val id = "c".repeat(22)
+        val create = FakeConnection(201, JSONObject().put("subscriptionId", id).put("sendSecret", "d".repeat(43)).toString())
+        val missing = FakeConnection(404)
+        val queue = ArrayDeque(listOf(create, missing))
+        val urls = mutableListOf<URL>()
+        val broker = PushBrokerClient("https://push.example/") { url -> urls += url; queue.removeFirst() }
+        assertEquals(id, broker.createSubscription(CREDENTIALS)?.subscriptionId)
+        assertEquals(listOf("Bearer ${CREDENTIALS.installationSecret}"), create.requestProperties["Authorization"])
+        assertEquals("{}", create.requestBody())
+        assertFalse(create.instanceFollowRedirects)
+        assertEquals(true, broker.deleteSubscription(CREDENTIALS, id))
+        assertEquals("DELETE", missing.requestMethod)
+        assertEquals("https://push.example/v1/installations/${CREDENTIALS.installationId}/subscriptions/$id", urls.last().toString())
+        for (body in listOf(" ".repeat(8193), "{}", JSONObject().put("subscriptionId", id).put("sendSecret", "d".repeat(43)).put("unexpected", true).toString())) {
+            val malformed = PushBrokerClient("https://push.example/") { FakeConnection(201, body) }
+            assertEquals(null, malformed.createSubscription(CREDENTIALS))
+        }
+        val redirect = PushBrokerClient("https://push.example/") { FakeConnection(302) }
+        assertEquals(null, redirect.createSubscription(CREDENTIALS))
+        assertEquals(false, redirect.deleteSubscription(CREDENTIALS, id))
+    }
+
     private class FakeConnection(
         private val status: Int,
         private val responseBody: String? = null,

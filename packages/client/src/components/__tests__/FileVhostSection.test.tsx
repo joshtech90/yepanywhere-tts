@@ -107,3 +107,41 @@ it("requires a password before serving a password-protected address", async () =
     }),
   );
 });
+
+it("keeps the suggested name for explicit replacement and accepts a manual name", async () => {
+  const replacement = service({ canReplace: true });
+  render(
+    <I18nProvider>
+      <FileVhostSection
+        filePath="new-version/report.html"
+        service={replacement}
+      />
+    </I18nProvider>,
+  );
+  const name = await screen.findByRole("textbox", { name: "Address name" });
+  const checkbox = screen.getByRole("checkbox", {
+    name: "Replace an existing mapping with this name",
+  });
+  expect(checkbox).toHaveProperty("checked", false);
+  fireEvent.click(checkbox);
+  expect(name).toHaveProperty("value", "report");
+  fireEvent.click(screen.getByRole("button", { name: "Serve here" }));
+  await waitFor(() =>
+    expect(replacement.serve).toHaveBeenCalledWith({
+      name: "report",
+      path: "new-version/report.html",
+      public: true,
+      replace: true,
+    }),
+  );
+  fireEvent.change(name, { target: { value: "Manual" } });
+  fireEvent.click(screen.getByRole("button", { name: "Serve here" }));
+  await waitFor(() =>
+    expect(replacement.serve).toHaveBeenLastCalledWith({
+      name: "manual",
+      path: "new-version/report.html",
+      public: true,
+      replace: true,
+    }),
+  );
+});

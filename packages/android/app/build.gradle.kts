@@ -67,13 +67,17 @@ run {
 android {
     namespace = "com.yepanywhere.mobile"
     compileSdk = 36
+    ndkVersion = "28.2.13676358"
 
     defaultConfig {
         applicationId = "com.yepanywhere.mobile"
         minSdk = 24
         targetSdk = 36
-        versionCode = 1000
-        versionName = "0.1.0"
+        versionCode = providers.gradleProperty("yaVersionCode").orNull?.let {
+            require(it.toIntOrNull() in 1..2100000000) { "Invalid yaVersionCode" }
+            it.toInt()
+        } ?: 1002
+        versionName = providers.gradleProperty("yaVersionName").orNull ?: "0.1.2"
         ndk {
             // Keep the app's established modern Android ABI set and prevent
             // JNA's AAR from reintroducing obsolete armeabi/MIPS binaries.
@@ -101,6 +105,15 @@ android {
     buildTypes {
         debug {
             isDebuggable = true
+            // Exercise the shipping native reflection boundary with R8 on a
+            // disposable cleartext fixture, without weakening Release policy.
+            // AGP intentionally warns that debuggable R8 probes cannot enable
+            // all Release optimizations. Debugging is required for WebView
+            // instrumentation; the probe still checks the shrunk shared ABI.
+            isMinifyEnabled = providers.gradleProperty("yaNativeProbeMinify").orNull == "true"
+            testProguardFiles("test-proguard-rules.pro")
+            if (isMinifyEnabled) proguardFiles("probe-proguard-rules.pro")
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
             manifestPlaceholders["usesCleartextTraffic"] =
                 (
                     debugWebClientUrl?.startsWith("http://") == true ||
@@ -139,14 +152,20 @@ android {
     }
 
     sourceSets {
+        getByName("main") {
+            java.srcDir(layout.buildDirectory.dir("generated/rustBindings"))
+            jniLibs.srcDir(layout.buildDirectory.dir("generated/rustJniLibs"))
+        }
         getByName("bundled") {
             assets.srcDir(layout.buildDirectory.dir("generated/webAssets"))
         }
         getByName("test") {
+            java.srcDir("src/sharedTest/java")
             resources.srcDir("src/sharedTest/resources")
             resources.srcDir("../../shared/test/fixtures")
         }
         getByName("androidTest") {
+            java.srcDir("src/sharedTest/java")
             assets.srcDir("src/sharedTest/resources")
             assets.srcDir("../../shared/test/fixtures")
         }
@@ -201,7 +220,16 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.9.2")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.9.2")
     implementation("androidx.webkit:webkit:1.14.0")
-    implementation("com.goterl:lazysodium-android:5.2.0") {
+    testImplementation("com.goterl:lazysodium-android:5.2.0") {
+        // The AAR API is Java bytecode. Its POM's Kotlin 2.1 stdlib is used
+        // only by transitive Android helpers and conflicts with this app's
+        // Kotlin 1.9 compiler; the app already supplies a compatible stdlib.
+        exclude(group = "org.jetbrains.kotlin", module = "kotlin-stdlib")
+        // Android needs JNA's AAR-packaged libjnidispatch rather than the
+        // ordinary JVM JAR selected by LazySodium's published POM.
+        exclude(group = "net.java.dev.jna", module = "jna")
+    }
+    androidTestImplementation("com.goterl:lazysodium-android:5.2.0") {
         // The AAR API is Java bytecode. Its POM's Kotlin 2.1 stdlib is used
         // only by transitive Android helpers and conflicts with this app's
         // Kotlin 1.9 compiler; the app already supplies a compatible stdlib.
@@ -213,7 +241,9 @@ dependencies {
     implementation("net.java.dev.jna:jna:5.17.0@aar")
     implementation(platform("com.google.firebase:firebase-bom:34.16.0"))
     implementation("com.google.firebase:firebase-messaging")
-    implementation("com.nimbusds:srp6a:2.1.0")
+    testImplementation("com.nimbusds:srp6a:2.1.0")
+    androidTestImplementation("com.nimbusds:srp6a:2.1.0")
+    implementation(files(layout.buildDirectory.file("generated/rustls-platform-verifier-0.2.0.aar")))
     // OkHttp 5.x is compiled with Kotlin 2.2. Keep the latest 4.x release
     // until the Android Kotlin/Compose compiler is upgraded deliberately.
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
@@ -268,3 +298,15 @@ tasks.withType<Test>().configureEach {
         )
     }
 }
+
+val prepareRustTransport = tasks.register<Exec>("prepareRustTransport") {
+    workingDir(rootProject.projectDir.resolve("../.."))
+    commandLine("node", "packages/mobile-core/scripts/run.mjs", "android")
+    inputs.dir(rootProject.projectDir.resolve("../mobile-core/src"))
+    inputs.dir(rootProject.projectDir.resolve("../mobile-core/scripts"))
+    inputs.files(rootProject.projectDir.resolve("../mobile-core/Cargo.toml"), rootProject.projectDir.resolve("../mobile-core/Cargo.lock"), rootProject.projectDir.resolve("../mobile-core/rust-toolchain.toml"), rootProject.projectDir.resolve("../mobile-core/uniffi.toml"))
+    outputs.dir(layout.buildDirectory.dir("generated/rustBindings"))
+    outputs.dir(layout.buildDirectory.dir("generated/rustJniLibs"))
+    outputs.file(layout.buildDirectory.file("generated/rustls-platform-verifier-0.2.0.aar"))
+}
+tasks.named("preBuild") { dependsOn(prepareRustTransport) }

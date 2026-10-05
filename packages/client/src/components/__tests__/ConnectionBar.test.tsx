@@ -64,4 +64,14 @@ describe("ConnectionBar", () => {
 
     expect(container.querySelector("[data-connection-status]")).toBeNull();
   });
+
+  it("shows a network failure with developer diagnostics disabled", () => {
+    state.showConnectionBars = false;
+    state.connectionState = "disconnected";
+    expect(
+      renderConnectionBar().container.querySelector(
+        '[data-connection-status="disconnected"]',
+      ),
+    ).not.toBeNull();
+  });
 });

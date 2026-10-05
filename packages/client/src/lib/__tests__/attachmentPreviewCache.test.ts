@@ -17,18 +17,16 @@ import { resizeImageFile } from "../imageAttachmentResize";
 
 const DB_NAME = "yep-anywhere-attachment-previews";
 const STORE_NAME = "images";
+const BLOB_STORE_NAME = "blobs";
 
 function openPreviewDatabase(): Promise<IDBDatabase> {
-  return openDatabase(DB_NAME, 2, (db: IDBDatabase, tx: IDBTransaction) => {
+  return openDatabase(DB_NAME, 3, (db: IDBDatabase) => {
     if (!db.objectStoreNames.contains(STORE_NAME)) {
       const store = db.createObjectStore(STORE_NAME);
       store.createIndex("byLastAccessedAt", "lastAccessedAt");
-      return;
     }
-
-    const store = tx.objectStore(STORE_NAME);
-    if (!store.indexNames.contains("byLastAccessedAt")) {
-      store.createIndex("byLastAccessedAt", "lastAccessedAt");
+    if (!db.objectStoreNames.contains(BLOB_STORE_NAME)) {
+      db.createObjectStore(BLOB_STORE_NAME);
     }
   });
 }
@@ -190,11 +188,13 @@ describe("attachment preview cache", () => {
       thumbnailVariant: "thumb:v1:96:image/png",
       thumbnailWidth: 1,
       thumbnailHeight: 1,
-      thumbnailBlob: new Blob(["thumb"], { type: "image/png" }),
-      fullBlob: new Blob(["full"], { type: "image/png" }),
       totalBytes: 8,
       createdAt: Date.now() - 1000,
       lastAccessedAt: Date.now() - 1000,
+    });
+    await putEntryWithKey(db, BLOB_STORE_NAME, legacyPath, {
+      thumbnailBlob: new Blob(["thumb"], { type: "image/png" }),
+      fullBlob: new Blob(["full"], { type: "image/png" }),
     });
 
     const loaded = await loadCachedAttachmentPreview(attachmentId, legacyPath);
@@ -207,6 +207,55 @@ describe("attachment preview cache", () => {
     expect(await getEntry(db, STORE_NAME, legacyPath)).toMatchObject({
       aliasFor: attachmentId,
     });
+    expect(await getEntry(db, BLOB_STORE_NAME, attachmentId)).toHaveProperty(
+      "fullBlob",
+    );
+    expect(await getEntry(db, BLOB_STORE_NAME, legacyPath)).toBeNull();
+    db.close();
+  });
+
+  it("records an access without rewriting the preview's blobs", async () => {
+    const sourceFile = new File(["preview"], "touched.jpeg", {
+      type: "image/jpeg",
+    });
+    const uploadedFile: UploadedFile = {
+      id: "attachment-id-touched",
+      originalName: "touched.jpeg",
+      name: "attachment-id-touched_touched.jpeg",
+      path: "/project/.attachments/session/attachment-id-touched.jpeg",
+      size: sourceFile.size,
+      mimeType: "image/jpeg",
+    };
+    await storeUploadedAttachmentPreview(uploadedFile, sourceFile);
+    const db = await openPreviewDatabase();
+    const before = await getEntry<{ lastAccessedAt: number }>(
+      db,
+      STORE_NAME,
+      uploadedFile.id,
+    );
+
+    const putStores: string[] = [];
+    const put = IDBObjectStore.prototype.put;
+    vi.spyOn(IDBObjectStore.prototype, "put").mockImplementation(function (
+      this: IDBObjectStore,
+      ...args: Parameters<IDBObjectStore["put"]>
+    ) {
+      putStores.push(this.name);
+      return put.apply(this, args);
+    });
+    vi.spyOn(Date, "now").mockReturnValue((before?.lastAccessedAt ?? 0) + 1);
+
+    const loaded = await loadCachedAttachmentPreview(uploadedFile.id);
+
+    expect(loaded).toHaveProperty("fullBlob");
+    expect(putStores).toEqual([STORE_NAME]);
+    const after = await getEntry<Record<string, unknown>>(
+      db,
+      STORE_NAME,
+      uploadedFile.id,
+    );
+    expect(after?.lastAccessedAt).toBe((before?.lastAccessedAt ?? 0) + 1);
+    expect(after).not.toHaveProperty("fullBlob");
     db.close();
   });
 
@@ -256,7 +305,6 @@ describe("attachment preview cache", () => {
       thumbnailVariant: "current",
       thumbnailWidth: 1,
       thumbnailHeight: 1,
-      fullBlob: new Blob(["x"], { type: "image/jpeg" }),
       totalBytes: 70 * 1024 * 1024,
       createdAt: 1,
       lastAccessedAt,
@@ -273,6 +321,11 @@ describe("attachment preview cache", () => {
       lastAccessedAt: 100,
     });
     await putEntryWithKey(db, STORE_NAME, oldId, preview(oldId, oldPath, 200));
+    for (const id of [recentId, oldId]) {
+      await putEntryWithKey(db, BLOB_STORE_NAME, id, {
+        fullBlob: new Blob(["x"], { type: "image/jpeg" }),
+      });
+    }
     await putEntryWithKey(db, STORE_NAME, oldPath, {
       aliasFor: oldId,
       totalBytes: 0,
@@ -298,6 +351,8 @@ describe("attachment preview cache", () => {
     });
     expect(await getEntry(inspected, STORE_NAME, oldId)).toBeNull();
     expect(await getEntry(inspected, STORE_NAME, oldPath)).toBeNull();
+    expect(await getEntry(inspected, BLOB_STORE_NAME, oldId)).toBeNull();
+    expect(await getEntry(inspected, BLOB_STORE_NAME, recentId)).not.toBeNull();
     inspected.close();
   });
 });

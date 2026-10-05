@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import os from "node:os";
+import process from "node:process";
 import {
   assessHostEligibility,
   parseCpuMax,
@@ -21,6 +23,18 @@ test("parses finite cgroup CPU quotas", () => {
   assert.equal(parseCpuMax("150000 100000"), 1.5);
   assert.equal(parseCpuMax("max 100000"), null);
   assert.equal(parseCpuMax("0 100000"), null);
+});
+
+test("Darwin availability admits reclaimable memory and reports free pages separately", async (t) => {
+  const gib = 1024 ** 3;
+  t.mock.method(os, "platform", () => "darwin");
+  t.mock.method(os, "freemem", () => gib / 2);
+  t.mock.method(process, "availableMemory", () => 4 * gib);
+  const sample = await readHostSample({ memory: { cgroupLimitBytes: null } });
+  assert.equal(sample.memory.hostFreeBytes, gib / 2);
+  assert.equal(sample.memory.hostAvailableBytes, 4 * gib);
+  assert.equal(sample.memory.effectiveAvailableBytes, 4 * gib);
+  assert.equal(sample.memory.availabilitySource, "node-available-memory");
 });
 
 test("profiles a stable capacity key and a bounded host window", async () => {

@@ -192,6 +192,9 @@ existing database. These are durable personal data, not rebuildable discovery
 indexes. Disabling SQLite hides the optional draft capability and leaves browser
 persistence working; it does not delete these tables. Backups and migrations
 must preserve them along with the other non-rebuildable tables.
+Migration 009 adds the account/sequence index used for bounded draft metadata
+catch-up. It preserves all draft rows, revisions, retry receipts and retention;
+the existing schema migration transaction owns its creation.
 
 ## Database ownership and migration
 

@@ -33,9 +33,12 @@ export async function startDraftBrowserServer() {
     createDraftRoutes({
       store,
       staging,
-      scanner: { getProject: async () => null } as unknown as ProjectScanner,
+      scanner: {
+        getProject: async (id: string) => (id === "history" ? { id } : null),
+      } as unknown as ProjectScanner,
       sessions: {
-        resolve: async () => null,
+        resolve: async (id: string) =>
+          /^draft-history-\d+$/.test(id) ? { projectId: "history" } : null,
       } as unknown as SessionAccessResolver,
     }),
   );

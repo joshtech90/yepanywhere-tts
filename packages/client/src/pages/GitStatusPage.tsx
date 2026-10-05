@@ -37,6 +37,7 @@ import {
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { PageHeader } from "../components/PageHeader";
+import { GitActionFeedback } from "../components/GitActionFeedback";
 import { ProjectSelector } from "../components/ProjectSelector";
 import { GlossaryProjectBoundary } from "../contexts/GlossaryContext";
 import { SourceReviewDefaultSessionContext } from "../contexts/SourceReviewDefaultSessionContext";
@@ -1363,14 +1364,11 @@ function GitActionNotices({
   return (
     <div className="git-status-action-notices">
       {gitActions.actionFeedback && gitActions.actionFeedbackTone && (
-        <div
-          className={`git-status-action-message git-status-action-message-${gitActions.actionFeedbackTone}`}
-          role={
-            gitActions.actionFeedbackTone === "warning" ? "alert" : "status"
-          }
-        >
-          {gitActions.actionFeedback}
-        </div>
+        <GitActionFeedback
+          message={gitActions.actionFeedback}
+          tone={gitActions.actionFeedbackTone}
+          failure={gitActions.actionFailure}
+        />
       )}
       {showIntegrationOptions && (
         <GitIntegrationOptionsPanel

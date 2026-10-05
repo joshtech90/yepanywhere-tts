@@ -30,37 +30,40 @@ describe("NativeHostClient", () => {
     client.dispose();
   });
 
-  it("performs and caches the host.describe handshake", async () => {
-    const channel = new FakeChannel();
-    channel.responder = (request) => ({
-      protocol: 1,
-      id: request.id,
-      ok: true,
-      result: {
+  it.each(["android", "ios"])(
+    "performs and caches the %s host.describe handshake",
+    async (platform) => {
+      const channel = new FakeChannel();
+      channel.responder = (request) => ({
         protocol: 1,
-        platform: "android",
+        id: request.id,
+        ok: true,
+        result: {
+          protocol: 1,
+          platform,
+          appVersion: "0.1.0",
+          buildVersion: 1000,
+          features: [],
+        },
+      });
+      const client = new NativeHostClient({ getChannel: () => channel });
+
+      await expect(client.describe()).resolves.toEqual({
+        protocol: 1,
+        platform,
         appVersion: "0.1.0",
         buildVersion: 1000,
         features: [],
-      },
-    });
-    const client = new NativeHostClient({ getChannel: () => channel });
-
-    await expect(client.describe()).resolves.toEqual({
-      protocol: 1,
-      platform: "android",
-      appVersion: "0.1.0",
-      buildVersion: 1000,
-      features: [],
-    });
-    await client.describe();
-    expect(channel.requests).toHaveLength(1);
-    expect(channel.requests[0]).toMatchObject({
-      protocol: 1,
-      method: "host.describe",
-    });
-    client.dispose();
-  });
+      });
+      await client.describe();
+      expect(channel.requests).toHaveLength(1);
+      expect(channel.requests[0]).toMatchObject({
+        protocol: 1,
+        method: "host.describe",
+      });
+      client.dispose();
+    },
+  );
 
   it("gates and parses native notification operations by exact feature", async () => {
     const channel = new FakeChannel();

@@ -56,6 +56,7 @@ interface WorkerCapabilities {
   steer: boolean;
   steerUsesMessageQueue?: boolean;
   appendConversationContext?: boolean;
+  instructionRestoration?: boolean;
   setMaxThinkingTokens: boolean;
   setEffort: boolean;
   effortUpdatesActiveTurn?: boolean;
@@ -63,6 +64,8 @@ interface WorkerCapabilities {
   interrupt: boolean;
   supportedModels: boolean;
   supportedCommands: boolean;
+  /** Absent from hosts started before the context breakdown existed. */
+  getContextBreakdown?: boolean;
   setModel: boolean;
   runProviderCommand: boolean;
 }
@@ -76,6 +79,8 @@ interface WorkerMetadata {
 }
 
 export interface HostedProviderReattachSpec {
+  /** Public binding identity only; credentials remain on the private launch channel. */
+  routerBindingId?: string;
   permissionMode?: PermissionMode;
   model?: string;
   serviceTier?: string;
@@ -658,6 +663,7 @@ function cloneableOptions(
     shouldEmitLiveDeltas: _shouldEmitLiveDeltas,
     onProviderRetentionChange: _onProviderRetentionChange,
     sessionSandbox: _sessionSandbox,
+    instructionReadHistory: _instructionReadHistory,
     getSessionChildEnv,
     ...cloneable
   } = options;
@@ -677,6 +683,7 @@ function reattachSpec(
 ): HostedProviderReattachSpec {
   const sandboxLevel = options.sessionSandboxOptions?.level;
   return {
+    routerBindingId: options.routerLaunch?.bindingId,
     permissionMode: options.permissionMode,
     model: options.model,
     serviceTier: options.serviceTier,
@@ -717,6 +724,14 @@ export async function startHostedProviderSession(
   const requestedReattach = reattachSpec(options);
   if (
     runtime &&
+    runtime.reattach.routerBindingId !== requestedReattach.routerBindingId
+  ) {
+    throw new Error(
+      "Retained runtime router binding does not match this session",
+    );
+  }
+  if (
+    runtime &&
     ((runtime.reattach.sandboxLevel ?? "none") !==
       (requestedReattach.sandboxLevel ?? "none") ||
       (requestedReattach.sandboxLevel === "project-write" &&
@@ -726,18 +741,22 @@ export async function startHostedProviderSession(
     await requestHost("terminate", { runtimeId: runtime.runtimeId });
     runtime = null;
   }
+  const hydrateHistory = !runtime && Boolean(options.instructionReadHistory);
   if (!runtime) {
     runtime = await requestHost<HostedProviderRuntimeInfo>("launch", {
       providerName,
       projectPath: options.cwd,
       sessionId: options.resumeSessionId,
-      options: cloneableOptions(options),
+      options: {
+        ...cloneableOptions(options),
+        deferInstructionHistory: hydrateHistory,
+      },
       runtimeConfig,
       reattach: reattachSpec(options),
     });
   }
   rememberRuntime(runtime);
-  return await HostedAgentSession.connect(runtime, options);
+  return await HostedAgentSession.connect(runtime, options, hydrateHistory);
 }
 
 class HostedMessageQueue implements AgentMessageQueue {
@@ -868,6 +887,7 @@ class HostedAgentSession {
   static async connect(
     runtime: HostedProviderRuntimeInfo,
     options: StartSessionOptions,
+    hydrateHistory = false,
   ): Promise<AgentSession> {
     const environment = getEnvironment();
     if (!environment) throw new Error("Provider runtime host is unavailable");
@@ -888,6 +908,16 @@ class HostedAgentSession {
         ]);
       }
       await requestHost("confirmAttach", { runtimeId: runtime.runtimeId });
+      if (hydrateHistory) {
+        const history = options.instructionReadHistory ?? [];
+        for (let offset = 0; offset < history.length; offset += 32) {
+          await proxy.rpc("hydrateInstructionReadHistory", [
+            history.slice(offset, offset + 32),
+            false,
+          ]);
+        }
+        await proxy.rpc("hydrateInstructionReadHistory", [[], true]);
+      }
       return proxy.toAgentSession();
     } catch (error) {
       socket.destroy();
@@ -1379,6 +1409,18 @@ class HostedAgentSession {
               this.rpc<boolean>("appendConversationContext", [turns]),
           }
         : {}),
+      ...(capabilities.instructionRestoration
+        ? {
+            configureInstructionRestoration: (
+              control: import("./instruction-restoration.js").InstructionRestorationControl,
+            ) => this.rpc<void>("configureInstructionRestoration", [control]),
+            forceReadInstructions: (paths: readonly string[]) =>
+              this.rpc<"native-history" | "user-turn">(
+                "forceReadInstructions",
+                [paths],
+              ),
+          }
+        : {}),
       ...(capabilities.setMaxThinkingTokens
         ? {
             setMaxThinkingTokens: (tokens) =>
@@ -1408,6 +1450,9 @@ class HostedAgentSession {
         : {}),
       ...(capabilities.supportedCommands
         ? { supportedCommands: () => this.rpc("supportedCommands") }
+        : {}),
+      ...(capabilities.getContextBreakdown
+        ? { getContextBreakdown: () => this.rpc("getContextBreakdown") }
         : {}),
       ...(capabilities.setModel
         ? { setModel: (model) => this.rpc("setModel", [model]) }

@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
+import { toUrlProjectId } from "@yep-anywhere/shared";
 import {
   buildPlayableHtml,
+  buildPublicShareFileUrl,
   buildPublicSharePlayUrl,
-  KEEP_FRAGMENT_LINKS_IN_FRAME_SCRIPT,
+  PLAY_FRAME_LINKS_SCRIPT,
   parsePublicSharePlayUrl,
+  playLinkSharePath,
   publicSharePlayUrlFromFileShareUrl,
 } from "../publicSharePlay";
 
@@ -48,6 +51,31 @@ describe("public share play links", () => {
       publicSharePlayUrlFromFileShareUrl("https://ya.example/share/abc"),
     ).toBeNull();
   });
+
+  it("names a followed link as the share's walk does, in or out of the project", () => {
+    const projectId = toUrlProjectId("/p/draft");
+    const from = "research/sr/report.html";
+    expect(playLinkSharePath(projectId, from, "../../topics/x.md#a")).toBe(
+      "topics/x.md",
+    );
+    expect(playLinkSharePath(projectId, from, "figs/a.png?v=2")).toBe(
+      "research/sr/figs/a.png",
+    );
+    expect(playLinkSharePath(projectId, from, "../../../notes/y.md")).toBe(
+      "/p/notes/y.md",
+    );
+    expect(playLinkSharePath(projectId, from, "https://x.test/")).toBeNull();
+    expect(
+      buildPublicShareFileUrl("/remote", {
+        relayUsername: "host",
+        secret: "s3cr3t",
+        projectId: "cHJvag",
+        path: "topics/x.md",
+      }),
+    ).toBe(
+      "/remote/share/s3cr3t/file?h=host&projectId=cHJvag&path=topics%2Fx.md&standalone=1#v=2&target=file",
+    );
+  });
 });
 
 describe("public share play", () => {
@@ -88,9 +116,7 @@ describe("public share play", () => {
     );
     expect(html.startsWith("<!doctype html>")).toBe(true);
     expect(html).not.toContain("<base");
-    expect(html).toContain(
-      `<head><script>${KEEP_FRAGMENT_LINKS_IN_FRAME_SCRIPT}</script>`,
-    );
+    expect(html).toContain(`<head><script>${PLAY_FRAME_LINKS_SCRIPT}</script>`);
     expect(html).toContain('href="data:text/css;base64,');
     expect(html).toContain('src="data:text/javascript;base64,');
     expect(html).toContain('src="https://cdn.example/lib.js"');

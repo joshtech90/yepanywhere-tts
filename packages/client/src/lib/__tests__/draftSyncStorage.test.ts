@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EMPTY_DRAFT,
+  draftHasContent,
   type DraftRead,
+  type DraftSlot,
   type DraftSnapshot,
   type DraftWrite,
   type DraftWriteResult,
@@ -18,14 +20,27 @@ import {
   subscribeDraftStorage,
 } from "../draftSyncStorage";
 import { subscribeDraftPresenceChanges } from "../draftPresenceEvents";
-import { setSyncedDraftSessionIds } from "../syncedDraftPresence";
+import {
+  getSyncedDraftSessionIds,
+  setSyncedDraftSessionIds,
+} from "../syncedDraftPresence";
+import {
+  getClientSummarySnapshotForSource,
+  LOCAL_CLIENT_SUMMARY_SOURCE_KEY,
+  resetClientSummaryStoreForTests,
+  retainClientSummaryDraftDecorations,
+} from "../clientSummaryStore";
+import {
+  saveSessionDraft,
+  updateSessionDraftIndex,
+} from "../sessionDraftStorage";
 import type { SourceTransport } from "../transport/types";
 const key = "draft-new-session:local";
 const raw = (text: string) => JSON.stringify({ version: 1, text });
-function server(owner = "") {
+function server(owner = "", slot: DraftSlot = { kind: "new-session" }) {
   let current: DraftRead = {
     snapshot: {
-      slot: { kind: "new-session" },
+      slot,
       revision: null,
       sequence: 0,
       payload: EMPTY_DRAFT,
@@ -39,49 +54,62 @@ function server(owner = "") {
   let hold:
     | ((value: DraftWriteResult) => Promise<DraftWriteResult>)
     | undefined;
-  const fetch = vi.fn(async (path: string, init?: RequestInit) => {
-    if (path.startsWith("/drafts/index"))
-      return {
-        owner,
-        entries: indexedSessionIds.map((sessionId) => ({
-          slot: { kind: "session" as const, sessionId },
-          revision: "r",
-          empty: false,
-        })),
-        next: null,
-        sequence: next,
-      };
-    if (path.startsWith("/drafts/changes")) return { sequence: next };
-    if (path.endsWith("/read")) return structuredClone(current);
-    if (path.endsWith("/write") || path.endsWith("/clear")) {
-      const op = JSON.parse(String(init?.body)) as DraftWrite;
-      const prior = receipts.get(op.operationId);
-      if (prior) return structuredClone(prior);
-      if (op.baseRevision !== current.snapshot.revision)
+  const fetch = vi.fn(
+    async (path: string, init?: RequestInit): Promise<unknown> => {
+      if (path.startsWith("/drafts/index"))
         return {
+          owner,
+          entries: [
+            ...(current.snapshot.revision
+              ? [
+                  {
+                    slot: current.snapshot.slot,
+                    revision: current.snapshot.revision,
+                    empty: !draftHasContent(current.snapshot.payload),
+                  },
+                ]
+              : []),
+            ...indexedSessionIds.map((sessionId) => ({
+              slot: { kind: "session" as const, sessionId },
+              revision: "r",
+              empty: false,
+            })),
+          ],
+          next: null,
+          sequence: next,
+        };
+      if (path.startsWith("/drafts/changes")) return { sequence: next };
+      if (path.endsWith("/read")) return structuredClone(current);
+      if (path.endsWith("/write") || path.endsWith("/clear")) {
+        const op = JSON.parse(String(init?.body)) as DraftWrite;
+        const prior = receipts.get(op.operationId);
+        if (prior) return structuredClone(prior);
+        if (op.baseRevision !== current.snapshot.revision)
+          return {
+            ...structuredClone(current),
+            outcome: "conflict",
+            operationId: op.operationId,
+          };
+        current = {
+          snapshot: {
+            ...current.snapshot,
+            revision: `rev-${++next}`,
+            sequence: next,
+            payload: path.endsWith("/clear") ? EMPTY_DRAFT : op.payload,
+          },
+          ticket: "ticket",
+        };
+        const result: DraftWriteResult = {
           ...structuredClone(current),
-          outcome: "conflict",
+          outcome: "accepted",
           operationId: op.operationId,
         };
-      current = {
-        snapshot: {
-          ...current.snapshot,
-          revision: `rev-${++next}`,
-          sequence: next,
-          payload: path.endsWith("/clear") ? EMPTY_DRAFT : op.payload,
-        },
-        ticket: "ticket",
-      };
-      const result: DraftWriteResult = {
-        ...structuredClone(current),
-        outcome: "accepted",
-        operationId: op.operationId,
-      };
-      receipts.set(op.operationId, result);
-      return hold ? await hold(result) : result;
-    }
-    throw new Error(`Unexpected request ${path}`);
-  });
+        receipts.set(op.operationId, result);
+        return hold ? await hold(result) : result;
+      }
+      throw new Error(`Unexpected request ${path}`);
+    },
+  );
   const transport = {
     fetch,
     status: {
@@ -116,6 +144,7 @@ const clients: DraftSyncClient[] = [];
 const subscriptions: Array<() => void> = [];
 beforeEach(() => {
   localStorage.clear();
+  resetClientSummaryStoreForTests();
   setDraftAccount("local", "");
   setSyncedDraftSessionIds("local", new Set());
   vi.useFakeTimers();
@@ -125,6 +154,7 @@ afterEach(() => {
   subscriptions.length = 0;
   for (const client of clients) client.stop();
   clients.length = 0;
+  resetClientSummaryStoreForTests();
   document.body.innerHTML = "";
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -242,6 +272,215 @@ function seedAcknowledged(key: string, snapshot: DraftSnapshot) {
     JSON.stringify({ raw: value, base: snapshot }),
   );
 }
+describe("paginated draft index catch-up", () => {
+  it("applies changed-slot presence without rereading or erasing untouched drafts", async () => {
+    const s = server(),
+      c = client(s);
+    s.remote("unchanged editor");
+    seedAcknowledged(key, s.get());
+    observe(key);
+    s.index(["keep", "cleared"]);
+    c.start();
+    await c.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    const original = s.fetch.getMockImplementation()!;
+    s.fetch.mockClear();
+    s.fetch.mockImplementation(async (path, init) => {
+      if (
+        path.startsWith("/drafts/index") &&
+        new URL(path, "http://draft.test").searchParams.has("since")
+      )
+        return {
+          owner: "",
+          sequence: s.get().sequence,
+          next: null,
+          entries: [
+            {
+              slot: { kind: "session", sessionId: "cleared" },
+              revision: "clear",
+              empty: true,
+            },
+            {
+              slot: { kind: "session", sessionId: "added" },
+              revision: "added",
+              empty: false,
+            },
+          ],
+        };
+      return original(path, init);
+    });
+    await c.refresh(1);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(getSyncedDraftSessionIds("local")).toEqual(
+      new Set(["keep", "added"]),
+    );
+    expect(draftStorage.getItem(key)).toBe(raw("unchanged editor"));
+    expect(s.fetch.mock.calls.some(([path]) => path.endsWith("/read"))).toBe(
+      false,
+    );
+  });
+  it("coalesces a full refresh requested while changed-slot catch-up is in flight", async () => {
+    const s = server(),
+      c = client(s);
+    const original = s.fetch.getMockImplementation()!;
+    let release!: (value: unknown) => void;
+    s.fetch.mockImplementation(async (path, init) => {
+      if (path.includes("since="))
+        return new Promise((resolve) => {
+          release = resolve;
+        });
+      return original(path, init);
+    });
+    const partial = c.refresh(0);
+    const full = c.refresh(),
+      siblingFull = c.refresh();
+    release({ owner: "", sequence: 0, entries: [], next: null });
+    await Promise.all([partial, full, siblingFull]);
+    expect(
+      s.fetch.mock.calls
+        .filter(([path]) => path.startsWith("/drafts/index"))
+        .map(([path]) => path),
+    ).toEqual(["/drafts/index?after=&since=0", "/drafts/index?after="]);
+  });
+  it("rebuilds from the full index when the account counter moved behind its cursor", async () => {
+    const s = server(),
+      c = client(s);
+    setSyncedDraftSessionIds("local", new Set(["old-account-draft"]));
+    await c.refresh(42);
+    expect(getSyncedDraftSessionIds("local")).toEqual(new Set());
+    expect(s.fetch.mock.calls.map(([path]) => path)).toEqual([
+      "/drafts/index?after=&since=42",
+      "/drafts/index?after=",
+    ]);
+  });
+  it("uses a full index after a day without an acknowledged refresh", async () => {
+    const s = server(),
+      c = client(s);
+    s.remote("old draft");
+    seedAcknowledged(key, s.get());
+    observe(key);
+    c.start();
+    await c.refresh();
+    await vi.advanceTimersByTimeAsync(0);
+    vi.setSystemTime(Date.now() + 86_400_000);
+    s.fetch.mockClear();
+    s.remote("new draft after long sleep");
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(
+      s.fetch.mock.calls.some(([path]) => path === "/drafts/index?after="),
+    ).toBe(true);
+    expect(s.fetch.mock.calls.some(([path]) => path.includes("since="))).toBe(
+      false,
+    );
+    expect(draftStorage.getItem(key)).toBe(raw("new draft after long sleep"));
+  });
+  it.each(["updated on the phone", ""])(
+    "catches an earlier page's concurrent edit or clear (%j) without another change",
+    async (remoteText) => {
+      const s = server(),
+        c = client(s);
+      s.remote("old remote draft");
+      seedAcknowledged(key, s.get());
+      observe(key);
+      const original = s.fetch.getMockImplementation()!;
+      let changed = false;
+      let changeDuringPagination = false;
+      s.fetch.mockImplementation(async (path, init) => {
+        if (!path.startsWith("/drafts/index")) return original(path, init);
+        if (new URL(path, "http://draft.test").searchParams.get("after") === "")
+          return {
+            owner: "",
+            sequence: s.get().sequence,
+            entries: [
+              { slot: s.get().slot, revision: s.get().revision, empty: false },
+              ...Array.from({ length: 99 }, (_, i) => ({
+                slot: { kind: "new-session" as const, projectId: `old-${i}` },
+                revision: `cleared-${i}`,
+                empty: true,
+              })),
+            ],
+            next: "page-two",
+          };
+        if (changeDuringPagination && !changed) {
+          changed = true;
+          if (remoteText) s.remote(remoteText);
+          else
+            await original("/drafts/clear", {
+              body: JSON.stringify({
+                slot: s.get().slot,
+                baseRevision: s.get().revision,
+                operationId: "phone-clear",
+                ticket: "ticket",
+                payload: EMPTY_DRAFT,
+              }),
+            });
+        }
+        return {
+          owner: "",
+          sequence: s.get().sequence,
+          entries: [],
+          next: null,
+        };
+      });
+      c.start();
+      await c.refresh();
+      await vi.advanceTimersByTimeAsync(0);
+      changeDuringPagination = true;
+      const refreshing = c.refresh();
+      expect(c.refresh()).toBe(refreshing);
+      await refreshing;
+      await vi.advanceTimersByTimeAsync(1100);
+      expect(
+        draftPayloadFromStorage(draftAddress(key)!, draftStorage.getItem(key))
+          .fields.text ?? "",
+      ).toBe(remoteText);
+      expect(
+        s.fetch.mock.calls.some(([path]) => path === "/drafts/changes?after=1"),
+      ).toBe(true);
+      expect(s.get().sequence).toBe(2);
+      expect(s.fetch.mock.calls.some(([path]) => path.endsWith("/write"))).toBe(
+        false,
+      );
+    },
+  );
+  it("retries an incomplete index without acknowledging unread pages", async () => {
+    const s = server(),
+      c = client(s);
+    s.remote("old remote draft");
+    seedAcknowledged(key, s.get());
+    observe(key);
+    s.remote("unread second-page draft");
+    const original = s.fetch.getMockImplementation()!;
+    let failed = false;
+    s.fetch.mockImplementation(async (path, init) => {
+      if (!path.startsWith("/drafts/index")) return original(path, init);
+      if (new URL(path, "http://draft.test").searchParams.get("after") === "")
+        return {
+          owner: "",
+          sequence: s.get().sequence,
+          entries: [],
+          next: "page-two",
+        };
+      if (!failed) {
+        failed = true;
+        throw new Error("Second page unavailable");
+      }
+      return {
+        owner: "",
+        sequence: s.get().sequence,
+        next: null,
+        entries: [
+          { slot: s.get().slot, revision: s.get().revision, empty: false },
+        ],
+      };
+    });
+    c.start();
+    await c.refresh();
+    await vi.advanceTimersByTimeAsync(1100);
+    expect(draftStorage.getItem(key)).toBe(raw("unread second-page draft"));
+    expect(s.get().sequence).toBe(2);
+  });
+});
 describe("local-first snapshot synchronization", () => {
   it("evicts acknowledged drafts after the last editor closes and restores their base offline", async () => {
     const s = server(),
@@ -997,4 +1236,96 @@ it("a failed review refresh cannot apply its cached remote version", async () =>
   expect(await c.resolve(e, "remote", revision)).toBe(false);
   expect(e.saved.raw).toBe(raw("desktop edit"));
   expect(e.error).toBe("sync");
+});
+
+describe("synchronized session draft badges", () => {
+  const sessionId = "badge-session";
+  const sessionKey = `draft-message-${sessionId}`;
+  const sourceKey = LOCAL_CLIENT_SUMMARY_SOURCE_KEY;
+  const reference = { sourceKey, sessionId };
+  const hasBadge = () =>
+    getClientSummarySnapshotForSource(
+      sourceKey,
+    ).localDecorations.draftSessionIds.has(sessionId);
+
+  function mountedSession() {
+    const s = server("", { kind: "session", sessionId });
+    s.remote("previous draft");
+    seedAcknowledged(sessionKey, s.get());
+    updateSessionDraftIndex(reference, raw("previous draft"));
+    // The sidebar can subscribe before the coordinator/editor mounts.
+    subscriptions.push(retainClientSummaryDraftDecorations(sourceKey));
+    subscriptions.push(subscribeDraftStorage(sessionKey, () => {}));
+    const c = client(s);
+    c.start();
+    return { s, c };
+  }
+
+  it("removes the badge when a remote clear reaches the local body after its index", async () => {
+    const { s, c } = mountedSession();
+    await c.refresh();
+    expect(hasBadge()).toBe(true);
+    s.remote("");
+    await c.refresh();
+    expect(hasBadge()).toBe(true);
+    await c.sync(c.entries.get(sessionKey)!);
+    expect(draftStorage.getItem(sessionKey)).toBeNull();
+    expect(
+      localStorage.getItem(`draft-presence-message:local:${sessionId}`),
+    ).toBeNull();
+    expect(hasBadge()).toBe(false);
+    await c.refresh();
+    expect(hasBadge()).toBe(false);
+  });
+
+  it("keeps the badge and newer local text when the server clears the previous draft", async () => {
+    const { s, c } = mountedSession();
+    await c.refresh();
+    saveSessionDraft(reference, "next local draft");
+    s.remote("");
+    await c.refresh();
+    await c.sync(c.entries.get(sessionKey)!);
+    expect(draftStorage.getItem(sessionKey)).toBe(raw("next local draft"));
+    expect(hasBadge()).toBe(true);
+  });
+
+  it("keeps a focused draft badge until the deferred clear applies after blur", async () => {
+    const { s, c } = mountedSession();
+    await c.refresh();
+    const input = document.createElement("textarea");
+    input.dataset.draftKey = sessionKey;
+    document.body.append(input);
+    input.focus();
+    s.remote("");
+    await c.refresh();
+    await c.sync(c.entries.get(sessionKey)!);
+    expect(hasBadge()).toBe(true);
+    expect(draftStorage.getItem(sessionKey)).toBe(raw("previous draft"));
+    input.blur();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(draftStorage.getItem(sessionKey)).toBeNull();
+    expect(hasBadge()).toBe(false);
+  });
+
+  it("adopts sibling-tab presence without echoing the draft body or metadata", async () => {
+    const { s, c } = mountedSession();
+    await c.refresh();
+    s.remote("");
+    await c.refresh();
+    const setItem = vi.spyOn(localStorage, "setItem");
+    for (const value of [null, raw("sibling draft"), null]) {
+      if (value === null) localStorage.removeItem(sessionKey);
+      else localStorage.setItem(sessionKey, value);
+      setItem.mockClear();
+      window.dispatchEvent(
+        new StorageEvent("storage", { key: sessionKey, newValue: value }),
+      );
+      expect(hasBadge()).toBe(value !== null);
+      expect(
+        setItem.mock.calls.every(([key]) =>
+          key.startsWith("draft-presence-message:"),
+        ),
+      ).toBe(true);
+    }
+  });
 });

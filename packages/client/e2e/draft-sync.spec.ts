@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Response } from "@playwright/test";
+import { EMPTY_DRAFT } from "@yep-anywhere/shared";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createTestViteServer } from "./support/vite-server";
@@ -10,7 +11,34 @@ let base: string;
 // The handoff test exercises multiple real debounce windows.
 test.setTimeout(60_000);
 test.beforeAll(async () => {
+  // CI 36921363093 spent 74.6s seeding before its first browser API call.
+  // Budget fixture preparation at 4x that measurement; interactions stay at 60s.
+  test.setTimeout(300_000);
   api = await startDraftBrowserServer();
+  const seededAt = performance.now();
+  // Thirty days at 100 distinct session drafts/day, using real cleared rows.
+  for (let i = 0; i < 3000; i++) {
+    const slot = { kind: "session" as const, sessionId: `draft-history-${i}` };
+    const initial = api.store.read("", slot);
+    const saved = api.store.write("", {
+      slot,
+      baseRevision: initial.snapshot.revision,
+      ticket: initial.ticket,
+      operationId: `history-${i}-save`,
+      payload: { fields: { text: "sent" }, attachments: [] },
+    });
+    api.store.write("", {
+      slot,
+      baseRevision: saved.snapshot.revision,
+      ticket: saved.ticket,
+      operationId: `history-${i}-clear`,
+      payload: EMPTY_DRAFT,
+    });
+    if (i % 100 === 99) await new Promise<void>((done) => setImmediate(done));
+  }
+  console.info(
+    `[draft-sync] seeded 3,000 cleared drafts in ${Math.ceil(performance.now() - seededAt)}ms`,
+  );
   server = await createTestViteServer({
     root: resolve(dirname(fileURLToPath(import.meta.url)), ".."),
     server: { host: "127.0.0.1", proxy: { "/api": { target: api.url } } },
@@ -23,7 +51,7 @@ test.afterAll(async () => {
   await api?.close();
   await presentUiCaptures();
 });
-test("two-device handoff, sequential typing, offline reload and conditional send clear", async ({
+test("two-device handoff and sequential typing with 3,000 cleared drafts, offline reload and send clear", async ({
   browser,
 }) => {
   const desktop = await browser.newContext({
@@ -37,6 +65,23 @@ test("two-device handoff, sequential typing, offline reload and conditional send
   const a = await desktop.newPage(),
     b = await phone.newPage();
   const errors: string[] = [];
+  const deltaSizes: number[] = [];
+  const recordDelta = async (response: Response) => {
+    const url = new URL(response.url());
+    if (
+      !url.pathname.endsWith("/drafts/index") ||
+      !url.searchParams.has("since")
+    )
+      return;
+    try {
+      const page = await response.json();
+      deltaSizes.push(page.entries.length);
+    } catch {
+      // A response may be aborted when its owned browser context closes.
+    }
+  };
+  a.on("response", (response) => void recordDelta(response));
+  b.on("response", (response) => void recordDelta(response));
   a.on("pageerror", (e) => errors.push(e.message));
   b.on("pageerror", (e) => errors.push(e.message));
   try {
@@ -129,6 +174,9 @@ test("two-device handoff, sequential typing, offline reload and conditional send
       )
       .toBe("Next draft");
     expect(errors).toEqual([]);
+    expect(deltaSizes.length).toBeGreaterThan(0);
+    // Only the active prompt changed; the 3,000 old clears are not retransmitted.
+    expect(Math.max(...deltaSizes)).toBeLessThanOrEqual(1);
   } finally {
     await desktop.close();
     await phone.close();
@@ -283,7 +331,9 @@ test("phone send clears an unchanged desktop draft quietly after focus leaves", 
   browser,
 }) => {
   api.store.deleteOwner("");
-  const desktop = await browser.newContext();
+  const desktop = await browser.newContext({
+    viewport: { width: 1000, height: 600 },
+  });
   const phone = await browser.newContext({
     viewport: { width: 375, height: 812 },
     isMobile: true,
@@ -292,26 +342,56 @@ test("phone send clears an unchanged desktop draft quietly after focus leaves", 
   const a = await desktop.newPage(),
     b = await phone.newPage();
   try {
-    await a.goto(`${base}e2e/fixtures/draft-sync.html`);
-    await b.goto(`${base}e2e/fixtures/draft-sync.html`);
+    const sessionId = "draft-history-0";
+    const slot = { kind: "session" as const, sessionId };
+    await a.goto(`${base}e2e/fixtures/draft-sync.html?session=${sessionId}`);
+    await b.goto(`${base}e2e/fixtures/draft-sync.html?session=${sessionId}`);
     const inputA = a.getByRole("textbox", { name: "Prompt" });
     const inputB = b.getByRole("textbox", { name: "Prompt" });
+    await inputA.evaluate((node) => {
+      node.addEventListener("keydown", (event) => {
+        if (!(event instanceof KeyboardEvent) || event.key.length !== 1) return;
+        const start = performance.now();
+        node.addEventListener(
+          "input",
+          () =>
+            requestAnimationFrame(() => {
+              const w = window as typeof window & { latencies?: number[] };
+              w.latencies ??= [];
+              w.latencies.push(performance.now() - start);
+            }),
+          { once: true },
+        );
+      });
+    });
     await inputA.pressSequentially("Send from phone", { delay: 20 });
+    const latencies = await a.evaluate(
+      () =>
+        (window as typeof window & { latencies?: number[] }).latencies ?? [],
+    );
+    expect(latencies).toHaveLength(15);
+    expect(Math.max(...latencies)).toBeLessThan(100);
     await expect(inputB).toHaveValue("Send from phone", { timeout: 10000 });
+    const navigation = a.getByRole("navigation", { name: "Sessions" });
+    await expect(navigation.getByText("Draft", { exact: true })).toBeVisible();
     await b.getByRole("button", { name: "Send", exact: true }).click();
     await expect
-      .poll(
-        () =>
-          api.store.read("", { kind: "new-session" }).snapshot.payload.fields
-            .text,
-      )
+      .poll(() => api.store.read("", slot).snapshot.payload.fields.text)
       .toBeUndefined();
     await a.evaluate(() => window.dispatchEvent(new Event("focus")));
     await expect(a.getByRole("status")).toHaveCount(0);
     await expect(inputA).toHaveValue("Send from phone");
-    await a.getByRole("heading", { name: "New session", exact: true }).click();
+    await expect(navigation.getByText("Draft", { exact: true })).toBeVisible();
+    await a
+      .getByRole("heading", { name: "Session draft", exact: true })
+      .click();
     await expect(inputA).toHaveValue("", { timeout: 10000 });
     await expect(a.getByRole("status")).toHaveCount(0);
+    await expect(navigation.getByText("Draft", { exact: true })).toHaveCount(0);
+    await recordUiCapture(a, "draft-cleared-desktop");
+    await a.setViewportSize({ width: 375, height: 812 });
+    await expect(navigation.getByText("Draft", { exact: true })).toHaveCount(0);
+    await recordUiCapture(a, "draft-cleared-phone");
     await a.reload();
     await expect(inputA).toHaveValue("");
   } finally {

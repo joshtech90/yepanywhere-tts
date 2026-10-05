@@ -1,4 +1,9 @@
-import { ARTIFACT_SANDBOX, type UrlProjectId } from "@yep-anywhere/shared";
+import {
+  ARTIFACT_SANDBOX,
+  type LocalResourceRef,
+  parseLocalResourceAttributes,
+  type UrlProjectId,
+} from "@yep-anywhere/shared";
 import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { ResourceContextMenu } from "./FileResourceActions";
@@ -33,6 +38,16 @@ interface Props {
    * preview directly, a running artifact through its find agent.
    */
   onFindSource?: (source: ViewerFindSource | null) => void;
+  /** The file's absolute path, so the preview's relative links name files. */
+  documentPath?: string | null;
+  /**
+   * Opens a file the scriptless preview links to. The frame cannot open it
+   * itself: it has no scripts, no popups, and no file base URL.
+   */
+  onLocalResourceLink?: (
+    resource: LocalResourceRef,
+    anchor: HTMLAnchorElement,
+  ) => void;
 }
 
 /**
@@ -56,8 +71,8 @@ export function ArtifactPreview(props: Props) {
   const announceApp = useSessionAppAnnouncer();
   // Rendering reparses a possibly multi-megabyte document; do it per source.
   const scriptlessDocument = useMemo(
-    () => createScriptlessHtmlPreviewDocument(props.html),
-    [props.html],
+    () => createScriptlessHtmlPreviewDocument(props.html, props.documentPath),
+    [props.html, props.documentPath],
   );
   const [frame, setFrame] = useState<HTMLIFrameElement | null>(null);
   const running = Boolean(grant);
@@ -67,6 +82,38 @@ export function ArtifactPreview(props: Props) {
     onFindSource?.(frame ? { kind: running ? "agent" : "frame", frame } : null);
   }, [frame, running, onFindSource]);
   useEffect(() => () => onFindSource?.(null), [onFindSource]);
+  const { onLocalResourceLink } = props;
+  useEffect(() => {
+    if (!frame || running || !onLocalResourceLink) return;
+    // The same-origin preview lets the viewer listen inside it; the frame's
+    // elements belong to its own realm, so no `instanceof` checks.
+    const onClick = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0) return;
+      const anchor = (event.target as Element | null)?.closest?.(
+        "a[data-ya-resource], area[data-ya-resource]",
+      ) as HTMLAnchorElement | null | undefined;
+      if (!anchor) return;
+      const resource = parseLocalResourceAttributes({
+        "data-ya-resource": anchor.getAttribute("data-ya-resource"),
+        "data-ya-path": anchor.getAttribute("data-ya-path"),
+      });
+      if (!resource) return;
+      event.preventDefault();
+      onLocalResourceLink(resource, anchor);
+    };
+    let listening: Document | null = null;
+    const listen = () => {
+      listening?.removeEventListener("click", onClick);
+      listening = frame.contentDocument;
+      listening?.addEventListener("click", onClick);
+    };
+    listen();
+    frame.addEventListener("load", listen);
+    return () => {
+      frame.removeEventListener("load", listen);
+      listening?.removeEventListener("click", onClick);
+    };
+  }, [frame, running, onLocalResourceLink]);
   useEffect(() => {
     if (grant) announceApp(grant.url, props.title);
   }, [grant, props.title, announceApp]);
@@ -194,6 +241,7 @@ function RunningPreviewMenu({
       canStartNewSession={false}
       onClose={onClose}
       onOpen={() => window.open(grantUrl, "_blank", "noopener,noreferrer")}
+      fileTarget={projectId ? { projectId, path } : undefined}
       onCopyPublicUrl={
         canCreateFileShare && projectId
           ? () =>

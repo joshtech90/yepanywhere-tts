@@ -231,3 +231,28 @@
 .rewoundGroupCopy {
   margin-left: auto;
 }
+
+.contentFilterBlock {
+  display: block;
+  max-width: min(100%, 980px);
+}
+
+.contentFilterBlockTitle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.contentFilterBlockGuidance {
+  margin: 6px 0 0;
+  /* Align the guidance under the title text, past the icon and its gap. */
+  padding-left: calc(1ch + 8px);
+  color: var(--text-secondary, var(--text-primary));
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.contentFilterBlockLabel {
+  color: var(--text-muted);
+}

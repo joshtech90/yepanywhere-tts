@@ -31,7 +31,7 @@
 }
 .expand {
   position: absolute;
-  right: 0;
+  right: 64px;
   bottom: calc(100% + 1px);
   width: 26px;
   z-index: 3;
@@ -108,7 +108,10 @@
   border-radius: 4px;
   box-shadow: 0 4px 12px #0005;
 }
-.menu button {
+.menu button,
+.menu a {
+  display: block;
+  text-decoration: none;
   border: 0;
   background: none;
   color: var(--text-primary);

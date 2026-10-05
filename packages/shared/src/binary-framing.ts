@@ -16,7 +16,8 @@
  *   0x03 = gzip-compressed JSON (Phase 3)
  *   0x04 = speech audio chunk
  *   0x05 = transport chunk carrying part of a complete binary message
- *   0x06-0xFF = reserved
+ *   0x06 = raw bytes of a streamed response body (encrypted only)
+ *   0x07-0xFF = reserved
  */
 
 /** Format byte values for binary WebSocket frames */
@@ -31,6 +32,12 @@ export const BinaryFormat = {
   SPEECH_AUDIO: 0x04,
   /** Part of a complete binary WebSocket message (Phase 4) */
   TRANSPORT_CHUNK: 0x05,
+  /**
+   * Raw bytes of a streamed response body. Sent only inside an encrypted
+   * envelope, and only for a request that asked to be streamed, so it needs
+   * no advertisement in client capabilities.
+   */
+  RESPONSE_CHUNK: 0x06,
 } as const;
 
 export type BinaryFormatValue =
@@ -340,7 +347,8 @@ export function extractFormatAndPayload(decrypted: Uint8Array): {
     format !== BinaryFormat.BINARY_UPLOAD &&
     format !== BinaryFormat.COMPRESSED_JSON &&
     format !== BinaryFormat.SPEECH_AUDIO &&
-    format !== BinaryFormat.TRANSPORT_CHUNK
+    format !== BinaryFormat.TRANSPORT_CHUNK &&
+    format !== BinaryFormat.RESPONSE_CHUNK
   ) {
     throw new BinaryEnvelopeError(
       `Unknown format byte: 0x${format.toString(16).padStart(2, "0")}`,
@@ -642,6 +650,67 @@ export function encodeUploadChunkPayload(
   result.set(data, pos);
 
   return result;
+}
+
+// =============================================================================
+// Streamed response chunks
+// =============================================================================
+
+/** Header of a streamed response chunk: sequence (8) + request UUID (16). */
+export const RESPONSE_CHUNK_HEADER_SIZE = OFFSET_BYTE_LENGTH + UUID_BYTE_LENGTH;
+
+/** One part of a streamed response body. */
+export interface ResponseChunkData {
+  /**
+   * The connection's outbound message sequence. JSON messages carry it inside
+   * their payload; a raw chunk carries it here so the same replay check
+   * covers both.
+   */
+  seq: number;
+  /** The request this body answers, as a UUID string. */
+  requestId: string;
+  data: Uint8Array;
+}
+
+/**
+ * Encode a streamed response chunk (format 0x06) for an encrypted envelope,
+ * which adds the format byte.
+ *
+ * Payload: [8 bytes: seq big-endian uint64][16 bytes: request UUID][data]
+ */
+export function encodeResponseChunkPayload(
+  seq: number,
+  requestId: string,
+  data: Uint8Array,
+): Uint8Array {
+  const result = new Uint8Array(RESPONSE_CHUNK_HEADER_SIZE + data.length);
+  result.set(offsetToBytes(seq), 0);
+  result.set(uuidToBytes(requestId), OFFSET_BYTE_LENGTH);
+  result.set(data, RESPONSE_CHUNK_HEADER_SIZE);
+  return result;
+}
+
+/**
+ * Decode a streamed response chunk payload (without format byte).
+ *
+ * @throws UploadChunkError if the payload is shorter than its header
+ */
+export function decodeResponseChunkPayload(
+  payload: Uint8Array,
+): ResponseChunkData {
+  if (payload.length < RESPONSE_CHUNK_HEADER_SIZE) {
+    throw new UploadChunkError(
+      `Response chunk payload too short: ${payload.length} bytes (minimum ${RESPONSE_CHUNK_HEADER_SIZE})`,
+      "INVALID_LENGTH",
+    );
+  }
+  return {
+    seq: bytesToOffset(payload.subarray(0, OFFSET_BYTE_LENGTH)),
+    requestId: bytesToUuid(
+      payload.subarray(OFFSET_BYTE_LENGTH, RESPONSE_CHUNK_HEADER_SIZE),
+    ),
+    data: payload.subarray(RESPONSE_CHUNK_HEADER_SIZE),
+  };
 }
 
 // =============================================================================

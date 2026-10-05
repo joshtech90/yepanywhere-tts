@@ -1150,7 +1150,7 @@ textarea {
   box-sizing: border-box;
 }
 
-.new-session-form button {
+.new-session-form > button {
   align-self: flex-end;
 }
 
@@ -13726,7 +13726,6 @@ a.sidebar-nav-item {
   color: white;
 }
 
-.session-list-item:hover .session-list-item__menu,
 .session-list-item__link:focus-visible ~ .session-list-item__menu,
 .session-list-item__menu:focus-within,
 .session-list-item__menu.is-open {
@@ -14600,25 +14599,6 @@ body:has(.session-page)
     z-index: 10000;
     box-shadow: var(--shadow-lg);
   }
-}
-
-.git-status-action-message {
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border-color);
-  border-radius: var(--radius-md);
-  font-size: 0.82rem;
-}
-
-.git-status-action-message-success {
-  color: var(--success-color);
-  background: color-mix(in srgb, var(--success-color) 12%, transparent);
-  border-color: color-mix(in srgb, var(--success-color) 28%, transparent);
-}
-
-.git-status-action-message-warning {
-  color: var(--warning-color);
-  background: color-mix(in srgb, var(--warning-color) 12%, transparent);
-  border-color: color-mix(in srgb, var(--warning-color) 28%, transparent);
 }
 
 .git-integration-options {

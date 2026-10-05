@@ -338,7 +338,8 @@ describe("Sidebar client summary source registry", () => {
     await act(async () => {});
     expect(ids()).toEqual(["a", "b"]);
     fireEvent.pointerEnter(aside, { pointerType: "mouse" });
-    fireEvent.focus(aside);
+    const focusedLink = aside.querySelector("a")!;
+    act(() => focusedLink.focus());
     act(() => {
       recordSessionInteraction(source, "b");
       reportGlobalSessionsCollectionSnapshot(
@@ -354,7 +355,7 @@ describe("Sidebar client summary source registry", () => {
     expect(ids()).toEqual(["a", "b"]);
     fireEvent.pointerLeave(aside, { pointerType: "mouse" });
     expect(ids()).toEqual(["a", "b"]);
-    fireEvent.blur(aside, { relatedTarget: document.body });
+    act(() => focusedLink.blur());
     expect(ids()).toEqual(["b", "a", "new"]);
     act(() => recordSessionInteraction(source, "a"));
     expect(ids()).toEqual(["a", "b", "new"]);

@@ -53,6 +53,7 @@ export interface RemoteCompatibilityInput {
   latestVersion: string | null;
   updateAvailable: boolean;
   installSource?: RemoteInstallSource;
+  desktopRuntime?: boolean;
   resumeProtocolVersion?: number;
   remoteCompatibilityLevel?: number;
   capabilities?: string[];
@@ -378,6 +379,11 @@ function buildUpdateGuidance(
   input: RemoteCompatibilityInput,
   targetVersion: string,
 ): { text: string; action?: RemoteCompatibilityNoticeAction } {
+  if (input.desktopRuntime) {
+    return {
+      text: "This server is bundled with the Yep Anywhere desktop app. On its host, use Check for Updates in the menu bar or system tray to update the app.",
+    };
+  }
   const installSource = getEffectiveInstallSource(input);
   if (installSource === "source") {
     return {

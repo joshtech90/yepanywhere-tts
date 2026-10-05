@@ -172,6 +172,12 @@ bucketed physical/effective memory. Exact capacity fields, Node/V8 versions,
 CI metadata, and start/end host samples remain beside it. Samples include load,
 available host/cgroup memory, swap, Linux pressure data where available, and
 whole-run CPU occupancy. Each repetition gets its own resource window.
+Linux availability uses `MemAvailable`; Darwin uses Node's
+`process.availableMemory()` (free plus reclaimable inactive/purgeable pages),
+with immediately free bytes and the availability source recorded separately.
+Earlier Darwin samples used `os.freemem()` under the availability field and
+therefore underreported headroom; those samples describe free pages, not
+available memory. CPU/swap evidence remains independently required.
 
 Before fixture work, the suite takes a three-second baseline and requires
 sufficient effective CPU, idle CPU equivalents, CPU-busy fraction, load per

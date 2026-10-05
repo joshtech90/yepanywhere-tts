@@ -13,6 +13,8 @@ export interface ProjectAppTarget {
 const path = (id: string) => `/projects/${encodeURIComponent(id)}/app`;
 export const projectAppApi = {
   inventory: () => fetchJSON<ProjectAppInventory>("/project-apps"),
+  deleteApp: (id: string) =>
+    fetchJSON<{ deleted: boolean }>(path(id), { method: "DELETE" }),
   releaseAddress: (projectId: string, namespace: string) =>
     fetchJSON<unknown>("/project-apps/address/release", {
       method: "POST",

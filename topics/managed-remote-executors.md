@@ -23,6 +23,7 @@ The staged implementation and research gates are tracked in
 
 Related:
 [working across machines](multi-machine-architecture.md),
+[managed remote execution user journey](managed-remote-execution-user-journey.md),
 [SSH Remote Executors](../docs/project/remote-executors.md),
 [managed SSH executor tactical](../docs/tactical/119-managed-ssh-executor-baseline.md),
 [managed runner execution targets](managed-runner-execution-targets.md),
@@ -96,6 +97,12 @@ sessions retain their historical resume path until a separate migration and
 compatibility decision is approved.
 
 ## Product Shape And User Journey
+
+The detailed target experience, including the persistent-checkout and safe
+synchronization follow-ons, lives in the
+[managed remote execution user journey](managed-remote-execution-user-journey.md).
+This section summarizes the smaller isolated-worktree slice owned by the
+current tactical.
 
 The feature is YA-novel and explicitly default-off. With it disabled, YA does
 not inspect SSH configuration, test hosts, transfer artifacts, create remote

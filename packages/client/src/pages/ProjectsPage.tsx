@@ -36,6 +36,7 @@ import { useInboxCountsByProject } from "../lib/clientSummaryStore";
 import { newProjectBaseFor } from "../lib/newProjectPath";
 import { serverSupportsProjectQueue } from "../lib/projectQueueVisibility";
 import type { Project } from "../types";
+import styles from "./ProjectsPage.module.css";
 
 const EMPTY_PROJECT_QUEUE_PROJECT_IDS: readonly string[] = [];
 
@@ -358,15 +359,6 @@ export function ProjectsPage() {
     await projectQueues.updateItem(projectId, itemId, { message });
   };
 
-  if (loading) return <div className="loading">{t("projectsLoading")}</div>;
-  if (error) {
-    return (
-      <div className="error">
-        {t("projectsErrorPrefix")} {error.message}
-      </div>
-    );
-  }
-
   const isEmpty = projects.length === 0;
 
   return (
@@ -379,6 +371,23 @@ export function ProjectsPage() {
 
       <main className="page-scroll-container">
         <div className="page-content-inner">
+          {loading && projects.length === 0 && (
+            <div role="status">{t("projectsLoading")}</div>
+          )}
+          {error && (
+            <div className={styles.loadError} role="status">
+              <span>
+                {t("projectsErrorPrefix")} {error.message}
+              </span>
+              <button
+                className={styles.retry}
+                type="button"
+                onClick={() => void refetch()}
+              >
+                {t("hostOfflineRetry")}
+              </button>
+            </div>
+          )}
           {/* Toolbar with Add Project button */}
           <div className="inbox-toolbar">
             {!showAddForm ? (
@@ -500,23 +509,26 @@ export function ProjectsPage() {
           )}
 
           {isEmpty ? (
-            <div className="inbox-empty">
-              <svg
-                width="48"
-                height="48"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.5"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                aria-hidden="true"
-              >
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-              <h3>{t("projectsEmptyTitle")}</h3>
-              <p>{t("projectsEmptyDescription")}</p>
-            </div>
+            !loading &&
+            !error && (
+              <div className="inbox-empty">
+                <svg
+                  width="48"
+                  height="48"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                </svg>
+                <h3>{t("projectsEmptyTitle")}</h3>
+                <p>{t("projectsEmptyDescription")}</p>
+              </div>
+            )
           ) : (
             <ul className="project-list-cards">
               {sortedProjects.map((project) => (

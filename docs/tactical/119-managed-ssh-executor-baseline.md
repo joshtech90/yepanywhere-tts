@@ -12,6 +12,13 @@ capability, setting, browser-visible managed session metadata, user-project Git
 writer, UI, or reload-survival claim described here is implemented or
 compatibility-approved.
 
+Product journey and follow-on UX direction:
+[`topics/managed-remote-execution-user-journey.md`](../../topics/managed-remote-execution-user-journey.md).
+That document distinguishes this tactical's isolated-worktree, fetched-head
+baseline from the intended persistent-checkout, safe-sync, and direct
+fast-forward integration follow-ons; linking it does not expand a gate's
+implementation scope.
+
 This tactical deliberately has stop/go gates. A normal implementation request
 should complete and record one gate at a time rather than treating the whole
 document as one unattended change. Later steps consume the evidence and code
@@ -953,10 +960,12 @@ configuration, provider account, or unrelated VM.
   and additional providers; each requires separate provider-specific
   acceptance.
 - Dirty controller snapshot seeding and dirty target artifact capture.
-- Existing target checkout adoption and multiple simultaneous writers in one
+- Existing target checkout adoption, including opt-in safe fast-forward
+  synchronization before launch, and multiple simultaneous writers in one
   target repository anchor.
 - Project Queue/workstream remote lanes and agent-initiated placement.
-- Automatic fast-forward, merge, rebase, cherry-pick, push, or PR creation.
+- The explicit fast-forward-only **Bring into main** journey, plus automatic
+  fast-forward, merge, rebase, cherry-pick, push, or PR creation.
 - Full remote Source Control, inventory, media, blame, search, and source-review
   parity.
 - Credential brokering beyond the approved Codex file-backed ChatGPT

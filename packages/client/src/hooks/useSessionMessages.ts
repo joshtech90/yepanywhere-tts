@@ -520,6 +520,7 @@ export function useSessionMessages(
   );
   const [reloadGeneration, setReloadGeneration] = useState(0);
   const forceFreshLoadRef = useRef(false);
+  const initialLoadFailedRef = useRef(false);
   const reloadSession = useCallback(() => {
     forceFreshLoadRef.current = true;
     coordinator.resetEntryState();
@@ -712,6 +713,7 @@ export function useSessionMessages(
   // replacing the cached transcript.
   useEffect(() => {
     let cancelled = false;
+    initialLoadFailedRef.current = false;
     let warmHydrated = false;
     let pendingWarmData: GetSessionResult | null = null;
     let pendingWarmError: Error | null = null;
@@ -1056,6 +1058,7 @@ export function useSessionMessages(
           coordinator.buildInitialLoadErrorPerfDetail(err),
         );
         setSessionLoadProgress(coordinator.buildLoadProgress("error"));
+        initialLoadFailedRef.current = true;
         setLoading(false);
         onLoadError?.(err);
       });
@@ -1216,6 +1219,13 @@ export function useSessionMessages(
   // Fetch new messages incrementally (for file change events)
   const fetchNewMessages = useCallback(
     (trigger?: IncrementalFetchTrigger) => {
+      // Incremental reconciliation cannot complete a failed initial reveal or
+      // open its stream gate. Renew that load when connectivity returns.
+      if (initialLoadFailedRef.current) {
+        initialLoadFailedRef.current = false;
+        reloadSession();
+        return Promise.resolve();
+      }
       return coordinator.runExclusiveFetchNewMessages(async () => {
         const requestId = ++incrementalFetchSequenceRef.current;
         let afterMessageId: string | undefined;
@@ -1383,6 +1393,7 @@ export function useSessionMessages(
       effectiveTailTurns,
       initialHistoryCompactions,
       notifyTranscriptReconciled,
+      reloadSession,
       projectId,
       sessionId,
       tailFrom,

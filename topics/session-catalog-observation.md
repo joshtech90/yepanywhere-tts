@@ -61,6 +61,18 @@ becoming placeholders. When a bounded provider head supplies its creation time,
 the retained row preserves it; a client never substitutes last activity for an
 unknown creation time.
 
+A retained row carries the two times the sidebar files sessions by, as the
+complete path does: `createdAt` and `lastHumanTurnAt`. They come from the
+indexed summary when one is warm. A live Claude session is appended to
+constantly and rarely has one, so without it the row takes `createdAt` from
+the first timestamped entry in the 256 KiB head. It takes `lastHumanTurnAt`
+from the latest entry in the 256 KiB tail that passes the summary's own
+human-turn test. A human turn further back than that window is omitted, and
+the sidebar falls back to the creation time. Before this, such rows had
+neither time and a session being worked in filed under Older (observed
+2026-09-30). Catalog row format 2 carries both; format 1 rows are read once
+more.
+
 The base generation publishes before the optional Codex question pass. That
 pass skips archived sessions and obeys the existing bounded preview contract.
 A subsequent generation adds observed questions; clients preserve existing

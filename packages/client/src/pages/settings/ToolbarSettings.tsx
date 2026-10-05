@@ -36,6 +36,10 @@ import { useServerSettings } from "../../hooks/useServerSettings";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import {
+  useAttachmentAction,
+  type AttachmentAction,
+} from "../../hooks/useAttachmentAction";
+import {
   setQuestionReminderTurns,
   useQuestionReminderTurns,
 } from "../../hooks/useQuestionReminderTurns";
@@ -232,6 +236,7 @@ function ControlPresenceSlider({
 
 export function ToolbarSettings() {
   const { t } = useI18n();
+  const [attachmentAction, setAttachmentAction] = useAttachmentAction();
   useSettingsPaneTitle(t("appearanceSessionToolbarTitle"));
   const questionReminderTurns = useQuestionReminderTurns();
   const questionLimits = getQuestionReminderThresholds(questionReminderTurns);
@@ -597,6 +602,24 @@ export function ToolbarSettings() {
   return (
     <SettingsSection description={t("appearanceSessionToolbarDescription")}>
       <div className="settings-group">
+        <SettingsItem
+          label={t("audioMemoDefaultAction")}
+          description={t("audioMemoDefaultActionDescription")}
+        >
+          <select
+            className="settings-select"
+            value={attachmentAction}
+            onChange={(event) =>
+              setAttachmentAction(event.target.value as AttachmentAction)
+            }
+            aria-label={t("audioMemoDefaultAction")}
+          >
+            <option value="auto">{t("audioMemoDefaultAuto")}</option>
+            <option value="menu">{t("audioMemoShareMenu")}</option>
+            <option value="files">{t("toolbarAttachFiles")}</option>
+            <option value="memo">{t("audioMemoRecord")}</option>
+          </select>
+        </SettingsItem>
         <SettingsItem
           label={t("appearanceToolbarDefaultActionTitle")}
           description={t("appearanceToolbarDefaultActionDescription")}

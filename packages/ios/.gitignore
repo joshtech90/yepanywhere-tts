@@ -1,0 +1,6 @@
+build/
+Generated/
+YepAnywhere.xcodeproj/
+Config/GoogleService-Info.plist
+project.generated.yml
+Config/Signing.xcconfig

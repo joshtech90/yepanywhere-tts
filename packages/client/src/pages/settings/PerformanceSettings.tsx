@@ -17,7 +17,12 @@ import {
   useSessionPerformanceSettings,
 } from "../../hooks/useSessionPerformanceSettings";
 import { useStableToolPreviewRendering } from "../../hooks/useStableToolPreviewRendering";
+import { useLiveToolOutputEnabled } from "../../hooks/useLiveToolOutputEnabled";
 import { useStreamingEnabled } from "../../hooks/useStreamingEnabled";
+import {
+  MAX_SEARCH_CONCURRENCY,
+  useSearchConcurrency,
+} from "../../hooks/useSearchConcurrency";
 import { useVersion } from "../../hooks/useVersion";
 import { useI18n } from "../../i18n";
 import { SettingsItem } from "./SettingsItem";
@@ -47,6 +52,9 @@ export function PerformanceSettings() {
   const { t } = useI18n();
   useSettingsPaneTitle(t("performanceSectionTitle"));
   const { streamingEnabled, setStreamingEnabled } = useStreamingEnabled();
+  const { liveToolOutputEnabled, setLiveToolOutputEnabled } =
+    useLiveToolOutputEnabled();
+  const { searchConcurrency, setSearchConcurrency } = useSearchConcurrency();
   const { sessionLoadingProgressEnabled, setSessionLoadingProgressEnabled } =
     useSessionLoadingProgress();
   const {
@@ -227,6 +235,8 @@ export function PerformanceSettings() {
   const undoState = useMemo(
     () => ({
       streamingEnabled,
+      liveToolOutputEnabled,
+      searchConcurrency,
       sessionLoadingProgressEnabled,
       sessionDomLingerEnabled,
       sessionActiveWindowTrimEnabled,
@@ -239,6 +249,8 @@ export function PerformanceSettings() {
     }),
     [
       streamingEnabled,
+      liveToolOutputEnabled,
+      searchConcurrency,
       sessionLoadingProgressEnabled,
       sessionDomLingerEnabled,
       sessionActiveWindowTrimEnabled,
@@ -253,6 +265,8 @@ export function PerformanceSettings() {
   const restoreUndoState = useCallback(
     (snapshot: typeof undoState) => {
       setStreamingEnabled(snapshot.streamingEnabled);
+      setLiveToolOutputEnabled(snapshot.liveToolOutputEnabled);
+      setSearchConcurrency(snapshot.searchConcurrency);
       setSessionLoadingProgressEnabled(snapshot.sessionLoadingProgressEnabled);
       setSessionDomLingerEnabled(snapshot.sessionDomLingerEnabled);
       setSessionActiveWindowTrimEnabled(
@@ -283,6 +297,8 @@ export function PerformanceSettings() {
     },
     [
       setStreamingEnabled,
+      setLiveToolOutputEnabled,
+      setSearchConcurrency,
       setSessionLoadingProgressEnabled,
       setSessionDomLingerEnabled,
       setSessionActiveWindowTrimEnabled,
@@ -302,6 +318,26 @@ export function PerformanceSettings() {
     <SettingsSection description={t("performanceSectionDescription")}>
       <div className="settings-group">
         <SettingsItem
+          label={t("performanceSearchConcurrencyTitle")}
+          description={t("performanceSearchConcurrencyDescription")}
+          valueText={t("performanceSearchConcurrencyValue", {
+            count: searchConcurrency,
+          })}
+          className="settings-item--wide-control"
+        >
+          <div className="settings-item-actions">
+            <CommittedRangeInput
+              min={1}
+              max={MAX_SEARCH_CONCURRENCY}
+              step={1}
+              value={searchConcurrency}
+              onCommit={setSearchConcurrency}
+              aria-label={t("performanceSearchConcurrencyTitle")}
+            />
+            <span className="settings-input-unit">{searchConcurrency}</span>
+          </div>
+        </SettingsItem>
+        <SettingsItem
           label={t("appearanceStreamingTitle")}
           description={t("appearanceStreamingDescription")}
         >
@@ -311,6 +347,22 @@ export function PerformanceSettings() {
               checked={streamingEnabled}
               onChange={(event) => setStreamingEnabled(event.target.checked)}
               aria-label={t("appearanceStreamingTitle")}
+            />
+            <span className="toggle-slider" />
+          </label>
+        </SettingsItem>
+        <SettingsItem
+          label={t("appearanceLiveToolOutputTitle")}
+          description={t("appearanceLiveToolOutputDescription")}
+        >
+          <label className="toggle-switch">
+            <input
+              type="checkbox"
+              checked={liveToolOutputEnabled}
+              onChange={(event) =>
+                setLiveToolOutputEnabled(event.target.checked)
+              }
+              aria-label={t("appearanceLiveToolOutputTitle")}
             />
             <span className="toggle-slider" />
           </label>

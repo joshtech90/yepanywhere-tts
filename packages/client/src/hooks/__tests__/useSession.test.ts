@@ -5,6 +5,7 @@ import type {
   UrlProjectId,
 } from "@yep-anywhere/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useEffect } from "react";
 import { UI_KEYS } from "../../lib/storageKeys";
 import type {
   FileChangeEvent,
@@ -98,6 +99,7 @@ let streamingContentOptions:
 let sessionMessagesOptions:
   | {
       onLoadComplete?: (result: SessionLoadResult) => void;
+      onLoadError?: (error: Error) => void;
       onTranscriptReconciled?: (updatedAt: string) => void;
     }
   | undefined;
@@ -182,9 +184,11 @@ function installVisibilityStateMock(initial: DocumentVisibilityState) {
 vi.mock("../useSessionMessages", () => ({
   useSessionMessages: vi.fn((options) => {
     sessionMessagesOptions = options;
-    options.onTranscriptReconciled?.(
-      sessionMessagesMock.reconciledSessionUpdatedAt,
-    );
+    const reconciledAt = sessionMessagesMock.reconciledSessionUpdatedAt;
+    // biome-ignore lint/correctness/useExhaustiveDependencies: Tests mutate this fixture watermark between rerenders to simulate async transcript completion.
+    useEffect(() => {
+      options.onTranscriptReconciled?.(reconciledAt);
+    }, [options.onTranscriptReconciled, reconciledAt]);
     return {
       messages: sessionMessagesMock.messages,
       agentContent: {},
@@ -588,6 +592,86 @@ describe("useSession completion reconciliation", () => {
     });
 
     expect(result.current.isCompacting).toBe(false);
+  });
+
+  it("keeps known goal state when a live inventory does not report it", () => {
+    const knownGoal = {
+      name: "goal",
+      description: "Set a goal",
+      providerDetails: {
+        codex: { goalObjective: "ship the fix", goalStatus: "active" },
+      },
+    };
+    const { result } = renderHook(() =>
+      useSession(PROJECT_ID, "sess-1", {
+        owner: "self",
+        processId: "proc-1",
+      }),
+    );
+
+    act(() => {
+      sessionMessagesOptions?.onLoadComplete?.({
+        session: {
+          id: "sess-1",
+          projectId: PROJECT_ID,
+          title: null,
+          fullTitle: null,
+          createdAt: "2026-04-23T23:00:00.000Z",
+          updatedAt: "2026-04-24T00:00:00.000Z",
+          messageCount: 1,
+          ownership: { owner: "self", processId: "proc-1" },
+          provider: "codex",
+        },
+        status: { owner: "self", processId: "proc-1" },
+        slashCommands: [knownGoal],
+      });
+    });
+
+    // A process start or skills refresh reports the inventory before the
+    // provider has said anything about the goal.
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "system",
+        subtype: "init",
+        slash_command_inventory: [
+          { name: "goal", description: "Set a goal" },
+          { name: "review", description: "Review changes" },
+        ],
+      });
+      settleStreamDispatch();
+    });
+
+    expect(result.current.slashCommands).toEqual([
+      knownGoal,
+      { name: "review", description: "Review changes" },
+    ]);
+
+    act(() => {
+      sessionStreamHandler?.({
+        eventType: "message",
+        type: "system",
+        subtype: "commands_changed",
+        slash_command_inventory: [
+          {
+            name: "goal",
+            description: "Set a goal",
+            providerDetails: {
+              codex: { goalObjective: null, goalStatus: null },
+            },
+          },
+        ],
+      });
+      settleStreamDispatch();
+    });
+
+    expect(result.current.slashCommands).toEqual([
+      {
+        name: "goal",
+        description: "Set a goal",
+        providerDetails: { codex: { goalObjective: null, goalStatus: null } },
+      },
+    ]);
   });
 
   it("does not refresh for unrelated session status events", () => {
@@ -1109,6 +1193,16 @@ describe("useSession completion reconciliation", () => {
       processId: "proc-1",
     });
     expect(result.current.processState).toBe("in-turn");
+  });
+
+  it("clears a failed read after transcript recovery", () => {
+    const { result } = renderHook(() => useSession(PROJECT_ID, "sess-1"));
+    act(() => sessionMessagesOptions?.onLoadError?.(new Error("offline")));
+    expect(result.current.error?.message).toBe("offline");
+    act(() =>
+      sessionMessagesOptions?.onTranscriptReconciled?.("2026-10-04T14:00:00Z"),
+    );
+    expect(result.current.error).toBeNull();
   });
 
   it("reconciles a replayed busy navigation hint with retained idle state", async () => {

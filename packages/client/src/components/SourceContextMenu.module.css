@@ -90,6 +90,17 @@
   opacity: 0.5;
 }
 
+.touchTargets button {
+  min-height: 44px;
+}
+
+.heading {
+  padding: 8px 10px;
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+  font-weight: 600;
+}
+
 /* Touch rows have no hover, so the trigger stays visible and grows its target. */
 @media (max-width: 600px) {
   .trigger {

@@ -1191,6 +1191,26 @@ describe("MessageList rendering", () => {
     expect(onCorrect).toHaveBeenCalledWith("user-2", "second request");
   });
 
+  it("shows a content-filter block with its guidance always visible", () => {
+    const { container } = render(
+      <MessageList
+        messages={[
+          {
+            type: "system",
+            uuid: "msg-filter",
+            subtype: "content_filter_block",
+            content: "Offer a permitted alternative.",
+          },
+        ]}
+      />,
+    );
+
+    // The shared MessageList i18n mock renders unlisted keys verbatim.
+    expect(screen.getByText("contentFilterBlockTitle")).toBeTruthy();
+    expect(screen.getByText(/Offer a permitted alternative\./)).toBeTruthy();
+    expect(container.querySelector("details")).toBeNull();
+  });
+
   it("renders compact summaries as one collapsed compact notification", () => {
     const { container } = render(
       <MessageList

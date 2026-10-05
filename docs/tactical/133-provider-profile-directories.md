@@ -4,6 +4,14 @@ Status: direction agreed, not started, 2026-09-21. No implementation exists;
 this document records the vetted design so implementation can begin from it.
 Contributing-model: fable-5-1.
 
+The separately opted-in
+[Agent Auth Router integration](143-agent-auth-router-integration.md) now plans
+router-owned account pools and balancing behind YA's native client runtimes.
+This plan remains the direct-CLI profile path: separate homes, no credential
+reads/copies in YA, and no automatic profile switching. The router proposal
+does not replace these direct-profile semantics or establish cross-account
+conversation continuation.
+
 ## Problem
 
 Yep Anywhere runs every Claude session against one Claude Code state

@@ -1,5 +1,11 @@
 # T3 Code
 
+For the current remote-execution analysis, read
+[T3 Code remote environments: ownership, workspaces and recovery](t3code-remote-sessions.md),
+reviewed against freshly fetched upstream source on 2026-10-03. The broader
+comparison below remains a 2026-09-04 snapshot; its absence claims about forks,
+external-session import and scheduling are historical, not current findings.
+
 - **GitHub:** [pingdotgg/t3code](https://github.com/pingdotgg/t3code)
 - **Website:** [t3.codes](https://t3.codes)
 - **Type:** Local agent server + web client + Electron desktop + native iOS/Android

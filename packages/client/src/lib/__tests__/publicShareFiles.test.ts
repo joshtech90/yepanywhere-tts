@@ -39,6 +39,23 @@ describe("normalizePublicShareFilePath", () => {
       path: "README.md",
     });
   });
+
+  it("keeps an outside absolute path only for a live file share", () => {
+    const outside = { outsideProject: true };
+    expect(
+      normalizePublicShareFilePath(
+        "/notes/../docs/./x.md:4",
+        projectId,
+        outside,
+      ),
+    ).toEqual({ path: "/docs/x.md", lineNumber: 4 });
+    expect(
+      normalizePublicShareFilePath("/repo/README.md", projectId, outside),
+    ).toEqual({ path: "README.md" });
+    expect(
+      normalizePublicShareFilePath("/../x.md", projectId, outside),
+    ).toBeNull();
+  });
 });
 
 describe("public share file routes", () => {
@@ -78,6 +95,19 @@ describe("public share file routes", () => {
       fetchPublicShareRawFileBlob(grant, null, "/etc/passwd"),
     ).rejects.toThrow("File is outside this public share");
     expect(fetchPublicShareBlobViaRelay).toHaveBeenCalledTimes(1);
+  });
+
+  it("reads a linked file outside the project through a live file share", async () => {
+    await fetchPublicShareRawFileBlob(
+      { ...grant, standaloneFile: true },
+      null,
+      "/notes/fig.png",
+    );
+    expect(fetchPublicShareBlobViaRelay).toHaveBeenCalledWith({
+      relayUrl: grant.relayUrl,
+      relayUsername: grant.relayUsername,
+      path: "/public-api/shares/s%2Fcret/files/raw?path=%2Fnotes%2Ffig.png&viewerId=viewer-1",
+    });
   });
 
   it("uses media the referencing document embeds without a request", async () => {

@@ -51,3 +51,10 @@ scripts/release-website.sh 1.5.3
 The staging deploy runbook is host-specific and intentionally kept out of this public
 repo. It lives in the private dotfiles repo: `~/code/dotfiles/machines/pi/README.md`. If
 asked to deploy to staging, read the steps there.
+
+## Preparing native mobile stores
+
+See [mobile store preparation](../distribution/mobile/README.md) for shared
+listing copy, existing icons, initial artwork, and the boundary between internal
+testing and public store submission. Private account and credential inventory
+lives in the dotfiles runbooks.

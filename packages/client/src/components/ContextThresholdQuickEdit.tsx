@@ -4,6 +4,7 @@ import {
   type ProviderName,
 } from "@yep-anywhere/shared";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useContextBreakdown } from "../hooks/useContextBreakdown";
 import { useProviderSubscriptionUsage } from "../hooks/useProviderSubscriptionUsage";
 import { useProviders } from "../hooks/useProviders";
 import { useServerSettings } from "../hooks/useServerSettings";
@@ -28,6 +29,8 @@ interface ContextThresholdQuickEditProps {
   provider?: ProviderName;
   /** Model context window, for the token preview. */
   contextWindow?: number;
+  /** Session whose live context breakdown the usage popover shows. */
+  sessionId?: string;
   size?: number;
 }
 
@@ -69,6 +72,7 @@ export function ContextThresholdQuickEdit({
   model,
   provider,
   contextWindow,
+  sessionId,
   size = 16,
 }: ContextThresholdQuickEditProps) {
   const { t } = useI18n();
@@ -80,6 +84,7 @@ export function ContextThresholdQuickEdit({
     refresh: refreshSubscriptionUsage,
   } = useProviderSubscriptionUsage(provider);
   const [open, setOpen] = useState<"usage" | "threshold" | null>(null);
+  const breakdown = useContextBreakdown(sessionId, open === "usage");
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const suppressClickRef = useRef(false);
@@ -158,6 +163,10 @@ export function ContextThresholdQuickEdit({
    * the composer toolbar — at phone widths that centring pushes its right edge
    * (and the token counts) past the viewport. Nudge it back inside once it is
    * laid out, so the numbers it exists to show are readable.
+   *
+   * It grows upward from its anchor, so its bottom edge is fixed: capping its
+   * height to the space above that edge keeps a tall popover (an expanded
+   * context breakdown) scrollable instead of running off the top.
    */
   useEffect(() => {
     if (!open) return;
@@ -166,6 +175,8 @@ export function ContextThresholdQuickEdit({
     if (!popover) return;
     popover.style.setProperty(POPOVER_SHIFT_VAR, "0px");
     const rect = popover.getBoundingClientRect();
+    popover.style.maxHeight = `${Math.max(0, Math.floor(rect.bottom - VIEWPORT_MARGIN_PX))}px`;
+    popover.style.overflowY = "auto";
     const overflowRight = rect.right - (window.innerWidth - VIEWPORT_MARGIN_PX);
     const overflowLeft = VIEWPORT_MARGIN_PX - rect.left;
     const shift =
@@ -257,6 +268,7 @@ export function ContextThresholdQuickEdit({
         <ContextUsagePopover
           usage={subscriptionUsage ?? undefined}
           contextUsage={usage}
+          breakdown={breakdown}
           modelId={model}
           refreshing={subscriptionUsageLoading}
           onRefresh={() => void refreshSubscriptionUsage()}

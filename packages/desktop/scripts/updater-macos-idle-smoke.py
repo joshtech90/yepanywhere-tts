@@ -16,10 +16,11 @@ import time
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--app", required=True)
+parser.add_argument("--bundle-id", default="com.yepanywhere.desktop")
 parser.add_argument("--idle-seconds", type=float, default=360)
 args = parser.parse_args()
 control = str(Path.home() / "bin/machine-control")
-target = "com.yepanywhere.desktop"
+target = args.bundle_id
 started = time.monotonic()
 
 
@@ -46,9 +47,9 @@ def check_current(case):
     press("Check for Updates")
     deadline = time.monotonic() + 15
     while time.monotonic() < deadline:
-        result = call(operation="snapshot", target=target, query="latest version")
+        result = call(operation="snapshot", target=target)
         values = [element.get("value") for element in result["data"]["elements"]]
-        if "You are running the latest version on this channel." in values:
+        if any(value and ("is up to date." in value or "You are running the latest version on this channel." in value) for value in values):
             assert result["data"]["application"]["active"], "Updater not foreground"
             report("passed", case=case)
             return

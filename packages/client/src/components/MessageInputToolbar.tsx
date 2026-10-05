@@ -1,3 +1,4 @@
+import { AttachmentButton } from "./AttachmentButton";
 import type {
   ModelInfo,
   ProviderRuntimeStatus,
@@ -236,6 +237,8 @@ function getIsearchAlternateRows(
 }
 
 export interface MessageInputToolbarProps {
+  onAttachmentPanel?: () => void;
+  onRecordAudioMemo?: () => void;
   /** Canonical YA session id represented by this composer. */
   sessionId?: string;
   // Mode selector
@@ -536,6 +539,8 @@ interface ToolbarModeControl {
 }
 
 interface ToolbarAttachmentControl {
+  onAttachmentPanel?: () => void;
+  onRecordAudioMemo?: () => void;
   canAttach?: boolean;
   attachmentCount: number;
   onAttachClick?: () => void;
@@ -736,6 +741,8 @@ interface ToolbarActionsControl {
   contextProvider?: ProviderName;
   /** Model context window, for the quick-edit token preview. */
   contextWindow?: number;
+  /** Session whose live context breakdown the usage popover may show. */
+  contextSessionId?: string;
   btw?: ToolbarBtwControl | null;
   stop?: ToolbarStopControl | null;
   projectQueue?: ToolbarProjectQueueControl | null;
@@ -1596,6 +1603,7 @@ export function MessageInputToolbarView({
           model={actionsControl.contextModel}
           provider={actionsControl.contextProvider}
           contextWindow={actionsControl.contextWindow}
+          sessionId={actionsControl.contextSessionId}
           size={16}
         />
       </span>
@@ -1986,6 +1994,7 @@ export function MessageInputToolbarView({
     event: MouseEvent<HTMLDivElement>,
   ) => {
     if (!onHideControl || !(event.target instanceof Element)) return;
+    if (event.target.closest('[data-attachment-menu="true"]')) return;
     const controlTarget = event.target.closest<HTMLElement>(
       "[data-session-toolbar-control]",
     );
@@ -2065,35 +2074,17 @@ export function MessageInputToolbarView({
             </span>
           )}
           {visibility.attachments && (
-            <button
-              type="button"
-              {...toolbarControlMarker("attachments")}
+            <AttachmentButton
               className={inlineTierClass("attachments", "attach-button")}
-              onClick={attachmentControl.onAttachClick}
-              disabled={!attachmentControl.canAttach}
-              title={
-                attachmentControl.canAttach
-                  ? t("toolbarAttachFiles")
-                  : t("toolbarAttachDisabled")
+              onFiles={attachmentControl.onAttachClick}
+              onMemo={attachmentControl.onRecordAudioMemo}
+              onPanel={attachmentControl.onAttachmentPanel}
+              onHide={
+                onHideControl ? () => onHideControl("attachments") : undefined
               }
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                aria-hidden="true"
-              >
-                <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-              </svg>
-              {attachmentControl.attachmentCount > 0 && (
-                <span className="attach-count">
-                  {attachmentControl.attachmentCount}
-                </span>
-              )}
-            </button>
+              disabled={!attachmentControl.canAttach}
+              count={attachmentControl.attachmentCount}
+            />
           )}
           {visibility.slashMenu && slashControl && (
             <span
@@ -2368,36 +2359,19 @@ export function MessageInputToolbarView({
                   )}
                 {visibility.attachments &&
                   isPriorityCollapsible("attachments") && (
-                    <button
-                      type="button"
-                      {...toolbarControlMarker("attachments")}
+                    <AttachmentButton
                       className={menuTierClass("attachments", "attach-button")}
-                      onClick={attachmentControl.onAttachClick}
-                      disabled={!attachmentControl.canAttach}
-                      title={
-                        attachmentControl.canAttach
-                          ? t("toolbarAttachFiles")
-                          : t("toolbarAttachDisabled")
+                      onFiles={attachmentControl.onAttachClick}
+                      onMemo={attachmentControl.onRecordAudioMemo}
+                      onPanel={attachmentControl.onAttachmentPanel}
+                      onHide={
+                        onHideControl
+                          ? () => onHideControl("attachments")
+                          : undefined
                       }
-                      role="menuitem"
-                    >
-                      <svg
-                        width="16"
-                        height="16"
-                        viewBox="0 0 24 24"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        aria-hidden="true"
-                      >
-                        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48" />
-                      </svg>
-                      {attachmentControl.attachmentCount > 0 && (
-                        <span className="attach-count">
-                          {attachmentControl.attachmentCount}
-                        </span>
-                      )}
-                    </button>
+                      disabled={!attachmentControl.canAttach}
+                      count={attachmentControl.attachmentCount}
+                    />
                   )}
                 {visibility.sessionStatus &&
                   isPriorityCollapsible("sessionStatus") &&
@@ -3143,6 +3117,8 @@ export function MessageInputToolbarView({
 }
 
 export function MessageInputToolbar({
+  onAttachmentPanel,
+  onRecordAudioMemo,
   sessionId,
   mode = "default",
   onModeChange,
@@ -3928,6 +3904,8 @@ export function MessageInputToolbar({
           : null
       }
       attachmentControl={{
+        onAttachmentPanel,
+        onRecordAudioMemo,
         canAttach,
         attachmentCount,
         onAttachClick,
@@ -4086,6 +4064,7 @@ export function MessageInputToolbar({
         contextModel: contextRequestedModel ?? thinkingModel,
         contextProvider: thinkingProviderInfo?.name,
         contextWindow: thinkingModelInfo?.contextWindow,
+        contextSessionId: sessionId,
         btw: onBtwClick
           ? {
               onClick: onBtwClick,

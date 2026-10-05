@@ -127,6 +127,15 @@ expanded. The [pre-boot composer](early-typing-handoff.md#pre-boot-composer)
 reserves the same sidebar space so adopting early typing does not require
 hiding navigation; `?sidebar=expanded` still wins.
 
+## Session List Menu Visibility
+
+Session row menus remain hidden at rest on both desktop and touch screens.
+Desktop hover reveals only the hovered row's menu. Touch devices reveal the
+menu for the focused row; keyboard focus and an open menu keep its trigger
+visible. Touch hover emulation must not reveal menus across the list or require
+a second tap to open a session. These rules apply to compact sidebar rows and
+session cards alike.
+
 ## Public Share Example
 
 Public shares have a valid reason for an independent unauthenticated top-level
@@ -195,6 +204,9 @@ Every form has an explicit × dismiss control with at least a 36×36 pixel hit
 target. Visible copy stays compact; complete restart-risk and action wording
 remains available through accessible names and hover titles. All
 `ReloadBanner` callers inherit this placement and interaction contract.
+An empty notice stack stays mounted for future notices but does not measure
+geometry or schedule placement for composer mutations. A later visible notice
+still receives the same collision-aware placement.
 Choosing any action consumes the current notice instead of morphing it into a
 status or confirmation panel. The requested reload or safe-restart schedule
 continues; after a reload, later source changes may produce a fresh notice.

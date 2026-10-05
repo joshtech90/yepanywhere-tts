@@ -7,9 +7,11 @@
 
 Topic: new-session-agent-tooling
 
-Status: broader direction proposal, updated 2026-09-08. Opt-in own-session
+Status: broader direction proposal, updated 2026-10-02. Opt-in own-session
 command delivery is implemented in [Agent Own-Session Inspection](agent-self.md).
-The remaining tooling and instruction controls here are proposals. The
+Installed Machine Control advertisement is implemented for eligible local
+launches as described below. The remaining tooling and instruction controls
+here are proposals. The
 consumer-side story (what the scripts do against the server) is
 [`agent-session-access.md`](agent-session-access.md); this topic owns
 what YA injects into a session at launch. Packaging, desktop delivery, the
@@ -137,3 +139,28 @@ state dir, not by double-redirecting.
 - Exact direct-network versus provider-host bridge profiles for sandboxed
   launches; individual command settings do not silently widen access.
 - MCP adapter timing after the command runtime proves each service surface.
+
+## Native administrator authentication
+
+Explicitly configured local unrestricted Mac launches can advertise the
+verified Machine Control `mc-sudo` helper. Defaults stay unchanged.
+[Native sudo](native-sudo.md) owns configuration, authority and validation.
+
+## Installed Machine Control instructions
+
+**Current:** eligible local Claude-family and unrestricted Codex launches can
+select default-off Machine Control in advanced New Session options. Capability
+112 gates both read-only installation readiness and the optional `machineControl`
+launch field. Explicit false suppresses `YEP_MC_CONTROL`; older hosts receive
+neither new requests nor the field. Selected queue submission is unavailable.
+Remote executors, plan mode, session sandboxes and fixed launches remain
+ineligible. Existing context and environment survive composition.
+
+YA verifies the installed app and complete Python client before adding its
+command directory to PATH and an exact command path plus `agent instructions`
+to context. MC owns native access, claims, resident lifecycle and updates.
+Advertisement grants no access; closing YA does not revoke MC's grant. Native
+Stop, expiry or MC restart owns revocation. Native sudo remains independent.
+[Optional Computer Control](optional-computer-control.md) owns configuration,
+legacy retirement and acceptance limits; [Tactical 142](../docs/tactical/142-machine-control-desktop-consumer.md)
+records actual native/browser Codex turns, image/media use and platform checks.

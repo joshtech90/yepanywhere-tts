@@ -1903,6 +1903,62 @@ describe("Codex Normalization", () => {
     });
   });
 
+  it("shows a content-filter block with the guidance Codex gave the agent", () => {
+    const guidance =
+      "Your previous response was blocked by a content filter. Offer a permitted alternative.";
+    const entries: CodexSessionEntry[] = [
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:01Z",
+        payload: {
+          type: "message",
+          id: "msg-env",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: "<multi_agent_mode>no delegation</multi_agent_mode>",
+            },
+          ],
+        },
+      },
+      {
+        type: "response_item",
+        timestamp: "2024-01-01T00:00:02Z",
+        payload: {
+          type: "message",
+          id: "msg-filter",
+          role: "developer",
+          content: [
+            {
+              type: "input_text",
+              text: `<content_filter_guidance>\n${guidance}\n</content_filter_guidance>`,
+            },
+          ],
+        },
+      },
+    ];
+
+    const result = normalizeSession(buildLoadedSession(entries));
+    expect(result.messages).toHaveLength(1);
+    expect(result.messages[0]).toMatchObject({
+      uuid: "msg-filter",
+      type: "system",
+      subtype: "content_filter_block",
+      content: guidance,
+    });
+
+    const renderItems = compileTranscriptProjection(result.messages);
+    expect(renderItems).toEqual([
+      expect.objectContaining({
+        type: "system",
+        id: "msg-filter",
+        subtype: "content_filter_block",
+        content: guidance,
+      }),
+    ]);
+  });
+
   it("preserves the error on an aborted Codex turn", () => {
     const entries: CodexSessionEntry[] = [
       {

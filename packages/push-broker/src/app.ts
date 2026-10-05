@@ -260,7 +260,10 @@ export function createBrokerApp(
         options.provider,
         {
           target: currentSubscription.target,
-          message: buildGenericMessage(currentSubscription.id, parsed.intent),
+          message: {
+            ...buildGenericMessage(currentSubscription.id, parsed.intent),
+            ...parsed,
+          },
         },
         providerTimeoutMs,
       );

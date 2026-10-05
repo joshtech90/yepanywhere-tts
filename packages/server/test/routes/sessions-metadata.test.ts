@@ -4920,6 +4920,12 @@ describe("Sessions metadata route", () => {
       providerName: "claude",
       upToMessageId: "msg-uuid-7",
       title: "Fork: Refactor session",
+      launchOverrides: {
+        requestedModel: "sonnet",
+        permissionMode: "bypassPermissions",
+        thinking: undefined,
+        serviceTier: undefined,
+      },
       sandboxLevel: "project-write",
       sandboxNetworkFirewall: false,
       sandboxStateKey: "project-sandbox",
@@ -5063,7 +5069,7 @@ describe("Sessions metadata route", () => {
     });
   });
 
-  it("forks at a requested effort keeping the source's other launch settings", async () => {
+  it("passes a validated thinking override to common fork inheritance", async () => {
     const project = createProject();
     const forkSession = vi.fn(async () => ({ sessionId: "sess-fork" }));
     const recordEffectiveLaunchSettings = vi.fn(async () => undefined);
@@ -5121,13 +5127,11 @@ describe("Sessions metadata route", () => {
     expect(forkSession).not.toHaveBeenCalled();
 
     expect((await fork("on:high")).status).toBe(200);
-    expect(recordEffectiveLaunchSettings).toHaveBeenCalledWith("sess-fork", {
-      permissionMode: "acceptEdits",
-      requestedModel: "opus",
-      serviceTier: "priority",
-      thinking: { type: "adaptive", display: "summarized" },
-      effort: "high",
-    });
+    expect(forkSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        launchOverrides: { thinking: "on:high" },
+      }),
+    );
   });
 
   it("numbers repeated forks of one session after the first", async () => {
@@ -5976,6 +5980,13 @@ describe("Sessions metadata route", () => {
   it("owns fork-summary generation after returning a durable display object", async () => {
     const project = createProject();
     const sessionSandbox = { stateKey: "project-sandbox" };
+    const launchSettings = {
+      permissionMode: "bypassPermissions",
+      requestedModel: "sonnet",
+      serviceTier: "fast",
+      thinking: { type: "adaptive" },
+      effort: "high",
+    };
     const generateSummary = vi.fn(async () => ({
       text: "Title: Refactor continuation\n\nKept the setup; continue from the fixed test failure.",
     }));
@@ -5985,6 +5996,7 @@ describe("Sessions metadata route", () => {
         sessionId: "sess-generator",
         sandboxStateKey: "project-sandbox",
         sessionSandbox,
+        launchSettings,
       })
       .mockResolvedValueOnce({
         sessionId: "sess-target",
@@ -6142,6 +6154,7 @@ describe("Sessions metadata route", () => {
     );
     expect(forkSession).toHaveBeenNthCalledWith(2, {
       sessionId: "sess-1",
+      launchSettings,
       projectPath: project.path,
       providerName: "claude",
       boundary: {

@@ -37,6 +37,8 @@ import {
   type SecurityClientSummary,
   type SecurityEvent,
   type SecurityEventClientSnapshot,
+  type PutNativePushSubscriptionRequest,
+  type SecurityClientPublicPushState,
 } from "@yep-anywhere/shared";
 import { createCoalescingSaver } from "../lib/coalescingSaver.js";
 import type { AuthenticatedSrpTransportContext } from "../middleware/authenticated-transport.js";
@@ -101,6 +103,57 @@ interface StoredSecurityClient {
   lastTransport?: "direct" | "relay";
   lastPeerAddress?: string;
   events: SecurityClientAuditEvent[];
+  nativePush?: StoredNativePushSubscription;
+}
+
+/** Private owner-only state; sendSecret must never enter a public projection. */
+export interface StoredNativePushSubscription
+  extends SecurityClientPublicPushState {
+  enabled: true;
+  brokerUrl: string;
+  subscriptionId: string;
+  sendSecret: string;
+  privacyMode: "generic";
+  updatedAt: string;
+  destinations?: { sessionId: string; projectId: string }[];
+}
+
+function isStoredNativePush(
+  value: unknown,
+): value is StoredNativePushSubscription {
+  if (!isRecord(value)) return false;
+  if (
+    value.enabled !== true ||
+    value.privacyMode !== "generic" ||
+    typeof value.brokerUrl !== "string" ||
+    !/^[A-Za-z0-9_-]{22}$/.test(String(value.subscriptionId)) ||
+    !/^[A-Za-z0-9_-]{43}$/.test(String(value.sendSecret)) ||
+    !isIsoTimestamp(value.updatedAt)
+  )
+    return false;
+  try {
+    const url = new URL(value.brokerUrl);
+    return (
+      url.protocol === "https:" &&
+      url.origin === value.brokerUrl &&
+      ["lastTestAt", "lastDeliveryAt", "lastFailureAt"].every(
+        (key) => value[key] === undefined || isIsoTimestamp(value[key]),
+      ) &&
+      (value.destinations === undefined ||
+        (Array.isArray(value.destinations) &&
+          value.destinations.length <= 64 &&
+          value.destinations.every(
+            (row) =>
+              isRecord(row) &&
+              typeof row.sessionId === "string" &&
+              typeof row.projectId === "string" &&
+              /^[A-Za-z0-9_-]{1,128}$/.test(row.sessionId) &&
+              /^[A-Za-z0-9_-]{1,2048}$/.test(row.projectId),
+          )))
+    );
+  } catch {
+    return false;
+  }
 }
 
 interface RegistrationIndexEntry {
@@ -267,7 +320,8 @@ function isStoredClient(value: unknown): value is StoredSecurityClient {
     (value.revokedAt === undefined || isIsoTimestamp(value.revokedAt)) &&
     Array.isArray(value.events) &&
     value.events.length <= SECURITY_CLIENT_MAX_OBSERVATIONS &&
-    value.events.every(isClientAuditEvent)
+    value.events.every(isClientAuditEvent) &&
+    (value.nativePush === undefined || isStoredNativePush(value.nativePush))
   );
 }
 
@@ -970,6 +1024,7 @@ export class SecurityClientService {
         );
       }
       client.revokedAt = now;
+      delete client.nativePush;
       for (const proof of client.proofs) proof.status = "revoked";
       this.appendClientEvent(client, {
         eventId: randomUUID(),
@@ -994,6 +1049,176 @@ export class SecurityClientService {
           }
         },
       };
+    });
+  }
+
+  requireNativePushOwner(
+    clientId: string,
+    transport: AuthenticatedSrpTransportContext,
+  ): void {
+    const client = this.requireClient(clientId);
+    this.assertClientActive(client);
+    if (
+      !["android-native", "ios-native"].includes(client.kind) ||
+      client.username !== transport.username ||
+      this.activeConnections.get(transport.connectionId)?.clientId !== clientId
+    ) {
+      throw new SecurityClientServiceError(
+        "security_client_connection_bound",
+        409,
+        "Native push requires this connection to be checked in as its native client",
+      );
+    }
+    this.assertSessionAttachable(transport, clientId);
+  }
+
+  async setNativePush(
+    clientId: string,
+    transport: AuthenticatedSrpTransportContext,
+    request: PutNativePushSubscriptionRequest | null,
+    brokerUrl: string,
+  ): Promise<SecurityClientResponse> {
+    return this.mutate(async () => {
+      this.requireNativePushOwner(clientId, transport);
+      const client = this.requireClient(clientId);
+      const prior = client.nativePush;
+      if (
+        request &&
+        Object.values(this.state.clients).some(
+          (other) =>
+            other.clientId !== clientId &&
+            !other.revokedAt &&
+            other.nativePush?.brokerUrl === brokerUrl &&
+            other.nativePush.subscriptionId === request.subscriptionId,
+        )
+      ) {
+        throw new SecurityClientServiceError(
+          "security_client_request_conflict",
+          409,
+          "Push subscription is already enrolled by another client",
+        );
+      }
+      if (request)
+        client.nativePush = {
+          ...request,
+          brokerUrl,
+          enabled: true,
+          updatedAt: this.nowIso(),
+        };
+      else delete client.nativePush;
+      try {
+        await this.saver.save();
+      } catch (error) {
+        client.nativePush = prior;
+        throw error;
+      }
+      this.appendClientEvent(client, {
+        eventId: randomUUID(),
+        type: request ? "push-enabled" : "push-disabled",
+        timestamp: this.nowIso(),
+      });
+      await this.saver.save();
+      return { client: this.toSummary(client) };
+    });
+  }
+
+  nativePushDestinations(
+    brokerUrl: string,
+  ): { clientId: string; subscription: StoredNativePushSubscription }[] {
+    return Object.values(this.state.clients)
+      .filter(
+        (client) =>
+          !client.revokedAt && client.nativePush?.brokerUrl === brokerUrl,
+      )
+      .map((client) => ({
+        clientId: client.clientId,
+        subscription: { ...client.nativePush! },
+      }));
+  }
+
+  isCurrentNativePush(
+    clientId: string,
+    subscription: StoredNativePushSubscription,
+  ): boolean {
+    const client = this.state.clients[clientId];
+    return (
+      !!client &&
+      !client.revokedAt &&
+      client.nativePush?.subscriptionId === subscription.subscriptionId &&
+      client.nativePush?.sendSecret === subscription.sendSecret &&
+      client.nativePush?.brokerUrl === subscription.brokerUrl
+    );
+  }
+
+  async rememberNativePushDestination(
+    clientId: string,
+    subscription: StoredNativePushSubscription,
+    sessionId: string,
+    projectId: string,
+  ): Promise<void> {
+    if (
+      !/^[A-Za-z0-9_-]{1,128}$/.test(sessionId) ||
+      !/^[A-Za-z0-9_-]{1,2048}$/.test(projectId)
+    )
+      return;
+    await this.mutate(async () => {
+      if (!this.isCurrentNativePush(clientId, subscription)) return;
+      const child = this.requireClient(clientId).nativePush!;
+      const rows = child.destinations ?? [];
+      if (
+        rows.at(-1)?.sessionId === sessionId &&
+        rows.at(-1)?.projectId === projectId
+      )
+        return;
+      const previous = child.destinations;
+      child.destinations = [
+        ...rows.filter((row) => row.sessionId !== sessionId),
+        { sessionId, projectId },
+      ].slice(-64);
+      try {
+        await this.saver.save();
+      } catch (error) {
+        child.destinations = previous;
+        throw error;
+      }
+    });
+  }
+
+  nativePushDestination(
+    clientId: string,
+    transport: AuthenticatedSrpTransportContext,
+    sessionId: string,
+  ): string | null {
+    this.requireNativePushOwner(clientId, transport);
+    const row = this.requireClient(clientId).nativePush?.destinations?.find(
+      (item) => item.sessionId === sessionId,
+    );
+    return row ? `/projects/${row.projectId}/sessions/${row.sessionId}` : null;
+  }
+
+  async recordNativePushResult(
+    clientId: string,
+    subscription: StoredNativePushSubscription,
+    result: { success: boolean; invalid: boolean; test: boolean },
+  ): Promise<void> {
+    await this.mutate(async () => {
+      if (!this.isCurrentNativePush(clientId, subscription)) return;
+      const client = this.requireClient(clientId);
+      const now = this.nowIso();
+      if (result.test) client.nativePush!.lastTestAt = now;
+      if (result.success) client.nativePush!.lastDeliveryAt = now;
+      else client.nativePush!.lastFailureAt = now;
+      if (result.invalid) delete client.nativePush;
+      this.appendClientEvent(client, {
+        eventId: randomUUID(),
+        type: result.success
+          ? result.test
+            ? "push-tested"
+            : "push-delivered"
+          : "push-failed",
+        timestamp: now,
+      });
+      await this.saver.save();
     });
   }
 
@@ -1328,7 +1553,10 @@ export class SecurityClientService {
       lastPeerAddress: client.lastPeerAddress,
       activeConnectionCount,
       sessions,
-      push: { enabled: false },
+      push: client.nativePush
+        ? (({ sendSecret: _, destinations: __, ...publicState }) =>
+            publicState)(client.nativePush)
+        : { enabled: false },
     };
   }
 

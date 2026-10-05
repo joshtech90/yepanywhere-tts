@@ -336,6 +336,13 @@ export function decideLimitedRoute(
     // for everyone.
     return isRead ? { kind: "allow" } : { kind: "deny" };
   }
+  // These handlers enforce creator ownership and the supplied project's grant.
+  if (
+    (path === "/api/artifacts/vhost-sites" &&
+      ["GET", "POST"].includes(method)) ||
+    (/^\/api\/artifacts\/vhost-sites\/[^/]+$/.test(path) && method === "DELETE")
+  )
+    return { kind: "allow" };
   if (hasPrefix(path, DENIED_PREFIXES)) return { kind: "deny" };
 
   if (SELF_WRITE_PATHS.includes(path)) return { kind: "allow" };

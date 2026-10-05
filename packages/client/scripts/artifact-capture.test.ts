@@ -134,14 +134,15 @@ async function serverFixture({
 // These are cold Chromium integration checks, not API-only unit checks. Phase
 // probes measured 1.68s isolated and 1.89s with the workspace suite running:
 // launch up to 611ms, two network-idle navigations about 500ms each, screenshots
-// up to 20ms, and joined close up to 31ms. Earlier loaded runs exceeded 5000ms
-// in three different cases. Apply 3x that observed floor to every real capture,
-// rather than budgeting only the first case. Assertions still use their own
-// configured navigation/readiness deadline (including the 750ms failure case).
-describe("portable artifact capture", { timeout: 15000 }, () => {
+// up to 20ms, and joined close up to 31ms. The 2026-10-04 workspace run with a
+// concurrent Release build exceeded 15000ms and reported 17878ms after joined
+// cleanup; all 22 cases then passed in isolation. Allow about 2.5x that observed
+// maximum for cold Chromium work. Assertions still use their own configured
+// navigation/readiness deadline (including the 750ms failure case).
+describe("portable artifact capture", { timeout: 45000 }, () => {
   // CI36641621916 took 3903ms; two full local runs with concurrent typechecks
   // exceeded 5000ms. This cold Chromium/two-viewport capture tests output,
-  // not latency; its budget is 3x the observed timeout floor.
+  // not latency; it shares the measured loaded budget above.
   it("captures a standalone bundle in both standard sizes without YA", async () => {
     const files = await fixture();
     const result = await captureArtifact({
@@ -172,7 +173,7 @@ describe("portable artifact capture", { timeout: 15000 }, () => {
       `${result.markdown}\n`,
     );
     await expect(captureArtifact(files)).rejects.toThrow("EEXIST");
-  }, 15000);
+  });
 
   it.each([{ configured: false }, { available: false }, { capable: false }])(
     "skips health and grants when delivery is absent: %j",

@@ -15,7 +15,9 @@ describe("useStreamingMarkdown", () => {
   });
 
   afterEach(() => {
-    vi.runOnlyPendingTimers();
+    act(() => {
+      vi.runOnlyPendingTimers();
+    });
     vi.useRealTimers();
     document.body.removeChild(container);
     document.body.removeChild(pending);
@@ -31,7 +33,9 @@ describe("useStreamingMarkdown", () => {
 
   function flushBufferedUpdates() {
     act(() => {
-      vi.advanceTimersByTime(100);
+      // Content assertions must also drain adaptive flush delays after a slow
+      // render; elapsed host time is not the behavior under test here.
+      vi.runAllTimers();
     });
   }
 

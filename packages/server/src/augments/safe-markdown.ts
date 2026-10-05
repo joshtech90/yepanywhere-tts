@@ -1,7 +1,12 @@
 import { statSync } from "node:fs";
 import { isAbsolute, normalize, posix, win32 } from "node:path";
 import { katex as markdownItKatex } from "@mdit/plugin-katex";
-import { linkifyToHtml, parseLineColumn } from "@yep-anywhere/shared";
+import {
+  linkifyToHtml,
+  normalizeTexForKatex,
+  paperKatexMacros,
+  parseLineColumn,
+} from "@yep-anywhere/shared";
 import MarkdownIt, {
   type Env,
   type Renderer,
@@ -49,9 +54,9 @@ export interface SafeMarkdownRenderOptions {
   /**
    * Directory that relative local markdown links are resolved against.
    *
-   * Relative links containing `..` are left as ordinary text/links. Project
-   * file endpoints still perform their own containment checks; this renderer
-   * only resolves same-directory or child-directory links for previews.
+   * Links and images may climb out of it with `..`; the project, local-file
+   * and share endpoints they reach perform their own access checks. Quarto
+   * includes, which inline the target's text, stay within it.
    */
   localFileBasePath?: string;
   /**
@@ -62,6 +67,13 @@ export interface SafeMarkdownRenderOptions {
   inlineLocalImages?: boolean;
   /** Interpret supported Quarto Markdown syntax without executing Quarto. */
   quartoMarkdown?: boolean;
+  /**
+   * Keep relative and fragment link and image references as written. A
+   * document served by URL beside the files it names, as a file vhost serves
+   * one, lets the browser resolve them, and its server decides what each
+   * reaches.
+   */
+  siteRelativeReferences?: boolean;
   /**
    * Project context for turning assistant inline-code filename references into
    * project-file viewer links. Public shares supply it too, with `publicShare`
@@ -833,7 +845,33 @@ function renderDirectLocalImage(path: string, altText: string, title?: string) {
   return `<img src="${src}"${altAttr}${titleAttr} ${resourceAttrs}>`;
 }
 
-function resolveLocalMarkdownHref(href: string): LocalPathReference | null {
+/**
+ * `href` as written when rendering with `siteRelativeReferences` and it names
+ * a path or fragment on the serving site; null otherwise.
+ */
+function siteRelativeReference(href: string): string | null {
+  if (!activeRenderOptions.siteRelativeReferences) return null;
+  const trimmed = href.trim();
+  if (
+    !trimmed ||
+    /[\p{C}\s]/u.test(trimmed) ||
+    trimmed.startsWith("//") ||
+    /^[a-z][a-z0-9+.-]*:/i.test(trimmed)
+  )
+    return null;
+  return trimmed;
+}
+
+/**
+ * The local file a relative reference names. `..` segments are followed only
+ * with `parentSegments`, as a link or image is: a reader's endpoint decides
+ * what they reach. An include, which inlines the target's text, stays within
+ * the base directory.
+ */
+function resolveLocalMarkdownHref(
+  href: string,
+  options: { parentSegments?: boolean } = {},
+): LocalPathReference | null {
   const normalizedHref = href.trim();
   let trimmed = normalizedHref;
   try {
@@ -868,7 +906,7 @@ function resolveLocalMarkdownHref(href: string): LocalPathReference | null {
   if (
     !normalized ||
     normalized === "." ||
-    segments.some((segment) => segment === "..")
+    (!options.parentSegments && segments.some((segment) => segment === ".."))
   ) {
     return null;
   }
@@ -880,8 +918,71 @@ function resolveLocalMarkdownHref(href: string): LocalPathReference | null {
   };
 }
 
+// Presentation MathML, which browsers render natively. Paper extracts keep
+// MathML inside raw HTML tables, where TeX delimiters would not be rendered.
+// `annotation` holds only text and is hidden inside `semantics`;
+// `annotation-xml` is excluded because it can carry arbitrary markup.
+const MATHML_TAGS = [
+  "math",
+  "semantics",
+  "annotation",
+  "mrow",
+  "mi",
+  "mn",
+  "mo",
+  "ms",
+  "mtext",
+  "mspace",
+  "msub",
+  "msup",
+  "msubsup",
+  "munder",
+  "mover",
+  "munderover",
+  "mmultiscripts",
+  "mprescripts",
+  "none",
+  "mfrac",
+  "msqrt",
+  "mroot",
+  "mstyle",
+  "mpadded",
+  "mphantom",
+  "menclose",
+  "mtable",
+  "mtr",
+  "mtd",
+  "merror",
+];
+const MATHML_LAYOUT_ATTRIBUTES = [
+  "display",
+  "displaystyle",
+  "scriptlevel",
+  "mathvariant",
+  "stretchy",
+  "fence",
+  "separator",
+  "form",
+  "largeop",
+  "movablelimits",
+  "accent",
+  "accentunder",
+  "lspace",
+  "rspace",
+  "width",
+  "height",
+  "depth",
+  "linethickness",
+  "notation",
+  "columnalign",
+  "rowalign",
+  "columnspan",
+  "rowspan",
+];
+
 const MARKDOWN_SANITIZE_OPTIONS = {
   allowedTags: [
+    ...MATHML_TAGS,
     "a",
     "blockquote",
     "br",
@@ -953,6 +1054,13 @@ const MARKDOWN_SANITIZE_OPTIONS = {
     span: ["class", "data-media-path", "data-media-type", "data-expanded"],
     td: ["align", "colspan", "rowspan"],
     th: ["align", "colspan", "rowspan"],
+    ...Object.fromEntries(
+      MATHML_TAGS.filter((tag) => tag !== "annotation").map((tag) => [
+        tag,
+        MATHML_LAYOUT_ATTRIBUTES,
+      ]),
+    ),
+    annotation: ["encoding"],
   },
   allowedSchemes: ["http", "https", "mailto"],
   allowedSchemesByTag: {
@@ -999,7 +1107,11 @@ function renderLinkOpen(
   const href = String(token.attrGet("href") ?? "");
   const titleValue = token.attrGet("title");
   const title = titleValue === null ? undefined : String(titleValue);
-  const localPath = resolveLocalMarkdownHref(href);
+  const siteHref = siteRelativeReference(href);
+  const localPath =
+    siteHref === null
+      ? resolveLocalMarkdownHref(href, { parentSegments: true })
+      : null;
   let open = "";
   let close = "";
 
@@ -1029,7 +1141,7 @@ function renderLinkOpen(
       close = "</a>";
     }
   } else {
-    const safeHref = sanitizeUrl(href);
+    const safeHref = siteHref ?? sanitizeUrl(href);
     if (safeHref) {
       const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
       open = `<a href="${escapeHtml(safeHref)}"${titleAttr}>`;
@@ -1109,7 +1221,13 @@ function renderImage(
     options,
     environment,
   );
-  const localPath = resolveLocalMarkdownHref(href);
+  const siteSrc = siteRelativeReference(href);
+  if (siteSrc !== null) {
+    const altAttr = text ? ` alt="${escapeHtml(text)}"` : ' alt=""';
+    const titleAttr = title ? ` title="${escapeHtml(title)}"` : "";
+    return `<img src="${escapeHtml(siteSrc)}"${altAttr}${titleAttr}>`;
+  }
+  const localPath = resolveLocalMarkdownHref(href, { parentSegments: true });
   if (localPath) {
     const resolvedImage = resolveLocalMarkdownImage(localPath);
     if (resolvedImage) {
@@ -1284,6 +1402,9 @@ markdownRenderer.use(markdownItKatex, {
   allowInlineWithSpace: false,
   delimiters: "all",
   logger: (): "ignore" => "ignore",
+  // The plugin copies this table for each document render, so a \gdef
+  // persists within one document but never reaches another.
+  macros: paperKatexMacros(),
   mathFence: false,
   maxExpand: 1000,
   output: "html",
@@ -1305,7 +1426,13 @@ function preserveEmptyMath(
       return displayMode ? `<p>${literal}</p>\n` : literal;
     }
     if (token.content.trim()) {
-      return rendererRule(tokens, index, options, environment, renderer);
+      const original = token.content;
+      token.content = normalizeTexForKatex(original);
+      try {
+        return rendererRule(tokens, index, options, environment, renderer);
+      } finally {
+        token.content = original;
+      }
     }
 
     const opening = token.markup || (displayMode ? "$$" : "$");
@@ -1467,6 +1594,7 @@ export {
   localResourceDataAttributes,
   MEDIA_EXTENSIONS,
   renderLocalFileLink,
+  renderLocalFileLinkOpen,
   renderLocalMediaLink,
   VIDEO_EXTENSIONS,
 };

@@ -14,6 +14,20 @@ const CURRENT_REMOTE_COMPATIBILITY = {
 };
 
 describe("remoteCompatibilityNotices", () => {
+  it("gives desktop update instructions without source/npm commands", () => {
+    const notices = getRemoteCompatibilityNotices({
+      currentVersion: "dev",
+      latestVersion: null,
+      updateAvailable: false,
+      installSource: "source",
+      desktopRuntime: true,
+      resumeProtocolVersion: 2,
+      relayUsername: "desktop",
+      ...CURRENT_REMOTE_COMPATIBILITY,
+    });
+    expect(notices[0]?.guidance).toContain("menu bar or system tray");
+    expect(notices[0]?.action).toBeUndefined();
+  });
   it("does not emit notices outside relay-hosted connections", () => {
     expect(
       getRemoteCompatibilityNotices({

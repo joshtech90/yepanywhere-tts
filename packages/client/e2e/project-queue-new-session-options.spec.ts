@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { readFile } from "node:fs/promises";
 import type { Page } from "@playwright/test";
 import {
   decodeJsonFrame,
@@ -247,6 +248,19 @@ test("right-click queues the draft as a new session in another project", async (
   await expect(composer).toHaveValue("");
 
   // The ordinary Send button enters the same dock with direct delivery.
+  const addedProject = await page.request.post(`${baseURL}/api/projects`, {
+    headers: { "X-Yep-Anywhere": "true" },
+    data: { path: otherProjectPath, create: true },
+  });
+  expect(addedProject.ok(), await addedProject.text()).toBe(true);
+  await page.locator('input[type="file"]').setInputFiles({
+    name: "destination-note.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("Bytes for the destination first turn"),
+  });
+  await expect(
+    page.getByText("destination-note.txt", { exact: true }).first(),
+  ).toBeVisible();
   await composer.fill("Start immediately");
   await page.locator(".send-button-with-help").click({ button: "right" });
   await expect(dialog).toBeVisible();
@@ -275,26 +289,48 @@ test("right-click queues the draft as a new session in another project", async (
   await recordUiCapture(page, "green-phone", { width: 375, height: 812 });
   await page.setViewportSize({ width: 1000, height: 600 });
   let started: Record<string, unknown> | undefined;
-  await page.route(`**/api/projects/${otherProjectId}/sessions`, (route) => {
-    started = route.request().postDataJSON() as Record<string, unknown>;
-    return route.fulfill({
-      json: {
-        sessionId,
-        projectId,
-        processId: "new-process",
-        permissionMode: "default",
-        modeVersion: 1,
-      },
-    });
-  });
+  await page.route(
+    `**/api/projects/${otherProjectId}/sessions/create`,
+    (route) => {
+      started = route.request().postDataJSON() as Record<string, unknown>;
+      return route.fulfill({
+        json: {
+          sessionId: "destination-first-turn",
+          projectId: otherProjectId,
+          processId: "new-process",
+          permissionMode: "default",
+          modeVersion: 1,
+        },
+      });
+    },
+  );
+  let firstTurn:
+    | { message: string; attachments: { path: string }[] }
+    | undefined;
+  await page.route(
+    "**/api/sessions/destination-first-turn/messages",
+    (route) => {
+      firstTurn = route.request().postDataJSON();
+      return route.fulfill({
+        json: { queued: true, serverTimestamp: Date.now() },
+      });
+    },
+  );
   queued = undefined;
   await composer.press("Enter");
   await expect
     .poll(() => started)
     .toMatchObject({
-      message: "Start immediately",
       provider: "codex",
       model: "gpt-test",
     });
   expect(queued).toBeUndefined();
+  await expect.poll(() => firstTurn).toBeDefined();
+  expect(firstTurn!.message).toBe("Start immediately");
+  expect(firstTurn!.attachments).toHaveLength(1);
+  const path = firstTurn!.attachments[0]!.path;
+  expect(path).toContain("/destination-first-turn/");
+  expect(await readFile(path, "utf8")).toBe(
+    "Bytes for the destination first turn",
+  );
 });

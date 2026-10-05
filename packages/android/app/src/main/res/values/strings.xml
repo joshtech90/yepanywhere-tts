@@ -1,34 +1,4 @@
 <resources>
-    <string name="conversation_title">Conversation preview</string>
-    <string name="conversation_read_only">Experimental · Read-only</string>
-    <string name="conversation_open_full">Open full session</string>
-    <string name="conversation_loading">Loading conversation…</string>
-    <string name="conversation_update_required">This server needs an update to support the conversation preview.</string>
-    <string name="conversation_revision_mismatch">The app and server use different preview revisions. Update them to matching builds.</string>
-    <string name="conversation_invalid">The server returned an invalid preview. Open the full session or reconnect.</string>
-    <string name="conversation_offline">Updates stopped. Any messages shown are the last received snapshot. Reconnect or go back to check the server connection.</string>
-    <string name="conversation_reconnect">Reconnect</string>
-    <string name="conversation_unavailable">This conversation or history window is unavailable. Try Latest or open the full session.</string>
-    <string name="conversation_unknown">Unsupported content. Open the full session to view it.</string>
-    <string name="conversation_activity_unknown">Activity unknown</string>
-    <plurals name="conversation_message_count">
-        <item quantity="one">%1$d message</item>
-        <item quantity="other">%1$d messages</item>
-    </plurals>
-    <string name="conversation_more">Show more</string>
-    <string name="conversation_latest">Latest</string>
-    <string name="conversation_scope_limit">Older history may exist outside this preview’s compaction scope.</string>
-    <string name="conversation_partial">Some history is unavailable or exceeds the preview size limit.</string>
-    <string name="conversation_anchored">Showing an anchored history window. Latest returns to the live tail.</string>
-    <string name="conversation_empty">No messages in this window.</string>
-    <string name="conversation_you">You</string>
-    <string name="conversation_agent">Agent</string>
-    <string name="conversation_interrupted">Interrupted</string>
-    <string name="conversation_truncated">Message shortened for this preview.</string>
-    <string name="conversation_pending">Input requested</string>
-    <string name="conversation_pending_full">Respond or approve in the full session.</string>
-    <string name="conversation_tools">Tools: %1$d · Failed: %2$d</string>
-    <string name="conversation_media">Attachment: %1$s — open the full session to view.</string>
     <string name="app_name">Yep Anywhere</string>
     <string name="open_full_app">Open full app</string>
     <string name="connect_to_server">Connect to your server</string>
@@ -49,12 +19,8 @@
     <string name="connect">Connect</string>
     <string name="cancel">Cancel</string>
     <string name="back">Back</string>
-    <string name="settings">Settings</string>
     <string name="servers">Servers</string>
-    <string name="all_servers">All servers</string>
-    <string name="no_servers_included">No servers are included. Choose servers in Settings.</string>
     <string name="add_server">Add server</string>
-    <string name="refresh">Refresh</string>
     <string name="forget_server">Forget server</string>
     <string name="forget_server_title">Forget this server?</string>
     <string name="forget_server_explanation">This removes the saved server profile and its protected resume credential from this device.</string>
@@ -67,14 +33,9 @@
     <string name="finish_forgetting">Finish forgetting</string>
     <string name="finish_forgetting_title">Device unregistered</string>
     <string name="finish_forgetting_explanation">The server revoked this device, but Android could not erase the local profile. Try the local cleanup again.</string>
-    <string name="include_in_all_servers">Included</string>
-    <string name="notifications_setup_pending">Notification delivery settings will appear here after native push registration is connected to this server.</string>
     <string name="sign_in_again">Sign in again</string>
     <string name="sign_in_again_explanation">The saved session expired or was rejected. Enter your server password to create a new session.</string>
     <string name="sign_in">Sign in</string>
-    <string name="recent_sessions">Recent sessions</string>
-    <string name="no_sessions_yet">No sessions yet</string>
-    <string name="untitled_session">Untitled session</string>
     <string name="dismiss">Dismiss</string>
     <string name="connection_idle">Idle</string>
     <string name="connection_connecting">Connecting…</string>
@@ -83,15 +44,9 @@
     <string name="connection_sign_in_required">Sign-in required</string>
     <string name="connection_revoked">Device revoked</string>
     <string name="connection_failed">Offline</string>
-    <string name="approval_needed">Approval needed</string>
-    <string name="answer_needed">Answer needed</string>
-    <string name="input_needed">Input needed</string>
-    <string name="session_working">Working</string>
-    <string name="session_waiting">Waiting for input</string>
     <string name="invalid_server_details">Check the username, password, and any advanced connection settings.</string>
     <string name="authentication_failed">Could not authenticate with this server.</string>
     <string name="connection_failed_message">Could not update the saved server.</string>
-    <string name="session_load_failed">Could not load sessions from this server.</string>
     <string name="retry">Retry</string>
     <string name="web_client_unavailable">Yep Anywhere is unavailable.</string>
     <string name="notification_channel_activity_id" translatable="false">ya_activity</string>
@@ -102,4 +57,33 @@
           \"include\": \"https://yepanywhere.com/.well-known/assetlinks.json\"
         }]
     </string>
+    <string name="native_push_enabled">Notifications enabled for this server</string>
+    <string name="native_push_disabled">Notifications are off for this server</string>
+    <string name="native_push_enable">Enable notifications</string>
+    <string name="native_push_disable">Disable notifications</string>
+    <string name="native_push_test">Send test</string>
+    <string name="native_push_failed">Could not update notifications. Check notification permission and your connection, then retry.</string>
+    <string name="native_push_update_required">Update this YA server to enable native notifications.</string>
+    <string name="push_approval">An agent needs your approval.</string>
+    <string name="push_input">An agent needs your input.</string>
+    <string name="push_completed">An agent has finished working.</string>
+    <string name="push_failed">An agent stopped with an error.</string>
+    <string name="push_test_message">Notifications are working. Tap to open your server.</string>
+    <string name="native_tab_projects">Projects</string>
+    <string name="native_tabs">Tabs</string>
+    <plurals name="native_tabs_count">
+        <item quantity="one">Tabs, %1$d open</item>
+        <item quantity="other">Tabs, %1$d open</item>
+    </plurals>
+    <string name="native_tabs_done">Done</string>
+    <string name="native_tab_new">New tab</string>
+    <string name="native_tab_add_host">Add host</string>
+    <string name="native_tab_open">Open in new tab</string>
+    <string name="native_tab_opened">Opened in new tab</string>
+    <string name="native_tab_limit">Close a tab before opening another (maximum %1$d)</string>
+    <string name="native_tab_unavailable_host">Unavailable host</string>
+    <string name="native_tab_host_label">%1$s%2$s</string>
+    <string name="native_tab_select">Switch to tab: %1$s, %2$s</string>
+    <string name="native_tab_close">Close tab: %1$s</string>
+    <string name="native_switch_host">Switch host</string>
 </resources>

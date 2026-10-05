@@ -47,7 +47,10 @@ export function readProcessStartTime(pid) {
       ["-l", "JavaScript", "-e", DARWIN_IDENTITY_SCRIPT, String(pid)],
       {
         encoding: "utf8",
-        timeout: 1_000,
+        // Intel macOS CI run 36796881935 exhausted the original 1s probe
+        // repeatedly during /api/version readiness. Allow 3x that observed
+        // limit while keeping identity errors fail-closed and bounded.
+        timeout: 3_000,
         maxBuffer: 4096,
         stdio: ["ignore", "pipe", "pipe"],
       },

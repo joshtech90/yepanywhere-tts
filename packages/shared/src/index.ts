@@ -1,5 +1,6 @@
 export type {
   ArtifactVhost,
+  ArtifactVhostLinkedFiles,
   ArtifactVhostSite,
   ArtifactVhostSiteView,
   ArtifactViewerConfig,
@@ -18,10 +19,12 @@ export type {
 } from "./retained-session-collections.js";
 
 export * from "./session-content-search.js";
+export * from "./instructionRestoration.js";
 export * from "./limited-users.js";
 export * from "./sidebar-categories.js";
 export * from "./project-template-source.js";
 export * from "./model-prices.js";
+export * from "./katex-compat.js";
 export * from "./model-display.js";
 export * from "./user-usage.js";
 export {
@@ -96,6 +99,19 @@ export type {
   ProjectFileCompletionEntry,
   ProjectFileCompletionResult,
 } from "./project-file-completion.js";
+
+export {
+  FILE_VIEW_MAX_PART_LENGTH,
+  FILE_VIEW_MAX_PARTS,
+  type FileViewLineTarget,
+  type FileViewSearchEntry,
+  type FileViewSearchResult,
+  type FileViewSearchTier,
+  formatFileViewLineSuffix,
+  formatFileViewPart,
+  type ParsedFileViewArgument,
+  parseFileViewArgument,
+} from "./file-view-command.js";
 
 export {
   isIdeMetadata,
@@ -503,6 +519,7 @@ export {
   findGoalCommand,
   readGoalDetails,
   readInventoryGoalDetails,
+  withKnownGoal,
 } from "./slash-command-goal.js";
 export {
   detectNestedHarnessLaunch,
@@ -668,6 +685,11 @@ export {
 } from "./attachment-thumbnail.js";
 
 export { DEFAULT_RELAY_URL, normalizeRelayUrl } from "./relay-url.js";
+
+export {
+  isLiveToolOutputMessage,
+  TOOL_OUTPUT_PREVIEW_MESSAGE_TYPE,
+} from "./live-tool-output.js";
 
 export {
   DEFAULT_YA_CLIENT_BASE_URL,
@@ -1052,6 +1074,11 @@ export type {
   ProviderRuntimeRetryReason,
   ProviderRuntimeStatus,
   ContextUsage,
+  ContextBreakdown,
+  ContextBreakdownCategory,
+  ContextBreakdownCategoryKey,
+  ContextBreakdownItem,
+  ContextBreakdownMessageParts,
   SessionOwnership,
   SessionSandboxPolicy,
   DurableRecapMessage,
@@ -1172,6 +1199,20 @@ export {
   resolveHtmlRootAssetPath,
 } from "./html-root-assets.js";
 export type { HtmlRootAssetReference } from "./html-root-assets.js";
+export {
+  findLinkedReferences,
+  LINKED_SITE_LIMITS,
+  linkedDocumentKind,
+  resolveLinkedReference,
+  walkLinkedSite,
+} from "./linked-site.js";
+export type {
+  LinkedDocumentKind,
+  LinkedSite,
+  LinkedSiteFile,
+  LinkedSiteInspector,
+  LinkedSiteLimits,
+} from "./linked-site.js";
 
 export type {
   CreatePublicFileShareRequest,
@@ -1344,6 +1385,10 @@ export type {
   RelayHttpMethod,
   RelayRequest,
   RelayResponse,
+  RelayResponseStreamStart,
+  RelayResponseStreamEnd,
+  RelayResponseStreamAck,
+  RelayResponseStreamCancel,
   RelaySubscriptionChannel,
   RelaySubscribe,
   RelayUnsubscribe,
@@ -1409,6 +1454,10 @@ export {
   isSequencedEncryptedPayload,
   // Client capabilities type guard
   isClientCapabilities,
+  // Streamed responses
+  RELAY_RESPONSE_STREAM_CHUNK_BYTES,
+  RELAY_RESPONSE_STREAM_WINDOW_BYTES,
+  RELAY_RESPONSE_STREAM_IDLE_TIMEOUT_MS,
 } from "./relay.js";
 
 // Binary framing utilities (Phase 0/1/2/3 of binary WebSocket protocol)
@@ -1448,6 +1497,11 @@ export {
   decodeUploadChunkFrame,
   encodeUploadChunkPayload,
   decodeUploadChunkPayload,
+  // Streamed response chunks
+  RESPONSE_CHUNK_HEADER_SIZE,
+  type ResponseChunkData,
+  encodeResponseChunkPayload,
+  decodeResponseChunkPayload,
   // Phase 3: Compressed JSON
   encodeCompressedJsonFrame,
   decodeCompressedJsonFrame,
@@ -1616,3 +1670,21 @@ export {
 } from "./project-service.js";
 
 export * from "./drafts.js";
+export type {
+  AgentAuthRouterStatus,
+  AgentAuthRouterIssueCode,
+  AgentAuthRouterAccount,
+  AgentAuthRouterRecovery,
+} from "./agent-auth-router.js";
+
+export type {
+  AgentAuthRouterPoolPolicy,
+  AgentAuthRouterPool,
+  AgentAuthRouterPoolInput,
+  AgentAuthRouterOverview,
+} from "./agent-auth-router.js";
+
+export {
+  routerModelSupportsThinking,
+  resolveRouterModel,
+} from "./agent-auth-router.js";

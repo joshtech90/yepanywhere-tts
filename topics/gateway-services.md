@@ -1,5 +1,10 @@
 # Gateway Services
 
+[Agent Auth Router](agent-auth-router.md) is a separate opt-in route for native
+Claude/Codex subscription accounts. It has its own private control connection,
+account catalog and per-session token; it does not reuse a dummy gateway token
+or turn the account into a generic model service.
+
 > A gateway service is one configured model-serving endpoint: an OpenAI- or
 > Anthropic-compatible HTTP server, optionally one YA may start and stop, with
 > stated context and output sizes and its own harness narrowings. Claude Gateway

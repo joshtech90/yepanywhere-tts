@@ -3,10 +3,14 @@ import {
   openSqliteOrThrow,
   type SqliteDatabase,
 } from "../../src/storage/sqlite.js";
-import { migrateDiscoveryDatabase } from "../../src/storage/discovery-sqlite.js";
+import {
+  migrateDiscoveryDatabase,
+  discoveryMigrationPrefix,
+} from "../../src/storage/discovery-sqlite.js";
 import { DraftStore } from "../../src/drafts/DraftStore.js";
 import {
   EMPTY_DRAFT,
+  draftSlotKey,
   mergeDrafts,
   type DraftSlot,
   type DraftWrite,
@@ -44,6 +48,78 @@ afterEach(() => {
   db.close();
 });
 describe("draft snapshot transactions", () => {
+  it("paginates changed rows while excluding earlier clears and other accounts", () => {
+    for (let i = 0; i < 250; i++) {
+      const slot = { kind: "session" as const, sessionId: `history-${i}` };
+      const read = store.read("", slot);
+      const saved = store.write("", {
+        slot,
+        baseRevision: null,
+        ticket: read.ticket,
+        operationId: `save-${i}`,
+        payload: text("sent"),
+      });
+      store.write("", {
+        slot,
+        baseRevision: saved.snapshot.revision,
+        ticket: saved.ticket,
+        operationId: `clear-${i}`,
+        payload: EMPTY_DRAFT,
+      });
+    }
+    const since = store.sequence("");
+    for (let i = 0; i < 105; i++) {
+      const slot = { kind: "session" as const, sessionId: `new-${i}` };
+      const read = store.read("", slot);
+      store.write("", {
+        slot,
+        baseRevision: null,
+        ticket: read.ticket,
+        operationId: `new-${i}`,
+        payload: text("new draft"),
+      });
+    }
+    store.write("alice", save("private", "alice"));
+    const first = store.list("", "", since);
+    expect(first).toHaveLength(100);
+    const second = store.list("", draftSlotKey(first[99]!.slot), since);
+    expect(second).toHaveLength(5);
+    expect(
+      [...first, ...second].every((row) => row.sequence > since && !row.empty),
+    ).toBe(true);
+    expect(
+      new Set([...first, ...second].map((row) => draftSlotKey(row.slot))).size,
+    ).toBe(105);
+    expect(store.list("alice", "", 0)).toHaveLength(1);
+  });
+  it("preserves draft data and retry receipts when adding the change index", () => {
+    const historical = openSqliteOrThrow(":memory:");
+    let previous: DraftStore | undefined;
+    try {
+      migrateDiscoveryDatabase(historical, discoveryMigrationPrefix(8));
+      previous = new DraftStore(historical);
+      const read = previous.read("", slot);
+      const operation = {
+        slot,
+        baseRevision: null,
+        ticket: read.ticket,
+        operationId: "pre-migration",
+        payload: text("retained draft"),
+      };
+      const accepted = previous.write("", operation);
+      previous.close();
+      migrateDiscoveryDatabase(historical);
+      previous = new DraftStore(historical);
+      expect(previous.write("", operation)).toEqual(accepted);
+      expect(previous.read("", slot).snapshot).toEqual(accepted.snapshot);
+      expect(previous.list("", "", 0)).toMatchObject([
+        { revision: accepted.snapshot.revision },
+      ]);
+    } finally {
+      previous?.close();
+      historical.close();
+    }
+  });
   it("rejects stale writers, replays exact receipts, and never shares accounts", () => {
     const phone = save("phone"),
       desktop = save("desktop");

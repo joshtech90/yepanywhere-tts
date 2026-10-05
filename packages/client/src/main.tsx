@@ -24,6 +24,7 @@ import { initializeTabSize } from "./hooks/useTabSize";
 import { initializeTheme } from "./hooks/useTheme";
 import { initializeTooltipAppearance } from "./hooks/useTooltipAppearance";
 import { I18nProvider, useI18n } from "./i18n";
+import { installModifierChordTracking } from "./lib/modifierChords";
 import "./styles/index.css";
 
 const App = lazy(() => import("./App").then(({ App }) => ({ default: App })));
@@ -258,6 +259,7 @@ if (import.meta.env.DEV && window.location.port === String(__VITE_DEV_PORT__)) {
     </I18nProvider>,
   );
 } else {
+  installModifierChordTracking();
   // Apply saved preferences before React renders to avoid flash
   initializeTheme();
   initializeFontSize();

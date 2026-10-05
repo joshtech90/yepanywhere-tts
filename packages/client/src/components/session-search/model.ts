@@ -97,6 +97,7 @@ export function titleMatches(
   query: string,
   after?: number,
   before?: number,
+  additionalNeedles: readonly string[] = [],
 ): TitleMatch[] {
   if (!query.trim()) return [];
   const title = getSessionDisplayTitle(session) ?? "";
@@ -109,12 +110,18 @@ export function titleMatches(
       : []),
   ];
   const needle = query.replace(/\s+/g, " ").trim().toLowerCase();
-  const text = candidates.find((text) =>
-    normalizeSearchPreviewText(text)
+  const needles = [
+    needle,
+    ...additionalNeedles.map((term) =>
+      term.replace(/\s+/g, " ").trim().toLowerCase(),
+    ),
+  ];
+  const text = candidates.find((text) => {
+    const normalized = normalizeSearchPreviewText(text)
       .replace(/\s+/g, " ")
-      .toLowerCase()
-      .includes(needle),
-  );
+      .toLowerCase();
+    return needles.every((term) => normalized.includes(term));
+  });
   return text
     ? [
         {

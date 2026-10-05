@@ -12,6 +12,51 @@ import { SECURITY_CLIENT_AUDIT_CAPABILITY } from "./security-clients.js";
 export type ServerCapabilityKind = "permanent" | "transitional";
 
 export const OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS = {
+  agentAuthRouterMostRemaining: {
+    name: "agent-auth-router-most-remaining",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterMostRemaining.id,
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterOwnedPools: {
+    name: "agent-auth-router-owned-pools",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterOwnedPools.id,
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterPools: {
+    name: "agent-auth-router-pools",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterPools.id,
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouterRecovery: {
+    name: "agent-auth-router-recovery",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.id,
+    introducedIn: "0.9.4",
+  },
+  agentAuthRouter: {
+    name: "agent-auth-router",
+    index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouter.id,
+    introducedIn: "0.9.4",
+  },
+  installedMachineControl: {
+    name: "installed-machine-control",
+    index: CAPABILITY_ID_ALLOCATIONS.installedMachineControl.id,
+    introducedIn: "0.9.4",
+  },
+  nativePushSubscriptions: {
+    name: "native-push-subscriptions-v1",
+    index: CAPABILITY_ID_ALLOCATIONS.nativePushSubscriptions.id,
+    introducedIn: "0.9.4",
+  },
+  projectAppDeletion: {
+    name: "project-app-deletion",
+    index: CAPABILITY_ID_ALLOCATIONS.projectAppDeletion.id,
+    introducedIn: "0.9.4",
+  },
+  vhostFileSiteReplacement: {
+    name: "vhost-file-site-replacement",
+    index: CAPABILITY_ID_ALLOCATIONS.vhostFileSiteReplacement.id,
+    introducedIn: "0.9.4",
+  },
   draftSync: {
     name: "draft-sync-v1",
     index: CAPABILITY_ID_ALLOCATIONS.draftSync.id,
@@ -209,6 +254,230 @@ export interface ServerCapabilityDefinition {
 }
 
 export const SERVER_CAPABILITIES = {
+  agentAuthRouterMostRemaining: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterMostRemaining.id,
+    name: "agent-auth-router-most-remaining",
+    introducedIn: "0.9.4",
+    kind: "permanent",
+    area: "sessions",
+    lifecycle: {
+      kind: "permanent",
+      reason: "Opt-in quota-aware router selection.",
+    },
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterMostRemaining.id,
+    },
+    description:
+      "Negotiates Most remaining with AAR and reports admission refresh and policy evidence.",
+    clientFallback:
+      "Keep Manual and Round robin; hide Most remaining and refuse unsupported pool defaults with upgrade guidance.",
+    serverContract: {
+      requestFields: ["routerPolicy: most-remaining"],
+      responseFields: [
+        "supportedPolicies",
+        "admissionRefresh",
+        "selection.decisions.evidence",
+      ],
+    },
+  },
+  agentAuthRouterOwnedPools: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterOwnedPools.id,
+    name: "agent-auth-router-owned-pools",
+    introducedIn: "0.9.4",
+    kind: "permanent",
+    area: "sessions",
+    lifecycle: {
+      kind: "permanent",
+      reason: "Explicit router owner/use authority boundary.",
+    },
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterOwnedPools.id,
+    },
+    description:
+      "Reports whether the connected router permits integration pool editing; router-owned pools remain read-only in YA.",
+    clientFallback:
+      "Use the existing pool UI on older servers; honor explicit read-only metadata when present. Router rejects unauthorized writes.",
+    serverContract: {
+      responseFields: ["canManagePools", "directAccountAccess"],
+    },
+  },
+  agentAuthRouterPools: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterPools.id,
+    name: "agent-auth-router-pools",
+    introducedIn: "0.9.4",
+    kind: "permanent",
+    area: "sessions",
+    lifecycle: {
+      kind: "permanent",
+      reason: "Optional local router pool controls.",
+    },
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterPools.id,
+    },
+    description:
+      "Owner-only router pools, cached quota overview and Manual/Round robin session allocation.",
+    clientFallback:
+      "Keep manual account controls; hide pool controls and omit pool launch fields.",
+    serverContract: {
+      routes: [
+        "POST /api/agent-auth-router/overview",
+        "POST /api/agent-auth-router/overview/refresh",
+        "POST /api/agent-auth-router/pools/save",
+        "POST /api/agent-auth-router/pools/remove",
+      ],
+      routeModules: ["packages/server/src/routes/agent-auth-router-pools.ts"],
+      requestFields: ["routerPoolId", "routerPolicy"],
+      responseFields: ["pools", "accounts", "selection"],
+    },
+  },
+  agentAuthRouterRecovery: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.id,
+    name: "agent-auth-router-recovery",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouterRecovery.id,
+    },
+    description:
+      "On-demand router health and explicit failed-launch cleanup retry.",
+    clientFallback:
+      "Keep existing router controls; omit recovery requests and cleanup retry.",
+    serverContract: {
+      routes: [
+        "GET /api/agent-auth-router/recovery",
+        "POST /api/agent-auth-router/retry-cancellations",
+      ],
+      routeModules: [
+        "packages/server/src/routes/agent-auth-router-recovery.ts",
+      ],
+      responseFields: [
+        "checkedAt",
+        "reachable",
+        "pendingCancellations",
+        "issue",
+      ],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Optional local router recovery controls.",
+    },
+  },
+  agentAuthRouter: {
+    id: CAPABILITY_ID_ALLOCATIONS.agentAuthRouter.id,
+    name: "agent-auth-router",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.agentAuthRouter.id,
+    },
+    description:
+      "Local router pairing, automatic compatible-pool discovery, unified model/thinking selection and pinned native provider sessions.",
+    clientFallback:
+      "Hide router controls and omit router launch fields when absent.",
+    serverContract: {
+      routes: [
+        "GET /api/agent-auth-router",
+        "POST /api/agent-auth-router/selection",
+        "POST /api/agent-auth-router/connect",
+        "POST /api/agent-auth-router/disconnect",
+        "GET /api/agent-auth-router/accounts",
+        "GET /api/agent-auth-router/accounts/:id/catalog",
+        "GET /api/agent-auth-router/accounts/:id/quotas",
+      ],
+      routeModules: ["packages/server/src/routes/agent-auth-router.ts"],
+      requestFields: ["routerAccountId", "routerPoolId", "thinking"],
+      responseFields: ["routerId", "state", "accounts"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Optional local router integration.",
+    },
+  },
+  nativePushSubscriptions: {
+    id: CAPABILITY_ID_ALLOCATIONS.nativePushSubscriptions.id,
+    name: "native-push-subscriptions-v1",
+    kind: "permanent",
+    area: "security",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index:
+        OPTIONAL_SERVER_CAPABILITY_BIT_ALLOCATIONS.nativePushSubscriptions
+          .index,
+    },
+    description:
+      "Key-verified native clients can enroll, disable and test their own broker push subscription.",
+    clientFallback:
+      "Native push needs a server update; retain ordinary SRP and web use without enrollment requests.",
+    serverContract: {
+      routes: [
+        "PUT /api/security/clients/:clientId/native-push-subscription",
+        "DELETE /api/security/clients/:clientId/native-push-subscription",
+        "POST /api/security/clients/:clientId/native-push-subscription/test",
+        "GET /api/security/clients/:clientId/native-push-subscription/destination",
+      ],
+      routeModules: ["packages/server/src/routes/native-push.ts"],
+      responseFields: ["nativePush"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Native enrollment requires explicitly mounted delivery support independently of server version.",
+    },
+  },
+
+  contextUsageBreakdown: {
+    id: CAPABILITY_ID_ALLOCATIONS.contextUsageBreakdown.id,
+    name: "context-usage-breakdown",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Reports what fills a live session's context window by category (prompt, tool definitions, instruction files, skills, conversation), with per-file and per-skill rows, for the context-usage popover.",
+    clientFallback:
+      "The context-usage popover shows only its existing token and quota rows and makes no breakdown request.",
+    serverContract: {
+      routeModules: ["packages/server/src/routes/context-breakdown.ts"],
+      routes: ["GET /api/sessions/:sessionId/context-breakdown"],
+      responseFields: ["breakdown"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Servers before 0.9.4 have no breakdown route; the client must not request it from them.",
+    },
+  },
+  projectFileViewCommand: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectFileViewCommand.id,
+    name: "project-file-view-command",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: { kind: "version-implied" },
+    description:
+      "Resolves /v and /view path parts to project files, tracked first, then untracked, then (on submit) ignored, and to exact or outside-project absolute paths, so the composer can open the file viewer without an agent turn.",
+    clientFallback:
+      "Neither advertise nor intercept /v or /view; the typed text reaches the provider unchanged and no search request is made.",
+    serverContract: {
+      routeModules: ["packages/server/src/routes/project-file-view-search.ts"],
+      routes: ["GET /api/projects/:projectId/file-view-search"],
+      requestFields: ["part", "recent", "ignored"],
+      responseFields: ["entries", "pending", "truncated"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers have no multi-part, tracked-first search; the client must not send /v text it cannot resolve as a command.",
+    },
+  },
   fileOwnerProject: {
     id: CAPABILITY_ID_ALLOCATIONS.fileOwnerProject.id,
     name: "file-owner-project",
@@ -251,12 +520,40 @@ export const SERVER_CAPABILITIES = {
         "DELETE /api/artifacts/vhost-sites/:name",
       ],
       requestFields: ["vhostSites"],
-      responseFields: ["artifactViewer.vhostSites"],
+      responseFields: ["artifactViewer.vhostSites", "sites[].linkedFiles"],
     },
     lifecycle: {
       kind: "permanent",
       reason:
         "Older servers drop vhostSites on save and have no route to claim or serve a file address.",
+    },
+  },
+  vhostFileSiteReplacement: {
+    id: CAPABILITY_ID_ALLOCATIONS.vhostFileSiteReplacement.id,
+    name: "vhost-file-site-replacement",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.vhostFileSiteReplacement.id,
+    },
+    description:
+      "Explicit replacement of file vhosts, with creator ownership and project confinement for limited users.",
+    clientFallback: "Hide replacement and keep file vhosts administrator-only.",
+    serverContract: {
+      routes: [
+        "GET /api/artifacts/vhost-sites",
+        "POST /api/artifacts/vhost-sites",
+        "DELETE /api/artifacts/vhost-sites/:name",
+      ],
+      requestFields: ["replace", "projectId"],
+      responseFields: ["sites[].ownerUsername"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers reject collisions and do not support limited-user file vhosts.",
     },
   },
   localSourceBrowse: {
@@ -323,6 +620,26 @@ export const SERVER_CAPABILITIES = {
       kind: "permanent",
       reason:
         "Older servers lack global app inventory and orphan reservation release.",
+    },
+  },
+  projectAppDeletion: {
+    id: CAPABILITY_ID_ALLOCATIONS.projectAppDeletion.id,
+    name: "project-app-deletion",
+    kind: "permanent",
+    area: "settings",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.projectAppDeletion.id,
+    },
+    description:
+      "Administrator deletion of app declarations, with service stop and address release.",
+    clientFallback: "Hide app deletion and offer an update notice.",
+    serverContract: { routes: ["DELETE /api/projects/:projectId/app"] },
+    lifecycle: {
+      kind: "permanent",
+      reason:
+        "Older servers cannot delete app declarations or clean up their addresses.",
     },
   },
   projectService: {
@@ -904,22 +1221,37 @@ export const SERVER_CAPABILITIES = {
       index: CAPABILITY_ID_ALLOCATIONS.computerControlReleases.id,
     },
     description:
-      "Verified Machine Control release downloads and managed updates.",
+      "Retired in 0.9.4: YA-managed Windows release downloads and updates. ID reserved.",
     clientFallback:
       "Show server-update guidance; send no release-management requests.",
-    serverContract: {
-      routes: [
-        "POST /api/computer-control/releases/check",
-        "POST /api/computer-control/releases/update",
-        "PUT /api/computer-control/releases/enabled",
-        "PUT /api/computer-control/releases/automatic",
-      ],
-      routeModules: ["packages/server/src/routes/computer-control-releases.ts"],
-      responseFields: ["release"],
-    },
     lifecycle: {
       kind: "permanent",
       reason: "Optional managed Windows component.",
+    },
+  },
+  installedMachineControl: {
+    id: CAPABILITY_ID_ALLOCATIONS.installedMachineControl.id,
+    name: "installed-machine-control",
+    kind: "permanent",
+    area: "sessions",
+    introducedIn: "0.9.4",
+    advertisement: {
+      kind: "optional-bit",
+      index: CAPABILITY_ID_ALLOCATIONS.installedMachineControl.id,
+    },
+    description:
+      "Verified installed Machine Control CLI readiness and explicit local session advertisement.",
+    clientFallback:
+      "Hide the installed MC picker and send neither its readiness request nor machineControl launch field.",
+    serverContract: {
+      routes: ["GET /api/machine-control"],
+      routeModules: ["packages/server/src/routes/machine-control.ts"],
+      requestFields: ["machineControl"],
+      responseFields: ["available", "version", "reason"],
+    },
+    lifecycle: {
+      kind: "permanent",
+      reason: "Optional independently installed desktop product.",
     },
   },
   computerControl: {
@@ -933,21 +1265,9 @@ export const SERVER_CAPABILITIES = {
       index: CAPABILITY_ID_ALLOCATIONS.computerControl.id,
     },
     description:
-      "Operator-managed signed Windows preview and explicit local Codex session grants.",
+      "Retired in 0.9.4: YA-managed Windows component and local Codex grants. ID reserved.",
     clientFallback:
       "Hide computer controls and send no computer-control requests or launch fields.",
-    serverContract: {
-      routes: [
-        "GET /api/computer-control",
-        "PUT /api/computer-control/settings",
-        "POST /api/computer-control/install",
-        "POST /api/computer-control/stop",
-        "DELETE /api/computer-control/installation",
-        "DELETE /api/computer-control/sessions/:sessionId",
-      ],
-      routeModules: ["packages/server/src/routes/computer-control.ts"],
-      requestFields: ["computerControl"],
-    },
     lifecycle: {
       kind: "permanent",
       reason: "Experimental Windows-only optional component.",

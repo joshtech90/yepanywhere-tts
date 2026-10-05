@@ -1,3 +1,4 @@
+import type { DesktopControlOrigin } from "../desktop/machine-control.js";
 import {
   DEFAULT_RECAP_AFTER_SECONDS,
   HELPER_SIDE_MODEL_CHEAPEST,
@@ -17,12 +18,20 @@ import type {
 } from "../metadata/index.js";
 import { getSessionSandboxSettingsError } from "../session-sandbox.js";
 import type { RecoveredSessionLaunchSettings } from "../sessions/types.js";
+import { resolveInheritedForkModel } from "../sdk/providers/types.js";
 import type { PermissionMode } from "../sdk/types.js";
 import type { Process } from "./Process.js";
 import { persistedSandboxFromProcess } from "./sessionSandboxMetadata.js";
 
 /** Launch and live configuration settings for a session. */
 export interface ModelSettings {
+  routerAccountId?: string;
+  routerPoolId?: string;
+  routerPolicy?: "manual" | "round-robin" | "most-remaining";
+  /** Explicit installed CLI advertisement for this provider launch. */
+  machineControl?: boolean;
+  /** Private credential proof; never accepted from JSON or restored settings. */
+  desktopControlOrigin?: DesktopControlOrigin;
   /** Explicit launch opt-in, never inherited by forks or automatic resumes. */
   computerControl?: boolean;
   /** Model to use (e.g., "sonnet", "opus", "haiku"). undefined = use CLI default */
@@ -386,6 +395,42 @@ export class SessionActivationCoordinator {
           : (modelSettings?.effort ?? inheritedEffort),
       },
     };
+  }
+
+  /** Read a coherent fork source without activating or migrating it. */
+  async snapshotLaunchSettings(
+    projectId: UrlProjectId,
+    sessionId: string,
+    providerName: ProviderName,
+  ): Promise<EffectiveSessionLaunchSettingsValue> {
+    await this.waitForActivation(sessionId);
+    return this.enqueueConfiguration(sessionId, async () => {
+      const process = this.options.getProcessForSession(sessionId);
+      if (process && !process.isTerminated) {
+        await this.flushPendingProcessLaunchSettings(process);
+        const snapshot = structuredClone(this.processLaunchSettings(process));
+        snapshot.requestedModel =
+          resolveInheritedForkModel(
+            snapshot.requestedModel ?? undefined,
+            process.resolvedModel,
+            process.model,
+          ) ?? snapshot.requestedModel;
+        return snapshot;
+      }
+      const resolved = await this.resolveColdLaunchSettings(
+        projectId,
+        sessionId,
+        undefined,
+        { providerName },
+      );
+      return {
+        permissionMode: resolved.permissionMode,
+        requestedModel: resolved.modelSettings.requestedModel ?? null,
+        serviceTier: resolved.modelSettings.serviceTier ?? null,
+        thinking: resolved.modelSettings.thinking ?? null,
+        effort: resolved.modelSettings.effort ?? null,
+      };
+    });
   }
 
   private processLaunchSettings(

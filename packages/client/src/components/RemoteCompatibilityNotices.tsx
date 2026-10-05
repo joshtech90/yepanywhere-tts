@@ -47,6 +47,7 @@ export function RemoteCompatibilityNotices({
       latestVersion: versionInfo?.latest ?? null,
       updateAvailable: versionInfo?.updateAvailable ?? false,
       installSource: versionInfo?.installSource,
+      desktopRuntime: versionInfo?.desktopRuntime,
       resumeProtocolVersion: versionInfo?.resumeProtocolVersion,
       remoteCompatibilityLevel: versionInfo?.remoteCompatibilityLevel,
       capabilities: versionInfo?.capabilities,

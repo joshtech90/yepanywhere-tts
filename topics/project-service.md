@@ -392,6 +392,28 @@ and unavailable-project reservations remain visible; administrator release
 rotates the address bearer and frees the claim without deleting files or
 stopping a service. Static apps have no Start/Stop control.
 
+The inventory requires an app declaration, an owned launch or a retained
+reservation. An unrelated project whose directory is missing is not an app.
+Project folder and other table headers sort the displayed rows; paths share
+the responsive middle-elision component with manual vhosts. Selecting a row
+opens its details, and the `_` control minimizes them back to the list.
+
+Administrators can separately confirm **Delete app** or **Delete project**
+beside the minimize control. Both remove exactly `.project-template/app.json`,
+stop the owned app through its serialized lifecycle and revoke/release every
+reserved address, including previous namespaces. The declaration's canonical
+parent must remain inside the project. App deletion keeps project registration;
+project deletion then unregisters it through the existing project API. Neither
+deletes the directory, source/output files, sessions or removal audit history.
+Artifact grants retain their separate lifecycle. Failed cleanup is reported
+and inventory refreshed; completed steps are not silently rolled back.
+
+`project-app-deletion` (ID 110, explicit optional bit) gates administrator
+DELETE `/api/projects/:projectId/app` and both new controls. The 2026-10-01
+review uses the approved v0.9.0–v0.9.2 corpus, which has no project-app routes.
+Without the bit, details show update guidance and send no deletion request.
+Standing maintainer compatibility authorization applies.
+
 `project-app-inventory` (ID 101, version-implied from 0.9.4) owns administrator
 GET `/api/project-apps` and POST `/api/project-apps/address/release`. The existing
 principal boundary denies both to limited users. Maintainer approval on

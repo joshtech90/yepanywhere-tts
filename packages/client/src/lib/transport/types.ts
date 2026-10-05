@@ -162,6 +162,15 @@ export interface SourceTransport {
   /** Response body and available headers; a 304 is returned without a body. */
   fetchResponse(path: string, init?: RequestInit): Promise<Response>;
   fetchBlob(path: string): Promise<Blob>;
+  /**
+   * GET a file body as a Response whose body streams in as it arrives.
+   * Present only where the backing connection can stream; rejects for an
+   * error status.
+   */
+  fetchStream?(
+    path: string,
+    init?: { signal?: AbortSignal },
+  ): Promise<Response>;
   upload(
     projectId: string,
     sessionId: string,

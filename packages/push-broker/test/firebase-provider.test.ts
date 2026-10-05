@@ -50,9 +50,18 @@ describe("FirebasePushProvider", () => {
     });
     expect(client.messages[0]).toEqual({
       fid: "fid-value",
-      notification: {
-        title: "Yep Anywhere",
-        body: "Open Yep Anywhere for an update.",
+      android: { priority: "high" },
+      apns: {
+        headers: { "apns-priority": "10", "apns-push-type": "alert" },
+        payload: {
+          aps: {
+            alert: {
+              title: "Yep Anywhere",
+              body: "Open Yep Anywhere for an update.",
+            },
+            sound: "default",
+          },
+        },
       },
       data: {
         intent: "approval_required",

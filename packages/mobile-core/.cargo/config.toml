@@ -1,0 +1,5 @@
+[env]
+# scripts/run.mjs downloads and checks the pinned archive before invoking Cargo.
+SODIUM_DIST_DIR = { value = "build/sodium-source", relative = true, force = true }
+
+IPHONEOS_DEPLOYMENT_TARGET = { value = "16.0", force = true }

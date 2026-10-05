@@ -23,16 +23,29 @@ interface ParagraphTarget {
   height: number;
 }
 
-function collectTopLevelBlocks(content: HTMLElement): HTMLElement[] {
+function isMermaidBlock(element: HTMLElement): boolean {
+  const block = element.closest("[data-ya-code-block], pre");
+  const code = block?.querySelector(":scope > pre > code, :scope > code");
+  return Array.from(code?.classList ?? []).some(
+    (name) => name.toLowerCase() === "language-mermaid",
+  );
+}
+
+function collectTopLevelBlocks(content: HTMLElement): {
+  blocks: HTMLElement[];
+  onlyMermaid: boolean;
+} {
   const all = Array.from(
     content.querySelectorAll<HTMLElement>(PARAGRAPH_BLOCK_SELECTOR),
   );
-  return all.filter((element) => {
+  const eligible = all.filter((element) => !isMermaidBlock(element));
+  const blocks = eligible.filter((element) => {
     const parentBlock = element.parentElement?.closest(
       PARAGRAPH_BLOCK_SELECTOR,
     );
     return !parentBlock || !content.contains(parentBlock);
   });
+  return { blocks, onlyMermaid: all.length > 0 && eligible.length === 0 };
 }
 
 function paragraphTargetsEqual(
@@ -102,12 +115,13 @@ export function ParagraphQuoteRail({
   const [paragraphTargets, setParagraphTargets] = useState<ParagraphTarget[]>(
     [],
   );
+  const [onlyMermaid, setOnlyMermaid] = useState(false);
 
   useEffect(() => {
     void layoutKey;
     const content = contentRef.current;
     const surface = surfaceRef.current;
-    if (!paragraphQuoteCirclesEnabled || !content || !surface) {
+    if (!content || !surface) {
       if (paragraphBlocksRef.current.length > 0) {
         paragraphBlocksRef.current = [];
         setParagraphTargets([]);
@@ -147,6 +161,7 @@ export function ParagraphQuoteRail({
     // track the visible neighborhood so a resize only measures and renders
     // quote controls that can appear in the scrollport.
     const intersectionObserver: IntersectionObserver | null =
+      !paragraphQuoteCirclesEnabled ||
       typeof IntersectionObserver === "undefined"
         ? null
         : new IntersectionObserver(
@@ -198,7 +213,16 @@ export function ParagraphQuoteRail({
       if (intersectionObserver) {
         for (const block of blocks) intersectionObserver.unobserve(block);
       }
-      blocks = collectTopLevelBlocks(content);
+      const collected = collectTopLevelBlocks(content);
+      setOnlyMermaid(collected.onlyMermaid);
+      if (!paragraphQuoteCirclesEnabled) {
+        paragraphBlocksRef.current = [];
+        setParagraphTargets((previous) =>
+          previous.length > 0 ? [] : previous,
+        );
+        return;
+      }
+      blocks = collected.blocks;
       blockIndexes = new WeakMap<HTMLElement, number>();
       blocks.forEach((block, blockIndex) => {
         blockIndexes.set(block, blockIndex);
@@ -218,7 +242,7 @@ export function ParagraphQuoteRail({
       intersectionObserver.observe(surface);
     }
     const observer =
-      typeof ResizeObserver === "undefined"
+      !paragraphQuoteCirclesEnabled || typeof ResizeObserver === "undefined"
         ? null
         : new ResizeObserver(scheduleResizeMeasure);
     observer?.observe(content);
@@ -269,6 +293,8 @@ export function ParagraphQuoteRail({
     },
     [onQuoteBlock, sourceRef],
   );
+
+  if (onlyMermaid) return null;
 
   return (
     <div className="text-block-quote-rail">

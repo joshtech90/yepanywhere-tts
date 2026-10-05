@@ -50,6 +50,22 @@ afterEach(() => {
 });
 
 describe("activityBus source streams", () => {
+  it("revalidates failed cold reads when the source first becomes available", () => {
+    const transport = new FakeSourceTransport();
+    transport.setState("connecting");
+    const recovered = vi.fn();
+    activityBus.on("reconnect", recovered);
+    const release = activityBus.retainCurrentSourceStream(
+      "cold-native",
+      transport,
+    );
+    transport.setState("disconnected");
+    expect(recovered).not.toHaveBeenCalled();
+    transport.setState("ready");
+    transport.openSubscription(getOnlyActivitySubscription(transport).id);
+    expect(recovered).toHaveBeenCalledTimes(1);
+    release();
+  });
   it("isolates source listeners while bridging only the current source", () => {
     const sourceATransport = new FakeSourceTransport();
     const sourceBTransport = new FakeSourceTransport();

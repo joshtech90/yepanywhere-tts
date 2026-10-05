@@ -40,6 +40,21 @@ its declared 2.x range. That release fixes
 [quadratic expansion](https://github.com/advisories/GHSA-q2hr-2g5m-vwhr).
 No new audit exclusions are added; unrelated resolutions remain unchanged.
 
+The 2026-10-01 CI audit repair resolves `@grpc/grpc-js` to 1.14.5 and
+`dompurify` to 3.4.16 within their parents' declared ranges, fixing
+[the gRPC certificate advisory](https://github.com/advisories/GHSA-m9gg-hp2v-232j),
+[gRPC error disclosure](https://github.com/advisories/GHSA-f596-whhp-79r4), and
+[the DOMPurify hook advisory](https://github.com/advisories/GHSA-p98j-92pf-mc4p).
+A fresh audit also reported [Hono JSX boundary escaping](https://github.com/advisories/GHSA-hxh3-vqpv-xpqv);
+all Hono workspace consumers now resolve 4.13.12, above its 4.13.7 patch floor.
+No new advisory exclusions or install-script permissions are added.
+
+The 2026-10-03 CI repair resolves Firebase Admin's `@fastify/busboy` edge
+to 3.2.2 within its declared range, above the 3.2.1 patch floor for
+[multipart resource exhaustion](https://github.com/advisories/GHSA-xjh9-v7x6-24jw)
+and [prototype-named headers](https://github.com/advisories/GHSA-x8mw-p69m-v3mx).
+Unrelated resolutions and advisory exclusions remain unchanged.
+
 ### Install-script allowlist
 
 Dependency install scripts (preinstall/install/postinstall) are blocked by

@@ -47,6 +47,7 @@ export const COMPOSER_ONLY_YA_COMMANDS = [
   "terminate",
   "title",
   "compact",
+  "view",
 ] as const;
 
 export type ComposerOnlyYaCommandName =
@@ -114,6 +115,7 @@ const ALIASES: Record<string, string> = {
   m: "model",
   b: "btw",
   d: "done",
+  v: "view",
 };
 
 function isQueueable(name: string): name is QueuedYaCommandName {
@@ -129,11 +131,15 @@ function isComposerOnly(name: string): name is ComposerOnlyYaCommandName {
  * is not a YA-emulated command — ordinary prose, a provider command, a skill
  * line, an effort modifier such as `/fast …` — is `prompt` and queues as text.
  * Without rewind support, `/clear`, `/fork`, and `/clearloop` are the
- * provider's own commands and queue as text too.
+ * provider's own commands and queue as text too, as does `/v` or `/view`
+ * where YA's file-view command is unavailable.
  */
 export function classifyQueuedYaCommand(
   text: string,
-  { rewindSupported }: { rewindSupported: boolean },
+  {
+    rewindSupported,
+    fileViewSupported = false,
+  }: { rewindSupported: boolean; fileViewSupported?: boolean },
 ): QueuedYaCommandClassification {
   const match = /^\/([^\s/]+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (!match) return { kind: "prompt" };
@@ -141,6 +147,7 @@ export function classifyQueuedYaCommand(
   const name = ALIASES[authored] ?? authored;
   const argument = match[2] ?? "";
   if (!rewindSupported && isRewindSlashCommand(name)) return { kind: "prompt" };
+  if (!fileViewSupported && name === "view") return { kind: "prompt" };
   if (isQueueable(name)) {
     const trimmed = argument.trim();
     const command = { name, argument: trimmed };
