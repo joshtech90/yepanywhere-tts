@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import { UI_KEYS } from "../lib/storageKeys";
 import { CockpitSessionDetail } from "./CockpitSessionDetail";
+import { createCockpitTranscriptEntries } from "./core/sessionDetail";
 import type { CockpitSessionDetailData } from "./useCockpitSessionDetail";
 
 const detailMocks = vi.hoisted(() => ({
@@ -613,5 +614,116 @@ describe("Cockpit session detail", () => {
 
     act(() => root.unmount());
     host.remove();
+  });
+
+  describe("finished turns", () => {
+    const workedTurn = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        {
+          type: "user_prompt",
+          id: "user-1",
+          content: "Check the release notes.",
+          sourceMessages: [{ uuid: "user-1" }],
+        },
+        {
+          type: "text",
+          id: "note-1",
+          text: "Looking at the notes first.",
+          sourceBlockIndex: 0,
+          sourceMessages: [{ uuid: "assistant-1" }],
+        },
+        {
+          type: "tool_call",
+          id: "tool-1",
+          toolName: "Bash",
+          toolInput: { command: "cat NOTES.md" },
+          toolResult: { content: "ok", isError: false },
+          status: "complete",
+          sourceMessages: [{ uuid: "assistant-1" }],
+        },
+        {
+          type: "text",
+          id: "answer-1",
+          text: "The release notes are complete.",
+          sourceBlockIndex: 0,
+          sourceMessages: [{ uuid: "assistant-2" }],
+        },
+      ],
+    });
+
+    it("shows only the prompt and the final answer until the reader opens the work", () => {
+      detailMocks.data = detailData({ entries: workedTurn });
+      renderDetail();
+
+      expect(screen.getByText("Check the release notes.")).toBeTruthy();
+      expect(screen.getByText("The release notes are complete.")).toBeTruthy();
+      expect(screen.queryByText("Looking at the notes first.")).toBeNull();
+      const fold = screen.getByRole("button", {
+        name: "1 step · 1 interim message",
+      });
+      expect(fold.getAttribute("aria-expanded")).toBe("false");
+
+      fireEvent.click(fold);
+
+      expect(fold.getAttribute("aria-expanded")).toBe("true");
+      expect(screen.getByText("Looking at the notes first.")).toBeTruthy();
+      expect(screen.getByText("The release notes are complete.")).toBeTruthy();
+    });
+
+    it("keeps the running turn complete", () => {
+      detailMocks.data = detailData({
+        entries: workedTurn,
+        processState: "in-turn",
+      });
+      renderDetail();
+
+      expect(screen.getByText("Looking at the notes first.")).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "1 step · 1 interim message" }),
+      ).toBeNull();
+    });
+
+    it("folds a turn that ends while the reader follows the end", () => {
+      detailMocks.data = detailData({
+        entries: workedTurn,
+        processState: "in-turn",
+      });
+      const view = renderDetail();
+      expect(screen.getByText("Looking at the notes first.")).toBeTruthy();
+
+      detailMocks.data = detailData({ entries: workedTurn });
+      view.rerender(detailTree());
+
+      expect(screen.queryByText("Looking at the notes first.")).toBeNull();
+    });
+
+    it("holds a turn open that ends while the reader is scrolled up in it", () => {
+      detailMocks.data = detailData({
+        entries: workedTurn,
+        processState: "in-turn",
+      });
+      const view = renderDetail();
+      const transcript = screen.getByLabelText("Session conversation");
+      Object.defineProperty(transcript, "scrollHeight", {
+        configurable: true,
+        get: () => 2000,
+      });
+      Object.defineProperty(transcript, "clientHeight", {
+        configurable: true,
+        get: () => 400,
+      });
+      transcript.scrollTop = 100;
+      fireEvent.scroll(transcript);
+
+      detailMocks.data = detailData({ entries: workedTurn });
+      view.rerender(detailTree());
+      expect(screen.getByText("Looking at the notes first.")).toBeTruthy();
+
+      transcript.scrollTop = 1600;
+      fireEvent.scroll(transcript);
+      expect(screen.queryByText("Looking at the notes first.")).toBeNull();
+    });
   });
 });

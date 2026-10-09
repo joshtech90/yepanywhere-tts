@@ -264,6 +264,23 @@ steht. Beim expliziten Nachladen aelterer Seiten bleibt die sichtbare Position
 durch einen Hoehenausgleich erhalten; Reconnect zeigt den Status, behaelt aber
 bereits geladene Zeilen sichtbar.
 
+Abgeschlossene Durchgaenge zeigt das Cockpit als Gespraech: den Prompt, eine
+leise Faltzeile und die Endantwort ohne ihr Thinking (Joscha 09.10.2026). Die
+Faltzeile zaehlt die verborgenen Werkzeugaufrufe und Zwischennachrichten; ein
+Klick oeffnet alle Zeilen an ihrer urspruenglichen Stelle und pausiert das
+Folgen, damit die Zeile stehen bleibt. Der laufende Durchgang bleibt
+vollstaendig. Endet er, waehrend der Leser in seinen Schritten hochgescrollt
+ist, bleibt er offen, bis der Leser wieder am Ende steht oder der naechste
+Durchgang beginnt. Nicht gefaltet werden Durchgaenge ohne fertige Endantwort
+(Ende auf einem Werkzeugaufruf, abgebrochen, noch schreibend). Sichtbar
+bleiben Status- und Kompaktierungsgrenzen sowie `AskUserQuestion` und
+`ExitPlanMode`, weil Frage und Plan Joschas eigene Entscheidungen tragen. Die
+Faltung ist eine reine Projektion (`core/turnFold.ts`) ueber die kanonischen
+Eintraege; Vorlesen, Kurzbefehle und Suche sehen weiter alle Eintraege. Der
+Aufklappzustand gilt nur fuer die geoeffnete Sitzung. Der Anker fuer aeltere
+Seiten ist der erste echte Eintrag, weil sich der Schluessel einer Faltzeile
+aendert, sobald eine aeltere Seite den Prompt ihres Durchgangs nachliefert.
+
 Vorlesen ruft direkt den bestehenden appweiten Controller in `readAloud.ts`
 auf. Dessen Token stellt weiterhin genau eine Wiedergabe fuer alte und neue UI
 sicher; Start, Chunk-Prefetch und Stop verwenden unveraendert `/api/tts/plan`

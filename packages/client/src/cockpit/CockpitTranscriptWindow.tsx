@@ -7,7 +7,7 @@ import {
   useState,
 } from "react";
 import { useTranscriptRenderWindow } from "../hooks/useTranscriptRenderWindow";
-import type { CockpitTranscriptEntry } from "./core/sessionDetail";
+import type { CockpitDisplayEntry } from "./core/turnFold";
 import styles from "./CockpitSessionDetail.module.css";
 
 const TRANSCRIPT_RENDER_MARKER_STYLE = {
@@ -17,7 +17,7 @@ const TRANSCRIPT_RENDER_MARKER_STYLE = {
   pointerEvents: "none",
 } as const;
 
-function getEntryTargetIds(entry: CockpitTranscriptEntry) {
+function getEntryTargetIds(entry: CockpitDisplayEntry) {
   return [entry.key];
 }
 
@@ -36,10 +36,10 @@ export interface CockpitTranscriptWindowProps {
   /** Live tail below the last row, such as the working indicator. */
   afterRows?: ReactNode;
   beforeRows: ReactNode;
-  entries: readonly CockpitTranscriptEntry[];
+  entries: readonly CockpitDisplayEntry[];
   following: boolean;
   pinnedEntryKey: string | null;
-  renderEntry: (entry: CockpitTranscriptEntry) => ReactNode;
+  renderEntry: (entry: CockpitDisplayEntry) => ReactNode;
 }
 
 /**

@@ -684,3 +684,53 @@
     animation: none;
   }
 }
+
+/* A finished turn's work, folded into one quiet line above its answer. */
+.foldRow {
+  display: flex;
+  margin: -0.35rem 0 0.75rem;
+}
+
+.foldToggle {
+  display: inline-flex;
+  min-height: 1.9rem;
+  padding: 0 0.75rem 0 0.55rem;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--cockpit-border);
+  border-radius: 999px;
+  color: var(--cockpit-muted);
+  background: transparent;
+  font: inherit;
+  font-size: var(--cockpit-text-xs);
+  cursor: pointer;
+  transition:
+    color 140ms ease,
+    border-color 140ms ease;
+}
+
+.foldToggle:hover {
+  border-color: var(--cockpit-border-strong);
+  color: var(--cockpit-text);
+}
+
+.foldToggle:focus-visible {
+  outline: 2px solid var(--cockpit-accent);
+  outline-offset: 2px;
+}
+
+.foldToggle svg {
+  width: 0.9rem;
+  height: 0.9rem;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.8;
+  transform: rotate(-90deg);
+  transition: transform 140ms ease;
+}
+
+.foldToggle[aria-expanded="true"] svg {
+  transform: none;
+}

@@ -36,12 +36,16 @@ import {
   type CockpitAssistantEntry,
   type CockpitOutgoingEntry,
   type CockpitSessionState,
-  type CockpitTranscriptEntry,
 } from "./core/sessionDetail";
 import type { CockpitShellState } from "./core/shellState";
 import { cockpitContextUsage } from "./core/contextUsage";
 import { cockpitLedToneForState } from "./core/statusLed";
 import { selectCockpitTranscriptSnapshot } from "./core/transcriptScheduling";
+import {
+  foldCockpitTurns,
+  type CockpitDisplayEntry,
+  type CockpitFoldEntry,
+} from "./core/turnFold";
 import { useCockpitAutoReadAloud } from "./useCockpitAutoReadAloud";
 import { useCockpitSessionDetail } from "./useCockpitSessionDetail";
 
@@ -231,16 +235,74 @@ function OutgoingEntry({
   );
 }
 
+function foldLabel(entry: CockpitFoldEntry, t: TranslationFn) {
+  const parts: string[] = [];
+  if (entry.steps > 0) {
+    parts.push(
+      entry.steps === 1
+        ? t("cockpitFoldStepsOne")
+        : t("cockpitFoldSteps", { count: entry.steps }),
+    );
+  }
+  if (entry.notes > 0) {
+    parts.push(
+      entry.notes === 1
+        ? t("cockpitFoldNotesOne")
+        : t("cockpitFoldNotes", { count: entry.notes }),
+    );
+  }
+  if (parts.length === 0) parts.push(t("cockpitFoldThinking"));
+  return parts.join(" · ");
+}
+
+/**
+ * Stands in for the work of a finished turn, so the conversation reads as
+ * prompts and final answers (Joscha 09.10.2026). Opening it shows every step
+ * in its original place below.
+ */
+function FoldRow({
+  entry,
+  onToggle,
+}: {
+  entry: CockpitFoldEntry;
+  onToggle: (key: string) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div
+      className={styles.foldRow}
+      data-cockpit-entry-key={entry.key}
+      data-entry-kind="fold"
+    >
+      <button
+        aria-expanded={entry.expanded}
+        className={styles.foldToggle}
+        onClick={() => onToggle(entry.key)}
+        title={entry.expanded ? t("cockpitFoldHide") : t("cockpitFoldShow")}
+        type="button"
+      >
+        <ArrowIcon direction="down" />
+        <span>{foldLabel(entry, t)}</span>
+      </button>
+    </div>
+  );
+}
+
 const TranscriptEntry = memo(function TranscriptEntry({
   entry,
   locale,
+  onToggleFold,
   sessionWorking,
 }: {
-  entry: CockpitTranscriptEntry;
+  entry: CockpitDisplayEntry;
   locale: string;
+  onToggleFold: (key: string) => void;
   sessionWorking: boolean;
 }) {
   const { t } = useI18n();
+  if (entry.kind === "fold") {
+    return <FoldRow entry={entry} onToggle={onToggleFold} />;
+  }
   const time = entryTime(entry.timestamp, locale);
   if (entry.kind === "boundary") {
     return (
@@ -410,6 +472,10 @@ export function CockpitSessionDetail({
   } | null>(null);
   const [following, setFollowing] = useState(true);
   const [pinnedEntryKey, setPinnedEntryKey] = useState<string | null>(null);
+  const [expandedFoldKeys, setExpandedFoldKeys] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const [latestTurnHeldOpen, setLatestTurnHeldOpen] = useState(false);
 
   const hasEntries = transcriptEntries.length > 0;
   const state = deriveCockpitSessionState({
@@ -445,15 +511,51 @@ export function CockpitSessionDetail({
     return attentionStop();
   }, [attentionStop, skipAutoReadTurn]);
 
+  // A turn that ends while the reader is scrolled up into its steps stays
+  // open until they return to the end, so the text under them does not
+  // vanish mid-read. The next turn releases it as well.
+  const wasWorkingRef = useRef(sessionWorking);
+  useLayoutEffect(() => {
+    if (wasWorkingRef.current && !sessionWorking && !followingRef.current) {
+      setLatestTurnHeldOpen(true);
+    }
+    wasWorkingRef.current = sessionWorking;
+  }, [sessionWorking]);
+  useEffect(() => {
+    if (following || sessionWorking) setLatestTurnHeldOpen(false);
+  }, [following, sessionWorking]);
+
+  const visibleEntries = useMemo(
+    () =>
+      foldCockpitTurns(transcriptEntries, {
+        expandedFoldKeys,
+        latestTurnOpen: sessionWorking || latestTurnHeldOpen,
+      }),
+    [expandedFoldKeys, latestTurnHeldOpen, sessionWorking, transcriptEntries],
+  );
+
+  // Opening or closing a fold keeps that row where it is instead of
+  // following the end; scrolling back down resumes following.
+  const toggleFold = useCallback((key: string) => {
+    followingRef.current = false;
+    setFollowing(false);
+    setExpandedFoldKeys((previous) => {
+      const next = new Set(previous);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }, []);
+
   const renderTranscriptEntry = useCallback(
-    (entry: CockpitTranscriptEntry) => (
+    (entry: CockpitDisplayEntry) => (
       <TranscriptEntry
         entry={entry}
         locale={locale}
+        onToggleFold={toggleFold}
         sessionWorking={sessionWorking}
       />
     ),
-    [locale, sessionWorking],
+    [locale, sessionWorking, toggleFold],
   );
 
   useLayoutEffect(() => {
@@ -461,6 +563,8 @@ export function CockpitSessionDetail({
     followingRef.current = true;
     setFollowing(true);
     setPinnedEntryKey(null);
+    setExpandedFoldKeys(new Set());
+    setLatestTurnHeldOpen(false);
   }, [interactionKey]);
 
   useLayoutEffect(() => {
@@ -478,7 +582,7 @@ export function CockpitSessionDetail({
       } else {
         const entriesBeforeAnchor = countEntriesBeforeCockpitScrollAnchor(
           prepend.anchorKey,
-          transcriptEntries,
+          visibleEntries,
         );
         if (entriesBeforeAnchor === null) {
           prependRef.current = null;
@@ -519,7 +623,7 @@ export function CockpitSessionDetail({
     if (followingRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [projectId, runtime.sourceKey, sessionId, transcriptEntries]);
+  }, [projectId, runtime.sourceKey, sessionId, visibleEntries]);
 
   const showWorking = state === "active" || state === "external";
   const outgoingCount = detail.outgoing.length;
@@ -579,7 +683,9 @@ export function CockpitSessionDetail({
 
   const loadOlder = useCallback(async () => {
     const container = scrollRef.current;
-    const anchorKey = transcriptEntries[0]?.key;
+    // A fold row's key changes when an older page brings its turn's prompt,
+    // so the anchor is the first real entry.
+    const anchorKey = visibleEntries.find((entry) => entry.kind !== "fold")?.key;
     if (container && anchorKey) {
       const anchorElement = findTranscriptEntryElement(container, anchorKey);
       prependRef.current = {
@@ -610,7 +716,7 @@ export function CockpitSessionDetail({
     projectId,
     runtime.sourceKey,
     sessionId,
-    transcriptEntries,
+    visibleEntries,
   ]);
 
   const title =
@@ -823,7 +929,7 @@ export function CockpitSessionDetail({
               )}
             </>
           }
-          entries={transcriptEntries}
+          entries={visibleEntries}
           following={following}
           key={`${interactionKey}:transcript`}
           pinnedEntryKey={pinnedEntryKey}
