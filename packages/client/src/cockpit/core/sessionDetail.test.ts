@@ -51,6 +51,45 @@ const initialItems: RenderItem[] = [
 ];
 
 describe("Cockpit session detail projection", () => {
+  it("marks where the agent began a turn on its own and where a turn was aborted", () => {
+    const entries = createCockpitTranscriptEntries({
+      sourceKey: "local",
+      sessionId: "session-1",
+      renderItems: [
+        ...initialItems,
+        {
+          type: "task_notification",
+          id: "notification-1",
+          raw: "<task-notification />",
+          sourceMessages: [{ uuid: "notification-1" }],
+        },
+        {
+          type: "text",
+          id: "text-2",
+          text: "The background task finished.",
+          sourceBlockIndex: 0,
+          sourceMessages: [{ uuid: "assistant-2" }],
+        },
+        {
+          type: "system",
+          id: "aborted-1",
+          subtype: "turn_aborted",
+          content: "Turn aborted",
+          sourceMessages: [{ uuid: "aborted-1" }],
+        },
+      ],
+    });
+
+    const last = entries[entries.length - 1];
+    expect(last).toMatchObject({
+      kind: "assistant",
+      turnStart: true,
+      turnAborted: true,
+    });
+    expect(entries.filter((entry) => entry.turnStart)).toHaveLength(1);
+    expect(entries.some((entry) => entry.kind === "boundary")).toBe(false);
+  });
+
   it("keeps warm-return rows stable and preserves rendered Markdown", () => {
     const first = createCockpitTranscriptEntries({
       sourceKey: "local",

@@ -272,14 +272,20 @@ Folgen, damit die Zeile stehen bleibt. Der laufende Durchgang bleibt
 vollstaendig. Endet er, waehrend der Leser in seinen Schritten hochgescrollt
 ist, bleibt er offen, bis der Leser wieder am Ende steht oder der naechste
 Durchgang beginnt. Nicht gefaltet werden Durchgaenge ohne fertige Endantwort
-(Ende auf einem Werkzeugaufruf, abgebrochen, noch schreibend). Sichtbar
+(Ende auf einem Werkzeugaufruf, per `turn_aborted` abgebrochen, unterbrochen,
+noch schreibend). Ein Durchgang, den der Agent ohne Prompt selbst beginnt,
+etwa nach einer `task_notification` einer Hintergrundaufgabe, faltet getrennt;
+die Antwort davor bleibt sichtbar. Beide Marker haben keine eigene Zeile, sie
+markieren den benachbarten Eintrag (`turnStart`, `turnAborted`). Sichtbar
 bleiben Status- und Kompaktierungsgrenzen sowie `AskUserQuestion` und
 `ExitPlanMode`, weil Frage und Plan Joschas eigene Entscheidungen tragen. Die
 Faltung ist eine reine Projektion (`core/turnFold.ts`) ueber die kanonischen
 Eintraege; Vorlesen, Kurzbefehle und Suche sehen weiter alle Eintraege. Der
-Aufklappzustand gilt nur fuer die geoeffnete Sitzung. Der Anker fuer aeltere
-Seiten ist der erste echte Eintrag, weil sich der Schluessel einer Faltzeile
-aendert, sobald eine aeltere Seite den Prompt ihres Durchgangs nachliefert.
+Aufklappzustand gilt nur fuer die geoeffnete Sitzung. Eine Faltzeile traegt
+den Schluessel ihrer Endantwort, damit sie offen bleibt, wenn eine aeltere
+Seite den Prompt ihres Durchgangs nachliefert. Der Anker fuer aeltere Seiten
+ist der erste echte Eintrag; als echtes Voranstellen gilt erst, wenn vor ihm
+mehr Zeilen stehen als beim Start der Anfrage.
 
 Vorlesen ruft direkt den bestehenden appweiten Controller in `readAloud.ts`
 auf. Dessen Token stellt weiterhin genau eine Wiedergabe fuer alte und neue UI

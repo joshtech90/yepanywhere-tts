@@ -464,6 +464,8 @@ export function CockpitSessionDetail({
   const followingRef = useRef(true);
   const prependRef = useRef<{
     anchorKey: string;
+    /** Rows before the anchor when the request started (a fold row may lead). */
+    anchorIndex: number;
     anchorTop: number | null;
     projectId: string;
     sessionId: string;
@@ -587,7 +589,7 @@ export function CockpitSessionDetail({
         if (entriesBeforeAnchor === null) {
           prependRef.current = null;
           setPinnedEntryKey(null);
-        } else if (entriesBeforeAnchor > 0) {
+        } else if (entriesBeforeAnchor > prepend.anchorIndex) {
           const anchorElement = findTranscriptEntryElement(
             container,
             prepend.anchorKey,
@@ -685,11 +687,15 @@ export function CockpitSessionDetail({
     const container = scrollRef.current;
     // A fold row's key changes when an older page brings its turn's prompt,
     // so the anchor is the first real entry.
-    const anchorKey = visibleEntries.find((entry) => entry.kind !== "fold")?.key;
+    const anchorIndex = visibleEntries.findIndex(
+      (entry) => entry.kind !== "fold",
+    );
+    const anchorKey = visibleEntries[anchorIndex]?.key;
     if (container && anchorKey) {
       const anchorElement = findTranscriptEntryElement(container, anchorKey);
       prependRef.current = {
         anchorKey,
+        anchorIndex,
         anchorTop: anchorElement?.getBoundingClientRect().top ?? null,
         projectId,
         sessionId,

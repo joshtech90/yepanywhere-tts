@@ -119,7 +119,7 @@ describe("foldCockpitTurns", () => {
       prompt,
       {
         kind: "fold",
-        key: "user-1\0fold",
+        key: "asst-final\0fold",
         expanded: false,
         steps: 2,
         notes: 1,
@@ -178,7 +178,7 @@ describe("foldCockpitTurns", () => {
       interimNote,
       finalAnswer,
     ];
-    const foldKey = "user-1\0fold";
+    const foldKey = "asst-final\0fold";
 
     const result = foldCockpitTurns(entries, {
       expandedFoldKeys: new Set([foldKey]),
@@ -226,7 +226,7 @@ describe("foldCockpitTurns", () => {
       prompt1,
       {
         kind: "fold",
-        key: "user-1\0fold",
+        key: "asst-1\0fold",
         expanded: false,
         steps: 1,
         notes: 0,
@@ -316,7 +316,7 @@ describe("foldCockpitTurns", () => {
       prompt,
       {
         kind: "fold",
-        key: "user-1\0fold",
+        key: "asst-final\0fold",
         expanded: false,
         steps: 1,
         notes: 0,
@@ -344,7 +344,7 @@ describe("foldCockpitTurns", () => {
     expect(result.some((entry) => entry.kind === "fold")).toBe(false);
   });
 
-  it("folds a leading body without a user prompt using a key based on its first entry", () => {
+  it("folds a leading body without a user prompt, keyed by its final answer", () => {
     const firstTool = createToolEntry("tool-head", "Bash");
     const interimNote = createAssistantEntry("asst-interim", {
       text: "Working through paginated history...",
@@ -367,7 +367,7 @@ describe("foldCockpitTurns", () => {
     expect(collapsedResult).toEqual([
       {
         kind: "fold",
-        key: "tool-head\0fold",
+        key: "asst-final\0fold",
         expanded: false,
         steps: 1,
         notes: 1,
@@ -376,14 +376,14 @@ describe("foldCockpitTurns", () => {
     ]);
 
     const expandedResult = foldCockpitTurns(entries, {
-      expandedFoldKeys: new Set(["tool-head\0fold"]),
+      expandedFoldKeys: new Set(["asst-final\0fold"]),
       latestTurnOpen: false,
     });
 
     expect(expandedResult).toEqual([
       {
         kind: "fold",
-        key: "tool-head\0fold",
+        key: "asst-final\0fold",
         expanded: true,
         steps: 1,
         notes: 1,
@@ -424,5 +424,90 @@ describe("foldCockpitTurns", () => {
     expect(entries[1]).toBe(tool);
     expect(entries[2]).toBe(interimNote);
     expect(entries[3]).toBe(finalAnswer);
+  });
+
+  it("keeps the fold open when an older page brings the turn's prompt", () => {
+    const tool = createToolEntry("tool-1");
+    const finalAnswer = createAssistantEntry("asst-final", { text: "Done." });
+    const options = {
+      expandedFoldKeys: new Set(["asst-final\0fold"]),
+      latestTurnOpen: false,
+    };
+
+    const partial = foldCockpitTurns([tool, finalAnswer], options);
+    const prompt = createUserEntry("user-1");
+    const complete = foldCockpitTurns([prompt, tool, finalAnswer], options);
+
+    expect(partial[0]).toMatchObject({ kind: "fold", expanded: true });
+    expect(complete[1]).toBe(partial[0]);
+    expect(complete.slice(2)).toEqual([tool, finalAnswer]);
+  });
+
+  it("folds a turn the agent began on its own separately from the answer before it", () => {
+    const prompt = createUserEntry("user-1");
+    const firstTool = createToolEntry("tool-1");
+    const firstAnswer = createAssistantEntry("asst-1", { text: "Started." });
+    const wakeTool = {
+      ...createToolEntry("tool-2"),
+      turnStart: true as const,
+    };
+    const wakeAnswer = createAssistantEntry("asst-2", { text: "Task done." });
+
+    const result = foldCockpitTurns(
+      [prompt, firstTool, firstAnswer, wakeTool, wakeAnswer],
+      { expandedFoldKeys: new Set(), latestTurnOpen: false },
+    );
+
+    expect(result).toEqual([
+      prompt,
+      {
+        kind: "fold",
+        key: "asst-1\0fold",
+        expanded: false,
+        steps: 1,
+        notes: 0,
+      },
+      firstAnswer,
+      {
+        kind: "fold",
+        key: "asst-2\0fold",
+        expanded: false,
+        steps: 1,
+        notes: 0,
+      },
+      wakeAnswer,
+    ]);
+  });
+
+  it("does not fold an aborted turn even when it ends on finished text", () => {
+    const prompt = createUserEntry("user-1");
+    const tool = createToolEntry("tool-1");
+    const progress = {
+      ...createAssistantEntry("asst-progress", { text: "Halfway there." }),
+      turnAborted: true as const,
+    };
+
+    const result = foldCockpitTurns([prompt, tool, progress], {
+      expandedFoldKeys: new Set(),
+      latestTurnOpen: false,
+    });
+
+    expect(result).toEqual([prompt, tool, progress]);
+  });
+
+  it("keeps unchanged fold rows identical across projections", () => {
+    const entries = [
+      createUserEntry("user-1"),
+      createToolEntry("tool-1"),
+      createAssistantEntry("asst-final", { text: "Done." }),
+    ];
+    const options = {
+      expandedFoldKeys: new Set<string>(),
+      latestTurnOpen: false,
+    };
+
+    expect(foldCockpitTurns(entries, options)[1]).toBe(
+      foldCockpitTurns(entries, options)[1],
+    );
   });
 });

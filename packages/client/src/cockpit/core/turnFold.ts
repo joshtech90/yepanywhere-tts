@@ -48,6 +48,7 @@ function isFinalAnswer(
 ): entry is CockpitAssistantEntry {
   return (
     entry?.kind === "assistant" &&
+    !entry.turnAborted &&
     !entry.isStreaming &&
     entry.text.length > 0 &&
     !entry.text.some((segment) => segment.abortedMidStream)
@@ -71,6 +72,38 @@ function withoutThinking(entry: CockpitAssistantEntry): CockpitAssistantEntry {
   return answer;
 }
 
+// Unchanged fold rows keep their identity, keyed by the answer they stand
+// before, so a live update does not re-render every historical fold.
+const foldsByAnswer = new WeakMap<CockpitAssistantEntry, CockpitFoldEntry>();
+
+function foldRow(
+  answer: CockpitAssistantEntry,
+  expanded: boolean,
+  steps: number,
+  notes: number,
+): CockpitFoldEntry {
+  const previous = foldsByAnswer.get(answer);
+  if (
+    previous &&
+    previous.expanded === expanded &&
+    previous.steps === steps &&
+    previous.notes === notes
+  ) {
+    return previous;
+  }
+  const fold: CockpitFoldEntry = {
+    kind: "fold",
+    // The answer's key survives an older page bringing the turn's prompt,
+    // so an opened fold stays open while history loads above it.
+    key: `${answer.key}\0fold`,
+    expanded,
+    steps,
+    notes,
+  };
+  foldsByAnswer.set(answer, fold);
+  return fold;
+}
+
 function foldTurn(
   prompt: CockpitTranscriptEntry | null,
   body: readonly CockpitTranscriptEntry[],
@@ -78,9 +111,12 @@ function foldTurn(
 ): CockpitDisplayEntry[] {
   const head = prompt ? [prompt] : [];
   const answer = body[body.length - 1];
-  // A turn that ended on a tool call, was interrupted or is still writing has
-  // no final answer to stand for it; the reader needs to see what happened.
-  if (!isFinalAnswer(answer)) return [...head, ...body];
+  // A turn that ended on a tool call, was aborted or interrupted, or is still
+  // writing has no final answer to stand for it; the reader needs to see what
+  // happened.
+  if (!isFinalAnswer(answer) || body.some((entry) => entry.turnAborted)) {
+    return [...head, ...body];
+  }
 
   let steps = 0;
   let notes = 0;
@@ -94,10 +130,13 @@ function foldTurn(
     body.slice(0, -1).some((entry) => !staysVisible(entry));
   if (!hidesSomething) return [...head, ...body];
 
-  const key = `${(prompt ?? body[0] ?? answer).key}\0fold`;
-  const expanded = expandedFoldKeys.has(key);
-  const fold: CockpitFoldEntry = { kind: "fold", key, expanded, steps, notes };
-  if (expanded) return [...head, fold, ...body];
+  const fold = foldRow(
+    answer,
+    expandedFoldKeys.has(`${answer.key}\0fold`),
+    steps,
+    notes,
+  );
+  if (fold.expanded) return [...head, fold, ...body];
   return [
     ...head,
     fold,
@@ -108,6 +147,8 @@ function foldTurn(
 
 /**
  * Reduces finished turns to the user's prompt and the agent's final answer.
+ * A turn the agent began on its own, after a background task finished, folds
+ * separately, so the answer before it stays visible.
  * Everything in between collapses into one fold row the reader can open; the
  * running turn stays complete. Pure projection: the canonical entries are not
  * changed, and an opened fold shows them in their original order.
@@ -122,9 +163,12 @@ export function foldCockpitTurns(
   }> = [];
   let current: (typeof turns)[number] = { prompt: null, body: [] };
   for (const entry of entries) {
-    if (entry.kind === "user") {
+    if (entry.kind === "user" || entry.turnStart) {
       if (current.prompt || current.body.length > 0) turns.push(current);
-      current = { prompt: entry, body: [] };
+      current =
+        entry.kind === "user"
+          ? { prompt: entry, body: [] }
+          : { prompt: null, body: [entry] };
       continue;
     }
     current.body.push(entry);

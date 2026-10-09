@@ -32,6 +32,13 @@ interface CockpitTranscriptEntryBase {
   timestamp?: string;
   /** Stable render-item references used only to retain unchanged row identity. */
   sourceItems?: readonly RenderItem[];
+  /**
+   * Begins a provider turn that no user prompt started, such as the agent
+   * waking up for a finished background task.
+   */
+  turnStart?: true;
+  /** The provider aborted the turn right after this entry. */
+  turnAborted?: true;
 }
 
 export interface CockpitUserAttachment {
@@ -227,6 +234,14 @@ export function createCockpitTranscriptEntries(input: {
   renderItems: readonly RenderItem[];
 }): CockpitTranscriptEntry[] {
   const entries: CockpitTranscriptEntry[] = [];
+  // Turn markers have no row of their own; they mark the neighbouring entry
+  // so the Cockpit can tell where a provider turn began or was aborted.
+  let turnStartPending = false;
+  const push = (entry: CockpitTranscriptEntry) => {
+    if (turnStartPending && entry.kind !== "user") entry.turnStart = true;
+    turnStartPending = false;
+    entries.push(entry);
+  };
   let assistantItems: Array<
     Extract<RenderItem, { type: "text" | "thinking" }>
   > = [];
@@ -255,7 +270,7 @@ export function createCockpitTranscriptEntries(input: {
     );
     if (text.length > 0 || thinking.length > 0) {
       const timestamp = timestampForItem(first);
-      entries.push({
+      push({
         kind: "assistant",
         key: entryKey(input.sourceKey, input.sessionId, "assistant", first.id),
         ...(timestamp ? { timestamp } : {}),
@@ -280,7 +295,7 @@ export function createCockpitTranscriptEntries(input: {
       const prompt = parseUserPrompt(contentText(item.content));
       if (prompt.text || prompt.uploadedFiles.length > 0) {
         const timestamp = timestampForItem(item);
-        entries.push({
+        push({
           kind: "user",
           key: entryKey(input.sourceKey, input.sessionId, "user", item.id),
           ...(timestamp ? { timestamp } : {}),
@@ -303,7 +318,7 @@ export function createCockpitTranscriptEntries(input: {
     if (item.type === "tool_call") {
       flushAssistant();
       const timestamp = timestampForItem(item);
-      entries.push({
+      push({
         kind: "tool",
         key: entryKey(input.sourceKey, input.sessionId, "tool", item.id),
         ...(timestamp ? { timestamp } : {}),
@@ -313,13 +328,28 @@ export function createCockpitTranscriptEntries(input: {
       continue;
     }
 
+    if (item.type === "task_notification") {
+      flushAssistant();
+      turnStartPending = true;
+      continue;
+    }
+
+    if (item.type === "system" && item.subtype === "turn_aborted") {
+      flushAssistant();
+      const last = entries[entries.length - 1];
+      if (last && last.kind !== "user") {
+        entries[entries.length - 1] = { ...last, turnAborted: true };
+      }
+      continue;
+    }
+
     if (
       item.type === "system" &&
       (item.subtype === "compact_boundary" || item.subtype === "status")
     ) {
       flushAssistant();
       const timestamp = timestampForItem(item);
-      entries.push({
+      push({
         kind: "boundary",
         key: entryKey(input.sourceKey, input.sessionId, "boundary", item.id),
         ...(timestamp ? { timestamp } : {}),
@@ -342,6 +372,8 @@ export function createCockpitTranscriptEntries(input: {
       previous.kind !== entry.kind ||
       !previous.sourceItems ||
       !entry.sourceItems ||
+      previous.turnStart !== entry.turnStart ||
+      previous.turnAborted !== entry.turnAborted ||
       previous.sourceItems.length !== entry.sourceItems.length ||
       !previous.sourceItems.every(
         (sourceItem, index) => sourceItem === entry.sourceItems?.[index],
