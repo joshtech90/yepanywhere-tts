@@ -463,9 +463,13 @@ export function CockpitSessionDetail({
   const scrollRef = useRef<HTMLDivElement>(null);
   const followingRef = useRef(true);
   const prependRef = useRef<{
+    /** Visible row whose position is restored after the prepend. */
     anchorKey: string;
-    /** Rows before the anchor when the request started (a fold row may lead). */
-    anchorIndex: number;
+    /**
+     * First canonical entry when the request started. Rows appearing before
+     * it are the prepend; folding changes visible rows, not canonical ones.
+     */
+    historyKey: string;
     anchorTop: number | null;
     projectId: string;
     sessionId: string;
@@ -583,13 +587,13 @@ export function CockpitSessionDetail({
         setPinnedEntryKey(null);
       } else {
         const entriesBeforeAnchor = countEntriesBeforeCockpitScrollAnchor(
-          prepend.anchorKey,
-          visibleEntries,
+          prepend.historyKey,
+          transcriptEntries,
         );
         if (entriesBeforeAnchor === null) {
           prependRef.current = null;
           setPinnedEntryKey(null);
-        } else if (entriesBeforeAnchor > prepend.anchorIndex) {
+        } else if (entriesBeforeAnchor > 0) {
           const anchorElement = findTranscriptEntryElement(
             container,
             prepend.anchorKey,
@@ -625,7 +629,7 @@ export function CockpitSessionDetail({
     if (followingRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [projectId, runtime.sourceKey, sessionId, visibleEntries]);
+  }, [projectId, runtime.sourceKey, sessionId, transcriptEntries, visibleEntries]);
 
   const showWorking = state === "active" || state === "external";
   const outgoingCount = detail.outgoing.length;
@@ -685,17 +689,17 @@ export function CockpitSessionDetail({
 
   const loadOlder = useCallback(async () => {
     const container = scrollRef.current;
-    // A fold row's key changes when an older page brings its turn's prompt,
-    // so the anchor is the first real entry.
-    const anchorIndex = visibleEntries.findIndex(
+    // A fold row stands for its turn and can change with it, so the
+    // position anchor is the first real row.
+    const anchorKey = visibleEntries.find(
       (entry) => entry.kind !== "fold",
-    );
-    const anchorKey = visibleEntries[anchorIndex]?.key;
-    if (container && anchorKey) {
+    )?.key;
+    const historyKey = transcriptEntries[0]?.key;
+    if (container && anchorKey && historyKey) {
       const anchorElement = findTranscriptEntryElement(container, anchorKey);
       prependRef.current = {
         anchorKey,
-        anchorIndex,
+        historyKey,
         anchorTop: anchorElement?.getBoundingClientRect().top ?? null,
         projectId,
         sessionId,
@@ -722,6 +726,7 @@ export function CockpitSessionDetail({
     projectId,
     runtime.sourceKey,
     sessionId,
+    transcriptEntries,
     visibleEntries,
   ]);
 

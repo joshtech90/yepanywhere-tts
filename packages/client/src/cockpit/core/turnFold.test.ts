@@ -119,7 +119,7 @@ describe("foldCockpitTurns", () => {
       prompt,
       {
         kind: "fold",
-        key: "asst-final\0fold",
+        key: "text-asst-final\0fold",
         expanded: false,
         steps: 2,
         notes: 1,
@@ -178,7 +178,7 @@ describe("foldCockpitTurns", () => {
       interimNote,
       finalAnswer,
     ];
-    const foldKey = "asst-final\0fold";
+    const foldKey = "text-asst-final\0fold";
 
     const result = foldCockpitTurns(entries, {
       expandedFoldKeys: new Set([foldKey]),
@@ -226,7 +226,7 @@ describe("foldCockpitTurns", () => {
       prompt1,
       {
         kind: "fold",
-        key: "asst-1\0fold",
+        key: "text-asst-1\0fold",
         expanded: false,
         steps: 1,
         notes: 0,
@@ -316,7 +316,7 @@ describe("foldCockpitTurns", () => {
       prompt,
       {
         kind: "fold",
-        key: "asst-final\0fold",
+        key: "text-asst-final\0fold",
         expanded: false,
         steps: 1,
         notes: 0,
@@ -367,7 +367,7 @@ describe("foldCockpitTurns", () => {
     expect(collapsedResult).toEqual([
       {
         kind: "fold",
-        key: "asst-final\0fold",
+        key: "text-asst-final\0fold",
         expanded: false,
         steps: 1,
         notes: 1,
@@ -376,14 +376,14 @@ describe("foldCockpitTurns", () => {
     ]);
 
     const expandedResult = foldCockpitTurns(entries, {
-      expandedFoldKeys: new Set(["asst-final\0fold"]),
+      expandedFoldKeys: new Set(["text-asst-final\0fold"]),
       latestTurnOpen: false,
     });
 
     expect(expandedResult).toEqual([
       {
         kind: "fold",
-        key: "asst-final\0fold",
+        key: "text-asst-final\0fold",
         expanded: true,
         steps: 1,
         notes: 1,
@@ -430,7 +430,7 @@ describe("foldCockpitTurns", () => {
     const tool = createToolEntry("tool-1");
     const finalAnswer = createAssistantEntry("asst-final", { text: "Done." });
     const options = {
-      expandedFoldKeys: new Set(["asst-final\0fold"]),
+      expandedFoldKeys: new Set(["text-asst-final\0fold"]),
       latestTurnOpen: false,
     };
 
@@ -462,7 +462,7 @@ describe("foldCockpitTurns", () => {
       prompt,
       {
         kind: "fold",
-        key: "asst-1\0fold",
+        key: "text-asst-1\0fold",
         expanded: false,
         steps: 1,
         notes: 0,
@@ -470,7 +470,7 @@ describe("foldCockpitTurns", () => {
       firstAnswer,
       {
         kind: "fold",
-        key: "asst-2\0fold",
+        key: "text-asst-2\0fold",
         expanded: false,
         steps: 1,
         notes: 0,
@@ -509,5 +509,46 @@ describe("foldCockpitTurns", () => {
     expect(foldCockpitTurns(entries, options)[1]).toBe(
       foldCockpitTurns(entries, options)[1],
     );
+  });
+
+  it("keeps every turn since the latest prompt open while the agent works", () => {
+    const prompt = createUserEntry("user-1");
+    const firstTool = createToolEntry("tool-1");
+    const note = createAssistantEntry("asst-1", {
+      text: "Waiting for the build.",
+    });
+    const wakeTool = { ...createToolEntry("tool-2"), turnStart: true as const };
+
+    const entries = [prompt, firstTool, note, wakeTool];
+    expect(
+      foldCockpitTurns(entries, {
+        expandedFoldKeys: new Set(),
+        latestTurnOpen: true,
+      }),
+    ).toEqual(entries);
+  });
+
+  it("keeps the fold open when an older page merges items into the answer", () => {
+    const answer = createAssistantEntry("asst-final", { text: "Done." });
+    const tool = createToolEntry("tool-1");
+    const options = {
+      expandedFoldKeys: new Set(["text-asst-final\0fold"]),
+      latestTurnOpen: false,
+    };
+    // The older page adds earlier thinking to the same group, so the entry's
+    // key now comes from that earlier item while its last text stays.
+    const grown: CockpitAssistantEntry = {
+      ...answer,
+      key: "asst-earlier",
+      thinking: [{ id: "thinking-earlier", text: "Plan.", status: "complete" }],
+    };
+
+    const result = foldCockpitTurns(
+      [createUserEntry("user-1"), tool, grown],
+      options,
+    );
+
+    expect(result[1]).toMatchObject({ kind: "fold", expanded: true });
+    expect(result.slice(2)).toEqual([tool, grown]);
   });
 });

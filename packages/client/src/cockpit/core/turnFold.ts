@@ -72,6 +72,16 @@ function withoutThinking(entry: CockpitAssistantEntry): CockpitAssistantEntry {
   return answer;
 }
 
+/**
+ * Named after the answer's last text segment: an older page can bring the
+ * turn's prompt or merge earlier items into the answer's group, but not
+ * change its last segment, so an opened fold stays open while history loads.
+ */
+export function foldKey(answer: CockpitAssistantEntry): string {
+  const lastSegment = answer.text[answer.text.length - 1];
+  return `${lastSegment?.id ?? answer.key}\0fold`;
+}
+
 // Unchanged fold rows keep their identity, keyed by the answer they stand
 // before, so a live update does not re-render every historical fold.
 const foldsByAnswer = new WeakMap<CockpitAssistantEntry, CockpitFoldEntry>();
@@ -93,9 +103,7 @@ function foldRow(
   }
   const fold: CockpitFoldEntry = {
     kind: "fold",
-    // The answer's key survives an older page bringing the turn's prompt,
-    // so an opened fold stays open while history loads above it.
-    key: `${answer.key}\0fold`,
+    key: foldKey(answer),
     expanded,
     steps,
     notes,
@@ -132,7 +140,7 @@ function foldTurn(
 
   const fold = foldRow(
     answer,
-    expandedFoldKeys.has(`${answer.key}\0fold`),
+    expandedFoldKeys.has(foldKey(answer)),
     steps,
     notes,
   );
@@ -175,8 +183,17 @@ export function foldCockpitTurns(
   }
   if (current.prompt || current.body.length > 0) turns.push(current);
 
+  // While the agent works, everything since the latest prompt stays open,
+  // including turns a background task started in the middle of it.
+  let firstOpenTurn = turns.length;
+  if (latestTurnOpen) {
+    firstOpenTurn = Math.max(0, turns.length - 1);
+    while (firstOpenTurn > 0 && !turns[firstOpenTurn]?.prompt) {
+      firstOpenTurn -= 1;
+    }
+  }
   return turns.flatMap((turn, index) => {
-    if (latestTurnOpen && index === turns.length - 1) {
+    if (index >= firstOpenTurn) {
       return turn.prompt ? [turn.prompt, ...turn.body] : turn.body;
     }
     return foldTurn(turn.prompt, turn.body, expandedFoldKeys);

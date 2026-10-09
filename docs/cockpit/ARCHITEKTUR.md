@@ -282,10 +282,14 @@ bleiben Status- und Kompaktierungsgrenzen sowie `AskUserQuestion` und
 Faltung ist eine reine Projektion (`core/turnFold.ts`) ueber die kanonischen
 Eintraege; Vorlesen, Kurzbefehle und Suche sehen weiter alle Eintraege. Der
 Aufklappzustand gilt nur fuer die geoeffnete Sitzung. Eine Faltzeile traegt
-den Schluessel ihrer Endantwort, damit sie offen bleibt, wenn eine aeltere
-Seite den Prompt ihres Durchgangs nachliefert. Der Anker fuer aeltere Seiten
-ist der erste echte Eintrag; als echtes Voranstellen gilt erst, wenn vor ihm
-mehr Zeilen stehen als beim Start der Anfrage.
+die ID des letzten Textsegments ihrer Endantwort, damit sie offen bleibt, wenn
+eine aeltere Seite den Prompt ihres Durchgangs nachliefert oder fruehere
+Elemente in die Antwortgruppe einfuegt. Waehrend der Agent arbeitet, bleibt
+alles seit dem letzten Prompt offen, auch ein Durchgang, den eine
+Hintergrundmeldung mittendrin begonnen hat. Ob eine aeltere Seite angekommen
+ist, entscheidet der erste kanonische Eintrag, denn Falten aendert sichtbare
+Zeilen, nicht kanonische; die Position stellt der erste echte sichtbare
+Eintrag wieder her.
 
 Vorlesen ruft direkt den bestehenden appweiten Controller in `readAloud.ts`
 auf. Dessen Token stellt weiterhin genau eine Wiedergabe fuer alte und neue UI
