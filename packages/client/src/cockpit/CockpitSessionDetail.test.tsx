@@ -699,6 +699,34 @@ describe("Cockpit session detail", () => {
       expect(screen.queryByText("Looking at the notes first.")).toBeNull();
     });
 
+    it("resumes following when closing a fold leaves the reader at the end", async () => {
+      detailMocks.data = detailData({ entries: workedTurn });
+      renderDetail();
+      const transcript = screen.getByLabelText("Session conversation");
+      Object.defineProperty(transcript, "scrollHeight", {
+        configurable: true,
+        get: () => 500,
+      });
+      Object.defineProperty(transcript, "clientHeight", {
+        configurable: true,
+        get: () => 480,
+      });
+      const fold = screen.getByRole("button", {
+        name: "1 step · 1 interim message",
+      });
+
+      fireEvent.click(fold);
+      fireEvent.click(fold);
+      await act(
+        () =>
+          new Promise((resolve) => requestAnimationFrame(() => resolve(null))),
+      );
+
+      expect(
+        screen.queryByRole("button", { name: "Jump to latest" }),
+      ).toBeNull();
+    });
+
     it("holds a turn open that ends while the reader is scrolled up in it", () => {
       detailMocks.data = detailData({
         entries: workedTurn,

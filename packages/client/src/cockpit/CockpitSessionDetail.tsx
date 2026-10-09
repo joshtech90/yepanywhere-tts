@@ -479,9 +479,9 @@ export function CockpitSessionDetail({
   } | null>(null);
   const [following, setFollowing] = useState(true);
   const [pinnedEntryKey, setPinnedEntryKey] = useState<string | null>(null);
-  const [expandedFoldKeys, setExpandedFoldKeys] = useState<
-    ReadonlySet<string>
-  >(() => new Set());
+  const [expandedFoldKeys, setExpandedFoldKeys] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
   const [latestTurnHeldOpen, setLatestTurnHeldOpen] = useState(false);
 
   const hasEntries = transcriptEntries.length > 0;
@@ -542,7 +542,9 @@ export function CockpitSessionDetail({
   );
 
   // Opening or closing a fold keeps that row where it is instead of
-  // following the end; scrolling back down resumes following.
+  // following the end; scrolling back down resumes following. Closing one
+  // can leave the reader at the end without any scroll event, so the end is
+  // checked once the change has painted.
   const toggleFold = useCallback((key: string) => {
     followingRef.current = false;
     setFollowing(false);
@@ -550,6 +552,19 @@ export function CockpitSessionDetail({
       const next = new Set(previous);
       if (!next.delete(key)) next.add(key);
       return next;
+    });
+    if (typeof requestAnimationFrame !== "function") return;
+    requestAnimationFrame(() => {
+      const container = scrollRef.current;
+      if (
+        !container ||
+        container.scrollHeight - container.scrollTop - container.clientHeight >=
+          72
+      ) {
+        return;
+      }
+      followingRef.current = true;
+      setFollowing(true);
     });
   }, []);
 
@@ -630,7 +645,13 @@ export function CockpitSessionDetail({
     if (followingRef.current) {
       container.scrollTop = container.scrollHeight;
     }
-  }, [projectId, runtime.sourceKey, sessionId, transcriptEntries, visibleEntries]);
+  }, [
+    projectId,
+    runtime.sourceKey,
+    sessionId,
+    transcriptEntries,
+    visibleEntries,
+  ]);
 
   const showWorking = state === "active" || state === "external";
   const outgoingCount = detail.outgoing.length;
