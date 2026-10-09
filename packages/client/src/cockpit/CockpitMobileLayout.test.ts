@@ -27,7 +27,7 @@ function rule(css: string, selector: string): string {
 describe("Cockpit mobile navigation layout", () => {
   it("uses short navigation labels on phones instead of breaking words", async () => {
     const pageCss = await readFile(pageStylesheetUrl, "utf8");
-    const phone = pageCss.slice(pageCss.indexOf("@media (max-width: 700px)"));
+    const phone = pageCss.slice(pageCss.indexOf("@media (width <= 700px)"));
 
     expect(rules(pageCss, ".labelShort")[0]).toMatch(/display:\s*none\s*;/);
     expect(rule(phone, ".labelShort")).toMatch(/display:\s*inline\s*;/);
